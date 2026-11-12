@@ -136,9 +136,10 @@ fn failed_checksum_native_window_retries_only_release_at_bounded_rate_until_acce
     }
     assert_eq!(
         h.attempts.get(),
-        3,
-        "the failed tool and its error notice are each attempted only once"
+        2,
+        "only the failed tool is attempted; its notice remains in the main window"
     );
+    assert!(h.main.get_embedded_modal_open());
     assert_eq!(h.releases.get(), 1, "no zero-delay release retry loop");
     h.tick(249);
     assert_eq!(h.releases.get(), 1);
@@ -164,7 +165,7 @@ fn failed_checksum_native_window_retries_only_release_at_bounded_rate_until_acce
         midnight_ui::refresh(&h.main, &h.state.borrow());
     }
     h.tick(2000);
-    assert_eq!(h.attempts.get(), 3);
+    assert_eq!(h.attempts.get(), 2);
     assert_eq!(h.releases.get(), 3);
     h.main.invoke_close_checksum_windows();
     h.main.hide().unwrap();
@@ -179,9 +180,9 @@ fn host_shutdown_stops_failed_checksum_retries_and_initial_find_failure_closes_l
     h.main.invoke_close_checksum_windows();
     h.tick(1000);
     assert_eq!(h.releases.get(), 1);
-    assert_eq!(h.attempts.get(), 3);
+    assert_eq!(h.attempts.get(), 2);
     h.main.invoke_find_files(0);
-    assert_eq!(h.attempts.get(), 4);
+    assert_eq!(h.attempts.get(), 3);
     h.tick(1000);
     for _ in 0..8 {
         h.tick(1000);
@@ -189,8 +190,8 @@ fn host_shutdown_stops_failed_checksum_retries_and_initial_find_failure_closes_l
     }
     assert_eq!(
         h.attempts.get(),
-        5,
-        "unstarted Find and its notice each fail once without recreating either host"
+        3,
+        "unstarted Find fails once and its notice allocates no native host"
     );
     h.main.invoke_close_find_windows();
     h.main.hide().unwrap();

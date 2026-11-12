@@ -58,10 +58,10 @@ fn exercise(pane: PaneId, archive: bool) {
     ui::chord(&h.ui.window, &[Key::Control, Key::Shift], "a");
     selected(&h, &["folder", "root.txt"]);
     settle(&mut h, &["folder", "root.txt"]);
-    ui::chord(&h.ui.window, &[Key::Control], "d");
-    selected(&h, &["folder"]);
-    settle(&mut h, &["folder"]);
     ui::chord(&h.ui.window, &[Key::Control, Key::Shift], "d");
+    selected(&h, &["folder", "root.txt"]);
+    settle(&mut h, &["folder", "root.txt"]);
+    ui::chord(&h.ui.window, &[Key::Control], "d");
     selected(&h, &[]);
     settle(&mut h, &[]);
 }
@@ -86,7 +86,7 @@ fn archive_right_tree_shortcuts_distinguish_files_and_all_entries() {
     exercise(PaneId::Right, true);
 }
 
-fn clear_nested_files(pane: PaneId, archive: bool) {
+fn clear_nested_marks(pane: PaneId, archive: bool) {
     let mut h = Harness::with_sizes(pane, archive);
     h.ui.window.invoke_activate(pane.index() as i32);
     // Inline branches display folders only; a file-only child has no expansion arrow.
@@ -100,10 +100,10 @@ fn clear_nested_files(pane: PaneId, archive: bool) {
     }
     settle(&mut h, &["folder", "large", "root.txt"]);
     h.ui.window.invoke_focus_files();
-    ui::chord(&h.ui.window, &[Key::Control], "d");
-    selected(&h, &["folder", "large"]);
-    settle(&mut h, &["folder", "large"]);
     ui::chord(&h.ui.window, &[Key::Control, Key::Shift], "d");
+    selected(&h, &["folder", "large", "root.txt"]);
+    settle(&mut h, &["folder", "large", "root.txt"]);
+    ui::chord(&h.ui.window, &[Key::Control], "d");
     selected(&h, &[]);
     settle(&mut h, &[]);
     ui::chord(&h.ui.window, &[Key::Control], "a");
@@ -115,21 +115,21 @@ fn clear_nested_files(pane: PaneId, archive: bool) {
 }
 
 #[test]
-fn native_left_clear_files_preserves_nested_folders() {
-    clear_nested_files(PaneId::Left, false);
+fn native_left_clear_removes_nested_folder_marks() {
+    clear_nested_marks(PaneId::Left, false);
 }
 
 #[test]
-fn native_right_clear_files_preserves_nested_folders() {
-    clear_nested_files(PaneId::Right, false);
+fn native_right_clear_removes_nested_folder_marks() {
+    clear_nested_marks(PaneId::Right, false);
 }
 
 #[test]
-fn archive_left_clear_files_preserves_nested_folders() {
-    clear_nested_files(PaneId::Left, true);
+fn archive_left_clear_removes_nested_folder_marks() {
+    clear_nested_marks(PaneId::Left, true);
 }
 
 #[test]
-fn archive_right_clear_files_preserves_nested_folders() {
-    clear_nested_files(PaneId::Right, true);
+fn archive_right_clear_removes_nested_folder_marks() {
+    clear_nested_marks(PaneId::Right, true);
 }

@@ -5,7 +5,7 @@ mod modeless;
 mod ui;
 use i_slint_core::{item_tree::ItemRc, items::AccessibleRole, window::WindowInner};
 use midnight_core::*;
-use midnight_ui::{MainWindow, Presenter, install, refresh};
+use midnight_ui::{MainWindow, NoticePresentation, Presenter, install, refresh};
 use slint::{
     ComponentHandle,
     platform::{Key, WindowAdapter, WindowEvent},
@@ -75,32 +75,36 @@ fn drive_details_are_measured_and_late_result_does_not_reopen_a_closed_notice() 
     assert!(window.get_message_body().contains("Reading native"));
     assert_eq!(
         windows.borrow().len(),
-        2,
-        "notice needs its own native adapter"
+        1,
+        "the notice must reuse the main adapter"
     );
-    let loading = windows.borrow()[1].clone();
-    assert!(!Rc::ptr_eq(&owner, &loading));
-    assert!(loading.window().is_visible());
-    assert!(window.get_dialog_input_blocked());
-    assert!(!ui::has_popup(&window));
-    modeless::draw(&loading, 600, 400, "volume-information-loading");
-    modeless::click(&loading, "Close");
+    let presentation = window.global::<NoticePresentation>();
+    let loading_token = presentation.get_token();
+    assert!(!loading_token.is_empty());
+    assert!(window.get_embedded_modal_open());
+    assert!(!window.get_dialog_input_blocked());
+    assert!(ui::has_popup(&window));
+    modeless::draw(&owner, 600, 400, "volume-information-loading");
+    modeless::click(&owner, "Close");
     slint::platform::update_timers_and_animations();
-    assert!(!loading.window().is_visible());
+    assert!(presentation.get_token().is_empty());
+    assert!(!window.get_embedded_modal_open());
     assert!(!window.get_dialog_input_blocked());
     assert!(window.window().is_visible());
+    assert!(!ui::has_popup(&window));
     presenter.borrow_mut().apply(result(&request));
     refresh(&window, &presenter.borrow());
     slint::platform::update_timers_and_animations();
     assert!(
-        !loading.window().is_visible(),
-        "late reply must not reopen the child"
+        presentation.get_token().is_empty(),
+        "a dismissed query's late reply must not reopen its notice"
     );
     assert_eq!(
         windows.borrow().len(),
-        2,
+        1,
         "late reply must not allocate another notice"
     );
+    assert!(!window.get_embedded_modal_open());
     assert!(!window.get_dialog_input_blocked());
 
     window.invoke_focus_files();
@@ -108,13 +112,17 @@ fn drive_details_are_measured_and_late_result_does_not_reopen_a_closed_notice() 
     slint::platform::update_timers_and_animations();
     assert_eq!(
         windows.borrow().len(),
-        3,
-        "a fresh query opens a fresh native notice"
+        1,
+        "a fresh query reuses the main adapter"
     );
-    let notice = windows.borrow()[2].clone();
-    assert!(notice.window().is_visible());
-    assert!(window.get_dialog_input_blocked());
-    assert!(!ui::has_popup(&window));
+    let notice_token = presentation.get_token();
+    assert!(!notice_token.is_empty());
+    assert_ne!(notice_token, loading_token);
+    assert!(window.get_embedded_modal_open());
+    assert!(!window.get_dialog_input_blocked());
+    assert!(ui::has_popup(&window));
+    presentation.invoke_dismiss(loading_token);
+    assert_eq!(presentation.get_token(), notice_token);
     let request = commands
         .borrow()
         .iter()
@@ -129,36 +137,41 @@ fn drive_details_are_measured_and_late_result_does_not_reopen_a_closed_notice() 
     slint::platform::update_timers_and_animations();
     assert_eq!(
         windows.borrow().len(),
-        3,
-        "reply updates the existing native notice"
+        1,
+        "reply updates the existing embedded notice"
     );
-    assert!(notice.window().is_visible());
+    assert_eq!(presentation.get_token(), notice_token);
+    assert!(window.get_embedded_modal_open());
     let body = window.get_message_body();
     assert!(body.contains("MeasuredFS"));
     assert!(body.contains("資料 disk 🦀"));
     assert!(body.contains("Used: 5000000000 bytes"));
     assert!(body.contains("Storage: Unavailable"));
     assert!(!window.get_message_error());
-    modeless::draw(&notice, 600, 400, "volume-information");
-    let child_root = ItemRc::new_root(WindowInner::from_pub(notice.window()).component());
+    assert_eq!(presentation.get_body(), body);
+    modeless::draw(&owner, 600, 400, "volume-information");
+    let popup_root = {
+        let inner = WindowInner::from_pub(window.window());
+        let popups = inner.active_popups();
+        ItemRc::new_root(popups.last().unwrap().component.clone())
+    };
     assert!(
-        ui::visible_text_values(child_root)
+        ui::visible_text_values(popup_root)
             .iter()
             .any(|text| text == &body)
     );
-    modeless::click(&notice, "Copy details");
+    modeless::click(&owner, "Copy details");
     assert!(commands.borrow().iter().any(
         |command| matches!(command, Command::CopyText { text, .. } if text.contains(body.as_str()))
     ));
-    let child_size = notice.window().size();
     modeless::draw(&owner, 1040, 600, "volume-information-owner-small");
     assert_eq!(
-        notice.window().size(),
-        child_size,
-        "owner resize must not size the child"
+        presentation.get_token(),
+        notice_token,
+        "resize preserves the notice"
     );
-    modeless::draw(&notice, 320, 200, "volume-information-small");
-    let close = modeless::accessible_item(&notice, AccessibleRole::Button, "Close").unwrap();
+    modeless::draw(&owner, 320, 200, "volume-information-small");
+    let close = modeless::accessible_popup_item(&owner, AccessibleRole::Button, "Close").unwrap();
     let geometry = close.geometry();
     let origin = close.map_to_native_window(geometry.origin);
     assert!(close.is_visible());
@@ -172,10 +185,11 @@ fn drive_details_are_measured_and_late_result_does_not_reopen_a_closed_notice() 
             text: Key::Escape.into(),
         },
     ] {
-        notice.window().dispatch_event(event);
+        owner.window().dispatch_event(event);
     }
     slint::platform::update_timers_and_animations();
-    assert!(!notice.window().is_visible());
+    assert!(presentation.get_token().is_empty());
+    assert!(!window.get_embedded_modal_open());
     assert!(!window.get_dialog_input_blocked());
     assert!(window.window().is_visible());
     assert!(!ui::has_popup(&window));

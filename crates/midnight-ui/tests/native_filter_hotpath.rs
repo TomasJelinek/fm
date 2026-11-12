@@ -1,9 +1,13 @@
-//! Native Filter and Hot Paths preserve their captured pane and location.
+//! Installed Filter and Hot Paths use the main adapter and preserve captured authority.
 #[path = "support/modeless.rs"]
 mod modeless;
-use i_slint_core::{accessibility::AccessibleStringProperty, items::AccessibleRole};
-use midnight_core::{Command, Event, PaneId, PanelFilter, UserPreferences};
-use midnight_ui::{MainWindow, Presenter, install, refresh};
+use i_slint_core::{
+    accessibility::AccessibleStringProperty, items::AccessibleRole, window::WindowInner,
+};
+use midnight_core::{Command, Event, FilterMode, PaneId, PanelFilter, UserPreferences};
+use midnight_ui::{
+    HotPathsPresentation, MainWindow, PanelFilterPresentation, Presenter, Theme, install, refresh,
+};
 use slint::{
     ComponentHandle, SharedString,
     platform::{Key, WindowAdapter, WindowEvent, software_renderer::MinimalSoftwareWindow},
@@ -38,6 +42,7 @@ struct Harness {
     state: Rc<RefCell<Presenter>>,
     windows: Rc<RefCell<Vec<Rc<MinimalSoftwareWindow>>>>,
     commands: Rc<RefCell<Vec<Command>>>,
+    accept_commands: Rc<Cell<bool>>,
     paths: [PathBuf; 2],
     refuse_window: Rc<Cell<bool>>,
     attempts: Rc<Cell<usize>>,
@@ -72,54 +77,75 @@ impl Harness {
             expression: "*.txt".into(),
             ..Default::default()
         };
+        preferences.panel_filter_history = vec![PanelFilter {
+            enabled: true,
+            mode: FilterMode::Regex,
+            expression: r"\.TXT$".into(),
+            case_sensitive: true,
+        }];
         state
             .borrow_mut()
             .apply(Event::PreferencesLoaded(Ok(Box::new(preferences))));
         let commands = Rc::new(RefCell::new(Vec::new()));
+        let accept_commands = Rc::new(Cell::new(true));
         let sent = commands.clone();
+        let accept = accept_commands.clone();
         install(
             &main,
             state.clone(),
             Rc::new(move |command| {
                 sent.borrow_mut().push(command);
-                true
+                accept.get()
             }),
         );
-        modeless::draw(&windows.borrow()[0], 1000, 700, "panel-native-owner");
+        modeless::draw(&windows.borrow()[0], 1000, 700, "embedded-panel-main");
         commands.borrow_mut().clear();
         Self {
             main,
             state,
             windows,
             commands,
+            accept_commands,
             paths,
             refuse_window,
             attempts,
         }
     }
-    fn child(&self) -> Rc<MinimalSoftwareWindow> {
-        let visible: Vec<_> = self
-            .windows
-            .borrow()
-            .iter()
-            .skip(1)
-            .filter(|w| w.window().is_visible())
-            .cloned()
-            .collect();
-        assert_eq!(
-            visible.len(),
-            1,
-            "the panel form must have its own native window adapter"
-        );
-        let child = visible[0].clone();
-        child
-            .window()
+    fn form(&self) -> Rc<MinimalSoftwareWindow> {
+        let main = self.windows.borrow()[0].clone();
+        main.window()
             .dispatch_event(WindowEvent::WindowActiveChanged(true));
-        modeless::draw(&child, 560, 440, "panel-native-child");
-        assert!(self.main.get_dialog_input_blocked());
-        child
+        slint::platform::update_timers_and_animations();
+        modeless::draw(&main, 1000, 700, "embedded-panel-popup");
+        assert_eq!(
+            self.windows.borrow().len(),
+            1,
+            "form must use the main adapter"
+        );
+        assert_eq!(self.attempts.get(), 1, "no child Window may be attempted");
+        assert!(
+            !WindowInner::from_pub(main.window())
+                .active_popups()
+                .is_empty(),
+            "the installed form must be an active popup"
+        );
+        main
+    }
+    fn filter_closed(&self) {
+        assert!(
+            self.main
+                .global::<PanelFilterPresentation>()
+                .get_token()
+                .is_empty()
+        );
+        assert!(!self.main.get_panel_filter_view().open);
+        assert!(
+            self.main.window().is_visible(),
+            "closing a form keeps Main open"
+        );
     }
 }
+
 fn key(window: &MinimalSoftwareWindow, text: impl Into<SharedString>) {
     let text = text.into();
     window
@@ -128,9 +154,13 @@ fn key(window: &MinimalSoftwareWindow, text: impl Into<SharedString>) {
     window
         .window()
         .dispatch_event(WindowEvent::KeyReleased { text });
+    slint::platform::update_timers_and_animations();
 }
 fn value(window: &MinimalSoftwareWindow) -> SharedString {
-    modeless::accessible_item(window, AccessibleRole::TextInput, "File filter expression")
+    modeless::accessible_popup_item(window, AccessibleRole::TextInput, "File filter expression")
+        .or_else(|| {
+            modeless::accessible_item(window, AccessibleRole::TextInput, "File filter expression")
+        })
         .unwrap()
         .accessible_string_property(AccessibleStringProperty::Value)
         .unwrap()
@@ -145,23 +175,20 @@ fn replace(window: &MinimalSoftwareWindow, text: &str) {
     });
     key(window, text);
 }
+
 #[test]
-fn native_filter_retains_text_on_resize_and_cancels_pending_validation() {
+fn embedded_filter_retains_text_on_resize_and_cancels_pending_validation() {
     let h = Harness::new();
     h.main.invoke_open_panel_filter(0);
-    let child = h.child();
-    forms::click_control(&child, "File filter expression", AccessibleRole::TextInput);
-    replace(&child, "*.文档");
-    assert_eq!(
-        value(&child),
-        "*.文档",
-        "the editor accepted the draft before resizing"
-    );
+    let main = h.form();
+    forms::click_control(&main, "File filter expression", AccessibleRole::TextInput);
+    replace(&main, "*.文档");
+    assert_eq!(value(&main), "*.文档");
     h.main.invoke_activate(1);
-    modeless::draw(&child, 320, 200, "native-filter-minimum");
+    modeless::draw(&main, 320, 200, "embedded-filter-minimum");
     refresh(&h.main, &h.state.borrow());
-    assert_eq!(value(&child), "*.文档");
-    modeless::click(&child, "OK");
+    assert_eq!(value(&main), "*.文档");
+    modeless::click(&main, "OK");
     let request = h
         .commands
         .borrow()
@@ -170,12 +197,11 @@ fn native_filter_retains_text_on_resize_and_cancels_pending_validation() {
             Command::ValidatePanelFilter(request) => Some(request.clone()),
             _ => None,
         })
-        .expect("OK must validate captured filter");
+        .expect("OK must validate the captured filter");
     assert_eq!(request.pane, PaneId::Left);
     assert_eq!(request.filter.expression, "*.文档");
-    child.window().dispatch_event(WindowEvent::CloseRequested);
-    assert!(!child.window().is_visible());
-    assert!(!h.main.get_dialog_input_blocked());
+    key(&main, Key::Escape);
+    h.filter_closed();
     h.state.borrow_mut().apply(Event::PanelFilterValidated {
         request,
         result: Ok(()),
@@ -183,18 +209,19 @@ fn native_filter_retains_text_on_resize_and_cancels_pending_validation() {
     });
     h.state
         .borrow_mut()
-        .flush_filters(&|_| panic!("a canceled validation must not be saved"));
+        .flush_filters(&|_| panic!("canceled validation must not be saved"));
     h.main.invoke_open_panel_filter(0);
-    let next = h.child();
-    assert_eq!(value(&next), "*.txt");
-    key(&next, Key::Escape);
-    assert!(!next.window().is_visible());
+    let main = h.form();
+    assert_eq!(value(&main), "*.txt");
+    key(&main, Key::Escape);
+    h.filter_closed();
 }
+
 #[test]
-fn native_filter_navigation_retires_form_without_clearing_applied_filter() {
+fn embedded_filter_navigation_retires_form_without_clearing_applied_filter() {
     let h = Harness::new();
     h.main.invoke_open_panel_filter(0);
-    let child = h.child();
+    let main = h.form();
     h.main.invoke_navigate(
         0,
         h.paths[0]
@@ -203,93 +230,260 @@ fn native_filter_navigation_retires_form_without_clearing_applied_filter() {
             .as_ref()
             .into(),
     );
-    assert!(
-        !child.window().is_visible(),
-        "navigation retires the old native filter"
-    );
-    assert!(!h.main.get_panel_filter_view().open);
+    h.filter_closed();
     assert!(
         h.main.get_panel_filter_view().enabled,
-        "navigation must not clear the applied filter"
+        "navigation preserves the applied filter"
     );
     h.main.invoke_open_panel_filter(0);
-    let current = h.child();
-    assert_eq!(value(&current), "*.txt");
-    key(&current, Key::Escape);
+    h.form();
+    assert_eq!(value(&main), "*.txt");
+    key(&main, Key::Escape);
+    h.filter_closed();
 }
+
 #[test]
-fn native_hot_paths_add_uses_opening_location_and_close_keeps_committed_edits() {
+fn embedded_hot_paths_add_uses_opening_location_and_close_keeps_saved_edits() {
     let h = Harness::new();
     h.main.invoke_show_bookmarks(0);
-    let child = h.child();
+    let main = h.form();
     h.main.invoke_navigate(
         0,
         h.paths[0].join("later").to_string_lossy().as_ref().into(),
     );
     h.main.invoke_activate(1);
-    modeless::click(&child, "Add current");
-    modeless::click(&child, "Add current");
+    modeless::click(&main, "Add current");
+    modeless::click(&main, "Add current");
     assert_eq!(
         h.state.borrow().bookmarks().len(),
         1,
-        "captured location remains unique"
+        "captured location stays unique"
     );
     assert_eq!(h.state.borrow().bookmarks()[0].path, h.paths[0]);
     assert_eq!(h.state.borrow().bookmarks()[0].slot, Some(1));
-    modeless::draw(&child, 320, 200, "native-hotpaths-minimum");
-    modeless::click(&child, "Close");
-    assert!(!child.window().is_visible());
-    assert!(!h.main.get_dialog_input_blocked());
+    modeless::draw(&main, 320, 200, "embedded-hotpaths-minimum");
+    modeless::click(&main, "Close");
+    assert!(
+        h.main
+            .global::<HotPathsPresentation>()
+            .get_token()
+            .is_empty()
+    );
+    assert!(main.window().is_visible());
     assert_eq!(h.state.borrow().bookmarks().len(), 1);
 }
+
+#[test]
+fn embedded_filter_help_blocks_filter_input_and_escape_restores_the_draft_focus() {
+    let h = Harness::new();
+    h.main.invoke_open_panel_filter(0);
+    let main = h.form();
+    forms::click_control(&main, "File filter expression", AccessibleRole::TextInput);
+    replace(&main, "*.draft");
+    key(&main, Key::F1);
+    modeless::draw(&main, 1000, 700, "embedded-filter-expression-help");
+    let presentation = h.main.global::<PanelFilterPresentation>();
+    assert!(!presentation.get_help_token().is_empty());
+    assert_eq!(
+        WindowInner::from_pub(main.window()).active_popups().len(),
+        2
+    );
+    assert_eq!(h.attempts.get(), 1, "Help must not create a native Window");
+    h.commands.borrow_mut().clear();
+
+    forms::click_control(&main, "File filter expression", AccessibleRole::TextInput);
+    replace(&main, "wrong");
+    presentation.invoke_apply(presentation.get_token(), true, 0, "wrong".into(), false);
+    presentation.invoke_clear(presentation.get_token());
+    presentation.invoke_dismiss(presentation.get_token());
+    assert_eq!(value(&main), "*.draft");
+    assert!(h.commands.borrow().is_empty());
+    assert!(h.main.get_panel_filter_view().open);
+    assert!(!presentation.get_help_token().is_empty());
+
+    key(&main, Key::Escape);
+    assert!(presentation.get_help_token().is_empty());
+    assert!(!presentation.get_token().is_empty());
+    assert_eq!(value(&main), "*.draft");
+    // No pointer repair: Escape must return the original editor's focus.
+    replace(&main, "*.after-help");
+    key(&main, Key::Return);
+    assert!(h.commands.borrow().iter().any(|command| {
+        matches!(command, Command::ValidatePanelFilter(request)
+            if request.pane == PaneId::Left && request.filter.expression == "*.after-help")
+    }));
+    key(&main, Key::Escape);
+    h.filter_closed();
+}
+
+#[test]
+fn embedded_filter_queue_rejection_and_theme_changes_keep_the_same_edited_controls() {
+    let h = Harness::new();
+    h.main.invoke_open_panel_filter(0);
+    let main = h.form();
+    forms::click_control(&main, "File filter expression", AccessibleRole::TextInput);
+    replace(&main, "kind = file");
+    forms::click_control(&main, "Filter mode", AccessibleRole::Combobox);
+    key(&main, Key::DownArrow);
+    key(&main, Key::DownArrow);
+    key(&main, Key::Return);
+    h.accept_commands.set(false);
+    modeless::click(&main, "OK");
+    assert!(!h.main.get_panel_filter_view().busy);
+    assert!(
+        h.main
+            .get_panel_filter_view()
+            .error
+            .contains("queue is busy")
+    );
+    let token = h.main.global::<PanelFilterPresentation>().get_token();
+    for (width, height, scheme, density, font) in [(320, 200, 1, 1, 32), (1000, 700, 2, 0, 12)] {
+        let theme = h.main.global::<Theme>();
+        theme.set_scheme(scheme);
+        theme.set_density(density);
+        theme.set_desktop_font_size(font);
+        theme.set_touch_font_size(font);
+        modeless::draw(&main, width, height, "embedded-filter-feedback-theme");
+        assert_eq!(value(&main), "kind = file");
+        assert_eq!(
+            h.main.global::<PanelFilterPresentation>().get_token(),
+            token
+        );
+    }
+    h.accept_commands.set(true);
+    modeless::click(&main, "OK");
+    assert!(
+        matches!(h.commands.borrow().last(), Some(Command::ValidatePanelFilter(request))
+        if request.filter.mode == FilterMode::Expression && request.filter.expression == "kind = file")
+    );
+    key(&main, Key::Escape);
+    h.filter_closed();
+}
+
+#[test]
+fn embedded_filter_history_recall_and_clear_edit_only_while_show_all_removes_the_filter() {
+    let h = Harness::new();
+    h.main.invoke_open_panel_filter(0);
+    let main = h.form();
+    forms::click_control(&main, "Filter history", AccessibleRole::Combobox);
+    key(&main, Key::DownArrow);
+    key(&main, Key::Return);
+    assert_eq!(value(&main), r"\.TXT$");
+    assert!(
+        h.commands.borrow().is_empty(),
+        "history recall does not apply"
+    );
+    modeless::click(&main, "OK");
+    assert!(
+        matches!(h.commands.borrow().last(), Some(Command::ValidatePanelFilter(request))
+        if request.filter.mode == FilterMode::Regex && request.filter.case_sensitive)
+    );
+    key(&main, Key::Escape);
+    h.main.invoke_open_panel_filter(0);
+    h.form();
+    h.commands.borrow_mut().clear();
+    modeless::click(&main, "Clear filter expression");
+    assert_eq!(value(&main), "");
+    assert!(h.main.get_panel_filter_view().enabled);
+    assert!(h.commands.borrow().is_empty());
+    modeless::click(&main, "Show all");
+    h.filter_closed();
+    assert!(!h.main.get_panel_filter_view().enabled);
+    assert!(
+        h.commands
+            .borrow()
+            .iter()
+            .all(|command| !matches!(command, Command::ValidatePanelFilter(_)))
+    );
+}
+
+#[path = "support/native_panel_failure.rs"]
+mod failure;
 #[path = "support/native_filter_form.rs"]
 mod forms;
 #[path = "support/native_hotpaths_form.rs"]
 mod hotpaths_form;
 
-#[path = "support/native_panel_failure.rs"]
-mod failure;
+#[test]
+fn embedded_forms_restore_the_invoking_editor_after_the_popup_close_tick() {
+    let h = Harness::new();
+    let main = h.windows.borrow()[0].clone();
+    h.main.invoke_focus_command();
+    key(&main, "before");
+    assert_eq!(h.main.get_command_text(), "before");
+    h.main.invoke_open_panel_filter(0);
+    h.form();
+    key(&main, Key::Escape);
+    h.filter_closed();
+    slint::platform::update_timers_and_animations();
+    key(&main, "-filter");
+    assert_eq!(h.main.get_command_text(), "before-filter");
+    h.main.invoke_show_bookmarks(0);
+    h.form();
+    key(&main, Key::Escape);
+    slint::platform::update_timers_and_animations();
+    key(&main, "-paths");
+    assert_eq!(h.main.get_command_text(), "before-filter-paths");
+}
 
 #[test]
-fn native_filter_help_blocks_owner_pointer_and_keyboard_until_help_closes() {
+fn retained_filter_and_help_items_cannot_act_on_replacement_popups() {
+    use i_slint_core::accessibility::AccessibilityAction;
     let h = Harness::new();
     h.main.invoke_open_panel_filter(0);
-    let filter = h.child();
-    forms::click_control(&filter, "File filter expression", AccessibleRole::TextInput);
-    replace(&filter, "*.draft");
-    key(&filter, Key::F1);
-    let help = h.windows.borrow().last().unwrap().clone();
-    assert!(!Rc::ptr_eq(&help, &filter));
-    assert!(help.window().is_visible());
-    modeless::draw(&help, 700, 500, "filter-expression-help");
-    modeless::draw(&filter, 560, 440, "filter-owner-blocked-by-help");
-    h.commands.borrow_mut().clear();
-
-    // The software adapter has no OS EnableWindow. These exercise the Slint
-    // pointer/key gate used on Linux instead of merely inspecting a modal count.
-    replace(&filter, "wrong");
-    key(&filter, Key::Return);
-    key(&filter, Key::Escape);
-    modeless::click(&filter, "Show all");
-    modeless::click(&filter, "OK");
-    modeless::click(&filter, "Cancel");
-    assert_eq!(value(&filter), "*.draft");
+    let main = h.form();
+    let old_buttons: Vec<_> = ["OK", "Cancel", "Help", "Show all"]
+        .into_iter()
+        .map(|label| modeless::accessible_popup_item(&main, AccessibleRole::Button, label).unwrap())
+        .collect();
+    key(&main, Key::Escape);
+    h.main.invoke_open_panel_filter(1);
+    h.form();
+    let presentation = h.main.global::<PanelFilterPresentation>();
+    let token = presentation.get_token();
+    for button in old_buttons {
+        button.accessible_action(&AccessibilityAction::Default);
+    }
+    assert_eq!(presentation.get_token(), token);
+    assert!(presentation.get_help_token().is_empty());
     assert!(h.commands.borrow().is_empty());
-    assert!(filter.window().is_visible() && help.window().is_visible());
-    assert!(h.main.get_dialog_input_blocked());
+    modeless::click(&main, "Help");
+    modeless::draw(&main, 1000, 700, "embedded-help-first-occurrence");
+    let old_close =
+        modeless::accessible_popup_item(&main, AccessibleRole::Button, "Close").unwrap();
+    key(&main, Key::Escape);
+    modeless::click(&main, "Help");
+    modeless::draw(&main, 1000, 700, "embedded-help-second-occurrence");
+    let help = presentation.get_help_token();
+    old_close.accessible_action(&AccessibilityAction::Default);
+    assert_eq!(presentation.get_help_token(), help);
+    assert!(!help.is_empty());
+    key(&main, Key::Escape);
+    key(&main, Key::Escape);
+    h.filter_closed();
+}
 
-    key(&help, Key::Escape);
-    assert!(!help.window().is_visible());
-    assert!(filter.window().is_visible());
-    assert!(h.main.get_dialog_input_blocked());
-    forms::click_control(&filter, "File filter expression", AccessibleRole::TextInput);
-    replace(&filter, "*.after-help");
-    key(&filter, Key::Return);
-    assert!(h.commands.borrow().iter().any(|command| {
-        matches!(command, Command::ValidatePanelFilter(request)
-            if request.pane == PaneId::Left && request.filter.expression == "*.after-help")
-    }));
-    key(&filter, Key::Escape);
-    assert!(!filter.window().is_visible());
-    assert!(!h.main.get_dialog_input_blocked());
+#[test]
+fn retained_hotpaths_items_cannot_edit_or_close_a_replacement_popup() {
+    use i_slint_core::accessibility::AccessibilityAction;
+    let h = Harness::new();
+    h.main.invoke_show_bookmarks(0);
+    let main = h.form();
+    let old_add =
+        modeless::accessible_popup_item(&main, AccessibleRole::Button, "Add current").unwrap();
+    let old_close =
+        modeless::accessible_popup_item(&main, AccessibleRole::Button, "Close").unwrap();
+    key(&main, Key::Escape);
+    h.main.invoke_show_bookmarks(1);
+    h.form();
+    let presentation = h.main.global::<HotPathsPresentation>();
+    let token = presentation.get_token();
+    old_add.accessible_action(&AccessibilityAction::Default);
+    old_close.accessible_action(&AccessibilityAction::Default);
+    assert!(h.state.borrow().bookmarks().is_empty());
+    assert_eq!(presentation.get_token(), token);
+    modeless::click(&main, "Add current");
+    assert_eq!(h.state.borrow().bookmarks()[0].path, h.paths[1]);
+    key(&main, Key::Escape);
+    assert!(presentation.get_token().is_empty());
 }

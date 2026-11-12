@@ -13,6 +13,7 @@ export component DialogFooter inherits Rectangle {
     in property <image> dismiss-fallback-icon: FallbackIcons.close;
     in property <bool> dismiss-enabled: true;
     in property <bool> compact-height;
+    in property <bool> compact-controls;
     in property <bool> fill-actions;
     callback dismiss();
     public function focus-dismiss() { dismiss-button.focus(); }
@@ -37,6 +38,7 @@ export component DialogFooter inherits Rectangle {
         }
     }
     dismiss-button := HintedActionButton {
+        minimum-control-height: root.compact-controls ? 0px : 32px;
         x: root.width - self.width; y: root.stacked ? root.action-height + 8px : 0px;
         width: min(root.width, max(80px, self.preferred-width));
         height: root.control-height;

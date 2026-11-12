@@ -1,4 +1,4 @@
-//! Actual operation adapters on an interactive desktop, without filesystem mutations.
+//! Embedded operation dialogs on an interactive desktop, without filesystem mutations.
 use super::*;
 use midnight_core::*;
 use slint::Model;
@@ -12,10 +12,6 @@ unsafe extern "system" {
         data: isize,
     ) -> i32;
     fn GetWindowTextW(window: isize, text: *mut u16, capacity: i32) -> i32;
-    fn GetWindowRect(window: isize, rect: *mut Rect) -> i32;
-    fn GetClientRect(window: isize, rect: *mut Rect) -> i32;
-    fn SetWindowPos(window: isize, after: isize, x: i32, y: i32, w: i32, h: i32, flags: u32)
-    -> i32;
     fn PostMessageW(window: isize, message: u32, wparam: usize, lparam: isize) -> i32;
 }
 #[link(name = "kernel32")]
@@ -65,70 +61,9 @@ pub(super) fn find_child(owner: isize, title: &'static str) -> Result<Option<isi
     }
     Ok(search.found)
 }
-fn move_child(owner: isize, child: isize, size: (i32, i32)) -> Result<i32, String> {
-    let mut bounds = Rect::default();
-    // SAFETY: live same-thread owned HWNDs, writable stack rectangle, scalar results.
-    unsafe {
-        if GetWindow(child, 4) != owner || IsWindowEnabled(owner) != 0 {
-            return Err("Operation adapter did not acquire native owner modality".into());
-        }
-        let style = GetWindowLongPtrW(child, -20);
-        if style & (0x0004_0000 | 0x0000_0080) != 0 {
-            return Err("Ordinary operation has APPWINDOW or TOOLWINDOW style".into());
-        }
-        if GetWindowRect(owner, &mut bounds) == 0 {
-            return Err("Unable to query owner bounds".into());
-        }
-        let x = bounds.right + 16;
-        if SetWindowPos(child, 0, x, bounds.top, size.0, size.1, 0x0004 | 0x0010) == 0 {
-            return Err("Unable to move/resize operation outside owner".into());
-        }
-        Ok(x)
-    }
-}
-fn close_child(
-    owner: isize,
-    child: isize,
-    expected_x: i32,
-    size: (i32, i32),
-) -> Result<(), String> {
-    let mut outer = Rect::default();
-    let mut client = Rect::default();
-    // SAFETY: HWND belongs to the exact adapter captured by this probe. Calls query
-    // scalar geometry and enqueue its ordinary WM_CLOSE; no pointers escape.
-    unsafe {
-        if GetWindowRect(child, &mut outer) == 0 || GetClientRect(child, &mut client) == 0 {
-            return Err("Operation disappeared before native close".into());
-        }
-        if outer.left != expected_x
-            || outer.right - outer.left != size.0
-            || outer.bottom - outer.top != size.1
-            || client.right <= 0
-            || client.bottom <= 0
-        {
-            return Err("Operation did not retain its independently resized/moved geometry".into());
-        }
-        if IsWindowEnabled(owner) != 0 {
-            return Err("Operation lost native modality while moved".into());
-        }
-        println!(
-            "operation-adapter HWND={child:#x} owner={owner:#x} outside-x={} outer={}x{} client={}x{}",
-            outer.left,
-            outer.right - outer.left,
-            outer.bottom - outer.top,
-            client.right,
-            client.bottom
-        );
-        if PostMessageW(child, 0x0010, 0, 0) == 0 {
-            return Err("Could not post native operation WM_CLOSE".into());
-        }
-    }
-    Ok(())
-}
-
 #[test]
 #[ignore = "requires an interactive Windows desktop; run this test alone with --ignored --test-threads=1"]
-fn native_operation_adapters_keep_owner_and_cancel_without_mutation() {
+fn embedded_operation_keeps_main_enabled_and_native_close_cancels_without_mutation() {
     let mut builder: slint::winit_030::EventLoopBuilder =
         slint::winit_030::winit::event_loop::EventLoop::with_user_event();
     builder.with_any_thread(true);
@@ -213,9 +148,6 @@ fn native_operation_adapters_keep_owner_and_cancel_without_mutation() {
     let outcome = result.clone();
     let mut phase = 0;
     let mut ticks = 0;
-    let mut child = 0;
-    let mut child_x = 0;
-    let mut child_size = (420, 300);
     let mut operation = None;
     let timer = slint::Timer::default();
     timer.start(slint::TimerMode::Repeated, Duration::from_millis(100), move || {
@@ -240,36 +172,56 @@ fn native_operation_adapters_keep_owner_and_cancel_without_mutation() {
                     crate::refresh(&main, &state.borrow());
                     phase = 1;
                 }
-                1 | 4 => {
-                    if let Some(found) = find_child(owner, if phase == 1 { "Rename" } else { "Copy" })? {
-                        child = found;
-                        let scale = f64::from(main.window().scale_factor());
-                        child_size = ((420.0 * scale).ceil() as i32, (300.0 * scale).ceil() as i32);
-                        child_x = move_child(owner, child, child_size)?;
-                        phase += 1;
+                1 | 3 => {
+                    if !main.global::<crate::OperationPresentation>().get_active() { return Ok(false) }
+                    let title = if phase == 1 { "Rename" } else { "Copy" };
+                    if find_child(owner, title)?.is_some() {
+                        return Err("A blocking operation escaped into a native child window".into());
                     }
+                    // SAFETY: live same-thread main HWND; scalar state query only.
+                    if unsafe { IsWindowEnabled(owner) } == 0 {
+                        return Err("Embedded operation disabled its own native input host".into());
+                    }
+                    if !main.get_embedded_modal_open() || main.get_dialog_input_blocked()
+                        || i_slint_core::window::WindowInner::from_pub(main.window()).active_popups().iter()
+                            .all(|popup| matches!(popup.window_kind, i_slint_core::window::WindowKind::ToolTip))
+                    {
+                        return Err("Operation did not open an embedded modal popup".into());
+                    }
+                    main.window().set_size(slint::LogicalSize::new(420.0, 300.0));
+                    // SAFETY: live main HWND; queue ordinary native close without retaining pointers.
+                    if unsafe { PostMessageW(owner, 0x0010, 0, 0) } == 0 {
+                        return Err("Could not post main-window WM_CLOSE".into());
+                    }
+                    phase += 1;
                 }
-                2 | 5 => { close_child(owner, child, child_x, child_size)?; phase += 1; }
-                3 => {
+                2 => {
                     if state.borrow().operations.pending.is_some() { return Ok(false) }
                     if !sent.borrow().iter().any(|command| matches!(command, Command::CancelOperation(id) if Some(*id) == operation)) {
-                        return Err("Native close did not cancel the exact operation".into());
+                        return Err("Native close did not cancel the exact embedded operation".into());
                     }
-                    // SAFETY: live owner HWND, scalar state query only.
-                    if unsafe { IsWindowEnabled(owner) } == 0 { return Err("Rename left owner disabled".into()) }
+                    if !main.window().is_visible() {
+                        return Err("Native close hid the application while dismissing a dialog".into());
+                    }
                     state.borrow_mut().request_copy_dialog(PaneId::Left, &|_| false);
                     if state.borrow().copies.draft.is_none() { return Err("Copy draft was not captured".into()) }
                     crate::refresh(&main, &state.borrow());
-                    phase = 4;
+                    phase = 3;
                 }
-                6 => {
+                4 => {
                     if state.borrow().copies.draft.is_some() { return Ok(false) }
+                    if main.get_embedded_modal_open()
+                        || i_slint_core::window::WindowInner::from_pub(main.window()).active_popups().iter()
+                            .any(|popup| !matches!(popup.window_kind, i_slint_core::window::WindowKind::ToolTip))
+                    { return Ok(false) }
                     // SAFETY: live same-thread owner HWND, scalar state query only.
                     if unsafe { IsWindowEnabled(owner) } == 0 || main.get_dialog_input_blocked() {
-                        return Err("Copy close did not release owner modality".into());
+                        return Err("Copy close did not release embedded modality".into());
                     }
-                    if unexpected_mutation.get() { return Err("Native Cancel attempted mutation".into()) }
-                    println!("actual Rename and Copy adapters: owned, taskbar-suppressed, movable/resizable outside main, WM_CLOSE cancels exact draft, owner restored");
+                    if !main.window().is_visible() || unexpected_mutation.get() {
+                        return Err("Embedded Cancel hid main or attempted a mutation".into());
+                    }
+                    println!("Rename and Copy remain inside enabled main HWND; native close cancels exact drafts without mutation");
                     return Ok(true);
                 }
                 _ => unreachable!(),

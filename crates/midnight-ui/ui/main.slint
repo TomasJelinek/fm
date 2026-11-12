@@ -1,4 +1,10 @@
-import { DialogFrame, DialogHeader } from "dialog-frame.slint";
+import { DialogFrame, DialogHeader, PopupFocus } from "dialog-frame.slint";
+import { EmbeddedPanelFilter, PanelFilterPresentation } from "embedded-panel-filter.slint";
+import { EmbeddedHotPaths, HotPathsPresentation } from "embedded-hot-paths.slint";
+import { EmbeddedOperation, OperationPresentation } from "embedded-operation.slint";
+import { EmbeddedFileList, FileListPresentation } from "embedded-file-list.slint";
+import { EmbeddedNotice, NoticePresentation } from "embedded-notice.slint";
+export { PanelFilterPresentation, HotPathsPresentation, OperationPresentation, FileListPresentation, NoticePresentation, PopupFocus }
 import { FileListWindow } from "file-list-window.slint";
 export { FileListWindow }
 import { FindWindow, FindRow, FindDraft } from "find-window.slint";
@@ -89,6 +95,17 @@ export { FunctionSlot } from "function-models.slint";
 
 export component MainWindow inherits Window {
     in property <bool> dialog-input-blocked;
+    out property <bool> modal-overlay-open: filter-overlay.active || hot-paths-overlay.active
+        || operation-overlay.active || file-list-overlay.active || notice-overlay.active;
+    out property <bool> embedded-modal-open: root.modal-overlay-open
+        || root.options-open || root.comparison-open || root.metadata-token != "";
+    changed embedded-modal-open => {
+        if root.embedded-modal-open {
+            root.drag-invalidate-targets();
+            root.cancel-function-press();
+            SelectionRectangle.cancel();
+        }
+    }
     callback open-help-window();
     in-out property <int> help-topic: 0;
     callback open-about-window();
@@ -269,8 +286,10 @@ export component MainWindow inherits Window {
     callback confirm-metadata(string, string, int);
     callback cancel-metadata(string);
     changed metadata-token => {
+        PopupFocus.update();
         if root.metadata-token != "" { root.drag-invalidate-targets(); metadata-popup.show(); }
         else { metadata-popup.close(); }
+        PopupFocus.update();
     }
     callback open-comparison();
     callback open-panel-filter(int);
@@ -290,7 +309,9 @@ export component MainWindow inherits Window {
     callback clear-panel-filter(int);
     private property <bool> comparison-open: root.comparison-view.open;
     changed comparison-open => {
+        PopupFocus.update();
         if root.comparison-open { root.drag-invalidate-targets(); comparison-popup.show(); } else { comparison-popup.close(); }
+        PopupFocus.update();
     }
 
     in property <ActionIcons> action-icons;
@@ -622,8 +643,10 @@ export component MainWindow inherits Window {
     in property <bool> options-committing;
     in-out property <string> options-feedback-revision;
     changed options-open => {
+        PopupFocus.update();
         if root.options-open { options.show(); }
         else { ColorOptionsView.picker-field = -1; options.close(); root.focus-files(); }
+        PopupFocus.update();
     }
     in property <string> editor-default-label;
     in property <string> editor-executable;
@@ -646,6 +669,7 @@ export component MainWindow inherits Window {
         Theme.touch-font-size = touch;
     }
     public function focus-files() {
+        if root.embedded-modal-open { return; }
         if root.active-pane == 0 { left.focus-list(); } else { right.focus-list(); }
     }
     public function reset-files-input(pane: int) {
@@ -659,10 +683,10 @@ export component MainWindow inherits Window {
     }
     public function set-history-command(text: string, offset: int) {
         command-input.text = text;
-        command-input.focus();
+        if !root.embedded-modal-open { command-input.focus(); }
         command-input.set-selection-offsets(offset, offset);
     }
-    public function focus-command() { command-input.focus(); }
+    public function focus-command() { if !root.embedded-modal-open { command-input.focus(); } }
     public function execute-command() {
         if root.submit-command(root.command-text) { root.command-text = ""; root.command-edited(false); }
     }
@@ -737,6 +761,7 @@ export component MainWindow inherits Window {
       capture-key-pressed(event) => {
         NavigationFocus.keyboard = true;
         if root.dialog-input-blocked { return accept; }
+        if root.modal-overlay-open { return reject; }
         root.drag-modifiers(event.modifiers.control, event.modifiers.shift, event.modifiers.alt || event.modifiers.meta);
         if event.text == Key.Escape && SelectionRectangle.cancel() { return accept; }
         if event.text == Key.Escape && root.drag-escape() { return accept; }
@@ -745,6 +770,7 @@ export component MainWindow inherits Window {
       }
       capture-key-released(event) => {
         if root.dialog-input-blocked { return accept; }
+        if root.modal-overlay-open { return reject; }
         root.drag-modifiers(event.modifiers.control, event.modifiers.shift, event.modifiers.alt || event.modifiers.meta);
         root.window-key-release(event); reject
       }
@@ -1323,6 +1349,7 @@ export component MainWindow inherits Window {
             private property <color> picker-initial;
             private property <int> picker-generation;
             changed picker-field => {
+                PopupFocus.update();
                 if self.picker-field >= 0 && root.options-open {
                     self.picker-initial = self.picker-field == 0
                         ? (ColorOptionsView.preview-foreground-set ? ColorOptionsView.preview-foreground : Theme.text)
@@ -1330,6 +1357,7 @@ export component MainWindow inherits Window {
                     self.picker-generation += 1;
                     color-picker-popup.show();
                 } else { color-picker-popup.close(); }
+                PopupFocus.update();
             }
             desired-width: max(840px, Theme.font-size * 28); desired-height: max(660px, Theme.font-size * 23);
             changed body-left => { root.options-left = self.body-left; }
@@ -1436,4 +1464,9 @@ export component MainWindow inherits Window {
         width: root.width; height: root.height;
         scroll-event(event) => { accept }
     }
+    operation-overlay := EmbeddedOperation { x: 0px; y: 0px; width: root.width; height: root.height; }
+    file-list-overlay := EmbeddedFileList { x: 0px; y: 0px; width: root.width; height: root.height; }
+    filter-overlay := EmbeddedPanelFilter { x: 0px; y: 0px; width: root.width; height: root.height; }
+    hot-paths-overlay := EmbeddedHotPaths { x: 0px; y: 0px; width: root.width; height: root.height; }
+    notice-overlay := EmbeddedNotice { x: 0px; y: 0px; width: root.width; height: root.height; }
 }

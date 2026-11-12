@@ -1,10 +1,8 @@
-//! Native confirmation lifetime. Records contain UI identity, never captured providers.
+//! Embedded confirmation lifetime. Records contain UI identity, never captured providers.
 use crate::{
-    MainWindow, OperationWindow, Presenter, copy_draft_windows,
-    dialog_host::{
-        CloseDisposition, DialogHost, DialogModality, DialogOwner, DialogSession, DialogSessions,
-    },
-    dialog_presentation::{self, DialogThemeTarget},
+    MainWindow, OperationPresentation, Presenter, copy_draft_windows,
+    dialog_focus::{FocusReturn, restore_after_popup},
+    dialog_host::{DialogSession, DialogSessions},
     tool_window_failure::Failures,
 };
 use midnight_core::{Command, MutationKind, OperationId};
@@ -15,7 +13,6 @@ use std::{
     time::Duration,
 };
 
-type ThemeRevision = (i32, i32, String, i32, i32);
 #[derive(Clone, PartialEq, Eq)]
 enum Key {
     Operation(OperationId),
@@ -44,9 +41,9 @@ impl Key {
 struct Record {
     key: Key,
     session: DialogSession,
-    window: OperationWindow,
-    host: DialogHost,
-    theme: RefCell<ThemeRevision>,
+    token: SharedString,
+    main: slint::Weak<MainWindow>,
+    focus: FocusReturn,
     error: RefCell<String>,
     cancelling: Cell<bool>,
     retry: slint::Timer,
@@ -61,32 +58,9 @@ struct Context {
     main: slint::Weak<MainWindow>,
     state: std::rc::Weak<RefCell<Presenter>>,
     send: Rc<dyn Fn(Command) -> bool>,
-    owner: DialogOwner,
     windows: RefCell<Windows>,
     closing: Rc<Cell<bool>>,
     failures: Failures<OperationId>,
-}
-impl DialogThemeTarget for OperationWindow {
-    fn apply_theme(
-        &self,
-        scheme: i32,
-        density: i32,
-        family: SharedString,
-        desktop: i32,
-        touch: i32,
-    ) {
-        self.invoke_apply_preferences(scheme, density, family, desktop, touch);
-    }
-}
-fn theme(p: &Presenter) -> ThemeRevision {
-    let values = &p.preferences.values;
-    (
-        p.preferences.theme_index(),
-        p.preferences.density_index(),
-        values.font_family.clone(),
-        i32::from(values.desktop_font_size),
-        i32::from(values.touch_font_size),
-    )
 }
 fn cancel_prepared(p: &mut Presenter, id: OperationId, send: &dyn Fn(Command) -> bool) -> bool {
     if !Key::Operation(id).current(p) {
@@ -106,7 +80,6 @@ pub(crate) fn install(
         main: main.as_weak(),
         state: Rc::downgrade(&state),
         send: send.clone(),
-        owner: DialogOwner::new(main),
         windows: RefCell::new(Windows::default()),
         failures: Failures::new(
             main,
@@ -156,15 +129,10 @@ fn synchronize(ctx: &Rc<Context>, main: &MainWindow, p: &Presenter) {
         return;
     }
     if let Some(record) = ctx.windows.borrow().record.clone() {
-        let revision = theme(p);
-        if *record.theme.borrow() != revision {
-            dialog_presentation::apply(&record.window, p);
-            *record.theme.borrow_mut() = revision;
-        }
         update_warning(&record, main);
         return;
     }
-    if !ctx.owner.is_ready() {
+    if !main.window().is_visible() {
         return;
     }
     let key = p
@@ -187,27 +155,25 @@ fn synchronize(ctx: &Rc<Context>, main: &MainWindow, p: &Presenter) {
         Key::Copy(token) if ctx.windows.borrow().failed_copy.as_ref() == Some(token) => return,
         _ => {}
     }
-    match open(ctx, main, p, key.clone()) {
+    match open(ctx, main, key.clone()) {
         Ok(record) => ctx.windows.borrow_mut().record = Some(Rc::new(record)),
         Err(error) => failed(ctx, key, error.to_string()),
     }
 }
-fn open(
-    ctx: &Rc<Context>,
-    main: &MainWindow,
-    p: &Presenter,
-    key: Key,
-) -> Result<Record, PlatformError> {
+fn open(ctx: &Rc<Context>, main: &MainWindow, key: Key) -> Result<Record, PlatformError> {
     main.invoke_drag_invalidate_targets();
     let session = ctx.windows.borrow_mut().sessions.allocate()?;
-    let (window, host) = DialogHost::create(
-        session,
-        ctx.owner.clone(),
-        DialogModality::OwnerModal,
-        OperationWindow::new,
-    )?;
-    crate::tooltip::install_operation(&window)?;
-    dialog_presentation::apply(&window, p);
+    let token: SharedString = format!("{session:?}").into();
+    let focus = FocusReturn::capture(main.window());
+    let window = main.global::<OperationPresentation>();
+    window.set_token(token.clone());
+    // Unlike a new native component, this shared form must clear optional state.
+    window.set_kind(-1);
+    window.set_confirm_enabled(true);
+    window.set_option_visible(false);
+    window.set_option_enabled(true);
+    window.set_option_checked(false);
+    window.set_dangerous(false);
     match &key {
         Key::Copy(_) => copy_draft_windows::initialize(&window, main),
         Key::Operation(_) => {
@@ -232,49 +198,37 @@ fn open(
         }
     }
     let weak = Rc::downgrade(ctx);
-    window.on_confirm(move |value| {
+    let expected = token.clone();
+    window.on_confirm(move |token, value| {
+        if token != expected {
+            return;
+        }
         if let Some(ctx) = weak.upgrade() {
             confirm(&ctx, session, value);
         }
     });
     let weak = Rc::downgrade(ctx);
-    window.on_request_dismiss(move || {
+    let expected = token.clone();
+    window.on_request_dismiss(move |token| {
+        if token != expected {
+            return;
+        }
         if let Some(ctx) = weak.upgrade() {
             dismiss(&ctx, session);
         }
     });
-    let weak = window.as_weak();
-    window.window().on_close_requested(move || {
-        if let Some(window) = weak.upgrade() {
-            window.invoke_request_dismiss();
-        }
-        slint::CloseRequestResponse::KeepWindowShown
-    });
     let record = Record {
         key,
         session,
-        window,
-        host,
-        theme: RefCell::new(theme(p)),
+        token,
+        main: main.as_weak(),
+        focus,
         error: RefCell::new(String::new()),
         cancelling: Cell::new(false),
         retry: slint::Timer::default(),
     };
     update_warning(&record, main);
-    // Adapter construction may have captured the empty form's default size.
-    // Evaluate wrapping at the final width before the first native presentation.
-    let width = record.window.get_initial_width();
-    record
-        .window
-        .window()
-        .set_size(slint::LogicalSize::new(width, 300.0));
-    let height = record.window.get_initial_height();
-    record
-        .window
-        .window()
-        .set_size(slint::LogicalSize::new(width, height));
-    record.host.show(record.window.window())?;
-    record.window.invoke_begin();
+    window.invoke_begin();
     Ok(record)
 }
 fn update_warning(record: &Record, main: &MainWindow) {
@@ -290,14 +244,14 @@ fn update_warning(record: &Record, main: &MainWindow) {
     } else {
         format!("{base}\n\n{error}").into()
     };
-    record.window.set_warning(warning);
+    main.global::<OperationPresentation>().set_warning(warning);
 }
 fn current(ctx: &Context, session: DialogSession) -> Option<Rc<Record>> {
     ctx.windows
         .borrow()
         .record
         .as_ref()
-        .filter(|record| record.session == session && record.host.is_current(session))
+        .filter(|record| record.session == session)
         .cloned()
 }
 fn confirm(ctx: &Rc<Context>, session: DialogSession, value: SharedString) {
@@ -325,7 +279,7 @@ fn confirm(ctx: &Rc<Context>, session: DialogSession, value: SharedString) {
                 &mut p,
                 token,
                 value.as_str(),
-                record.window.get_option_checked(),
+                main.global::<OperationPresentation>().get_option_checked(),
                 ctx.send.as_ref(),
             ),
         };
@@ -371,7 +325,10 @@ fn dismiss(ctx: &Rc<Context>, session: DialogSession) {
 }
 fn wait_to_cancel(ctx: &Rc<Context>, record: &Record) {
     *record.error.borrow_mut() = "Waiting to cancel…".into();
-    record.window.set_confirm_enabled(false);
+    if let Some(main) = record.main.upgrade() {
+        main.global::<OperationPresentation>()
+            .set_confirm_enabled(false);
+    }
     if !record.cancelling.replace(true) {
         let weak = Rc::downgrade(ctx);
         let session = record.session;
@@ -401,15 +358,22 @@ fn remove(ctx: &Context, session: DialogSession, explicit: bool) {
     };
     close_record(record, explicit);
 }
-fn close_record(record: Option<Rc<Record>>, explicit: bool) {
+fn close_record(record: Option<Rc<Record>>, _explicit: bool) {
     if let Some(record) = record {
         record.retry.stop();
-        if explicit {
-            record
-                .host
-                .request_close(record.window.window(), || CloseDisposition::Hide);
-        } else {
-            record.host.close(record.window.window());
+        if let Some(main) = record.main.upgrade() {
+            let window = main.global::<OperationPresentation>();
+            if window.get_token() == record.token {
+                window.set_active(false);
+                let weak = main.as_weak();
+                let token = record.token.clone();
+                restore_after_popup(&main, Some(record.focus.clone()), move || {
+                    weak.upgrade().is_some_and(|main| {
+                        let window = main.global::<OperationPresentation>();
+                        window.get_token() == token && !window.get_active()
+                    })
+                });
+            }
         }
     }
 }

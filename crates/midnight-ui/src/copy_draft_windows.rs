@@ -1,8 +1,8 @@
-//! Copy/Move adapter: backend captures stay in Presenter, edits stay in the child.
-use crate::{MainWindow, OperationWindow, Presenter};
+//! Copy/Move adapter: backend captures stay in Presenter, edits stay in the form.
+use crate::{MainWindow, OperationPresentation, Presenter};
 use midnight_core::{Command, TransferMetadataPolicy};
 
-pub(super) fn initialize(window: &OperationWindow, main: &MainWindow) {
+pub(super) fn initialize(window: &OperationPresentation<'_>, main: &MainWindow) {
     let title = if main.get_copy_draft_move() {
         "Move"
     } else {

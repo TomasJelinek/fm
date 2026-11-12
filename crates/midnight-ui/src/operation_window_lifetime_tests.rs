@@ -1,4 +1,4 @@
-//! Retained old components and delayed cancellation never change operation authority.
+//! Retired embedded occurrences and delayed cancellation never change operation authority.
 use super::*;
 use midnight_core::{DeleteMode, EntryKind, EntryMetadata, MutationItem, OperationPreview};
 use slint::platform::{
@@ -7,13 +7,17 @@ use slint::platform::{
 };
 use std::sync::Arc;
 
-struct Boundary(Rc<Cell<Duration>>);
+struct Boundary {
+    clock: Rc<Cell<Duration>>,
+    adapters: Rc<Cell<usize>>,
+}
 impl Platform for Boundary {
     fn create_window_adapter(&self) -> Result<Rc<dyn WindowAdapter>, PlatformError> {
+        self.adapters.set(self.adapters.get() + 1);
         Ok(MinimalSoftwareWindow::new(RepaintBufferType::NewBuffer))
     }
     fn duration_since_start(&self) -> Duration {
-        self.0.get()
+        self.clock.get()
     }
 }
 struct Harness {
@@ -23,11 +27,17 @@ struct Harness {
     commands: Rc<RefCell<Vec<Command>>>,
     accepting: Rc<Cell<bool>>,
     clock: Rc<Cell<Duration>>,
+    adapters: Rc<Cell<usize>>,
 }
 impl Harness {
     fn new() -> Self {
         let clock = Rc::new(Cell::new(Duration::ZERO));
-        slint::platform::set_platform(Box::new(Boundary(clock.clone()))).unwrap();
+        let adapters = Rc::new(Cell::new(0));
+        slint::platform::set_platform(Box::new(Boundary {
+            clock: clock.clone(),
+            adapters: adapters.clone(),
+        }))
+        .unwrap();
         let main = MainWindow::new().unwrap();
         main.show().unwrap();
         let path = std::env::temp_dir().join("operation-lifetime");
@@ -47,7 +57,6 @@ impl Harness {
             main: main.as_weak(),
             state: Rc::downgrade(&state),
             send: send.clone(),
-            owner: DialogOwner::new(&main),
             windows: RefCell::new(Windows::default()),
             failures: Failures::new(&main, &state, &send, &closing, "fixture", cancel_prepared),
             closing,
@@ -65,9 +74,10 @@ impl Harness {
             commands,
             accepting,
             clock,
+            adapters,
         }
     }
-    fn preview(&self, id: u64) -> OperationWindow {
+    fn preview(&self, id: u64) -> Rc<Record> {
         {
             let mut p = self.state.borrow_mut();
             p.operations.pending = Some(OperationId(id));
@@ -85,14 +95,13 @@ impl Harness {
             }));
         }
         crate::refresh(&self.main, &self.state.borrow());
-        self.ctx
-            .windows
-            .borrow()
-            .record
-            .as_ref()
-            .unwrap()
-            .window
-            .clone_strong()
+        slint::platform::update_timers_and_animations();
+        assert_eq!(
+            self.adapters.get(),
+            1,
+            "confirmation created a native adapter"
+        );
+        self.ctx.windows.borrow().record.as_ref().unwrap().clone()
     }
     fn tick(&self, millis: u64) {
         self.clock.set(Duration::from_millis(millis));
@@ -100,18 +109,25 @@ impl Harness {
     }
 }
 #[test]
-fn native_operation_old_component_callbacks_cannot_confirm_or_cancel_replacement() {
+fn embedded_operation_old_occurrence_cannot_confirm_or_cancel_replacement() {
     std::thread::spawn(|| {
         let h = Harness::new();
         let old = h.preview(11);
         let new = h.preview(12);
-        assert!(!old.window().is_visible());
-        assert!(new.window().is_visible());
-        old.invoke_confirm("old".into());
-        old.invoke_request_dismiss();
+        assert!(current(&h.ctx, old.session).is_none());
+        assert!(current(&h.ctx, new.session).is_some());
+        assert!(h.main.global::<OperationPresentation>().get_active());
+        confirm(&h.ctx, old.session, "old".into());
+        dismiss(&h.ctx, old.session);
+        let form = h.main.global::<OperationPresentation>();
+        form.invoke_confirm(old.token.clone(), "stale popup".into());
+        form.invoke_request_dismiss(old.token.clone());
         assert!(h.commands.borrow().is_empty());
         assert_eq!(h.state.borrow().operations.pending, Some(OperationId(12)));
-        new.invoke_confirm("".into());
+        h.main.global::<OperationPresentation>().invoke_confirm(
+            h.main.global::<OperationPresentation>().get_token(),
+            "".into(),
+        );
         assert!(matches!(
             h.commands.borrow().as_slice(),
             [Command::ConfirmOperation {
@@ -119,21 +135,84 @@ fn native_operation_old_component_callbacks_cannot_confirm_or_cancel_replacement
                 new_name: None
             }]
         ));
-        assert!(!new.window().is_visible());
+        assert!(!h.main.global::<OperationPresentation>().get_active());
         h.main.hide().unwrap();
     })
     .join()
     .unwrap();
 }
+
 #[test]
-fn native_operation_cancel_retry_defers_while_presenter_is_borrowed() {
+fn embedded_operation_retained_popup_controls_cannot_submit_replacement() {
+    use i_slint_core::{
+        accessibility::{AccessibilityAction, AccessibleStringProperty},
+        item_tree::ItemRc,
+        items::AccessibleRole,
+        window::WindowInner,
+    };
+
+    fn find(item: ItemRc, label: &str) -> Option<ItemRc> {
+        if item.accessible_role() == AccessibleRole::Button
+            && item
+                .accessible_string_property(AccessibleStringProperty::Label)
+                .is_some_and(|text| text == label)
+        {
+            return Some(item);
+        }
+        let mut child = item.first_child();
+        while let Some(item) = child {
+            child = item.next_sibling();
+            if let Some(found) = find(item, label) {
+                return Some(found);
+            }
+        }
+        None
+    }
+
     std::thread::spawn(|| {
         let h = Harness::new();
-        let child = h.preview(11);
+        h.preview(11);
+        let popup = WindowInner::from_pub(h.main.window())
+            .active_popups()
+            .last()
+            .unwrap()
+            .component
+            .clone();
+        let old_confirm = find(ItemRc::new_root(popup.clone()), "Permanently delete").unwrap();
+        let old_cancel = find(ItemRc::new_root(popup), "Cancel").unwrap();
+        h.preview(12);
+        old_confirm.accessible_action(&AccessibilityAction::Default);
+        old_cancel.accessible_action(&AccessibilityAction::Default);
+        assert!(h.commands.borrow().is_empty());
+        assert_eq!(h.state.borrow().operations.pending, Some(OperationId(12)));
+        assert!(h.main.global::<OperationPresentation>().get_active());
+        let form = h.main.global::<OperationPresentation>();
+        form.invoke_request_dismiss(form.get_token());
+        assert!(matches!(
+            h.commands.borrow().as_slice(),
+            [Command::CancelOperation(OperationId(12))]
+        ));
+        h.main.hide().unwrap();
+    })
+    .join()
+    .unwrap();
+}
+
+#[test]
+fn embedded_operation_cancel_retry_defers_while_presenter_is_borrowed() {
+    std::thread::spawn(|| {
+        let h = Harness::new();
+        h.preview(11);
         h.accepting.set(false);
-        child.invoke_request_dismiss();
+        h.main
+            .global::<OperationPresentation>()
+            .invoke_request_dismiss(h.main.global::<OperationPresentation>().get_token());
         assert_eq!(h.commands.borrow().len(), 1);
-        assert!(!child.get_confirm_enabled());
+        assert!(
+            !h.main
+                .global::<OperationPresentation>()
+                .get_confirm_enabled()
+        );
         let guard = h.state.borrow_mut();
         h.tick(250);
         drop(guard);
@@ -151,7 +230,7 @@ fn native_operation_cancel_retry_defers_while_presenter_is_borrowed() {
                 Command::CancelOperation(OperationId(11))
             ]
         ));
-        assert!(!child.window().is_visible());
+        assert!(!h.main.global::<OperationPresentation>().get_active());
         h.main.hide().unwrap();
     })
     .join()
@@ -159,7 +238,7 @@ fn native_operation_cancel_retry_defers_while_presenter_is_borrowed() {
 }
 
 #[test]
-fn native_operation_background_copy_retirement_keeps_owner_item_focus() {
+fn embedded_operation_background_copy_retirement_keeps_owner_item_focus() {
     std::thread::spawn(|| {
         let h = Harness::new();
         h.main.invoke_set_command("unchanged draft".into(), 3);
@@ -174,19 +253,10 @@ fn native_operation_background_copy_retirement_keeps_owner_item_focus() {
             &|_| panic!("opening a draft must not submit a transfer"),
         );
         crate::refresh(&h.main, &h.state.borrow());
-        let child = h
-            .ctx
-            .windows
-            .borrow()
-            .record
-            .as_ref()
-            .unwrap()
-            .window
-            .clone_strong();
+        slint::platform::update_timers_and_animations();
+        assert!(h.main.global::<OperationPresentation>().get_active());
+        assert_eq!(h.adapters.get(), 1);
         h.main
-            .window()
-            .dispatch_event(slint::platform::WindowEvent::WindowActiveChanged(false));
-        child
             .window()
             .dispatch_event(slint::platform::WindowEvent::WindowActiveChanged(false));
         let token = h
@@ -200,7 +270,8 @@ fn native_operation_background_copy_retirement_keeps_owner_item_focus() {
             .clone();
         h.state.borrow_mut().cancel_copy_dialog(&token);
         crate::refresh(&h.main, &h.state.borrow());
-        assert!(!child.window().is_visible());
+        h.tick(0);
+        assert!(!h.main.global::<OperationPresentation>().get_active());
         assert!(
             inner
                 .focus_item

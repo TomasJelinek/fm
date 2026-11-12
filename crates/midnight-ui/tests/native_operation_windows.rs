@@ -1,4 +1,4 @@
-//! Native operation forms retain the backend target and the exact UI occurrence.
+//! Embedded operation forms retain the backend target and the exact UI occurrence.
 #[path = "support/modeless.rs"]
 mod modeless;
 #[path = "support/ui.rs"]
@@ -9,7 +9,7 @@ use i_slint_core::{
     window::WindowInner,
 };
 use midnight_core::*;
-use midnight_ui::{MainWindow, Presenter, install, refresh};
+use midnight_ui::{MainWindow, OperationPresentation, Presenter, install, refresh};
 use slint::{
     ComponentHandle, Model, SharedString,
     platform::{Key, WindowAdapter, WindowEvent, software_renderer::MinimalSoftwareWindow},
@@ -129,8 +129,8 @@ impl Harness {
             .collect();
         assert_eq!(
             children.len(),
-            1,
-            "operation form must own a separate visible native window adapter"
+            0,
+            "blocking operation forms must stay inside the main window adapter"
         );
         assert!(
             self.main.get_dialog_input_blocked(),
@@ -139,10 +139,11 @@ impl Harness {
         assert!(
             WindowInner::from_pub(self.main.window())
                 .active_popups()
-                .is_empty()
+                .len()
+                == 1
         );
-        let child = children[0].clone();
-        modeless::draw(&child, 640, 420, "operation-child");
+        let child = self.windows.borrow()[0].clone();
+        modeless::draw(&child, 640, 420, "operation-embedded");
         child
             .window()
             .dispatch_event(WindowEvent::WindowActiveChanged(true));
@@ -199,7 +200,12 @@ impl Harness {
 
     fn assert_closed(&self, child: &MinimalSoftwareWindow) {
         slint::platform::update_timers_and_animations();
-        assert!(!child.window().is_visible());
+        assert!(child.window().is_visible());
+        assert!(
+            WindowInner::from_pub(child.window())
+                .active_popups()
+                .is_empty()
+        );
         assert!(self.main.window().is_visible());
         assert!(!self.main.get_dialog_input_blocked());
     }
@@ -231,7 +237,9 @@ fn replace(window: &MinimalSoftwareWindow, text: &str) {
 }
 
 fn item(window: &MinimalSoftwareWindow, label: &str, role: AccessibleRole) -> ItemRc {
-    modeless::accessible_item(window, role, label).unwrap_or_else(|| panic!("missing {label}"))
+    modeless::accessible_popup_item(window, role, label)
+        .or_else(|| modeless::accessible_item(window, role, label))
+        .unwrap_or_else(|| panic!("missing {label}"))
 }
 
 fn value(window: &MinimalSoftwareWindow, label: &str) -> SharedString {
@@ -258,6 +266,26 @@ fn assert_visible(window: &MinimalSoftwareWindow, label: &str, role: AccessibleR
 }
 
 #[test]
+fn embedded_operation_blocks_background_shortcuts_and_pointer_actions() {
+    let h = Harness::new();
+    let (id, main) = h.operation(PaneId::Left, 2);
+    let active = h.main.get_active_pane();
+    for shortcut in [Key::F2, Key::F5, Key::F6, Key::F7, Key::F8, Key::Delete] {
+        key(&main, shortcut);
+    }
+    modeless::click(&main, "F5 Copy");
+    assert!(h.commands.borrow().is_empty());
+    assert_eq!(h.main.get_active_pane(), active);
+    assert_eq!(h.main.get_operation_token(), id.0.to_string());
+    assert!(h.main.global::<OperationPresentation>().get_active());
+    assert_eq!(h.windows.borrow().len(), 1);
+    key(&main, Key::Escape);
+    assert!(matches!(h.commands.borrow().as_slice(),
+        [Command::CancelOperation(actual)] if *actual == id));
+    h.assert_closed(&main);
+}
+
+#[test]
 fn native_operation_rename_retains_exact_target_text_and_caret_across_resize_and_refresh() {
     let h = Harness::new();
     for pane in [PaneId::Left, PaneId::Right] {
@@ -277,11 +305,14 @@ fn native_operation_rename_retains_exact_target_text_and_caret_across_resize_and
             [Command::ConfirmOperation {id: actual, new_name: Some(name)}]
             if *actual == id && name == "renamed 文档.txXt"));
         h.assert_closed(&child);
-        key(&child, Key::Return);
+        h.main.global::<OperationPresentation>().invoke_confirm(
+            h.main.global::<OperationPresentation>().get_token(),
+            "stale".into(),
+        );
         assert_eq!(
             h.commands.borrow().len(),
             1,
-            "a closed child cannot confirm twice"
+            "a retired occurrence cannot confirm twice"
         );
     }
 }
@@ -415,7 +446,7 @@ fn native_operation_rejected_confirmation_keeps_same_child_and_edited_name_for_r
     key(&child, Key::Return);
     assert!(h.commands.borrow().is_empty());
     assert!(child.window().is_visible());
-    assert_eq!(h.windows.borrow().len(), 2);
+    assert_eq!(h.windows.borrow().len(), 1);
     refresh(&h.main, &h.state.borrow());
     assert_eq!(value(&child, "New name"), "retry 文档.txt");
     h.accepting.set(true);
@@ -490,7 +521,7 @@ fn native_operation_rejected_close_retains_modal_child_and_never_turns_into_conf
     child.window().dispatch_event(WindowEvent::CloseRequested);
     assert!(child.window().is_visible());
     assert!(h.main.get_dialog_input_blocked());
-    assert_eq!(h.windows.borrow().len(), 2);
+    assert_eq!(h.windows.borrow().len(), 1);
     assert!(h.commands.borrow().is_empty());
     assert_eq!(
         item(&child, "Permanently delete", AccessibleRole::Button)
@@ -507,8 +538,8 @@ fn native_operation_rejected_close_retains_modal_child_and_never_turns_into_conf
             .iter()
             .all(|command| !matches!(command, Command::ConfirmOperation { .. }))
     );
-    if child.window().is_visible() {
-        // A second explicit native close retries the same cancellation identity.
+    if h.main.global::<OperationPresentation>().get_active() {
+        // A second explicit close retries the same cancellation identity.
         child.window().dispatch_event(WindowEvent::CloseRequested);
     }
     assert!(

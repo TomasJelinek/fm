@@ -119,6 +119,7 @@ export component ActionButton inherits Rectangle {
     in property <image> fallback-icon;
     in property <bool> primary;
     in property <bool> compact;
+    in property <length> minimum-control-height: 32px;
     in property <bool> removal-icon;
     in property <bool> destructive;
     in property <bool> enabled: true;
@@ -133,7 +134,7 @@ export component ActionButton inherits Rectangle {
     private property <color> foreground: !root.enabled ? Theme.muted-text
         : root.destructive ? Theme.error-text : Theme.text;
     min-width: max(32px, content.min-width);
-    min-height: max(32px, Theme.control-height, content.min-height);
+    min-height: max(root.minimum-control-height, Theme.control-height, content.min-height);
     horizontal-stretch: 0; vertical-stretch: 0;
     forward-focus: input;
     accessible-role: button;

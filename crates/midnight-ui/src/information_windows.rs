@@ -1,6 +1,6 @@
-//! Informational native windows own presentation only, never backend resources.
+//! Modeless information tools and embedded blocking notices own presentation only.
 use crate::{
-    AboutWindow, HelpWindow, MainWindow, NoticeWindow, Presenter, ShortcutHints,
+    AboutWindow, HelpWindow, MainWindow, Presenter, ShortcutHints,
     dialog_host::{
         CloseDisposition, DialogHost, DialogModality, DialogOwner, DialogSession, DialogSessions,
     },
@@ -9,6 +9,9 @@ use crate::{
 use midnight_core::Command;
 use slint::{ComponentHandle, PlatformError, SharedString};
 use std::{cell::RefCell, rc::Rc};
+
+#[path = "information_notices.rs"]
+mod notices;
 
 #[cfg(test)]
 #[path = "information_window_tests.rs"]
@@ -30,8 +33,7 @@ struct InformationWindows {
     sessions: DialogSessions,
     help: Option<Record<HelpWindow>>,
     about: Option<Record<AboutWindow>>,
-    notice: Option<Record<NoticeWindow>>,
-    pending_notice: Option<i32>,
+    notice: Rc<notices::Context>,
     closing: bool,
 }
 
@@ -91,72 +93,6 @@ information_window!(
         self.set_close_icon(main.get_action_icons().close);
     }
 );
-information_window!(
-    NoticeWindow,
-    notice,
-    install_notice,
-    const MODALITY: DialogModality = DialogModality::OwnerModal;,
-    fn initialize(&self, main: &MainWindow) {
-        self.set_message_title(main.get_message_title());
-        self.set_body(main.get_message_body());
-        self.set_folder_path(main.get_message_path());
-        self.set_details(main.get_message_details());
-        self.set_can_authorize(main.get_message_can_authorize());
-        self.set_error(main.get_message_error());
-        self.set_generation(main.get_message_generation());
-    },
-    fn refresh(&self, main: &MainWindow) {
-        if self.get_generation() == main.get_message_generation() {
-            self.initialize(main);
-        }
-    },
-    fn generation(main: &MainWindow) -> Option<i32> {
-        Some(main.get_message_generation())
-    },
-    fn closed(&self, main: &MainWindow) {
-        main.invoke_diagnostic_notice_closed(self.get_generation());
-    },
-    fn bind_actions(&self, main: &MainWindow, windows: &Windows, session: DialogSession) {
-        let retry_main = main.as_weak();
-        let retry_windows = Rc::downgrade(windows);
-        let weak = main.as_weak();
-        let windows = Rc::downgrade(windows);
-        let generation = main.get_message_generation();
-        self.on_copy_details(move || {
-            let (Some(main), Some(windows)) = (weak.upgrade(), windows.upgrade()) else {
-                return;
-            };
-            let current = windows.borrow().notice.as_ref().is_some_and(|record| {
-                record.session == session
-                    && record.host.is_current(session)
-                    && record.generation == Some(generation)
-            });
-            if current && main.get_message_generation() == generation {
-                main.invoke_copy_message();
-            }
-        });
-        self.on_authorize_retry(move || {
-            let (Some(main), Some(windows)) = (retry_main.upgrade(), retry_windows.upgrade())
-            else {
-                return;
-            };
-            let current = windows.borrow().notice.as_ref().is_some_and(|record| {
-                record.session == session
-                    && record.host.is_current(session)
-                    && record.generation == Some(generation)
-            });
-            if current
-                && main.get_message_generation() == generation
-                && main.get_message_can_authorize()
-            {
-                main.invoke_authorize_message(generation);
-                main.invoke_diagnostic_notice_closed(generation);
-                dismiss::<NoticeWindow>(&windows, session);
-            }
-        });
-    }
-);
-
 pub(crate) fn install(
     main: &MainWindow,
     state: Rc<RefCell<Presenter>>,
@@ -168,8 +104,7 @@ pub(crate) fn install(
         sessions: DialogSessions::default(),
         help: None,
         about: None,
-        notice: None,
-        pending_notice: None,
+        notice: notices::install(main),
         closing: false,
     }));
     macro_rules! open_callback {
@@ -191,53 +126,28 @@ pub(crate) fn install(
     {
         let weak = main.as_weak();
         let windows = windows.clone();
-        let state = state.clone();
-        main.on_open_notice_window(move || {
-            let Some(main) = weak.upgrade() else {
-                return;
-            };
-            if windows.borrow().closing {
-                return;
-            }
-            // Preferences/backend startup can report a notice before the main
-            // adapter is visible. Retain only the latest requested generation.
-            if !windows.borrow().owner.is_ready() {
-                windows.borrow_mut().pending_notice = Some(main.get_message_generation());
-                return;
-            }
-            windows.borrow_mut().pending_notice = None;
-            if let Err(error) = open::<NoticeWindow>(&main, &windows, &state.borrow()) {
-                main.set_desktop_status(format!("Unable to open dialog: {error}").into());
-            }
-        });
-    }
-    {
-        let weak = main.as_weak();
-        let windows = windows.clone();
         main.on_refresh_information_windows(move || {
             let Some(main) = weak.upgrade() else {
                 return;
             };
             let presenter = state.borrow();
-            let pending = {
+            let notice = {
                 let mut windows = windows.borrow_mut();
                 refresh::<HelpWindow>(&main, &mut windows, &presenter);
                 refresh::<AboutWindow>(&main, &mut windows, &presenter);
-                refresh::<NoticeWindow>(&main, &mut windows, &presenter);
-                windows.owner.is_ready()
-                    && !windows.closing
-                    && windows.pending_notice.take().is_some()
+                windows.notice.clone()
             };
-            if pending && let Err(error) = open::<NoticeWindow>(&main, &windows, &presenter) {
-                main.set_desktop_status(format!("Unable to open dialog: {error}").into());
-            }
+            drop(presenter);
+            notices::refresh(&notice, &main);
         });
     }
+    let weak = main.as_weak();
     main.on_close_information_windows(move || {
         let mut windows = windows.borrow_mut();
         windows.closing = true;
-        windows.pending_notice = None;
-        close_record(windows.notice.take(), false);
+        if let Some(main) = weak.upgrade() {
+            notices::close(&windows.notice, &main);
+        }
         close_record(windows.about.take(), false);
         close_record(windows.help.take(), false);
     });

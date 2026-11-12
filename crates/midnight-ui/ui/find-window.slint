@@ -3,7 +3,7 @@ import { HintedLineEdit, HintedActionButton } from "hinted-inputs.slint";
 import { Theme } from "theme.slint";
 import { PathText } from "path-text.slint";
 import { CompactPicker } from "controls.slint";
-import { FallbackIcons, ActionButton } from "action-icons.slint";
+import { FallbackIcons } from "action-icons.slint";
 import { ErrorNotice } from "error-notice.slint";
 import { ToolWindow } from "tool-window.slint";
 import { FindResults, FindRow } from "find-results.slint";
@@ -17,6 +17,11 @@ export struct FindDraft {
     masks: string, mode: int, recursive: bool, name-case: bool,
     content-enabled: bool, content: string, content-case: bool, whole-words: bool,
     modified-enabled: bool, modified-seconds: int, duplicates: bool,
+}
+
+// Match the query controls while preserving touch and intrinsic content sizing.
+component FindActionButton inherits HintedActionButton {
+    minimum-control-height: 0px;
 }
 
 export component FindWindow inherits ToolWindow {
@@ -148,7 +153,7 @@ export component FindWindow inherits ToolWindow {
                             accessible-name: "Search folders";
                             selected(index) => { root.selected-root = index; }
                         }
-                        ActionButton {
+                        FindActionButton {
                             row: root.narrow ? root.name-row + 3 : 2; col: root.narrow ? 1 : 2;
                             text: "Remove"; fallback-icon: FallbackIcons.close;
                             enabled: !root.running && root.roots.length > 0;
@@ -189,7 +194,7 @@ export component FindWindow inherits ToolWindow {
                     }
                     GridLayout {
                         spacing: 8px;
-                        ActionButton {
+                        FindActionButton {
                             row: 0; col: 0;
                             text: root.show-advanced ? "Fewer options" : "More options";
                             fallback-icon: FallbackIcons.options;
@@ -217,7 +222,7 @@ export component FindWindow inherits ToolWindow {
                                 hint: "Add another native folder. Existing roots retain their original native path, including names that cannot be typed here.";
                                 accepted => { root.add-root(self.text); }
                             }
-                            ActionButton {
+                            FindActionButton {
                                 row: root.narrow ? 1 : 0; col: root.narrow ? 0 : 1;
                                 text: "Add"; fallback-icon: FallbackIcons.tab-add;
                                 enabled: !root.running && new-root.text != "";
@@ -294,27 +299,28 @@ export component FindWindow inherits ToolWindow {
             }
             DialogFooter {
                 compact-height: root.height < 350px;
+                compact-controls: true;
                 dismiss-text: "Close";
                 dismiss-hint: "Close this Find window and cancel its search (Escape).";
                 dismiss => { root.close-session(); }
-                ActionButton { text: root.running ? "Stop" : "Find"; primary: !root.running;
+                FindActionButton { text: root.running ? "Stop" : "Find"; primary: !root.running;
                     fallback-icon: root.running ? FallbackIcons.close : FallbackIcons.find; enabled: !root.stopping && (root.running || advanced.valid);
                     clicked => { if root.running { root.stop(); } else { root.submit(); } } }
-                ActionButton { text: root.show-details ? "Copy" : "Go to file";
+                FindActionButton { text: root.show-details ? "Copy" : "Go to file";
                     fallback-icon: root.show-details ? FallbackIcons.copy : FallbackIcons.open-path; enabled: root.show-details || (root.selected-row >= 0 && root.selected-row < root.rows.length);
                     clicked => { if root.show-details { root.copy-details(); } else { root.reveal-selected(); } } }
-                if !root.show-details: HintedActionButton { text: "View"; fallback-icon: FallbackIcons.view;
+                if !root.show-details: FindActionButton { text: "View"; fallback-icon: FallbackIcons.view;
                     enabled: root.selected-file; hint: root.view-hint;
                     clicked => { root.act-selected(0); } }
-                if !root.show-details: HintedActionButton { text: "Edit"; fallback-icon: FallbackIcons.edit;
+                if !root.show-details: FindActionButton { text: "Edit"; fallback-icon: FallbackIcons.edit;
                     enabled: root.selected-file; hint: root.edit-hint;
                     clicked => { root.act-selected(2); } }
-                if !root.show-details: HintedActionButton { text: "Open"; fallback-icon: FallbackIcons.run;
+                if !root.show-details: FindActionButton { text: "Open"; fallback-icon: FallbackIcons.run;
                     enabled: root.selected-row >= 0 && root.selected-row < root.rows.length;
                     hint: "Open the selected file with its system association. This may run a program. Folders use Go to file.";
                     clicked => { root.act-selected(3); } }
-                ActionButton { text: root.show-details ? "Query" : "Details"; fallback-icon: FallbackIcons.properties; clicked => { root.show-details = !root.show-details; } }
-                if root.width >= 600px: ActionButton { text: "Copy details"; fallback-icon: FallbackIcons.copy; clicked => { root.copy-details(); } }
+                FindActionButton { text: root.show-details ? "Query" : "Details"; fallback-icon: FallbackIcons.properties; clicked => { root.show-details = !root.show-details; } }
+                if root.width >= 600px: FindActionButton { text: "Copy details"; fallback-icon: FallbackIcons.copy; clicked => { root.copy-details(); } }
             }
         }
     }

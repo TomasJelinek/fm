@@ -1,3 +1,7 @@
+#[path = "support/window_input.rs"]
+mod input;
+#[path = "support/embedded_file_list.rs"]
+mod installed;
 #[path = "support/modeless.rs"]
 mod modeless;
 
@@ -142,7 +146,8 @@ fn file_list_template_input_reports_edits_and_retains_unicode_selection_offsets(
 }
 
 #[test]
-fn file_list_native_close_waits_for_exact_request_release_and_does_not_reopen() {
+fn embedded_file_list_cancel_waits_for_exact_request_release_without_another_adapter() {
+    use i_slint_core::{accessibility::AccessibilityAction, item_tree::ItemRc};
     use midnight_core::{Command, DirectoryIndex, Event, PaneId};
     use midnight_ui::{MainWindow, Presenter};
     use std::sync::Arc;
@@ -189,10 +194,31 @@ fn file_list_native_close_waits_for_exact_request_release_and_does_not_reopen() 
     });
     main.show().unwrap();
     midnight_ui::refresh(&main, &state.borrow());
+    let mut retired_controls: Option<(ItemRc, ItemRc)> = None;
     for cycle in 0..3 {
         main.invoke_make_file_list(0);
-        assert_eq!(windows.borrow().len(), cycle + 2);
-        let native = windows.borrow().last().unwrap().clone();
+        slint::platform::update_timers_and_animations();
+        assert_eq!(
+            windows.borrow().len(),
+            1,
+            "cycle {cycle} created a child window"
+        );
+        let native = windows.borrow()[0].clone();
+        let before = commands.borrow().len();
+        if let Some((generate, cancel)) = retired_controls.take() {
+            generate.accessible_action(&AccessibilityAction::Default);
+            cancel.accessible_action(&AccessibilityAction::Default);
+            assert_eq!(
+                commands.borrow().len(),
+                before,
+                "retired controls submitted a new draft"
+            );
+        }
+        retired_controls = Some((
+            modeless::accessible_popup_item(&native, AccessibleRole::Button, "Create file list")
+                .unwrap(),
+            modeless::accessible_popup_item(&native, AccessibleRole::Button, "Cancel").unwrap(),
+        ));
         assert!(native.window().is_visible());
         assert!(
             main.get_dialog_input_blocked(),
@@ -209,7 +235,8 @@ fn file_list_native_close_waits_for_exact_request_release_and_does_not_reopen() 
             .unwrap();
 
         accepting.set(false);
-        native.window().dispatch_event(WindowEvent::CloseRequested);
+        let form = main.global::<midnight_ui::FileListPresentation>();
+        form.invoke_cancel(form.get_token());
         assert!(
             native.window().is_visible(),
             "a full queue keeps the owner alive"
@@ -220,8 +247,8 @@ fn file_list_native_close_waits_for_exact_request_release_and_does_not_reopen() 
             "rejected cancellation retains the modal lease"
         );
         accepting.set(true);
-        native.window().dispatch_event(WindowEvent::CloseRequested);
-        assert!(!native.window().is_visible());
+        form.invoke_cancel(form.get_token());
+        assert!(native.window().is_visible());
         assert!(
             !main.get_dialog_input_blocked(),
             "accepted close releases the owner"
@@ -231,7 +258,7 @@ fn file_list_native_close_waits_for_exact_request_release_and_does_not_reopen() 
                 if *closed == id && *closed_generation == generation)
         }));
         midnight_ui::refresh(&main, &state.borrow());
-        assert_eq!(windows.borrow().len(), cycle + 2);
+        assert_eq!(windows.borrow().len(), 1);
         assert_eq!(
             windows
                 .borrow()
@@ -319,4 +346,171 @@ fn file_list_preview_grows_with_the_window_and_resize_preserves_the_draft_caret(
     }
     click(&native, "Cancel");
     assert!(!window.window().is_visible());
+}
+
+#[test]
+fn embedded_file_list_preserves_template_caret_and_capture_through_refresh_and_export() {
+    use midnight_core::{
+        Command, Event, FileListDestination, FileListEvent, FileListSource, FileListUpdate,
+    };
+    use midnight_ui::FileListPresentation;
+    use std::sync::Arc;
+
+    let h = installed::Harness::new();
+    let first = h.request();
+    let form = h.main.global::<FileListPresentation>();
+    let token = form.get_token();
+    assert_eq!(form.get_template_text(), "文档$(FileName)$(CRLF)");
+    form.invoke_focus_template_at(6);
+    h.tick(0);
+    input::key(&h.native, "-");
+    h.tick(0);
+    assert_eq!(form.get_template_text(), "文档-$(FileName)$(CRLF)");
+    assert_eq!(form.get_template_cursor(), 7);
+    draw(&h.native, 390, 300, "embedded-file-list-resize");
+    midnight_ui::refresh(&h.main, &h.state.borrow());
+    h.tick(0);
+    assert_eq!(form.get_template_cursor(), 7);
+    form.invoke_insert_variable(token.clone(), 0);
+    h.tick(0);
+    assert_eq!(
+        form.get_template_text(),
+        "文档-$(FileName)$(FileName)$(CRLF)"
+    );
+    assert_eq!(form.get_template_cursor(), 18);
+    h.apply(Event::FileList(Box::new(FileListEvent {
+        id: first.id,
+        generation: first.generation,
+        result: Ok(FileListUpdate::Preview {
+            text: "obsolete preview".into(),
+            items: 1,
+            truncated: false,
+        }),
+    })));
+    assert!(
+        form.get_preview_text().is_empty(),
+        "stale preview replaced the edited draft"
+    );
+    h.tick(200);
+    let preview = h.request();
+    assert!(Arc::ptr_eq(&first.capture, &preview.capture));
+    assert_eq!(preview.template, form.get_template_text().as_str());
+    assert!(h.commands.borrow().iter().all(|command| {
+        !matches!(command, Command::RunFileList(request) if request.destination != FileListDestination::Preview)
+    }));
+
+    form.invoke_select_preset(token.clone(), 1);
+    h.tick(200);
+    assert_eq!(
+        form.get_template_text(),
+        "$(Drive)$(Path)$(FileName)$(CRLF)"
+    );
+    form.invoke_select_history(token.clone(), 1);
+    h.tick(200);
+    assert_eq!(form.get_template_text(), "$(FileSize)$(LF)");
+    h.main.invoke_activate(1);
+    let destination = h.root.join("output 文档.txt");
+    form.set_destination(2);
+    form.set_destination_path(destination.to_str().unwrap().into());
+    form.set_append_output(true);
+    form.invoke_generate(token);
+    let output = h.request();
+    assert!(Arc::ptr_eq(&first.capture, &output.capture));
+    assert_eq!(output.template, "$(FileSize)$(LF)");
+    assert_eq!(
+        output.destination,
+        FileListDestination::File {
+            path: destination,
+            append: true
+        }
+    );
+    let FileListSource::Native {
+        entries, fallback, ..
+    } = &output.capture.source
+    else {
+        panic!("native capture")
+    };
+    assert_eq!(entries.len(), 2);
+    assert_eq!(*fallback, Some(midnight_core::EntryId(1)));
+    assert!(form.get_busy());
+    assert!(form.get_active());
+    h.tick(200);
+}
+
+#[test]
+fn embedded_file_list_browse_and_existing_output_confirmation_keep_exact_request() {
+    use midnight_core::*;
+    use midnight_ui::FileListPresentation;
+
+    let h = installed::Harness::new();
+    let form = h.main.global::<FileListPresentation>();
+    let token = form.get_token();
+    let preview = h.request();
+    form.set_destination(2);
+    form.invoke_browse(token.clone());
+    let picker = h
+        .commands
+        .borrow()
+        .iter()
+        .find_map(|command| match command {
+            Command::PickPath { request, input } => {
+                assert_eq!(input.kind, PathPickerKind::TextSave);
+                Some(*request)
+            }
+            _ => None,
+        })
+        .unwrap();
+    assert!(form.get_busy());
+    assert_eq!(
+        h.request().generation,
+        preview.generation,
+        "Browse must not generate output"
+    );
+    let destination = h.root.join("picked 文档.txt");
+    h.apply(Event::PathPicked {
+        request: picker,
+        result: Ok(Some(destination.clone())),
+    });
+    assert!(!form.get_busy());
+    assert_eq!(form.get_destination_path(), destination.to_str().unwrap());
+    form.invoke_generate(token.clone());
+    let output = h.request();
+    h.apply(Event::FileList(Box::new(FileListEvent {
+        id: output.id,
+        generation: output.generation,
+        result: Ok(FileListUpdate::Conflict {
+            entry: TransferEntry {
+                item: MutationItem {
+                    path: destination,
+                    kind: EntryKind::File,
+                    metadata: EntryMetadata::default(),
+                },
+                identity: TransferIdentity {
+                    device: 1,
+                    object: [7; 16],
+                },
+            },
+            append: false,
+        }),
+    })));
+    assert!(form.get_conflict_pending());
+    assert!(
+        h.commands
+            .borrow()
+            .iter()
+            .all(|command| !matches!(command, Command::ConfirmFileList { .. }))
+    );
+    h.accepting.set(false);
+    form.invoke_confirm(token.clone());
+    assert!(form.get_conflict_pending());
+    assert!(!form.get_error_text().is_empty());
+    h.accepting.set(true);
+    form.invoke_confirm(token);
+    assert!(
+        matches!(h.commands.borrow().last(), Some(Command::ConfirmFileList { id, generation })
+        if *id == output.id && *generation == output.generation)
+    );
+    assert!(!form.get_conflict_pending());
+    assert!(form.get_active());
+    h.tick(0);
 }

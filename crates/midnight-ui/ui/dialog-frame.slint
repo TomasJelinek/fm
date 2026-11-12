@@ -4,6 +4,9 @@ import { ErrorGlyph } from "error-notice.slint";
 import { DialogResizeEdge } from "dialog-resize.slint";
 import { CloseButton } from "close-button.slint";
 
+// Retain the top dialog's focus when an asynchronous update closes a lower popup.
+export global PopupFocus { callback update(); }
+
 // Each top-level native dialog sets this in its own component context. Its OS
 // titlebar supplies native movement/resizing; all forms retain the themed header.
 export global DialogWindowStyle {
@@ -82,13 +85,16 @@ export component DialogFrame inherits Rectangle {
         root.offset-x = left - (root.width - width) / 2;
         root.offset-y = top - (root.height - height) / 2;
     }
-    TouchArea { clicked => { if root.dismiss-on-outside { root.dismiss(); } } }
+    TouchArea {
+        clicked => { if root.dismiss-on-outside { root.dismiss(); } }
+        scroll-event(event) => { accept }
+    }
     body := Rectangle {
         x: root.body-left; y: root.body-top;
         width: root.body-width; height: root.body-height;
         clip: true;
         // Blank body areas must never activate the outside-dismiss surface.
-        TouchArea {}
+        TouchArea { scroll-event(event) => { accept } }
         @children
         Path {
             x: parent.width - 12px; y: parent.height - 12px;

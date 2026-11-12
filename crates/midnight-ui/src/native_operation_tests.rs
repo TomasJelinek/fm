@@ -1,4 +1,4 @@
-//! Operation-host failure leaves backend release explicit and bounded.
+//! Embedded confirmation has no native child; exact cancellation stays bounded.
 use crate::*;
 use slint::platform::{
     Platform, PlatformError, WindowAdapter,
@@ -123,59 +123,53 @@ impl Harness {
 }
 
 #[test]
-fn native_operation_failed_creation_or_show_retries_only_exact_cancellation() {
-    for show in [false, true] {
-        std::thread::spawn(move || {
-            let h = Harness::new();
-            h.preview(41);
-            h.display.fail_create.set(!show);
-            h.display.fail_show.set(show);
-            h.refresh();
-            h.tick(0);
-            assert_eq!(h.cancelled.borrow().as_slice(), &[OperationId(41)]);
-            assert_eq!(h.state.borrow().operations.pending, Some(OperationId(41)));
-            assert!(
-                !h.main.get_dialog_input_blocked(),
-                "failed host must release modality"
-            );
-            let attempts = h.display.attempts.get();
-            for _ in 0..12 {
-                h.refresh();
-                h.tick(0);
-            }
-            assert_eq!(
-                h.display.attempts.get(),
-                attempts,
-                "failed host must not be recreated"
-            );
-            assert_eq!(h.cancelled.borrow().len(), 1);
-            h.tick(249);
-            assert_eq!(h.cancelled.borrow().len(), 1);
-            h.accepting.set(true);
-            h.tick(250);
-            assert_eq!(
-                h.cancelled.borrow().as_slice(),
-                &[OperationId(41), OperationId(41)]
-            );
-            assert!(h.state.borrow().operations.preview.is_none());
-            assert!(h.state.borrow().operations.pending.is_none());
-            h.main.hide().unwrap();
-        })
-        .join()
-        .unwrap();
-    }
-}
-
-#[test]
-fn native_operation_failed_old_host_cannot_cancel_replacement_preview() {
+fn embedded_operation_does_not_allocate_or_show_a_child_adapter() {
     std::thread::spawn(|| {
         let h = Harness::new();
         h.preview(41);
         h.display.fail_create.set(true);
+        h.display.fail_show.set(true);
         h.refresh();
         h.tick(0);
+        assert_eq!(h.display.attempts.get(), 1);
+        assert!(h.main.global::<OperationPresentation>().get_active());
+        assert!(h.cancelled.borrow().is_empty());
+        assert_eq!(h.state.borrow().operations.pending, Some(OperationId(41)));
+        h.main
+            .global::<OperationPresentation>()
+            .invoke_request_dismiss(h.main.global::<OperationPresentation>().get_token());
         assert_eq!(h.cancelled.borrow().as_slice(), &[OperationId(41)]);
-        h.display.fail_create.set(false);
+        assert!(h.main.global::<OperationPresentation>().get_active());
+        assert!(
+            !h.main
+                .global::<OperationPresentation>()
+                .get_confirm_enabled()
+        );
+        h.accepting.set(true);
+        h.tick(250);
+        assert_eq!(
+            h.cancelled.borrow().as_slice(),
+            &[OperationId(41), OperationId(41)]
+        );
+        assert!(!h.main.global::<OperationPresentation>().get_active());
+        assert_eq!(h.display.attempts.get(), 1);
+        h.main.hide().unwrap();
+    })
+    .join()
+    .unwrap();
+}
+
+#[test]
+fn embedded_operation_retired_cancel_retry_cannot_cancel_replacement_preview() {
+    std::thread::spawn(|| {
+        let h = Harness::new();
+        h.preview(41);
+        h.refresh();
+        h.tick(0);
+        h.main
+            .global::<OperationPresentation>()
+            .invoke_request_dismiss(h.main.global::<OperationPresentation>().get_token());
+        assert_eq!(h.cancelled.borrow().as_slice(), &[OperationId(41)]);
         h.preview(42);
         h.refresh();
         h.accepting.set(true);
@@ -185,11 +179,9 @@ fn native_operation_failed_old_host_cannot_cancel_replacement_preview() {
             h.state.borrow().operations.preview.as_ref().unwrap().id,
             OperationId(42)
         );
-        assert!(
-            h.main.get_dialog_input_blocked(),
-            "replacement child must remain modal"
-        );
+        assert!(h.main.global::<OperationPresentation>().get_active());
         assert_eq!(h.cancelled.borrow().as_slice(), &[OperationId(41)]);
+        assert_eq!(h.display.attempts.get(), 1);
         h.main.hide().unwrap();
     })
     .join()
@@ -197,7 +189,7 @@ fn native_operation_failed_old_host_cannot_cancel_replacement_preview() {
 }
 
 #[test]
-fn native_operation_failed_copy_creation_defers_cleanup_while_presenter_is_borrowed() {
+fn embedded_copy_cancellation_defers_while_presenter_is_borrowed() {
     std::thread::spawn(|| {
         let h = Harness::new();
         h.state.borrow_mut().start_copy(
@@ -218,8 +210,15 @@ fn native_operation_failed_copy_creation_defers_cleanup_while_presenter_is_borro
             .token
             .clone();
         h.display.fail_create.set(true);
+        h.display.fail_show.set(true);
         h.refresh();
+        h.tick(0);
+        assert!(h.main.global::<OperationPresentation>().get_active());
+        assert_eq!(h.display.attempts.get(), 1);
         let guard = h.state.borrow_mut();
+        h.main
+            .global::<OperationPresentation>()
+            .invoke_request_dismiss(h.main.global::<OperationPresentation>().get_token());
         h.tick(0);
         drop(guard);
         assert_eq!(h.state.borrow().copies.draft.as_ref().unwrap().token, token);
@@ -227,17 +226,9 @@ fn native_operation_failed_copy_creation_defers_cleanup_while_presenter_is_borro
         assert!(h.state.borrow().copies.draft.is_some());
         h.tick(250);
         assert!(h.state.borrow().copies.draft.is_none());
-        assert!(
-            h.cancelled.borrow().is_empty(),
-            "local copy drafts have no prepared operation to cancel"
-        );
-        assert!(!h.main.get_dialog_input_blocked());
-        let attempts = h.display.attempts.get();
-        for _ in 0..12 {
-            h.refresh();
-            h.tick(500);
-        }
-        assert_eq!(h.display.attempts.get(), attempts);
+        assert!(h.cancelled.borrow().is_empty());
+        assert!(!h.main.global::<OperationPresentation>().get_active());
+        assert_eq!(h.display.attempts.get(), 1);
         h.main.hide().unwrap();
     })
     .join()

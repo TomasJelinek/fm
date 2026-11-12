@@ -420,22 +420,19 @@ fn toolbar_and_header_callbacks_transfer_actual_keyboard_focus() {
         commands.borrow().is_empty(),
         "opening a copy draft does not queue a copy"
     );
-    let child = windows
-        .borrow()
-        .iter()
-        .skip(1)
-        .find(|child| child.window().is_visible())
-        .unwrap()
-        .clone();
-    child
-        .window()
-        .dispatch_event(WindowEvent::WindowActiveChanged(true));
-    child.window().dispatch_event(WindowEvent::KeyPressed {
-        text: Key::Escape.into(),
-    });
-    child.window().dispatch_event(WindowEvent::KeyReleased {
-        text: Key::Escape.into(),
-    });
+    slint::platform::update_timers_and_animations();
+    assert_eq!(
+        windows.borrow().len(),
+        1,
+        "transfer draft must share the main adapter"
+    );
+    assert!(
+        !i_slint_core::window::WindowInner::from_pub(window.window())
+            .active_popups()
+            .is_empty()
+    );
+    key(&window, Key::Escape);
+    slint::platform::update_timers_and_animations();
     assert!(!window.get_dialog_input_blocked());
     assert!(window.get_copy_draft_token().is_empty());
     assert_eq!(window.get_focused_pane(), 0);
@@ -448,22 +445,19 @@ fn toolbar_and_header_callbacks_transfer_actual_keyboard_focus() {
         commands.borrow().is_empty(),
         "opening a Move draft does not queue a transfer"
     );
-    let child = windows
-        .borrow()
-        .iter()
-        .skip(1)
-        .find(|child| child.window().is_visible())
-        .unwrap()
-        .clone();
-    child
-        .window()
-        .dispatch_event(WindowEvent::WindowActiveChanged(true));
-    child.window().dispatch_event(WindowEvent::KeyPressed {
-        text: Key::Escape.into(),
-    });
-    child.window().dispatch_event(WindowEvent::KeyReleased {
-        text: Key::Escape.into(),
-    });
+    slint::platform::update_timers_and_animations();
+    assert_eq!(
+        windows.borrow().len(),
+        1,
+        "transfer draft must share the main adapter"
+    );
+    assert!(
+        !i_slint_core::window::WindowInner::from_pub(window.window())
+            .active_popups()
+            .is_empty()
+    );
+    key(&window, Key::Escape);
+    slint::platform::update_timers_and_animations();
     assert!(!window.get_dialog_input_blocked());
     assert!(window.get_copy_draft_token().is_empty());
     assert_eq!(window.get_focused_pane(), 0);

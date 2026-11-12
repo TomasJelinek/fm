@@ -1,0 +1,95 @@
+import { PanelFilterDialog, PanelFilterView } from "panel-filter-dialog.slint";
+import { HelpBody } from "help-dialog.slint";
+import { DialogFrame, PopupFocus } from "dialog-frame.slint";
+import { Theme } from "theme.slint";
+
+export global PanelFilterPresentation {
+    in-out property <PanelFilterView> model;
+    in-out property <string> token;
+    in-out property <string> help-token;
+    in-out property <image> close-icon;
+    callback apply(string, bool, int, string, bool);
+    callback clear(string);
+    callback dismiss(string);
+    callback show-help(string);
+    callback dismiss-help(string, string);
+}
+
+// The native window stays enabled; both modal layers live in its popup stack.
+export component EmbeddedPanelFilter inherits Rectangle {
+    private property <string> token: PanelFilterPresentation.token;
+    out property <bool> active: root.token != "";
+    background: transparent;
+    changed token => {
+        PopupFocus.update();
+        if root.token != "" { filter-popup.close(); filter-popup.show(); }
+        else { filter-popup.close(); }
+        PopupFocus.update();
+    }
+    filter-popup := PopupWindow {
+        x: 0px; y: 0px; width: root.width; height: root.height;
+        close-policy: no-auto-close;
+        help-popup := PopupWindow {
+            x: 0px; y: 0px; width: root.width; height: root.height;
+            close-policy: no-auto-close;
+            help-frame := DialogFrame {
+                x: 0px; y: 0px; width: root.width; height: root.height;
+                desired-width: 740px; desired-height: 600px;
+                dim: true; dismiss-on-outside: false;
+                init => { self.reset(); }
+                HelpBody {
+                    topic: 1; close-icon: PanelFilterPresentation.close-icon;
+                    private property <string> filter-occurrence;
+                    private property <string> occurrence;
+                    init => {
+                        self.filter-occurrence = PanelFilterPresentation.token;
+                        self.occurrence = PanelFilterPresentation.help-token;
+                        self.begin();
+                    }
+                    move-dialog(dx, dy) => { help-frame.move-by(dx, dy); }
+                    close => { PanelFilterPresentation.dismiss-help(self.filter-occurrence, self.occurrence); }
+                }
+            }
+        }
+        filter-frame := DialogFrame {
+            x: 0px; y: 0px; width: root.width; height: root.height;
+            desired-width: max(540px, Theme.font-size * 28);
+            desired-height: max(320px, Theme.control-height * 6 + 100px);
+            dim: true; dismiss-on-outside: false;
+            private property <string> occurrence;
+            private property <string> help-occurrence: PanelFilterPresentation.help-token;
+            init => { self.occurrence = PanelFilterPresentation.token; self.reset(); }
+            changed help-occurrence => {
+                PopupFocus.update();
+                if self.help-occurrence != "" && self.occurrence == PanelFilterPresentation.token {
+                    help-popup.close(); help-popup.show();
+                } else { help-popup.close(); }
+                PopupFocus.update();
+            }
+            FocusScope {
+                width: parent.width; height: parent.height;
+                capture-key-pressed(event) => { PanelFilterPresentation.help-token != "" ? accept : reject }
+                capture-key-released(event) => { PanelFilterPresentation.help-token != "" ? accept : reject }
+                form := PanelFilterDialog {
+                    width: parent.width; height: parent.height;
+                    model: PanelFilterPresentation.model;
+                    private property <string> occurrence;
+                    init => { self.occurrence = PanelFilterPresentation.token; self.begin(); }
+                    move-dialog(dx, dy) => { filter-frame.move-by(dx, dy); }
+                    apply(enabled, mode, expression, names) => {
+                        if PanelFilterPresentation.help-token == "" {
+                            PanelFilterPresentation.apply(self.occurrence, enabled, mode, expression, names);
+                        }
+                    }
+                    clear => { if PanelFilterPresentation.help-token == "" { PanelFilterPresentation.clear(self.occurrence); } }
+                    help => { if PanelFilterPresentation.help-token == "" { PanelFilterPresentation.show-help(self.occurrence); } }
+                    cancel => { if PanelFilterPresentation.help-token == "" { PanelFilterPresentation.dismiss(self.occurrence); } }
+                }
+            }
+            if PanelFilterPresentation.help-token != "": TouchArea {
+                width: parent.width; height: parent.height;
+                scroll-event(event) => { accept }
+            }
+        }
+    }
+}

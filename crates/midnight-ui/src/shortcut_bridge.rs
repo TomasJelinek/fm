@@ -135,6 +135,9 @@ fn install_routing(window: &MainWindow, bindings: Bindings) {
         let Some(window) = weak.upgrade() else {
             return 1;
         };
+        if window.get_embedded_modal_open() {
+            return 1;
+        }
         if window.get_native_alt_gr() {
             return 0;
         }
@@ -154,8 +157,14 @@ fn install_routing(window: &MainWindow, bindings: Bindings) {
             return false;
         };
         update_control_layer(&window, &event, false);
+        if window.get_modal_overlay_open() {
+            return false;
+        }
         if crate::shortcut_editor::capture(&window, &event) {
             return true;
+        }
+        if window.get_embedded_modal_open() {
+            return false;
         }
         if window.get_native_alt_gr() {
             return false;
@@ -187,6 +196,9 @@ fn install_routing(window: &MainWindow, bindings: Bindings) {
         let Some(window) = weak.upgrade() else {
             return;
         };
+        if window.get_embedded_modal_open() {
+            return;
+        }
         let searching = if pane == 0 {
             window.get_left_search_active()
         } else {
@@ -210,6 +222,9 @@ fn install_routing(window: &MainWindow, bindings: Bindings) {
         let Some(window) = weak.upgrade() else {
             return 0;
         };
+        if window.get_embedded_modal_open() {
+            return 0;
+        }
         if window.get_native_alt_gr() {
             return 0;
         }
@@ -247,8 +262,14 @@ fn install_routing(window: &MainWindow, bindings: Bindings) {
             shift,
             meta,
         };
+        if window.get_modal_overlay_open() {
+            return false;
+        }
         if crate::shortcut_editor::capture_physical(&window, &chord) {
             return true;
+        }
+        if window.get_embedded_modal_open() {
+            return false;
         }
         let (context, pane, composing) = context(&window);
         if composing && !control && !alt && !meta {

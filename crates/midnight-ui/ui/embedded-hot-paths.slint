@@ -1,0 +1,52 @@
+import { HotPathsDialog } from "hot-paths-dialog.slint";
+import { BookmarkRow } from "navigation-models.slint";
+import { ActionIcons } from "action-icons.slint";
+import { DialogFrame, PopupFocus } from "dialog-frame.slint";
+import { Theme } from "theme.slint";
+
+export global HotPathsPresentation {
+    in-out property <string> token;
+    in-out property <[BookmarkRow]> model;
+    in-out property <ActionIcons> action-icons;
+    in-out property <string> path;
+    callback assign-bookmark(string, string, int);
+    callback remove-bookmark(string, string);
+    callback add-bookmark(string);
+    callback dismiss(string);
+}
+
+export component EmbeddedHotPaths inherits Rectangle {
+    private property <string> token: HotPathsPresentation.token;
+    out property <bool> active: root.token != "";
+    background: transparent;
+    changed token => {
+        PopupFocus.update();
+        if root.token != "" { manager-popup.close(); manager-popup.show(); }
+        else { manager-popup.close(); }
+        PopupFocus.update();
+    }
+    manager-popup := PopupWindow {
+        x: 0px; y: 0px; width: root.width; height: root.height;
+        close-policy: no-auto-close;
+        manager-frame := DialogFrame {
+            x: 0px; y: 0px; width: root.width; height: root.height;
+            desired-width: max(520px, Theme.font-size * 23);
+            desired-height: max(320px, Theme.control-height * 5 + 110px
+                + min(5, HotPathsPresentation.model.length) * max(44px, Theme.font-size + Theme.small-font + 12px));
+            dim: true; dismiss-on-outside: false;
+            init => { self.reset(); }
+            HotPathsDialog {
+                model: HotPathsPresentation.model;
+                action-icons: HotPathsPresentation.action-icons;
+                path: HotPathsPresentation.path;
+                private property <string> occurrence;
+                init => { self.occurrence = HotPathsPresentation.token; self.begin(); }
+                move-dialog(dx, dy) => { manager-frame.move-by(dx, dy); }
+                assign-bookmark(identity, slot) => { HotPathsPresentation.assign-bookmark(self.occurrence, identity, slot); }
+                remove-bookmark(identity) => { HotPathsPresentation.remove-bookmark(self.occurrence, identity); }
+                add-bookmark => { HotPathsPresentation.add-bookmark(self.occurrence); }
+                dismiss => { HotPathsPresentation.dismiss(self.occurrence); }
+            }
+        }
+    }
+}

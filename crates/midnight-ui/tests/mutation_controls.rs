@@ -307,23 +307,24 @@ fn main_with_children() -> (TestUi, ChildWindows) {
     test.resize(1340, 820);
     (test, windows)
 }
-fn current(test: &TestUi, windows: &ChildWindows) -> Rc<MinimalSoftwareWindow> {
+fn current(test: &TestUi, _windows: &ChildWindows) -> Rc<MinimalSoftwareWindow> {
     slint::platform::update_timers_and_animations();
     // Confirmed Delete keeps a modeless progress window while new panel actions
     // remain available. Only an active confirmation owns keyboard input here.
-    if !test.window.get_dialog_input_blocked() {
-        return test.native.clone();
+    if test.window.get_embedded_modal_open() {
+        assert!(
+            !i_slint_core::window::WindowInner::from_pub(test.window.window())
+                .active_popups()
+                .is_empty()
+        );
+        modeless::draw(
+            &test.native,
+            test.width as u32,
+            test.height as u32,
+            "mutation-embedded",
+        );
     }
-    let child = windows
-        .borrow()
-        .iter()
-        .skip(1)
-        .rev()
-        .find(|adapter| adapter.window().is_visible())
-        .cloned()
-        .expect("blocked owner must have a visible confirmation window");
-    modeless::draw(&child, 640, 420, "mutation-child");
-    child
+    test.native.clone()
 }
 fn key_current(test: &TestUi, windows: &ChildWindows, key: impl Into<slint::SharedString>) {
     window_input::key(&current(test, windows), key);

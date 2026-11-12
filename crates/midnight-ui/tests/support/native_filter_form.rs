@@ -44,7 +44,9 @@ pub(super) fn click_control(
     label: &str,
     role: AccessibleRole,
 ) {
-    let item = modeless::accessible_item(native, role, label).unwrap();
+    let item = modeless::accessible_popup_item(native, role, label)
+        .or_else(|| modeless::accessible_item(native, role, label))
+        .unwrap();
     let bounds = item.geometry();
     let origin = item.map_to_native_window(bounds.origin);
     let position = slint::LogicalPosition::new(

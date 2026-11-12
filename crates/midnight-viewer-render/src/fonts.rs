@@ -1,10 +1,65 @@
 //! Discover installed families using the same font database as the renderer.
 //! Call only from a backend worker. A completed catalog is shared for the process.
 use parley::FontContext;
-use std::sync::{Arc, OnceLock};
+use std::{
+    sync::{Arc, Mutex, OnceLock, TryLockError},
+    time::Duration,
+};
 
-static MONOSPACE: OnceLock<Arc<[String]>> = OnceLock::new();
-static INSTALLED: OnceLock<Arc<[String]>> = OnceLock::new();
+static MONOSPACE: Catalog = Catalog::new();
+static INSTALLED: Catalog = Catalog::new();
+
+struct Catalog {
+    names: OnceLock<Arc<[String]>>,
+    initialization: Mutex<()>,
+}
+
+impl Catalog {
+    const fn new() -> Self {
+        Self {
+            names: OnceLock::new(),
+            initialization: Mutex::new(()),
+        }
+    }
+
+    fn get(
+        &self,
+        cancelled: impl Fn() -> bool,
+        discover: impl FnOnce() -> Option<Arc<[String]>>,
+    ) -> Option<Arc<[String]>> {
+        if cancelled() {
+            return None;
+        }
+        if let Some(names) = self.names.get() {
+            return Some(names.clone());
+        }
+        let _initialization = loop {
+            match self.initialization.try_lock() {
+                Ok(guard) => break guard,
+                // A failed scan keeps its names local; the gate contains no partial data.
+                Err(TryLockError::Poisoned(error)) => break error.into_inner(),
+                Err(TryLockError::WouldBlock) => {
+                    if cancelled() {
+                        return None;
+                    }
+                    // Wait only on this backend worker, checking cancellation between attempts.
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+            }
+        };
+        if cancelled() {
+            return None;
+        }
+        if let Some(names) = self.names.get() {
+            return Some(names.clone());
+        }
+        let names = discover()?;
+        if cancelled() {
+            return None;
+        }
+        Some(self.names.get_or_init(|| names).clone())
+    }
+}
 
 /// Whether a saved family name denotes a renderer-supported CSS generic family.
 pub fn is_generic_family(family: &str) -> bool {
@@ -13,12 +68,10 @@ pub fn is_generic_family(family: &str) -> bool {
 
 /// Installed family names for the viewer's font chooser. Backend workers only.
 pub fn installed_families(cancelled: impl Fn() -> bool) -> Option<Arc<[String]>> {
-    if cancelled() {
-        return None;
-    }
-    if let Some(names) = INSTALLED.get() {
-        return Some(names.clone());
-    }
+    INSTALLED.get(&cancelled, || discover_installed(&cancelled))
+}
+
+fn discover_installed(cancelled: impl Fn() -> bool) -> Option<Arc<[String]>> {
     let mut fonts = FontContext::default();
     let mut names: Vec<_> = fonts
         .collection
@@ -37,19 +90,16 @@ pub fn installed_families(cancelled: impl Fn() -> bool) -> Option<Arc<[String]>>
     if cancelled() {
         return None;
     }
-    let names: Arc<[String]> = names.into();
-    Some(INSTALLED.get_or_init(|| names).clone())
+    Some(names.into())
 }
 
 /// Code fonts with fixed-pitch metrics and glyphs for every printable ASCII character.
 /// Cancellation never publishes a partial catalog. Names are literal family names.
 pub fn monospace_families(cancelled: impl Fn() -> bool) -> Option<Arc<[String]>> {
-    if cancelled() {
-        return None;
-    }
-    if let Some(names) = MONOSPACE.get() {
-        return Some(names.clone());
-    }
+    MONOSPACE.get(&cancelled, || discover_monospace(&cancelled))
+}
+
+fn discover_monospace(cancelled: impl Fn() -> bool) -> Option<Arc<[String]>> {
     let mut fonts = FontContext::default();
     let candidates: Vec<_> = fonts
         .collection
@@ -90,6 +140,9 @@ pub fn monospace_families(cancelled: impl Fn() -> bool) -> Option<Arc<[String]>>
     }
     names.sort_by_cached_key(|name| (name.to_lowercase(), name.clone()));
     names.dedup_by(|right, left| left.eq_ignore_ascii_case(right));
-    let names: Arc<[String]> = names.into();
-    Some(MONOSPACE.get_or_init(|| names).clone())
+    Some(names.into())
 }
+
+#[cfg(test)]
+#[path = "font_cache_tests.rs"]
+mod cache_tests;

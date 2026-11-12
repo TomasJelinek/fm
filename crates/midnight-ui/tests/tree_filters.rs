@@ -8,7 +8,10 @@ mod ui;
 
 use i_slint_core::items::AccessibleRole;
 use midnight_core::*;
-use slint::platform::{Key, WindowAdapter};
+use slint::{
+    ComponentHandle,
+    platform::{Key, WindowAdapter},
+};
 use std::sync::{Arc, atomic::Ordering};
 use support::Harness;
 
@@ -37,7 +40,16 @@ fn apply(h: &mut Harness, mode: i32, expression: &str) {
     native::click(&child, "OK", AccessibleRole::Button);
     assert!(h.ui.window.get_panel_filter_view().busy);
     h.until(|h| !h.ui.window.get_panel_filter_view().open);
-    assert!(!child.window().is_visible());
+    assert!(
+        child.window().is_visible(),
+        "closing the filter keeps Main open"
+    );
+    assert!(
+        h.ui.window
+            .global::<midnight_ui::PanelFilterPresentation>()
+            .get_token()
+            .is_empty()
+    );
     assert_eq!(
         h.filter_label(),
         previous_label,
@@ -72,7 +84,7 @@ fn native_tree_controls_apply_clear_sort_and_cancel_across_layouts() {
     );
     let child = native::filter(&h);
     native::key(&child, Key::Escape);
-    assert!(!child.window().is_visible());
+    assert!(child.window().is_visible(), "Escape keeps Main open");
     assert!(!h.ui.window.get_panel_filter_view().open);
     let hidden = h
         .view
@@ -188,7 +200,7 @@ fn native_tree_controls_apply_clear_sort_and_cancel_across_layouts() {
     let child = native::filter(&h);
     native::resize(&child, 320, 200);
     native::click(&child, "Cancel", AccessibleRole::Button);
-    assert!(!child.window().is_visible());
+    assert!(child.window().is_visible(), "Cancel keeps Main open");
     assert!(!h.ui.window.get_panel_filter_view().open);
 }
 

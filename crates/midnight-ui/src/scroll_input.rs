@@ -351,8 +351,19 @@ pub(crate) fn install(window: &MainWindow) {
                 return EventResult::PreventDefault;
             }
         }
-        crate::drag_bridge::observe_native(&window, event);
-        let replaced = observe(&window, &state, &timer, event);
+        let embedded_modal = window.get_embedded_modal_open();
+        let replaced = if embedded_modal {
+            window.global::<crate::PopupFocus>().invoke_update();
+            // Keep native delivery available to the popup's editors/IME and
+            // scrollbars while retiring background panel input ownership.
+            timer.stop();
+            *state.borrow_mut() = InputState::default();
+            window.set_scroll_interaction_active(false);
+            false
+        } else {
+            crate::drag_bridge::observe_native(&window, event);
+            observe(&window, &state, &timer, event)
+        };
         // Panel identity/routing gets first refusal. Only the remaining native
         // scrollbar and command-strip paths need auxiliary interpolation.
         let auxiliary_replaced = if replaced {

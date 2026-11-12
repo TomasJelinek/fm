@@ -42,34 +42,48 @@ fn multi_window_ui() -> (ui::TestUi, NativeWindows) {
     (test, windows)
 }
 
+fn accessible_item(
+    window: &MinimalSoftwareWindow,
+    role: i_slint_core::items::AccessibleRole,
+    label: &str,
+) -> Option<i_slint_core::item_tree::ItemRc> {
+    modeless::accessible_popup_item(window, role, label)
+        .or_else(|| modeless::accessible_item(window, role, label))
+}
+
 fn draft_child(windows: &NativeWindows) -> Rc<MinimalSoftwareWindow> {
-    let child = windows
-        .borrow()
-        .iter()
-        .skip(1)
-        .rev()
-        .find(|window| window.window().is_visible())
-        .cloned()
-        .expect("native draft child");
-    modeless::draw(&child, 720, 520, "transfer-draft");
-    child
-        .window()
-        .dispatch_event(WindowEvent::WindowActiveChanged(true));
-    child
+    slint::platform::update_timers_and_animations();
+    assert_eq!(
+        windows.borrow().len(),
+        1,
+        "copy draft created a native window"
+    );
+    let main = windows.borrow()[0].clone();
+    assert!(
+        !i_slint_core::window::WindowInner::from_pub(main.window())
+            .active_popups()
+            .is_empty()
+    );
+    modeless::draw(&main, 720, 520, "transfer-draft");
+    main
 }
 
 fn dismiss_native_notice(windows: &NativeWindows) {
-    let child = windows.borrow().last().unwrap().clone();
-    assert!(child.window().is_visible());
-    child.window().dispatch_event(WindowEvent::KeyPressed {
-        text: Key::Escape.into(),
-    });
-    child.window().dispatch_event(WindowEvent::KeyReleased {
-        text: Key::Escape.into(),
-    });
-    assert!(!child.window().is_visible());
+    let main = windows.borrow()[0].clone();
+    let count = i_slint_core::window::WindowInner::from_pub(main.window())
+        .active_popups()
+        .len();
+    assert!(count >= 2, "notice should overlay the retained copy draft");
+    input::key(&main, Key::Escape);
+    slint::platform::update_timers_and_animations();
+    assert!(main.window().is_visible());
+    assert_eq!(
+        i_slint_core::window::WindowInner::from_pub(main.window())
+            .active_popups()
+            .len(),
+        count - 1
+    );
 }
-
 #[test]
 fn copy_confirmation_shows_the_complete_source_above_the_destination() {
     use i_slint_core::items::AccessibleRole;
@@ -92,9 +106,8 @@ fn copy_confirmation_shows_the_complete_source_above_the_destination() {
         dialog.invoke_apply_preferences(3, density, "".into(), font, font);
         dialog.invoke_begin();
         modeless::draw(&child, 720, 520, &format!("copy-source-{density}-{font}"));
-        let source = modeless::accessible_item(&child, AccessibleRole::Text, body).unwrap();
-        let label =
-            modeless::accessible_item(&child, AccessibleRole::Text, "Destination folder").unwrap();
+        let source = accessible_item(&child, AccessibleRole::Text, body).unwrap();
+        let label = accessible_item(&child, AccessibleRole::Text, "Destination folder").unwrap();
         let source_rect = source.geometry();
         let source_top = source.map_to_native_window(source_rect.origin).y;
         let label_top = label.map_to_native_window(label.geometry().origin).y;
@@ -105,8 +118,7 @@ fn copy_confirmation_shows_the_complete_source_above_the_destination() {
             source_top + source_rect.size.height
         );
         let editor =
-            modeless::accessible_item(&child, AccessibleRole::TextInput, "Destination folder")
-                .unwrap();
+            accessible_item(&child, AccessibleRole::TextInput, "Destination folder").unwrap();
         assert!(
             editor.geometry().size.height < font as f32 * 3.0,
             "Destination must stay single-line"
@@ -119,7 +131,7 @@ fn copy_confirmation_shows_the_complete_source_above_the_destination() {
         ("Cancel", AccessibleRole::Button),
         ("Copy", AccessibleRole::Button),
     ] {
-        let item = modeless::accessible_item(&child, role, label).unwrap();
+        let item = accessible_item(&child, role, label).unwrap();
         let rect = item.geometry();
         let origin = item.map_to_native_window(rect.origin);
         assert!(
@@ -248,7 +260,7 @@ fn archive_dialog_disables_required_modified_time_and_keeps_ordinary_copy() {
     ui.draw();
     assert!(!ui.window.get_copy_draft_token().is_empty());
     let child = draft_child(&windows);
-    let option = modeless::accessible_item(
+    let option = accessible_item(
         &child,
         AccessibleRole::Checkbox,
         "Preserve exact modified time",
@@ -267,8 +279,7 @@ fn archive_dialog_disables_required_modified_time_and_keeps_ordinary_copy() {
             .unwrap(),
         "false"
     );
-    let editor =
-        modeless::accessible_item(&child, AccessibleRole::TextInput, "Destination folder").unwrap();
+    let editor = accessible_item(&child, AccessibleRole::TextInput, "Destination folder").unwrap();
     input::click(&child, &editor);
     input::key(&child, Key::Return);
     ui.draw();
@@ -374,7 +385,7 @@ fn destination_editor(shortcut: Key, moving: bool, preserve: bool) {
     ui::key(&ui.window, shortcut);
     ui.draw();
     let child = draft_child(&windows);
-    let option = modeless::accessible_item(
+    let option = accessible_item(
         &child,
         i_slint_core::items::AccessibleRole::Checkbox,
         "Preserve exact modified time",
@@ -392,7 +403,7 @@ fn destination_editor(shortcut: Key, moving: bool, preserve: bool) {
     if preserve {
         input::click(&child, &option);
         // Restore path focus without activating the form or changing the option.
-        let editor = modeless::accessible_item(
+        let editor = accessible_item(
             &child,
             i_slint_core::items::AccessibleRole::TextInput,
             "Destination folder",
@@ -435,7 +446,7 @@ fn destination_editor(shortcut: Key, moving: bool, preserve: bool) {
     assert_eq!(
         windows.borrow().len(),
         before_retry,
-        "admission error stays in the same editable native draft"
+        "admission error stays in the same editable embedded draft"
     );
     assert!(ui.window.get_dialog_input_blocked());
     assert!(!ui.window.get_copy_draft_token().is_empty());
@@ -444,7 +455,7 @@ fn destination_editor(shortcut: Key, moving: bool, preserve: bool) {
     let error = ui.window.get_copy_draft_error();
     assert!(!error.is_empty());
     assert!(
-        modeless::accessible_item(
+        accessible_item(
             &child,
             i_slint_core::items::AccessibleRole::Text,
             error.as_str()
@@ -452,7 +463,10 @@ fn destination_editor(shortcut: Key, moving: bool, preserve: bool) {
         .is_some_and(|item| item.is_visible()),
         "admission error must be visible in the draft"
     );
-    assert!(!ui::has_popup(&ui.window));
+    assert!(
+        ui::has_popup(&ui.window),
+        "admission error retains the same embedded draft"
+    );
     // An unrelated asynchronous notice also must not discard the edited target.
     ui.window.set_message_title("Background notice".into());
     ui.window

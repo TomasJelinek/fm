@@ -1,10 +1,9 @@
 //! An owned modal draft; all generation, clipboard and file work is delegated.
-use crate::dialog_host::{
-    CloseDisposition, DialogHost, DialogModality, DialogOwner, DialogSessions,
-};
+use crate::dialog_focus::{FocusReturn, restore_after_popup};
+use crate::dialog_host::{DialogSession, DialogSessions};
 use crate::presenter::file_list::{FileListSession, PRESETS, VARIABLES};
 use crate::tool_window_failure::Failures;
-use crate::{FileListWindow, MainWindow, Presenter, Theme};
+use crate::{FileListPresentation, MainWindow, Presenter};
 use midnight_core::*;
 use slint::{ComponentHandle, Timer, TimerMode};
 use std::{
@@ -15,11 +14,41 @@ use std::{
 };
 
 struct Record {
-    window: FileListWindow,
-    host: Rc<DialogHost>,
+    host: Rc<EmbeddedLife>,
     shown: bool,
     revision: Option<u64>,
     path_revision: u64,
+}
+struct EmbeddedLife {
+    main: slint::Weak<MainWindow>,
+    session: DialogSession,
+    token: slint::SharedString,
+    open: Cell<bool>,
+    focus: FocusReturn,
+}
+impl EmbeddedLife {
+    fn is_current(&self, session: DialogSession, token: &str) -> bool {
+        self.open.get() && self.session == session && self.token.as_str() == token
+    }
+    fn close(&self) {
+        if !self.open.replace(false) {
+            return;
+        }
+        if let Some(main) = self.main.upgrade() {
+            let window = main.global::<FileListPresentation>();
+            if window.get_token() == self.token {
+                window.set_active(false);
+                let weak = main.as_weak();
+                let token = self.token.clone();
+                restore_after_popup(&main, Some(self.focus.clone()), move || {
+                    weak.upgrade().is_some_and(|main| {
+                        let window = main.global::<FileListPresentation>();
+                        window.get_token() == token && !window.get_active()
+                    })
+                });
+            }
+        }
+    }
 }
 type Windows = Rc<RefCell<HashMap<DesktopRequestId, Record>>>;
 
@@ -44,7 +73,6 @@ pub(crate) fn install(
         let send = send.clone();
         let weak = main.as_weak();
         let closing = closing.clone();
-        let windows = windows.clone();
         main.on_make_file_list(move |pane| {
             if closing.get() {
                 return;
@@ -54,10 +82,6 @@ pub(crate) fn install(
                 .request_make_file_list(crate::pane(pane), send.as_ref());
             if let Some(main) = weak.upgrade() {
                 crate::refresh(&main, &state.borrow());
-            }
-            for record in windows.borrow().values() {
-                let _ = record.host.show(record.window.window());
-                record.window.invoke_begin();
             }
         });
     }
@@ -79,7 +103,7 @@ pub(crate) fn install(
     main.on_close_file_list_window(move || {
         closing.set(true);
         for (_, record) in std::mem::take(&mut *windows.borrow_mut()) {
-            record.host.close(record.window.window());
+            record.host.close();
         }
         // The engine shutdown barrier owns cancellation. Do not borrow Presenter here:
         // application shutdown can already hold its mutable borrow.
@@ -103,7 +127,7 @@ fn refresh(
         .collect();
     for key in removed {
         if let Some(record) = windows.borrow_mut().remove(&key) {
-            record.host.close(record.window.window());
+            record.host.close();
         }
     }
     let Some(id) = id else { return };
@@ -129,47 +153,23 @@ fn refresh(
     let Some(record) = records.get_mut(&id) else {
         return;
     };
-    apply_theme(main, &record.window);
-    crate::tooltip::synchronize_file_list(&record.window);
+    let window = main.global::<FileListPresentation>();
     if record.revision == Some(s.revision) {
         return;
     }
     record.revision = Some(s.revision);
-    sync(&record.window, s, &p.number_locale);
+    sync(&window, s, &p.number_locale);
     if record.path_revision != s.path_revision {
-        record
-            .window
-            .set_destination_path(s.path.to_string_lossy().as_ref().into());
+        window.set_destination_path(s.path.to_string_lossy().as_ref().into());
         record.path_revision = s.path_revision;
     }
-    let shown = if record.shown {
-        Ok(())
-    } else {
-        record.host.show(record.window.window()).map(|()| {
-            record.shown = true;
-            record.window.invoke_begin();
-        })
-    };
-    drop(records);
-    drop(p);
-    if let Err(error) = shown {
-        windows.borrow_mut().remove(&id);
-        failures.record(id, error.to_string());
+    if !record.shown {
+        record.shown = true;
+        window.invoke_begin();
     }
 }
 
-fn apply_theme(main: &MainWindow, window: &FileListWindow) {
-    let theme = main.global::<Theme>();
-    window.invoke_apply_preferences(
-        theme.get_scheme(),
-        theme.get_density(),
-        theme.get_font_family(),
-        theme.get_desktop_font_size(),
-        theme.get_touch_font_size(),
-    );
-}
-
-fn sync(window: &FileListWindow, s: &FileListSession, locale: &NumberLocale) {
+fn sync(window: &FileListPresentation<'_>, s: &FileListSession, locale: &NumberLocale) {
     window.set_busy(s.busy());
     window.set_preview_text(s.preview.clone().into());
     window.set_summary(s.summary.clone().into());
@@ -208,15 +208,16 @@ fn create(
         .allocate()
         .map_err(slint::PlatformError::from)?;
     main.invoke_drag_invalidate_targets();
-    let (window, host) = DialogHost::create(
+    let token: slint::SharedString = format!("{session:?}").into();
+    let host = Rc::new(EmbeddedLife {
         session,
-        DialogOwner::new(main),
-        DialogModality::OwnerModal,
-        FileListWindow::new,
-    )?;
-    let host = Rc::new(host);
-    crate::tooltip::install_file_list(&window)?;
-    apply_theme(main, &window);
+        token: token.clone(),
+        main: main.as_weak(),
+        open: Cell::new(true),
+        focus: FocusReturn::capture(main.window()),
+    });
+    let window = main.global::<FileListPresentation>();
+    window.set_token(token);
     window.set_variable_labels(
         Rc::new(slint::VecModel::from(
             VARIABLES
@@ -249,8 +250,8 @@ fn create(
         let main = main.as_weak();
         let timer = timer.clone();
         let host = host.clone();
-        window.on_template_edited(move |text| {
-            if !host.is_current(session) {
+        window.on_template_edited(move |token, text| {
+            if !host.is_current(session, token.as_str()) {
                 return;
             }
             edit(&state, &send, &main, &timer, id, text.to_string());
@@ -260,18 +261,19 @@ fn create(
         let state = state.clone();
         let send = send.clone();
         let main = main.as_weak();
-        let weak = window.as_weak();
+        let weak = main.clone();
         let timer = timer.clone();
         let host = host.clone();
-        window.on_insert_variable(move |index| {
-            if !host.is_current(session) {
+        window.on_insert_variable(move |token, index| {
+            if !host.is_current(session, token.as_str()) {
                 return;
             }
             let Some((_, variable)) = usize::try_from(index).ok().and_then(|i| VARIABLES.get(i))
             else {
                 return;
             };
-            let Some(window) = weak.upgrade() else { return };
+            let Some(owner) = weak.upgrade() else { return };
+            let window = owner.global::<FileListPresentation>();
             let Some((text, caret)) = insert_variable(
                 &window.get_template_text(),
                 window.get_template_anchor(),
@@ -289,17 +291,18 @@ fn create(
         let state = state.clone();
         let send = send.clone();
         let main = main.as_weak();
-        let weak = window.as_weak();
+        let weak = main.clone();
         let timer = timer.clone();
         let host = host.clone();
-        window.on_select_preset(move |index| {
-            if !host.is_current(session) {
+        window.on_select_preset(move |token, index| {
+            if !host.is_current(session, token.as_str()) {
                 return;
             }
             let Some(text) = usize::try_from(index).ok().and_then(|i| PRESETS.get(i)) else {
                 return;
             };
-            let Some(window) = weak.upgrade() else { return };
+            let Some(owner) = weak.upgrade() else { return };
+            let window = owner.global::<FileListPresentation>();
             window.set_template_text((*text).into());
             edit(&state, &send, &main, &timer, id, (*text).into());
             window.invoke_focus_template_at(text.len() as i32);
@@ -309,11 +312,11 @@ fn create(
         let state = state.clone();
         let send = send.clone();
         let main = main.as_weak();
-        let weak = window.as_weak();
+        let weak = main.clone();
         let timer = timer.clone();
         let host = host.clone();
-        window.on_select_history(move |index| {
-            if !host.is_current(session) {
+        window.on_select_history(move |token, index| {
+            if !host.is_current(session, token.as_str()) {
                 return;
             }
             let text = state
@@ -324,9 +327,10 @@ fn create(
                 .filter(|s| s.id == id)
                 .and_then(|s| usize::try_from(index).ok().and_then(|i| s.history.get(i)))
                 .cloned();
-            let (Some(text), Some(window)) = (text, weak.upgrade()) else {
+            let (Some(text), Some(owner)) = (text, weak.upgrade()) else {
                 return;
             };
+            let window = owner.global::<FileListPresentation>();
             window.set_template_text(text.clone().into());
             let caret = text.len() as i32;
             edit(&state, &send, &main, &timer, id, text);
@@ -336,11 +340,12 @@ fn create(
     macro_rules! callback {
         ($name:ident, |$p:ident, $send:ident, $window:ident $(, $arg:ident)*| $body:block) => {{
             let state = state.clone(); let sender = send.clone();
-            let main = main.as_weak(); let weak = window.as_weak();
+            let main = main.as_weak(); let weak = main.clone();
             let host = host.clone();
-            window.$name(move |$($arg),*| {
-                if !host.is_current(session) { return; }
-                let Some($window) = weak.upgrade() else { return };
+            window.$name(move |token $(, $arg)*| {
+                if !host.is_current(session, token.as_str()) { return; }
+                let Some(owner) = weak.upgrade() else { return };
+                let $window = owner.global::<FileListPresentation>();
                 { let mut p = state.borrow_mut(); let $p = &mut *p; let $send = sender.as_ref(); $body }
                 if let Some(main) = main.upgrade() { crate::refresh(&main, &state.borrow()); }
             });
@@ -355,30 +360,41 @@ fn create(
             send,
         );
     });
-    callback!(on_browse, |p, send, window| {
-        p.request_file_list_picker(
-            id,
-            crate::picker_window::native_path_picker_owner(window.window()),
-            send,
-        );
-    });
     {
         let host = host.clone();
         let state = state.clone();
         let send = send.clone();
-        let weak = window.as_weak();
+        let weak = main.as_weak();
+        window.on_browse(move |token| {
+            if !host.is_current(session, token.as_str()) {
+                return;
+            }
+            let Some(main) = weak.upgrade() else { return };
+            state.borrow_mut().request_file_list_picker(
+                id,
+                crate::picker_window::native_path_picker_owner(main.window()),
+                send.as_ref(),
+            );
+            crate::refresh(&main, &state.borrow());
+        });
+    }
+    {
+        let host = host.clone();
+        let state = state.clone();
+        let send = send.clone();
         let main = main.as_weak();
-        window.on_cancel(move || {
-            let Some(window) = weak.upgrade() else { return };
-            host.request_close(window.window(), || {
+        window.on_cancel(move |token| {
+            if !host.is_current(session, token.as_str()) {
+                return;
+            }
+            let closed = {
                 let mut p = state.borrow_mut();
                 p.close_file_list(id, send.as_ref());
-                if p.file_list.session.as_ref().is_some_and(|s| s.id == id) {
-                    CloseDisposition::KeepOpen
-                } else {
-                    CloseDisposition::Hide
-                }
-            });
+                !p.file_list.session.as_ref().is_some_and(|s| s.id == id)
+            };
+            if closed {
+                host.close();
+            }
             if let Some(main) = main.upgrade() {
                 crate::refresh(&main, &state.borrow());
             }
@@ -390,17 +406,7 @@ fn create(
     callback!(on_copy_error, |p, send, _window, text| {
         p.copy_viewer_text(text.to_string(), send);
     });
-    {
-        let weak = window.as_weak();
-        window.window().on_close_requested(move || {
-            if let Some(window) = weak.upgrade() {
-                window.invoke_cancel();
-            }
-            slint::CloseRequestResponse::KeepWindowShown
-        });
-    }
     Ok(Record {
-        window,
         host,
         shown: false,
         revision: None,

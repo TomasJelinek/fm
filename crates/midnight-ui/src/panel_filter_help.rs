@@ -1,106 +1,77 @@
-//! Filter help belongs to the active modal filter, not to its disabled main owner.
+//! Help is a nested embedded popup tied to one live filter occurrence.
 use super::*;
-use crate::{HelpWindow, ShortcutHints};
 
 pub(super) struct Record {
-    pub(super) window: HelpWindow,
-    host: DialogHost,
-    session: DialogSession,
+    generation: u64,
+    token: u64,
+    focus: FocusReturn,
 }
-fn current(ctx: &Context, session: DialogSession) -> Option<Rc<super::Record>> {
-    if ctx.closing.get() {
-        return None;
+
+pub(super) fn show(ctx: &Rc<Context>, token: &str) {
+    let (Some(generation), Some(state), Some(main)) =
+        (current(ctx, token), ctx.state.upgrade(), ctx.main.upgrade())
+    else {
+        return;
+    };
+    if ctx.help.borrow().is_some() {
+        return;
     }
-    ctx.record
-        .borrow()
-        .as_ref()
-        .filter(|record| record.session == session && record.host.is_current(session))
-        .cloned()
+    let p = state.borrow();
+    if !p.filter_dialog.open || p.filter_dialog.generation != generation {
+        return;
+    }
+    drop(p);
+    let Some(help) = ctx.next_help.get().checked_add(1) else {
+        state.borrow_mut().filter_dialog.error = "Filter help identities are exhausted.".into();
+        crate::refresh(&main, &state.borrow());
+        return;
+    };
+    ctx.next_help.set(help);
+    *ctx.help.borrow_mut() = Some(Record {
+        generation,
+        token: help,
+        focus: FocusReturn::capture(main.window()),
+    });
+    main.global::<PanelFilterPresentation>()
+        .set_help_token(help.to_string().into());
 }
-pub(super) fn show(ctx: &Rc<Context>, session: DialogSession) {
-    let (Some(record), Some(state), Some(main)) = (
-        current(ctx, session),
-        ctx.state.upgrade(),
+
+pub(super) fn dismiss(ctx: &Rc<Context>, token: &str, help_token: &str) {
+    let (Some(generation), Ok(help), Some(main)) = (
+        current(ctx, token),
+        help_token.parse::<u64>(),
         ctx.main.upgrade(),
     ) else {
         return;
     };
-    let p = state.borrow();
-    if !p.filter_dialog.open || p.filter_dialog.generation != record.generation {
+    if !ctx
+        .help
+        .borrow()
+        .as_ref()
+        .is_some_and(|record| record.generation == generation && record.token == help)
+    {
         return;
     }
-    let result = open(ctx, &record, &main, &p);
-    drop(p);
-    if let Err(error) = result {
-        state.borrow_mut().filter_dialog.error = format!("Unable to open filter help: {error}");
-        crate::refresh(&main, &state.borrow());
-    }
-}
-fn open(
-    ctx: &Rc<Context>,
-    filter: &Rc<super::Record>,
-    main: &MainWindow,
-    p: &Presenter,
-) -> Result<(), PlatformError> {
-    if let Some(record) = filter.help.borrow().as_ref() {
-        record.host.show(record.window.window())?;
-        record.host.activate(record.window.window());
-        return Ok(());
-    }
-    let session = ctx.sessions.borrow_mut().allocate()?;
-    let (window, host) = DialogHost::create(
-        session,
-        DialogOwner::new(&filter.window),
-        DialogModality::OwnerModal,
-        HelpWindow::new,
-    )?;
-    crate::tooltip::install_help(&window)?;
-    dialog_presentation::apply(&window, p);
-    window.set_topic(1);
-    window.set_close_icon(main.get_action_icons().close);
-    window.set_shortcuts(main.global::<ShortcutHints>().invoke_help());
-    let parent_session = filter.session;
+    let Some(record) = ctx.help.borrow_mut().take() else {
+        return;
+    };
+    main.global::<PanelFilterPresentation>()
+        .set_help_token(SharedString::default());
     let weak = Rc::downgrade(ctx);
-    window.on_request_dismiss(move || {
+    slint::Timer::single_shot(std::time::Duration::ZERO, move || {
         let Some(ctx) = weak.upgrade() else {
             return;
         };
-        let Some(filter) = current(&ctx, parent_session) else {
+        if ctx.closing.get()
+            || ctx.generation.get() != Some(generation)
+            || ctx.help.borrow().is_some()
+            || ctx.next_help.get() != help
+        {
             return;
-        };
-        let valid = filter
-            .help
-            .borrow()
-            .as_ref()
-            .is_some_and(|record| record.session == session && record.host.is_current(session));
-        if valid {
-            close(&filter, true);
+        }
+        if let Some(main) = ctx.main.upgrade() {
+            // The shared top-popup guard refuses focus covered by another modal.
+            record.focus.restore(main.window());
         }
     });
-    let weak = window.as_weak();
-    window.window().on_close_requested(move || {
-        if let Some(window) = weak.upgrade() {
-            window.invoke_request_dismiss();
-        }
-        slint::CloseRequestResponse::KeepWindowShown
-    });
-    host.show(window.window())?;
-    *filter.help.borrow_mut() = Some(Record {
-        window,
-        host,
-        session,
-    });
-    Ok(())
-}
-pub(super) fn close(filter: &super::Record, explicit: bool) {
-    let record = filter.help.borrow_mut().take();
-    if let Some(record) = record {
-        if explicit {
-            record
-                .host
-                .request_close(record.window.window(), || CloseDisposition::Hide);
-        } else {
-            record.host.close(record.window.window());
-        }
-    }
 }

@@ -36,14 +36,23 @@ fn open(service: &Service, launch: FileCompareLaunch) -> Session {
 
 fn next_result(session: &Session) -> Output {
     let start = Instant::now();
+    let mut last_status = None;
     loop {
         match session.mailbox.take() {
-            Some(Output::Status(_)) | None => {}
-            Some(result) => return result,
+            Some(Output::Status(status)) => {
+                eprintln!("Comparator status after {:?}: {status}", start.elapsed());
+                last_status = Some(status);
+            }
+            None => {}
+            Some(result) => {
+                eprintln!("Comparator interactive result after {:?}", start.elapsed());
+                return result;
+            }
         }
         assert!(
             start.elapsed() < Duration::from_secs(10),
-            "No interactive result from comparator"
+            "No interactive result from comparator after {:?}; last status: {last_status:?}",
+            start.elapsed()
         );
         std::thread::sleep(Duration::from_millis(5));
     }

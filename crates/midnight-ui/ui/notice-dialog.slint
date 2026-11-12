@@ -23,6 +23,7 @@ export component NoticeDialog inherits Rectangle {
     callback authorize-retry();
     callback close();
     callback move-dialog(length, length);
+    public function focus-close() { close-button.focus(); }
     init => { close-button.focus(); }
     changed generation => { root.details-expanded = false; close-button.focus(); }
     background: Theme.surface; border-color: Theme.active-frame;

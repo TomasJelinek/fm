@@ -1,4 +1,4 @@
-//! Real message-window layout, clipboard dispatch and focus behavior.
+//! Embedded message layout, clipboard dispatch and focus behavior.
 #[allow(dead_code)]
 #[path = "support/modeless.rs"]
 mod modeless;
@@ -7,7 +7,7 @@ mod ui;
 
 use i_slint_core::{item_tree::ItemRc, items::AccessibleRole, window::WindowInner};
 use midnight_core::*;
-use midnight_ui::{MainWindow, Presenter, install, refresh};
+use midnight_ui::{MainWindow, NoticePresentation, Presenter, install, refresh};
 use slint::{
     ComponentHandle,
     platform::{Key, WindowAdapter, WindowEvent, software_renderer::MinimalSoftwareWindow},
@@ -31,6 +31,19 @@ fn escape(window: &MinimalSoftwareWindow) {
     window.window().dispatch_event(WindowEvent::KeyReleased {
         text: Key::Escape.into(),
     });
+    slint::platform::update_timers_and_animations();
+}
+
+fn notice_root(window: &MinimalSoftwareWindow) -> ItemRc {
+    let inner = WindowInner::from_pub(window.window());
+    let popups = inner.active_popups();
+    ItemRc::new_root(
+        popups
+            .last()
+            .expect("embedded notice popup")
+            .component
+            .clone(),
+    )
 }
 
 #[test]
@@ -169,8 +182,12 @@ fn failed_action_is_readable_copyable_and_escape_closes_without_losing_panel() {
     });
     refresh(&window, &presenter.borrow());
     slint::platform::update_timers_and_animations();
-    assert_eq!(windows.borrow().len(), 2);
-    let notice = windows.borrow()[1].clone();
+    assert_eq!(windows.borrow().len(), 1);
+    let owner = windows.borrow()[0].clone();
+    let presentation = window.global::<NoticePresentation>();
+    assert!(!presentation.get_token().is_empty());
+    assert!(window.get_embedded_modal_open());
+    assert!(!window.get_dialog_input_blocked());
     let body = window.get_message_body().to_string();
     assert!(
         body.contains(&format!("\nPath\n{}\n", path.display())),
@@ -182,24 +199,24 @@ fn failed_action_is_readable_copyable_and_escape_closes_without_losing_panel() {
         window.invoke_preferences_changed(scheme, density, 0);
         slint::platform::update_timers_and_animations();
         modeless::draw(
-            &notice,
+            &owner,
             width,
             height,
             &format!("error-message-{scheme}-{density}"),
         );
-        assert!(modeless::accessible_item(&notice, AccessibleRole::Text, "Error").is_some());
-        let inner = WindowInner::from_pub(notice.window());
-        let texts = ui::text_values(ItemRc::new_root(inner.component()));
+        assert!(modeless::accessible_popup_item(&owner, AccessibleRole::Text, "Error").is_some());
+        let texts = ui::text_values(notice_root(&owner));
         assert!(texts.iter().any(|text| text.as_str() == body));
         for label in ["Copy details", "Close"] {
-            let item = modeless::accessible_item(&notice, AccessibleRole::Button, label).unwrap();
+            let item =
+                modeless::accessible_popup_item(&owner, AccessibleRole::Button, label).unwrap();
             let geometry = item.geometry();
             let position = item.map_to_native_window(geometry.origin);
             assert!(position.y >= 0.0 && position.y + geometry.height() <= height as f32);
             assert!(position.x >= 0.0 && position.x + geometry.width() <= width as f32);
         }
     }
-    modeless::click(&notice, "Copy details");
+    modeless::click(&owner, "Copy details");
     assert!(
         commands
             .borrow()
@@ -207,10 +224,12 @@ fn failed_action_is_readable_copyable_and_escape_closes_without_losing_panel() {
             .any(|command| matches!(command, Command::CopyText { text, .. }
         if text == &format!("Desktop action failed\n\n{body}")))
     );
-    assert!(notice.window().is_visible());
+    assert!(owner.window().is_visible());
+    assert!(ui::has_popup(&window));
+    escape(&owner);
+    assert!(presentation.get_token().is_empty());
+    assert!(!window.get_embedded_modal_open());
     assert!(!ui::has_popup(&window));
-    escape(&notice);
-    assert!(!notice.window().is_visible());
     assert!(window.window().is_visible());
     assert!(!window.get_dialog_input_blocked());
 }
@@ -229,14 +248,20 @@ fn information_dialog_has_no_error_glyph() {
     window.set_message_error(false);
     window.set_message_generation(1);
     slint::platform::update_timers_and_animations();
-    let notice = windows.borrow()[1].clone();
-    modeless::draw(&notice, 640, 420, "information-notice");
-    let inner = WindowInner::from_pub(notice.window());
-    let texts = ui::text_values(ItemRc::new_root(inner.component()));
+    assert_eq!(windows.borrow().len(), 1);
+    let owner = windows.borrow()[0].clone();
+    let presentation = window.global::<NoticePresentation>();
+    assert!(!presentation.get_token().is_empty());
+    assert!(window.get_embedded_modal_open());
+    assert!(!window.get_dialog_input_blocked());
+    modeless::draw(&owner, 640, 420, "information-notice");
+    let texts = ui::text_values(notice_root(&owner));
     assert!(!texts.iter().any(|text| text.as_str() == "!"));
-    assert!(modeless::accessible_item(&notice, AccessibleRole::Text, "Error").is_none());
-    escape(&notice);
-    assert!(!notice.window().is_visible());
+    assert!(modeless::accessible_popup_item(&owner, AccessibleRole::Text, "Error").is_none());
+    escape(&owner);
+    assert!(presentation.get_token().is_empty());
+    assert!(!window.get_embedded_modal_open());
+    assert!(!ui::has_popup(&window));
     assert!(window.window().is_visible());
 }
 

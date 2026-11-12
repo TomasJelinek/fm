@@ -12,6 +12,7 @@ export component HelpBody inherits Rectangle {
     in property <string> shortcuts: ShortcutHints.help();
     callback close();
     callback move-dialog(length, length);
+    public function begin() { close-button.focus(); }
     background: Theme.surface; border-radius: 8px;
     border-color: Theme.active-frame; border-width: 1px;
     init => { close-button.focus(); }

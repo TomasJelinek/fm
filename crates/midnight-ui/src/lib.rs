@@ -889,6 +889,7 @@ pub fn install(
             window.invoke_focus_files();
         }
     });
+    dialog_focus::install(window);
     information_windows::install(window, presenter.clone(), send.clone());
     shortcut_bridge::install(window, presenter.clone(), send.clone());
     path_paste::install(window, presenter.clone(), send.clone());
@@ -1599,7 +1600,20 @@ pub fn install(
         let weak = window.as_weak();
         window.window().on_close_requested(move || {
             if let Some(window) = weak.upgrade() {
-                window.invoke_exit();
+                if window.get_embedded_modal_open() {
+                    window.global::<PopupFocus>().invoke_update();
+                    let text = slint::SharedString::from(slint::platform::Key::Escape);
+                    window
+                        .window()
+                        .dispatch_event(slint::platform::WindowEvent::KeyPressed {
+                            text: text.clone(),
+                        });
+                    window
+                        .window()
+                        .dispatch_event(slint::platform::WindowEvent::KeyReleased { text });
+                } else {
+                    window.invoke_exit();
+                }
             }
             slint::CloseRequestResponse::KeepWindowShown
         });

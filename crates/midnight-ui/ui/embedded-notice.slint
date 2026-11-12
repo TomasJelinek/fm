@@ -1,0 +1,66 @@
+import { DialogFrame, PopupFocus } from "dialog-frame.slint";
+import { NoticeDialog } from "notice-dialog.slint";
+import { Theme } from "theme.slint";
+
+export global NoticePresentation {
+    in-out property <string> token;
+    in-out property <int> generation;
+    in-out property <string> title;
+    in-out property <string> body;
+    in-out property <string> folder-path;
+    in-out property <string> details;
+    in-out property <bool> can-authorize;
+    in-out property <bool> error;
+    callback dismiss(string);
+    callback copy-details(string);
+    callback authorize-retry(string);
+}
+
+// A notice is a blocking surface in its owner's client area, with no OS window.
+export component EmbeddedNotice inherits Rectangle {
+    out property <bool> active: NoticePresentation.token != "";
+    private property <string> token: NoticePresentation.token;
+    private property <bool> details-expanded;
+    changed token => {
+        PopupFocus.update();
+        notice.close();
+        if root.token != "" {
+            root.details-expanded = false;
+            notice.show();
+        }
+        PopupFocus.update();
+    }
+    measure := Text {
+        visible: false; accessible-role: none;
+        width: max(1px, min(root.width - 56px, max(560px, Theme.font-size * 30) - 56px));
+        text: NoticePresentation.body; font-size: Theme.font-size; wrap: word-wrap;
+    }
+    notice := PopupWindow {
+        x: 0px; y: 0px; width: root.width; height: root.height;
+        close-policy: no-auto-close;
+        frame := DialogFrame {
+            init => { self.reset(); }
+            desired-width: max(560px, Theme.font-size * 30);
+            desired-height: clamp(measure.preferred-height
+                + max(Theme.control-height, Theme.font-size * 2) + 100px
+                + (NoticePresentation.folder-path == "" ? 0px : min(88px, Theme.font-size * 3 + 18px) + 12px)
+                + (NoticePresentation.can-authorize ? Theme.font-size * 2 + 12px : 0px)
+                + (NoticePresentation.can-authorize && root.width < 524px ? Theme.control-height + 12px : 0px), 220px, 440px)
+                + (root.details-expanded ? 200px : 0px);
+            dim: true; dismiss-on-outside: false;
+            form := NoticeDialog {
+                private property <string> occurrence;
+                init => { self.occurrence = root.token; self.focus-close(); }
+                title: NoticePresentation.title; body: NoticePresentation.body;
+                folder-path: NoticePresentation.folder-path; details: NoticePresentation.details;
+                can-authorize: NoticePresentation.can-authorize; error: NoticePresentation.error;
+                generation: NoticePresentation.generation;
+                details-expanded <=> root.details-expanded;
+                move-dialog(dx, dy) => { frame.move-by(dx, dy); }
+                copy-details => { NoticePresentation.copy-details(self.occurrence); }
+                authorize-retry => { NoticePresentation.authorize-retry(self.occurrence); }
+                close => { NoticePresentation.dismiss(self.occurrence); }
+            }
+        }
+    }
+}

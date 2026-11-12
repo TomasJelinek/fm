@@ -1,0 +1,97 @@
+import { DialogFrame, PopupFocus } from "dialog-frame.slint";
+import { OperationDialog } from "operation-controls.slint";
+import { Theme } from "theme.slint";
+import { FallbackIcons } from "action-icons.slint";
+
+// Presentation values contain no captured provider or filesystem authority.
+export global OperationPresentation {
+    in-out property <bool> active;
+    in-out property <string> token;
+    in-out property <string> title-text;
+    in-out property <int> kind: -1;
+    in-out property <string> body;
+    in-out property <string> initial-name;
+    in-out property <string> input-label;
+    in-out property <int> selection-end;
+    in-out property <bool> has-name;
+    in-out property <bool> dangerous;
+    in-out property <string> confirm-text;
+    in-out property <bool> confirm-enabled: true;
+    in-out property <image> native-icon;
+    in-out property <string> warning;
+    in-out property <bool> option-visible;
+    in-out property <bool> option-enabled: true;
+    in-out property <bool> option-checked;
+    in-out property <string> option-label;
+    in-out property <string> option-hint;
+    in-out property <int> begin-revision;
+    in-out property <int> focus-revision;
+    callback confirm(string, string);
+    callback request-dismiss(string);
+    public function begin() {
+        self.active = true;
+        self.begin-revision += 1;
+    }
+    public function focus-input() { self.focus-revision += 1; }
+}
+
+// One persistent form keeps its edited text and caret through host refreshes.
+export component EmbeddedOperation inherits Rectangle {
+    out property <bool> active: OperationPresentation.active;
+    private property <int> begin-revision: OperationPresentation.begin-revision;
+    changed active => {
+        if !root.active { PopupFocus.update(); popup.close(); PopupFocus.update(); }
+    }
+    changed begin-revision => {
+        if root.active {
+            PopupFocus.update(); popup.show(); PopupFocus.update();
+        }
+    }
+    popup := PopupWindow {
+        x: 0px; y: 0px; width: root.width; height: root.height;
+        close-policy: no-auto-close;
+        frame := DialogFrame {
+            desired-width: max(540px, Theme.font-size * 28);
+            desired-height: form.preferred-dialog-height;
+            dim: true; dismiss-on-outside: false;
+            form := OperationDialog {
+                private property <string> occurrence;
+                private property <bool> current: self.occurrence == OperationPresentation.token
+                    && OperationPresentation.active;
+                private property <int> begin-revision: OperationPresentation.begin-revision;
+                private property <int> focus-revision: OperationPresentation.focus-revision;
+                init => { self.occurrence = OperationPresentation.token; frame.reset(); self.begin(); }
+                changed begin-revision => {
+                    if self.current { frame.reset(); self.begin(); }
+                }
+                changed focus-revision => {
+                    if self.current { self.focus-input(); }
+                }
+                preferred-width: 0px; preferred-height: 0px;
+                title: OperationPresentation.title-text;
+                body: OperationPresentation.body;
+                initial-name: OperationPresentation.initial-name;
+                input-label: OperationPresentation.input-label;
+                selection-end: OperationPresentation.selection-end;
+                has-name: OperationPresentation.has-name && self.current;
+                dangerous: OperationPresentation.dangerous;
+                confirm-text: OperationPresentation.confirm-text;
+                confirm-enabled: OperationPresentation.confirm-enabled && self.current;
+                native-icon: OperationPresentation.native-icon;
+                fallback-icon: OperationPresentation.kind < 0 ? FallbackIcons.copy
+                    : OperationPresentation.kind == 0 ? FallbackIcons.rename
+                    : OperationPresentation.kind == 3 ? FallbackIcons.new-folder
+                    : OperationPresentation.kind == 4 ? FallbackIcons.new-file : FallbackIcons.delete;
+                warning: OperationPresentation.warning;
+                option-visible: OperationPresentation.option-visible;
+                option-enabled: OperationPresentation.option-enabled && self.current;
+                option-checked <=> OperationPresentation.option-checked;
+                option-label: OperationPresentation.option-label;
+                option-hint: OperationPresentation.option-hint;
+                confirm(value) => { OperationPresentation.confirm(self.occurrence, value); }
+                cancel => { OperationPresentation.request-dismiss(self.occurrence); }
+                move-dialog(dx, dy) => { frame.move-by(dx, dy); }
+            }
+        }
+    }
+}

@@ -19,6 +19,7 @@ export component HotPathsDialog inherits Rectangle {
     callback remove-bookmark(string);
     callback add-bookmark();
     callback dismiss();
+    callback move-dialog(length, length);
     changed model => { root.revision += 1; }
     changed width => { if root.width < 400px { bookmark-close.focus(); } }
     changed height => { if root.height < 350px { bookmark-close.focus(); } }
@@ -44,6 +45,7 @@ export component HotPathsDialog inherits Rectangle {
             spacing: root.height < 350px ? 4px : 10px;
             DialogHeader { title: "Manage Hot Paths"; compact: root.height < 350px;
                 close-label: "Close dialog"; close => { root.dismiss(); }
+                dragged(dx, dy) => { root.move-dialog(dx, dy); }
                 fallback-icon: FallbackIcons.bookmarks; }
             ScrollView {
                 min-height: 0px; vertical-stretch: 1;

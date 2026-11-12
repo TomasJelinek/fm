@@ -1,4 +1,4 @@
-//! Input for the actual native filter child in Engine-backed tree fixtures.
+//! Input for the embedded production filter in Engine-backed tree fixtures.
 #[path = "window_input.rs"]
 mod input;
 
@@ -16,15 +16,18 @@ pub use input::{chord, key};
 
 pub fn filter(h: &super::support::Harness) -> Rc<MinimalSoftwareWindow> {
     assert!(h.ui.window.get_panel_filter_view().open);
-    let child = h.dialog();
+    let main = h.ui.native.clone();
+    let size = main.window().size();
+    slint::platform::update_timers_and_animations();
+    resize(&main, size.width, size.height);
     assert!(
-        WindowInner::from_pub(h.ui.window.window())
+        !WindowInner::from_pub(h.ui.window.window())
             .active_popups()
             .is_empty(),
-        "the filter must not use an embedded owner popup"
+        "the installed filter must be an active popup in Main"
     );
-    control(&child, "File filter expression", AccessibleRole::TextInput);
-    child
+    control(&main, "File filter expression", AccessibleRole::TextInput);
+    main
 }
 
 fn find(item: ItemRc, label: &str, role: AccessibleRole) -> Option<ItemRc> {
@@ -47,8 +50,12 @@ fn find(item: ItemRc, label: &str, role: AccessibleRole) -> Option<ItemRc> {
 }
 
 fn control(window: &MinimalSoftwareWindow, label: &str, role: AccessibleRole) -> ItemRc {
-    let root = ItemRc::new_root(WindowInner::from_pub(window.window()).component());
-    find(root, label, role).unwrap_or_else(|| panic!("Missing visible filter control: {label}"))
+    WindowInner::from_pub(window.window())
+        .active_popups()
+        .iter()
+        .rev()
+        .find_map(|popup| find(ItemRc::new_root(popup.component.clone()), label, role))
+        .unwrap_or_else(|| panic!("Missing visible embedded filter control: {label}"))
 }
 
 pub fn click(window: &MinimalSoftwareWindow, label: &str, role: AccessibleRole) {

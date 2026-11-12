@@ -1,0 +1,111 @@
+import { FileListDialog } from "file-list-dialog.slint";
+import { DialogFrame, PopupFocus } from "dialog-frame.slint";
+
+export global FileListPresentation {
+    in-out property <bool> active;
+    in-out property <string> token;
+    in-out property <string> template-text: "$(FileName)$(CRLF)";
+    in-out property <[string]> template-history;
+    in-out property <[string]> variable-labels;
+    in-out property <int> destination;
+    in-out property <string> destination-path;
+    in-out property <bool> append-output;
+    in-out property <bool> busy;
+    in-out property <string> preview-text;
+    in-out property <string> error-text;
+    in-out property <string> summary;
+    in-out property <bool> conflict-pending;
+    in-out property <string> conflict-text;
+    in-out property <string> preview-font-family: "monospace";
+    in-out property <int> template-anchor;
+    in-out property <int> template-cursor;
+    in-out property <int> begin-revision;
+    in-out property <int> focus-revision;
+    in-out property <int> focus-offset;
+    callback template-edited(string, string);
+    callback insert-variable(string, int);
+    callback select-history(string, int);
+    callback select-preset(string, int);
+    callback browse(string);
+    callback generate(string);
+    callback cancel(string);
+    callback copy-error(string, string);
+    callback confirm(string);
+    public function begin() {
+        self.active = true;
+        self.begin-revision += 1;
+    }
+    public function focus-template-at(offset: int) {
+        self.focus-offset = offset;
+        self.focus-revision += 1;
+    }
+}
+
+export component EmbeddedFileList inherits Rectangle {
+    out property <bool> active: FileListPresentation.active;
+    private property <int> begin-revision: FileListPresentation.begin-revision;
+    changed active => {
+        if !root.active { PopupFocus.update(); popup.close(); PopupFocus.update(); }
+    }
+    changed begin-revision => {
+        if root.active { PopupFocus.update(); popup.show(); PopupFocus.update(); }
+    }
+    popup := PopupWindow {
+        x: 0px; y: 0px; width: root.width; height: root.height;
+        close-policy: no-auto-close;
+        frame := DialogFrame {
+            desired-width: 720px; desired-height: 520px;
+            dim: true; dismiss-on-outside: false;
+            form := FileListDialog {
+                private property <string> occurrence;
+                private property <bool> current: self.occurrence == FileListPresentation.token
+                    && FileListPresentation.active;
+                private property <int> begin-revision: FileListPresentation.begin-revision;
+                private property <int> focus-revision: FileListPresentation.focus-revision;
+                init => { self.occurrence = FileListPresentation.token; frame.reset(); self.begin(); }
+                changed begin-revision => {
+                    if self.current { frame.reset(); self.begin(); }
+                }
+                changed focus-revision => {
+                    if self.current { self.focus-template-at(FileListPresentation.focus-offset); }
+                }
+                changed template-anchor => {
+                    if self.current { FileListPresentation.template-anchor = self.template-anchor; }
+                }
+                changed template-cursor => {
+                    if self.current { FileListPresentation.template-cursor = self.template-cursor; }
+                }
+                template-text <=> FileListPresentation.template-text;
+                template-history: FileListPresentation.template-history;
+                variable-labels: FileListPresentation.variable-labels;
+                destination <=> FileListPresentation.destination;
+                destination-path <=> FileListPresentation.destination-path;
+                append-output <=> FileListPresentation.append-output;
+                busy: FileListPresentation.busy || !self.current;
+                preview-text: FileListPresentation.preview-text;
+                error-text: FileListPresentation.error-text;
+                summary: FileListPresentation.summary;
+                conflict-pending: FileListPresentation.conflict-pending && self.current;
+                conflict-text: FileListPresentation.conflict-text;
+                preview-font-family: FileListPresentation.preview-font-family;
+                template-edited(text) => { FileListPresentation.template-edited(self.occurrence, text); }
+                insert-variable(index) => {
+                    // Capture the caret before the variable picker moves focus.
+                    if self.current {
+                        FileListPresentation.template-anchor = form.template-anchor;
+                        FileListPresentation.template-cursor = form.template-cursor;
+                        FileListPresentation.insert-variable(self.occurrence, index);
+                    }
+                }
+                select-history(index) => { FileListPresentation.select-history(self.occurrence, index); }
+                select-preset(index) => { FileListPresentation.select-preset(self.occurrence, index); }
+                browse => { FileListPresentation.browse(self.occurrence); }
+                generate => { FileListPresentation.generate(self.occurrence); }
+                cancel => { FileListPresentation.cancel(self.occurrence); }
+                copy-error(text) => { FileListPresentation.copy-error(self.occurrence, text); }
+                confirm => { FileListPresentation.confirm(self.occurrence); }
+                move-dialog(dx, dy) => { frame.move-by(dx, dy); }
+            }
+        }
+    }
+}

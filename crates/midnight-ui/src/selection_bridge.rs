@@ -96,6 +96,7 @@ fn layout(window: &MainWindow, presenter: &Presenter, pane: PaneId) -> (Layout, 
 fn available(window: &MainWindow) -> bool {
     window.window().is_visible()
         && !window.get_dialog_input_blocked()
+        && !window.get_embedded_modal_open()
         && !window.get_touch_contact()
         && !window.get_drag_active()
         && window.get_copy_draft_token().is_empty()

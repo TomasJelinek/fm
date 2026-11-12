@@ -1,9 +1,10 @@
-//! Installed informational actions share native lifetime and modal input policy.
+//! Modeless information tools and embedded notices retain their own lifetimes.
 #[allow(dead_code)]
 #[path = "support/modeless.rs"]
 mod modeless;
 
-use midnight_ui::{MainWindow, Presenter};
+use i_slint_core::{items::AccessibleRole, window::WindowInner};
+use midnight_ui::{MainWindow, NoticePresentation, Presenter};
 use slint::{
     ComponentHandle,
     platform::{WindowAdapter, WindowEvent, software_renderer::MinimalSoftwareWindow},
@@ -26,6 +27,30 @@ fn harness() -> (MainWindow, NativeWindows) {
     (main, windows)
 }
 
+fn assert_notice_open(main: &MainWindow) {
+    slint::platform::update_timers_and_animations();
+    assert!(!main.global::<NoticePresentation>().get_token().is_empty());
+    assert!(main.get_embedded_modal_open());
+    assert!(!main.get_dialog_input_blocked());
+    assert_eq!(
+        WindowInner::from_pub(main.window()).active_popups().len(),
+        1
+    );
+}
+
+fn assert_notice_closed(main: &MainWindow) {
+    slint::platform::update_timers_and_animations();
+    assert!(main.global::<NoticePresentation>().get_token().is_empty());
+    assert!(!main.get_embedded_modal_open());
+    assert!(!main.get_dialog_input_blocked());
+    assert!(
+        WindowInner::from_pub(main.window())
+            .active_popups()
+            .is_empty()
+    );
+    assert!(main.window().is_visible());
+}
+
 #[test]
 fn latest_startup_notice_waits_for_visible_owner_and_does_not_reopen_after_close() {
     let windows = Rc::new(RefCell::new(Vec::new()));
@@ -46,23 +71,21 @@ fn latest_startup_notice_waits_for_visible_owner_and_does_not_reopen_after_close
     assert!(!main.get_dialog_input_blocked());
     main.show().unwrap();
     main.invoke_refresh_information_windows();
-    assert_eq!(windows.borrow().len(), 2);
-    let notice = windows.borrow()[1].clone();
+    assert_notice_open(&main);
+    assert_eq!(windows.borrow().len(), 1);
+    let notice = windows.borrow()[0].clone();
     modeless::draw(&notice, 640, 420, "startup-notice-latest");
-    let texts = modeless::accessible_item(
-        &notice,
-        i_slint_core::items::AccessibleRole::Text,
-        "Generation 2",
-    );
+    let texts = modeless::accessible_popup_item(&notice, AccessibleRole::Text, "Generation 2");
     assert!(
         texts.is_some(),
         "the latest pending generation must be displayed"
     );
+    assert_eq!(main.global::<NoticePresentation>().get_generation(), 2);
     notice.window().dispatch_event(WindowEvent::CloseRequested);
+    assert_notice_closed(&main);
     main.invoke_refresh_information_windows();
-    assert_eq!(windows.borrow().len(), 2);
-    assert!(!notice.window().is_visible());
-    assert!(!main.get_dialog_input_blocked());
+    assert_notice_closed(&main);
+    assert_eq!(windows.borrow().len(), 1);
 }
 
 #[test]
@@ -105,23 +128,26 @@ fn native_about_shows_the_application_version_and_keeps_main_usable() {
 }
 
 #[test]
-fn only_notice_blocks_owner_and_shutdown_closes_all_information_windows() {
+fn embedded_notice_blocks_background_input_and_shutdown_closes_information_tools() {
     let (main, windows) = harness();
     main.invoke_show_app_menu(0);
     main.invoke_show_about();
     assert!(!main.get_dialog_input_blocked());
+    main.invoke_set_command("preserved command".into(), 17);
     main.set_message_title("Diagnostic".into());
     main.set_message_body("Complete diagnostic text".into());
     main.set_message_generation(1);
-    slint::platform::update_timers_and_animations();
-    assert!(main.get_dialog_input_blocked());
-    assert_eq!(windows.borrow().len(), 4);
-    let notice = windows.borrow()[3].clone();
-    notice.window().dispatch_event(WindowEvent::CloseRequested);
-    assert!(!main.get_dialog_input_blocked());
+    assert_notice_open(&main);
+    assert_eq!(windows.borrow().len(), 3);
+    main.window()
+        .dispatch_event(WindowEvent::KeyPressed { text: "x".into() });
+    main.window()
+        .dispatch_event(WindowEvent::KeyReleased { text: "x".into() });
+    assert_eq!(main.get_command_text(), "preserved command");
     assert!(windows.borrow()[1].window().is_visible());
     assert!(windows.borrow()[2].window().is_visible());
     main.invoke_close_information_windows();
+    assert_notice_closed(&main);
     assert!(
         windows
             .borrow()
@@ -135,24 +161,23 @@ fn only_notice_blocks_owner_and_shutdown_closes_all_information_windows() {
     slint::platform::update_timers_and_animations();
     assert_eq!(
         windows.borrow().len(),
-        4,
+        3,
         "shutdown must not reopen children"
     );
-    assert!(!main.get_dialog_input_blocked());
+    assert_notice_closed(&main);
 }
 
 #[test]
-fn failed_startup_notice_does_not_retry_on_refresh_or_leave_owner_blocked() {
-    struct FailingBoundary {
-        fail: Rc<Cell<bool>>,
+fn startup_and_replacement_notices_never_request_another_adapter() {
+    struct MainAdapterOnly {
         attempts: Rc<Cell<usize>>,
         windows: NativeWindows,
     }
-    impl slint::platform::Platform for FailingBoundary {
+    impl slint::platform::Platform for MainAdapterOnly {
         fn create_window_adapter(&self) -> Result<Rc<dyn WindowAdapter>, slint::PlatformError> {
             self.attempts.set(self.attempts.get() + 1);
-            if self.fail.get() {
-                return Err("injected information window creation failure".into());
+            if self.attempts.get() != 1 {
+                return Err("embedded notices must reuse the main adapter".into());
             }
             let window = MinimalSoftwareWindow::new(
                 slint::platform::software_renderer::RepaintBufferType::NewBuffer,
@@ -162,52 +187,56 @@ fn failed_startup_notice_does_not_retry_on_refresh_or_leave_owner_blocked() {
         }
     }
     let windows = Rc::new(RefCell::new(Vec::new()));
-    let fail = Rc::new(Cell::new(false));
     let attempts = Rc::new(Cell::new(0));
-    slint::platform::set_platform(Box::new(FailingBoundary {
-        fail: fail.clone(),
+    slint::platform::set_platform(Box::new(MainAdapterOnly {
         attempts: attempts.clone(),
         windows: windows.clone(),
     }))
     .unwrap();
     let main = MainWindow::new().unwrap();
-    let path = std::path::PathBuf::from("failed-notice-fixture");
+    let path = std::path::PathBuf::from("embedded-notice-fixture");
     midnight_ui::install(
         &main,
         Rc::new(RefCell::new(Presenter::new(path.clone(), path))),
         Rc::new(|_| true),
     );
     main.set_message_title("Startup diagnostic".into());
+    main.set_message_body("First diagnostic".into());
     main.set_message_generation(1);
     slint::platform::update_timers_and_animations();
-    fail.set(true);
     main.show().unwrap();
     main.invoke_refresh_information_windows();
-    assert_eq!(attempts.get(), 2);
-    assert!(!main.get_dialog_input_blocked());
-    assert!(
-        main.get_desktop_status()
-            .contains("injected information window creation failure")
-    );
+    assert_notice_open(&main);
+    assert_eq!(attempts.get(), 1);
+    let first = main.global::<NoticePresentation>().get_token();
     for _ in 0..3 {
         main.invoke_refresh_information_windows();
     }
     assert_eq!(
         attempts.get(),
-        2,
-        "a failed generation must not retry on refresh"
+        1,
+        "refresh must not allocate a native notice"
     );
-    fail.set(false);
+    assert_eq!(main.global::<NoticePresentation>().get_token(), first);
+    main.set_message_body("Replacement diagnostic".into());
     main.set_message_generation(2);
-    slint::platform::update_timers_and_animations();
+    assert_notice_open(&main);
     assert_eq!(
         attempts.get(),
-        3,
-        "a new notice generation can open normally"
+        1,
+        "replacement also reuses the main adapter"
     );
-    assert!(main.get_dialog_input_blocked());
-    windows.borrow()[1]
+    let presentation = main.global::<NoticePresentation>();
+    let replacement = presentation.get_token();
+    assert_ne!(first, replacement);
+    presentation.invoke_dismiss(first);
+    assert_eq!(presentation.get_token(), replacement);
+    assert_notice_open(&main);
+    windows.borrow()[0]
         .window()
         .dispatch_event(WindowEvent::CloseRequested);
-    assert!(!main.get_dialog_input_blocked());
+    assert_notice_closed(&main);
+    main.invoke_refresh_information_windows();
+    assert_notice_closed(&main);
+    assert_eq!(attempts.get(), 1);
 }

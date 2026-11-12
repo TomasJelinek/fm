@@ -187,11 +187,16 @@ impl Harness {
             .collect();
         assert_eq!(
             children.len(),
-            1,
-            "operation must use a separate native child"
+            0,
+            "blocking operation confirmations must share the main adapter"
         );
         assert!(self.ui.window.get_dialog_input_blocked());
-        let child = children[0].clone();
+        assert!(
+            !i_slint_core::window::WindowInner::from_pub(self.ui.window.window())
+                .active_popups()
+                .is_empty()
+        );
+        let child = self.windows.borrow()[0].clone();
         modeless::draw(&child, 640, 420, "native-filesystem-operation");
         child
             .window()
