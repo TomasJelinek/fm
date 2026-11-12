@@ -1,5 +1,19 @@
 # Detailed volume information
 
+On Linux, the drive dropdown and drive bar show `/`, the Home shortcut and useful
+mounted storage: local volumes, removable media, network shares and user FUSE
+mounts. Discovery reads `/proc/self/mountinfo` on backend workers, with the same
+filter in the independent native provider and startup desktop locations. Snap
+images, namespaces, portals, tracing/kernel filesystems, container layers and
+mounts under system/boot/temporary directories are omitted. Runtime exceptions
+retain `/run/media` and `/run/user/<numeric UID>/gvfs` mounts.
+
+Block-device subdirectory views are omitted as duplicate navigation locations;
+Btrfs and bcachefs subvolumes remain available. This also hides intentional local
+directory bind mounts. Whole-filesystem bind aliases may remain because mountinfo
+does not distinguish them. Filtering affects navigation choices only: an omitted
+path can still be entered directly, browsed and queried for volume information.
+
 Ctrl+F1 and Ctrl+L query the filesystem containing the displayed native folder.
 Inside an archive, the dialog explicitly identifies the native **archive container**
 and reports its hosting filesystem. It does not describe the archive as a disk.
