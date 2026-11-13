@@ -10,6 +10,12 @@ its recorded upstream commit is `0eb55780894a9200e9a70ca3d16bd1c641281a44`.
 The local manifest marker keeps this path dependency in license inventories and
 release notices; it does not turn it into project-owned code.
 
+A feature-gating correction in `femtovg/src/lib.rs` keeps the `FilePath` import
+only when image loading or text layout uses it, and the private `font_scale`
+helper only with text layout. This removes unused-item warnings for the app
+feature set (`swash`, `wgpu`) without changing enabled rendering paths. Version,
+feature selection and the MIT license choice remain unchanged.
+
 The host workspace patch adds bounded reuse of managed image/glyph bind groups.
 Native DX12 stack sampling identified per-draw bind-group allocation and release
 as a scrolling bottleneck: each sampler binding creates an internal GPU buffer.

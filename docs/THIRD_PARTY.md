@@ -75,7 +75,10 @@ packages present only in Cargo metadata's feature union are excluded using
 The scrolling renderer correction vendors the same FemtoVG **0.27.0** under its
 MIT alternative, retaining both upstream license texts and
 [exact source provenance and patch details](../vendor/README.md). Application
-package/version selections are unchanged; its lockfile changes only the
+package/version selections are unchanged. The same local source also guards
+feature-specific imports/helpers so the app's `swash,wgpu` feature set compiles
+without unused-item warnings; no dependency, license or feature selection changes.
+Its lockfile changes only the
 renderer source from the registry to the local patch. The `renderer-tests` scope
 accounts for the independent vendored test workspace with
 `--no-default-features --features wgpu`, including its normal, build and development
