@@ -76,6 +76,29 @@ pub struct Service {
     image_catalog_revision: Arc<AtomicU64>,
 }
 
+/// App-owned completion ticket for the source-free image spare only.
+/// This does not retain a Service or wait for active foreground image sessions.
+pub struct ImageSpareRetirement {
+    inner: image_startup::SpareRetirement,
+}
+
+impl ImageSpareRetirement {
+    /// Permanently stop speculative configuration/refill without waiting for native work.
+    pub fn stop_spare(&self) {
+        self.inner.stop_spare();
+    }
+
+    /// Await spare retirement and owner exit, retaining ownership across shutdown handling.
+    /// Owner failure is terminal and does not confirm cleanup. Call outside UI callbacks,
+    /// before shutting down the Tokio runtime; keep this ticket through runtime cleanup.
+    pub async fn wait(&self) -> Result<(), String> {
+        self.inner
+            .wait()
+            .await
+            .map_err(|error| format!("Image spare owner failed: {error:?}; cleanup unconfirmed"))
+    }
+}
+
 type Catalogs = (
     Arc<Runtime>,
     Arc<[midnight_image_viewer_host::Provider]>,
@@ -191,6 +214,14 @@ impl Service {
                     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| service.catalogs()));
             });
         });
+    }
+
+    /// Register spare completion before fallible app startup can begin preparation.
+    /// The ticket owns completion state, not this Service or its preparation Control.
+    pub fn image_spare_retirement(&self) -> ImageSpareRetirement {
+        ImageSpareRetirement {
+            inner: self.image_startup.spare_retirement(),
+        }
     }
 
     /// Schedule source-free image preparation after effective startup preferences are known.

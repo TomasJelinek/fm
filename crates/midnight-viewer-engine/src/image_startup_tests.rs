@@ -1,8 +1,13 @@
 //! Lifecycle tests replace only native launch/exit, retaining the real manager and budget.
 use super::*;
-use std::sync::{
-    atomic::{AtomicUsize, Ordering},
-    mpsc::{self, Receiver, SyncSender},
+use std::{
+    future::Future,
+    pin::Pin,
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        mpsc::{self, Receiver, SyncSender},
+    },
+    task::{Context, Poll, Wake, Waker},
 };
 
 const WAIT: Duration = Duration::from_secs(5);
@@ -37,6 +42,7 @@ struct Counters {
     validations: AtomicUsize,
     reject_identity: AtomicBool,
     panic_identity: AtomicBool,
+    panic_reap: AtomicBool,
     validation_barrier: Mutex<Option<(SyncSender<()>, Receiver<()>)>>,
 }
 
@@ -96,6 +102,10 @@ impl Drop for FakePrepared {
         // Simulate native cleanup that cannot release its lifetime reservation early.
         let _ = self.exit.recv();
         self.counters.live.fetch_sub(1, Ordering::AcqRel);
+        assert!(
+            !self.counters.panic_reap.load(Ordering::Acquire),
+            "controlled cleanup panic"
+        );
     }
 }
 
@@ -236,6 +246,40 @@ impl Harness {
         self.manager.take();
         self.exited.recv_timeout(WAIT).unwrap();
         assert_eq!(self.counters.live.load(Ordering::Acquire), 0);
+    }
+}
+
+struct WaitWake(SyncSender<()>);
+
+impl Wake for WaitWake {
+    fn wake(self: Arc<Self>) {
+        self.wake_by_ref();
+    }
+
+    fn wake_by_ref(self: &Arc<Self>) {
+        let _ = self.0.try_send(());
+    }
+}
+
+struct WaitProbe {
+    waker: Waker,
+    woken: Receiver<()>,
+}
+
+impl WaitProbe {
+    fn new() -> Self {
+        let (wake, woken) = mpsc::sync_channel(1);
+        Self {
+            waker: Waker::from(Arc::new(WaitWake(wake))),
+            woken,
+        }
+    }
+
+    fn poll(
+        &self,
+        waiting: Pin<&mut impl Future<Output = Result<(), RetirementError>>>,
+    ) -> Poll<Result<(), RetirementError>> {
+        waiting.poll(&mut Context::from_waker(&self.waker))
     }
 }
 
@@ -781,4 +825,292 @@ fn final_handle_drop_signals_shutdown_before_blocked_native_startup_or_reap_retu
     exit.finish.send(()).unwrap();
     harness.exited.recv_timeout(WAIT).unwrap();
     assert_eq!(harness.counters.live.load(Ordering::Acquire), 0);
+}
+
+#[test]
+fn spare_stop_waits_for_late_native_create_and_reap_with_a_live_manager_clone() {
+    let mut harness = Harness::new();
+    harness.configure(&[provider("image")]);
+    let attempt = harness.attempt();
+    let held = harness.manager().clone();
+    let retirement = held.spare_retirement();
+    let second_retirement = held.spare_retirement();
+    let probe = WaitProbe::new();
+    let second_probe = WaitProbe::new();
+    let mut waiting = std::pin::pin!(retirement.wait());
+    let mut second_waiting = std::pin::pin!(second_retirement.wait());
+    assert!(probe.poll(waiting.as_mut()).is_pending());
+    assert!(second_probe.poll(second_waiting.as_mut()).is_pending());
+
+    let stop = held.spare_retirement();
+    let (stopped, received) = mpsc::sync_channel(1);
+    let stopping = std::thread::spawn(move || {
+        stop.stop_spare();
+        stopped.send(()).unwrap();
+    });
+    received.recv_timeout(WAIT).unwrap();
+    stopping.join().unwrap();
+    harness.wait(|state| {
+        state.spare_stopped
+            && !state.shutdown
+            && state.children == 1
+            && matches!(&state.spare, Spare::Starting { cancel, .. } if cancel.load(Ordering::Acquire))
+    });
+    assert!(probe.poll(waiting.as_mut()).is_pending());
+    assert!(second_probe.poll(second_waiting.as_mut()).is_pending());
+    assert!(probe.woken.try_recv().is_err());
+
+    let exit = attempt.ready(true);
+    exit.reaping.recv_timeout(WAIT).unwrap();
+    harness.wait(|state| state.children == 1 && matches!(state.spare, Spare::Retiring));
+    assert!(probe.poll(waiting.as_mut()).is_pending());
+    assert!(second_probe.poll(second_waiting.as_mut()).is_pending());
+    assert!(harness.exited.try_recv().is_err());
+
+    exit.finish.send(()).unwrap();
+    probe.woken.recv_timeout(WAIT).unwrap();
+    second_probe.woken.recv_timeout(WAIT).unwrap();
+    assert_eq!(probe.poll(waiting.as_mut()), Poll::Ready(Ok(())));
+    assert_eq!(
+        second_probe.poll(second_waiting.as_mut()),
+        Poll::Ready(Ok(()))
+    );
+    harness.shutdown();
+    assert!(!held.control.shared.lock().shutdown);
+}
+
+#[test]
+fn spare_stop_retires_ready_without_waiting_for_live_manager_clones() {
+    let mut harness = Harness::new();
+    harness.configure(&[provider("image")]);
+    let exit = harness.attempt().ready(true);
+    harness.ready();
+    let held = harness.manager().clone();
+    let retirement = held.spare_retirement();
+    let probe = WaitProbe::new();
+    let mut waiting = std::pin::pin!(retirement.wait());
+    assert!(probe.poll(waiting.as_mut()).is_pending());
+
+    retirement.stop_spare();
+    exit.reaping.recv_timeout(WAIT).unwrap();
+    harness.wait(|state| state.children == 1 && matches!(state.spare, Spare::Retiring));
+    assert!(probe.poll(waiting.as_mut()).is_pending());
+    assert!(harness.exited.try_recv().is_err());
+    exit.finish.send(()).unwrap();
+    probe.woken.recv_timeout(WAIT).unwrap();
+    assert_eq!(probe.poll(waiting.as_mut()), Poll::Ready(Ok(())));
+    harness.shutdown();
+
+    // A ticket first obtained after owner completion observes it without needing another wake.
+    let late_retirement = held.spare_retirement();
+    let mut late_waiting = std::pin::pin!(late_retirement.wait());
+    assert_eq!(probe.poll(late_waiting.as_mut()), Poll::Ready(Ok(())));
+    assert!(!held.control.shared.lock().shutdown);
+}
+
+#[test]
+fn spare_stop_is_idempotent_and_seals_late_configuration_opened_and_queued_refill() {
+    let harness = Harness::new();
+    let image = provider("image");
+    let mut active: Vec<_> = (0..CHILD_LIMIT).map(|_| harness.cold(&image)).collect();
+    harness.configure(std::slice::from_ref(&image));
+    harness.wait(|state| state.refill.is_some() && state.children == CHILD_LIMIT);
+    let held = harness.manager().clone();
+    let retirement = held.spare_retirement();
+    let generation = held.control.shared.lock().generation;
+
+    retirement.stop_spare();
+    retirement.stop_spare();
+    held.configure(Some(policy(2)), Arc::from([provider("late")]));
+    held.opened(&image);
+    drop(active.pop());
+    harness.exited.recv_timeout(WAIT).unwrap();
+    retirement.stop_spare();
+    held.configure(Some(policy(3)), Arc::from([image.clone()]));
+    held.opened(&image);
+    let cold = held.acquire(&image, &AtomicBool::new(false)).unwrap();
+    assert!(cold.prepared.is_none());
+    {
+        let state = held.control.shared.lock();
+        assert!(state.spare_stopped);
+        assert!(!state.shutdown);
+        assert_eq!(state.generation, generation);
+        assert!(state.refill.is_none());
+        assert!(matches!(state.spare, Spare::Empty));
+        assert_eq!(state.children, CHILD_LIMIT);
+    }
+    assert_eq!(harness.counters.launches.load(Ordering::Acquire), 0);
+    assert!(harness.attempts.try_recv().is_err());
+    let probe = WaitProbe::new();
+    let mut waiting = std::pin::pin!(retirement.wait());
+    assert_eq!(probe.poll(waiting.as_mut()), Poll::Ready(Ok(())));
+    drop(cold);
+    drop(active);
+}
+
+#[test]
+fn spare_retirement_ticket_does_not_keep_the_last_control_alive() {
+    let mut harness = Harness::new();
+    harness.configure(&[provider("image")]);
+    let attempt = harness.attempt();
+    let control = Arc::downgrade(&harness.manager().control);
+    let retirement = harness.manager().spare_retirement();
+    let probe = WaitProbe::new();
+    let mut waiting = std::pin::pin!(retirement.wait());
+    assert!(probe.poll(waiting.as_mut()).is_pending());
+    harness.manager.take();
+    assert!(control.upgrade().is_none());
+
+    let exit = attempt.ready(true);
+    exit.reaping.recv_timeout(WAIT).unwrap();
+    assert!(probe.poll(waiting.as_mut()).is_pending());
+    exit.finish.send(()).unwrap();
+    probe.woken.recv_timeout(WAIT).unwrap();
+    assert_eq!(probe.poll(waiting.as_mut()), Poll::Ready(Ok(())));
+    harness.exited.recv_timeout(WAIT).unwrap();
+    assert_eq!(harness.counters.live.load(Ordering::Acquire), 0);
+}
+
+#[test]
+fn spare_stop_acknowledgement_excludes_active_sessions_and_preserves_cold_admission() {
+    let harness = Harness::new();
+    let image = provider("image");
+    harness.configure(std::slice::from_ref(&image));
+    let active_exit = harness.attempt().ready(true);
+    harness.ready();
+    let active = harness
+        .manager()
+        .acquire(&image, &AtomicBool::new(false))
+        .unwrap();
+    assert!(active.prepared.is_some());
+    harness.manager().opened(&image);
+    let spare_exit = harness.attempt().ready(true);
+    harness.ready();
+    let retirement = harness.manager().spare_retirement();
+    let probe = WaitProbe::new();
+    let mut waiting = std::pin::pin!(retirement.wait());
+    assert!(probe.poll(waiting.as_mut()).is_pending());
+
+    retirement.stop_spare();
+    spare_exit.reaping.recv_timeout(WAIT).unwrap();
+    assert!(active_exit.reaping.try_recv().is_err());
+    assert!(probe.poll(waiting.as_mut()).is_pending());
+    spare_exit.finish.send(()).unwrap();
+    probe.woken.recv_timeout(WAIT).unwrap();
+    assert_eq!(probe.poll(waiting.as_mut()), Poll::Ready(Ok(())));
+    harness.exited.recv_timeout(WAIT).unwrap();
+    assert!(active_exit.reaping.try_recv().is_err());
+    assert_eq!(harness.counters.live.load(Ordering::Acquire), 1);
+
+    let cold = harness.cold(&image);
+    harness.manager().opened(&image);
+    harness.wait(|state| {
+        !state.shutdown
+            && state.children == 2
+            && state.refill.is_none()
+            && matches!(state.spare, Spare::Empty)
+    });
+    assert_eq!(harness.counters.launches.load(Ordering::Acquire), 2);
+    assert!(harness.attempts.try_recv().is_err());
+    drop(cold);
+    let retire_active = std::thread::spawn(move || drop(active));
+    active_exit.reaping.recv_timeout(WAIT).unwrap();
+    active_exit.finish.send(()).unwrap();
+    retire_active.join().unwrap();
+    assert_eq!(harness.counters.live.load(Ordering::Acquire), 0);
+}
+
+#[test]
+fn spare_stop_does_not_cancel_or_await_a_claim_already_in_foreground_validation() {
+    let harness = Harness::new();
+    let image = provider("image");
+    harness.configure(std::slice::from_ref(&image));
+    let exit = harness.attempt().ready(true);
+    harness.ready();
+    let (started, validating) = mpsc::sync_channel(1);
+    let (release, proceed) = mpsc::sync_channel(1);
+    *harness.counters.validation_barrier.lock().unwrap() = Some((started, proceed));
+    let manager = harness.manager().clone();
+    let (result, received) = mpsc::sync_channel(1);
+    let demand = std::thread::spawn(move || {
+        result
+            .send(manager.acquire(&image, &AtomicBool::new(false)))
+            .unwrap();
+    });
+    validating.recv_timeout(WAIT).unwrap();
+    let retirement = harness.manager().spare_retirement();
+    retirement.stop_spare();
+    harness.exited.recv_timeout(WAIT).unwrap();
+    let probe = WaitProbe::new();
+    let mut waiting = std::pin::pin!(retirement.wait());
+    assert_eq!(probe.poll(waiting.as_mut()), Poll::Ready(Ok(())));
+    assert!(received.try_recv().is_err());
+    assert!(exit.reaping.try_recv().is_err());
+
+    release.send(()).unwrap();
+    let active = received.recv_timeout(WAIT).unwrap().unwrap();
+    assert!(active.prepared.is_some());
+    demand.join().unwrap();
+    let retire_active = std::thread::spawn(move || drop(active));
+    exit.reaping.recv_timeout(WAIT).unwrap();
+    exit.finish.send(()).unwrap();
+    retire_active.join().unwrap();
+    assert_eq!(harness.counters.live.load(Ordering::Acquire), 0);
+}
+
+#[test]
+fn spare_retirement_reports_owner_failure_without_claiming_cleanup_or_resetting_state() {
+    let harness = Harness::new();
+    let image = provider("image");
+    let active = harness.cold(&image);
+    harness.configure(std::slice::from_ref(&image));
+    let attempt = harness.attempt();
+    harness.counters.panic_reap.store(true, Ordering::Release);
+    let retirement = harness.manager().spare_retirement();
+    let probe = WaitProbe::new();
+    let mut waiting = std::pin::pin!(retirement.wait());
+    assert!(probe.poll(waiting.as_mut()).is_pending());
+
+    // Ordinary invalidation triggers cleanup; the failure path itself must permanently seal work.
+    harness.manager().configure(None, Arc::from([]));
+    assert!(!harness.manager().control.shared.lock().spare_stopped);
+    let exit = attempt.ready(true);
+    exit.reaping.recv_timeout(WAIT).unwrap();
+    harness.wait(|state| state.children == 2 && matches!(state.spare, Spare::Retiring));
+    assert!(probe.poll(waiting.as_mut()).is_pending());
+    exit.finish.send(()).unwrap();
+    probe.woken.recv_timeout(WAIT).unwrap();
+    assert_eq!(
+        probe.poll(waiting.as_mut()),
+        Poll::Ready(Err(RetirementError::OwnerFailed))
+    );
+    harness.exited.recv_timeout(WAIT).unwrap();
+    assert_eq!(harness.counters.live.load(Ordering::Acquire), 0);
+    let late_retirement = harness.manager().spare_retirement();
+    let mut late_waiting = std::pin::pin!(late_retirement.wait());
+    assert_eq!(
+        probe.poll(late_waiting.as_mut()),
+        Poll::Ready(Err(RetirementError::OwnerFailed))
+    );
+    retirement.stop_spare();
+    let generation = {
+        let state = harness.manager().control.shared.lock();
+        assert!(state.spare_stopped);
+        assert!(!state.shutdown);
+        // Normal unwinding released only the spare's own permit. The active reservation survives.
+        assert_eq!(state.children, 1);
+        assert!(matches!(state.spare, Spare::Retiring));
+        assert!(state.refill.is_none());
+        state.generation
+    };
+    harness.configure(std::slice::from_ref(&image));
+    harness.manager().opened(&image);
+    let state = harness.manager().control.shared.lock();
+    assert_eq!(state.generation, generation);
+    assert_eq!(state.children, 1);
+    assert!(matches!(state.spare, Spare::Retiring));
+    assert!(state.refill.is_none());
+    drop(state);
+    assert!(harness.attempts.try_recv().is_err());
+    drop(active);
 }

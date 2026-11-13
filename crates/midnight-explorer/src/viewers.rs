@@ -9,6 +9,27 @@ use std::{
 };
 use tokio::sync::mpsc;
 
+pub(crate) fn finish_after_image_spare<T>(
+    result: Result<crate::startup_recovery::Attempt, String>,
+    retire_spare: impl FnOnce() -> (T, Result<(), String>),
+    shutdown_runtime: impl FnOnce(T),
+    retry: impl FnOnce() -> Result<(), String>,
+) -> Result<(), String> {
+    // Transfer the runtime only after a terminal spare result, including startup errors.
+    let (runtime, retirement) = retire_spare();
+    let result = match retirement {
+        Ok(()) => result,
+        Err(error) => Err(match result {
+            Ok(crate::startup_recovery::Attempt::NativeStartupFailed(startup)) | Err(startup) => {
+                format!("{startup}\n{error}")
+            }
+            Ok(crate::startup_recovery::Attempt::Finished) => error,
+        }),
+    };
+    // Existing runtime cleanup still runs on failure; Err cannot enter software retry.
+    crate::startup_recovery::finish(result, || shutdown_runtime(runtime), retry)
+}
+
 pub(crate) fn install(
     window: &MainWindow,
     presenter: Rc<RefCell<Presenter>>,
@@ -16,11 +37,16 @@ pub(crate) fn install(
     runtime: &tokio::runtime::Handle,
     filesystem: std::sync::Arc<midnight_native_filesystem_host::InstalledProvider>,
     resources: std::sync::Arc<dyn midnight_core::TransferService>,
+    retirement: &mut Option<midnight_viewer_engine::ImageSpareRetirement>,
 ) -> (Rc<ViewerWindows>, slint::Timer) {
     let service = midnight_viewer_engine::Service::with_native_capture(
         runtime.clone(),
         crate::native_content::factory_with_resources(filesystem, resources),
     );
+    // The outer run owns this ticket on every later Result/early-return path.
+    // Register before timers or ViewerWindows can start catalog preparation.
+    debug_assert!(retirement.is_none());
+    *retirement = Some(service.image_spare_retirement());
     let image_preparation =
         prepare_images_after_settings(window.as_weak(), Rc::downgrade(&presenter), service.clone());
     let viewers = Rc::new(ViewerWindows::new(service));

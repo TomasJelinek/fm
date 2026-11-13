@@ -2,10 +2,11 @@
 //!
 //! The external handles never own a native process. Their final Drop only cancels and wakes the
 //! backend owner, which retains starting/ready/retiring ownership until native cleanup finishes.
+//! Explicit spare retirement is independent of external handle lifetime and active foreground work.
 use midnight_core::ViewerAssociations;
 use midnight_image_viewer_host::{PreparedImageWorker, Provider};
 use std::{
-    io,
+    fmt, io,
     sync::{
         Arc, Condvar, Mutex, MutexGuard,
         atomic::{AtomicBool, Ordering},
@@ -49,6 +50,44 @@ pub(crate) struct Startup {
     manager: Manager<Native>,
 }
 
+/// A spare-only retirement fence that retains shared state, never the service's external Control.
+pub(crate) struct SpareRetirement {
+    ticket: Retirement<Native>,
+}
+
+/// Failure to confirm spare cleanup after the backend owner unwinds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum RetirementError {
+    OwnerFailed,
+}
+
+impl fmt::Display for RetirementError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::OwnerFailed => {
+                formatter.write_str("Image spare owner failed before confirming cleanup")
+            }
+        }
+    }
+}
+
+impl std::error::Error for RetirementError {}
+
+impl SpareRetirement {
+    /// Memory-only and idempotent. Permanently seals spare configuration/refill and wakes its owner.
+    /// Active sessions and ordinary cold foreground admissions remain usable.
+    pub fn stop_spare(&self) {
+        self.ticket.stop_spare();
+    }
+
+    /// Success follows late spare creation, actual cleanup and normal backend owner exit.
+    /// Await outside the UI and before runtime teardown. Owner failure is terminal but does not
+    /// confirm cleanup; retain this ticket through runtime shutdown and do not retry startup.
+    pub async fn wait(&self) -> Result<(), RetirementError> {
+        self.ticket.wait().await
+    }
+}
+
 /// Keep this permit alive until the associated prepared worker/session's actual Drop has finished.
 /// In an image actor, declare the permit before the session so reverse local drop order enforces it.
 pub(crate) struct ChildPermit {
@@ -77,6 +116,12 @@ impl Startup {
                 // No UI-held last Arc can consequently destroy a ready process synchronously.
                 handle.spawn_blocking(run);
             }),
+        }
+    }
+
+    pub fn spare_retirement(&self) -> SpareRetirement {
+        SpareRetirement {
+            ticket: self.manager.spare_retirement(),
         }
     }
 
@@ -170,9 +215,57 @@ impl<B: Backend> Drop for Control<B> {
     fn drop(&mut self) {
         let mut state = self.shared.lock();
         state.shutdown = true;
-        state.refill = None;
-        state.invalidate();
+        state.stop_spare();
         self.shared.changed.notify_all();
+    }
+}
+
+struct Retirement<B: Backend> {
+    shared: Arc<Shared<B>>,
+}
+
+impl<B: Backend> Retirement<B> {
+    fn stop_spare(&self) {
+        let mut state = self.shared.lock();
+        state.stop_spare();
+        self.shared.changed.notify_all();
+    }
+
+    async fn wait(&self) -> Result<(), RetirementError> {
+        self.shared.completion.wait().await
+    }
+}
+
+#[derive(Default)]
+struct Completion {
+    result: Mutex<Option<Result<(), RetirementError>>>,
+    changed: tokio::sync::Notify,
+}
+
+impl Completion {
+    fn finish(&self, result: Result<(), RetirementError>) {
+        *self
+            .result
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = Some(result);
+        self.changed.notify_waiters();
+    }
+
+    async fn wait(&self) -> Result<(), RetirementError> {
+        loop {
+            let changed = self.changed.notified();
+            tokio::pin!(changed);
+            // Register before checking the committed state, including for concurrent waiters.
+            changed.as_mut().enable();
+            let result = *self
+                .result
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            if let Some(result) = result {
+                return result;
+            }
+            changed.await;
+        }
     }
 }
 
@@ -180,12 +273,14 @@ struct Shared<B: Backend> {
     backend: B,
     state: Mutex<State<B>>,
     changed: Condvar,
+    completion: Arc<Completion>,
 }
 
 struct State<B: Backend> {
     configuration: Option<Configuration<B>>,
     generation: u64,
     shutdown: bool,
+    spare_stopped: bool,
     children: usize,
     demands: usize,
     spare: Spare<B>,
@@ -193,6 +288,12 @@ struct State<B: Backend> {
 }
 
 impl<B: Backend> State<B> {
+    fn stop_spare(&mut self) {
+        self.spare_stopped = true;
+        self.refill = None;
+        self.invalidate();
+    }
+
     fn invalidate(&mut self) {
         match &mut self.spare {
             Spare::Starting { cancel, .. } => cancel.store(true, Ordering::Release),
@@ -298,17 +399,42 @@ impl<B: Backend> Manager<B> {
                 configuration: None,
                 generation: 0,
                 shutdown: false,
+                spare_stopped: false,
                 children: 0,
                 demands: 0,
                 spare: Spare::Empty,
                 refill: None,
             }),
             changed: Condvar::new(),
+            completion: Arc::default(),
         });
         let owner = shared.clone();
-        schedule(Box::new(move || owner.run()));
+        let completion = shared.completion.clone();
+        schedule(Box::new(move || {
+            let result = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                owner.clone().run();
+            })) {
+                Ok(()) => Ok(()),
+                Err(_) => {
+                    // Unwinding has finished, but native cleanup may be unconfirmed. Seal work
+                    // without manufacturing Empty or releasing any remaining reservations.
+                    let mut state = owner.lock();
+                    state.stop_spare();
+                    owner.changed.notify_all();
+                    Err(RetirementError::OwnerFailed)
+                }
+            };
+            // Only normal run return certifies cleanup. Failure wakes waiters without that claim.
+            completion.finish(result);
+        }));
         Self {
             control: Arc::new(Control { shared }),
+        }
+    }
+
+    fn spare_retirement(&self) -> Retirement<B> {
+        Retirement {
+            shared: self.control.shared.clone(),
         }
     }
 
@@ -317,6 +443,7 @@ impl<B: Backend> Manager<B> {
         let shared = &self.control.shared;
         let mut state = shared.lock();
         if state.shutdown
+            || state.spare_stopped
             || state.configuration.as_ref().is_some_and(|previous| {
                 previous.policy == policy && Arc::ptr_eq(&previous.catalog, &catalog)
             })
@@ -334,7 +461,7 @@ impl<B: Backend> Manager<B> {
     fn opened(&self, provider: &B::Provider) {
         let shared = &self.control.shared;
         let mut state = shared.lock();
-        if state.shutdown {
+        if state.shutdown || state.spare_stopped {
             return;
         }
         let Some(provider) = state.eligible(provider).cloned() else {
@@ -556,6 +683,7 @@ impl<B: Backend> Shared<B> {
                     ..
                 } => {
                     state.shutdown
+                        || state.spare_stopped
                         || *generation != state.generation
                         || *retire
                         || Instant::now() >= *expires
@@ -571,7 +699,7 @@ impl<B: Backend> Shared<B> {
                 self.changed.notify_all();
                 return Work::Retire(ready);
             }
-            if state.shutdown && matches!(state.spare, Spare::Empty) {
+            if (state.shutdown || state.spare_stopped) && matches!(state.spare, Spare::Empty) {
                 return Work::Stop;
             }
             if matches!(state.spare, Spare::Empty)
@@ -622,6 +750,7 @@ impl<B: Backend> Shared<B> {
             Ok(prepared) => {
                 let mut state = self.lock();
                 if !state.shutdown
+                    && !state.spare_stopped
                     && state.generation == generation
                     && !cancel.load(Ordering::Acquire)
                     && B::prepared_matches(&prepared, &provider)
