@@ -14,27 +14,45 @@ Overflow uses horizontal scrolling with previous/next buttons, without making th
 command line taller or increasing the application's 320×200 minimum.
 
 Options gains a **Custom Commands** page with an ordered, selectable list,
-Add/Edit/Remove, drag-and-drop ordering, move up/down and a preview. Drag a row
+New/Edit/Remove, drag-and-drop ordering, move up/down and a preview. New immediately
+shows a selected **Unsaved draft** row with a stable ID. This row is presentation
+only; Save validates and stages the command within Options. The untouched
+incomplete draft has no error and cannot Save or Preview. Discard changes removes
+its unsaved row. Drag a configured row
 to an insertion marker; holding near a visible list edge scrolls the list. A
 valid changed drop stages the new order and retains the command's ID and shortcut
-bindings. Update command stages an edited form; OK saves the whole Options session
+bindings. Save stages an edited form; OK saves the whole Options session
 once, and Cancel restores its original list and appearance previews.
-Escape or dropping outside the visible list cancels. Apply or cancel an edited
+Escape or dropping outside the visible list cancels. Save or discard an edited
 draft before changing order. The keyboard-accessible Up/Down buttons remain.
 Right-click anywhere on this toolbar
 opens a context menu containing **Settings…**, which opens that exact page and
 selects the clicked command. An empty toolbar is configured from Options. A
 settings selection, preview, icon hover or history recall never launches a command.
 
-The Custom Commands page displays Preview results inline below its grouped draft
-actions. Preview keeps Options open and does not create another Jobs popup. The
+The working-directory Variables menu sits beside Browse. Active folder or Other
+folder replaces the full field with `${active.path}` or `${other.path}`, rather
+than appending a folder fragment. Cancelling a native Browse dialog adds no new
+error and leaves the draft unchanged; existing genuine errors remain visible.
+Native identity, draft/configuration guards and actual picker-failure reporting
+remain authoritative.
+
+The Custom Commands page presents Preview as a secondary, explicitly requested
+inline dry run below its grouped draft actions. It spawns no process, stages or
+saves no settings, keeps Options open and does not open the Jobs window. The
 result shows the working folder, program and separate arguments (or literal
-terminal script and captured environment) in a bounded, scrollable read-only
+terminal script and captured environment), including per-item expansion, in a
+bounded, scrollable read-only
 area. It belongs to one draft and preview attempt: editing, selecting another
 command or cancelling invalidates that display. A delayed failure from an older
 attempt must not overwrite a newer result. Selection capture and validation
-errors stay in the same form. Update command stages the draft; only the main
+errors stay in the same form. Preview never starts automatically or runs the
+command. Save stages the draft; the main
 Options OK saves it, and Cancel discards it.
+
+The 13 November form polish has source-authored regressions, but their execution
+and runtime qualification remain **pending**. Existing qualified-executable and
+dated verification evidence does not qualify this new polish.
 
 ## Salamander reference and adaptation
 
@@ -74,7 +92,13 @@ The last expands only as whole argument-list elements in Program mode. A
 per-item launch option explicitly executes once per captured selected item;
 group and per-item expansion cannot be combined. Shell mode initially supports
 scalar variables only through backend-created process environment values, with
-shell-specific reference snippets inserted by the picker. Never interpolate
+shell-specific reference snippets inserted by the picker. Required captured
+values displays all six scalar references through the same formatter as script
+insertion: quoted `"$env:ME_*"` for PowerShell, quoted `"$ME_*"` for POSIX and
+complete `!ME_*_ARG!` arguments for CMD. The
+[settings contract](../../developer/USER_COMMAND_SETTINGS.md) lists the six exact
+keys and references. Inserting a value declares it as required; checking a
+required value alone does not insert script text. Never interpolate
 untrusted file names directly into script syntax. Environment values are data,
 not subject to recursive template expansion. Missing variables and embedded NUL
 fail before execution. Preview shows resolved values with native identities

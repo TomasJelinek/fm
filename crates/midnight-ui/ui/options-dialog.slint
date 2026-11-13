@@ -95,6 +95,7 @@ export component OptionsBody inherits Rectangle {
     callback move-dialog(length, length);
     private property <bool> compact: root.height < 350px;
     private property <bool> narrow: root.width < max(700px, Theme.font-size * 34);
+    private property <bool> header-topic: root.compact && root.narrow;
     private property <string> command-preview-revision: UserCommandSettingsView.preview-revision;
     changed command-preview-revision => {
         if root.topic-index == 9 && UserCommandSettingsView.preview-text != "" {
@@ -147,11 +148,31 @@ export component OptionsBody inherits Rectangle {
     }
     VerticalLayout {
         padding: root.compact ? 6px : 18px; spacing: root.compact ? 4px : 12px;
-        header := DialogHeader { title: "Options"; compact: root.compact;
-            native-icon: root.action-icons.options; fallback-icon: FallbackIcons.options;
-            close => { root.close-options(); }
-            dragged(dx, dy) => { root.move-dialog(dx, dy); } }
-        if root.narrow : HintedComboBox {
+        header := Rectangle {
+            min-width: 0px;
+            height: max(heading.height, root.header-topic ? Theme.control-height + 5px : 0px);
+            heading := DialogHeader {
+                width: parent.width; y: (parent.height - self.height) / 2;
+                title: "Options"; compact: root.compact;
+                native-icon: root.action-icons.options; fallback-icon: FallbackIcons.options;
+                close => { root.close-options(); }
+                dragged(dx, dy) => { root.move-dialog(dx, dy); }
+            }
+            if root.header-topic : CompactPicker {
+                // Leave the themed title/icon and compact header's close target intact.
+                x: parent.width - max(26px, Theme.font-size + 8px) - self.width - 16px;
+                y: max(0px, (parent.height - self.height - 5px) / 2);
+                width: max(40px, Theme.control-height); height: Theme.control-height;
+                model: OptionsTopics.titles;
+                current-index: OptionsTopics.index(root.topic-index);
+                accessible-name: "Options topic";
+                hint: "Options page: " + OptionsTopics.titles[OptionsTopics.index(root.topic-index)];
+                popup-width: root.width; fit-popup-to-content: true;
+                enabled: root.preferences-ready && !root.options-busy;
+                selected(index) => { root.topic-index = OptionsTopics.topic(index); }
+            }
+        }
+        if root.narrow && !root.header-topic : HintedComboBox {
             accessible-label: "Options topic";
             model: OptionsTopics.titles;
             current-index: OptionsTopics.index(root.topic-index);

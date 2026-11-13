@@ -187,8 +187,7 @@ impl Form {
                 if variable == UserCommandVariable::SelectedPaths {
                     return Err("Selected paths can only be a complete Program argument.".into());
                 }
-                self.working_directory
-                    .push_str(&format!("${{{}}}", variable.name()));
+                self.working_directory = format!("${{{}}}", variable.name());
             }
             1 => {
                 let mut values = arguments(&self.arguments)?;
@@ -200,14 +199,7 @@ impl Form {
                     serde_json::to_string_pretty(&values).map_err(|error| error.to_string())?;
             }
             2 => {
-                let key = variable
-                    .environment_key()
-                    .ok_or("Terminal accepts scalar context values only.")?;
-                let reference = match self.shell()? {
-                    ShellFlavor::PowerShell => format!("\"$env:{key}\""),
-                    ShellFlavor::Posix => format!("\"${key}\""),
-                    ShellFlavor::Cmd => format!("!{key}_ARG!"),
-                };
+                let reference = self.captured_value_reference(variable)?;
                 if !self.script.is_empty() && !self.script.ends_with(char::is_whitespace) {
                     self.script.push(' ');
                 }
@@ -217,6 +209,30 @@ impl Form {
             _ => return Err("Choose a variable insertion target.".into()),
         }
         Ok(())
+    }
+    /// Complete script references in the fixed captured-value presentation order.
+    pub(crate) fn captured_value_references(&self) -> Result<Vec<String>, String> {
+        [
+            UserCommandVariable::ActivePath,
+            UserCommandVariable::OtherPath,
+            UserCommandVariable::FilePath,
+            UserCommandVariable::FileName,
+            UserCommandVariable::FileStem,
+            UserCommandVariable::FileExtension,
+        ]
+        .into_iter()
+        .map(|variable| self.captured_value_reference(variable))
+        .collect()
+    }
+    fn captured_value_reference(&self, variable: UserCommandVariable) -> Result<String, String> {
+        let key = variable
+            .environment_key()
+            .ok_or("Terminal accepts scalar context values only.")?;
+        Ok(match self.shell()? {
+            ShellFlavor::PowerShell => format!("\"$env:{key}\""),
+            ShellFlavor::Posix => format!("\"${key}\""),
+            ShellFlavor::Cmd => format!("!{key}_ARG!"),
+        })
     }
     fn shell(&self) -> Result<ShellFlavor, String> {
         match self.shell {

@@ -1,6 +1,7 @@
-import { ActionButton } from "action-icons.slint";
+import { ActionButton, FallbackIcons } from "action-icons.slint";
 import { TextEdit } from "std-widgets.slint";
-import { HintedCheckBox, HintedComboBox, HintedLineEdit, HintedActionButton } from "hinted-inputs.slint";
+import { HintedComboBox, HintedLineEdit, HintedActionButton } from "hinted-inputs.slint";
+import { CompactPicker } from "controls.slint";
 import { ArgumentEditor } from "argument-editor.slint";
 import { UserCommandSettingsView } from "user-command-models.slint";
 import { Theme } from "theme.slint";
@@ -107,13 +108,15 @@ export component UserCommandForm inherits VerticalLayout {
         }
         if root.show-variables : GridLayout {
             spacing: 4px;
-            for label[index] in ["Active folder", "Other folder", "File path", "File name", "Name without extension", "Extension"] : HintedCheckBox {
+            for label[index] in ["Active folder", "Other folder", "File path", "File name", "Name without extension", "Extension"] : WrappingCheckBox {
             row: root.narrow ? index : floor(index / 2); col: root.narrow ? 0 : mod(index, 2);
-            text: label;
+            text: label + (index < UserCommandSettingsView.variable-references.length ? " · " + UserCommandSettingsView.variable-references[index] : "");
             checked: index == 0 ? UserCommandSettingsView.draft.active-path : index == 1 ? UserCommandSettingsView.draft.other-path
                 : index == 2 ? UserCommandSettingsView.draft.file-path : index == 3 ? UserCommandSettingsView.draft.file-name
                 : index == 4 ? UserCommandSettingsView.draft.file-stem : UserCommandSettingsView.draft.file-extension;
-            hint: "Require this captured value before the script can run.";
+            hint: UserCommandSettingsView.draft.shell == 2
+                ? "Require this captured value. The shown _ARG reference is a complete external-program argument; raw ME_* values need the builtin's own syntax."
+                : "Require this captured value before the script can run. Use the shown quoted reference in the script.";
             toggled => {
                 if index == 0 { UserCommandSettingsView.draft.active-path = self.checked; }
                 else if index == 1 { UserCommandSettingsView.draft.other-path = self.checked; }
@@ -136,14 +139,26 @@ export component UserCommandForm inherits VerticalLayout {
             row: 0; col: 0;
             hint: "An absolute folder, or a captured folder value."; min-width: 0px; horizontal-stretch: 1;
             edited => { root.edited(); } }
-        ActionButton { text: "Browse…"; accessible-label: "Browse working directory";
+        HorizontalLayout {
             row: root.narrow ? 1 : 0; col: root.narrow ? 0 : 1;
-            enabled: !UserCommandSettingsView.busy; clicked => { UserCommandSettingsView.browse(1); } }
-    }
-    GridLayout {
-        spacing: 6px;
-        ActionButton { row: 0; col: 0; text: "Active folder"; clicked => { UserCommandSettingsView.draft.working-directory = "${active.path}"; root.edited(); } }
-        ActionButton { row: root.narrow ? 1 : 0; col: root.narrow ? 0 : 1; text: "Other folder"; clicked => { UserCommandSettingsView.draft.working-directory = "${other.path}"; root.edited(); } }
+            spacing: 6px; alignment: start; cross-axis-alignment: center;
+            working-directory-browse := ActionButton { text: "Browse…"; accessible-label: "Browse working directory"; compact: true;
+                height: self.min-height;
+                enabled: !UserCommandSettingsView.busy; clicked => { UserCommandSettingsView.browse(1); } }
+            CompactPicker {
+                label: root.narrow ? "" : "Variables";
+                accessible-name: "Working directory variables";
+                model: ["Active folder", "Other folder"];
+                context: UserCommandSettingsView.token;
+                width: root.narrow ? max(32px, Theme.control-height) : self.compact-width;
+                minimum-control-width: max(32px, Theme.control-height);
+                height: working-directory-browse.min-height; horizontal-stretch: 0;
+                popup-width: 160px; fit-popup-to-content: true; fill-available-height: true; show-row-icons: false;
+                enabled: !UserCommandSettingsView.busy;
+                hint: "Replace the initial directory with the captured active or other folder.";
+                selected(index) => { if UserCommandSettingsView.insert-variable(UserCommandSettingsView.token, UserCommandSettingsView.draft, 0, index) { root.edited(); } }
+            }
+        }
     }
     HintedComboBox { model: ["Run once", "Run for each selected item"]; current-index <=> UserCommandSettingsView.draft.launch;
         accessible-label: "Custom Command execution mode"; hint: "Choose whether to run once or once for every captured selected item.";
@@ -186,14 +201,20 @@ export component UserCommandForm inherits VerticalLayout {
     if UserCommandSettingsView.validation != "" : ErrorNotice { text: UserCommandSettingsView.validation; }
     GridLayout {
         spacing: 6px;
-        ActionButton { text: "Update command"; accessible-label: "Apply Custom Command";
+        HintedActionButton { text: "Save"; accessible-label: "Save Custom Command";
+            primary: true; compact: true; fallback-icon: FallbackIcons.save-again;
+            hint: "Stages command; Options OK saves settings.";
             row: 0; col: 0;
             enabled: UserCommandSettingsView.can-apply && !UserCommandSettingsView.busy;
             clicked => { UserCommandSettingsView.apply(UserCommandSettingsView.token, UserCommandSettingsView.draft); } }
-        ActionButton { text: "Discard changes"; accessible-label: "Cancel Custom Command draft";
+        HintedActionButton { text: "Discard changes"; accessible-label: "Cancel Custom Command draft";
+            compact: true; fallback-icon: FallbackIcons.close;
+            hint: "Discard edits to this command. A new unsaved command is removed.";
             row: root.narrow ? 1 : 0; col: root.narrow ? 0 : 1;
             enabled: UserCommandSettingsView.dirty; clicked => { UserCommandSettingsView.cancel(); } }
-        ActionButton { text: "Preview"; accessible-label: "Preview Custom Command";
+        HintedActionButton { text: "Preview"; accessible-label: "Preview Custom Command";
+            primary: false; compact: true; fallback-icon: FallbackIcons.view;
+            hint: "Show the program, working folder and arguments for each selected item without running it. Results appear below; Options stays open.";
             row: root.narrow ? 2 : 0; col: root.narrow ? 0 : 2;
             enabled: UserCommandSettingsView.ready && UserCommandSettingsView.draft.kind != 2 && UserCommandSettingsView.can-preview && !UserCommandSettingsView.busy;
             clicked => { UserCommandSettingsView.preview(UserCommandSettingsView.token, UserCommandSettingsView.draft); } }

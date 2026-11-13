@@ -29,6 +29,184 @@ fn setup() -> Presenter {
 }
 
 #[test]
+fn new_command_draft_starts_without_error_and_cannot_apply() {
+    let mut p = setup();
+    let saved = p.preferences.values.user_commands.clone();
+    p.new_user_command_setting();
+    let form = p.user_command_settings_form().unwrap();
+    assert_eq!(
+        p.user_command_settings.selected.as_ref().unwrap().as_str(),
+        form.id
+    );
+    assert_eq!(form.name, "New command");
+    assert!(form.executable.is_empty());
+    assert!(p.user_command_settings.new);
+    assert!(p.user_command_settings.dirty);
+    assert!(!p.user_command_settings.can_apply);
+    assert!(!p.user_command_settings.can_preview);
+    assert!(p.user_command_settings.error.is_empty());
+    assert!(p.user_command_settings.validation.is_empty());
+    assert!(Arc::ptr_eq(&saved, &p.preferences.values.user_commands));
+}
+
+#[test]
+fn invalid_new_command_edits_and_explicit_apply_still_show_errors() {
+    let mut p = setup();
+    let saved = p.preferences.values.user_commands.clone();
+    p.new_user_command_setting();
+    let token = p.user_command_settings.token();
+    let mut form = p.user_command_settings_form().unwrap();
+    form.name.clear();
+    p.remember_user_command_form(&token, form.clone());
+    p.validate_user_command_setting(&token, &form);
+    assert!(!p.user_command_settings.validation.is_empty());
+    assert!(p.user_command_settings.error.is_empty());
+    assert!(!p.user_command_settings.can_apply);
+    assert!(!p.apply_user_command_setting(&token, &form, &|_| panic!("invalid draft saved")));
+    assert!(!p.user_command_settings.error.is_empty());
+    assert!(Arc::ptr_eq(&saved, &p.preferences.values.user_commands));
+}
+
+#[test]
+fn new_command_reaches_preferences_only_once_after_valid_apply() {
+    let mut p = setup();
+    let saved = p.preferences.values.user_commands.clone();
+    p.new_user_command_setting();
+    let token = p.user_command_settings.token();
+    let mut form = p.user_command_settings_form().unwrap();
+    let id = form.id.clone();
+    form.name = "Pending command 文档".into();
+    p.remember_user_command_form(&token, form.clone());
+    assert!(Arc::ptr_eq(&saved, &p.preferences.values.user_commands));
+    assert!(!p.apply_user_command_setting(&token, &form, &|_| panic!("incomplete draft saved")));
+    form.executable = std::env::temp_dir()
+        .join("pending-tool.exe")
+        .to_string_lossy()
+        .into_owned();
+    p.remember_user_command_form(&token, form.clone());
+    p.validate_user_command_setting(&token, &form);
+    assert!(p.user_command_settings.can_apply);
+    assert!(Arc::ptr_eq(&saved, &p.preferences.values.user_commands));
+    let sent = RefCell::new(Vec::new());
+    let send = |command| {
+        sent.borrow_mut().push(command);
+        true
+    };
+    assert!(p.apply_user_command_setting(&token, &form, &send));
+    assert_eq!(p.preferences.values.user_commands.len(), 3);
+    assert_eq!(p.preferences.values.user_commands[2].id.as_str(), id);
+    assert_eq!(
+        p.preferences.values.user_commands[2].name,
+        "Pending command 文档"
+    );
+    assert_eq!(
+        p.preferences
+            .values
+            .user_commands
+            .iter()
+            .filter(|command| command.id.as_str() == id)
+            .count(),
+        1
+    );
+    assert!(!p.user_command_settings.new);
+    assert!(!p.user_command_settings.dirty);
+    assert!(!p.apply_user_command_setting(&token, &form, &send));
+    assert_eq!(p.preferences.values.user_commands.len(), 3);
+    assert_eq!(
+        sent.borrow()
+            .iter()
+            .filter(|command| matches!(command, Command::SavePreferences { .. }))
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn discard_and_options_cancel_remove_new_draft_without_saving() {
+    for transition in ["discard", "options-cancel"] {
+        let mut p = setup();
+        p.begin_options();
+        let saved = p.preferences.values.user_commands.clone();
+        p.new_user_command_setting();
+        let token = p.user_command_settings.token();
+        let mut form = p.user_command_settings_form().unwrap();
+        form.name = "Discarded command".into();
+        p.remember_user_command_form(&token, form.clone());
+        if transition == "discard" {
+            p.cancel_user_command_setting();
+        } else {
+            p.cancel_options(&|_| panic!("Options Cancel saved a draft"));
+        }
+        assert!(!p.user_command_settings.new, "{transition}");
+        assert!(!p.user_command_settings.dirty, "{transition}");
+        assert_eq!(p.user_command_settings_form().unwrap().id, "first");
+        assert!(Arc::ptr_eq(&saved, &p.preferences.values.user_commands));
+        p.remember_user_command_form(&token, form);
+        assert!(!p.user_command_settings.new, "{transition}");
+        assert!(!p.user_command_settings.dirty, "{transition}");
+        assert!(Arc::ptr_eq(&saved, &p.preferences.values.user_commands));
+    }
+}
+
+#[test]
+fn reset_preserves_new_command_draft_without_enabling_reorder_or_persistence() {
+    let mut p = setup();
+    p.begin_options();
+    let saved = p.preferences.values.user_commands.clone();
+    p.new_user_command_setting();
+    let token = p.user_command_settings.token();
+    let mut form = p.user_command_settings_form().unwrap();
+    form.name = "Keep this unfinished command".into();
+    p.remember_user_command_form(&token, form.clone());
+    p.reset_options(&|command| {
+        assert!(!matches!(command, Command::SavePreferences { .. }));
+        true
+    });
+    assert_eq!(p.user_command_settings.token(), token);
+    assert_eq!(p.user_command_settings_form().unwrap().name, form.name);
+    assert!(p.user_command_settings.new);
+    assert!(p.user_command_settings.dirty);
+    assert!(!p.user_command_settings.can_apply);
+    assert!(Arc::ptr_eq(&saved, &p.preferences.values.user_commands));
+    assert!(!p.move_user_command_setting(&token, 1, &|_| panic!("draft reordered")));
+    assert!(!p.delete_user_command_setting(&token, &|_| panic!("draft deleted a saved command")));
+    assert!(p.begin_user_command_drag("second").is_empty());
+    assert!(Arc::ptr_eq(&saved, &p.preferences.values.user_commands));
+}
+
+#[test]
+fn final_command_slot_accepts_one_draft_and_refuses_another_at_128_commands() {
+    let mut p = setup();
+    p.preferences.values.user_commands = Arc::new(
+        (0..127)
+            .map(|index| command(&format!("saved-{index}"), "Saved command"))
+            .collect(),
+    );
+    p.sync_user_command_settings();
+    p.new_user_command_setting();
+    assert_eq!(p.preferences.values.user_commands.len(), 127);
+    let token = p.user_command_settings.token();
+    let mut form = p.user_command_settings_form().unwrap();
+    form.executable = std::env::temp_dir()
+        .join("last-tool.exe")
+        .to_string_lossy()
+        .into_owned();
+    p.remember_user_command_form(&token, form.clone());
+    p.validate_user_command_setting(&token, &form);
+    assert!(p.user_command_settings.can_apply);
+    assert!(p.apply_user_command_setting(&token, &form, &|_| true));
+    assert_eq!(p.preferences.values.user_commands.len(), 128);
+    let saved = p.preferences.values.user_commands.clone();
+    let selected = p.user_command_settings.selected.clone();
+    p.new_user_command_setting();
+    assert!(!p.user_command_settings.new);
+    assert!(!p.user_command_settings.dirty);
+    assert!(!p.user_command_settings.error.is_empty());
+    assert_eq!(p.user_command_settings.selected, selected);
+    assert!(Arc::ptr_eq(&saved, &p.preferences.values.user_commands));
+}
+
+#[test]
 fn command_edit_apply_preserves_stable_id_and_reorder_delete_retains_other_shortcuts() {
     let mut p = setup();
     let token = p.user_command_settings.token();

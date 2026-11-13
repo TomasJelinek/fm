@@ -24,7 +24,8 @@ pub(crate) fn refresh(window: &MainWindow, p: &Presenter) {
     if view.get_revision() == revision {
         return;
     }
-    if let Some(form) = p.user_command_settings_form()
+    let form = p.user_command_settings_form();
+    if let Some(form) = &form
         && let Ok(arguments) = serde_json::from_str::<Vec<String>>(&form.arguments)
     {
         view.set_argument_rows(crate::argument_rows::sync(
@@ -32,6 +33,14 @@ pub(crate) fn refresh(window: &MainWindow, p: &Presenter) {
             &arguments,
         ));
     }
+    let references = form
+        .as_ref()
+        .and_then(|form| form.captured_value_references().ok())
+        .unwrap_or_default();
+    view.set_variable_references(crate::argument_rows::sync(
+        view.get_variable_references(),
+        &references,
+    ));
     view.set_ready(p.user_command_settings_available());
     view.set_configuration_revision(p.user_command_drag_revision().to_string().into());
     let drag_token = p.user_command_drag_token();
@@ -49,25 +58,36 @@ pub(crate) fn refresh(window: &MainWindow, p: &Presenter) {
         .selected
         .as_ref()
         .and_then(|id| commands.iter().position(|command| command.id == *id));
-    view.set_selected_index(position.map_or(-1, |row| row as i32));
+    let pending = form.as_ref().filter(|form| {
+        state.new
+            && position.is_none()
+            && state
+                .selected
+                .as_ref()
+                .is_some_and(|id| id.as_str() == form.id)
+    });
+    let selected = position.or_else(|| pending.map(|_| commands.len()));
+    view.set_selected_index(selected.map_or(-1, |row| row as i32));
     view.set_can_up(position.is_some_and(|row| row > 0));
     view.set_can_down(position.is_some_and(|row| row + 1 < commands.len()));
     view.set_can_delete(position.is_some() && !state.new);
     let draft_revision = state.draft_revision.to_string();
     // Ordinary validation never replaces text/cursor state in a live input.
     if view.get_draft_revision() != draft_revision {
-        if let Some(form) = p.user_command_settings_form() {
-            view.set_draft(to_view(form));
+        if let Some(form) = &form {
+            view.set_draft(to_view(form.clone()));
         }
         view.set_draft_revision(draft_revision.into());
     }
     let rows_revision = format!(
-        "{:p}:{}",
+        "{:p}:{}:{}:{}",
         Arc::as_ptr(commands),
-        state.selected.as_ref().map_or("", |id| id.as_str())
+        state.selected.as_ref().map_or("", |id| id.as_str()),
+        state.new,
+        if state.new { state.edit_revision } else { 0 }
     );
     if view.get_rows_revision() != rows_revision {
-        let rows = commands
+        let mut rows = commands
             .iter()
             .map(|command| {
                 let kind = match &command.invocation {
@@ -107,6 +127,22 @@ pub(crate) fn refresh(window: &MainWindow, p: &Presenter) {
                 }
             })
             .collect::<Vec<_>>();
+        if let Some(form) = pending {
+            // The incomplete command exists only in this settings presentation.
+            // Saving a valid draft creates its one configuration row.
+            rows.push(UserCommandSettingsRow {
+                id: form.id.as_str().into(),
+                name: if form.name.is_empty() {
+                    "New command".into()
+                } else {
+                    form.name.as_str().into()
+                },
+                summary: "Unsaved draft".into(),
+                separator: form.kind == 2,
+                enabled: form.enabled,
+                selected: true,
+            });
+        }
         view.set_rows(ModelRc::new(VecModel::from(rows)));
         view.set_rows_revision(rows_revision.into());
     }

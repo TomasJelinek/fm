@@ -41,6 +41,7 @@ export global UserCommandSettingsView {
     callback cancel();
     callback save();
     in property <[string]> argument-rows;
+    in property <[string]> variable-references;
     callback draft-edited(string, UserCommandSettingsForm);
     callback argument(int, int, string);
     callback browse(int);

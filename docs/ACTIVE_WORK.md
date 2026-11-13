@@ -10,11 +10,41 @@ code or a green subset into complete qualification.
 
 ## Current checkpoint
 
-Root committed/pushed **`174c5fd6d426d23f873285eb5c70ffaa6ec28124`**:
+**PAUSED by explicit user request on 13 November 2026.** The user requested a
+checkpoint of all current work and a push; Root owns review, integration and Git.
+No new implementation, design, documentation polish or qualification work is
+authorized while paused. Build's final height-fix compile finished with **exit 0,
+zero errors and zero warnings**. The 28 direct UI tests and a fresh application
+run were not executed. Owned children are stopped and build leases released.
+
+The current 12-file Custom Commands UI overlay includes the latest height fix
+(`c99f96db`), but final targeted tests and a new runtime remain **UNQUALIFIED**.
+The original parallel test-process abort **`0xC0000409`** remains unresolved.
+The isolated reverse-drag case passed **1/1**; the full serial group and original
+parallel pair did not abort, but both failed the known alignment assertion.
+These diagnostics do not establish that the abort is fixed or unrelated. The
+last qualified private executable remains **`937e9bfc`**, with its existing scope
+and historical receipts unchanged. This checkpoint includes the four canonical
+`performance_probe` examples as **UNQUALIFIED WIP** in the user-requested
+checkpoint; they establish no product qualification. Comparator settings remain
+**PLANNED ONLY**.
+
+Before this paused checkpoint, Root reported main committed/pushed and
+push-verified through
+**`4f27e16c6ad233b1294d01d446ae560d8b9a3a9a`**, following `ab1d561` and
+`c2a6560`. This is not a new exact-head remote-CI receipt. The registered,
+visually reviewed private Windows runtime is now **`937e9bfc`**. Its normal debug
+build used base `49312b42ff08027814dff8ce97f8d84e8a5929e4` plus **83 reviewed
+overlay paths**, not the later pushed head; [exact identity, targeted evidence
+and limits](#current-windows-launch-qualified-runtime-937e9bfc) are below.
+
+Earlier checkpoint history: Root committed/pushed
+**`174c5fd6d426d23f873285eb5c70ffaa6ec28124`**:
 38 exact source/documentation files including the COPY core/queue layer and
 app-private HTML layout handshake. Root committed/pushed the later three-file
 format-only correction as **`cdc9226c0ce04f2ee4b492bdf7763479f5500956`**;
-exact-head remote CI is pending. The earlier debug attempt at `174c5fd` exited **101** after
+its exact-head remote CI remained pending in that record. The earlier debug
+attempt at `174c5fd` exited **101** after
 **674.914 s**, zero source drift: cached core binary dep-info watched the older
 COPY overlay. The origin-audited `retry-mtime-v1` also failed **E0460** after
 **759.096 s** because cached `midnight_native_filesystem_host` referenced a
@@ -22,8 +52,8 @@ different core build. The retry had zero source drift and produced no EXE
 artifact. These failed attempts retain their historical scope. The later coherent
 normal debug build at `cdc9226` passed **254.609 s**, zero source drift, with all
 **14** consumer origins rebuilt/coherent. The registered private Windows
-startup-qualified EXE is now `f5b29eab`, source `cdc9226`; exact identity and scope
-are [below](#current-windows-launch-qualified-runtime-f5b29eab).
+startup-qualified EXE at that checkpoint was `f5b29eab`, source `cdc9226`;
+exact identity and scope are [below](#current-windows-launch-qualified-runtime-f5b29eab).
 Original failed receipt: `_build/verification/integrated-debug-20261113-v2/debug-build-result.json`.
 
 | Area | Current source state | Acceptance still open |
@@ -32,7 +62,8 @@ Original failed receipt: `_build/verification/integrated-debug-20261113-v2/debug
 | HTML | App-private token/generation layout handshake integrated; public plugin API unchanged. | App/native opening/layout/performance/deployment evidence; old failed native measurements remain unqualified. |
 | Native Rename | Public/native/core-host source integrated. | Engine/UI routing and finish ownership, installed flat/tree/native-provider workflows and deployment. |
 | Tree/DirectoryLink | Captured actions, recursive expansion and loaded-link maintenance implemented; cap128 has a passing synthetic-only gate. | Native I/O/UI paint, physical Linux input, larger-than-model paging and archive/provider gaps. |
-| Current runtime/CI | Coherent normal debug build and registered private startup pass at `cdc9226`, runtime `f5b29eab`; previous `516fc158` is retained. Exact-head `9176272` remote CI is **20/20 GREEN**. Historical `174c5fd` failed both format checks, 13 hunks/3 files; Root's format correction is committed/pushed as `cdc9226`. | Exact-head remote CI at `cdc9226`, complete tree/HTML/native performance and workflow qualification remain pending. |
+| Current runtime/CI | Registered, visually reviewed private runtime `937e9bfc`; normal debug build **0 / 584.880 s**, 14 coherent consumers, zero warnings/errors/drift. Source base `49312b4` plus 83 reviewed paths is distinct from Root's pushed main `4f27e16`. Windows **208/0/0** and Linux **40/0/0** targeted evidence; scoped strict Clippy passes. Previous `f5b29eab`/`516fc158` and failed build/CI evidence are retained. Exact-head `9176272` remains the retained remote **20/20 GREEN** receipt. | No newer exact-head remote-CI GREEN or full-suite rerun is established. Complete tree/HTML/native performance/workflows, Ubuntu/Linux graphical Trash opening, Source53 and optional vendor matrices remain unqualified. |
+| Comparator settings — **PLANNED ONLY** | Proposed [design](superpowers/specs/2026-11-13-comparator-associations-design.md) and [implementation plan](superpowers/plans/2026-11-13-comparator-associations.md) describe configurable comparator associations. | Separately scoped implementation and qualification remain future work; the current runtime and retained comparison evidence do not qualify these proposed settings. Unrelated backlog remains parked. |
 
 [Archived run detail](verification/2026-11-13-checkpoint-evidence-history.md) retains unique failures, full hashes, deleted-QA
 provenance and overlapping-count arithmetic. Existing
@@ -96,7 +127,58 @@ unresolved work in handoffs. Follow [Agent workflow](developer/AGENT_WORKFLOW.md
 
 ## Integrated baseline and recorded evidence
 
-### Current Windows launch-qualified runtime `f5b29eab`
+<a id="current-windows-launch-qualified-runtime-937e9bfc"></a>
+
+### Current Windows launch-qualified runtime `937e9bfc`
+
+The final receipt is
+`_build/verification/disk-recycle-combined-20261113/final-qualified-lane-result.json`,
+SHA256 `89090e27e82ae4718794a3f8ca4a666d9ab1b4217c4e22c10ec7c2939c803ac6`.
+It records normal debug **exit 0 / 584.880 s**, **14** coherent core consumers,
+zero compiler warnings/errors/native-build diagnostics and zero source drift.
+The registered private EXE is
+`C:/Users/tjelinek/MidnightExplorer-20261113-123202-937e9bfc/me.exe`,
+**102,327,296 bytes**, SHA256
+`937e9bfc9caeaf107845a8538fd871e0cf0534694ca91eb9c3a4c00b6b6f1cdd`.
+The real PE VERSIONINFO, icon and manifest checks pass: file/product version
+**0.2.0**, copyright **© 2026 Tomas Jelinek**.
+
+App-build source is base `49312b42ff08027814dff8ce97f8d84e8a5929e4` plus
+**83 reviewed overlay paths**. The snapshot binds **3,650 shipping app inputs**;
+four unqualified diagnostic examples are excluded from the 3,654 observed inputs.
+App freeze preceded the accepted test-only correction to
+`crates/midnight-ui/tests/recycle_bin.rs`; production source was unchanged after
+freeze. This does not identify the EXE as a build directly from later pushed main
+`4f27e16`.
+
+Engine **17.484 s** and native UI **7.328 s** startup smokes exited **0** without
+timeout; their owned jobs were released. Registration followed passing smokes.
+The exact native startup screenshot was visually reviewed for populated panels,
+Unicode, Recycle Bin artwork and surrounding controls. All **1,382** new and
+**1,382** previous runtime files were hash-verified; fixtures, preferences,
+shortcuts and prior runtimes were preserved. No candidate native plugins were
+deployed. The linked `app-debug/delivery/final-qualified-debug-result.json` and
+`app-debug/delivery/visual-review.json` under the same lane retain exact scope.
+
+Targeted functional evidence is **Windows 208/0/0** (206 retained passes plus two
+corrected Recycle Bin cases) and **Linux 40/0/0** (retained across the reviewed
+one-line derivative, with no functional rerun in that follow-up). The earlier
+**10-case work-budget** gate remains separate; these counts are not a combined
+unique-test total. Scoped strict Clippy passes with zero warnings/errors:
+Windows **10 selected packages, libraries plus 15 exact direct integration
+targets**, app feature closure and `-D warnings`; Linux **two recorded scopes**.
+Full suites were **not rerun**.
+
+This qualifies the private Windows startup/snapshot and the named targeted
+gates. Ubuntu/Linux graphical Trash opening remains **unqualified**: Root reports
+no owned graphical session. Source53, optional vendor matrices, performance,
+complete workflows and newer exact-head remote CI remain unqualified. Comparator
+settings are planned only. Earlier runtime/failure evidence below retains its
+original source/environment and scope.
+
+<a id="current-windows-launch-qualified-runtime-f5b29eab"></a>
+
+### Previous Windows launch-qualified runtime `f5b29eab`
 
 The coherent normal debug receipt
 `_build/verification/integrated-debug-20261113-v2/coherent-final/debug-build-result.json`
@@ -121,7 +203,8 @@ reviewed both panels, Unicode and footer. The previous qualified
 This qualifies private Windows startup/snapshot identity only. Complete tree,
 HTML, native performance and workflow qualification remain open, along with
 physical Linux UI and installed native Rename deployment. Candidate native
-plugins were not deployed. Exact-head remote CI at `cdc9226` remains pending.
+plugins were not deployed. At that checkpoint, exact-head remote CI at `cdc9226`
+remained pending.
 
 <a id="current-windows-launch-qualified-runtime-516fc158"></a>
 
@@ -255,8 +338,11 @@ Build's exact-head watch records **`9176272`: 20/20 GREEN**. The historical
 `174c5fd` result is **not green**: both format checks failed **13 hunks across
 3 files**. After Build released the failed-build source lease, Root applied the
 three-file format-only correction, committed/pushed as `cdc9226`; its exact-head
-remote CI is pending. The separate registered `f5b29eab` startup receipt is
-[above](#current-windows-launch-qualified-runtime-f5b29eab); it does not establish
+remote CI remained pending in that record. Root now reports main pushed/verified
+through `4f27e16c6ad233b1294d01d446ae560d8b9a3a9a`, following `ab1d561` and
+`c2a6560`; no newer exact-head remote-CI GREEN receipt is established here.
+The separate registered `937e9bfc` startup receipt is
+[above](#current-windows-launch-qualified-runtime-937e9bfc); it does not establish
 remote CI or complete workflow/performance qualification. The
 [older remote/local failure chain](verification/2026-11-13-checkpoint-evidence-history.md#retained-remote-ci-boundary)
 retains `02b2f2f` run 43367992268/job 131699200987, 43345016027/43312251721,
@@ -319,7 +405,7 @@ for the next assignment, not permission to start unreserved edits or builds.
 | NET-01 / P1 / implementation | Discovery and typed discovery Hot Paths exist; [Linux GIO](../plugins/midnight-filesystem-network/src/linux/gio.rs) explicitly aborts interactive password challenges. Live SMB/GVfs interoperability is a separate qualification gap. | Backend + Architect: host-owned ephemeral authentication/cancel flow with no credential persistence/logging. Cover stale/canceled auth, reconnect and provider removal; then qualify an owned live endpoint. |
 | FILTER-01/02, UI-01 / P1 / targeted positive-input gate passed | The retained replacement-popup focus assertion passes. Native Filter 17/0, Filter library 2/0 and exact operation-lifetime 1/0 cover 20 distinct tests; exact-first replay is not added twice. Find geometry passed with unchanged source. Private engine/native UI startup subsequently passes. | Preserve verified input/focus/lifetime and source identities. The original shared hashing anomaly remains preserved/unattributed after a passing engine retry; full native/layout/platform acceptance is not closed by these focused tests or startup smokes. Retain real pointer/key, occurrence identity, history/clear and stale-token coverage. |
 | SELECT-01 / P1 / fixture correction implemented; subset passed | [Flat](../crates/midnight-ui/tests/bulk_selection.rs) and [tree](../crates/midnight-ui/tests/tree_bulk_selection.rs) definitions match all-marks Ctrl+D and default-unassigned Ctrl+Shift+D in `2e0e554`; their recorded binary runs passed 1 and 8 tests. The earlier Linux CI failure remains historical and the combined current diagnostic failed elsewhere. | Build: finish the targeted both-pane/native/archive integrations and record exact source/artifact/commands/results. Preserve explicit files-only action/remap coverage and the wider native/layout/drag qualification requirements; this subset does not establish a full selection or remote CI pass. |
-| CMD-02 / P1 / corrected Windows gate passed | Checkpoint `21c9c7a` records the six accepted UI files. Corrected gate: 37 passed / 0 failed / 0 ignored across five artifacts, zero source drift, completed 21:16:16 CET. Natural FocusOut/caret and explicit active-size-bit fixtures pass locally; initial 31/5 setup failures remain historical. Captured Custom Commands remain separate; the current private `f5b29eab` EXE has startup-only qualification, with command workflows separate. | Preserve literal insertion, acknowledged occurrence identity, raw names, focus, stale rejection and shell-draft grammar. Build: retain the exact receipts and qualify remaining Linux/native command-workflow boundaries separately. Do not derive authority from displayed archive paths or execute inserted text; no remote CI fix is inferred. |
+| CMD-02 / P1 / corrected Windows gate passed | Checkpoint `21c9c7a` records the six accepted UI files. Corrected gate: 37 passed / 0 failed / 0 ignored across five artifacts, zero source drift, completed 21:16:16 CET. Natural FocusOut/caret and explicit active-size-bit fixtures pass locally; initial 31/5 setup failures remain historical. Captured Custom Commands remain separate; the current private `937e9bfc` EXE has startup/snapshot qualification, with command workflows separate. | Preserve literal insertion, acknowledged occurrence identity, raw names, focus, stale rejection and shell-draft grammar. Build: retain the exact receipts and qualify remaining Linux/native command-workflow boundaries separately. Do not derive authority from displayed archive paths or execute inserted text; no remote CI fix is inferred. |
 | STATUS-02, PFS-02 / P1 / terminal styling implemented; targeted UI tests pass | Completed partial totals retain `≈`, yellow warnings and details with normal metadata number styling; only actively unfinished totals are highlighted, even while another root runs. Earlier recorded size/model library tests, `size_errors` 2/0, `panel_warning_details` 4/0 and `tree_folder_sizes` 7/0 passed. | Preserve these guarantees through remaining UI fixes without extending those earlier receipts to changed source, including mixed running/finished, warning-completed and cancelled/incomplete states. Full native/layout/platform qualification remains in the UI acceptance row below; these software UI passes do not close it. |
 | SCROLL-02, VIEW-PERF-01/02, MEDIA-03 / P1 / source integration accepted; native qualification open | Corrected Markdown is committed at `255fbdc`, with 72/0 and strict Clippy. Perf accepts source integration from 32 paired debug profiling passes with exact output equivalence: large-fixture request wall time falls about 23 ms → 11–15 ms, while per-request allocator peak rises 383,320/461,739 bytes and small-fixture p95 rises 0.038–0.298 ms. [Retained-seek report](verification/2026-11-12-retained-complete-page-seek.md) retains its dated XML/refill and native boundaries. | Viewer + Build: establish matching packaged-worker/native evidence. Native scrolling/deployment, release/frame pacing, process memory/RSS, DPI/viewport and scroll-back qualification remain open under coordinated leases. Matching deployment/interactive evidence is still required; backend wall-time measurements do not close these requirements. |
 | SCROLL-02, VIEW-PERF-01/02 / P1 / native Source drag unresolved | The archived one-off Source probe completed 1,098 operations/732 exact replays without mismatches; it measures broker/codec work, not the user's 134-line C++ scrollbar input-to-paint path. Portable panel regression tests `3bee1dc` 4/0 and thumbnail correction `8e205c0` 14/0 do not qualify that separate viewer path. | Viewer + UI + Build/Perf: capture the actual native scrollbar gesture, dispatch, request, layout/render and presentation phases on an owned unchanged fixture; attribute the observed delay before choosing a fix. Preserve source identity, cancellation and bounded provider I/O; do not infer a rendering improvement from protocol replay. |
@@ -377,7 +463,7 @@ gestures prove different boundaries.
 | DIALOG-02, META-02, SELECT-01, PANEL-02, NAV-01/02, NOTICE-02, THEME-02, ICON-02, DRIVE-02, STATUS-02 / UI polish | Embedded modal/focus/input source and corrected selection fixtures are in [current checkpoint scope](#current-checkpoint); earlier [panel/selection/palette evidence](verification/2026-11-12-panel-interaction-polish.md) retains its dated scope | UI + Build: qualify normal/320×200, desktop/touch, fonts/DPI/themes, input/focus/IME, resizing, X/Escape and captured callbacks. Ordinary modals stay embedded; independent tools retain native hosts. Preserve warning Copy/retry/close and the tested finished-partial-size presentation. Render matrices do not substitute for native/compositor checks. |
 | VIEW-01/02, SCROLL-02 / viewers and comparison | [Viewer presentation](developer/VIEWER_PRESENTATION.md), [image limits](developer/IMAGE_VIEWER_API.md), [HTML contract](developer/WEB_VIEWER_API.md), [foreground evidence](verification/2026-11-12-foreground-scroll-resume.md) | Viewer + UI + Build: native text/hex/source/Markdown/image/PDF/HTML opening/navigation/search/copy/zoom/font/persisted settings, exact user fixtures, native/archive content and text/image comparison. Qualify Linux frame pacing, physical IME, native Chromium Wayland and configurable browser key arbitration separately; preserve bounded page selection and inert content. |
 | NET-01, PLAT-02 / native environments and permissions | [Network contract](developer/NETWORK_FILESYSTEM.md), [system targets](SYSTEM_REQUIREMENTS.md), [directory authorization](verification/2026-11-11-directory-authorization.md) | Backend + UI + Build: controlled live SMB/GVfs/FUSE, Windows 10, physical Linux desktops/distribution packages, GPU/driver/filesystem and multilingual/RTL/IME evidence. CSC warning/UI and Engine mock gates pass, but actual privileged CSC access, accepted UAC/polkit prompts and physical Linux desktop workflows remain unqualified. The original recursive symlink fixture is verified 1/0/0 under WSL/tmpfs at `1714d99`, with compile/test exit 0. Record exact environment, reduced-RAM measurements and artifact notices; WSL/compilation is narrower evidence. |
-| CI / complete current validation | [Retained remote boundary](#retained-remote-ci-boundary): exact-head `9176272` is **20/20 GREEN**. The historical `174c5fd` result is **not green**: both format checks failed 13 hunks/3 files. Root's three-file format-only correction is committed/pushed as `cdc9226`; its exact-head remote CI is pending. [Earlier failures and correction provenance](verification/2026-11-13-checkpoint-evidence-history.md#retained-remote-ci-boundary) retain their dated scopes. HTML 135, COPY 80, C native-plugin and WSL/software gates remain selected local evidence. | Build + Root: obtain fresh frozen-source targeted/workspace and remote receipts. Structural workflow validation, selected local gates, C native-plugin gates, WSL fixtures and qualified `f5b29eab` startup do not establish full-suite/desktop success. The earlier cap16 functional95/Clippy 0 and failed aggregate remain historical; the later integrated cap128 passes only its recorded functional25 and single synthetic aggregate. Native provider/host Task 4, viewer performance and manual permissions remain separate. |
+| CI / complete current validation | [Retained remote boundary](#retained-remote-ci-boundary): exact-head `9176272` is **20/20 GREEN**. The historical `174c5fd` result is **not green**: both format checks failed 13 hunks/3 files. Root's three-file format-only correction was committed/pushed as `cdc9226`; its exact-head remote CI remained pending in that record. Main is now pushed/verified through `4f27e16` per Root, without a newer remote-CI GREEN receipt here. [Earlier failures and correction provenance](verification/2026-11-13-checkpoint-evidence-history.md#retained-remote-ci-boundary) retain their dated scopes. HTML 135, COPY 80, C native-plugin and WSL/software gates remain selected local evidence; the current lane adds only its [named targeted/build/startup scope](#current-windows-launch-qualified-runtime-937e9bfc), with full suites not rerun. | Build + Root: obtain fresh frozen-source targeted/workspace and remote receipts. Structural workflow validation, selected local gates, C native-plugin gates, WSL fixtures and qualified `937e9bfc` startup do not establish full-suite/desktop success. The earlier cap16 functional95/Clippy 0 and failed aggregate remain historical; the later integrated cap128 passes only its recorded functional25 and single synthetic aggregate. Native provider/host Task 4, viewer performance and manual permissions remain separate. |
 | Dependencies / release inventory | [Dependency policy](DEPENDENCY_POLICY.md), [third-party inventory](THIRD_PARTY.md) and distribution notices | Every role + Documentation + Build: review actual pinned direct/transitive/native/test/build dependencies and enabled features on changes, verify free intended use/distribution and required notices/source offers. No trial/paid-only path or silent project-license change. No dependency changed in this documentation pass. |
 
 ### Retained extension contracts

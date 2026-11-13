@@ -1,8 +1,11 @@
 # Custom Commands settings
 
-Options → Custom Commands edits the ordered configuration stored by schema 17.
-New creates a stable ID; changing the name, enabled state, label, icon or order
-does not change that identity. Delete removes that command's shortcut overrides
+Options → Custom Commands edits the ordered configuration introduced in preferences schema 17.
+New allocates a stable ID and immediately shows a selected **Unsaved draft** row.
+That row is presentation only: Save validates and stages it as a configured
+command within Options. The untouched incomplete draft shows no error, with Save
+and Preview disabled. Changing the name, enabled state, label, icon or order
+does not change its identity. Delete removes that command's shortcut overrides
 through `UserPreferences::replace_user_commands`, preserving unrelated bindings.
 The toolbar's Settings action selects the corresponding ID on this page.
 
@@ -10,7 +13,7 @@ Drag a list row to change command order; the insertion line shows its destinatio
 Dropping stages the new order within Options and keeps the dragged command
 selected. OK persists it; Cancel restores the original order. Up/Down remain
 available for keyboard and accessibility use. The list scrolls at its edges while dragging, and keyboard
-navigation reveals the selected row. Dirty drafts require Update command or
+navigation reveals the selected row. Dirty drafts require Save or
 Discard before reordering. Escape, right-click, pointer cancellation, closing Options, stale
 configuration and releases outside the actually visible list cancel the drag.
 
@@ -46,12 +49,13 @@ A separator keeps its stable ID and position but has no execution fields or
 preview. Converting a command to a separator removes its shortcut bindings;
 the backend independently rejects forged Preview/Execute requests for it.
 
-Update command validates and stages one command, allowing another command to be
+Save validates and stages one command, allowing another command to be
 edited. The common OK footer also validates any remaining draft, saves the complete
 Options transaction, and closes only after storage succeeds. A failed save keeps
 the dialog open for retry. Discard changes reloads the currently staged command;
-Cancel discards the entire Options session, including applied commands and order.
-Changing the selected command while a draft is dirty requires Update command or
+for a new unsaved command, it removes the presentation-only row. Cancel discards
+the entire Options session, including staged commands and order.
+Changing the selected command while a draft is dirty requires Save or
 Discard. A configuration replacement invalidates stale
 draft callbacks; no displayed path is used as an existing native identity.
 
@@ -73,14 +77,41 @@ Change icon uses the CommandIconResource native chooser; Browse image uses
 CommandIconImage, leaving unrelated Image pickers unchanged. Both return the
 managed PNG path to the same guarded icon draft.
 Requests capture the target field, draft revision and configuration identity;
-typing, changing pages or closing Options invalidates the result. Cancel leaves
-the draft unchanged. Program picks retain the original native path, including
+typing, changing pages or closing Options invalidates the result. Cancelling a
+native Browse dialog leaves the draft unchanged and adds no error. An existing
+validation or picker error remains visible; genuine picker failures are still
+reported. Program picks retain the original native path, including
 values whose displayed Unicode caption is lossy. Command image picks retain the imported native PNG path.
-Valid completion revalidates the draft, enabling Update without an extra text edit.
+Valid completion revalidates the draft, enabling Save without an extra text edit.
 Initial directory is
 currently a template string: unrepresentable native directory picks are refused,
-and dollar signs in a picked literal are escaped for that template. The Active
-folder button remains available without converting a native folder to text.
+and dollar signs in a picked literal are escaped for that template. The Variables
+menu beside Browse offers Active folder and Other folder. Choosing one replaces
+the **entire** working-directory field with `${active.path}` or `${other.path}`;
+it does not append to an existing directory. These templates retain the captured
+native folder identity without converting it to a literal display path.
+
+Required captured values shows the same complete shell reference that Insert
+value inserts into the terminal script. Both use one formatter, and the six
+labels follow the selected shell. Inserting a value also declares it as required;
+toggling its required-value checkbox changes the declaration without inserting
+script text.
+
+| Captured value | PowerShell | POSIX shell | CMD |
+| --- | --- | --- | --- |
+| Active folder | `"$env:ME_ACTIVE_PATH"` | `"$ME_ACTIVE_PATH"` | `!ME_ACTIVE_PATH_ARG!` |
+| Other folder | `"$env:ME_OTHER_PATH"` | `"$ME_OTHER_PATH"` | `!ME_OTHER_PATH_ARG!` |
+| File path | `"$env:ME_FILE_PATH"` | `"$ME_FILE_PATH"` | `!ME_FILE_PATH_ARG!` |
+| File name | `"$env:ME_FILE_NAME"` | `"$ME_FILE_NAME"` | `!ME_FILE_NAME_ARG!` |
+| Name without extension | `"$env:ME_FILE_STEM"` | `"$ME_FILE_STEM"` | `!ME_FILE_STEM_ARG!` |
+| Extension | `"$env:ME_FILE_EXTENSION"` | `"$ME_FILE_EXTENSION"` | `!ME_FILE_EXTENSION_ARG!` |
+
+These are scalar references; `${selected.paths}` remains Program-only. CMD `_ARG`
+references are complete backend-quoted external-program arguments and take no
+additional quotes. Builtins need their own raw-value syntax, and CALL, batch files
+and nested shells can reparse values; retain the
+[backend shell limits](USER_COMMANDS.md). Captured values remain data rather than
+text interpolated into script syntax.
 
 Options → Editors shares the argument-row control and a Browse button. Its draft
 also survives page switches; Cancel discards it. Use the system default editor
@@ -89,11 +120,15 @@ starts an incomplete custom-editor draft with visible executable/argument fields
 choosing the system default is explicit. A missing executable cannot be accepted.
 OK validates the editor configuration once; editing or browsing never launches the editor.
 
-Preview validates an immutable transient configuration and invokes the backend's
-Preview command only. It neither applies settings nor executes processes. Once
-accepted, the originating command form displays the captured preparation result
-inline while Options remains open with its draft. The preview remains read-only
-and does not launch a process. Disabled commands can be previewed;
+Preview is a secondary inline dry run, requested explicitly rather than started
+automatically. It validates an immutable transient configuration and invokes the
+backend's Preview command only, with **zero process spawns**. It neither stages
+nor saves settings. Once accepted, the originating command form displays the
+captured preparation result inline while Options remains open with its draft.
+It does not open the Jobs window. The
+read-only result shows the program, working directory, separate argv elements and
+per-item expansion, or the literal terminal script and captured environment.
+Preview never runs the command or saves the draft. Disabled commands can be previewed;
 execution remains disabled. Availability and native-shell errors are backend
 results. See [the backend contract](USER_COMMANDS.md) for provider and shell limits.
 
@@ -109,6 +144,10 @@ validation debounce does not replace live text fields, preventing cursor resets
 while editing. Command count, argument count and aggregate configuration limits
 come from the core; malformed or oversized inputs are rejected with visible
 validation instead of truncated.
+
+The 13 November form polish has source-authored regression tests; their execution
+and runtime qualification remain **pending**. No coverage by the currently
+qualified private executable is claimed for these changes.
 
 Focused checks live in `presenter/user_command_settings_tests.rs`, the pure form
 tests and `tests/user_command_settings_ui.rs`. Qualification evidence is recorded

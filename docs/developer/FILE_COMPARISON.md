@@ -3,6 +3,15 @@
 `Ctrl+Shift+C`, F10's Compare files and the shared toolbar invoke the same comparator.
 The action remains available without a file target: it can ask for both inputs.
 
+## Planned comparator settings
+
+Configurable comparator associations are **planned**, not implemented or qualified
+by the current runtime. The [design](../superpowers/specs/2026-11-13-comparator-associations-design.md),
+[UI wireframes](../superpowers/specs/2026-11-13-comparator-associations-ui.md) and
+[implementation plan](../superpowers/plans/2026-11-13-comparator-associations.md)
+cover ordered BOTH-basename routing to existing built-ins or a trusted external
+program. The current pairing and ownership behavior below remains implemented.
+
 ## Pair resolution
 
 `Presenter::file_compare_launch` captures immutable `FileCompareSource` snapshots,

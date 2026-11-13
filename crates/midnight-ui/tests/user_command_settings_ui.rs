@@ -3,11 +3,13 @@
 mod bitmap;
 #[path = "user_command_settings_ui/drag_cases.rs"]
 mod drag_cases;
+#[path = "support/popup_scroll.rs"]
+mod popup_scroll;
 #[path = "support/ui.rs"]
 mod ui;
 use i_slint_core::{accessibility::AccessibilityAction, items::AccessibleRole};
 use midnight_core::*;
-use midnight_ui::{Presenter, UserCommandSettingsView, install, refresh};
+use midnight_ui::{Presenter, Theme, UserCommandSettingsView, install, refresh};
 use slint::{ComponentHandle, Model};
 use std::{cell::RefCell, rc::Rc, sync::Arc, time::Duration};
 
@@ -135,6 +137,322 @@ impl Harness {
 }
 
 #[test]
+fn new_command_is_a_selected_row_and_save_stages_it_exactly_once_until_options_ok() {
+    let mut h = Harness::new();
+    h.open();
+    h.action("New Custom Command");
+    h.ui.draw();
+    bitmap::snapshot(
+        &h.ui.pixels,
+        h.ui.width,
+        h.ui.height,
+        "command-settings-pristine-new-row",
+    );
+    let window = h.ui.window.clone_strong();
+    let view = window.global::<UserCommandSettingsView>();
+    let id = view.get_draft().id;
+    assert!(!id.is_empty());
+    assert_eq!(h.rows().len(), 3, "New must immediately appear in the list");
+    let row = h.rows().into_iter().find(|row| row.id == id).unwrap();
+    assert!(row.selected);
+    assert_eq!(row.name, "New command");
+    assert_eq!(view.get_selected_index(), 2);
+
+    h.text("Command name", "New command 文档");
+    h.text(
+        "Program executable (absolute path)",
+        std::env::temp_dir()
+            .join("new-program.exe")
+            .to_str()
+            .unwrap(),
+    );
+    h.settle();
+    let row = h.rows().into_iter().find(|row| row.id == id).unwrap();
+    assert!(row.selected);
+    assert_eq!(row.name, "New command 文档");
+    assert!(view.get_can_apply());
+    h.action("Save Custom Command");
+    h.ui.draw();
+    h.action("Save Custom Command");
+    assert_eq!(h.rows().len(), 3);
+    assert_eq!(h.rows().iter().filter(|row| row.id == id).count(), 1);
+    assert_eq!(view.get_draft().id, id);
+    assert!(!view.get_dirty());
+    assert_eq!(h.save_count(), 0, "Save stages the command inside Options");
+
+    h.action("OK");
+    assert_eq!(h.save_count(), 1);
+    let saved = h.latest();
+    assert_eq!(saved.user_commands.len(), 3);
+    assert_eq!(
+        saved
+            .user_commands
+            .iter()
+            .filter(|command| command.id.as_str() == id.as_str())
+            .count(),
+        1
+    );
+    assert_eq!(saved.user_commands[2].name, "New command 文档");
+    assert!(h.commands.borrow().iter().all(|command| !matches!(
+        command,
+        Command::ExecuteUserCommand(_) | Command::PreviewUserCommand(_)
+    )));
+}
+
+#[test]
+fn discard_removes_a_new_row_and_options_cancel_removes_a_staged_new_command() {
+    let mut h = Harness::new();
+    h.open();
+    h.action("New Custom Command");
+    h.ui.draw();
+    let discarded =
+        h.ui.window
+            .global::<UserCommandSettingsView>()
+            .get_draft()
+            .id;
+    h.text("Command name", "Discard this new command");
+    h.settle();
+    h.action("Cancel Custom Command draft");
+    h.ui.draw();
+    assert_eq!(h.rows().len(), 2);
+    assert!(h.rows().iter().all(|row| row.id != discarded));
+
+    h.action("New Custom Command");
+    h.ui.draw();
+    let staged =
+        h.ui.window
+            .global::<UserCommandSettingsView>()
+            .get_draft()
+            .id;
+    h.text("Command name", "Cancel this staged command");
+    h.text(
+        "Program executable (absolute path)",
+        std::env::temp_dir()
+            .join("cancelled-program.exe")
+            .to_str()
+            .unwrap(),
+    );
+    h.settle();
+    h.action("Save Custom Command");
+    h.ui.draw();
+    assert_eq!(h.rows().iter().filter(|row| row.id == staged).count(), 1);
+    h.action("Cancel");
+    h.open();
+    assert_eq!(h.rows().len(), 2);
+    assert!(h.rows().iter().all(|row| row.id != staged));
+    assert_eq!(h.rows()[0].id, "one");
+    assert_eq!(h.rows()[0].name, "First command");
+    assert_eq!(h.save_count(), 0);
+    assert!(h.commands.borrow().iter().all(|command| !matches!(
+        command,
+        Command::ExecuteUserCommand(_) | Command::PreviewUserCommand(_)
+    )));
+}
+
+#[test]
+fn required_value_labels_follow_the_selected_shell_and_toggle_the_declared_capture() {
+    let mut h = Harness::new();
+    h.open();
+    let window = h.ui.window.clone_strong();
+    let view = window.global::<UserCommandSettingsView>();
+    let mut form = view.get_draft();
+    form.kind = 1;
+    form.script = "echo captured values".into();
+    view.set_draft(form.clone());
+    view.invoke_draft_edited(view.get_token(), form);
+    h.ui.draw();
+    h.action("Required terminal values");
+    let labels = [
+        "Active folder",
+        "Other folder",
+        "File path",
+        "File name",
+        "Name without extension",
+        "Extension",
+    ];
+    let references = [
+        [
+            "\"$env:ME_ACTIVE_PATH\"",
+            "\"$env:ME_OTHER_PATH\"",
+            "\"$env:ME_FILE_PATH\"",
+            "\"$env:ME_FILE_NAME\"",
+            "\"$env:ME_FILE_STEM\"",
+            "\"$env:ME_FILE_EXTENSION\"",
+        ],
+        [
+            "\"$ME_ACTIVE_PATH\"",
+            "\"$ME_OTHER_PATH\"",
+            "\"$ME_FILE_PATH\"",
+            "\"$ME_FILE_NAME\"",
+            "\"$ME_FILE_STEM\"",
+            "\"$ME_FILE_EXTENSION\"",
+        ],
+        [
+            "!ME_ACTIVE_PATH_ARG!",
+            "!ME_OTHER_PATH_ARG!",
+            "!ME_FILE_PATH_ARG!",
+            "!ME_FILE_NAME_ARG!",
+            "!ME_FILE_STEM_ARG!",
+            "!ME_FILE_EXTENSION_ARG!",
+        ],
+    ];
+    for (shell, references) in references.into_iter().enumerate() {
+        let mut form = view.get_draft();
+        form.shell = shell as i32;
+        view.set_draft(form.clone());
+        view.invoke_draft_edited(view.get_token(), form);
+        h.ui.draw();
+        for (index, (label, reference)) in labels.into_iter().zip(references).enumerate() {
+            let checkbox = ui::popup_item(
+                &h.ui.window,
+                &format!("{label} · {reference}"),
+                AccessibleRole::Checkbox,
+            );
+            checkbox.accessible_action(&AccessibilityAction::Default);
+            h.ui.draw();
+            let form = view.get_draft();
+            let captures = [
+                form.active_path,
+                form.other_path,
+                form.file_path,
+                form.file_name,
+                form.file_stem,
+                form.file_extension,
+            ];
+            assert_eq!(captures.iter().filter(|checked| **checked).count(), 1);
+            assert!(
+                captures[index],
+                "{label} must require its own captured value"
+            );
+            checkbox.accessible_action(&AccessibilityAction::Default);
+            h.ui.draw();
+        }
+    }
+    assert!(h.commands.borrow().iter().all(|command| !matches!(
+        command,
+        Command::ExecuteUserCommand(_)
+            | Command::PreviewUserCommand(_)
+            | Command::SavePreferences { .. }
+    )));
+}
+
+#[test]
+fn working_folder_variables_stay_beside_browse_and_replace_the_field_in_a_small_window() {
+    let mut h = Harness::new();
+    h.open();
+    for (theme, density, font) in [(0, 0, 12), (1, 1, 15), (3, 0, 32), (3, 1, 32)] {
+        h.ui.window.invoke_apply_preferences(theme, density);
+        h.ui.window.invoke_apply_fonts("".into(), font, font);
+        h.ui.resize(320, 200);
+        for (label, expected) in [
+            ("Active folder", "${active.path}"),
+            ("Other folder", "${other.path}"),
+        ] {
+            h.text("Working folder", "replace this whole field");
+            h.settle();
+            let browse = ui::popup_item(
+                &h.ui.window,
+                "Browse working directory",
+                AccessibleRole::Button,
+            );
+            let variables = ui::popup_item(
+                &h.ui.window,
+                "Working directory variables",
+                AccessibleRole::Combobox,
+            );
+            popup_scroll::click(
+                &mut h.ui,
+                "Working directory variables",
+                AccessibleRole::Combobox,
+            );
+            bitmap::snapshot(
+                &h.ui.pixels,
+                h.ui.width,
+                h.ui.height,
+                &format!(
+                    "command-settings-folder-variables-theme{theme}-density{density}-font{font}-{}",
+                    if label == "Active folder" {
+                        "active"
+                    } else {
+                        "other"
+                    }
+                ),
+            );
+            let browse_rect = browse.geometry();
+            let browse_at = browse.map_to_native_window(browse_rect.origin);
+            let variables_rect = variables.geometry();
+            let variables_at = variables.map_to_native_window(variables_rect.origin);
+            assert!((browse_at.y - variables_at.y).abs() <= 1.0);
+            assert!((browse_rect.height() - variables_rect.height()).abs() <= 1.0);
+            assert!(browse_at.x + browse_rect.width() <= variables_at.x + 1.0);
+            assert!(variables_at.x - browse_at.x - browse_rect.width() <= 8.0);
+            assert!(
+                variables_rect.width()
+                    <= h.ui.window.global::<Theme>().get_control_height().max(32.0) + 1.0
+            );
+            assert!(browse_at.x >= 0.0 && browse_at.y >= 0.0);
+            assert!(
+                variables_at.x + variables_rect.width() <= 320.0
+                    && variables_at.y + variables_rect.height() <= 200.0
+            );
+            popup_scroll::click(&mut h.ui, label, AccessibleRole::Button);
+            assert_eq!(
+                h.ui.window
+                    .global::<UserCommandSettingsView>()
+                    .get_draft()
+                    .working_directory,
+                expected
+            );
+            assert!(h.ui.window.get_options_open());
+            assert!(!h.ui.window.get_operations_visible());
+        }
+    }
+    assert!(h.commands.borrow().iter().all(|command| !matches!(
+        command,
+        Command::ExecuteUserCommand(_)
+            | Command::PreviewUserCommand(_)
+            | Command::SavePreferences { .. }
+    )));
+}
+
+#[test]
+fn save_is_a_visible_primary_action_and_preview_keeps_the_secondary_palette() {
+    let mut h = Harness::new();
+    h.open();
+    h.text("Command name", "Stage through the visible Save");
+    h.settle();
+    popup_scroll::click(&mut h.ui, "Save Custom Command", AccessibleRole::Button);
+    h.text("Command name", "Keep Save enabled for the palette check");
+    h.settle();
+    let theme = h.ui.window.global::<Theme>();
+    for (label, expected) in [
+        ("Save Custom Command", theme.get_active_header()),
+        ("Preview Custom Command", theme.get_secondary_surface()),
+    ] {
+        let button = ui::popup_item(&h.ui.window, label, AccessibleRole::Button);
+        let origin = button.map_to_native_window(button.geometry().origin);
+        let pixel = h.ui.pixel(origin.x + 5.0, origin.y + 5.0);
+        assert_eq!(
+            (pixel.r, pixel.g, pixel.b),
+            (expected.red(), expected.green(), expected.blue()),
+            "{label} must use its application action palette"
+        );
+        if label == "Save Custom Command" {
+            assert!(
+                ui::visible_text_values(button)
+                    .iter()
+                    .any(|text| text == "Save")
+            );
+        }
+    }
+    assert_eq!(h.save_count(), 0);
+    assert!(h.commands.borrow().iter().all(|command| !matches!(
+        command,
+        Command::ExecuteUserCommand(_) | Command::PreviewUserCommand(_)
+    )));
+}
+
+#[test]
 fn cancel_restores_applied_command_edits_and_order() {
     let mut h = Harness::new();
     h.open();
@@ -154,7 +472,7 @@ fn cancel_restores_applied_command_edits_and_order() {
         view.get_error(),
         view.get_validation()
     );
-    h.action("Apply Custom Command");
+    h.action("Save Custom Command");
     assert!(
         h.rows()
             .iter()
@@ -187,7 +505,7 @@ fn batched_accessibility_edit_after_reorder_keeps_current_draft_validation() {
         view.get_error(),
         view.get_validation()
     );
-    h.action("Apply Custom Command");
+    h.action("Save Custom Command");
     assert_eq!(h.rows()[1].id, "one");
     assert_eq!(h.rows()[1].name, "Batched accessible command");
     assert_eq!(h.save_count(), 0);
@@ -221,7 +539,7 @@ fn options_create_edit_reorder_delete_use_stable_ids_and_preserve_text_draft_on_
         view.get_validation()
     );
     let id = view.get_draft().id;
-    h.action("Apply Custom Command");
+    h.action("Save Custom Command");
     h.ui.draw();
     assert_eq!(h.rows().len(), 3);
     assert_eq!(h.rows()[2].id.as_str(), id.as_str());
@@ -281,9 +599,17 @@ fn terminal_variable_preview_uses_unsaved_literal_script_and_does_not_save_or_ex
     assert!(view.get_draft().active_path);
     view.invoke_validate(token, view.get_draft());
     assert!(view.get_can_preview());
+    assert!(
+        h.commands
+            .borrow()
+            .iter()
+            .all(|command| !matches!(command, Command::PreviewUserCommand(_)))
+    );
     h.action("Preview Custom Command");
     slint::platform::update_timers_and_animations();
     h.ui.draw();
+    assert!(h.ui.window.get_options_open());
+    assert!(!h.ui.window.get_operations_visible());
     let commands = h.commands.borrow();
     let request = commands
         .iter()
@@ -554,7 +880,7 @@ fn separator_details_keep_mode_drafts_and_never_preview_or_execute() {
         c,
         Command::ExecuteUserCommand(_) | Command::PreviewUserCommand(_)
     )));
-    h.action("Apply Custom Command");
+    h.action("Save Custom Command");
     h.ui.draw();
     assert!(h.rows()[0].separator);
     bitmap::snapshot(
@@ -611,9 +937,9 @@ fn icon_artwork_uses_managed_picker_and_valid_completion_enables_update() {
     let view = window.global::<UserCommandSettingsView>();
     assert!(
         view.get_can_apply(),
-        "Choosing valid icon artwork must enable Update without an extra edit"
+        "Choosing valid icon artwork must enable Save without an extra edit"
     );
-    h.action("Apply Custom Command");
+    h.action("Save Custom Command");
     assert_eq!(view.get_draft().icon, image.to_string_lossy().as_ref());
     h.action("Cancel");
     assert!(

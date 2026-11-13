@@ -555,9 +555,10 @@ editor scope and shortcuts reserved for later stages.
   Right-click opens the matching settings page and selects that command.
   Drag rows in Options → Custom Commands to change their order. A marker shows
   the insertion point; the list scrolls at its edges. Escape cancels the drag.
-  Order is staged without changing command IDs or shortcuts; **OK** saves it,
-  **Cancel** restores it. Up/Down remain available. **Update command** stages an
-  individual form so another command can be edited before confirming the dialog.
+  Order is staged without changing command IDs or shortcuts; Up/Down remain
+  available. **Save** validates and stages an individual form so another command
+  can be edited. Options **OK** persists staged changes; **Cancel** discards the
+  session.
   Program mode passes native arguments separately; terminal mode uses literal
   user-authored PowerShell/POSIX source with explicitly declared context variables.
   Preview does not execute. Jobs reports started/not-started processes; Cancel

@@ -24,6 +24,7 @@ use slint::{ComponentHandle, Model, winit_030::WinitWindowAccessor};
 use std::{
     cell::{Cell, RefCell},
     collections::HashMap,
+    io::Write,
     path::PathBuf,
     rc::Rc,
     sync::{
@@ -83,6 +84,8 @@ impl ContentSource for Counted {
         result
     }
 }
+const INACTIVE_COMPLETION_HOLD_MS: u64 = 2000;
+
 struct Probe {
     opening: Option<opening_proof::Probe>,
     scrollbar: Option<scrollbar::Probe>,
@@ -91,6 +94,8 @@ struct Probe {
     round: usize,
     opened: Instant,
     first: bool,
+    inactive_completion_ready: Option<Instant>,
+    inactive_completion_hold_finished: bool,
     image_ready: Option<Instant>,
     image_proofs: Vec<image_proof::Capture>,
     image_settled: bool,
@@ -101,6 +106,23 @@ struct Probe {
     last_status: String,
     proofs: Vec<gpu_proof::Capture>,
 }
+fn quit_probe(state: &Probe, terminal_logging: bool, context: &str) {
+    if terminal_logging {
+        let _ = writeln!(
+            std::io::stderr(),
+            "probe_terminal schema=1 context={context} stage={} round={} first_frame={} completion_hold_finished={} stage_elapsed_ms={:.3} error={:?} status={:?}",
+            state.stage,
+            state.round,
+            state.first,
+            state.inactive_completion_hold_finished,
+            state.opened.elapsed().as_secs_f64() * 1000.0,
+            state.error,
+            state.last_status,
+        );
+    }
+    let _ = slint::quit_event_loop();
+}
+
 fn marker(window: &ViewerWindow) -> f64 {
     if window.get_image_mode() {
         f64::from(window.get_zoom_percent())
@@ -133,7 +155,7 @@ fn presentation(window: &ViewerWindow) -> &'static str {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut args = std::env::args_os().skip(1);
     let directory = PathBuf::from(args.next().ok_or(
-        "usage: performance_probe fixture-directory report-file [--load] [--count] [--scrollbar|--wheel] [--d3d|--software] [--wheel-trace] [--extended-wheel|--real-wheel|--wrapped-tabs|--file=path] [--sustained] [--tail] [--gpu-proof] [--image-proof] [--opening-proof] [--native-parent]",
+        "usage: performance_probe fixture-directory report-file [--load] [--count] [--scrollbar|--wheel] [--d3d|--software] [--wheel-trace] [--extended-wheel|--real-wheel|--wrapped-tabs|--file=path] [--sustained] [--tail] [--gpu-proof] [--image-proof] [--opening-proof] [--native-parent] [--inactive-native-source]",
     )?);
     let report = PathBuf::from(args.next().ok_or("report-file missing")?);
     let flags: Vec<_> = args.collect();
@@ -163,6 +185,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let image_proof = flags.iter().any(|flag| flag == "--image-proof");
     let opening_proof = flags.iter().any(|flag| flag == "--opening-proof");
     let native_parent = flags.iter().any(|flag| flag == "--native-parent");
+    let inactive_native_source = flags.iter().any(|flag| flag == "--inactive-native-source");
     let d3d = flags.iter().any(|flag| flag == "--d3d");
     let software = flags.iter().any(|flag| flag == "--software");
     if flags.iter().any(|flag| {
@@ -180,6 +203,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             && flag != "--image-proof"
             && flag != "--opening-proof"
             && flag != "--native-parent"
+            && flag != "--inactive-native-source"
             && flag != "--d3d"
             && flag != "--software"
             && !flag
@@ -187,6 +211,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .is_some_and(|value| value.starts_with("--file="))
     }) {
         return Err("unknown probe argument".into());
+    }
+    if inactive_native_source
+        && (!cfg!(target_os = "windows")
+            || selected_file.is_none()
+            || !scrollbar
+            || !d3d
+            || !native_parent
+            || software
+            || wheel
+            || gpu_proof
+            || image_proof
+            || opening_proof
+            || std::env::var_os("MIDNIGHT_VIEWER_PROBE_SPATIAL_PROOF").is_some())
+    {
+        return Err(
+            "--inactive-native-source requires Windows, one --file, --scrollbar, --d3d and \
+             --native-parent, with no wheel/software/snapshot options"
+                .into(),
+        );
     }
     if opening_proof && (selected_file.is_none() || wheel || scrollbar || image_proof || gpu_proof)
     {
@@ -221,13 +264,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let timeline = timeline::Trace::new(wheel_trace);
     let after_render: render_observer::Callback = Rc::new(RefCell::new(None));
+    let native_proof = inactive_native_source.then(render_observer::NativeProof::default);
     let native_events = Rc::new(RefCell::new(Vec::new()));
     let mut selector = slint::BackendSelector::new().backend_name("winit".into());
+    if inactive_native_source {
+        // Applies to the fresh parent and viewer before their first show. Winit's
+        // Windows path uses SW_SHOWNOACTIVATE; no foreground request is issued.
+        selector =
+            selector.with_winit_window_attributes_hook(|attributes| attributes.with_active(false));
+    }
     if d3d {
         // Match the Windows application's default renderer policy explicitly.
         let mut graphics = slint::wgpu_30::WGPUSettings::default();
         graphics.backends = slint::wgpu_30::wgpu::Backends::from_env()
             .unwrap_or(slint::wgpu_30::wgpu::Backends::DX12);
+        if inactive_native_source && graphics.backends != slint::wgpu_30::wgpu::Backends::DX12 {
+            return Err("inactive native Source proof requires the DX12-only backend".into());
+        }
         eprintln!("app_wgpu_backends={:?}", graphics.backends);
         let mut flags = slint::wgpu_30::wgpu::InstanceFlags::from_build_config();
         flags.remove(
@@ -250,6 +303,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             injected_wheel: wheel,
             native_events: native_events.clone(),
             timeline: timeline.clone(),
+            native_proof: native_proof.clone(),
         })
         .select()?;
     let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -340,12 +394,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let setup_paths = paths.clone();
     let setup_counts = counts.clone();
     let setup_timeline = timeline.clone();
+    let setup_native_proof = native_proof.clone();
     let exact_file = selected_file.is_some();
     let (timer, state) = native_parent::run(native_parent, move |placement| {
         let manager = setup_manager;
         let paths = setup_paths;
         let counts = setup_counts;
         let timeline = setup_timeline;
+        let native_proof = setup_native_proof;
         let entries: Arc<[Entry]> = paths
             .iter()
             .enumerate()
@@ -423,24 +479,42 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         };
         eprintln!("requested_d3d={d3d} actual_renderer={actual_renderer}");
         if d3d && !actual_gpu {
+            if inactive_native_source {
+                let _ = writeln!(
+                    std::io::stderr(),
+                    "probe_terminal schema=1 context=renderer_fallback error=\"requested D3D renderer fell back to software\""
+                );
+            }
             manager.close_all();
             return Err("requested D3D renderer fell back to software".into());
         }
+        let timing = if inactive_native_source {
+            "input_to_after_rendering_submission"
+        } else {
+            "input_to_redraw_completed"
+        };
         let state = Rc::new(RefCell::new(Probe {
             opening: opening_proof.then(opening_proof::Probe::default),
-            scrollbar: scrollbar.then(scrollbar::Probe::default),
+            scrollbar: scrollbar.then(|| {
+                native_proof.clone().map_or_else(
+                    scrollbar::Probe::default,
+                    scrollbar::Probe::with_native_proof,
+                )
+            }),
             wheel: wheel.then(|| wheel::Probe::new(timeline.clone(), wheel_options)),
             stage: 0,
             round: 0,
             opened: start,
             first: false,
+            inactive_completion_ready: None,
+            inactive_completion_hold_finished: false,
             image_ready: None,
             image_proofs: Vec::new(),
             image_settled: false,
             pending: None,
             latencies: vec![],
             rows: vec![format!(
-                "synthetic_cpu_load_jobs={} instrumented_source_reads={instrumented} requested_femtovg_d3d={d3d} actual_renderer={actual_renderer} native_parent={native_parent} timing=input_to_redraw_completed exact_file={} pointer_dispatch=slint-events extended={extended} real_only={real_only} wrapped_tabs={wrapped_tabs} sustained={sustained} tail={tail} gpu_proof={gpu_proof} image_proof={image_proof} snapshot_run_excluded_from_timing_comparison={snapshot_run}",
+                "synthetic_cpu_load_jobs={} instrumented_source_reads={instrumented} requested_femtovg_d3d={d3d} actual_renderer={actual_renderer} native_parent={native_parent} timing={timing} exact_file={} pointer_dispatch=slint-events extended={extended} real_only={real_only} wrapped_tabs={wrapped_tabs} sustained={sustained} tail={tail} gpu_proof={gpu_proof} image_proof={image_proof} snapshot_run_excluded_from_timing_comparison={snapshot_run}",
                 if load { 2 } else { 0 },
                 exact_file,
                 snapshot_run = gpu_proof
@@ -477,6 +551,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let before_window = window.clone();
         let before_frames = presented.clone();
         let before_paths = paths.clone();
+        let native_admitted = Rc::new(Cell::new(native_proof.is_none()));
+        let before_native_admitted = native_admitted.clone();
+        let before_native_proof = native_proof.clone();
+        let rendered_native_proof = native_proof.clone();
         *after_render.borrow_mut() = Some(render_observer::Callbacks {
             window: window.clone(),
             before: Box::new(move || {
@@ -486,6 +564,63 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let Ok(mut state) = before_state.try_borrow_mut() else {
                     return;
                 };
+                if let Some(proof) = &before_native_proof {
+                    if state.error.is_some() {
+                        quit_probe(&state, inactive_native_source, "latched_error");
+                        return;
+                    }
+                    if !before_native_admitted.get() {
+                        // show() queues native creation. Admit at the first
+                        // real redraw, before sampling or installing the hook.
+                        let admission = window.window().with_winit_window(|native| {
+                            let focused = native.has_focus();
+                            let visible = native.is_visible();
+                            let minimized = native.is_minimized();
+                            let size = native.inner_size();
+                            eprintln!(
+                                "inactive_native_admission native_present=true target={:?} focused={focused} visible={visible:?} minimized={minimized:?} physical={size:?} elapsed_ms={:.3}",
+                                native.id(),
+                                state.opened.elapsed().as_secs_f64() * 1000.0,
+                            );
+                            !focused
+                                && visible == Some(true)
+                                && minimized != Some(true)
+                                && size.width > 0
+                                && size.height > 0
+                        });
+                        let Some(admitted) = admission else { return };
+                        if !admitted {
+                            state.error = Some(
+                                "inactive native viewer was focused, hidden, minimized or empty"
+                                    .into(),
+                            );
+                            quit_probe(&state, inactive_native_source, "native_admission");
+                            return;
+                        }
+                        if let Some(error) = proof.error() {
+                            state.error = Some(error);
+                            quit_probe(&state, inactive_native_source, "native_proof");
+                            return;
+                        }
+                        // The pre-map draw is over. Install before this native
+                        // draw so an early Source publication is not missed.
+                        let notifier = proof.clone();
+                        if let Err(error) = window
+                            .window()
+                            .set_rendering_notifier(move |state, api| notifier.notify(state, api))
+                        {
+                            state.error = Some(format!(
+                                "inactive native rendering notifier unavailable: {error}"
+                            ));
+                            quit_probe(&state, inactive_native_source, "rendering_notifier");
+                            return;
+                        }
+                        before_native_admitted.set(true);
+                        eprintln!(
+                            "inactive_native_source notifier_installed=true window_nonactivating=true"
+                        );
+                    }
+                }
                 let active =
                     state.stage < stage_count && active(&window, &before_paths[state.stage]);
                 if let Some(opening) = state.opening.as_mut() {
@@ -505,6 +640,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 if state.stage >= stage_count || !active(&window, &native_paths[state.stage]) {
                     return;
                 }
+                if let Some(proof) = &rendered_native_proof {
+                    if let Some(error) = proof.error() {
+                        state.error = Some(error);
+                        quit_probe(&state, inactive_native_source, "native_proof");
+                        return;
+                    }
+                    // Loading/chrome draws are genuine draws, but they are not
+                    // the first rendered Source frame for this fixture.
+                    if !proof
+                        .latest_frame()
+                        .is_some_and(|frame| frame.source_mode && frame.content_ready)
+                    {
+                        return;
+                    }
+                }
                 let opened_ms = state.opened.elapsed().as_secs_f64() * 1000.0;
                 if let Some(opening) = state.opening.as_mut() {
                     match opening.rendered(&window, opened_ms, rendered_frames.get()) {
@@ -512,7 +662,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         Ok(false) => return,
                         Err(error) => {
                             state.error = Some(error);
-                            let _ = slint::quit_event_loop();
+                            quit_probe(&state, inactive_native_source, "opening_render");
                             return;
                         }
                     }
@@ -521,7 +671,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     if wrapped_tabs && (!window.get_wrap_available() || !window.get_wrap_enabled())
                     {
                         state.error = Some("wrapped-tab case did not activate wrapping".into());
-                        let _ = slint::quit_event_loop();
+                        quit_probe(&state, inactive_native_source, "wrap_validation");
                         return;
                     }
                     let stage = state.stage;
@@ -543,7 +693,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 }
                                 Err(error) => {
                                     state.error = Some(error);
-                                    let _ = slint::quit_event_loop();
+                                    quit_probe(&state, inactive_native_source, "image_capture");
                                     return;
                                 }
                             }
@@ -607,6 +757,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let origin = start;
         let timer_timeline = timeline.clone();
         let last_tick = Cell::new(Instant::now());
+        let timer_native_proof = native_proof.clone();
+        let timer_native_admitted = native_admitted;
+        let native_wait_logged = Cell::new(false);
         timer.start(
             slint::TimerMode::Repeated,
             Duration::from_millis(4),
@@ -624,6 +777,36 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     return;
                 };
                 state.last_status = window.get_status().to_string();
+                if let Some(proof) = &timer_native_proof {
+                    if state.error.is_some() {
+                        quit_probe(&state, inactive_native_source, "latched_error");
+                        return;
+                    }
+                    let failure = proof.error().or_else(|| {
+                        if !state.first && state.opened.elapsed() > Duration::from_secs(12) {
+                            Some("inactive native Source first-render timeout (12 seconds)".into())
+                        } else if origin.elapsed() > Duration::from_secs(40) {
+                            Some("inactive native Source overall timeout (40 seconds)".into())
+                        } else {
+                            None
+                        }
+                    });
+                    if let Some(error) = failure {
+                        state.error = Some(error);
+                        quit_probe(&state, inactive_native_source, "native_proof_or_deadline");
+                        return;
+                    }
+                    if !timer_native_admitted.get() {
+                        if !native_wait_logged.replace(true) {
+                            eprintln!(
+                                "inactive_native_admission native_present={} pending=true waiting_for=pre_draw elapsed_ms={:.3}",
+                                window.window().has_winit_window(),
+                                state.opened.elapsed().as_secs_f64() * 1000.0,
+                            );
+                        }
+                        return;
+                    }
+                }
                 if origin.elapsed() > Duration::from_secs(300) {
                     state.error = Some(format!(
                         "timeout stage={} round={} status={}",
@@ -631,7 +814,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         state.round,
                         window.get_status()
                     ));
-                    let _ = slint::quit_event_loop();
+                    quit_probe(&state, inactive_native_source, "probe_timeout");
+                    return;
+                }
+                if let Some(ready) = state.inactive_completion_ready {
+                    if ready.elapsed() >= Duration::from_millis(INACTIVE_COMPLETION_HOLD_MS) {
+                        state.inactive_completion_hold_finished = true;
+                        quit_probe(&state, inactive_native_source, "completion_hold_finished");
+                    }
+                    // Keep the event loop and owned windows alive for Build's
+                    // fresh post-marker observation, without sending more input.
                     return;
                 }
                 // Reaching a clamped page edge can legitimately paint the same
@@ -649,7 +841,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     state.pending = None;
                     if window.get_image_mode() {
                         state.error = Some(format!("image zoom timed out at round {round}"));
-                        let _ = slint::quit_event_loop();
+                        quit_probe(&state, inactive_native_source, "image_zoom_timeout");
                         return;
                     }
                 }
@@ -658,7 +850,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 if let Some(opening) = &state.opening {
                     if opening.settled() {
-                        let _ = slint::quit_event_loop();
+                        quit_probe(&state, inactive_native_source, "opening_complete");
                     }
                     return;
                 }
@@ -679,7 +871,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }
                         Err(error) => {
                             state.error = Some(error);
-                            let _ = slint::quit_event_loop();
+                            quit_probe(&state, inactive_native_source, "image_capture");
                             return;
                         }
                     }
@@ -693,7 +885,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         Ok(None) => return,
                         Err(error) => {
                             state.error = Some(error);
-                            let _ = slint::quit_event_loop();
+                            quit_probe(&state, inactive_native_source, "scrollbar");
                             return;
                         }
                     }
@@ -745,7 +937,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             }
                             Err(error) => {
                                 state.error = Some(error);
-                                let _ = slint::quit_event_loop();
+                                quit_probe(&state, inactive_native_source, "image_capture");
                                 return;
                             }
                         }
@@ -774,11 +966,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     state.image_ready = None;
                     state.image_settled = false;
                     state.opened = Instant::now();
-                    state.scrollbar = scrollbar.then(scrollbar::Probe::default);
+                    state.scrollbar = scrollbar.then(|| {
+                        timer_native_proof.clone().map_or_else(
+                            scrollbar::Probe::default,
+                            scrollbar::Probe::with_native_proof,
+                        )
+                    });
                     state.wheel =
                         wheel.then(|| wheel::Probe::new(timer_timeline.clone(), wheel_options));
                     if state.stage == stage_count {
-                        let _ = slint::quit_event_loop();
+                        if inactive_native_source && state.error.is_none() {
+                            state.inactive_completion_ready = Some(Instant::now());
+                            eprintln!(
+                                "inactive_native_completion_ready schema=1 pid={} completed_stages={} stages={stage_count} hold_ms={INACTIVE_COMPLETION_HOLD_MS} gesture_completed=true occlusion_verified=false",
+                                std::process::id(),
+                                state.stage,
+                            );
+                        } else {
+                            quit_probe(&state, inactive_native_source, "stages_finished");
+                        }
                     } else {
                         window.invoke_focus_content();
                         window
@@ -811,6 +1017,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         runtime.block_on(job)?;
     }
     let mut state = state.borrow_mut();
+    if let Some(proof) = &native_proof {
+        if let Some(error) = proof.error() {
+            state.error.get_or_insert(error);
+        }
+        state.rows.extend(proof.rows());
+    }
     for (index, path) in paths.iter().enumerate() {
         let counts = &counts[path];
         state.rows.push(format!(
@@ -833,6 +1045,29 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             state.stage,
             state.round,
             state.last_status,
+        ));
+    }
+    if inactive_native_source {
+        let completed = state.stage == paths.len();
+        let hold_finished = state.inactive_completion_hold_finished;
+        if !completed && state.error.is_none() {
+            state.error = Some(format!(
+                "inactive native Source event loop ended before gesture completion: \
+                 completed_stages={}/{} round={} status={}",
+                state.stage,
+                paths.len(),
+                state.round,
+                state.last_status,
+            ));
+        }
+        if completed && !hold_finished && state.error.is_none() {
+            state.error = Some(
+                "inactive native Source event loop ended before completion hold finished".into(),
+            );
+        }
+        let submission_qualified = completed && hold_finished && state.error.is_none();
+        state.rows.push(format!(
+            "inactive_native_completion gesture_completed={completed} submission_qualified={submission_qualified} occlusion_verified=false completion_hold_finished={hold_finished}",
         ));
     }
     if let Some(error) = state.error.clone() {

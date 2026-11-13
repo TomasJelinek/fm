@@ -64,7 +64,7 @@ impl Drag {
         dirty: bool,
     ) -> Result<(), &'static str> {
         if dirty {
-            return Err("Apply or cancel the current draft before reordering commands.");
+            return Err("Save or discard the current draft before reordering commands.");
         }
         if self.revision != revision || self.source.as_ptr() != Arc::as_ptr(commands) {
             return Err("Custom Commands changed. Start the drag again.");

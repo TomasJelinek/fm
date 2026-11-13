@@ -51,7 +51,7 @@ impl Presenter {
         }
         if self.user_command_settings.dirty {
             self.user_command_settings
-                .fail("Apply or cancel the current draft before reordering commands.");
+                .fail("Save or discard the current draft before reordering commands.");
             return String::new();
         }
         let commands = &self.preferences.values.user_commands;

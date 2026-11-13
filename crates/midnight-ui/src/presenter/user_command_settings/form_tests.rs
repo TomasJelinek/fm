@@ -136,6 +136,124 @@ fn terminal_picker_declares_exact_scalar_and_keeps_script_literal() {
 }
 
 #[test]
+fn captured_value_references_match_exact_shell_insertions_for_all_scalars() {
+    let variables = [
+        UserCommandVariable::ActivePath,
+        UserCommandVariable::OtherPath,
+        UserCommandVariable::FilePath,
+        UserCommandVariable::FileName,
+        UserCommandVariable::FileStem,
+        UserCommandVariable::FileExtension,
+    ];
+    let cases = [
+        (
+            0,
+            ShellFlavor::PowerShell,
+            [
+                "\"$env:ME_ACTIVE_PATH\"",
+                "\"$env:ME_OTHER_PATH\"",
+                "\"$env:ME_FILE_PATH\"",
+                "\"$env:ME_FILE_NAME\"",
+                "\"$env:ME_FILE_STEM\"",
+                "\"$env:ME_FILE_EXTENSION\"",
+            ],
+        ),
+        (
+            1,
+            ShellFlavor::Posix,
+            [
+                "\"$ME_ACTIVE_PATH\"",
+                "\"$ME_OTHER_PATH\"",
+                "\"$ME_FILE_PATH\"",
+                "\"$ME_FILE_NAME\"",
+                "\"$ME_FILE_STEM\"",
+                "\"$ME_FILE_EXTENSION\"",
+            ],
+        ),
+        (
+            2,
+            ShellFlavor::Cmd,
+            [
+                "!ME_ACTIVE_PATH_ARG!",
+                "!ME_OTHER_PATH_ARG!",
+                "!ME_FILE_PATH_ARG!",
+                "!ME_FILE_NAME_ARG!",
+                "!ME_FILE_STEM_ARG!",
+                "!ME_FILE_EXTENSION_ARG!",
+            ],
+        ),
+    ];
+    let original = command();
+    for (shell_index, expected_shell, expected_references) in cases {
+        let mut form = Form::from_command(&original);
+        form.kind = 1;
+        form.shell = shell_index;
+        form.script = "emit literal-${not-a-template}".into();
+        assert_eq!(
+            form.captured_value_references().unwrap(),
+            expected_references
+        );
+        assert!(form.variables().is_empty());
+        for (variable, reference) in variables.into_iter().zip(expected_references) {
+            let mut inserted = form.clone();
+            inserted.insert_variable(2, variable).unwrap();
+            let UserCommandInvocation::Terminal {
+                shell,
+                script,
+                variables,
+            } = inserted.command(Some(&original)).unwrap().invocation
+            else {
+                panic!()
+            };
+            assert_eq!(shell, expected_shell);
+            assert_eq!(
+                script,
+                format!("emit literal-${{not-a-template}} {reference}")
+            );
+            assert_eq!(variables, vec![variable]);
+        }
+    }
+}
+
+#[test]
+fn captured_value_references_reject_unknown_shell_without_changing_script_or_declarations() {
+    let mut form = Form::new("invalid-shell".into());
+    form.shell = -1;
+    form.script = "unchanged literal source".into();
+    assert!(form.captured_value_references().is_err());
+    assert!(
+        form.insert_variable(2, UserCommandVariable::ActivePath)
+            .is_err()
+    );
+    assert_eq!(form.script, "unchanged literal source");
+    assert!(form.variables().is_empty());
+}
+
+#[test]
+fn folder_picker_replaces_the_complete_directory_and_preserves_program_literals() {
+    let original = command();
+    let mut form = Form::from_command(&original);
+    form.working_directory = absolute("folder 文档").to_string_lossy().into_owned();
+    for (variable, expected_directory) in [
+        (UserCommandVariable::OtherPath, "${other.path}"),
+        (UserCommandVariable::ActivePath, "${active.path}"),
+        (UserCommandVariable::OtherPath, "${other.path}"),
+    ] {
+        form.insert_variable(0, variable).unwrap();
+        assert_eq!(form.working_directory, expected_directory);
+        let accepted = form.command(Some(&original)).unwrap();
+        assert_eq!(accepted.working_directory, expected_directory);
+        assert_eq!(accepted.invocation, original.invocation);
+        assert!(!form.executable_edited);
+    }
+    assert!(
+        form.insert_variable(0, UserCommandVariable::SelectedPaths)
+            .is_err()
+    );
+    assert_eq!(form.working_directory, "${other.path}");
+}
+
+#[test]
 fn program_picker_adds_separate_argument_and_directory_group_is_rejected() {
     let original = command();
     let mut form = Form::from_command(&original);

@@ -189,7 +189,7 @@ impl Presenter {
         if state.dirty {
             state.can_apply = false;
             state.can_preview = false;
-            state.fail("Custom Commands changed. Cancel the draft to reload current settings.");
+            state.fail("Custom Commands changed. Discard the draft to reload current settings.");
             return;
         }
         state.source = Arc::downgrade(commands);
@@ -247,7 +247,7 @@ impl Presenter {
         }
         if self.user_command_settings.dirty {
             self.user_command_settings
-                .fail("Apply or cancel the current draft before selecting another command.");
+                .fail("Save or discard the current draft before selecting another command.");
             return;
         }
         let Some(id) = self
@@ -283,7 +283,7 @@ impl Presenter {
         }
         if self.user_command_settings.dirty {
             self.user_command_settings
-                .fail("Apply or cancel the current draft before adding a command.");
+                .fail("Save or discard the current draft before adding a command.");
             return;
         }
         if self.preferences.values.user_commands.len() == MAX_USER_COMMANDS {
@@ -322,8 +322,7 @@ impl Presenter {
             state.can_apply = false;
             state.can_preview = false;
             state.error.clear();
-            state.validation =
-                "Choose a program, write a terminal script, or choose Separator.".into();
+            state.validation.clear();
             state.status.clear();
             state.changed(true);
             return;
@@ -364,7 +363,7 @@ impl Presenter {
             .source
             .upgrade()
             .filter(|source| Arc::ptr_eq(source, &self.preferences.values.user_commands))
-            .ok_or("Custom Commands changed. Cancel the draft to reload current settings.")?;
+            .ok_or("Custom Commands changed. Discard the draft to reload current settings.")?;
         let position = source
             .iter()
             .position(|command| command.id.as_str() == form.id);
@@ -443,7 +442,7 @@ impl Presenter {
         if *accepted != *self.preferences.values.user_commands {
             self.retired.push(Box::new(accepted));
             self.user_command_settings
-                .fail("Custom Commands could not be applied. Check the shortcut assignments.");
+                .fail("Custom Commands could not be staged. Check the shortcut assignments.");
             return false;
         }
         self.user_command_settings.dirty = false;
@@ -451,7 +450,7 @@ impl Presenter {
         self.user_command_settings.source = Default::default();
         self.sync_user_command_settings();
         self.user_command_settings.status =
-            "Command applied. Options save status appears below.".into();
+            "Command staged. Choose OK in Options to save settings.".into();
         true
     }
     pub(crate) fn delete_user_command_setting(
@@ -537,7 +536,7 @@ impl Presenter {
         if *commands != *self.preferences.values.user_commands {
             self.retired.push(Box::new(commands));
             self.user_command_settings
-                .fail("Custom Commands could not be applied. Check the shortcut assignments.");
+                .fail("Custom Commands could not be staged. Check the shortcut assignments.");
             return false;
         }
         self.user_command_settings.selected = selected;

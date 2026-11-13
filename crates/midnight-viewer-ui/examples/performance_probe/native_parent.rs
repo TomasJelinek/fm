@@ -3,6 +3,7 @@ use midnight_ui_input::WindowPlacement;
 use slint::{ComponentHandle, winit_030::WinitWindowAccessor};
 use std::{
     cell::RefCell,
+    io::Write,
     rc::Rc,
     time::{Duration, Instant},
 };
@@ -20,6 +21,9 @@ pub(super) fn run<T: 'static>(
     native_parent: bool,
     setup: impl FnOnce(WindowPlacement) -> Result<T, Box<dyn std::error::Error>> + 'static,
 ) -> Result<T, Box<dyn std::error::Error>> {
+    let terminal_logging = std::env::args_os()
+        .skip(1)
+        .any(|arg| arg == "--inactive-native-source");
     let size = std::env::var("MIDNIGHT_VIEWER_PROBE_SIZE")
         .ok()
         .and_then(|value| {
@@ -56,6 +60,12 @@ pub(super) fn run<T: 'static>(
             return;
         }
         let Some(parent) = waiting.upgrade() else {
+            if terminal_logging {
+                let _ = writeln!(
+                    std::io::stderr(),
+                    "probe_terminal schema=1 context=native_parent_readiness error=\"native probe parent disappeared\""
+                );
+            }
             *delivered.borrow_mut() = Some(Err("native probe parent disappeared".into()));
             let _ = slint::quit_event_loop();
             return;
@@ -65,6 +75,12 @@ pub(super) fn run<T: 'static>(
         });
         let Some((size, scale)) = native.filter(|(size, scale)| size.width > 0 && size.height > 0 && *scale > 0.0) else {
             if started.elapsed() >= Duration::from_secs(10) {
+                if terminal_logging {
+                    let _ = writeln!(
+                        std::io::stderr(),
+                        "probe_terminal schema=1 context=native_parent_readiness error=\"native probe parent readiness timeout\""
+                    );
+                }
                 *delivered.borrow_mut() = Some(Err("native probe parent readiness timeout".into()));
                 let _ = slint::quit_event_loop();
             }
@@ -74,6 +90,12 @@ pub(super) fn run<T: 'static>(
         let placement = WindowPlacement::capture(parent.window());
         let running = setup.take().expect("parent setup runs once")(placement);
         let failed = running.is_err();
+        if terminal_logging && let Err(error) = &running {
+            let _ = writeln!(
+                std::io::stderr(),
+                "probe_terminal schema=1 context=native_parent_setup error={error:?}"
+            );
+        }
         *delivered.borrow_mut() = Some(running);
         // Keep the owned parent behind its child, matching the application.
         // Hiding the final native window here could exit before child creation.
@@ -81,7 +103,24 @@ pub(super) fn run<T: 'static>(
             let _ = slint::quit_event_loop();
         }
     });
-    slint::run_event_loop()?;
+    let loop_result = slint::run_event_loop();
+    if terminal_logging {
+        let _ = match result.borrow().as_ref() {
+            Some(Ok(_)) => writeln!(
+                std::io::stderr(),
+                "probe_terminal schema=1 context=event_loop_return loop_result={loop_result:?} setup_status=ok"
+            ),
+            Some(Err(error)) => writeln!(
+                std::io::stderr(),
+                "probe_terminal schema=1 context=event_loop_return loop_result={loop_result:?} setup_status=error error={error:?}"
+            ),
+            None => writeln!(
+                std::io::stderr(),
+                "probe_terminal schema=1 context=event_loop_return loop_result={loop_result:?} setup_status=missing error=\"native parent never started the viewer\""
+            ),
+        };
+    }
+    loop_result?;
     timer.stop();
     let _ = parent.hide();
     result
