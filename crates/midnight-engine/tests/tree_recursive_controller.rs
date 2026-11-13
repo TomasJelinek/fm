@@ -86,7 +86,11 @@ impl DirectoryService for Files {
     ) -> Result<Option<SizeDirectoryTarget>, FsError> {
         let object = if let Some(scaling) = &self.scaling {
             *scaling.indices.get(path).ok_or_else(|| {
-                FsError::from_io("scaling identity", path, std::io::ErrorKind::NotFound.into())
+                FsError::from_io(
+                    "scaling identity",
+                    path,
+                    std::io::ErrorKind::NotFound.into(),
+                )
             })? as u128
         } else if path == self.root {
             0_u128

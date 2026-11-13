@@ -228,7 +228,9 @@ fn payload_budget_container_replacement_releases_target_and_descendant_charges()
             NonZeroU32::MIN,
             Arc::from(vec![0; length]),
         );
-        registry.resolve(&address, &Cancellation::default()).unwrap()
+        registry
+            .resolve(&address, &Cancellation::default())
+            .unwrap()
     };
     tree.attach_container(file, mount(4096)).unwrap();
     assert_payload_accounting(&tree);
@@ -270,7 +272,9 @@ fn payload_budget_includes_the_root_mount_address() {
             NonZeroU32::MIN,
             Arc::from(vec![0; address_bytes]),
         );
-        let mount = registry.resolve(&address, &Cancellation::default()).unwrap();
+        let mount = registry
+            .resolve(&address, &Cancellation::default())
+            .unwrap();
         let mut tree = DirectoryTree::new(
             mount,
             TreeLimits {

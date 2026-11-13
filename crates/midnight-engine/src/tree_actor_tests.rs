@@ -834,8 +834,16 @@ fn explicit_size_sort_uses_cached_totals_for_ordinary_and_linked_folders() {
         fixture.session.size_sort(Arc::new(sizes));
         assert!(Arc::ptr_eq(fixture.session.projection(), &initial));
         for (request, descending, expected) in [
-            (1, false, ["a-parent", "z-parent", "b-folder-000", "file.txt"]),
-            (2, true, ["z-parent", "a-parent", "b-folder-000", "file.txt"]),
+            (
+                1,
+                false,
+                ["a-parent", "z-parent", "b-folder-000", "file.txt"],
+            ),
+            (
+                2,
+                true,
+                ["z-parent", "a-parent", "b-folder-000", "file.txt"],
+            ),
         ] {
             let current = fixture.session.publication().unwrap();
             assert!(fixture.session.commit(&current.view));

@@ -205,13 +205,22 @@ async fn retention_checks_only_cached_sizes_and_preserves_collapsed_rows() {
     })
     .await;
     f.session
-        .branch(&expanded.view, TreeRequestId(3), parent, BranchAction::Collapse)
+        .branch(
+            &expanded.view,
+            TreeRequestId(3),
+            parent,
+            BranchAction::Collapse,
+        )
         .unwrap();
     f.session
         .update_projection(&Cancellation::default())
         .unwrap();
     assert!(
-        !f.session.projection().index.row_positions.contains_key(&child)
+        !f.session
+            .projection()
+            .index
+            .row_positions
+            .contains_key(&child)
     );
     let mut checked = Vec::new();
     state.retain(|row| {
