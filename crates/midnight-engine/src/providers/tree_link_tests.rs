@@ -3,6 +3,34 @@ use super::super::registry::check_cancel;
 use super::*;
 use midnight_core::SizeDirectoryIdentity;
 
+#[test]
+fn loaded_maintenance_scope_does_not_cross_an_attached_provider_mount() {
+    let (registry, _graph, mut tree) = fixture(TreeLimits::default());
+    let native = row(&tree, 1).id;
+    run(&mut tree, Some(native), TreeRequest::Expand);
+    let file = row(&tree, 3).id;
+    let address = StoredLocation::new(
+        ProviderId::new("test.tree").unwrap(),
+        NonZeroU32::MIN,
+        Arc::from([]),
+    );
+    let container = registry
+        .resolve(&address, &Cancellation::default())
+        .unwrap();
+    tree.attach_container(file, container).unwrap();
+    run(&mut tree, Some(file), TreeRequest::Expand);
+    let mounted_child = tree
+        .rows()
+        .into_iter()
+        .find(|row| row.parent == Some(file))
+        .unwrap()
+        .id;
+    run(&mut tree, Some(mounted_child), TreeRequest::Expand);
+    assert_eq!(tree.loaded_native_branches(), [tree.root(), native]);
+    assert!(!tree.loaded_native_branch(file));
+    assert!(!tree.loaded_native_branch(mounted_child));
+}
+
 struct IdentityGraph {
     rows: HashMap<u64, Vec<ProviderEntry>>,
     identities: Mutex<HashMap<u64, u64>>,
@@ -282,4 +310,65 @@ fn a_directory_target_retargeted_during_listing_never_publishes_children_under_t
             .iter()
             .any(|row| row.entry.display_name == "entry-8")
     );
+}
+
+#[test]
+fn refreshing_a_loaded_link_rechecks_identity_and_retains_its_logical_occurrence() {
+    let (_registry, graph, mut tree) = identity_fixture();
+    let parent = row(&tree, 2).id;
+    run(&mut tree, Some(parent), TreeRequest::Expand);
+    let link = row(&tree, 5).id;
+    run(&mut tree, Some(link), TreeRequest::Expand);
+    let original_node = row(&tree, 5).node;
+    let original_child = row(&tree, 8).id;
+    graph
+        .identity_sequences
+        .lock()
+        .unwrap()
+        .insert(5, [55, 77].into());
+    run(&mut tree, Some(link), TreeRequest::Refresh);
+    assert!(matches!(
+        row(&tree, 5).error,
+        Some(ProviderError::Failed(ref message)) if message.contains("changed while listing")
+    ));
+    assert_eq!(row(&tree, 8).id, original_child);
+    graph.identities.lock().unwrap().insert(5, 77);
+    run(&mut tree, Some(link), TreeRequest::Refresh);
+    assert!(row(&tree, 5).error.is_none());
+    assert_eq!(row(&tree, 5).node, original_node);
+    assert_eq!(row(&tree, 8).id, original_child);
+}
+
+#[test]
+fn a_probe_does_not_replace_the_identity_basis_of_a_cached_listing() {
+    let (_registry, graph, mut tree) = identity_fixture();
+    let parent = row(&tree, 2).id;
+    run(&mut tree, Some(parent), TreeRequest::Expand);
+    let link = row(&tree, 5).id;
+    run(&mut tree, Some(link), TreeRequest::Expand);
+    let identity = tree.loaded_native_identity(link).unwrap();
+    let version = tree.watch_listing(link).unwrap().0;
+    assert!(tree.collapse(link));
+    graph.identities.lock().unwrap().insert(5, 77);
+    run(&mut tree, Some(link), TreeRequest::Probe);
+    assert_eq!(tree.loaded_native_identity(link).unwrap(), identity);
+    assert_eq!(tree.watch_listing(link).unwrap().0, version);
+}
+
+#[test]
+fn rejected_refresh_installation_does_not_replace_the_listing_identity_basis() {
+    let (registry, graph, mut tree) = identity_fixture();
+    let parent = row(&tree, 2).id;
+    run(&mut tree, Some(parent), TreeRequest::Expand);
+    let link = row(&tree, 5).id;
+    run(&mut tree, Some(link), TreeRequest::Expand);
+    let identity = tree.loaded_native_identity(link).unwrap();
+    let version = tree.watch_listing(link).unwrap().0;
+    graph.identities.lock().unwrap().insert(5, 77);
+    let completed = tree.request(link, TreeRequest::Refresh).unwrap().run();
+    drop(registry);
+    assert!(tree.apply(completed));
+    assert_eq!(row(&tree, 5).error, Some(ProviderError::StaleReference));
+    assert_eq!(tree.loaded_native_identity(link).unwrap(), identity);
+    assert_eq!(tree.watch_listing(link).unwrap().0, version);
 }

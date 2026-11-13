@@ -5,7 +5,8 @@ use midnight_core::{
     Cancellation, Command, DirectoryService, EntryKind, Event, FileClipboardIntent, NavigationId,
     PaneId, SelectionRevision, SortSpec, TreeBranchAction, TreeClipboardRequest,
     TreeClipboardScope, TreeCommand, TreeCopyOccurrence, TreeDisclosure, TreeDisplayRow, TreeEvent,
-    TreeProjection, TreePublication, TreeRequestId, TreeRootSelection, TreeRootSnapshot,
+    TreeProjection, TreePublication, TreeRefreshRequest, TreeRequestId, TreeRootSelection,
+    TreeRootSnapshot, TreeSizeCommand, TreeSizeEvent,
 };
 use midnight_engine::Engine;
 use midnight_platform::LocalFileSystem;
@@ -329,6 +330,91 @@ async fn native_symlink_tree_keeps_alias_actions_and_rejects_only_ancestor_loops
         assert_eq!(files.paths, [logical]);
         assert_ne!(files.paths[0], resolved_target.path.join(READABLE));
     }
+
+    // Refresh the actual target through both loaded logical symlink occurrences.
+    let before_refresh = visible.view.clone();
+    let added = "after refresh 文档";
+    fs::create_dir(target.join(added)).unwrap();
+    fs::create_dir(target.join(READABLE).join("leaf").join(added)).unwrap();
+    let request = TreeRefreshRequest {
+        view: visible.view.clone(),
+        request: TreeRequestId(5),
+    };
+    tree(&commands, TreeCommand::Commit(request.view.clone())).await;
+    tree(&commands, TreeCommand::RefreshLoaded(request.clone())).await;
+    tokio::time::timeout(WAIT, async {
+        loop {
+            match next_tree(&mut events).await {
+                TreeEvent::Published(publication) => {
+                    tree(&commands, TreeCommand::Commit(publication.view.clone())).await;
+                    visible = publication;
+                }
+                TreeEvent::Refreshed {
+                    stamp,
+                    request: id,
+                    result,
+                } => {
+                    assert_eq!(stamp, request.view.stamp);
+                    assert_eq!(id, request.request);
+                    result.expect("readable native symlink refresh must succeed");
+                    break;
+                }
+                TreeEvent::Sizes(TreeSizeEvent::Snapshot { sizes }) => {
+                    assert_eq!(sizes.stamp.session, request.view.stamp.session);
+                    assert!(sizes.is_empty());
+                    tree(
+                        &commands,
+                        TreeCommand::Sizes(TreeSizeCommand::Acknowledge {
+                            stamp: sizes.stamp,
+                            version: sizes.version,
+                        }),
+                    )
+                    .await;
+                }
+                TreeEvent::Sizes(TreeSizeEvent::Selected {
+                    view, selection, ..
+                }) => {
+                    assert_eq!(view.stamp.session, request.view.stamp.session);
+                    assert!(Arc::ptr_eq(&view, selection.basis()));
+                }
+                event => panic!("unexpected native refresh event: {event:?}"),
+            }
+        }
+    })
+    .await
+    .expect("native symlink refresh must complete");
+    assert_eq!(visible.view.stamp.session, before_refresh.stamp.session);
+    for alias in &aliases {
+        let parent = row(&visible.view, alias);
+        assert_eq!(parent.id, row(&before_refresh, alias).id);
+        assert_eq!(parent.disclosure, TreeDisclosure::Expanded);
+        assert_eq!(
+            row(&visible.view, &alias.join(added)).parent,
+            Some(parent.id)
+        );
+        let leaf_path = alias.join(READABLE).join("leaf");
+        let leaf = row(&visible.view, &leaf_path);
+        assert_eq!(leaf.id, row(&before_refresh, &leaf_path).id);
+        assert_eq!(leaf.disclosure, TreeDisclosure::Expanded);
+        assert_eq!(
+            row(&visible.view, &leaf_path.join(added)).parent,
+            Some(leaf.id)
+        );
+        let cycle = row(&visible.view, &alias.join(LOOP));
+        assert_eq!(cycle.disclosure, TreeDisclosure::Failed);
+        assert!(
+            !visible
+                .view
+                .rows
+                .iter()
+                .any(|row| row.parent == Some(cycle.id))
+        );
+    }
+    assert_eq!(
+        visible.view.rows.len(),
+        12,
+        "refresh must update both sibling aliases"
+    );
     commands.send(Command::Shutdown).await.unwrap();
     tokio::time::timeout(WAIT, engine).await.unwrap().unwrap();
     assert_eq!(fs::read(&sentinel).unwrap(), b"unchanged target contents");

@@ -248,7 +248,12 @@ impl DirectoryTree {
         let mut pending = vec![self.root];
         while let Some(id) = pending.pop() {
             let node = &self.nodes[&id];
-            if node.target.is_some() || node.entry.kind != EntryKind::Directory {
+            if node.target.is_some()
+                || !matches!(
+                    node.entry.kind,
+                    EntryKind::Directory | EntryKind::DirectoryLink
+                )
+            {
                 continue;
             }
             if node.listed {
@@ -263,7 +268,12 @@ impl DirectoryTree {
         let Some(node) = self.nodes.get(&branch) else {
             return false;
         };
-        if !node.listed || node.entry.kind != EntryKind::Directory {
+        if !node.listed
+            || !matches!(
+                node.entry.kind,
+                EntryKind::Directory | EntryKind::DirectoryLink
+            )
+        {
             return false;
         }
         let mut current = Some(branch);
@@ -271,12 +281,42 @@ impl DirectoryTree {
             let Some(node) = self.nodes.get(&id) else {
                 return false;
             };
-            if node.target.is_some() || node.entry.kind != EntryKind::Directory {
+            if node.target.is_some()
+                || !matches!(
+                    node.entry.kind,
+                    EntryKind::Directory | EntryKind::DirectoryLink
+                )
+            {
                 return false;
             }
             current = node.parent;
         }
         true
+    }
+
+    /// Identity of a successfully installed listing, not a later disclosure probe.
+    /// Linked ancestry requires a complete native identity basis for polling.
+    pub(crate) fn loaded_native_identity(
+        &self,
+        branch: BranchId,
+    ) -> Result<Option<SizeDirectoryIdentity>, ProviderError> {
+        if !self.loaded_native_branch(branch) {
+            return Err(ProviderError::StaleReference);
+        }
+        let identity = self.nodes[&branch].browse_identity;
+        let mut linked = false;
+        let mut missing = false;
+        let mut current = Some(branch);
+        while let Some(id) = current {
+            let node = &self.nodes[&id];
+            linked |= node.entry.kind == EntryKind::DirectoryLink;
+            missing |= node.browse_identity.is_none();
+            current = node.parent;
+        }
+        if linked && missing {
+            return Err(ProviderError::Unsupported);
+        }
+        Ok(identity)
     }
     /// Resolve a visible source entry, not a container mounted on that entry.
     /// The downstream service still establishes action-specific authority.
@@ -571,9 +611,6 @@ impl DirectoryTree {
             return false;
         }
         node.pending = None;
-        if result.rows.is_ok() {
-            node.browse_identity = result.identity;
-        }
         let rows = self.validate_chain(result.branch).and(result.rows);
         let outcome = rows.and_then(|rows| {
             if result.kind == TreeRequest::Probe {
@@ -591,6 +628,11 @@ impl DirectoryTree {
                 )
             }
         });
+        if outcome.is_ok() && result.kind != TreeRequest::Probe {
+            if let Some(node) = self.nodes.get_mut(&result.branch) {
+                node.browse_identity = result.identity;
+            }
+        }
         if let Err(error) = outcome {
             let used = self.payload_bytes();
             let details = self.failure_details(result.branch, &error);

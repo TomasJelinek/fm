@@ -8,6 +8,13 @@ use midnight_core::{TreeEvent, TreeRequestId, TreeRootSnapshot};
 
 fn scope(files: &Arc<Files>, path: &str) -> (Session, tree::TreeScope) {
     let visible = files.visible(PaneId::Left, 4, path);
+    scope_from_visible(files.clone(), visible)
+}
+
+fn scope_from_visible(
+    files: Arc<dyn midnight_core::FileSystem>,
+    visible: VisibleDirectory,
+) -> (Session, tree::TreeScope) {
     let root = TreeRootSnapshot {
         pane: visible.pane,
         navigation: visible.navigation,
@@ -16,7 +23,7 @@ fn scope(files: &Arc<Files>, path: &str) -> (Session, tree::TreeScope) {
         )),
         entries: visible.entries,
     };
-    let native = NativeProvider::new(files.clone());
+    let native = NativeProvider::new(files);
     let cancel = Cancellation::default();
     let opened = native
         .capture_root(&visible.path, &root.entries, &cancel)
@@ -528,4 +535,509 @@ async fn failed_probe_retries_after_a_successful_listing_ack_without_losing_hist
             .is_err()
     );
     stop(&controller, &mut tasks).await;
+}
+
+// Tree-only identity observations. Existing flat-watch Files/signature behavior stays unchanged.
+type WatchDirectoryIdentity = midnight_core::SizeDirectoryIdentity;
+
+#[derive(Default)]
+struct LinkWatchFiles {
+    files: Files,
+    identities: Mutex<HashMap<PathBuf, WatchDirectoryIdentity>>,
+    retarget_after_listing: Mutex<HashMap<PathBuf, WatchDirectoryIdentity>>,
+    listings: Mutex<Vec<PathBuf>>,
+    identity_reads: Mutex<Vec<PathBuf>>,
+}
+
+fn watch_identity(object: u128) -> WatchDirectoryIdentity {
+    WatchDirectoryIdentity {
+        device: 73,
+        object: object.to_le_bytes(),
+    }
+}
+
+impl DirectoryService for LinkWatchFiles {
+    fn browse_directory_identity(
+        &self,
+        path: &Path,
+        cancel: &Cancellation,
+    ) -> Result<Option<WatchDirectoryIdentity>, FsError> {
+        if cancel.is_cancelled() {
+            return Err(FsError::from_io(
+                "watch test identity",
+                path,
+                io::ErrorKind::Interrupted.into(),
+            ));
+        }
+        self.identity_reads.lock().unwrap().push(path.to_owned());
+        Ok(self.identities.lock().unwrap().get(path).copied())
+    }
+
+    fn read_directory(
+        &self,
+        path: &Path,
+        cancel: &Cancellation,
+        emit: &mut dyn FnMut(Entry) -> bool,
+    ) -> Result<(), FsError> {
+        let result = self.files.read_directory(path, cancel, emit);
+        self.listings.lock().unwrap().push(path.to_owned());
+        if let Some(identity) = self.retarget_after_listing.lock().unwrap().remove(path) {
+            self.identities
+                .lock()
+                .unwrap()
+                .insert(path.to_owned(), identity);
+        }
+        result
+    }
+
+    fn listing_metadata_complete(&self, _: &Entry) -> bool {
+        true
+    }
+
+    fn entry_metadata(&self, path: &Path) -> Result<EntryMetadata, FsError> {
+        self.files.entry_metadata(path)
+    }
+}
+
+impl VolumeService for LinkWatchFiles {
+    fn list_volumes(&self) -> Result<Vec<Volume>, FsError> {
+        Ok(Vec::new())
+    }
+}
+
+impl StorageService for LinkWatchFiles {
+    fn space_info(&self, path: &Path) -> Result<SpaceInfo, FsError> {
+        Err(FsError::from_io(
+            "watch test space",
+            path,
+            io::ErrorKind::Unsupported.into(),
+        ))
+    }
+}
+
+fn expand_link_watch_row(session: &mut Session, name: &str, request: u64, refresh: bool) {
+    let view = session.projection().clone();
+    assert!(session.commit(&view));
+    let row = view
+        .rows
+        .iter()
+        .find(|row| row.entry.display_name == name)
+        .unwrap()
+        .id;
+    session
+        .branch(
+            &view,
+            TreeRequestId(request),
+            row,
+            if refresh {
+                midnight_core::TreeBranchAction::Refresh
+            } else {
+                midnight_core::TreeBranchAction::Expand
+            },
+        )
+        .unwrap();
+    let job = session.take_work().unwrap().unwrap();
+    assert!(session.apply(job.run(), &Cancellation::default()).unwrap());
+}
+
+fn linked_watch_scope() -> (Arc<LinkWatchFiles>, Session, tree::TreeScope, Vec<PathBuf>) {
+    let root = std::env::current_dir()
+        .unwrap()
+        .join("_build/watch-tree-linked-runtime");
+    let files = Arc::new(LinkWatchFiles::default());
+    let names = [
+        ("direct", EntryKind::Directory),
+        ("alias-a", EntryKind::DirectoryLink),
+        ("alias-b", EntryKind::DirectoryLink),
+    ];
+    let paths = names
+        .iter()
+        .map(|(name, _)| root.join(name))
+        .collect::<Vec<_>>();
+    {
+        let mut directories = files.files.directories.lock().unwrap();
+        directories.insert(
+            root.clone(),
+            names
+                .iter()
+                .enumerate()
+                .map(|(index, (name, kind))| {
+                    Entry::new(EntryId(index as u64 + 1), root.join(name), *kind)
+                })
+                .collect(),
+        );
+        for path in &paths {
+            directories.insert(path.clone(), Vec::new());
+        }
+    }
+    {
+        let mut identities = files.identities.lock().unwrap();
+        identities.insert(root.clone(), watch_identity(1));
+        for path in &paths {
+            identities.insert(path.clone(), watch_identity(2));
+        }
+    }
+    let visible = files.files.visible(PaneId::Left, 4, root.to_str().unwrap());
+    let (mut session, _) = scope_from_visible(files.clone(), visible);
+    for (index, (name, _)) in names.iter().enumerate() {
+        expand_link_watch_row(&mut session, name, index as u64 + 1, false);
+    }
+    let view = session.projection().clone();
+    assert!(session.commit(&view));
+    let scope = session.watch_scope().unwrap().unwrap();
+    assert_eq!(
+        scope.targets.len(),
+        4,
+        "root plus all three logical occurrences"
+    );
+    assert_eq!(scope.eligible.len(), 4);
+    for target in &scope.targets {
+        let expected = files.identities.lock().unwrap()[&target.path];
+        assert_eq!(
+            target.directory_identity,
+            Some(expected),
+            "scope identity belongs to its acknowledged listing"
+        );
+    }
+    (files, session, scope, paths)
+}
+
+fn link_watch_timing() -> Timing {
+    Timing {
+        quiet: Duration::ZERO,
+        maximum: Duration::ZERO,
+        poll: Duration::ZERO,
+    }
+}
+
+// Drive the real tree Runtime synchronously: no background scheduling or sleeps
+// decide which observation was made before an acknowledgement or callback.
+struct LinkWatchRuntime {
+    handle: Handle,
+    runtime: tree::Runtime,
+    native: Arc<Batches>,
+    outbox: Outbox,
+    events: mpsc::Receiver<Event>,
+}
+
+impl LinkWatchRuntime {
+    fn new(scope: &tree::TreeScope) -> Self {
+        let handle = Handle {
+            panes: Retirement::testing().panes.map(|lease| {
+                Arc::new(lease.own(Shared {
+                    state: Mutex::new(Control {
+                        visible: None,
+                        revision: 0,
+                        cancel: Cancellation::default(),
+                        stopped: false,
+                        navigation: NavigationId(0),
+                        tree_navigation: None,
+                        tree: None,
+                    }),
+                    worker: std::sync::OnceLock::new(),
+                    timing: link_watch_timing(),
+                }))
+            }),
+        };
+        handle.set_tree_scope(scope.clone());
+        let shared = &handle.panes[scope.stamp.pane.index()];
+        let cancel = shared.state.lock().unwrap().cancel.clone();
+        let native = Arc::new(Batches::default());
+        let mut runtime = tree::Runtime::new(Arc::new(scope.clone()), cancel);
+        runtime.update(Arc::new(scope.clone()), shared, Some(native.as_ref()));
+        let (sender, events) = mpsc::channel(128);
+        Self {
+            handle,
+            runtime,
+            native,
+            outbox: Outbox {
+                sender,
+                wakeup: Arc::new(|| {}),
+            },
+            events,
+        }
+    }
+
+    fn tick(&mut self, files: &dyn midnight_core::FileSystem, count: usize) {
+        for _ in 0..count {
+            self.runtime.step(
+                &self.handle.panes[PaneId::Left.index()],
+                files,
+                &self.outbox,
+                link_watch_timing(),
+            );
+        }
+    }
+
+    fn changed(&mut self) -> Option<midnight_core::TreeViewStamp> {
+        let mut stamp = None;
+        while let Ok(event) = self.events.try_recv() {
+            match event {
+                Event::Tree(event) => match *event {
+                    TreeEvent::Changed { stamp: next } => stamp = Some(next),
+                    other => panic!("unexpected linked watch event: {other:?}"),
+                },
+                other => panic!("unexpected linked watch event: {other:?}"),
+            }
+        }
+        stamp
+    }
+
+    fn acknowledge(&mut self, scope: &tree::TreeScope, request: u64) {
+        let ticket = self
+            .handle
+            .begin_refresh(scope.stamp, TreeRequestId(request))
+            .unwrap();
+        self.handle
+            .finish_refresh(ticket, true, scope.stamp.revision);
+        self.handle.set_tree_scope(scope.clone());
+        self.runtime.update(
+            Arc::new(scope.clone()),
+            &self.handle.panes[scope.stamp.pane.index()],
+            Some(self.native.as_ref()),
+        );
+    }
+
+    fn settle(
+        &mut self,
+        files: &dyn midnight_core::FileSystem,
+        scope: &tree::TreeScope,
+        request: u64,
+    ) {
+        self.tick(files, scope.targets.len() + 1);
+        self.changed();
+        self.acknowledge(scope, request);
+        self.tick(files, scope.targets.len() + 1);
+        assert!(
+            self.changed().is_none(),
+            "accepted stable scope must become quiet"
+        );
+    }
+}
+
+#[test]
+fn tree_link_watch_physical_slots_are_deduplicated_and_all_logical_paths_are_polled() {
+    let (files, _session, scope, paths) = linked_watch_scope();
+    let mut runtime = LinkWatchRuntime::new(&scope);
+    {
+        let batches = runtime.native.callbacks.lock().unwrap();
+        assert_eq!(batches.len(), 1);
+        assert_eq!(
+            batches[0].0.len(),
+            2,
+            "root plus one shared physical directory"
+        );
+        let identities = files.identities.lock().unwrap();
+        let registered = batches[0]
+            .0
+            .iter()
+            .map(|path| identities[path])
+            .collect::<std::collections::HashSet<_>>();
+        assert_eq!(registered.len(), 2);
+    }
+    files.listings.lock().unwrap().clear();
+    runtime.settle(files.as_ref(), &scope, 100);
+    for path in &paths {
+        assert!(
+            files.listings.lock().unwrap().contains(path),
+            "logical path not polled: {path:?}"
+        );
+    }
+    {
+        let mut directories = files.files.directories.lock().unwrap();
+        for path in &paths {
+            directories.insert(
+                path.clone(),
+                vec![Entry::new(
+                    EntryId(1),
+                    path.join("new-child"),
+                    EntryKind::Directory,
+                )],
+            );
+        }
+    }
+    runtime.tick(files.as_ref(), scope.targets.len() + 1);
+    assert_eq!(
+        runtime.changed(),
+        Some(scope.stamp),
+        "empty-to-nonempty requests maintenance"
+    );
+    for path in &paths {
+        assert!(
+            !files
+                .listings
+                .lock()
+                .unwrap()
+                .contains(&path.join("new-child")),
+            "watch polling must not discover recursive targets"
+        );
+    }
+}
+
+#[test]
+fn tree_link_watch_same_path_retarget_with_identical_contents_rebinds_after_ack() {
+    let (files, mut session, scope, paths) = linked_watch_scope();
+    let alias = &paths[1];
+    let mut runtime = LinkWatchRuntime::new(&scope);
+    runtime.settle(files.as_ref(), &scope, 100);
+    let old_callback = runtime.native.callbacks.lock().unwrap()[0].1.clone();
+    files
+        .identities
+        .lock()
+        .unwrap()
+        .insert(alias.clone(), watch_identity(3));
+    runtime.tick(files.as_ref(), scope.targets.len() + 1);
+    assert_eq!(
+        runtime.changed(),
+        Some(scope.stamp),
+        "identity-only retarget must request maintenance despite identical empty contents"
+    );
+    assert_eq!(runtime.native.callbacks.lock().unwrap().len(), 1);
+
+    expand_link_watch_row(&mut session, "alias-a", 4, true);
+    let view = session.projection().clone();
+    assert!(session.commit(&view));
+    let accepted = session.watch_scope().unwrap().unwrap();
+    assert_eq!(
+        accepted
+            .targets
+            .iter()
+            .find(|target| target.path == *alias)
+            .unwrap()
+            .directory_identity,
+        Some(watch_identity(3))
+    );
+    runtime.acknowledge(&accepted, 101);
+    assert_eq!(runtime.native.callbacks.lock().unwrap().len(), 2);
+    assert_eq!(runtime.native.callbacks.lock().unwrap()[1].0.len(), 3);
+    runtime.settle(files.as_ref(), &accepted, 102);
+    assert_eq!(runtime.native.callbacks.lock().unwrap().len(), 2);
+
+    old_callback(u32::MAX);
+    runtime.tick(files.as_ref(), accepted.targets.len() + 1);
+    assert!(
+        runtime.changed().is_none(),
+        "replaced native callbacks cannot dirty the new scope"
+    );
+    let new_callback = runtime.native.callbacks.lock().unwrap()[1].1.clone();
+    new_callback(u32::MAX);
+    runtime.tick(files.as_ref(), 1);
+    assert_eq!(runtime.changed(), Some(accepted.stamp));
+}
+
+#[test]
+fn tree_link_watch_identity_change_during_poll_does_not_accept_a_new_baseline() {
+    let (files, _session, scope, paths) = linked_watch_scope();
+    let alias = &paths[1];
+    let mut runtime = LinkWatchRuntime::new(&scope);
+    runtime.settle(files.as_ref(), &scope, 100);
+    files.identity_reads.lock().unwrap().clear();
+    files
+        .retarget_after_listing
+        .lock()
+        .unwrap()
+        .insert(alias.clone(), watch_identity(3));
+    runtime.tick(files.as_ref(), scope.targets.len() + 1);
+    assert!(files.retarget_after_listing.lock().unwrap().is_empty());
+    assert!(
+        files
+            .identity_reads
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|path| *path == alias)
+            .count()
+            >= 2,
+        "identity must be observed before and after the real listing callback"
+    );
+    assert_eq!(runtime.changed(), Some(scope.stamp));
+
+    // A completed maintenance ticket carrying the old accepted identity cannot
+    // turn the rejected observation into a quiet baseline for the new target.
+    runtime.acknowledge(&scope, 101);
+    let listings = files
+        .listings
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|path| *path == alias)
+        .count();
+    runtime.tick(files.as_ref(), scope.targets.len() + 1);
+    assert_eq!(runtime.changed(), Some(scope.stamp));
+    assert_eq!(
+        files
+            .listings
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|path| *path == alias)
+            .count(),
+        listings,
+        "unacknowledged retarget must fail identity validation before enumeration"
+    );
+}
+
+#[test]
+fn tree_link_watch_unknown_identities_keep_distinct_slots_and_ordinary_polling() {
+    let files = Arc::new(Files::default());
+    let (_session, scope) = expanded_scope(&files, 2, "watch-tree-unknown-identities");
+    assert_eq!(scope.targets.len(), 3);
+    assert!(
+        scope
+            .targets
+            .iter()
+            .all(|target| target.directory_identity.is_none()),
+        "ordinary providers without identity support retain the compatibility path"
+    );
+    let mut runtime = LinkWatchRuntime::new(&scope);
+    {
+        let batches = runtime.native.callbacks.lock().unwrap();
+        assert_eq!(batches.len(), 1);
+        assert_eq!(
+            batches[0].0.len(),
+            3,
+            "None is not a shared physical identity"
+        );
+        assert_eq!(
+            batches[0]
+                .0
+                .iter()
+                .collect::<std::collections::HashSet<_>>()
+                .len(),
+            3,
+            "root and both unrelated ordinary directories need distinct slots"
+        );
+    }
+    let before = files.probes.load(Ordering::SeqCst);
+    runtime.settle(files.as_ref(), &scope, 100);
+    assert!(files.probes.load(Ordering::SeqCst) >= before + scope.targets.len());
+    for (index, target) in scope.targets.iter().skip(1).enumerate() {
+        // File-only changes do not alter the accepted folder-only display
+        // signature, so each positive hint proves that logical branch was polled.
+        files.put(target.path.to_str().unwrap(), index as u64 + 7);
+        runtime.tick(files.as_ref(), scope.targets.len() + 1);
+        assert_eq!(
+            runtime.changed(),
+            Some(scope.stamp),
+            "ordinary logical branch was not polled: {:?}",
+            target.path
+        );
+        runtime.settle(files.as_ref(), &scope, index as u64 + 101);
+    }
+    // Neither child probe observes this immediate-root listing metadata change.
+    files
+        .directories
+        .lock()
+        .unwrap()
+        .get_mut(&scope.targets[0].path)
+        .unwrap()[0]
+        .metadata
+        .native_attributes = Some(0x10);
+    runtime.tick(files.as_ref(), scope.targets.len() + 1);
+    assert_eq!(
+        runtime.changed(),
+        Some(scope.stamp),
+        "root must remain polled too"
+    );
+    assert_eq!(runtime.native.callbacks.lock().unwrap().len(), 1);
 }

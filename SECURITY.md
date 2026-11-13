@@ -74,13 +74,19 @@ publication uses the separate captured-source contract below; virtual exports
 remain unsupported.
 
 Native manual refresh and batched filesystem notifications share that maintenance
-path. Only exactly acknowledged provider-resolved root/expanded-branch targets
-enter the scope; links and foreign providers are excluded. Two backend workers
-own bounded native batches and fair serial metadata polling. Unchanged commits
-reuse admission results, with paced failed retries. Successful reconciliation and
-its exact Commit acknowledge only captured dirty epochs, preserving later events.
-Navigation and terminal failure invalidate the old generation before asynchronous
-teardown; old callbacks, receipts and failures cannot act on newer navigation.
+path. Parent-first reconciliation includes already-loaded provider-resolved
+native directory links and their loaded descendants; foreign mounts stay excluded.
+Watches require visible, expanded occurrences from the exact acknowledged view.
+Known physical browse identities deduplicate native notification slots; logical
+aliases remain separate display, polling and action occurrences. Accepted identity
+changes rebind watches; before/after polling identity mismatches request maintenance.
+Two backend workers retain bounded native batches, fair serial polling and paced
+failed retries. A failed parent suppresses descendant work and retains known rows.
+Successful reconciliation and its exact Commit settle only captured dirty epochs,
+preserving later events. Navigation or terminal failure invalidates the old
+generation before asynchronous teardown; old callbacks and receipts cannot act on
+newer navigation. This remains read-only maintenance, with no new writes, ACL
+changes or elevation authority.
 
 ## Network Neighborhood discovery
 

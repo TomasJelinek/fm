@@ -1,10 +1,12 @@
 //! Accepted native scope, private dirty epochs, and one serial probe/batch owner.
 use super::*;
 use crate::{
-    providers::{MountedTarget, tree::BranchId},
+    providers::{MountedTarget, ProviderTarget, tree::BranchId},
     tree_actor::RootRegistrationLease,
 };
-use midnight_core::{TreeDiagnostic, TreeEvent, TreeRequestId, TreeRevision, TreeViewStamp};
+use midnight_core::{
+    SizeDirectoryIdentity, TreeDiagnostic, TreeEvent, TreeRequestId, TreeRevision, TreeViewStamp,
+};
 use std::{
     collections::{HashMap, HashSet},
     path::PathBuf,
@@ -13,11 +15,80 @@ use std::{
 pub(crate) struct ScopeTarget {
     pub(crate) branch: BranchId,
     pub(crate) path: PathBuf,
+    pub(crate) directory_identity: Option<SizeDirectoryIdentity>,
     pub(crate) display: [u8; 32],
     pub(crate) folders_only: bool,
     pub(crate) path_bytes: usize,
     pub(crate) _mounted: MountedTarget,
     pub(crate) _registration: Arc<RootRegistrationLease>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+enum NotificationKey {
+    Directory(SizeDirectoryIdentity),
+    Branch(BranchId),
+}
+
+impl ScopeTarget {
+    fn notification_key(&self) -> NotificationKey {
+        self.directory_identity.map_or(
+            NotificationKey::Branch(self.branch),
+            NotificationKey::Directory,
+        )
+    }
+
+    fn same_basis(&self, other: &Self) -> bool {
+        self.branch == other.branch
+            && self.path == other.path
+            && self.directory_identity == other.directory_identity
+    }
+
+    fn same_notification_directory(&self, other: &Self) -> bool {
+        match (self.directory_identity, other.directory_identity) {
+            (Some(left), Some(right)) => left == right,
+            _ => self.same_basis(other),
+        }
+    }
+
+    fn probe(
+        &self,
+        filesystem: &dyn FileSystem,
+        cancel: &Cancellation,
+    ) -> Result<signature::Observation, ()> {
+        if cancel.is_cancelled() {
+            return Err(());
+        }
+        self.check_native_target()?;
+        self.check_directory_identity(filesystem, cancel)?;
+        let observation = signature::probe(filesystem, &self.path, self.folders_only, cancel)?;
+        self.check_directory_identity(filesystem, cancel)?;
+        self.check_native_target()?;
+        if cancel.is_cancelled() {
+            return Err(());
+        }
+        Ok(observation)
+    }
+
+    fn check_native_target(&self) -> Result<(), ()> {
+        match self._mounted.value().map_err(|_| ())? {
+            ProviderTarget::Native(path) if path == &self.path => Ok(()),
+            _ => Err(()),
+        }
+    }
+
+    fn check_directory_identity(
+        &self,
+        filesystem: &dyn FileSystem,
+        cancel: &Cancellation,
+    ) -> Result<(), ()> {
+        let Some(expected) = self.directory_identity else {
+            return Ok(());
+        };
+        let current = filesystem
+            .browse_directory_identity(&self.path, cancel)
+            .map_err(|_| ())?;
+        (current == Some(expected)).then_some(()).ok_or(())
+    }
 }
 
 #[derive(Clone)]
@@ -30,6 +101,7 @@ pub(crate) struct TreeScope {
 
 pub(super) struct TreeControl {
     scope: Arc<TreeScope>,
+    notification_keys: HashSet<NotificationKey>,
     epoch: u64,
     acknowledged: u64,
     fence: Option<(RefreshTicket, TreeRevision)>,
@@ -52,9 +124,10 @@ fn same_session(left: TreeViewStamp, right: TreeViewStamp) -> bool {
 }
 
 impl TreeControl {
-    fn new(scope: TreeScope, timing: Timing) -> Self {
+    fn new(scope: TreeScope, timing: Timing, notification_keys: HashSet<NotificationKey>) -> Self {
         Self {
             scope: Arc::new(scope),
+            notification_keys,
             epoch: 0,
             acknowledged: 0,
             fence: None,
@@ -79,6 +152,13 @@ impl Handle {
     /// Called on the model worker after successful exact Commit. Retired scopes
     /// are released here, after unlocking, never on a UI callback/native callback.
     pub(crate) fn set_tree_scope(&self, scope: TreeScope) {
+        // Build bounded membership on the model worker, outside the callback's lock.
+        let notification_keys = scope
+            .targets
+            .iter()
+            .filter(|target| scope.eligible.contains(&target.branch))
+            .map(|target| target.notification_key())
+            .collect();
         let shared = &self.panes[scope.stamp.pane.index()];
         let mut state = shared.state.lock().unwrap_or_else(|e| e.into_inner());
         if state.stopped || scope.stamp.navigation < state.navigation {
@@ -100,6 +180,7 @@ impl Handle {
         }
         let retired = if same {
             let tree = state.tree.as_mut().expect("same tree session");
+            tree.notification_keys = notification_keys;
             if scope.complete {
                 if let Some((ticket, revision)) = tree.fence
                     && scope.stamp.revision.0 >= revision.0
@@ -114,7 +195,9 @@ impl Handle {
             state.cancel.cancel();
             state.cancel = Cancellation::default();
             state.navigation = scope.stamp.navigation;
-            let old = state.tree.replace(TreeControl::new(scope, shared.timing));
+            let old = state
+                .tree
+                .replace(TreeControl::new(scope, shared.timing, notification_keys));
             old.map(|tree| tree.scope)
         };
         state.revision = state
@@ -271,6 +354,7 @@ impl Handle {
 }
 
 struct Observed {
+    basis: Arc<ScopeTarget>,
     full: Option<[u8; 32]>,
     failed: bool,
     poll_at: Instant,
@@ -321,8 +405,22 @@ impl Runtime {
         if Arc::ptr_eq(&self.scope, &scope) && !self.slots.is_empty() {
             return;
         }
-        self.observed
-            .retain(|branch, _| scope.eligible.contains(branch));
+        let targets = scope
+            .targets
+            .iter()
+            .map(|target| (target.branch, target))
+            .collect::<HashMap<_, _>>();
+        self.observed.retain(|branch, observed| {
+            let Some(target) = targets.get(branch) else {
+                return false;
+            };
+            if !scope.eligible.contains(branch) || !observed.basis.same_basis(target) {
+                return false;
+            }
+            observed.basis = Arc::clone(target);
+            true
+        });
+        drop(targets);
         let mut slots = Vec::new();
         if let Some(root) = scope.targets.first() {
             slots.push(root.clone());
@@ -331,7 +429,16 @@ impl Runtime {
             if let Some(target) = scope
                 .targets
                 .iter()
-                .find(|target| target.branch == previous.branch && target.path == previous.path)
+                .find(|target| target.same_basis(previous))
+                .or_else(|| {
+                    scope
+                        .targets
+                        .iter()
+                        .find(|target| target.same_notification_directory(previous))
+                })
+                && !slots
+                    .iter()
+                    .any(|old| target.same_notification_directory(old))
             {
                 slots.push(target.clone());
             }
@@ -340,7 +447,10 @@ impl Runtime {
             if slots.len() >= 32 {
                 break;
             }
-            if !slots.iter().any(|old| old.branch == target.branch) {
+            if !slots
+                .iter()
+                .any(|old| target.same_notification_directory(old))
+            {
                 slots.push(target.clone());
             }
         }
@@ -349,9 +459,12 @@ impl Runtime {
                 .slots
                 .iter()
                 .zip(&slots)
-                .any(|(old, new)| old.branch != new.branch || old.path != new.path);
+                .any(|(old, new)| !old.same_notification_directory(new));
         self.scope = scope;
         if !changed {
+            // A surviving alias may represent the same physical slot. Retain
+            // only its current provider context while keeping the subscription.
+            self.slots = slots;
             return;
         }
         let stamp = self.scope.stamp;
@@ -385,10 +498,10 @@ impl Runtime {
             .iter()
             .map(|target| target.path.clone())
             .collect::<Vec<_>>();
-        let branches = self
+        let keys = self
             .slots
             .iter()
-            .map(|target| target.branch)
+            .map(|target| target.notification_key())
             .collect::<Vec<_>>();
         let weak = Arc::downgrade(shared);
         let callback = Arc::new(move |mask: u32| {
@@ -407,9 +520,11 @@ impl Runtime {
             else {
                 return;
             };
-            if branches.iter().enumerate().any(|(slot, branch)| {
-                mask & (1 << slot) != 0 && tree.scope.eligible.contains(branch)
-            }) {
+            if keys
+                .iter()
+                .enumerate()
+                .any(|(slot, key)| mask & (1 << slot) != 0 && tree.notification_keys.contains(key))
+            {
                 tree.dirty();
                 drop(state);
                 shared.wake();
@@ -499,8 +614,33 @@ impl Runtime {
         if let Some(index) = due {
             self.cursor = (index + 1) % count;
             let target = &self.scope.targets[index];
-            let result =
-                signature::probe(filesystem, &target.path, target.folders_only, &self.cancel);
+            let result = target.probe(filesystem, &self.cancel);
+            let checked_scope = {
+                let state = shared.state.lock().unwrap_or_else(|e| e.into_inner());
+                if state.stopped
+                    || self.cancel.is_cancelled()
+                    || state.navigation != self.scope.stamp.navigation
+                {
+                    return Duration::ZERO;
+                }
+                let Some(tree) = state.tree.as_ref().filter(|tree| {
+                    same_session(tree.scope.stamp, self.scope.stamp)
+                        && tree.scope.eligible.contains(&target.branch)
+                }) else {
+                    return Duration::ZERO;
+                };
+                tree.scope.clone()
+            };
+            // Scope membership can be large. Inspect it without holding the
+            // callback's mutex, then require that exact scope when accepting I/O.
+            if !Arc::ptr_eq(&checked_scope, &self.scope)
+                && !checked_scope
+                    .targets
+                    .iter()
+                    .any(|current| Arc::ptr_eq(current, target))
+            {
+                return Duration::ZERO;
+            }
             let mut state = shared.state.lock().unwrap_or_else(|e| e.into_inner());
             if state.stopped
                 || self.cancel.is_cancelled()
@@ -511,10 +651,12 @@ impl Runtime {
             let Some(tree) = state.tree.as_mut().filter(|tree| {
                 same_session(tree.scope.stamp, self.scope.stamp)
                     && tree.scope.eligible.contains(&target.branch)
+                    && Arc::ptr_eq(&tree.scope, &checked_scope)
             }) else {
                 return Duration::ZERO;
             };
             let old = self.observed.entry(target.branch).or_insert(Observed {
+                basis: target.clone(),
                 full: None,
                 failed: false,
                 poll_at: now,

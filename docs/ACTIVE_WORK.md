@@ -1,4 +1,4 @@
-# Active work and requirements evidence — 12 November 2026
+# Active work and requirements evidence — 13 November 2026
 
 The user has resumed the goal: implement all accepted app features, test each
 deeply and polish the UI. This is the current coordination and requirements
@@ -6,29 +6,33 @@ ledger, alongside [Feature status](FEATURE_STATUS.md). It reconciles the older
 [requirement IDs](IMPLEMENTATION_BACKLOG.md) without treating their stale status
 text or stage ordering as current evidence.
 
-Recorded source/docs integration checkpoint **`cdbb29a375ef01705d7b3b4506edf0219ac38fdb`**
-is pushed, with exact remote equality verified by the Orchestrator. It contains
-Task 1/docs merged at `e5cba5d`, accepted Markdown at `255fbdc` and HTML diagnostics
-at `e6e086c`.
-Qualified runtime/UI source checkpoint: **`35a159cd00a5749f53d7f3522c64566e2c46a776`**.
-CMD-02 source is committed locally as **`21c9c7a55997b83a104098779c3bb9defc6afb8c`**,
-after documentation checkpoint `2475b86`; publication is pending. Its corrected
-Windows gate passes **37 / 0 / 0** (passed/failed/ignored), with zero source drift,
-completed **21:16:16 CET**. The qualified user EXE remains unchanged.
-Completed remote-CI checkpoint **`35a159c`** records **18 successful / 2 failed
-host jobs**, both at `compact_feedback.rs:163`; no completed CI result for
-`cdbb29a` is recorded here. The qualified source includes embedded modal presentation
-with focus/input gating, corrected selection fixtures and shared cancellable font
-catalog cold initialization. The positive-input UI gate passes **20 distinct
-tests**. The new debug EXE compiles and its **private entrypoint** passes engine
-smoke and native UI startup, both exit 0 with unchanged fixtures. The shared D
-engine retry also passes. Its initial hashing failure remains preserved and
-unattributed, with no source/validator fix; later stable-handle probes pass.
-Corrected Markdown is 72/0 plus strict Clippy but is not deployed in the qualified
-private runtime. Task 1 and its public docs are source-integrated into D; native
-Task 2/3 and host cutover remain open. Controlled Markdown debug A/B measurements
-are recorded below; Perf accepted source integration, with native qualification
-and deployment still open. No new remote CI success is recorded.
+Recorded clean D `main` checkpoint: **`1714d99`**, as verified by the Orchestrator.
+It includes recursive expansion `ce9eff3`, thumbnail correction `8e205c0` and
+portable panel scroll regression tests `3bee1dc`, alongside the earlier API/SDK, CMD-02 and viewer work.
+
+The current Windows launch-qualified private EXE is **`269f3419`**,
+**101,794,816 bytes**, built from baseline `1714d99` plus the frozen link-maintenance
+source overlays. Normal debug compilation and both private engine/native UI
+startup smokes pass with zero source drift. This does not establish complete
+viewer workflows, manual CSC/UAC access or Linux desktop UI.
+
+Recursive Windows/software UI passes **69/0**. Backend's broad run was **158/1**
+from 159 selected; its corrected, overlapping Windows junction/Delete rerun is
+**11/0**, not 11 additional unique tests. Thumbnail correction is **14/0** and the
+portable panel regression-test gate is **4/0**. These results do not establish native
+scroll latency, manual CSC/UAC access, physical Linux desktop qualification or a green
+current remote CI run. All open implementation and qualification work below remains
+open unless its exact source/environment boundary is supported by receipts.
+Loaded `DirectoryLink` manual/automatic refresh is implemented and Windows
+qualified: **51 selected / 51 passed / 0 failed / 0 ignored**, compile 0 and zero
+source drift across the eight applied files.
+Its accepted contract preserves separate logical aliases while deduplicating native
+notification slots by known physical browse identity and validating retargets.
+The preceding RED was 2 passed / 3 failed / 0 ignored. GREEN passes disjoint
+provider 10 + refresh 25 + watch 15 + real Windows junction 1 groups. The updated
+Linux native fixture now passes **1/0/0** with the frozen overlays; the 13-test
+Linux UI gate remains in progress. The new debug build and both registered private
+startup smokes pass.
 
 The initial assignment names integrated `main` commit `369b161`. The Orchestrator
 accepted the Markdown slice as `cc4857e` and checkpointed the build port/README as
@@ -76,24 +80,25 @@ success. Dated reports retain their exact source, environment and scope. Work
 below distinguishes **implementation gaps**, **source review**, **performance**
 and **qualification** rather than converting every missing receipt into missing code.
 
-## Current seven-role batch and exclusive ownership
+## Current role boundaries and exclusive ownership
 
 The [agent workflow](developer/AGENT_WORKFLOW.md) and [project rules](../AGENTS.md)
-govern assignments and handoffs. The documentation paths below are an explicit
-file reservation. Other rows name the assigned domains; concrete source paths
-must be recorded by the Orchestrator before shared edits, and a review alone
-does not reserve or authorize edits throughout a directory.
+govern assignments and handoffs. The documentation reservation covers this
+ledger, SECURITY's native manual/watch paragraph and TREE_PANEL maintenance/watch
+sections only. Other rows record ownership and remaining focus, not a claim
+that completed probes are still running or permission to begin unreserved work.
+The Orchestrator records concrete source paths and acceptance before shared edits.
 
-| Owner | Current assignment | Ownership and coordination boundary |
+| Owner | Recorded work / remaining focus | Ownership and coordination boundary |
 | --- | --- | --- |
 | Orchestrator | Coordinate the full goal; independently critique/review proposals, changes and evidence; own integration | Owns file reservations, API/UI integration decisions, Cargo target-directory/native-input leases and Git checkpoints. Commit/merge/push remain Orchestrator-owned. |
-| Architect | Review the frozen Windows native Rename candidate | Retain the accepted preparation/identity and API/SDK contracts. Native Windows source review is in progress; source acceptance, Build qualification and host cutover remain separate. |
-| Backend agent | Implement authorized Linux Task 3 in C alongside separately scoped Task 4A host tests | Root accepted behavior RED after reading the Linux assessment and both test logs: 15 executed failures, 14 explicitly Unsupported and one positive-preparation assertion without a reported variant. Task 1/docs remain integrated at `e5cba5d`; native candidate/host work remains separately scoped. No native Rename deployment, completed qualification or host/UI cutover is claimed. |
-| Viewer agent | Prepare the source-revisit probe | Accepted Markdown source `255fbdc` retains its 72/0, strict Clippy and paired-debug evidence. The new source-revisit probe does not inherit a measured/native result; the worker remains undeployed and native qualification is open. |
-| UI agent | Retain accepted CMD-02 checkpoint `21c9c7a` | Corrected Windows gate passes 37 tests across five artifacts, zero failed/ignored and zero source drift, completed 21:16:16 CET. Root verified all six source hashes and committed exactly those files. Initial 31/5 tree-setup failures remain historical; the qualified user EXE is unchanged and remote CI is not declared fixed. |
-| GitHub build system and build tools developer | Preserve qualified launch receipts and the original shared failure; own Task 2/3 and Markdown performance validation | Private engine/native UI startup and shared engine retry pass. Later stable-handle checks do not identify the original changed field; no source/validator fix occurred. Corrected Markdown is not deployed. Preserve exact source/runtime identities, logs and coordinated leases. |
-| Perf agent | Hold the panel-cost probe frozen and review native Rename costs | The panel-scroll audit is read-only; the frozen panel-cost probe still needs measurements and establishes no fix. Native Rename cost review is separate. Accepted Markdown wall-time/allocator evidence retains its scope; deployment, native scrolling and RSS remain unqualified. |
-| Documentation guru | Record the accepted CMD-02 checkpoint and prepare dependency-inventory evidence | Current tracked edit ownership is only D `docs/ACTIVE_WORK.md`; Windows dependency documentation proposals remain artifacts under `_build/verification/docs-20261112/`. No other root/C docs, source, Git, Cargo or application runs. Freeze a one-file ledger handoff for Root. |
+| Architect | Retain the accepted loaded DirectoryLink maintenance/watch contract and other provider boundaries | Recursive batching, exact Commit, rollback/identity and capacity contracts are implemented in `ce9eff3`; source review is not native/platform qualification. The DirectoryLink contract/applied source are reviewed and Windows-qualified at 51/0/0; updated Linux/platform acceptance remains separate. Native Rename/host cutover, provider watches and archive nesting retain separate acceptance. |
+| Backend agent | Retain Windows-qualified DirectoryLink maintenance; qualify remaining Linux/provider/host paths | API/SDK Task 1/docs are integrated at `e5cba5d`. Recursive Backend refined Windows gate passes 11/0 overlapping the broad 158/1 result; CSC Engine boundary passes 5/0 with mocked helper outcomes. Native Rename candidates are excluded from the retained runtime; the original Linux recursive symlink fixture is verified 1 passed / 0 failed / 0 ignored under WSL/tmpfs at `1714d99`; manual authorization, physical Linux/native-provider acceptance and host cutover remain open. Loaded DirectoryLink maintenance passes the Windows 51/0/0 gate with zero drift; its updated Linux fixture passes 1/0/0 on WSL/tmpfs; the new registered private Windows startup is qualified. C work keeps separate source identities and leases. |
+| Viewer agent | Retain completed Source/Markdown evidence; qualify remaining native viewer paths | The one-off Source probe completed 1,098 operations/732 exact replays without mismatches and is archived under `_build/`; it is not a reusable repo target or native C++ scrollbar diagnosis. Markdown source/A-B and HTML instrumentation retain their scopes. Full viewer/native scrolling and matching packaged-worker evidence remain separate. |
+| UI agent | Hold the tree-clipboard helper correction frozen for Linux execution; retain implemented UI behavior | Recursive/tree/CSC UI is 69/0; copy dialog 8/0, selected Native Jobs 2/0 and native-operations UI 4/0 pass on Windows. CSC warning retention is source-corrected; manual CSC/UAC access is unproved. CMD-02 retains its earlier 37/0 scope. The correction in `tests/support/tree_filters.rs` awaits the planned 13-test Linux runtime gate. Startup does not close full layout/input/platform acceptance or Find Open. |
+| GitHub build system and build tools developer | Retain exact receipts/runtime identity; own coordinated CI/native qualification | Normal debug and registered private `269f3419` engine/native UI startup pass; prior runtime/preferences/shortcut are preserved. Keep target-directory/native-input leases exclusive and reconcile current CI separately; the exact `1714d99` Linux `tree_clipboard` CI job is 3 passed/2 failed in a stale helper; the previous retained terminal run is `8b18892`. Neither is current-source GREEN. |
+| Perf agent | Retain portable panel regression tests and the thumbnail correction; qualify remaining measured costs | `3bee1dc` is a portable panel scroll regression-test commit (4/0), not a production correction; `8e205c0` has 14/0 thumbnail tests. Deterministic software counts/retention do not establish painted flicker, native frame pacing, SSD latency or RSS. Root confirmed the original watch callback-lock P2 closed against applied `watch/tree.rs` hash `a17e9279…b96d5`. Source scrollbar input-to-paint, recursive scaling and native Rename costs still require their own measurements. |
+| Documentation guru | Record applied link-maintenance source and exact CI/qualification boundaries | Exclusive scope is D `docs/ACTIVE_WORK.md`, SECURITY's native manual/watch paragraph and TREE_PANEL maintenance/watch sections only. Preserve open requirements and distinguish implementation from GREEN proof. No other docs, new reports, source, Git, Cargo or application runs. |
 
 Native Windows Task 2 and Linux Task 3 remain WIP in the existing
 `C:/Users/tjelinek/.codex/worktrees/main-deep-audit/FM` checkout and are excluded
@@ -104,8 +109,8 @@ exact equality of all 33 incoming files and zero dirty overlap. Source gates
 include API/SDK tests, corrected Rename tests, strict Clippy, direct Windows/network
 consumers and the C host all-targets check, retaining each original receipt's scope.
 This integrates public ABI/API/SDK source and docs; no native prepared-Rename
-capability/deployment or host/UI cutover is established. The private EXE below
-retains its pre-integration UI/source qualification.
+capability/deployment or host/UI cutover is established. The retained private EXE below has its own `3619070` source and startup receipts;
+native candidate deployment and host cutover are still excluded.
 
 The user authorized selecting useful historical branch changes, discarding obsolete
 changes and deleting branches. The Orchestrator accepted the archive/thumbnail
@@ -137,51 +142,99 @@ Staging, commit and push remain Orchestrator-owned.
 
 <a id="current-checkpoint"></a>
 
-### Qualified UI checkpoint `35a159c`
+### Current Windows launch-qualified runtime `269f3419`
 
-Root pushed the 33-file UI checkpoint `35a159c` and verified `origin/main` at the
-same commit. Its sources exactly match the compiled/qualified private EXE. Plugin
-WIP remains unstaged/excluded. The completed CI run below also names `35a159c`
-and fails at compact-feedback coverage; local startup does not supersede that result.
+`_build/verification/backend-tree-link-refresh-20261113/debug-build-result.json`
+records exit 0, zero source drift and **101,794,816 bytes** for
+`_build/debug/me.exe`, SHA-256
+`269f34195139865e4fb68430fdc396eeb384469dc9cc28a7222612b6f89658eb`.
+The registered private entrypoint is
+`C:/Users/tjelinek/MidnightExplorer-20261113-269f3419/me.exe`.
 
-The positive-input gate passes **20 distinct tests**: native Filter 17/0, Filter
-library 2/0 and exact background-operation retirement 1/0. Exact-first overlaps
-the Filter group and is not added again. Find geometry passed earlier with
-unchanged Find source. The debug EXE compiled successfully at **20:06:27 CET**.
-Its private entrypoint then passed engine smoke and native UI startup at
-**20:12:01 CET**, both exit 0 with unchanged fixtures. A shared D engine retry now
-also passes, with later stable-handle probes. Its initial generic hashing failure
-is preserved and unattributed; no source or validator fix occurred. These startup
-results do not establish full native/HTML/performance or remote CI qualification.
+`private-entrypoint-smoke-results.json` and `private-qualified-windows-result.json`
+in that directory record both engine `--smoke-test` and native `--ui-smoke-test`
+exit 0, zero source drift, and baseline `1714d99` plus frozen source overlays.
+The previous `d2643b49` runtime, preferences and desktop shortcut are preserved;
+candidate native Rename plugins were not deployed. This qualifies Windows
+startup, not full viewer workflows, manual CSC/UAC access or Linux desktop UI.
 
-| Area | Source scope / remaining evidence |
+### Previous launch-qualified runtime `d2643b49`
+
+`_build/verification/build-20261112/final-debug-build-result.json` records a
+normal debug build, exit 0, zero source drift, **101,768,704 bytes**, SHA-256
+`d2643b49917c29b8f5f3b0171dc075bb30058817de6f0b6b1212d8361c0f658d`.
+The registered private entrypoint is
+`C:/Users/tjelinek/MidnightExplorer-20261112-224859-d2643b49/me.exe`.
+
+`final-private-qualified-debug-result.json` records source
+`3619070f6e54eb442ddfa13fcd7b17d9282225f4` and qualification at **23:51:48 CET on
+12 November**. Engine `--smoke-test` and native `--ui-smoke-test` both exit 0;
+fixtures are unchanged. Root inspected the startup snapshot: two panes, toolbars
+and footer rendered without a startup error. The previous private runtime,
+preferences and desktop shortcut are preserved; native Rename candidate plugins
+were not deployed. These are startup results, not manual CSC/UAC, full viewer
+functionality, Linux or native performance qualification.
+
+### Integrated source and targeted gates
+
+| Area | Accepted source and exact recorded scope |
 | --- | --- |
-| Embedded modals | [Main presentation](../crates/midnight-ui/ui/main.slint), [operation/copy draft lifetime](../crates/midnight-ui/src/operation_windows.rs), [invoking-item focus restoration](../crates/midnight-ui/src/dialog_focus.rs) and [input gate registration](../crates/midnight-ui/src/lib.rs) implement the migrated forms. Modeless tools remain independent; native desktop/monitor qualification is separate. |
-| Selection fixtures | [Flat](../crates/midnight-ui/tests/bulk_selection.rs) and [tree](../crates/midnight-ui/tests/tree_bulk_selection.rs) fixtures now expect all-marks Ctrl+D and default-unassigned Ctrl+Shift+D. The historical 22-binary diagnostic passed 1 and 8 tests respectively; this subset does not establish complete selection/native/layout or remote CI success. |
-| Font catalog cold initialization | [Shared catalogs](../crates/midnight-viewer-render/src/fonts.rs) retain completed installed/monospace names process-wide and serialize cold misses per catalog. Waiting callers can cancel; cancelled discovery publishes no partial catalog. Work stays on backend workers and cancellation is cooperative around discovery. In the earlier renderer gate, the five [cache regressions](../crates/midnight-viewer-render/src/font_cache_tests.rs) ran within the 14-passing viewer-render library target; the separate monospace target passed 4 tests. |
-| Current UI verification | Retained-focus/input/lifetime boundaries pass (20 distinct tests). Private engine/native UI startup passes, fixtures unchanged; shared D engine retry also passes. The original shared hashing failure is preserved/unattributed with no source/validator change. Earlier Find/size/model/warning evidence retains its own scope. |
+| Recursive expansion | `ce9eff3`: Ctrl+expander recursive inline browsing, including links/junctions, cancellation, ancestor identity/cycle checks, bounded batches/Commit, rollback and Refresh guards. Windows/software UI is 69/0. Initial Backend gate: 159 selected, 158 passed/1 obsolete legacy assertion failed; refined gate: 11/0 (10 Delete captures plus one real Windows junction), unchanged production and zero drift. This rerun overlaps the broad gate. Loaded DirectoryLink maintenance is implemented/Windows-qualified at 51/0/0 with zero drift; its updated Linux fixture passes 1/0/0 with zero source drift. The original Linux native symlink fixture is verified 1/0/0 under WSL/tmpfs at exact `1714d99`; compile and test exit 0. Physical Linux desktop qualification and larger-than-model paging remain open. |
+| CSC warning retention | UI `20f507c` originally passed 17/0; Engine `3826298` passed 5/0. The integrated 62-case presenter group includes tree 44, folder presence 9 and elevation 9; disclosure 5 and tree panel 2 give 69 total, not 69 plus the earlier CSC counts. Mock helper denial/cancellation/transport and event retention do not prove successful privileged CSC access. |
+| Current interaction gates | Windows copy dialog 8/0, selected Native Jobs notice cases 2/0, native-operations UI 4/0 and viewer image/pixel preparation 26/0 pass in the integrated receipt. This does not close all native input/layout/viewer/platform acceptance. |
+| Thumbnail correction | `8e205c0`: later thumbnail gate 14/0/0, zero drift. It supersedes the earlier 12-pass/2-RED-failure result only for that group; no latency/SSD claim follows. |
+| Portable panel regression tests | `3bee1dc`: portable panel scroll regression-test commit, recorded 4/0; it changes no production panel behavior. The retained panel diagnostic measures bounded row/model behavior and a synthetic pressure case, not current native input-to-paint or universal retention. |
+| CMD-02 | `21c9c7a`: corrected Windows gate 37/0/0, zero drift. The initial 31-pass/5-tree-setup-failure gate is historical. The current private startup does not replace remaining Linux/raw-name/native command-workflow acceptance. |
 
-The local gate is `_build/verification/build-20261112/ui-positive-qualification.json`,
-with source identity in `ui-positive-source-before.json`. Root independently
-verified all 33 UI hashes against the accepted manifest plus positive-input
-overlay. Debug compilation is recorded in `app-debug-build-result.json` (exit 0).
-The qualified private boundary is `private-qualified-debug-result.json`,
-completed at 20:12:01 CET. Root independently inspected that result and the native
-startup screenshot; the unchanged fixtures are part of its recorded scope.
-Frozen identities are in
-`_build/verification/docs-20261112/final-gate-handoff.json`.
-Older failed UI gates remain historical. `qualified-debug-result.json` records the
-shared engine retry pass and stable-handle probes. The initial failure remains in
-`app-smoke-results.json`; its generic executable-hashing error does not identify
-which field changed. No source/validator correction is claimed.
+[Recursive/tree and final startup verification](verification/2026-11-12-recursive-tree.md)
+and [CSC verification](verification/2026-11-11-directory-authorization.md#12-november-csc-warning-retention-regression)
+retain the behavior and boundaries. Build receipts under
+`_build/verification/build-20261112/` are
+`recursive-ui-viewer-thumbnail-runtime-result.json`,
+`tree-recursive-green-runtime-result.json`,
+`tree-recursive-refined-runtime-result.json`,
+`thumbnail-green-runtime-result.json` and
+`final-private-entrypoint-smoke-results.json`. Panel source/test scope is separate
+from the original `panel-scroll-costs-baseline.json` diagnostic.
+
+The Linux receipt is
+`_build/verification/build-20261113/linux-tree-native-1714d99/result.json`,
+with its raw `test.log`: one real symlink test passed on WSL/tmpfs. The wrapper's
+CRLF-only exit 2 was corrected without rerunning the test; Linux desktop UI remains
+outside this qualification.
+
+The **updated** Linux link-maintenance fixture also passes **1/0/0**, compile/test
+exit 0 and `source_drift=[]`, with the frozen source overlays. Its receipt is
+`_build/verification/backend-tree-link-refresh-20261113/linux-engine-only-20261112T235114Z/result.json`.
+This extends WSL/tmpfs filesystem coverage, not Linux desktop UI qualification.
+
+The Source revisit probe is complete and archived:
+`_build/verification/viewer-20261112/source-revisit-probe/status.json` records
+1,098 operations, 14 reference streams, 732 exact replay comparisons, no mismatch,
+a 53,144-byte maximum request and zero reads for the logical 10 GB distant-Locate
+control. It made no production change and does not explain the reported native
+drag delay on the 134-line C++ file. Its machine-specific harness is no longer a
+repository test target; native input-to-paint attribution remains open.
+
+<a id="qualified-ui-checkpoint-35a159c"></a>
+
+### Earlier bounded evidence
+
+The `35a159c` positive-input gate passed 20 distinct tests (native Filter 17,
+Filter library 2, exact operation-lifetime 1); exact-first replay overlaps those
+counts. Its `0bf32ff3` private runtime and shared-engine retry remain historical.
+The initial shared executable-hashing failure in `app-smoke-results.json` remains
+unattributed; later stable checks, diagnostics and new startup passes do not
+identify its original changed field. Existing embedded-modal, selection and
+font-cache behavior remains covered only by each recorded source/test scope.
 
 The corrected Markdown gate is **72 passed / 0 failed across 12 targets**.
 Its strict Clippy receipt,
 `_build/verification/viewer-20261112/candidate-corrected-clippy-result.json`,
 also records exit 0 at **19:41:22 CET**. The correctness summary is
 `candidate-corrected-correctness/summary.json` in that viewer evidence directory.
-These results qualify the corrected source manifest; the candidate is **not
-deployed** in the qualified private runtime. Controlled debug request wall-time
+These results qualify the corrected source manifest; matching packaged-worker
+deployment/native scrolling qualification is not established by these receipts. Controlled debug request wall-time
 and allocator measurements below supported Perf's source-integration acceptance;
 Markdown is committed at `255fbdc`. Native scrolling/deployment and HTML viewer
 qualification remain separate.
@@ -215,17 +268,6 @@ The latest modal gate does not rerun that entire scope. See the
 [tree size contract](developer/TREE_PANEL.md#directory-sizes). Full-control
 clipping/native-layout qualification remains open.
 
-The new EXE is **101,542,400 bytes**, file timestamp **20:06:25 CET**, SHA-256
-`0bf32ff3e13fefc19aae26cd35bc669129938f12f60b6a59f2cfa5cc420bd600`.
-The qualified private entrypoint is
-`C:/Users/tjelinek/MidnightExplorer-20261112-190803-0bf32ff3/me.exe`.
-The same binary's shared path is `_build/debug/me.exe`; its engine retry passes.
-The initial shared hashing failure remains preserved/unattributed despite later
-stable checks, with no source/validator change. Desktop shortcut selection is
-unchanged and the prior private runtime is retained. Corrected Markdown is not
-deployed. Later API/SDK, Markdown and HTML source commits do not extend this
-pre-merge EXE's qualification; no new runtime or prepared-Rename capability is claimed.
-
 The [12 November panel qualification](verification/2026-11-12-panel-interaction-polish.md)
 records bounded tree publication/command admission, captured actions, diagnostics,
 root-level native directory comparison, current deselection defaults and the coral
@@ -235,49 +277,42 @@ additional targeted gates and final debug backend/native/software startup smokes
 Those are recorded results, not tests rerun during this documentation pass, a full
 workspace/remote CI pass or accepted UAC/polkit qualification.
 
-Build's `_build/verification/build-20261112/github-checkpoint-35a159c-terminal.json`
-records completed [GitHub run 43288511891](https://github.com/TomasJelinek/fm/actions/runs/43288511891)
-at `35a159c`: **18 successful jobs / 2 failed host check jobs**. Both Linux and
-Windows fail `compact_geometry_and_unfinished_sizes_render_in_every_theme` at
-`crates/midnight-ui/tests/compact_feedback.rs:163`, in the active-versus-completed
-size-color assertion. Cargo stops at that integration target, so later workspace
-targets are not qualified by the run. The terminal receipt and failure excerpts
-establish this checkpoint's result; no completed result for `cdbb29a` is recorded.
-The compact fixture now explicitly sets `size_running=true` for the active row,
-retaining the terminal-partial and active-color assertions. The local corrected
-compact-feedback test now passes; remote CI rerun remains separate.
+### Retained remote CI boundary
 
-The first CMD-02 compilation passed (exit 0). Its runtime gate recorded **31 passed /
-5 failed / 0 ignored** across four executed artifacts, with zero source drift.
-All five `tree_command_insertion` failures occur at the common setup assertion
-`tree_command_insertion.rs:354:9`: actual **8**, expected **5**. These are historical
-setup failures before insertion-key delivery. The corrected fixture acknowledges
-that real FocusOut collapses selected text to the caret; production is unchanged
-since the first gate. Historical Build receipts
-are `cmd02-build-result.json`, `cmd02-runtime-gate-result.json` and
-`cmd02-runtime-failures-readable.txt` under `_build/verification/build-20261112/`.
-UI's `_build/verification/ui-20261112/cmd02/handoff.md` records both fixture
-corrections. Root independently verified all six current source hashes and committed
-exactly those UI files as `21c9c7a55997b83a104098779c3bb9defc6afb8c`.
+The initial local Linux UI compilation stopped on missing `pkg-config`; **no tests
+executed in that attempt**. Build is resolving the documented CI prerequisites
+without feature changes; the 13-test Linux gate is in progress with no final result.
+The initial prerequisite failure is not a runtime result.
 
-The corrected Windows gate passed **37 tests / 0 failed / 0 ignored** across five
-artifacts at **21:16:16 CET**, with zero source drift: shortcuts library 29,
-tree insertion 5, command bindings 1, Salamander shortcuts 1 and compact feedback 1.
-`_build/verification/build-20261112/cmd02-corrected-gate-result.json`, the five
-`cmd02-corrected-runtime/*/summary.json` receipts and
-`cmd02-corrected-provenance.json` establish this scope. The provenance resolves
-the earlier source-timing question: all recorded UI/host source writes preceded
-Cargo; no extra freshness run is needed. The host diagnostic runtime tests were
-not run by this gate. This is a targeted Windows source/test qualification; the
-user EXE remains at its earlier `35a159c` source, and Linux/native deployment and
-remote CI qualification are separate.
 
-Earlier [run 43260032611](https://github.com/TomasJelinek/fm/actions/runs/43260032611)
-at `2e0e554` recorded 18 successful / 2 failed jobs in operation-background-retirement
-and Filter library tests; the later local positive-input gate passes those
-boundaries. Run `43239253816`, with comparator timeout and Ctrl+D fixture failures,
-also remains historical. Neither earlier result replaces the completed `35a159c`
-CI failure.
+At exact `1714d99`, the [Linux CI job](https://github.com/TomasJelinek/fm/actions/runs/43324388443/job/131555743277)
+records `tree_clipboard` **3 passed / 2 failed / 0 ignored**. The stale
+[tree_filters helper](../crates/midnight-ui/tests/support/tree_filters.rs) expected
+a separate native child instead of the Main embedded confirmation; failure occurs
+before Return and native Move/byte assertions. Root reports its source correction
+frozen; the planned **13-test Linux runtime gate is pending**. Available evidence
+is `_build/verification/build-20261113/ci-first-failure-diagnosis.json` and
+`github-checkpoint-1714d99-job-131555743277-20261112T232014Z.json`.
+This job did not reach the Linux recursive target;
+its separate WSL/tmpfs 1/0/0 receipt remains independent.
+
+
+The latest retained terminal remote receipt is
+`github-checkpoint-8b18892-terminal-20261112T221914Z.json`:
+[run 43312251721](https://github.com/TomasJelinek/fm/actions/runs/43312251721) at
+`8b18892` completed with **18 successful / 2 failed host jobs**. Both hosts
+failed three `operations_native_ui` assertions at
+`tests/support/operations_native.rs:193` (`get_dialog_input_blocked()`).
+The later integrated Windows target passes 4/0; Linux confirmation/current-main
+remote success remains separate. No retained terminal receipt qualifies
+`1714d99` as a green remote run.
+
+Earlier `955068c` Native Jobs notice failures, `35a159c` compact-feedback
+failures and `2e0e554` operation/Filter failures remain dated history. Local
+selected notice/operation/compact passes do not rewrite those CI outcomes or
+qualify later targets that a failed run never reached. CMD-02's source timing
+question was resolved by `cmd02-corrected-provenance.json`; its 37/0 gate remains
+a targeted Windows result, not a full suite.
 
 ### Completed build-script integration
 
@@ -355,15 +390,18 @@ for the next assignment, not permission to start unreserved edits or builds.
 | IDs / priority / kind | Verified basis and remaining work | Next acceptance / role |
 | --- | --- | --- |
 | VFS-01, PFS-01 / P1 / public API/SDK source integrated; native/host cutover open | Public [ABI 1.3](../filesystem-api/midnight-filesystem-plugin-api/src/abi.rs) and [operation family](../filesystem-api/midnight-filesystem-plugin-api/src/model.rs) now include optional prepared Rename alongside browsing/reads/storage and Activate/Refresh/ResolveText. Task 1 plus public docs are merged into D `e5cba5d`, with exact 33-file equality. [App composition](../crates/midnight-explorer/src/main.rs) still injects native MutationService/WatchService separately; Windows/Linux native WIP remains in C. | Architect + Backend: retain the source-integration boundary while qualifying native Task 2/3 and later host routing. No new provider Rename capability/deployment or host cutover is claimed. Reject stale/foreign/unsupported targets without native/TEMP substitution; plugins share only public APIs and own tests. |
-| TREE-01, ARCH-02 / P1 / implementation | [Tree contract](developer/TREE_PANEL.md) contains many implemented captured consumers. Production container discovery/attachment, archive watches and nested mounts remain separate gaps: [attach API](../crates/midnight-engine/src/providers/tree.rs) has test callers, while [archive mount input](../crates/midnight-filesystem-host/src/session.rs) still takes a native captured file. | Backend + Architect: add provider-content mount leases, exact parent anchors, bounded aggregate nesting/decompression/cache, invalidation and cancel/retry. Prove native → archive → archive → viewer, outer-source changes and concurrent solid readers; qualify supported tree actions without removing unsupported-action guards. |
+| TREE-01, ARCH-02 / P1 / implementation | [Tree contract](developer/TREE_PANEL.md) includes implemented bounded recursive expansion (`ce9eff3`, Windows UI 69/0 and overlapping Backend refined 11/0) and captured consumers; physical Linux desktop qualification/larger-than-model paging remain open. Production container discovery/attachment, archive watches and nested mounts remain separate gaps: [attach API](../crates/midnight-engine/src/providers/tree.rs) has test callers, while [archive mount input](../crates/midnight-filesystem-host/src/session.rs) still takes a native captured file. | Backend + Architect: add provider-content mount leases, exact parent anchors, bounded aggregate nesting/decompression/cache, invalidation and cancel/retry. Prove native → archive → archive → viewer, outer-source changes and concurrent solid readers; qualify supported tree actions without removing unsupported-action guards. |
+| TREE-01 / P1 / DirectoryLink maintenance implemented; Windows qualified | Parent-first loaded native-link refresh, exact acknowledged watch scope, physical-identity notification deduplication with separate logical aliases, and retarget-aware subscription/poll validation pass the Windows gate: 51 selected/passed, 0 failed/ignored, compile 0, zero drift. Disjoint groups: provider 10 + refresh 25 + watch 15 + real Windows junction 1. `build-green-result.json` and `build-green-runtime-result.json` under `_build/verification/backend-tree-link-refresh-20261113/` establish this scope. Prior RED 2/3/0 is historical. | Retain generation/exact Commit, failed-parent descendant suppression, cycle/retarget and logical-action safeguards; no write/ACL/elevation changes. Updated Linux-native fixture passes 1/0/0 on WSL/tmpfs with frozen overlays and zero drift. The separate Linux UI 13-test gate remains in progress; new debug compilation and registered private Windows startup pass. The earlier exact-`1714d99` Linux 1/0/0 fixture does not qualify this updated source. |
 | COPY-03 / P1 / implementation | [Metadata policy](../crates/midnight-core/src/transfer_metadata.rs) exposes ContentOnly and required exact modified time for up to 64 native regular-file roots. Full metadata/directory metadata and explicit link-object copying remain unavailable. | Backend: define capabilities for remaining times/attributes/ACLs/xattrs/streams and postorder directory metadata; unsupported kinds fail before writes where knowable. Verify required values before publication and retained sources on failure; link copying must preserve links without following referents. |
 | TERM-01 / P1 / implementation | [Terminal service](../crates/midnight-core/src/desktop.rs) is launch-only and [Linux launch](../crates/midnight-platform-linux/src/desktop.rs) spawns a new process/TTY. The [reusable-session requirement](superpowers/specs/2026-11-04-terminal-sessions-design.md) remains open. | Backend: one unprivileged bounded broker with kernel-verified process/UID/lifetime identity; distinguish Idle/Busy/disconnected/unknown outcome and never replay uncertain commands. Qualify a concrete terminal; sudo owns authentication/expiry, with no stored password, policy change or keepalive. |
+| FIND-01/02 / P1 / Open revalidation diagnosis unresolved | The reported Find Open error is emitted by [validate_result](../crates/midnight-engine/src/find_worker.rs) when raw path/kind/native identity or one of six revision words differs. `_build/verification/ui-20261112/find-result-revision/diagnosis.json` identifies that boundary; no differing field or production fix is proven. | Backend + Build: reproduce on the reported untouched file or an owned equivalent, record captured/current identity and all revision words, then fix the demonstrated cause without weakening replacement/stale-session rejection. UI Details is the query report, not a second file-Properties action. |
 | NET-01 / P1 / implementation | Discovery and typed discovery Hot Paths exist; [Linux GIO](../plugins/midnight-filesystem-network/src/linux/gio.rs) explicitly aborts interactive password challenges. Live SMB/GVfs interoperability is a separate qualification gap. | Backend + Architect: host-owned ephemeral authentication/cancel flow with no credential persistence/logging. Cover stale/canceled auth, reconnect and provider removal; then qualify an owned live endpoint. |
 | FILTER-01/02, UI-01 / P1 / targeted positive-input gate passed | The retained replacement-popup focus assertion passes. Native Filter 17/0, Filter library 2/0 and exact operation-lifetime 1/0 cover 20 distinct tests; exact-first replay is not added twice. Find geometry passed with unchanged source. Private engine/native UI startup subsequently passes. | Preserve verified input/focus/lifetime and source identities. The original shared hashing anomaly remains preserved/unattributed after a passing engine retry; full native/layout/platform acceptance is not closed by these focused tests or startup smokes. Retain real pointer/key, occurrence identity, history/clear and stale-token coverage. |
 | SELECT-01 / P1 / fixture correction implemented; subset passed | [Flat](../crates/midnight-ui/tests/bulk_selection.rs) and [tree](../crates/midnight-ui/tests/tree_bulk_selection.rs) definitions match all-marks Ctrl+D and default-unassigned Ctrl+Shift+D in `2e0e554`; their recorded binary runs passed 1 and 8 tests. The earlier Linux CI failure remains historical and the combined current diagnostic failed elsewhere. | Build: finish the targeted both-pane/native/archive integrations and record exact source/artifact/commands/results. Preserve explicit files-only action/remap coverage and the wider native/layout/drag qualification requirements; this subset does not establish a full selection or remote CI pass. |
-| CMD-02 / P1 / corrected Windows gate passed | Checkpoint `21c9c7a` records the six accepted UI files. Corrected gate: 37 passed / 0 failed / 0 ignored across five artifacts, zero source drift, completed 21:16:16 CET. Natural FocusOut/caret and explicit active-size-bit fixtures pass locally; initial 31/5 setup failures remain historical. Captured Custom Commands remain separate and the user EXE is unchanged. | Preserve literal insertion, acknowledged occurrence identity, raw names, focus, stale rejection and shell-draft grammar. Build: retain the exact receipts and qualify remaining Linux/native app/deployment boundaries separately. Do not derive authority from displayed archive paths or execute inserted text; no remote CI fix is inferred. |
+| CMD-02 / P1 / corrected Windows gate passed | Checkpoint `21c9c7a` records the six accepted UI files. Corrected gate: 37 passed / 0 failed / 0 ignored across five artifacts, zero source drift, completed 21:16:16 CET. Natural FocusOut/caret and explicit active-size-bit fixtures pass locally; initial 31/5 setup failures remain historical. Captured Custom Commands remain separate; the current private `269f3419` EXE passes startup, not all command workflows. | Preserve literal insertion, acknowledged occurrence identity, raw names, focus, stale rejection and shell-draft grammar. Build: retain the exact receipts and qualify remaining Linux/native command-workflow boundaries separately. Do not derive authority from displayed archive paths or execute inserted text; no remote CI fix is inferred. |
 | STATUS-02, PFS-02 / P1 / terminal styling implemented; targeted UI tests pass | Completed partial totals retain `≈`, yellow warnings and details with normal metadata number styling; only actively unfinished totals are highlighted, even while another root runs. Earlier recorded size/model library tests, `size_errors` 2/0, `panel_warning_details` 4/0 and `tree_folder_sizes` 7/0 passed. | Preserve these guarantees through remaining UI fixes without extending those earlier receipts to changed source, including mixed running/finished, warning-completed and cancelled/incomplete states. Full native/layout/platform qualification remains in the UI acceptance row below; these software UI passes do not close it. |
-| SCROLL-02, VIEW-PERF-01/02, MEDIA-03 / P1 / source integration accepted; native qualification open | Corrected Markdown is committed at `255fbdc`, with 72/0 and strict Clippy. Perf accepts source integration from 32 paired debug profiling passes with exact output equivalence: large-fixture request wall time falls about 23 ms → 11–15 ms, while per-request allocator peak rises 383,320/461,739 bytes and small-fixture p95 rises 0.038–0.298 ms. [Retained-seek report](verification/2026-11-12-retained-complete-page-seek.md) retains its dated XML/refill and native boundaries. | Viewer prepares the minimal native-worker handoff. Native scrolling/deployment, release/frame pacing, process memory/RSS, DPI/viewport and scroll-back qualification remain open under coordinated leases. The worker is undeployed; backend wall-time measurements do not close these requirements. |
+| SCROLL-02, VIEW-PERF-01/02, MEDIA-03 / P1 / source integration accepted; native qualification open | Corrected Markdown is committed at `255fbdc`, with 72/0 and strict Clippy. Perf accepts source integration from 32 paired debug profiling passes with exact output equivalence: large-fixture request wall time falls about 23 ms → 11–15 ms, while per-request allocator peak rises 383,320/461,739 bytes and small-fixture p95 rises 0.038–0.298 ms. [Retained-seek report](verification/2026-11-12-retained-complete-page-seek.md) retains its dated XML/refill and native boundaries. | Viewer + Build: establish matching packaged-worker/native evidence. Native scrolling/deployment, release/frame pacing, process memory/RSS, DPI/viewport and scroll-back qualification remain open under coordinated leases. Matching deployment/interactive evidence is still required; backend wall-time measurements do not close these requirements. |
+| SCROLL-02, VIEW-PERF-01/02 / P1 / native Source drag unresolved | The archived one-off Source probe completed 1,098 operations/732 exact replays without mismatches; it measures broker/codec work, not the user's 134-line C++ scrollbar input-to-paint path. Portable panel regression tests `3bee1dc` 4/0 and thumbnail correction `8e205c0` 14/0 do not qualify that separate viewer path. | Viewer + UI + Build/Perf: capture the actual native scrollbar gesture, dispatch, request, layout/render and presentation phases on an owned unchanged fixture; attribute the observed delay before choosing a fix. Preserve source identity, cancellation and bounded provider I/O; do not infer a rendering improvement from protocol replay. |
 | LIFE-01 / P1 / source review + qualification | [Lifetime contract](developer/ENGINE_LIFETIME.md) and later service/mailbox/report/configuration reports supersede the first retirement plan's narrower status. Exhaustive closure remains unestablished. | Architect + Backend: reconcile each retained owner/task/channel/last-release path against current source; exercise first-poll/drop, blocked dispatch, shutdown and completed-unconsumed outputs with native-before-provider destruction. A blocked destructor retains real capacity; no weakening or unbounded cleanup fallback. |
 | IO-01 / P2 / benchmark prerequisite + implementation | [Transfer contract](developer/TRANSFERS.md) and copy worker remain serial with bounded 256 KiB steps. [Same-SSD probe](verification/2026-11-10-ssd-copy-probe.md) is incomplete and no-go for enabling concurrency from that run. | Backend + Build: complete stable 1/2/4-stream full-verification measurements, then positive local-SSD endpoint classification and shared physical-device budgets. Unknown/HDD/network stay serial. Cover aliases, A↔B fairness, small/mixed/large files, UI p95/p99, failure/cancel and retained in-flight ownership before raising defaults. |
 | PLAT-01 / P1 / implementation + native dependency | [Application platform selection](../crates/midnight-platform/src/lib.rs) rejects non-Windows/Linux targets; a separate [read-only Darwin provider](../plugins/midnight-filesystem-native-macos/IMPLEMENTATION_PLAN.md) already exists. | Architect + Backend + UI + Build: reuse that provider and implement separate macOS app services, secure loaders/containment, input/clipboard/windows/terminal, mutations, packaging and CI. Native hardware/runner evidence must establish supported OS/architectures; its absence does not block independent source work. |
@@ -374,8 +412,9 @@ for the next assignment, not permission to start unreserved edits or builds.
 The accepted Rename API/SDK Task 1 (`f3f8c59`) and public docs (`852ee0c`) are now
 source-integrated into D `e5cba5d` with exact 33-file equality.
 Their tests, strict Clippy and consumer checks retain their recorded source scopes.
-Windows Task 2 and Linux Task 3 remain native WIP in C; no new Rename capability,
-runtime deployment or host cutover is claimed.
+Windows/Linux native candidates in C retain separate receipts and are excluded
+from the retained private runtime. No native prepared-Rename capability deployment
+or host cutover is established.
 The public [native protocol](../filesystem-api/NATIVE_PLUGIN_PROTOCOL.md)
 explicitly grants no mutation authority to read handles/revisions. Its existing
 Refresh invalidates discovery TTL caches; public watch subscriptions/general change
@@ -392,7 +431,7 @@ Proposed ownership: Backend owns public API/SDK/header, separate plugin/platform
 implementations, host adapters and engine authority/proof integration; UI owns
 capability presentation, drafts/confirmations and flat/tree UI regressions; Build
 owns packaging/CI. Shared composition/`lib.rs` edits receive one explicitly named
-owner. No source implementation began in the Architect's read-only review.
+owner. The Architect review itself was read-only; later source progress does not expand its recorded qualification.
 
 ### Qualification of implemented workflows
 
@@ -408,10 +447,10 @@ gestures prove different boundaries.
 | ARCH-01/04, HOTPATH-02, MEDIA-01/03 / archives and previews | [Archive API/limits](developer/FILESYSTEM_API.md), [streaming workers](verification/2026-11-09-archive-streaming.md), [cooperative thumbnail cancellation](verification/2026-11-10-archive-thumbnails.md), [native Hot Paths manager](verification/2026-11-11-native-tool-windows.md) | Backend + Viewer + Build: real-plugin full-app menu/shortcut/restart/restore/unavailable-source Hot Paths, large/ZIP64/solid/all-format paths, private-storage failure and release packaging. Qualify actual native panel scroll-back/cache reuse and stale provider revisions; protocol-3 installed worker checks do not cover every Linux/archive-panel desktop workflow. |
 | FIND-01/02, HASH-01 / tools | [Find](developer/FIND.md), [captured Find actions](verification/2026-11-12-find-actions.md), [checksums](developer/CHECKSUMS.md) | Backend + UI + Build: current installed tool windows, roots/history, exact captured result actions, manifest restrictions, export/partial consent, stop/stale/shutdown and small-window behavior. Archive Find and provider-wide checksum support require separate implementation contracts. |
 | CMD-01/02/03, OPTIONS-02, VIEW-03 / persisted settings and commands | [Tree commands](verification/2026-11-12-tree-custom-commands.md), [Cmd scope](verification/2026-11-12-cmd-custom-commands.md), [viewer preferences](developer/VIEWER_PREFERENCES.md) | UI + Backend + Build: actual Add/Edit/Preview/Cancel/Save/restart, exact argv/cwd and selected/focused identity, icon lifecycle and terminal behavior. Cmd `_ARG` direct argv evidence does not qualify arbitrary CALL/builtin reparsing. Viewer manager recreation is narrower than an app restart. |
-| DIALOG-02, META-02, SELECT-01, PANEL-02, NAV-01/02, NOTICE-02, THEME-02, ICON-02, DRIVE-02, STATUS-02 / UI polish | Embedded modal/focus/input source and corrected selection fixtures are in [current checkpoint scope](#qualified-ui-checkpoint-35a159c); earlier [panel/selection/palette evidence](verification/2026-11-12-panel-interaction-polish.md) retains its dated scope | UI + Build: qualify normal/320×200, desktop/touch, fonts/DPI/themes, input/focus/IME, resizing, X/Escape and captured callbacks. Ordinary modals stay embedded; independent tools retain native hosts. Preserve warning Copy/retry/close and the tested finished-partial-size presentation. Render matrices do not substitute for native/compositor checks. |
+| DIALOG-02, META-02, SELECT-01, PANEL-02, NAV-01/02, NOTICE-02, THEME-02, ICON-02, DRIVE-02, STATUS-02 / UI polish | Embedded modal/focus/input source and corrected selection fixtures are in [current checkpoint scope](#current-checkpoint); earlier [panel/selection/palette evidence](verification/2026-11-12-panel-interaction-polish.md) retains its dated scope | UI + Build: qualify normal/320×200, desktop/touch, fonts/DPI/themes, input/focus/IME, resizing, X/Escape and captured callbacks. Ordinary modals stay embedded; independent tools retain native hosts. Preserve warning Copy/retry/close and the tested finished-partial-size presentation. Render matrices do not substitute for native/compositor checks. |
 | VIEW-01/02, SCROLL-02 / viewers and comparison | [Viewer presentation](developer/VIEWER_PRESENTATION.md), [image limits](developer/IMAGE_VIEWER_API.md), [HTML contract](developer/WEB_VIEWER_API.md), [foreground evidence](verification/2026-11-12-foreground-scroll-resume.md) | Viewer + UI + Build: native text/hex/source/Markdown/image/PDF/HTML opening/navigation/search/copy/zoom/font/persisted settings, exact user fixtures, native/archive content and text/image comparison. Qualify Linux frame pacing, physical IME, native Chromium Wayland and configurable browser key arbitration separately; preserve bounded page selection and inert content. |
-| NET-01, PLAT-02 / native environments and permissions | [Network contract](developer/NETWORK_FILESYSTEM.md), [system targets](SYSTEM_REQUIREMENTS.md), [directory authorization](verification/2026-11-11-directory-authorization.md) | Backend + UI + Build: controlled live SMB/GVfs/FUSE, Windows 10, physical Linux desktops/distribution packages, GPU/driver/filesystem and multilingual/RTL/IME evidence. Accepted UAC/polkit prompts remain unqualified by the panel report. Record exact environment, reduced-RAM measurements and artifact notices; WSL/compilation is narrower evidence. |
-| CI / complete current validation | Completed remote [run 43288511891](https://github.com/TomasJelinek/fm/actions/runs/43288511891) at `35a159c` records 18 successful / 2 failed host jobs at `compact_feedback.rs:163`; later workspace targets are not qualified. The corrected local CMD-02/compact gate now passes 37/0/0 with zero drift at `21c9c7a` | Retain the historical failures and qualify remote CI separately; the local pass does not declare the remote failure fixed. Publication of `2475b86`/`21c9c7a` is pending. Preserve the initial unattributed hashing failure without claiming a source/validator fix; the qualified EXE, native WIP, worker deployment and broader native/HTML/performance boundaries remain separate. |
+| NET-01, PLAT-02 / native environments and permissions | [Network contract](developer/NETWORK_FILESYSTEM.md), [system targets](SYSTEM_REQUIREMENTS.md), [directory authorization](verification/2026-11-11-directory-authorization.md) | Backend + UI + Build: controlled live SMB/GVfs/FUSE, Windows 10, physical Linux desktops/distribution packages, GPU/driver/filesystem and multilingual/RTL/IME evidence. CSC warning/UI and Engine mock gates pass, but actual privileged CSC access, accepted UAC/polkit prompts and physical Linux desktop workflows remain unqualified. The original recursive symlink fixture is verified 1/0/0 under WSL/tmpfs at `1714d99`, with compile/test exit 0. Record exact environment, reduced-RAM measurements and artifact notices; WSL/compilation is narrower evidence. |
+| CI / complete current validation | Exact `1714d99` [Linux job](https://github.com/TomasJelinek/fm/actions/runs/43324388443/job/131555743277) records `tree_clipboard` 3 passed/2 failed in the stale native-child helper before confirmation. The helper correction is frozen; planned 13-test Linux execution remains pending. Previous terminal run `8b18892` had 18 successful/2 failed host jobs; later Windows operations passed 4/0 | Build + Root: execute the frozen Linux helper correction and qualify the current source on remote Windows/Linux with exact outcomes. DirectoryLink Windows 51/0/0 is local qualification; its updated Linux fixture passes 1/0/0 on WSL/tmpfs; the new registered private Windows startup is qualified. Local selected gates, WSL filesystem fixtures and startup do not establish full-suite/desktop success. Native provider/host cutover, viewer performance and manual permissions remain separate. |
 | Dependencies / release inventory | [Dependency policy](DEPENDENCY_POLICY.md), [third-party inventory](THIRD_PARTY.md) and distribution notices | Every role + Documentation + Build: review actual pinned direct/transitive/native/test/build dependencies and enabled features on changes, verify free intended use/distribution and required notices/source offers. No trial/paid-only path or silent project-license change. No dependency changed in this documentation pass. |
 
 ### Retained extension contracts

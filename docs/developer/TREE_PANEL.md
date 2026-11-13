@@ -406,10 +406,14 @@ cleanup tickets, including a draft abandoned after failed preparation.
 Every terminal Copy/Move result marks both adopted native tree sessions dirty,
 including failed or canceled transfers. The backend reconciles the hidden root
 and previously loaded native branches, including collapsed cached branches,
-parent-first through one provider lane. It does not discover unopened branches
-or enumerate foreign/archive mounts. Surviving occurrence IDs, expansion, marks,
-filters and sort options remain; deleted occurrences disappear. Failed listings
-retain their last known contents and report a diagnostic.
+parent-first through one provider lane. The accepted link-maintenance extension
+includes already-loaded provider-resolved native directory links and their loaded
+descendants. It does not discover unopened branches or enumerate foreign/archive
+mounts. Surviving occurrence IDs, expansion, marks, filters and sort options remain;
+deleted occurrences disappear.
+Failed parent listings retain known contents, report a diagnostic and suppress
+descendant work for that pass. Cycle/retarget validation and logical action paths
+remain intact; read-only maintenance grants no mutation, ACL or elevation authority.
 
 Maintenance waits for preceding selection acknowledgements and holds the mutation
 gate through each list/apply step, releasing it before publication backpressure.
@@ -472,24 +476,31 @@ protocol; this integration does not enable archive Paste, Cut or mutation.
 ## Native watches and reconciliation
 
 An exactly acknowledged publication supplies the backend's watch scope: the root
-and loaded, expanded native branches visible in the projection. An expanded empty
-branch retains observation so a newly created child appears. Collapsed, filtered
-out, link and foreign-provider branches do not become native watch targets.
+and loaded, expanded native branches visible in the projection. The accepted
+link-maintenance extension includes provider-resolved native directory links and
+their eligible loaded descendants.
+An expanded empty branch retains observation so a new child appears. Collapsed,
+filtered-out and foreign-mount/provider branches stay outside native watch scope.
 Targets come from retained provider registrations, never from displayed paths.
 
-Each pane uses one nonrecursive native batch for its root and up to 31 stable
-branches. A serial fair poll covers all eligible branches, including those beyond
-the native slots. The two existing backend watch workers own subscriptions,
-metadata probes and cleanup. Events use a one-second quiet interval and a
-three-second batching ceiling; slow probes or output backpressure can add delay.
-Polling and failure retries use a 15-second interval.
+Each pane retains a bounded nonrecursive native batch for its root and up to 31
+branch slots. Known physical browse identities deduplicate notification slots;
+logical aliases remain separate display rows, polling targets and action
+occurrences. A serial fair poll covers all eligible logical branches, including
+aliases and those beyond the native slots. Accepted browse-identity changes rebind
+subscriptions. Polling checks identity before and after observation; a mismatch
+requests maintenance rather than accepting the observation as unchanged.
+The two existing backend workers own subscriptions, metadata probes and cleanup.
+Events use a one-second quiet interval and a three-second batching ceiling; slow
+probes or output backpressure can add delay. Polling/failure retries use 15 seconds.
 
 The accepted listing signature and full immediate-directory observation remain
 separate, so files hidden by the folder-only branch view still invalidate sizes
 without causing a perpetual refresh. Unchanged publication commits reuse cached
-targets/signatures, including paced admission failures. A successful sweep and
-its exact acknowledged publication settle only the captured dirty epoch; a newer
-event remains pending. Failed listings retain known rows and report a diagnostic.
+targets/signatures only while accepted browse identities still match, including
+paced admission failures. A successful sweep and its exact acknowledged
+publication settle only the captured dirty epoch; a newer event remains pending.
+Failed listings retain known rows and report a diagnostic.
 
 Navigation or terminal session failure invalidates that generation immediately;
 the backend releases native/provider resources after any outstanding call returns.
@@ -499,9 +510,10 @@ through each maintenance list/apply step, while explicit expansion can proceed
 when maintenance is waiting for a transfer.
 
 See the [watch design](../superpowers/specs/2026-11-10-tree-watch-design.md).
-The [verification record](../verification/2026-11-10-tree-watch.md) gives the actual
-tested scope; this does not add archive watches,
-generic watch providers, or the remaining tree operation consumers.
+The earlier [verification record](../verification/2026-11-10-tree-watch.md) retains
+its dated scope; [ACTIVE_WORK](../ACTIVE_WORK.md#current-checkpoint) records current
+qualification. This does not add archive watches, generic watch providers or the
+remaining tree operation consumers.
 
 ## Delete from expanded native panels
 

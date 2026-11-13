@@ -5,7 +5,7 @@
 pub(super) mod modeless;
 use midnight_core::*;
 use midnight_engine::Engine;
-use midnight_ui::{Presenter, install, refresh};
+use midnight_ui::{OperationPresentation, Presenter, install, refresh};
 use slint::{
     ComponentHandle, Model,
     platform::{WindowAdapter, WindowEvent, software_renderer::MinimalSoftwareWindow},
@@ -611,7 +611,10 @@ impl Harness {
         h
     }
 
-    pub fn dialog(&self) -> Rc<MinimalSoftwareWindow> {
+    pub fn dialog(&mut self) -> Rc<MinimalSoftwareWindow> {
+        // Settle the embedded popup using Main's current layout and drawing
+        // buffer; it must not acquire the former native child geometry.
+        self.ui.draw();
         let children: Vec<_> = self
             .windows
             .borrow()
@@ -622,16 +625,32 @@ impl Harness {
             .collect();
         assert_eq!(
             children.len(),
-            1,
-            "tree transfer must use a separate native child"
+            0,
+            "tree transfer confirmation must stay inside the main adapter"
         );
-        assert!(self.ui.window.get_dialog_input_blocked());
-        let child = children[0].clone();
-        modeless::draw(&child, 640, 420, "tree-transfer-child");
-        child
-            .window()
-            .dispatch_event(WindowEvent::WindowActiveChanged(true));
-        child
+        assert!(
+            self.ui.window.get_embedded_modal_open(),
+            "the embedded confirmation must gate background application input"
+        );
+        assert!(
+            !self.ui.window.get_dialog_input_blocked(),
+            "the main input host must stay enabled for the embedded confirmation"
+        );
+        let form = self.ui.window.global::<OperationPresentation>();
+        assert!(form.get_active() && !form.get_token().is_empty());
+        assert_eq!(
+            i_slint_core::window::WindowInner::from_pub(self.ui.window.window())
+                .active_popups()
+                .iter()
+                .filter(|popup| !matches!(
+                    popup.window_kind,
+                    i_slint_core::window::WindowKind::ToolTip
+                ))
+                .count(),
+            1,
+            "the confirmation must be the only non-tooltip popup on Main"
+        );
+        self.ui.native.clone()
     }
 
     pub fn tool_window(&self) -> Rc<MinimalSoftwareWindow> {

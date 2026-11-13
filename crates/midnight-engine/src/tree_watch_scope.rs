@@ -32,7 +32,7 @@ impl Session {
     pub(crate) fn watch_eligibility(&self) -> HashSet<BranchId> {
         let mut eligible = HashSet::from([self.tree.root()]);
         for row in self.projection.rows.iter() {
-            if row.entry.kind == EntryKind::Directory
+            if matches!(row.entry.kind, EntryKind::Directory | EntryKind::DirectoryLink)
                 && let Some(branch) = self.projection_state.branch(row.id)
                 // Empty rows hide the disclosure affordance but retain explicit
                 // expansion intent. Continue observing them for newly added children.
@@ -96,8 +96,10 @@ impl Session {
                 .tree
                 .watch_listing(branch)
                 .ok_or(ProviderError::StaleReference)?;
+            let directory_identity = self.tree.loaded_native_identity(branch)?;
             let target = if let Some((cached_version, cached)) = self.watch_cache.get(&branch)
                 && *cached_version == version
+                && cached.directory_identity == directory_identity
             {
                 cached.clone()
             } else {
@@ -166,6 +168,7 @@ impl Session {
                     path,
                     display: signature.digest(!root),
                     folders_only: !root,
+                    directory_identity,
                     path_bytes,
                     _mounted: mounted,
                     _registration: self.registration.clone(),
