@@ -220,8 +220,9 @@ Drag a file/folder with the left mouse button after a short movement
 threshold. A selected item supplies the selected group; an unselected item supplies
 only itself. Touch scrolling does not start a file drag. Escape cancels the drag;
 releasing before asynchronous preparation finishes cannot start a delayed drag.
-Drop on an outlined folder to target that folder, or on empty list content for
-the panel's current folder. The default Copy/Move choice follows volume evidence
+Drop on an outlined folder to target that folder. In flat panels, empty list
+content and ordinary file rows/image tiles target the panel's current folder;
+the panel outline and drag label show that destination. The default Copy/Move choice follows volume evidence
 as described above. Editors, toolbars, dialogs
 and the hidden panel do not receive file drops.
 

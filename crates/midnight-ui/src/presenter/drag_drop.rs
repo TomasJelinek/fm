@@ -300,14 +300,18 @@ impl Presenter {
         let entry = row
             .checked_sub(p.parent_offset())
             .and_then(|row| p.display_entry(row))?;
-        (entry.kind == EntryKind::Directory
-            && entry.virtual_node.is_none()
-            && identity == p.row_identity(entry))
-        .then_some(InternalDropDestination::PanelEntry {
-            pane,
-            navigation,
-            entry: entry.id,
-        })
+        if entry.virtual_node.is_some() || identity != p.row_identity(entry) {
+            return None;
+        }
+        match entry.kind {
+            EntryKind::Directory => Some(InternalDropDestination::PanelEntry {
+                pane,
+                navigation,
+                entry: entry.id,
+            }),
+            EntryKind::File => Some(InternalDropDestination::PaneRoot { pane, navigation }),
+            _ => None,
+        }
     }
 
     pub(crate) fn drag_native_ready(&self) -> Option<DragId> {

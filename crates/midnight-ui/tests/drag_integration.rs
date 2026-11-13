@@ -35,6 +35,10 @@ impl Harness {
     }
 
     fn with_targets(count: usize) -> Self {
+        Self::with_target_kind(count, EntryKind::Directory)
+    }
+
+    fn with_target_kind(count: usize, target_kind: EntryKind) -> Self {
         let (mut ui, windows) = owned_windows::new();
         let left = std::env::temp_dir().join("drag source 文档");
         let right = std::env::temp_dir().join("drag target & $(literal)");
@@ -71,7 +75,11 @@ impl Harness {
                     Entry::new(EntryId(1), path.join("file 文档.bin"), EntryKind::File),
                     Entry::new(
                         EntryId(3),
-                        path.join("local destination"),
+                        path.join(if target_kind == EntryKind::File {
+                            "www"
+                        } else {
+                            "local destination"
+                        }),
                         EntryKind::Directory,
                     ),
                 ]
@@ -80,12 +88,14 @@ impl Harness {
                     .map(|index| {
                         Entry::new(
                             EntryId(index as u64 + 2),
-                            path.join(if index == 0 {
+                            path.join(if target_kind == EntryKind::File {
+                                format!("screenshot-{index:03}.png")
+                            } else if index == 0 {
                                 "hovered subfolder".to_owned()
                             } else {
                                 format!("Folder {index:03}")
                             }),
-                            EntryKind::Directory,
+                            target_kind,
                         )
                     })
                     .collect()
@@ -203,6 +213,39 @@ impl Harness {
         request
     }
 
+    fn root_preview_request(&self, id: DragId, pane: PaneId) -> InternalDropPreviewRequest {
+        assert_eq!(self.ui.window.get_drag_feedback_state(), 2);
+        let commands = self.commands.borrow();
+        let request = commands
+            .iter()
+            .rev()
+            .find_map(|command| match command {
+                Command::PreviewInternalDrop(request) if request.id == id => {
+                    Some(request.as_ref().clone())
+                }
+                _ => None,
+            })
+            .expect("hover over a file or empty content must validate the receiving panel");
+        let navigation = commands
+            .iter()
+            .rev()
+            .find_map(|command| match command {
+                Command::Navigate {
+                    pane: target,
+                    navigation,
+                    ..
+                } if *target == pane => Some(*navigation),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(request.intent, InternalDropIntent::Auto);
+        assert!(matches!(request.destination,
+            InternalDropDestination::PaneRoot { pane: target, navigation: captured }
+                if target == pane && captured == navigation
+        ));
+        request
+    }
+
     fn preview_result(
         &mut self,
         request: &InternalDropPreviewRequest,
@@ -316,7 +359,7 @@ fn internal_drop_highlights_the_exact_folder_and_captures_its_identity() {
 #[test]
 fn release_escape_and_navigation_cannot_be_revived_by_late_preparation() {
     let mut h = Harness::new();
-    for kind in 0..3 {
+    for kind in 0..2 {
         let id = h.start();
         match kind {
             0 => h.release(),
@@ -558,7 +601,7 @@ fn folder_targets_follow_actual_scrolled_cells_in_details_brief_and_thumbnail_mo
     use slint::Model;
     let mut h = Harness::with_targets(100);
     for mode in [0, 1, 2] {
-        h.ui.window.set_right_view_mode(mode);
+        h.ui.window.invoke_view_mode(1, mode);
         h.ui.window.invoke_scroll_selection(1, 100000.0);
         h.ui.draw();
         for offset in [0.0, -100.0] {
@@ -621,7 +664,7 @@ fn scrolling_during_a_stationary_drag_drops_on_the_newly_visible_folder() {
     use slint::Model;
     let mut h = Harness::with_targets(100);
     for mode in [0, 1, 2] {
-        h.ui.window.set_right_view_mode(mode);
+        h.ui.window.invoke_view_mode(1, mode);
         h.ui.window.invoke_scroll_selection(1, 100000.0);
         h.ui.draw();
         let id = h.start();
@@ -712,7 +755,7 @@ fn rejected_self_directory_and_late_preview_cannot_highlight_or_submit_a_drop() 
 }
 
 #[test]
-fn parent_file_rows_and_scrollbar_gutters_cannot_receive_internal_drops() {
+fn parent_rows_and_scrollbar_gutters_cannot_receive_internal_drops() {
     let mut h = Harness::new();
     for kind in 0..3 {
         let id = h.start();
@@ -722,7 +765,6 @@ fn parent_file_rows_and_scrollbar_gutters_cannot_receive_internal_drops() {
                 h.ui.window.get_right_list_left() + 70.0,
                 h.ui.window.get_right_list_top() + h.ui.window.get_right_view_row_height() / 2.0,
             ),
-            1 => ui::root_position(&h.ui.window, "file 文档.bin", AccessibleRole::ListItem),
             _ => slint::LogicalPosition::new(
                 h.ui.window.get_right_list_left() + h.ui.window.get_right_list_width() - 2.0,
                 h.ui.window.get_right_list_top() + 20.0,
@@ -834,4 +876,103 @@ fn deferred_focus_loss_cannot_cancel_a_later_gesture_after_the_old_backend_recei
     );
     assert!(h.ui.window.invoke_drag_escape());
     h.release();
+}
+
+#[test]
+fn directory_drop_over_screenshot_tiles_targets_the_panel_in_every_layout() {
+    let mut h = Harness::with_target_kind(36, EntryKind::File);
+    for mode in [2, 0, 1] {
+        // Persist the modes in the presenter: drag preparation refreshes the window.
+        h.ui.window.invoke_view_mode(0, mode);
+        h.ui.window.invoke_view_mode(1, mode);
+        h.ui.draw();
+        let id = h.start_item("www");
+        h.prepared(id);
+        assert_eq!(h.ui.window.get_left_view_mode(), mode);
+        assert_eq!(h.ui.window.get_right_view_mode(), mode);
+        let position =
+            ui::root_position(&h.ui.window, "screenshot-000.png", AccessibleRole::ListItem);
+        h.ui.window
+            .window()
+            .dispatch_event(WindowEvent::PointerMoved { position });
+        h.ui.draw();
+        let preview = h.root_preview_request(id, PaneId::Right);
+        h.preview_result(&preview, position, Some(TransferIntent::Move));
+        assert_eq!(h.ui.window.get_drag_feedback_state(), 4);
+        assert_eq!(h.ui.window.get_drag_hover_pane(), 1);
+        assert_eq!(
+            h.ui.window.get_drag_hover_row(),
+            -1,
+            "highlight the receiving panel"
+        );
+        assert_eq!(
+            h.ui.window.get_drag_label(),
+            "Move 1 item(s) into this panel"
+        );
+        if mode == 2 {
+            render::snapshot(&h.ui, "drag-directory-over-screenshot-tiles");
+        }
+        h.ui.window
+            .window()
+            .dispatch_event(WindowEvent::PointerReleased {
+                position,
+                button: PointerEventButton::Left,
+            });
+        assert!(!h.ui.window.get_drag_active());
+        let commands = h.commands.borrow();
+        let drops: Vec<_> = commands
+            .iter()
+            .filter_map(|command| match command {
+                Command::InternalDrop(request) if request.id == id => Some(request),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(drops.len(), 1);
+        assert_eq!(drops[0].intent, InternalDropIntent::Auto);
+        assert!(matches!(drops[0].destination,
+            InternalDropDestination::PaneRoot { pane: PaneId::Right, navigation }
+                if navigation == match preview.destination {
+                    InternalDropDestination::PaneRoot { navigation, .. } => navigation,
+                    _ => unreachable!(),
+                }
+        ));
+        assert_eq!(h.ui.window.get_left_view_mode(), mode);
+        assert_eq!(h.ui.window.get_right_view_mode(), mode);
+    }
+}
+
+#[test]
+fn directory_drop_over_empty_thumbnail_content_still_targets_the_panel() {
+    let mut h = Harness::with_targets(0);
+    h.ui.window.invoke_view_mode(0, 2);
+    h.ui.window.invoke_view_mode(1, 2);
+    h.ui.draw();
+    let id = h.start_item("local destination");
+    h.prepared(id);
+    assert_eq!(h.ui.window.get_right_view_mode(), 2);
+    let columns = h.ui.window.get_right_view_columns();
+    assert!(columns > 1, "there is empty content beside the parent tile");
+    let position = slint::LogicalPosition::new(
+        h.ui.window.get_right_list_left()
+            + h.ui.window.get_right_list_grid_width() * (1.0 - 0.5 / columns as f32),
+        h.ui.window.get_right_list_top() + h.ui.window.get_right_view_row_height() / 2.0,
+    );
+    h.ui.window
+        .window()
+        .dispatch_event(WindowEvent::PointerMoved { position });
+    h.ui.draw();
+    let preview = h.root_preview_request(id, PaneId::Right);
+    h.preview_result(&preview, position, Some(TransferIntent::Move));
+    assert_eq!(h.ui.window.get_drag_hover_pane(), 1);
+    assert_eq!(h.ui.window.get_drag_hover_row(), -1);
+    h.ui.window
+        .window()
+        .dispatch_event(WindowEvent::PointerReleased {
+            position,
+            button: PointerEventButton::Left,
+        });
+    assert!(h.commands.borrow().iter().any(|command| matches!(command,
+        Command::InternalDrop(request) if request.id == id
+            && matches!(request.destination, InternalDropDestination::PaneRoot { pane: PaneId::Right, .. })
+    )));
 }

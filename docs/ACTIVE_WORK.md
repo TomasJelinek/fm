@@ -53,6 +53,12 @@ admission before the provider correction and decoded/persisted afterward.
 The two dropped-progress regressions also failed before correction. The final
 scope records 75 passing targeted checks plus native Debug startup/shutdown;
 the native provider was replaced atomically and the running app was not restarted.
+The later [file-tile drop correction](verification/file-drag-drop.md#2026-11-13-file-tiles-target-the-current-folder)
+lets flat-panel ordinary files and screenshot tiles target the current folder.
+Its actual pointer regression preserves the selected view through drag startup;
+66 targeted checks pass, including folder/identity/tree guards and backend
+containment/admission. Native Debug startup/shutdown also passes; the user's
+`www` folder was not moved or copied by verification.
 These Linux results do not replace the Windows evidence below.
 The later [Linux network investigation](verification/2026-11-13-linux-network-discovery.md)
 installed the missing system `wsdd` helper and fixed WSDD namespace handling;

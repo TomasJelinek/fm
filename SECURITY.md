@@ -620,6 +620,9 @@ Linux creation timestamps are not editable. Unsupported operations fail explicit
 Incoming native drops enter the same Copy service as clipboard paste. Internal
 folder drops also support Move through the ordinary transfer service: the backend
 resolves exact entry/provider captures and volume evidence, never UI path strings.
+In flat native panels, hovering an ordinary file resolves to the current pane
+root after identity/navigation checks; the file itself is not a write target.
+Folder targets and tree occurrence authority retain their existing validation.
 Automatic drops move on a proven same volume and otherwise copy; Ctrl forces Copy,
 Shift forces Move. The verification policy is frozen at submission. Native rename
 does not read file contents; other moves verify each copied file before deleting
