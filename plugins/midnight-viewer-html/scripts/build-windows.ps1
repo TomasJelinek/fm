@@ -2,6 +2,7 @@ param(
     [Parameter(Mandatory=$true)][string]$SdkConfig,
     [string]$CefDistribution,
     [string]$TargetDirectory,
+    [string]$OutputDirectory,
     [switch]$Release
 )
 $ErrorActionPreference = 'Stop'
@@ -35,4 +36,5 @@ $arguments = @('build','--manifest-path',(Join-Path $project 'Cargo.toml'),'--co
 if ($Release) { $arguments += '--release' }
 & cargo @arguments
 if ($LASTEXITCODE -ne 0) { throw 'CEF provider build failed' }
-& (Join-Path $PSScriptRoot 'package-windows.ps1') -SdkConfig $SdkConfig -TargetDirectory $TargetDirectory -Release:$Release
+& (Join-Path $PSScriptRoot 'package-windows.ps1') -SdkConfig $SdkConfig -TargetDirectory $TargetDirectory `
+    -OutputDirectory $OutputDirectory -Release:$Release

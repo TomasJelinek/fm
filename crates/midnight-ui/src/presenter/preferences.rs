@@ -65,6 +65,7 @@ pub(super) struct EditedFields {
     pub(super) panel_view_modes: [bool; 2],
     pub(super) thumbnails_enabled: bool,
     pub(super) thumbnails_network: bool,
+    pub(super) thumbnails_archives: bool,
     pub(super) thumbnail_size: bool,
     pub(super) panel_filters: [bool; 2],
     pub(super) panel_filter_history: bool,
@@ -158,6 +159,7 @@ impl Presenter {
         &mut self,
         enabled: bool,
         network: bool,
+        archives: bool,
         field: i32,
         send: &dyn Fn(Command) -> bool,
     ) {
@@ -170,6 +172,10 @@ impl Presenter {
             1 => {
                 self.preferences.edited.thumbnails_network = true;
                 values.thumbnails_network = network;
+            }
+            2 => {
+                self.preferences.edited.thumbnails_archives = true;
+                values.thumbnails_archives = archives;
             }
             _ => return,
         }
@@ -318,6 +324,9 @@ impl Presenter {
                 }
                 if edited.thumbnails_network {
                     loaded.thumbnails_network = local.thumbnails_network;
+                }
+                if edited.thumbnails_archives {
+                    loaded.thumbnails_archives = local.thumbnails_archives;
                 }
                 if edited.thumbnail_size {
                     loaded.thumbnail_size = local.thumbnail_size;
@@ -705,6 +714,8 @@ impl Presenter {
         edited.user_commands |= preferences.user_commands != previous.user_commands;
         edited.thumbnails_enabled |= preferences.thumbnails_enabled != previous.thumbnails_enabled;
         edited.thumbnails_network |= preferences.thumbnails_network != previous.thumbnails_network;
+        edited.thumbnails_archives |=
+            preferences.thumbnails_archives != previous.thumbnails_archives;
         edited.thumbnail_size |= preferences.thumbnail_size != previous.thumbnail_size;
         for slot in 0..2 {
             edited.panel_filters[slot] |=
@@ -782,6 +793,25 @@ mod tests {
     use std::{cell::RefCell, io};
 
     #[test]
+    fn archive_preview_edit_survives_late_load_without_overwriting_other_preview_choices() {
+        let mut p = Presenter::new("left".into(), "right".into());
+        let mut values = p.preferences.values.clone();
+        values.thumbnails_archives = false;
+        p.update_preferences(values, &|_| panic!("must await preferences load"));
+        p.preferences_loaded(Ok(UserPreferences {
+            thumbnails_enabled: false,
+            thumbnails_network: true,
+            thumbnails_archives: true,
+            theme: PreferenceTheme::Nord,
+            ..Default::default()
+        }));
+        assert!(!p.preferences.values.thumbnails_archives);
+        assert!(!p.preferences.values.thumbnails_enabled);
+        assert!(p.preferences.values.thumbnails_network);
+        assert_eq!(p.preferences.values.theme, PreferenceTheme::Nord);
+    }
+
+    #[test]
     fn thumbnail_size_survives_a_late_load_and_rejects_unsupported_input() {
         let mut p = Presenter::new("left".into(), "right".into());
         p.change_thumbnail_size(192, &|_| panic!("must await preferences load"));
@@ -803,8 +833,9 @@ mod tests {
     #[test]
     fn early_preview_enable_edit_preserves_saved_network_choice_and_other_preferences() {
         let mut presenter = Presenter::new("left".into(), "right".into());
-        presenter
-            .change_thumbnail_options(false, false, 0, &|_| panic!("Must await preferences load"));
+        presenter.change_thumbnail_options(false, false, true, 0, &|_| {
+            panic!("Must await preferences load")
+        });
         presenter.preferences_loaded(Ok(UserPreferences {
             thumbnails_enabled: true,
             thumbnails_network: true,
@@ -827,8 +858,9 @@ mod tests {
     #[test]
     fn explicit_default_network_choice_wins_over_late_opt_in_without_changing_enable() {
         let mut presenter = Presenter::new("left".into(), "right".into());
-        presenter
-            .change_thumbnail_options(true, false, 1, &|_| panic!("Must await preferences load"));
+        presenter.change_thumbnail_options(true, false, true, 1, &|_| {
+            panic!("Must await preferences load")
+        });
         presenter.preferences_loaded(Ok(UserPreferences {
             thumbnails_enabled: false,
             thumbnails_network: true,
@@ -836,6 +868,55 @@ mod tests {
         }));
         assert!(!presenter.preferences.values.thumbnails_enabled);
         assert!(!presenter.preferences.values.thumbnails_network);
+    }
+
+    #[test]
+    fn explicit_default_archive_preview_choice_wins_over_late_opt_out() {
+        let mut p = Presenter::new("left".into(), "right".into());
+        p.change_thumbnail_options(true, false, true, 2, &|_| {
+            panic!("must await preferences load")
+        });
+        p.preferences_loaded(Ok(UserPreferences {
+            thumbnails_enabled: false,
+            thumbnails_network: true,
+            thumbnails_archives: false,
+            ..Default::default()
+        }));
+        assert!(p.preferences.values.thumbnails_archives);
+        assert!(!p.preferences.values.thumbnails_enabled);
+        assert!(p.preferences.values.thumbnails_network);
+        p.flush_loaded_preferences(&|command| {
+            let Command::SavePreferences { preferences, .. } = command else {
+                panic!("expected merged preferences save")
+            };
+            assert!(preferences.thumbnails_archives);
+            assert!(!preferences.thumbnails_enabled);
+            assert!(preferences.thumbnails_network);
+            true
+        });
+    }
+
+    #[test]
+    fn archive_preview_checkbox_changes_only_the_archive_field() {
+        let mut p = Presenter::new("left".into(), "right".into());
+        p.preferences_loaded(Ok(UserPreferences {
+            thumbnails_enabled: false,
+            thumbnails_network: true,
+            thumbnails_archives: true,
+            ..Default::default()
+        }));
+        p.change_thumbnail_options(true, false, false, 2, &|_| true);
+        assert!(!p.preferences.values.thumbnails_archives);
+        assert!(!p.preferences.values.thumbnails_enabled);
+        assert!(p.preferences.values.thumbnails_network);
+        p.change_thumbnail_options(true, false, true, 0, &|_| true);
+        assert!(p.preferences.values.thumbnails_enabled);
+        assert!(!p.preferences.values.thumbnails_archives);
+        assert!(p.preferences.values.thumbnails_network);
+        p.change_thumbnail_options(false, false, true, 1, &|_| true);
+        assert!(!p.preferences.values.thumbnails_network);
+        assert!(p.preferences.values.thumbnails_enabled);
+        assert!(!p.preferences.values.thumbnails_archives);
     }
 
     #[test]

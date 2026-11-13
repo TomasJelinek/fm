@@ -11,6 +11,7 @@ use i_slint_core::{
     item_tree::{ItemRc, ParentItemTraversalMode},
     items::{AccessibleRole, Flickable},
     layout::Orientation,
+    window::{WindowInner, WindowKind},
 };
 use midnight_core::{Command, Event, FilenameColorRule, UserPreferences};
 use midnight_ui::{ColorOptionsView, Presenter, install, refresh};
@@ -18,7 +19,11 @@ use slint::{
     ComponentHandle, LogicalPosition, Model,
     platform::{Key, WindowAdapter, WindowEvent},
 };
-use std::{cell::RefCell, rc::Rc};
+use std::{
+    cell::{Cell, RefCell},
+    rc::Rc,
+    time::Duration,
+};
 
 struct Harness {
     ui: ui::TestUi,
@@ -28,7 +33,20 @@ struct Harness {
 
 impl Harness {
     fn new(expressions: &[String]) -> Self {
-        let ui = ui::TestUi::new();
+        Self::with_rules(
+            expressions
+                .iter()
+                .map(|expression| FilenameColorRule {
+                    expression: expression.clone(),
+                    ..Default::default()
+                })
+                .collect(),
+            None,
+        )
+    }
+
+    fn with_rules(rules: Vec<FilenameColorRule>, clock: Option<Rc<Cell<Duration>>>) -> Self {
+        let ui = ui::TestUi::with_clock(clock);
         let presenter = Rc::new(RefCell::new(Presenter::new("left".into(), "right".into())));
         let sent = Rc::new(RefCell::new(Vec::new()));
         let captured = sent.clone();
@@ -43,14 +61,7 @@ impl Harness {
         presenter
             .borrow_mut()
             .apply(Event::PreferencesLoaded(Ok(Box::new(UserPreferences {
-                filename_colors: expressions
-                    .iter()
-                    .map(|expression| FilenameColorRule {
-                        expression: expression.clone(),
-                        ..Default::default()
-                    })
-                    .collect::<Vec<_>>()
-                    .into(),
+                filename_colors: rules.into(),
                 ..Default::default()
             }))));
         refresh(&ui.window, &presenter.borrow());
@@ -99,6 +110,105 @@ impl Harness {
             .map(|label| label.to_string())
             .collect()
     }
+}
+
+#[test]
+fn default_extension_groups_remain_responsive_to_keyboard_navigation() {
+    let rules = midnight_core::default_filename_colors();
+    let last = rules.len() - 1;
+    let time = Rc::new(Cell::new(Duration::ZERO));
+    let mut h = Harness::with_rules(rules.clone(), Some(time.clone()));
+    let labels = h.labels();
+    h.click(&labels[0], AccessibleRole::ListItem);
+
+    // Match the reported workflow with the real long default extension group
+    // and an actual hover tooltip still present when keyboard navigation starts.
+    let first = h.row(&labels[0]);
+    let area = bounds(&first);
+    h.ui.window
+        .window()
+        .dispatch_event(WindowEvent::PointerExited);
+    h.settle();
+    h.ui.window
+        .window()
+        .dispatch_event(WindowEvent::PointerMoved {
+            position: LogicalPosition::new((area.0 + area.2) / 2.0, (area.1 + area.3) / 2.0),
+        });
+    h.settle();
+    time.set(Duration::from_secs(2));
+    h.settle();
+    {
+        let inner = WindowInner::from_pub(h.ui.window.window());
+        let popups = inner.active_popups();
+        let tooltip = popups
+            .iter()
+            .find(|popup| matches!(popup.window_kind, WindowKind::ToolTip))
+            .expect("hovering the extension group shows its actual tooltip");
+        let text = ui::visible_text_values(ItemRc::new_root(tooltip.component.clone()));
+        assert!(
+            text.iter()
+                .any(|text| text.contains(rules[0].expression.as_str())),
+            "the complete extension group must remain available in the tooltip"
+        );
+    }
+
+    let assert_current = |h: &Harness, index: usize| {
+        let colors = h.ui.window.global::<ColorOptionsView>();
+        assert_eq!(colors.get_selected(), index as i32);
+        let draft = colors.get_draft();
+        assert_eq!(draft.expression.as_str(), rules[index].expression);
+        assert_eq!(
+            draft.foreground.as_str(),
+            rules[index].style.foreground.unwrap().hex(),
+            "the selected rule's color must follow its extension expression"
+        );
+        let row = h.row(&labels[index]);
+        assert_selected(&row, true);
+        let clip = bounds(&scroll_parent(&row));
+        let row = bounds(&row);
+        assert!(
+            row.1 >= clip.1 - 0.5 && row.3 <= clip.3 + 0.5,
+            "keyboard selection must be visible: index={index}, row={row:?}, clip={clip:?}"
+        );
+    };
+    assert_current(&h, 0);
+    for _ in 0..2 {
+        // Down first reproduces the reported transition from source-code
+        // extensions to video extensions, then crosses the list's viewport.
+        for index in 1..rules.len() {
+            ui::key(&h.ui.window, Key::DownArrow);
+            h.settle();
+            assert_current(&h, index);
+        }
+        ui::key(&h.ui.window, Key::DownArrow);
+        h.settle();
+        assert_current(&h, last);
+        for index in (0..last).rev() {
+            ui::key(&h.ui.window, Key::UpArrow);
+            h.settle();
+            assert_current(&h, index);
+        }
+        ui::key(&h.ui.window, Key::UpArrow);
+        h.settle();
+        assert_current(&h, 0);
+        for (key, index) in [
+            (Key::End, last),
+            (Key::End, last),
+            (Key::Home, 0),
+            (Key::Home, 0),
+        ] {
+            ui::key(&h.ui.window, key);
+            h.settle();
+            assert_current(&h, index);
+        }
+    }
+    h.assert_draft_only();
+    ui::key(&h.ui.window, Key::Escape);
+    h.settle();
+    assert!(
+        !h.ui.window.get_options_open(),
+        "Options must still close after navigation"
+    );
 }
 
 fn bounds(item: &ItemRc) -> (f32, f32, f32, f32) {

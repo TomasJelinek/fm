@@ -1,3 +1,7 @@
+#[cfg(test)]
+#[path = "mounts_tests.rs"]
+mod drive_list_tests;
+
 pub(crate) fn mount_paths(input: &[u8]) -> Vec<Vec<u8>> {
     let mut roots = Vec::new();
     let mut seen = std::collections::HashSet::<Vec<u8>>::new();
@@ -5,36 +9,20 @@ pub(crate) fn mount_paths(input: &[u8]) -> Vec<Vec<u8>> {
         let Some(separator) = line.windows(3).position(|bytes| bytes == b" - ") else {
             continue;
         };
-        let Some(mount) = line[..separator].split(|byte| *byte == b' ').nth(4) else {
+        let mut fields = line[..separator].split(|byte| *byte == b' ');
+        let Some(root) = fields.nth(3) else {
             continue;
         };
-        let Some(filesystem) = line[separator + 3..].split(|byte| *byte == b' ').next() else {
+        let Some(mount) = fields.next() else {
             continue;
         };
-        if matches!(
-            filesystem,
-            b"proc"
-                | b"sysfs"
-                | b"devtmpfs"
-                | b"devpts"
-                | b"cgroup"
-                | b"cgroup2"
-                | b"pstore"
-                | b"securityfs"
-                | b"debugfs"
-                | b"tracefs"
-                | b"configfs"
-                | b"hugetlbfs"
-                | b"mqueue"
-                | b"rpc_pipefs"
-                | b"binfmt_misc"
-                | b"fusectl"
-                | b"autofs"
-                | b"efivarfs"
-                | b"bpf"
-        ) {
+        let mut fields = line[separator + 3..].split(|byte| *byte == b' ');
+        let Some(filesystem) = fields.next() else {
             continue;
-        }
+        };
+        let Some(source) = fields.next() else {
+            continue;
+        };
         let mut decoded = Vec::with_capacity(mount.len());
         let mut index = 0;
         while index < mount.len() {
@@ -58,13 +46,15 @@ pub(crate) fn mount_paths(input: &[u8]) -> Vec<Vec<u8>> {
         if !decoded.starts_with(b"/") {
             continue;
         }
-        if filesystem == b"tmpfs"
-            && [b"/dev".as_slice(), b"/run", b"/sys", b"/proc"]
-                .iter()
-                .any(|prefix| {
-                    decoded == *prefix
-                        || (decoded.starts_with(prefix) && decoded.get(prefix.len()) == Some(&b'/'))
-                })
+        // This is a navigation list, not an inventory of the mount namespace.
+        // Keep the root even in containers/live systems. A block-device subtree
+        // is a bind view rather than another drive; native subvolumes are useful.
+        if decoded != b"/"
+            && (internal_filesystem(filesystem)
+                || internal_path(&decoded)
+                || (root != b"/"
+                    && source.starts_with(b"/dev/")
+                    && !matches!(filesystem, b"btrfs" | b"bcachefs")))
         {
             continue;
         }
@@ -74,6 +64,73 @@ pub(crate) fn mount_paths(input: &[u8]) -> Vec<Vec<u8>> {
         }
     }
     roots
+}
+
+fn internal_filesystem(filesystem: &[u8]) -> bool {
+    matches!(
+        filesystem,
+        b"proc"
+            | b"sysfs"
+            | b"devtmpfs"
+            | b"devpts"
+            | b"cgroup"
+            | b"cgroup2"
+            | b"pstore"
+            | b"securityfs"
+            | b"debugfs"
+            | b"tracefs"
+            | b"configfs"
+            | b"hugetlbfs"
+            | b"mqueue"
+            | b"rpc_pipefs"
+            | b"binfmt_misc"
+            | b"fusectl"
+            | b"autofs"
+            | b"efivarfs"
+            | b"bpf"
+            | b"squashfs"
+            | b"nsfs"
+            | b"fuse.portal"
+            | b"fuse.snapfuse"
+            | b"overlay"
+            | b"aufs"
+            | b"fuse.overlayfs"
+    )
+}
+
+fn within(path: &[u8], parent: &[u8]) -> bool {
+    path == parent || (path.starts_with(parent) && path.get(parent.len()) == Some(&b'/'))
+}
+
+fn internal_path(path: &[u8]) -> bool {
+    if [
+        b"/dev".as_slice(),
+        b"/proc",
+        b"/sys",
+        b"/boot",
+        b"/efi",
+        b"/snap",
+        b"/var/lib/snapd",
+        b"/var/lib/docker",
+        b"/var/lib/containers",
+        b"/tmp",
+        b"/var/tmp",
+    ]
+    .iter()
+    .any(|parent| within(path, parent))
+    {
+        return true;
+    }
+    within(path, b"/run") && !within(path, b"/run/media") && !gvfs_path(path)
+}
+
+fn gvfs_path(path: &[u8]) -> bool {
+    let Some(relative) = path.strip_prefix(b"/run/user/") else {
+        return false;
+    };
+    let mut parts = relative.splitn(2, |byte| *byte == b'/');
+    matches!((parts.next(), parts.next()), (Some(uid), Some(rest))
+        if !uid.is_empty() && uid.iter().all(u8::is_ascii_digit) && within(rest, b"gvfs"))
 }
 
 #[cfg(test)]
@@ -112,15 +169,11 @@ mod tests {
     }
 
     #[test]
-    fn mountinfo_filters_internal_tmpfs_components_without_hiding_prefix_siblings() {
+    fn mountinfo_filters_internal_components_without_hiding_prefix_siblings() {
         let input = b"1 0 0:1 / /run rw - tmpfs x rw\n2 0 0:1 / /run/sub rw - tmpfs x rw\n3 0 0:1 / /runner rw - tmpfs x rw\n4 0 0:1 / /mnt/tmp rw - tmpfs x rw\n5 0 8:1 / /run/user-disk rw - ext4 x rw\n";
         assert_eq!(
             mount_paths(input),
-            [
-                b"/runner".to_vec(),
-                b"/mnt/tmp".to_vec(),
-                b"/run/user-disk".to_vec(),
-            ]
+            [b"/runner".to_vec(), b"/mnt/tmp".to_vec()]
         );
     }
 

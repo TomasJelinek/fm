@@ -6,14 +6,15 @@ mod ui;
 
 use i_slint_core::{
     item_tree::{ItemRc, ParentItemTraversalMode},
-    items::{AccessibleRole, Flickable},
+    items::{AccessibleRole, ComplexText, Flickable, SimpleText},
+    layout::Orientation,
 };
 use midnight_ui::{
     ColorOptionsView, EditorOptionsDraft, EditorOptionsView, KeyboardEditorView, ShortcutCommandRow,
 };
 use slint::{
     ComponentHandle,
-    platform::{Key, WindowEvent},
+    platform::{Key, WindowAdapter, WindowEvent},
 };
 use std::{cell::RefCell, rc::Rc};
 
@@ -62,6 +63,112 @@ fn inside_clips(item: &ItemRc, width: usize, height: usize) {
         }
         parent = item.parent_item(ParentItemTraversalMode::StopAtPopups);
     }
+}
+
+#[test]
+fn options_navigation_grows_with_its_labels_and_keeps_selected_captions_unclipped() {
+    fn caption(item: ItemRc) -> Option<ItemRc> {
+        if item.downcast::<SimpleText>().is_some() || item.downcast::<ComplexText>().is_some() {
+            return Some(item);
+        }
+        let mut child = item.first_child();
+        while let Some(item) = child {
+            child = item.next_sibling();
+            if let Some(found) = caption(item) {
+                return Some(found);
+            }
+        }
+        None
+    }
+
+    let mut test = ui::TestUi::new();
+    test.resize(1600, 1050);
+    test.window.invoke_show_options();
+    let mut previous_width = 0.0;
+    for (density, family, font) in [
+        (0, "", 12),
+        (0, "", 16),
+        (0, "", 24),
+        (1, "", 24),
+        (0, "monospace", 24),
+    ] {
+        test.window.invoke_apply_preferences(0, density);
+        test.window.invoke_apply_fonts(family.into(), font, font);
+        let mut navigation_width: Option<f32> = None;
+        for (topic, label) in [
+            (0, "General"),
+            (1, "Appearance"),
+            (3, "Keyboard"),
+            (4, "Editors"),
+            (5, "Plugins"),
+            (6, "Previews"),
+            (7, "Archives"),
+            (8, "Colors"),
+            (9, "Custom Commands"),
+        ] {
+            test.window.set_options_topic_index(topic);
+            for _ in 0..3 {
+                test.draw();
+            }
+            let row = ui::popup_item(&test.window, label, AccessibleRole::Button);
+            let text = caption(row.clone()).expect("topic button's actual painted caption");
+            let adapter: Rc<dyn WindowAdapter> = test.native.clone();
+            let required = text.borrow().as_ref().layout_info(
+                Orientation::Horizontal,
+                text.geometry().height(),
+                &adapter,
+                &text,
+            );
+            assert!(
+                text.geometry().width() + 0.5 >= required.preferred,
+                "{label} is elided: density={density}, family={family}, font={font}, \
+                 available={}, required={}",
+                text.geometry().width(),
+                required.preferred
+            );
+            inside_clips(&row, test.width, test.height);
+            let width = row.geometry().width();
+            if let Some(previous) = navigation_width {
+                assert!(
+                    (previous - width).abs() < 0.5,
+                    "selection must not resize navigation"
+                );
+            }
+            navigation_width = Some(width);
+        }
+        let width = navigation_width.unwrap();
+        if density == 0 && family.is_empty() {
+            assert!(
+                width > previous_width,
+                "larger font must grow the navigation"
+            );
+            previous_width = width;
+        }
+        render::snapshot(
+            &test,
+            &format!("options-navigation-{density}-{family}-{font}"),
+        );
+    }
+    test.resize(960, 520);
+    test.window.set_options_topic_index(0);
+    test.draw();
+    test.window.set_options_topic_index(9);
+    for _ in 0..3 {
+        test.draw();
+    }
+    inside_clips(
+        &ui::popup_item(&test.window, "Custom Commands", AccessibleRole::Button),
+        960,
+        520,
+    );
+    test.window.invoke_apply_fonts("".into(), 32, 32);
+    test.draw();
+    ui::popup_item(&test.window, "Options topic", AccessibleRole::Combobox);
+    inside_clips(
+        &ui::popup_item(&test.window, "Cancel", AccessibleRole::Button),
+        960,
+        520,
+    );
 }
 
 #[test]

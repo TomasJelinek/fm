@@ -47,13 +47,18 @@ impl Presenter {
         self.browsable_archive_format(entry).is_some()
     }
     pub(crate) fn browsable_archive_format(&self, entry: &Entry) -> Option<ArchiveFormat> {
+        self.configured_archive_format(entry)
+            .filter(|format| self.archive_formats.contains(format))
+    }
+    /// Activation follows the user's association while backend discovery settles.
+    /// An unavailable provider reports an internal error instead of launching an OS handler.
+    pub(super) fn configured_archive_format(&self, entry: &Entry) -> Option<ArchiveFormat> {
         if entry.virtual_node.is_some() || entry.kind != EntryKind::File {
             return None;
         }
         entry
             .archive_extensions
             .enabled_format(&self.preferences.values)
-            .filter(|format| self.archive_formats.contains(format))
     }
     pub(super) fn archive_navigate(
         &mut self,

@@ -467,7 +467,7 @@ impl Presenter {
                 }
                 let path = original.path.clone();
                 let kind = original.kind;
-                let archive = self.browsable_archive_format(original);
+                let archive = self.configured_archive_format(original);
                 if matches!(kind, EntryKind::File | EntryKind::Symlink) {
                     if let Some(format) = archive {
                         return self.archive_navigate(

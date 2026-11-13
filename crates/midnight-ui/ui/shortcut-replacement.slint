@@ -1,0 +1,56 @@
+import { Theme } from "theme.slint";
+import { DialogHeader } from "dialog-frame.slint";
+import { DialogFooter } from "dialog-footer.slint";
+import { DialogText } from "dialog-text.slint";
+import { HintedActionButton } from "hinted-inputs.slint";
+
+// The owning popup captures token/body once per occurrence. A queued click must
+// never inherit the identity of a newer confirmation.
+export component ShortcutReplacementDialog inherits Rectangle {
+    in property <string> token;
+    in property <string> body;
+    private property <string> occurrence-token;
+    private property <string> occurrence-body;
+    callback decide(string, bool);
+    accessible-role: groupbox;
+    accessible-label: "Replace shortcut";
+    background: Theme.surface;
+    border-width: 1px; border-color: Theme.active-frame; border-radius: 6px;
+    init => { root.begin(); }
+    public function begin() {
+        if root.occurrence-token != "" || root.token == "" { return; }
+        root.occurrence-token = root.token;
+        root.occurrence-body = root.body;
+        footer.focus-dismiss();
+    }
+    forward-focus: scope;
+    scope := FocusScope {
+        capture-key-pressed(event) => {
+            if event.text == Key.Escape {
+                root.decide(root.occurrence-token, false);
+                return accept;
+            }
+            reject
+        }
+        VerticalLayout {
+            padding: root.height < 280px ? 6px : 16px;
+            spacing: root.height < 280px ? 4px : 10px;
+            DialogHeader {
+                title: "Replace shortcut";
+                compact: root.height < 280px;
+                close => { root.decide(root.occurrence-token, false); }
+            }
+            DialogText { text: root.occurrence-body; min-height: 0px; vertical-stretch: 1; }
+            footer := DialogFooter {
+                compact-height: root.height < 280px;
+                dismiss-hint: "Keep the current shortcut assignments (Escape).";
+                dismiss => { root.decide(root.occurrence-token, false); }
+                HintedActionButton {
+                    text: "Replace";
+                    hint: "Remove this shortcut from the listed commands and assign it to the new command.";
+                    clicked => { root.decide(root.occurrence-token, true); }
+                }
+            }
+        }
+    }
+}

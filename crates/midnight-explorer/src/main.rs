@@ -4,6 +4,7 @@
 mod command_artwork;
 mod comparator;
 mod native_content;
+mod shutdown;
 mod shutdown_preferences;
 mod size_refresh;
 mod smoke_settings;
@@ -150,17 +151,21 @@ fn run() -> Result<(), String> {
     let restart_arguments = std::env::args_os().skip(1).collect::<Vec<_>>();
     let restart_cwd = std::env::current_dir().map_err(|error| error.to_string())?;
     let mut image_spare_retirement = None;
-    let result = run_window(
-        engine_lifetime,
-        &runtime,
-        local,
-        filesystem,
-        &options,
-        &mut image_spare_retirement,
-    );
+    // Keep runtime ownership and the registered spare fence outside UI unwinding,
+    // so a panic cannot enter Tokio's unbounded blocking-pool destructor first.
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        run_window(
+            engine_lifetime,
+            &runtime,
+            local,
+            filesystem,
+            &options,
+            &mut image_spare_retirement,
+        )
+    }));
     // Normal close drains mutation cancellation before hiding the window.
     // A failed startup also stops its runtime before another process is started.
-    viewers::finish_after_image_spare(
+    shutdown::finish_after_unwind(
         result,
         || {
             let retirement_result = if let Some(retirement) = image_spare_retirement.as_ref() {

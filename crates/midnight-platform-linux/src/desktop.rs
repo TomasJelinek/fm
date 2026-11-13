@@ -8,7 +8,7 @@ use std::{
     io::{self, Read},
     os::unix::{ffi::OsStrExt, fs::PermissionsExt},
     path::{Path, PathBuf},
-    process::Command,
+    process::{Command, Stdio},
 };
 
 const TERMINALS: &[&str] = &[
@@ -18,11 +18,20 @@ const TERMINALS: &[&str] = &[
     "/usr/bin/xfce4-terminal",
     "/usr/bin/x-terminal-emulator",
 ];
-const COMMAND_WRAPPER: &str = "eval \"$1\"; exec /bin/sh -i";
+const INTERACTIVE_WRAPPER: &str = include_str!("terminal_prompt.sh");
+const COMMAND_WRAPPER: &str = concat!(
+    "_me_terminal_shell=$2\neval \"$1\"\nset -- \"$_me_terminal_shell\"\n",
+    include_str!("terminal_prompt.sh"),
+);
+const EXECUTABLE_WRAPPER: &str = concat!("\"$1\"\nshift\n", include_str!("terminal_prompt.sh"),);
 
 #[cfg(test)]
 #[path = "user_command_terminal_tests.rs"]
 mod user_command_tests;
+
+#[cfg(test)]
+#[path = "terminal_shell_tests.rs"]
+mod terminal_shell_tests;
 
 impl TerminalService for LinuxFileSystem {
     fn shell_flavor(&self) -> ShellFlavor {
@@ -46,8 +55,9 @@ impl TerminalService for LinuxFileSystem {
                 ),
             ));
         }
-        let executable = TERMINALS.iter().map(Path::new).find(|path| fs::metadata(path).is_ok_and(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0))
-            .ok_or_else(|| FsError::from_io("find system terminal", &request.working_directory, io::Error::new(io::ErrorKind::NotFound, "No supported system terminal is installed (xterm, Konsole, GNOME Terminal, Xfce Terminal).")))?;
+        let executable = terminal_executable().map_err(|cause| {
+            FsError::from_io("find system terminal", &request.working_directory, cause)
+        })?;
         terminal_command(executable, request)
             .and_then(|mut command| command.spawn())
             .map(|child| Box::new(child) as Box<dyn TerminalProcess>)
@@ -82,20 +92,9 @@ pub(crate) fn prepare_user_terminal(
     environment: &[(String, std::ffi::OsString)],
     cancel: &midnight_core::Cancellation,
 ) -> Result<Command, FsError> {
-    let executable = TERMINALS
-        .iter()
-        .map(Path::new)
-        .find(|path| is_executable(path))
-        .ok_or_else(|| {
-            FsError::from_io(
-                "find system terminal",
-                &request.working_directory,
-                io::Error::new(
-                    io::ErrorKind::NotFound,
-                    "No supported system terminal is installed.",
-                ),
-            )
-        })?;
+    let executable = terminal_executable().map_err(|cause| {
+        FsError::from_io("find system terminal", &request.working_directory, cause)
+    })?;
     prepare_user_terminal_with(executable, request, environment, cancel)
 }
 fn prepare_user_terminal_with(
@@ -150,6 +149,89 @@ fn prepare_user_terminal_with(
 }
 
 fn terminal_command(executable: &Path, request: &TerminalRequest) -> io::Result<Command> {
+    terminal_command_with_shell(
+        executable,
+        request,
+        &interactive_shell(std::env::var_os("SHELL").as_deref()),
+    )
+}
+
+fn interactive_shell(preferred: Option<&std::ffi::OsStr>) -> PathBuf {
+    preferred
+        .map(Path::new)
+        .filter(|path| {
+            path.is_absolute() && !path.as_os_str().as_bytes().contains(&0) && is_executable(path)
+        })
+        .or_else(|| {
+            [Path::new("/bin/bash"), Path::new("/bin/sh")]
+                .into_iter()
+                .find(|path| is_executable(path))
+        })
+        .unwrap_or(Path::new("/bin/sh"))
+        .to_path_buf()
+}
+
+fn terminal_executable() -> io::Result<&'static Path> {
+    TERMINALS
+        .iter()
+        .map(Path::new)
+        .find(|path| is_executable(path))
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                "No supported system terminal is installed.",
+            )
+        })
+}
+
+pub(crate) fn executable_terminal(path: &Path) -> io::Result<Command> {
+    executable_terminal_with(
+        terminal_executable()?,
+        path,
+        &interactive_shell(std::env::var_os("SHELL").as_deref()),
+    )
+}
+
+pub(crate) fn executable_terminal_with(
+    executable: &Path,
+    path: &Path,
+    shell: &Path,
+) -> io::Result<Command> {
+    if [executable, path, shell]
+        .into_iter()
+        .any(|path| !path.is_absolute() || path.as_os_str().as_bytes().contains(&0))
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "executable activation requires absolute native paths without NUL",
+        ));
+    }
+    let parent = path.parent().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "executable has no parent directory",
+        )
+    })?;
+    let mut command = terminal_host_command(executable);
+    // The executable path is a positional native argument. The fixed wrapper invokes
+    // it directly, letting the kernel honor its shebang; legacy .sh files retain the
+    // POSIX command fallback. No filename is parsed as command source or shell options.
+    command
+        .args(["/bin/sh", "-c", EXECUTABLE_WRAPPER, "midnight-executable"])
+        .arg(path)
+        .arg(shell)
+        .current_dir(parent)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    Ok(command)
+}
+
+fn terminal_command_with_shell(
+    executable: &Path,
+    request: &TerminalRequest,
+    shell: &Path,
+) -> io::Result<Command> {
     validate_terminal_request(request)?;
     if !executable.is_absolute()
         || !request.working_directory.is_absolute()
@@ -165,6 +247,27 @@ fn terminal_command(executable: &Path, request: &TerminalRequest) -> io::Result<
             "terminal requires absolute native paths and arguments without NUL",
         ));
     }
+    let mut command = terminal_host_command(executable);
+    if request.mode == TerminalMode::Elevated {
+        // Password interaction belongs entirely to sudo inside the external terminal.
+        // No -S flag, password pipe, output capture, or implicit elevation is used.
+        command.args(["/usr/bin/sudo", "--"]);
+    }
+    if request.command.is_empty() {
+        command.args(["/bin/sh", "-c", INTERACTIVE_WRAPPER, "midnight-terminal"]);
+    } else {
+        // The fixed wrapper is not composed from filenames or user source. The submitted
+        // command is one positional argument, explicitly evaluated only after submission.
+        command
+            .args(["/bin/sh", "-c", COMMAND_WRAPPER, "midnight-terminal"])
+            .arg(&request.command);
+    }
+    command.arg(shell);
+    command.current_dir(&request.working_directory);
+    Ok(command)
+}
+
+fn terminal_host_command(executable: &Path) -> Command {
     let mut command = Command::new(executable);
     match executable.file_name().and_then(|name| name.to_str()) {
         Some("gnome-terminal") => {
@@ -180,22 +283,7 @@ fn terminal_command(executable: &Path, request: &TerminalRequest) -> io::Result<
             command.arg("-e");
         }
     }
-    if request.mode == TerminalMode::Elevated {
-        // Password interaction belongs entirely to sudo inside the external terminal.
-        // No -S flag, password pipe, output capture, or implicit elevation is used.
-        command.args(["/usr/bin/sudo", "--"]);
-    }
-    if request.command.is_empty() {
-        command.args(["/bin/sh", "-i"]);
-    } else {
-        // The fixed wrapper is not composed from filenames or user source. The submitted
-        // command is one positional argument, explicitly evaluated only after submission.
-        command
-            .args(["/bin/sh", "-c", COMMAND_WRAPPER, "midnight-terminal"])
-            .arg(&request.command);
-    }
-    command.current_dir(&request.working_directory);
-    Ok(command)
+    command
 }
 
 fn validate_terminal_request(request: &TerminalRequest) -> io::Result<()> {
@@ -399,12 +487,23 @@ mod tests {
                     command: String::new(),
                     working_directory: directory.clone(),
                 };
-                let command = terminal_command(Path::new(executable), &request).unwrap();
+                let command = terminal_command_with_shell(
+                    Path::new(executable),
+                    &request,
+                    Path::new("/bin/bash"),
+                )
+                .unwrap();
                 let mut expected = prefix.clone();
                 if mode == TerminalMode::Elevated {
                     expected.extend(["/usr/bin/sudo", "--"]);
                 }
-                expected.extend(["/bin/sh", "-i"]);
+                expected.extend([
+                    "/bin/sh",
+                    "-c",
+                    INTERACTIVE_WRAPPER,
+                    "midnight-terminal",
+                    "/bin/bash",
+                ]);
                 let arguments: Vec<_> = command.get_args().collect();
                 assert_eq!(
                     arguments,
@@ -559,7 +658,7 @@ mod tests {
         assert_eq!(args[5], OsStr::new(COMMAND_WRAPPER));
         assert_eq!(args[6], OsStr::new("midnight-terminal"));
         assert_eq!(args[7], OsStr::new(source));
-        assert_eq!(args.len(), 8);
+        assert_eq!(args.len(), 9);
         assert_eq!(
             command.get_current_dir(),
             Some(request.working_directory.as_path())

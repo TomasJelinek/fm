@@ -13,6 +13,10 @@ use std::{
 #[path = "thumbnail_content.rs"]
 mod content;
 
+#[cfg(all(test, target_os = "linux"))]
+#[path = "native_thumbnail_linux_tests.rs"]
+mod native_linux_tests;
+
 pub(crate) struct Controller {
     timer: slint::Timer,
     service: Rc<Service>,

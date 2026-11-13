@@ -9,13 +9,14 @@ import os
 import re
 import shutil
 import stat
+import sys
 import tarfile
 import tomllib
 import zipfile
 from pathlib import Path
 
 REQUIRED_VIEWERS = ("midnight.viewer.basic", "midnight.viewer.source", "midnight.viewer.markdown",
-                    "midnight.viewer.image", "midnight.viewer.pdf")
+                    "midnight.viewer.image", "midnight.viewer.pdf", "midnight.viewer.html")
 FILESYSTEM_ABI_MINOR = 3
 
 
@@ -81,7 +82,7 @@ def sha256_file(path):
         return hashlib.file_digest(stream, "sha256").hexdigest()
 
 
-def copy_viewer_packages(stage, viewers, target, required_ids=()):
+def copy_viewer_packages(stage, viewers, target, required_ids=(), *, validate_only=False):
     """Copy independently built packages, validating all inputs before staging any plugin."""
     viewers = Path(viewers).absolute()
     if viewers.resolve() != viewers or not stat.S_ISDIR(plain_metadata(viewers).st_mode):
@@ -94,6 +95,16 @@ def copy_viewer_packages(stage, viewers, target, required_ids=()):
         raise ValueError("Expected 1..256 independently built viewer packages")
     for package in entries:
         files = plain_tree(package)
+        manifests = [name for name in ("plugin.toml", "image-viewer.json", "web-viewer.json")
+                     if package / name in files]
+        if len(manifests) != 1:
+            raise ValueError("A viewer package must have exactly one entry manifest")
+        if package / "web-viewer.json" in files:
+            manifest = image_viewer_manifest(package, files, target, web=True)
+            validate_web_runtime(package, files, manifest, target)
+            worker_identity(manifest, identities)
+            packages.append((package, manifest, files, manifest["executable"]))
+            continue
         if package / "image-viewer.json" in files:
             manifest = image_viewer_manifest(package, files, target)
             worker_identity(manifest, identities)
@@ -138,8 +149,11 @@ def copy_viewer_packages(stage, viewers, target, required_ids=()):
     missing = set(required_ids) - identities
     if missing:
         raise ValueError("Missing required viewer packages: " + ", ".join(sorted(missing)))
+    if validate_only:
+        return [manifest for _, manifest, _, _ in packages]
     inventory = []
     for package, manifest, files, worker in packages:
+        web = package / "web-viewer.json" in files
         copied = []
         for source in files:
             relative = Path("viewers") / package.name / source.relative_to(package)
@@ -147,7 +161,9 @@ def copy_viewer_packages(stage, viewers, target, required_ids=()):
             destination.parent.mkdir(parents=True, exist_ok=True)
             with plain_file(source) as original, destination.open("xb") as output:
                 shutil.copyfileobj(original, output)
-            executable = worker is not None and source == package / worker
+            executable = (worker is not None and source == package / worker) or (
+                web and source.parent == package
+                and (source.name == "chrome-sandbox" or source.suffix.lower() == ".exe"))
             destination.chmod(0o755 if executable else 0o644)
             copied.append({"path": relative.as_posix(), "bytes": destination.stat().st_size,
                            "sha256": sha256_file(destination), "executable": executable})
@@ -155,7 +171,8 @@ def copy_viewer_packages(stage, viewers, target, required_ids=()):
         item = {"id": manifest["id"], "version": manifest["version"], "target": target,
                 "package_sha256": fingerprint, "files": copied}
         if worker:
-            item.update(kind="image-viewer-worker", protocol=manifest["protocol"],
+            item.update(kind="web-viewer-worker" if web else "image-viewer-worker",
+                        protocol=manifest["protocol"],
                         entry_executable=worker, extensions=manifest["extensions"])
         else:
             item.update(abi_major=manifest["abi_major"], entry_library=manifest["entry_library"],
@@ -164,25 +181,86 @@ def copy_viewer_packages(stage, viewers, target, required_ids=()):
     return inventory
 
 
-def image_viewer_manifest(package, files, target):
+def image_viewer_manifest(package, files, target, *, web=False):
     if package / "plugin.toml" in files:
         raise ValueError("A viewer package cannot contain both native and process entry manifests")
-    manifest = read_worker_manifest(package / "image-viewer.json", json.loads)
+    filename = "web-viewer.json" if web else "image-viewer.json"
+    manifest = read_worker_manifest(package / filename, json.loads)
     fields = {"schema", "protocol", "id", "name", "version", "target", "executable", "extensions"}
     extensions = manifest.get("extensions")
     if (set(manifest) != fields or type(manifest.get("schema")) is not int
             or manifest["schema"] != 1 or type(manifest.get("protocol")) is not int
-            or manifest["protocol"] not in (1, 2) or manifest.get("target") != target
+            or manifest["protocol"] not in ((1,) if web else (1, 2)) or manifest.get("target") != target
             or not isinstance(manifest.get("name"), str) or not 1 <= len(manifest["name"]) <= 128
             or not isinstance(extensions, list) or not 1 <= len(extensions) <= 64
             or any(not isinstance(value, str) or not re.fullmatch(r"[a-z0-9]{1,32}", value)
                    for value in extensions) or len(set(extensions)) != len(extensions)):
         raise ValueError("Incompatible image viewer manifest")
     executable = worker_executable(manifest.get("executable"), target)
-    for required in ("image-viewer.json", executable, "LICENSE", "THIRD-PARTY.md"):
+    for required in (filename, executable, *(('LICENSE.txt', 'THIRD_PARTY.md') if web else
+                                           ('LICENSE', 'THIRD-PARTY.md'))):
         if package / required not in files:
             raise ValueError(f"Image viewer package missing required file {required}: {package}")
     return manifest
+
+
+def validate_web_runtime(package, files, manifest, target):
+    required = {"runtime-files.json", "LICENSE.txt", "CREDITS.html", "THIRD_PARTY.md",
+                "dependency-metadata.json", "icudtl.dat", "resources.pak",
+                "chrome_100_percent.pak", "chrome_200_percent.pak", "v8_context_snapshot.bin",
+                "vk_swiftshader_icd.json"}
+    if target.endswith("windows-msvc"):
+        required.update(("libcef.dll", "chrome_elf.dll", "dxcompiler.dll", "vk_swiftshader.dll",
+                         "vulkan-1.dll", str(Path(manifest["executable"]).with_suffix(".dll"))))
+    else:
+        required.update(("libcef.so", "libvk_swiftshader.so", "libvulkan.so.1", "chrome-sandbox"))
+    if (any(package / name not in files for name in required)
+            or not any(file.is_relative_to(package / "locales") and file.suffix == ".pak"
+                       for file in files)
+            or not any(file.parent != package and file.is_relative_to(package / "notices")
+                       for file in files)):
+        raise ValueError("Incomplete HTML viewer runtime or CEF attribution")
+
+    def unique_fields(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError("Duplicate CEF runtime inventory field")
+            result[key] = value
+        return result
+
+    with plain_file(package / "runtime-files.json") as stream:
+        encoded = stream.read(4 * 1024 * 1024 + 1)
+    if len(encoded) > 4 * 1024 * 1024:
+        raise ValueError("CEF runtime inventory exceeds 4 MiB")
+    inventory = json.loads(encoded.decode("utf-8-sig"), object_pairs_hook=unique_fields)
+    if (not isinstance(inventory, dict) or set(inventory) != {"cef", "archive_sha256", "files"}
+            or not isinstance(inventory.get("cef"), str) or not 1 <= len(inventory["cef"]) <= 128
+            or not isinstance(inventory.get("archive_sha256"), str)
+            or not re.fullmatch(r"[0-9a-f]{64}", inventory["archive_sha256"])
+            or not isinstance(inventory.get("files"), list)
+            or not 1 <= len(inventory["files"]) <= 4096):
+        raise ValueError("Invalid CEF runtime inventory")
+    expected = {file.relative_to(package).as_posix(): file for file in files
+                if file != package / "runtime-files.json"}
+    indexed = set()
+    for entry in inventory["files"]:
+        if (not isinstance(entry, dict) or set(entry) != {"path", "bytes", "sha256"}
+                or not isinstance(entry.get("path"), str) or type(entry.get("bytes")) is not int
+                or entry["bytes"] < 0 or not isinstance(entry.get("sha256"), str)
+                or not re.fullmatch(r"[0-9a-f]{64}", entry["sha256"])):
+            raise ValueError("Invalid CEF runtime file entry")
+        name = entry["path"]
+        for component in name.split("/"):
+            portable_component(component)
+        if name in indexed or name not in expected:
+            raise ValueError("Duplicate or unexpected CEF runtime file")
+        indexed.add(name)
+        path = expected[name]
+        if path.stat().st_size != entry["bytes"] or sha256_file(path) != entry["sha256"]:
+            raise ValueError("CEF runtime file size or SHA-256 mismatch: " + name)
+    if indexed != set(expected):
+        raise ValueError("CEF runtime inventory does not cover every package file")
 
 
 def worker_input(stage, source):
@@ -239,7 +317,8 @@ def copy_worker_files(stage, source_root, prefix, files, executables):
     return inventory, digest
 
 
-def copy_filesystem_packages(stage, source, target, require_native=False, require_network=False):
+def copy_filesystem_packages(stage, source, target, require_native=False, require_network=False,
+                             *, require_archive=False, validate_only=False):
     source = worker_input(stage, source)
     packages, identities = [], set()
     entries = sorted(source.iterdir())
@@ -275,6 +354,12 @@ def copy_filesystem_packages(stage, source, target, require_native=False, requir
     network_count = sum(manifest["kind"] == "filesystem-network" for _, manifest, _, _ in packages)
     if network_count > 1 or (require_network and network_count != 1):
         raise ValueError("Release requires exactly one network filesystem provider for its platform")
+    if require_archive and not any(manifest["kind"] == "filesystem-worker"
+                                   and manifest["id"] == "midnight.fs.archive"
+                                   for _, manifest, _, _ in packages):
+        raise ValueError("Release requires the midnight.fs.archive filesystem provider")
+    if validate_only:
+        return [manifest for _, manifest, _, _ in packages]
     inventory = []
     for package, manifest, files, executable in packages:
         standalone = {package / executable} if manifest["kind"] == "filesystem-worker" else set()
@@ -321,7 +406,7 @@ def library_filesystem_manifest(manifest, package, files, target):
     return library
 
 
-def copy_thumbnail_packages(stage, source, target):
+def copy_thumbnail_packages(stage, source, target, *, require_media=False, validate_only=False):
     source = worker_input(stage, source)
     files = plain_tree(source)
     manifests = [file for file in files if file.parent == source and file.suffix == ".json"]
@@ -350,18 +435,44 @@ def copy_thumbnail_packages(stage, source, target):
             raise ValueError("Thumbnail provider is missing its executable or attribution")
         executables.add(executable)
         providers.append(manifest)
+    if require_media and {provider["video"] for provider in providers} != {False, True}:
+        raise ValueError("Standard packages require image and video thumbnailers")
     # The bundled FFmpeg runtime must carry its matching source and licence;
     # independent thumbnail workers are free to use a different implementation.
     ffmpeg = ("avcodec-63.dll", "avformat-63.dll", "avutil-61.dll", "swscale-10.dll") if target.endswith("windows-msvc") else (
         "libavcodec.so.63", "libavformat.so.63", "libavutil.so.61", "libswscale.so.10")
-    if any(source / name in files for name in ffmpeg):
+    if (any(provider["id"] == "midnight-video" for provider in providers)
+            or any(source / name in files for name in ffmpeg)):
         required = [source / name for name in ffmpeg]
         required.extend(source / "notices/ffmpeg-9.0.2" / name for name in (
             "ffmpeg-9.0.2.tar.xz", "COPYING.LGPLv2.1", "build-options.txt", "config.h", "config.mak"))
         if any(path not in files for path in required):
             raise ValueError("Incomplete FFmpeg runtime, corresponding source or build notices")
+    if validate_only:
+        return {"providers": providers, "target": target}
     copied, digest = copy_worker_files(stage, source, "thumbnailers", files, executables)
     return {"providers": providers, "target": target, "package_sha256": digest, "files": copied}
+
+
+def validate_runtime_installation(source, target):
+    """Check the normal provider graph without creating staging or deployment files."""
+    source = Path(source).absolute()
+    if source.resolve() != source or not stat.S_ISDIR(plain_metadata(source).st_mode):
+        raise ValueError("Runtime installation must be a real directory")
+    suffix = ".exe" if target.endswith("windows-msvc") else ""
+    for name in ("me" + suffix, "midnight-elevated-listing" + suffix):
+        if not stat.S_ISREG(plain_metadata(source / name).st_mode):
+            raise ValueError("Normal builds require an ordinary executable: " + name)
+    viewers = copy_viewer_packages(source, source / "viewers", target,
+                                   required_ids=REQUIRED_VIEWERS, validate_only=True)
+    filesystems = copy_filesystem_packages(source, source / "filesystems", target,
+                                           require_native=True, require_network=True,
+                                           require_archive=True, validate_only=True)
+    thumbnails = copy_thumbnail_packages(source, source / "thumbnailers", target,
+                                         require_media=True, validate_only=True)
+    return {"viewers": [viewer["id"] for viewer in viewers],
+            "filesystems": [filesystem["id"] for filesystem in filesystems],
+            "thumbnailers": [provider["id"] for provider in thumbnails["providers"]]}
 
 
 def vendored(package):
@@ -506,6 +617,13 @@ def copy_authorization_helper(stage, binary, target):
 
 
 def main():
+    if len(sys.argv) > 1 and sys.argv[1] == "validate-runtime":
+        parser = argparse.ArgumentParser(description="Validate every required runtime module")
+        parser.add_argument("--source", required=True, type=Path)
+        parser.add_argument("--target", required=True)
+        args = parser.parse_args(sys.argv[2:])
+        print(json.dumps(validate_runtime_installation(args.source, args.target)))
+        return
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--binary", type=Path, required=True)
     parser.add_argument("--metadata", type=Path, required=True)
@@ -520,9 +638,9 @@ def main():
     parser.add_argument("--viewers-root", type=Path,
                         help="Independent plugin packages; defaults to viewers beside the executable")
     parser.add_argument("--filesystems-root", type=Path,
-                        help="Native and optional archive packages; defaults to filesystems beside executable")
+                        help="Required native, network and archive packages; defaults beside executable")
     parser.add_argument("--thumbnailers-root", type=Path,
-                        help="Optional flat worker installation; defaults to thumbnailers beside the executable")
+                        help="Required image/video workers; defaults to thumbnailers beside the executable")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     if not re.fullmatch(r"[a-z0-9][a-z0-9._-]*", args.target):
@@ -555,9 +673,8 @@ def main():
     filesystem_root = args.filesystems_root or args.binary.parent / "filesystems"
     thumbnail_root = args.thumbnailers_root or args.binary.parent / "thumbnailers"
     filesystems = copy_filesystem_packages(stage, filesystem_root, args.target,
-                                          require_native=True, require_network=True)
-    thumbnails = copy_thumbnail_packages(stage, thumbnail_root, args.target) if (
-        args.thumbnailers_root or thumbnail_root.exists()) else {"providers": [], "files": []}
+                                          require_native=True, require_network=True, require_archive=True)
+    thumbnails = copy_thumbnail_packages(stage, thumbnail_root, args.target, require_media=True)
     worker_files = [file for package in filesystems for file in package["files"]] + thumbnails["files"]
     add_notices(stage, json.loads(args.metadata.read_text(encoding="utf-8-sig")),
                 args.dependency_list.read_text(encoding="utf-8-sig"),

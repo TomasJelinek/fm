@@ -303,13 +303,20 @@ impl Bridge {
         }
         let identity = displayed.map(|entry| panel.row_identity(entry));
         let destination = p.preview_internal_drag_target(pane, row.zip(identity.as_deref()))?;
+        let (row, name) = match &destination {
+            InternalDropDestination::PaneRoot { .. } => (-1, Default::default()),
+            _ => (
+                row.map_or(-1, |row| row as i32),
+                displayed.map_or_else(Default::default, |entry| {
+                    entry.name.to_string_lossy().as_ref().into()
+                }),
+            ),
+        };
         Some(Target {
             destination,
             pane,
-            row: row.map_or(-1, |row| row as i32),
-            name: displayed.map_or_else(Default::default, |entry| {
-                entry.name.to_string_lossy().as_ref().into()
-            }),
+            row,
+            name,
         })
     }
 

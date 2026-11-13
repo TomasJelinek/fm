@@ -1,8 +1,12 @@
 # Independent Chromium HTML viewer
 
-This optional plugin is its own Rust workspace and lockfile. It consumes only
+This required runtime plugin is its own Rust workspace and lockfile. It consumes only
 the released `midnight-web-viewer-api` 0.2.0 registry package. Removing its
-installed viewer directory removes HTML capability without changing the host.
+installed viewer directory removes HTML capability without changing the host, but
+normal builds and distribution validation require the complete package.
+Use `bash scripts/build-html-viewer.sh debug` or
+`scripts/build-html-viewer.ps1 -Profile debug` from the repository for a standalone
+rebuild with the verified pinned CEF cache. The normal build includes it automatically.
 
 The host launches `midnight-viewer-html.exe` without arguments and provides MWV1
 framed binary commands on standard input; standard output contains events only.

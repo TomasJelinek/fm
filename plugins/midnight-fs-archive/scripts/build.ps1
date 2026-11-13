@@ -2,10 +2,12 @@ param(
     [Parameter(Mandatory=$true)][string]$SdkConfig,
     [Parameter(Mandatory=$true)][string]$BuildRoot,
     [string]$OutputDirectory,
+    [ValidateSet('debug', 'release')][string]$Profile = 'debug',
     [switch]$Test,
     [switch]$Offline
 )
 $ErrorActionPreference = 'Stop'
+if ($env:MIDNIGHT_TEST_ARCHIVE_FILESYSTEM -eq '1') { $Test = $true }
 $pluginRoot = Split-Path -Parent $PSScriptRoot
 $buildDirectory = [IO.Path]::GetFullPath($BuildRoot)
 if (($buildDirectory -split '[\\/]') -notcontains '_build') { throw 'BuildRoot must be under _build' }
@@ -22,17 +24,18 @@ try {
     $env:CARGO_PROFILE_TEST_DEBUG = '0'
     $common = @('--manifest-path', (Join-Path $pluginRoot 'Cargo.toml'), '--locked', '--config', (Resolve-Path -LiteralPath $SdkConfig).Path)
     if ($Offline) { $common += '--offline' }
+    if ($Profile -eq 'release') { $common += '--release' }
     if ($Test) {
         & cargo test @common
         if ($LASTEXITCODE -ne 0) { throw 'Archive plugin tests failed' }
     }
-    & cargo build --release @common
+    & cargo build @common
     if ($LASTEXITCODE -ne 0) { throw 'Archive plugin build failed' }
     if ($OutputDirectory) {
         $package = [IO.Path]::GetFullPath($OutputDirectory)
         if (($package -split '[\\/]') -notcontains '_build') { throw 'Package staging must be under _build' }
         New-Item -ItemType Directory -Force -Path $package | Out-Null
-        Copy-Item -LiteralPath (Join-Path $buildDirectory 'release/midnight-fs-archive.exe') -Destination $package
+        Copy-Item -LiteralPath (Join-Path $buildDirectory "$Profile/midnight-fs-archive.exe") -Destination $package
         Copy-Item -LiteralPath (Join-Path $pluginRoot 'THIRD-PARTY.md') -Destination $package
         $target = ((& rustc -vV | Select-String '^host: ').ToString() -replace '^host: ', '').Trim()
         if (-not $target) { throw 'Cannot determine plugin target' }
@@ -48,7 +51,7 @@ stable_entry_ids = true
 formats = ["zip", "tar", "gzip", "tar-gzip", "7z", "xz", "tar-xz", "bzip2", "tar-bzip2", "zstd", "tar-zstd"]
 "@
         [IO.File]::WriteAllText((Join-Path $package 'plugin.toml'), $manifest.Replace("`r`n", "`n"), [Text.UTF8Encoding]::new($false))
-        & python (Join-Path $PSScriptRoot 'notices.py') --config $SdkConfig --output (Join-Path $package 'licenses')
+        & python -B (Join-Path $PSScriptRoot 'notices.py') --config $SdkConfig --output (Join-Path $package 'licenses')
         if ($LASTEXITCODE -ne 0) { throw 'Archive distribution notices failed' }
     }
 } finally {

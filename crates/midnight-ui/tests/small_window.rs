@@ -375,6 +375,8 @@ fn exact_320_by_200_minimum_survives_density_fonts_and_recovers_both_panels() {
 #[test]
 fn all_function_slots_keep_captions_in_both_layers_after_remapping() {
     let mut test = ui::TestUi::new();
+    // This fixture exercises all twelve supported slots, including network dialogs.
+    test.window.set_network_available(true);
     let presenter = Rc::new(RefCell::new(Presenter::new("left".into(), "right".into())));
     install(&test.window, presenter.clone(), Rc::new(|_| true));
     presenter

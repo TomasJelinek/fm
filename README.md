@@ -6,9 +6,9 @@ Salamander-compatible templates to the clipboard, internal viewer or a UTF-8 fil
 
 A dual-pane desktop file manager written in Rust with Slint and Tokio.
 
-An optional [HTML viewer](docs/developer/WEB_VIEWER_API.md) renders HTML with
+The [HTML viewer](docs/developer/WEB_VIEWER_API.md) renders HTML with
 embedded Chromium inside the normal viewer. Its runtime is a separate plugin
-package; building `me.exe` alone does not install Chromium. Build/package steps
+package included by the normal build helpers; building `me.exe` alone does not install Chromium. Build/package steps
 are in the [independent provider README](plugins/midnight-viewer-html/README.md).
 F3 handles `.html`, `.htm` and `.xhtml`; Ctrl+F searches and Escape closes the
 viewer. HTML starts offline with JavaScript disabled. Windows rendering is
@@ -38,7 +38,8 @@ file operations include confirmed rename, recursive directory creation, empty-fi
 creation (toolbar or Shift+F4), and queued deletion (system Trash by default,
 permanent deletion with Shift). Empty-file creation accepts a name and never
 overwrites an existing entry.
-Explicitly opened files use host associations,
+Explicitly opened documents use host associations; on Linux, executable programs
+run directly and executable shell scripts run in a terminal,
 and explicitly submitted shell commands run with
 the selected user/sudo permissions. F3 opens an installed internal viewer; Alt+F3 forces
 plain text, and F4 opens the configured external editor. Ctrl+C/Ctrl+V copies files and ordinary folders through a
@@ -72,11 +73,14 @@ See [operation progress behavior and limits](docs/developer/OPERATION_PROGRESS.m
 See [error recovery and validation](docs/verification/2026-11-08-transfer-errors.md).
 
 Mouse file dragging uses the same verified copy queue for drops into either panel's
-displayed directory. Dragging a selected row keeps the selected group; dragging
+displayed directory. In flat panels, ordinary file rows and image tiles target the
+panel's current folder; folder rows target that folder. Dragging a selected row keeps the selected group; dragging
 an unselected row targets that item. Native exchange with other applications uses
 Windows OLE or Linux X11/XWayland XDND. Native Wayland currently supports internal
-panel dragging only. Drops copy and retain sources; copying out is performed by
-the receiving application. See [drag/drop controls](docs/KEYBOARD_SHORTCUTS.md)
+panel dragging only. Internal drops move on a proven same volume and otherwise
+copy; Ctrl forces Copy and Shift forces Move. Incoming native drops copy and
+retain sources; copying out is performed by the receiving application.
+See [drag/drop controls](docs/KEYBOARD_SHORTCUTS.md)
 and the [native boundary](SECURITY.md#file-drag-and-drop).
 
 ## Build and run
@@ -116,29 +120,56 @@ can bootstrap Rust; see the Linux instructions below. `build.bat` expects its
 prerequisites to be installed already. Application builds through the helpers also build the
 platform's independent native and Network Neighborhood
 filesystem packages under `filesystems/native.{windows,linux}/` and
-`filesystems/network.{windows,linux}/`, then the five
-independent viewer packages using the public SDK under `viewers/`. They do
+`filesystems/network.{windows,linux}/`, then the six
+independent viewer packages using the public SDK under `viewers/`, followed by
+the required image and video thumbnailers under `thumbnailers/` and the archive
+worker under `filesystems/midnight.fs.archive/`. All runtime modules for the target
+platform are mandatory in normal builds and distribution packages. They do
 not launch the application. Host Linux packages are installed only with explicit
 `--install-deps`; Docker setup installs packages inside its image. The Linux
-Docker path runs the full app/elevation/native-filesystem/network/viewer build
+Docker path runs the full app/elevation/native-filesystem/network/viewer/thumbnailer build
 chain. Direct `cargo build -p midnight-explorer` builds the host only; its elevation
-helper and provider/viewer packages need separate build/staging. Run
+helper and provider/viewer/thumbnailer packages need separate build/staging. Run
 `scripts/build-native-filesystem.ps1` or
 `scripts/build-native-filesystem.sh` before launching it, add Network Neighborhood with
 `scripts/build-network-filesystem.ps1` or `.sh`, and use `scripts/build-viewers.ps1`
-or `scripts/build-viewers.sh` to add viewers. Native browsing and F3 source reads have
+or `scripts/build-viewers.sh` to add viewers, then
+`scripts/build-default-thumbnailers.ps1 -Profile debug` or
+`bash scripts/build-default-thumbnailers.sh debug` for both thumbnailers.
+Native browsing and F3 source reads have
 no built-in fallback when their native filesystem package is absent or incompatible.
-Archive and thumbnail workers have separate builds; the root helpers do not install
-them. Use the archive plugin's `scripts/build.ps1` or `scripts/build.sh` with a
-canonical worker SDK configuration, and `scripts/build-thumbnailers.ps1` or
-`scripts/build-thumbnailers.sh` for thumbnails. Stage the results in executable-adjacent
-`filesystems/` and `thumbnailers/` respectively. See the
+For an individual archive-worker rebuild, use
+`scripts/build-archive-filesystem.ps1 -Profile debug` or
+`bash scripts/build-archive-filesystem.sh debug`. These reuse the current public
+worker SDK prepared by the normal build. See the
 [filesystem API and build reference](docs/developer/FILESYSTEM_API.md) and
 [worker SDK guide](docs/developer/WORKER_SDK.md). Release packaging accepts these
-package roots, requires one compatible native and one network filesystem provider, and
-preserves executable permissions and notices. Archive and thumbnail packages remain optional.
+package roots, requires all six viewers, native/network/archive filesystem providers and both image/video
+thumbnailers, and preserves executable permissions, notices and FFmpeg corresponding
+source. Missing module prerequisites, workers, runtimes or notices fail the normal
+build; they are never silently omitted. The selected Debug profile propagates to
+the independent Rust modules too.
+
+The HTML build acquires the exact pinned CEF archive, verifies its SHA-256 and
+retains the complete runtime, license and Chromium credits. Set `CEF_PATH` to an
+already verified SDK or use the build helper cache under `.tools/cef/`.
+Chromium renderer sandboxing remains enabled.
+
+Linux thumbnail builds acquire and verify the pinned FFmpeg 9.0.2 source and
+signature, then build the existing restricted LGPL configuration. GPG and libclang
+are build prerequisites; a system FFmpeg installation is not substituted. Windows
+thumbnail builds require the approved MSVC FFmpeg prefix/source and libclang:
+set `MIDNIGHT_FFMPEG_PREFIX`, `MIDNIGHT_FFMPEG_SOURCE_ARCHIVE` and `LIBCLANG_PATH`.
+The [video worker guide](plugins/midnight-thumbnail-video/README.md) documents its
+recipe and codec limits. Use `MIDNIGHT_THUMBNAILERS_OFFLINE=1` to require cached
+SDK/dependency/native downloads, or supply `MIDNIGHT_THUMBNAIL_SDK_CONFIG` for an
+existing released worker SDK. Debug is the default for the thumbnail build helpers.
 The [network plugin guide](plugins/midnight-filesystem-network/README.md) describes
 its optional Linux GIO/GVfs runtime and explicit unavailable/authentication states.
+On Ubuntu/Mint, local network discovery and native SMB share browsing use
+`gvfs-backends gvfs-fuse wsdd`; install these system runtime packages if missing.
+The `wsdd` helper supplies Windows computer discovery. A known server can also
+be entered as `smb://server/` in a panel's path.
 See the [native filesystem build instructions](docs/developer/NATIVE_FILESYSTEM_API.md#building-the-native-package)
 for package-only builds, test switches and offline options.
 The Cargo package remains `midnight-explorer`; its executable is `me.exe` on Windows
@@ -157,6 +188,9 @@ does not elevate ordinary file operations, change ACLs or store passwords. See
 [the authorization boundary](docs/verification/2026-11-11-directory-authorization.md).
 
 ### Windows x64
+
+Install 64-bit PowerShell 7 (`pwsh.exe`) and Python 3.12+ with its `py` launcher
+for the native worker build helpers. `build.bat` checks PowerShell before building.
 
 Install the Visual Studio **Desktop development with C++** workload, including
 the MSVC x64/x86 tools and a Windows SDK, as described in the
@@ -197,8 +231,9 @@ powershell -NoProfile -File scripts/deploy-private.ps1 -SourceDirectory _build/r
 
 Use the original build EXE, the **Midnight Explorer** desktop shortcut, or the
 private installation path printed by that command. Restart after deployment.
-`-IncludeFilesystems` includes the required native filesystem and any built archive
-workers. Omit `-IncludeThumbnailers` when optional thumbnail packages are absent.
+`-IncludeFilesystems` includes the filesystem packages. Keep `-IncludeThumbnailers`
+to deploy the image/video workers; normal build deployment includes both flags
+and rejects incomplete module installations.
 The helper does not launch the app or change saved settings. Direct launches:
 
 ```powershell
@@ -281,7 +316,8 @@ install the packages manually. For Ubuntu/Mint:
 
 ```sh
 sudo apt update
-sudo apt install build-essential python3 pkg-config libfontconfig1-dev libfreetype6-dev \
+sudo apt install build-essential python3 pkg-config curl ca-certificates gnupg xz-utils perl libclang-dev cmake ninja-build \
+    libfontconfig1-dev libfreetype6-dev \
     libxkbcommon-dev libxkbcommon-x11-0 libx11-dev libxcb1-dev libwayland-dev libudev-dev
 ```
 
@@ -289,6 +325,7 @@ Fedora 44+ (maintained desktop release, x86-64):
 
 ```sh
 sudo dnf install gcc gcc-c++ make python3 pkgconf-pkg-config fontconfig-devel freetype-devel \
+    curl ca-certificates gnupg2 xz perl clang-libs clang-devel cmake ninja-build \
     libxkbcommon-devel libxkbcommon-x11-devel libX11-devel libXcursor-devel \
     libxcb-devel wayland-devel systemd-devel xdg-utils
 ```
@@ -297,6 +334,7 @@ openSUSE Leap 16.x / Tumbleweed (x86-64):
 
 ```sh
 sudo zypper install gcc gcc-c++ make python3 pkg-config xdg-utils \
+    curl ca-certificates gpg2 xz perl clang-devel cmake ninja \
     'pkgconfig(fontconfig)' 'pkgconfig(freetype2)' 'pkgconfig(xkbcommon)' \
     'pkgconfig(xkbcommon-x11)' 'pkgconfig(x11)' 'pkgconfig(xcursor)' \
     'pkgconfig(xcb)' 'pkgconfig(wayland-client)' 'pkgconfig(libudev)'
@@ -389,26 +427,41 @@ When Windows and WSL use the same checkout, give Linux its separate cache:
 
 ### Linux desktop launcher
 
-The moon icon is embedded for X11. Native Wayland resolves it using the application
-ID and an installed desktop entry. Optional per-user installation after a release
-build, from the repository root:
+Ubuntu GNOME resolves the running application's moon icon through an installed
+desktop entry, including in X11 sessions. Native Wayland also uses the matching
+application ID and desktop entry. Register a debug build directly from the
+repository root:
 
 ```sh
-install -Dm755 _build/release/me "$HOME/.local/bin/me"
-install -Dm755 _build/release/midnight-elevated-listing \
-    "$HOME/.local/bin/midnight-elevated-listing"
-mkdir -p "$HOME/.local/bin/viewers"
-cp -R _build/release/viewers/. "$HOME/.local/bin/viewers/"
-install -Dm644 packaging/linux/io.github.TomasJelinek.MidnightExplorer.desktop \
-    "$HOME/.local/share/applications/io.github.TomasJelinek.MidnightExplorer.desktop"
-install -Dm644 assets/branding/midnight-explorer.png \
-    "$HOME/.local/share/icons/hicolor/256x256/apps/io.github.TomasJelinek.MidnightExplorer.png"
+python3 -B scripts/install-linux-desktop.py
 ```
 
-The graphical session's `PATH` must include `$HOME/.local/bin`; sign in again after
-changing that environment. If using custom XDG data directories, install the entry
-and icon under `$XDG_DATA_HOME` instead of `$HOME/.local/share`. These commands
-install the application but do not make it the default file manager.
+For another existing executable, use
+`python3 -B scripts/install-linux-desktop.py --executable _build/custom/debug/me`.
+The script installs the desktop entry and committed icon under `$XDG_DATA_HOME`
+(default `$HOME/.local/share`), with an absolute executable path, and invalidates
+the icon theme cache after registration. It leaves the
+application and its plugins in place and does not require a graphical-session
+`PATH` change. Restart Midnight Explorer after registration to refresh its running
+icon. Repeat registration after moving the checkout or selecting another build.
+
+For a separate per-user installation of the debug build:
+
+```sh
+install -Dm755 _build/debug/me "$HOME/.local/bin/me"
+install -Dm755 _build/debug/midnight-elevated-listing \
+    "$HOME/.local/bin/midnight-elevated-listing"
+mkdir -p "$HOME/.local/bin/viewers" "$HOME/.local/bin/filesystems" "$HOME/.local/bin/thumbnailers"
+cp -R _build/debug/viewers/. "$HOME/.local/bin/viewers/"
+cp -R _build/debug/filesystems/. "$HOME/.local/bin/filesystems/"
+cp -R _build/debug/thumbnailers/. "$HOME/.local/bin/thumbnailers/"
+python3 -B scripts/install-linux-desktop.py --executable "$HOME/.local/bin/me"
+```
+
+Registration uses only the dedicated `io.github.TomasJelinek.MidnightExplorer`
+desktop-entry and icon paths. It refuses symbolic links in installation paths and
+unrelated existing desktop entries. These commands do not make Midnight Explorer
+the default file manager.
 
 ### Rendering diagnostics
 
@@ -470,7 +523,11 @@ editor scope and shortcuts reserved for later stages.
   appear immediately while backend confirmations arrive. Panel status shows
   selected file/folder counts; attributes use readable flags or Unix chmod notation.
 - Enter / unmodified left double click: enter a directory or open a file in its
-  default system application. Directory links stay inside the file manager.
+  default system application. On Linux, executable ELF programs run directly;
+  executable shebang scripts and `.sh` files run in a terminal. Directory links
+  stay inside the file manager. Files without execute permission are not run.
+- In the bottom details bar, clicking the filename copies its name; Ctrl+click
+  copies the full native path. Other fields still copy their displayed value.
 - Backspace / toolbar Up: parent directory.
 - Alt+Left / Alt+Right: back / forward history; adjacent dropdowns choose a
   particular history entry. Click a highlighted path prefix to visit its ancestor.
@@ -502,6 +559,9 @@ editor scope and shortcuts reserved for later stages.
   preserves the command draft. Its adjacent arrow chooses PowerShell/cmd on Windows
   or Terminal/Terminal(sudo) on Linux. A nonempty draft stays bound to its grammar;
   clear it before switching PowerShell/cmd. Sudo selection is session-only.
+  Linux uses the executable shell in `$SHELL`, with Bash/sh fallbacks, and reads
+  its normal interactive configuration. A missing/basic prompt gets a dynamic
+  user/host/current-directory default without replacing custom shell prompts.
 - The compact terminal icon and navigation controls explain themselves through
   tooltips. Drive tooltips show free space and Windows volume names; expanded
   drive choices include those details. Quick buttons and their dropdown share
@@ -592,6 +652,8 @@ editor scope and shortcuts reserved for later stages.
   file count/total file bytes and folder count; folder contents are not recursively
   counted just to open the confirmation.
 - F11/F12: Windows system dialogs for connecting/disconnecting network drives.
+  Their footer buttons are hidden when these dialogs are unavailable, including
+  on Linux. Supported modifier actions such as Ctrl+F11 and Ctrl+F12 remain visible.
   The Options gear is at the right of the top toolbar; Jobs shows the operation
   queue and session history; Open displays the selected operation's progress.
 - Hold Ctrl to show the effective Ctrl+F1–F12 captions and actions in the footer.
@@ -631,8 +693,11 @@ editor scope and shortcuts reserved for later stages.
   Ctrl+F7 opens the same editor with case conversion enabled. Other edits start
   as Leave unchanged. Preview the captured selection, then Apply to queue the
   reviewed draft. Native Windows attributes/compression/timestamps and Linux
-  permissions/timestamps follow reported capabilities. Unicode case conversion
-  supports whole names, basenames and extensions. Recursive edits process
+  permissions/timestamps follow reported capabilities. Linux permissions have an
+  Owner/Group/Other read/write/execute grid, SUID/SGID/Sticky bits, and synchronized
+  octal and symbolic text. Mixed bits remain unchanged until edited; three octal
+  digits preserve special bits, while four explicitly replace them. Unicode case
+  conversion supports whole names, basenames and extensions. Recursive edits process
   children first without following links or crossing mount points. Name conflicts
   offer Skip, Skip all or Cancel; existing entries are never overwritten.
 - Click the blank area after the top breadcrumb to enter a custom path; Enter
@@ -643,7 +708,12 @@ editor scope and shortcuts reserved for later stages.
   visible page. Active prefix search retains its existing match navigation.
   Installed thumbnailer plugins provide cached previews for supported image/video
   formats; see the [thumbnail design](docs/superpowers/specs/2026-11-05-panel-views-thumbnails-design.md).
-  **Options → Previews → Thumbnail size** offers 48, 64, 72 (default), 96, 128,
+  **Options → Previews → Allow previews inside archives** is enabled by default,
+  including for older saved settings. Turning it off hides archive-member previews
+  and removes them from background scheduling. Network archives also require
+  **Allow previews on network locations**. Options OK saves these choices;
+  Cancel restores their previous values.
+  **Options → Previews → Thumbnail size** offers 48, 64, 72, 96 (default), 128,
   192 and 256 logical pixels. Larger sizes retain the current preview while a
   sharper image is prepared for that file; smaller sizes reuse larger cached
   images. The setting previews immediately, Cancel restores it and OK saves it.
@@ -655,12 +725,14 @@ editor scope and shortcuts reserved for later stages.
   retained and sorted on the backend; Refresh invalidates these live estimates.
 
 Application hotkeys can be changed, disabled, or restored in **Options → Keyboard**.
-Bindings are validated for conflicts in their applicable contexts; native text editing
-and IME behavior are protected. The [shortcut reference](docs/KEYBOARD_SHORTCUTS.md)
+An occupied shortcut offers **Replace** or **Cancel**, identifying the affected
+commands. Replacement preserves their other aliases and nonoverlapping contexts;
+Options **OK** saves the change, and Options **Cancel** rolls it back. Native text
+editing and IME behavior are protected. The [shortcut reference](docs/KEYBOARD_SHORTCUTS.md)
 lists defaults. Numbered tab and Hot Path bindings use physical digits across layouts.
 
 Options, tabs, bookmarks, panel filters, enabled command history, viewer preferences
-and shortcut overrides are stored as versioned UTF-8 JSON (supported schemas through 21) in the native
+and shortcut overrides are stored as versioned UTF-8 JSON (supported schemas through 32) in the native
 `%LOCALAPPDATA%\Midnight Explorer\preferences.json` on Windows, or
 `$XDG_CONFIG_HOME/midnight-explorer/preferences.json` /
 `~/.config/midnight-explorer/preferences.json` on Linux. When the new file is absent,
@@ -717,8 +789,8 @@ does not inspect a link target merely to choose its icon.
 Paths and file identities are kept separately from their displayed text. A failed
 navigation preserves the last usable directory and reports the failed operation.
 Each pane remembers its last visited directory for each volume during this run.
-Visible directories are watched on the backend. Changes are batched after one
-second of quiet, with a three-second cap during continuous activity. A 15-second
+Visible directories are watched on the backend. Changes are batched after
+150 ms of quiet, with a 500 ms cap during continuous activity. A 15-second
 metadata check catches missing native/network notifications. Automatic refresh
 preserves the viewport, selection and command editing; it invalidates earlier
 recursive folder-size estimates.

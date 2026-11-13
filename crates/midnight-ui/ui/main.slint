@@ -50,7 +50,7 @@ import { EditorOptionsView, EditorOptionsDraft } from "editor-options.slint";
 export { EditorOptionsView, EditorOptionsDraft }
 import { UserCommandSettingsView, UserCommandSettingsRow, UserCommandSettingsForm } from "user-command-options.slint";
 export { UserCommandSettingsView, UserCommandSettingsRow, UserCommandSettingsForm }
-import { KeyboardEditorView, ShortcutCommandRow } from "keyboard-editor.slint";
+import { KeyboardEditorView, ShortcutCommandRow, ShortcutReplacementDialog } from "keyboard-editor.slint";
 export { KeyboardEditorView, ShortcutCommandRow }
 import { ViewerPluginsView, ViewerPluginRow } from "plugin-options.slint";
 export { ViewerPluginsView, ViewerPluginRow }
@@ -67,6 +67,8 @@ export { SpeedChartData }
 export { JobsView }
 import { MetadataDialog, MetadataDraft, MetadataFileRow } from "metadata-controls.slint";
 export { MetadataDraft, MetadataFileRow }
+import { UnixPermissionsCodec, UnixPermissionBits, UnixPermissionView } from "unix-permissions.slint";
+export { UnixPermissionsCodec, UnixPermissionBits, UnixPermissionView }
 import { ComparisonView, CompareDirectoriesDialog } from "comparison-dialog.slint";
 import { PanelFilterHistoryItem, PanelFilterView } from "panel-filter-dialog.slint";
 export { ComparisonView, PanelFilterView, PanelFilterHistoryItem }
@@ -121,10 +123,11 @@ export component MainWindow inherits Window {
     in property <bool> left-can-target-selection;
     in property <bool> right-can-target-selection;
     callback thumbnail-clear-cache();
-    callback thumbnail-options-changed(bool, bool, int);
+    callback thumbnail-options-changed(bool, bool, bool, int);
     callback thumbnail-size-changed(int);
     in property <bool> thumbnails-enabled: true;
     in property <bool> thumbnails-network: false;
+    in-out property <bool> thumbnails-archives: true;
     in property <int> thumbnail-size: 96;
     in property <string> thumbnail-cache-location;
     callback row-drag(int, int, string, float, float) -> bool;
@@ -275,6 +278,9 @@ export component MainWindow inherits Window {
     in property <bool> metadata-can-windows;
     in property <int> metadata-windows-mask;
     in property <bool> metadata-can-unix;
+    in property <int> metadata-unix-current-mode;
+    in property <int> metadata-unix-known-mask;
+    in property <int> metadata-unix-supported-mask;
     in property <bool> metadata-can-compress;
     in property <bool> metadata-can-created;
     in property <bool> metadata-can-modified;
@@ -1281,7 +1287,8 @@ export component MainWindow inherits Window {
         close-policy: no-auto-close;
         x: 0px; y: 0px; width: root.width; height: root.height;
         metadata-popup-frame := DialogFrame {
-            desired-width: max(640px, Theme.font-size * 28); desired-height: max(440px, Theme.font-size * 20);
+            desired-width: max(640px, Theme.font-size * 28);
+            desired-height: max(metadata-body.unix-visible ? 620px : 440px, Theme.font-size * 20);
             dismiss-on-outside: false;
             dismiss => { root.cancel-metadata(root.metadata-token); }
             metadata-body := MetadataDialog {
@@ -1294,6 +1301,9 @@ export component MainWindow inherits Window {
                 error: root.metadata-error; ready: root.metadata-ready; busy: root.metadata-busy;
                 can-windows: root.metadata-can-windows; windows-mask: root.metadata-windows-mask;
                 can-unix: root.metadata-can-unix; can-compress: root.metadata-can-compress;
+                unix-current-mode: root.metadata-unix-current-mode;
+                unix-known-mask: root.metadata-unix-known-mask;
+                unix-supported-mask: root.metadata-unix-supported-mask;
                 can-created: root.metadata-can-created; can-modified: root.metadata-can-modified;
                 can-accessed: root.metadata-can-accessed; can-rename: root.metadata-can-rename;
                 init => { self.begin(root.metadata-start-case); }
@@ -1328,6 +1338,27 @@ export component MainWindow inherits Window {
     options := PopupWindow {
         close-policy: no-auto-close;
         x: 0px; y: 0px; width: root.width; height: root.height;
+      shortcut-replacement-popup := PopupWindow {
+        close-policy: no-auto-close;
+        x: 0px; y: 0px; preferred-width: root.width; preferred-height: root.height;
+        replacement-frame := DialogFrame {
+            x: 0px; y: 0px; width: root.width; height: root.height;
+            private property <string> occurrence-token;
+            init => {
+                self.occurrence-token = options-frame.presented-replacement-token;
+                self.reset();
+            }
+            desired-width: max(560px, Theme.font-size * 26);
+            desired-height: max(300px, Theme.font-size * 13);
+            dismiss-on-outside: false; dim: true;
+            dismiss => { KeyboardEditorView.decide-replacement(self.occurrence-token, false); }
+            replacement-body := ShortcutReplacementDialog {
+                token: options-frame.presented-replacement-token;
+                body: options-frame.presented-replacement-body;
+                decide(token, replace) => { KeyboardEditorView.decide-replacement(token, replace); }
+            }
+        }
+      }
       color-picker-popup := PopupWindow {
         close-policy: no-auto-close;
         x: 0px; y: 0px;
@@ -1353,6 +1384,28 @@ export component MainWindow inherits Window {
         }
       }
         options-frame := DialogFrame {
+            private property <string> replacement-request: KeyboardEditorView.replacement-token;
+            private property <bool> replacement-options-open: root.options-open;
+            private property <string> presented-replacement-token;
+            private property <string> presented-replacement-body;
+            changed replacement-request => { self.update-shortcut-replacement(); }
+            changed replacement-options-open => { self.update-shortcut-replacement(); }
+            function update-shortcut-replacement() {
+                PopupFocus.update();
+                if self.replacement-request != "" && root.options-open {
+                    if self.presented-replacement-token != self.replacement-request {
+                        shortcut-replacement-popup.close();
+                        self.presented-replacement-body = KeyboardEditorView.replacement-body;
+                        self.presented-replacement-token = self.replacement-request;
+                        shortcut-replacement-popup.show();
+                    }
+                } else {
+                    shortcut-replacement-popup.close();
+                    self.presented-replacement-token = "";
+                    self.presented-replacement-body = "";
+                }
+                PopupFocus.update();
+            }
             private property <int> picker-field: ColorOptionsView.picker-field;
             private property <color> picker-initial;
             private property <int> picker-generation;
@@ -1396,10 +1449,11 @@ export component MainWindow inherits Window {
                 command-history-empty: root.command-history.length == 0;
                 thumbnails-enabled: root.thumbnails-enabled;
                 thumbnails-network: root.thumbnails-network;
+                thumbnails-archives <=> root.thumbnails-archives;
                 thumbnail-size: root.thumbnail-size;
                 thumbnail-cache-location: root.thumbnail-cache-location;
                 thumbnail-size-changed(size) => { root.thumbnail-size-changed(size); }
-                thumbnail-options-changed(enabled, network, field) => { root.thumbnail-options-changed(enabled, network, field); }
+                thumbnail-options-changed(enabled, network, archives, field) => { root.thumbnail-options-changed(enabled, network, archives, field); }
                 thumbnail-clear-cache => { root.thumbnail-clear-cache(); }
                 preferences-changed(theme, density, field) => { root.preferences-changed(theme, density, field); }
                 font-options-changed(family, desktop, touch, field) => { root.font-options-changed(family, desktop, touch, field); }

@@ -33,16 +33,13 @@ pub(crate) fn patch(
             }
         }
     }
+    (edit.unix_mask, edit.unix_value) =
+        crate::unix_permissions::matrix_edit(draft.unix_mask, draft.unix_value)?;
     if draft.unix_edit {
-        let mode = draft.unix_mode.trim();
-        if !(3..=4).contains(&mode.len()) || !mode.bytes().all(|byte| (b'0'..=b'7').contains(&byte))
-        {
-            return Err(
-                "Permissions require three or four octal digits (for example 755 or 2755).".into(),
-            );
+        if edit.unix_mask != 0 {
+            return Err("Choose either an octal permission edit or individual bits.".into());
         }
-        edit.unix_mask = if mode.len() == 3 { 0o777 } else { 0o7777 };
-        edit.unix_value = u32::from_str_radix(mode, 8).map_err(|_| "Invalid permissions.")?;
+        (edit.unix_mask, edit.unix_value) = crate::unix_permissions::parse_octal(&draft.unix_mode)?;
     }
     if draft.case_enabled {
         let mode = match draft.case_mode {
@@ -157,6 +154,26 @@ mod tests {
         for invalid in ["", "75", "888", "10000", "-755", "0x755"] {
             draft.unix_mode = invalid.into();
             assert!(patch(&draft, None).is_err(), "{invalid}");
+        }
+    }
+
+    #[test]
+    fn unix_matrix_changes_only_requested_bits_and_rejects_ambiguous_edits() {
+        let mut draft = MetadataDraft {
+            unix_mask: 0o220,
+            unix_value: 0o020,
+            ..Default::default()
+        };
+        let edit = patch(&draft, None).unwrap();
+        assert_eq!((edit.unix_mask, edit.unix_value), (0o220, 0o020));
+        draft.unix_edit = true;
+        draft.unix_mode = "755".into();
+        assert!(patch(&draft, None).is_err());
+        draft.unix_edit = false;
+        for (mask, value) in [(-1, 0), (0o10000, 0), (0, 1), (0o7777, -1)] {
+            draft.unix_mask = mask;
+            draft.unix_value = value;
+            assert!(patch(&draft, None).is_err());
         }
     }
 

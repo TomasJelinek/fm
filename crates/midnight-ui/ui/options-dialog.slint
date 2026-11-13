@@ -76,6 +76,7 @@ export component OptionsBody inherits Rectangle {
     in property <bool> command-history-empty;
     in property <bool> thumbnails-enabled;
     in property <bool> thumbnails-network;
+    in-out property <bool> thumbnails-archives: true;
     in property <int> thumbnail-size: 96;
     in property <string> thumbnail-cache-location;
     callback preferences-changed(int, int, int);
@@ -86,7 +87,7 @@ export component OptionsBody inherits Rectangle {
     callback copy-verification-changed(bool);
     callback disk-io-concurrency-changed(bool, int);
     callback command-history-clear();
-    callback thumbnail-options-changed(bool, bool, int);
+    callback thumbnail-options-changed(bool, bool, bool, int);
     callback thumbnail-size-changed(int);
     callback thumbnail-clear-cache();
     callback close();
@@ -96,6 +97,19 @@ export component OptionsBody inherits Rectangle {
     private property <bool> compact: root.height < 350px;
     private property <bool> narrow: root.width < max(700px, Theme.font-size * 34);
     private property <bool> header-topic: root.compact && root.narrow;
+    private property <length> navigation-width: max(144px,
+        navigation-labels.preferred-width + 32px + FluentScrollMetrics.overlay-size);
+    // Measure every selected caption independently of the visible sidebar and
+    // its viewport, so font changes cannot elide labels or create sizing cycles.
+    navigation-metrics := Rectangle {
+        visible: false; accessible-role: none;
+        navigation-labels := VerticalLayout {
+            for label in OptionsTopics.titles: Text {
+                text: label; font-size: Theme.font-size; font-weight: 600;
+                wrap: no-wrap;
+            }
+        }
+    }
     private property <string> command-preview-revision: UserCommandSettingsView.preview-revision;
     changed command-preview-revision => {
         if root.topic-index == 9 && UserCommandSettingsView.preview-text != "" {
@@ -183,7 +197,7 @@ export component OptionsBody inherits Rectangle {
             spacing: root.narrow ? 0px : 18px;
             min-height: 0px; vertical-stretch: 1;
             if !root.narrow : OptionsNavigation {
-                width: max(144px, Theme.font-size * 6 + 28px);
+                width: root.navigation-width;
                 selected <=> root.topic-index;
             }
             content := ScrollView {
@@ -202,7 +216,7 @@ export component OptionsBody inherits Rectangle {
               if root.topic-index == 8 : ColorOptions {
                 // Responsive columns must not depend on their own layout's minimum width.
                 available-width: max(0px, root.width - (root.compact ? 12px : 36px) - FluentScrollMetrics.overlay-size
-                    - (root.narrow ? 0px : max(144px, Theme.font-size * 6 + 28px) + 18px));
+                    - (root.narrow ? 0px : root.navigation-width + 18px));
                 narrow: root.narrow;
               }
               if root.topic-index == 7 : ArchiveOptions { }
@@ -223,10 +237,11 @@ export component OptionsBody inherits Rectangle {
             if root.topic-index == 6 : ThumbnailOptions {
                 thumbnails-enabled: root.thumbnails-enabled;
                 thumbnails-network: root.thumbnails-network;
+                thumbnails-archives <=> root.thumbnails-archives;
                 thumbnail-size: root.thumbnail-size;
                 thumbnail-cache-location: root.thumbnail-cache-location;
                 size-changed(size) => { root.thumbnail-size-changed(size); }
-                changed(enabled, network, field) => { root.thumbnail-options-changed(enabled, network, field); }
+                changed(enabled, network, archives, field) => { root.thumbnail-options-changed(enabled, network, archives, field); }
                 clear-cache => { root.thumbnail-clear-cache(); }
             }
             if root.topic-index == 3 : KeyboardEditor { available-height: content.visible-height; narrow: root.narrow; }

@@ -1,7 +1,8 @@
 param(
     [Parameter(Mandatory)][string]$SdkConfig,
     [Parameter(Mandatory)][string]$BuildRoot,
-    [string]$OutputDirectory
+    [string]$OutputDirectory,
+    [ValidateSet('debug', 'release')][string]$Profile = 'debug'
 )
 $ErrorActionPreference = 'Stop'
 $pluginRoot = Split-Path -Parent $PSScriptRoot
@@ -14,10 +15,13 @@ if ($LASTEXITCODE -ne 0) { throw 'Native target discovery failed' }
 if ($nativeTarget -match '-windows-') { $library = 'midnight_viewer_markdown.dll' }
 elseif ($nativeTarget -match '-linux-') { $library = 'libmidnight_viewer_markdown.so' }
 else { throw "Unsupported native target: $nativeTarget" }
-& cargo --config $config build --manifest-path (Join-Path $pluginRoot 'Cargo.toml') --target-dir (Join-Path $BuildRoot 'target') --target $nativeTarget --release --locked --offline
-if ($LASTEXITCODE -ne 0) { throw 'Plugin release build failed' }
+$arguments = @('--config', $config, 'build', '--manifest-path', (Join-Path $pluginRoot 'Cargo.toml'),
+    '--target-dir', (Join-Path $BuildRoot 'target'), '--target', $nativeTarget, '--locked', '--offline')
+if ($Profile -eq 'release') { $arguments += '--release' }
+& cargo @arguments
+if ($LASTEXITCODE -ne 0) { throw 'Plugin build failed' }
 New-Item -ItemType Directory -Force $OutputDirectory | Out-Null
-Copy-Item -LiteralPath (Join-Path $BuildRoot "target/$nativeTarget/release/$library") -Destination $OutputDirectory
+Copy-Item -LiteralPath (Join-Path $BuildRoot "target/$nativeTarget/$Profile/$library") -Destination $OutputDirectory
 $manifest = Get-Content -LiteralPath (Join-Path $pluginRoot 'plugin.toml') -Raw
 $manifest = $manifest -replace 'entry_library = "[^"]+"', "entry_library = `"$library`""
 $manifest = $manifest -replace 'target = "[^"]+"', "target = `"$nativeTarget`""

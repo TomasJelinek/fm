@@ -78,16 +78,19 @@ case "$package_manager" in
     apt-get)
         run_package_command apt-get update --error-on=any
         run_package_command apt-get install --no-install-recommends \
-            build-essential python3 pkg-config libfontconfig1-dev libfreetype6-dev \
+            build-essential python3 pkg-config curl ca-certificates gnupg xz-utils perl libclang-dev cmake ninja-build \
+            libfontconfig1-dev libfreetype6-dev \
             libxkbcommon-dev libxkbcommon-x11-0 libx11-dev libxcb1-dev libwayland-dev libudev-dev
         ;;
     dnf)
         run_package_command dnf install gcc gcc-c++ make python3 pkgconf-pkg-config \
+            curl ca-certificates gnupg2 xz perl clang-libs clang-devel cmake ninja-build \
             fontconfig-devel freetype-devel libxkbcommon-devel libxkbcommon-x11-devel \
             libX11-devel libXcursor-devel libxcb-devel wayland-devel systemd-devel xdg-utils
         ;;
     zypper)
         run_package_command zypper install gcc gcc-c++ make python3 pkg-config xdg-utils \
+            curl ca-certificates gpg2 xz perl clang-devel cmake ninja \
             'pkgconfig(fontconfig)' 'pkgconfig(freetype2)' 'pkgconfig(xkbcommon)' \
             'pkgconfig(xkbcommon-x11)' 'pkgconfig(x11)' 'pkgconfig(xcursor)' \
             'pkgconfig(xcb)' 'pkgconfig(wayland-client)' 'pkgconfig(libudev)'

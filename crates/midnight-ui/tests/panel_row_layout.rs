@@ -214,6 +214,150 @@ fn rendered_text(test: &ui::TestUi, caption: &str) -> ItemRc {
 }
 
 #[test]
+fn mandatory_breaks_in_native_filenames_cannot_shift_glyphs_into_adjacent_rows() {
+    let mut test = ui::TestUi::new();
+    test.resize(1711, 900);
+    test.window.invoke_apply_fonts("".into(), 13, 15);
+    test.window
+        .set_right_size_column_sample("3,603,169,280".into());
+    let base = "mb-h56-static-dups.ovclash.ovstage.clashdata.ovclashdb";
+    let names = [
+        base.to_string(),
+        format!("{base}-journal\n"),
+        format!("{base}-journal\r"),
+    ];
+    test.window.set_right_rows(ModelRc::new(VecModel::from(
+        names
+            .iter()
+            .enumerate()
+            .map(|(index, name)| FileRow {
+                identity: format!("file-{index}").into(),
+                name: name.as_str().into(),
+                size: "591,360".into(),
+                modified_date: "11/13/2026".into(),
+                modified_time: "01:16:02 PM".into(),
+                ..Default::default()
+            })
+            .collect::<Vec<_>>(),
+    )));
+    for _ in 0..3 {
+        test.draw();
+    }
+    render::snapshot(&test, "filename-mandatory-breaks");
+    let mut bands = Vec::new();
+    for name in &names {
+        let row = ui::root_item(&test.window, name, AccessibleRole::ListItem);
+        let rect = row.geometry();
+        let origin = row.map_to_native_window(rect.origin);
+        let x0 = origin.x.round() as usize + 56;
+        let y0 = origin.y.round() as usize;
+        let height = rect.height().round() as usize;
+        let ink = (0..height)
+            .filter(|dy| {
+                (x0..x0 + 80).any(|x| {
+                    let p = test.pixels[(y0 + dy) * test.width + x];
+                    p.r.max(p.g).max(p.b) > 150
+                })
+            })
+            .collect::<Vec<_>>();
+        bands.push((
+            *ink.first().expect("painted filename prefix"),
+            *ink.last().unwrap(),
+        ));
+    }
+    for band in &bands[1..] {
+        assert!(
+            bands[0].0.abs_diff(band.0) <= 1 && bands[0].1.abs_diff(band.1) <= 1,
+            "a hidden mandatory line break must not recenter a multiline label inside one row: {bands:?}"
+        );
+    }
+}
+
+#[test]
+fn long_database_names_keep_one_line_and_align_with_metadata_during_updates() {
+    let mut test = ui::TestUi::new();
+    test.resize(1711, 900);
+    test.window.invoke_apply_fonts("".into(), 13, 15);
+    test.window.set_active_pane(1);
+    test.window
+        .set_right_size_column_sample("3,603,169,280".into());
+    let names = [
+        "mb-h56-static-dups.ovclash.ovstage.clashdata.ovclashdb",
+        "mb-h56-static-dups.ovclash.ovstage.clashdata.ovclashdb-journal",
+    ];
+    let rows = Rc::new(VecModel::from(vec![
+        FileRow {
+            identity: "parent".into(),
+            name: "..".into(),
+            parent_entry: true,
+            directory: true,
+            cursor: true,
+            ..Default::default()
+        },
+        FileRow {
+            identity: "database".into(),
+            name: names[0].into(),
+            size: "3,603,169,280".into(),
+            modified_date: "11/13/2026".into(),
+            modified_time: "01:16:31 PM".into(),
+            ..Default::default()
+        },
+        FileRow {
+            identity: "journal".into(),
+            name: names[1].into(),
+            size: "591,360".into(),
+            modified_date: "11/13/2026".into(),
+            modified_time: "01:16:02 PM".into(),
+            ..Default::default()
+        },
+    ]));
+    test.window.set_right_rows(ModelRc::from(rows.clone()));
+    for phase in 0..3 {
+        if phase > 0 {
+            use slint::Model;
+            let mut row = rows.row_data(2).unwrap();
+            row.size = if phase == 1 { "12,345,678" } else { "591,360" }.into();
+            rows.set_row_data(2, row);
+        }
+        for _ in 0..3 {
+            test.draw();
+        }
+        let adapter: Rc<dyn WindowAdapter> = test.native.clone();
+        for (name, time) in names.iter().zip(["01:16:31 PM", "01:16:02 PM"]) {
+            let row = ui::root_item(&test.window, name, AccessibleRole::ListItem);
+            let row_rect = row.geometry();
+            let row_top = row.map_to_native_window(row_rect.origin).y;
+            let text = rendered_text(&test, name);
+            let rect = text.geometry();
+            let text_top = text.map_to_native_window(rect.origin).y;
+            let metadata = rendered_text(&test, time);
+            let meta = metadata.geometry();
+            let metadata_top = metadata.map_to_native_window(meta.origin).y;
+            let preferred = text
+                .borrow()
+                .as_ref()
+                .layout_info(Orientation::Vertical, rect.width(), &adapter, &text)
+                .preferred;
+            assert!(
+                preferred <= row_rect.height() + 0.5,
+                "filename must occupy one row: {name}, preferred={preferred}, row={row_rect:?}"
+            );
+            assert!(
+                text_top >= row_top - 0.5
+                    && text_top + rect.height() <= row_top + row_rect.height() + 0.5,
+                "filename escapes its row: {name}, text={text_top}/{rect:?}, row={row_top}/{row_rect:?}"
+            );
+            assert!(
+                ((text_top + rect.height() / 2.0) - (metadata_top + meta.height() / 2.0)).abs()
+                    <= 0.5,
+                "filename and metadata have different row centers: {name}, name={text_top}/{rect:?}, metadata={metadata_top}/{meta:?}"
+            );
+        }
+        render::snapshot(&test, &format!("database-rows-update-{phase}"));
+    }
+}
+
+#[test]
 fn folder_links_files_and_folders_share_the_same_name_gutter() {
     let mut test = ui::TestUi::new();
     test.window.set_left_rows(ModelRc::new(VecModel::from(vec![

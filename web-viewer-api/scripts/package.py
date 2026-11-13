@@ -44,7 +44,12 @@ def canonical_package(artifact, prefix):
             entry.size = len(data)
             entry.mode = 0o755 if mode & 0o111 else 0o644
             archive.addfile(entry, io.BytesIO(data))
-    return gzip.compress(stream.getvalue(), mtime=0), members
+    compressed = io.BytesIO()
+    # gzip.compress(mtime=0) delegates its header to zlib on some Python
+    # versions, embedding the host OS. GzipFile writes the portable OS=255 header.
+    with gzip.GzipFile(fileobj=compressed, mode="wb", filename="", mtime=0, compresslevel=9) as encoder:
+        encoder.write(stream.getvalue())
+    return compressed.getvalue(), members
 
 
 def main():
@@ -62,8 +67,8 @@ def main():
         'replace-with = "web-viewer-releases"\n[source.web-viewer-releases]\n'
         f'local-registry = {json.dumps(str(registry))}\n', encoding="utf-8")
     environment = os.environ.copy()
-    environment["CARGO_HOME"] = str(REPOSITORY / ".tools/cargo")
-    environment["RUSTUP_HOME"] = str(REPOSITORY / ".tools/rustup")
+    environment.setdefault("CARGO_HOME", str(REPOSITORY / ".tools/cargo"))
+    environment.setdefault("RUSTUP_HOME", str(REPOSITORY / ".tools/rustup"))
     cargo = environment.get("CARGO", "cargo")
     target = REPOSITORY / "_build/html-viewer/api-target"
     artifacts = []

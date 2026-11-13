@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
-if (( $# < 4 )); then
-    echo 'usage: build-thumbnailers.sh API_CONFIG DESTINATION BUILD_ROOT NOTICES_ROOT [FFMPEG_PREFIX FFMPEG_SOURCE_ARCHIVE LIBCLANG_PATH] [debug|release]' >&2
+if (( $# < 7 || $# > 8 )); then
+    echo 'usage: build-thumbnailers.sh API_CONFIG DESTINATION BUILD_ROOT NOTICES_ROOT FFMPEG_PREFIX FFMPEG_SOURCE_ARCHIVE LIBCLANG_PATH [debug|release]' >&2
     exit 2
 fi
 repository=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
@@ -17,16 +17,16 @@ for target in "$destination" "$build_root"; do
         parent=$(dirname "$parent")
     done
 done
-mkdir -p "$destination" "$build_root"
-profile=${8:-release}
+profile=${8:-debug}
 [[ $profile == debug || $profile == release ]] || exit 2
-plugins=(midnight-thumbnail-image)
-if (( $# >= 7 )) && [[ -n $5 ]]; then
-    export FFMPEG_DIR=$(realpath "$5") LIBCLANG_PATH=$(realpath "$7")
-    source_archive=$(realpath "$6")
-    echo "8c3850283eb25fa026482078a04051e0be17347b09ef81a0849bec15a96e002e  $source_archive" | sha256sum --check --status
-    plugins+=(midnight-thumbnail-video)
-fi
+plugins=(midnight-thumbnail-image midnight-thumbnail-video)
+[[ -n $5 && -n $6 && -n $7 ]] || { echo 'Both thumbnailers require FFMPEG_PREFIX, FFMPEG_SOURCE_ARCHIVE and LIBCLANG_PATH' >&2; exit 2; }
+FFMPEG_DIR=$(realpath "$5")
+LIBCLANG_PATH=$(realpath "$7")
+export FFMPEG_DIR LIBCLANG_PATH
+source_archive=$(realpath "$6")
+echo "8c3850283eb25fa026482078a04051e0be17347b09ef81a0849bec15a96e002e  $source_archive" | sha256sum --check --status
+mkdir -p "$destination" "$build_root"
 native_offline=()
 [[ ${MIDNIGHT_IMAGE_NATIVE_OFFLINE:-0} != 1 ]] || native_offline+=(--offline)
 native_jobs=${CARGO_BUILD_JOBS:-2}
@@ -54,12 +54,10 @@ for name in "${plugins[@]}"; do
         exit 2
     fi
 done
-if (( $# >= 7 )) && [[ -n $5 ]]; then
-    for name in libavcodec.so.63 libavformat.so.63 libavutil.so.61 libswscale.so.10; do
-        cp -L "$FFMPEG_DIR/lib/$name" "$destination/$name"
-    done
-    mkdir -p "$destination/notices/ffmpeg-9.0.2"
-    cp -R "$FFMPEG_DIR/share/midnight-ffmpeg/." "$destination/notices/ffmpeg-9.0.2/"
-    cp "$source_archive" "$destination/notices/ffmpeg-9.0.2/ffmpeg-9.0.2.tar.xz"
-fi
+for name in libavcodec.so.63 libavformat.so.63 libavutil.so.61 libswscale.so.10; do
+    cp -L "$FFMPEG_DIR/lib/$name" "$destination/$name"
+done
+mkdir -p "$destination/notices/ffmpeg-9.0.2"
+cp -R "$FFMPEG_DIR/share/midnight-ffmpeg/." "$destination/notices/ffmpeg-9.0.2/"
+cp "$source_archive" "$destination/notices/ffmpeg-9.0.2/ffmpeg-9.0.2.tar.xz"
 printf 'Built installed thumbnail providers: %s\n' "$destination"

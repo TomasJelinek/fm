@@ -3,6 +3,7 @@ import { CompactPicker, TipBody } from "controls.slint";
 import { HintedActionButton, HintedLineEdit } from "hinted-inputs.slint";
 import { ErrorNotice } from "error-notice.slint";
 import { Theme } from "theme.slint";
+export { ShortcutReplacementDialog } from "shortcut-replacement.slint";
 
 export struct ShortcutCommandRow { id: string, label: string, aliases: string, selected: bool }
 
@@ -21,6 +22,8 @@ export global KeyboardEditorView {
     in-out property <string> revision;
     in-out property <string> command-revision;
     in-out property <bool> capturing;
+    in property <string> replacement-token;
+    in property <string> replacement-body;
     callback search(string);
     callback select(string);
     callback move-selection(int);
@@ -28,6 +31,7 @@ export global KeyboardEditorView {
     callback capture-chord(string);
     callback clear();
     callback assign(string, string);
+    callback decide-replacement(string, bool);
     callback remove(string, string);
     callback restore(string);
     callback reset-all();
@@ -164,7 +168,7 @@ export component KeyboardEditor inherits VerticalLayout {
         HintedActionButton {
             row: root.narrow ? 1 : 0; col: root.narrow ? 1 : 2;
             text: "Assign"; enabled: KeyboardEditorView.can-assign;
-            hint: "Add this shortcut to the command, keeping its other shortcuts.";
+            hint: "Add this shortcut, keeping the command's other shortcuts. An occupied shortcut asks for replacement confirmation.";
             clicked => { KeyboardEditorView.assign(KeyboardEditorView.selected-id, KeyboardEditorView.candidate); }
         }
     }

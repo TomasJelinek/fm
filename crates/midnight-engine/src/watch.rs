@@ -115,8 +115,8 @@ impl Controller {
             outbox,
             tasks,
             Timing {
-                quiet: Duration::from_secs(1),
-                maximum: Duration::from_secs(3),
+                quiet: Duration::from_millis(150),
+                maximum: Duration::from_millis(500),
                 poll: Duration::from_secs(15),
             },
         )

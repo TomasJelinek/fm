@@ -100,7 +100,16 @@ All entries have a declared license. Alternatives are retained verbatim; they do
 not mean all alternatives are selected. The mandatory free-of-charge requirement
 and Slint's selected royalty-free branch are in [the policy](DEPENDENCY_POLICY.md).
 
-The optional HTML provider adds pinned `cef` / `cef-dll-sys`
+Normal Linux HTML builds also require CMake and Ninja. The 13 November Ubuntu
+24.04 build container used CMake `3.28.3-1build7` (upstream BSD-3-Clause, retaining
+its component notices) and Ninja `1.11.1-2` (Apache-2.0, retaining its bundled
+component notices). The installed distribution copyright files were inspected;
+both tools permit the intended build use without mandatory fees. They are build
+tools rather than libraries shipped with ME. The exact version/license capture is
+`_build/qa/main-integration-20261113/html-build-tools.txt` and its adjacent package
+version receipt. CEF's existing runtime notices remain separate.
+
+The HTML provider, included by normal builds, adds pinned `cef` / `cef-dll-sys`
 `156.4.0+156.0.26`, with only `sandbox` enabled and MIT selected for the Rust
 bindings. Its separately packaged Chromium Embedded Framework runtime is
 `156.0.26+g8ea0c73+chromium-156.0.8078.88`. The main executable does not link CEF.
@@ -222,7 +231,7 @@ This table is a guide; the linked inventories above contain every selected crate
 | ruzstd 0.9.1 / twox-hash 2.1.5 | Zstandard decoding and frame checksums | MIT |
 | tar 0.4.46 / flate2 1.1.10 and 1.1.11 | TAR/GZIP archive decoding, SDK packaging and image codec dependencies | MIT OR Apache-2.0 |
 | blake3 1.8.7 | Thumbnail cache identities and integrity records | CC0-1.0 OR Apache-2.0 OR Apache-2.0 WITH LLVM-exception |
-| ffmpeg-next 9.0.0 / ffmpeg-sys-next 9.0.1 | Optional isolated video decoder bindings | WTFPL |
+| ffmpeg-next 9.0.0 / ffmpeg-sys-next 9.0.1 | Required isolated video thumbnail decoder bindings | WTFPL |
 | bindgen 0.73.2 | Build-time native video bindings | BSD-3-Clause |
 | regex 1.13.1 | Matching and the source viewer's custom lexer | MIT OR Apache-2.0 |
 | pulldown-cmark 0.13.6 | Markdown parsing | MIT |
@@ -272,6 +281,11 @@ raises the direct count to 62; the complete inventory remains 490 records and 45
 names. Full selected license texts and runtime notes
 ship inside the package's [THIRD-PARTY.md](../plugins/midnight-filesystem-network/THIRD-PARTY.md).
 Optional GLib/GIO and GVfs/backends/FUSE are system-provided and are not bundled.
+GVfs Windows discovery also uses the optional system `wsdd` helper. Ubuntu
+`wsdd` 2:0.7.1-5 (upstream 0.7.1) and its Debian packaging were inspected under
+MIT, with system Python 3 as the only declared dependency and no optional build
+features. It is not bundled or added to the Cargo inventory; its full runtime
+provenance is recorded in the network package's THIRD-PARTY.md.
 The inspected GLib package is LGPL-2.1-or-later with per-file notices; GVfs 1.54.4
 COPYING is GNU Library GPL v2, with inspected backend/client headers allowing later
 versions. Any future native runtime bundle needs its own full license, backend
@@ -312,8 +326,9 @@ versions, transitive dependencies and graphics drivers vary by installation.
 
 | Component | Use | Upstream license family / provenance |
 | --- | --- | --- |
-| FFmpeg 9.0.2 shared libraries | Optional isolated video thumbnails; pinned source/build, not a dependency of the main executable | LGPL-2.1-or-later in the supplied configuration: GPL, nonfree, version3 and network disabled. Matching source, configuration and notices accompany the four runtime libraries |
-| LLVM/libclang 18.1.1 | Build-time video binding generation, not shipped as application runtime | Apache-2.0 WITH LLVM-exception; retained upstream license |
+| FFmpeg 9.0.2 shared libraries | Required isolated video thumbnails; pinned source/build, not linked into the main executable | LGPL-2.1-or-later in the supplied configuration: GPL, nonfree, version3 and network disabled. Matching source, configuration and notices accompany the four runtime libraries |
+| LLVM/libclang 18.1.1 wheel or system development package (Ubuntu 18.1.3 in this Debug build) | Build-time video binding generation, not shipped as application runtime | Apache-2.0 WITH LLVM-exception; retained upstream license or distribution copyright files |
+| GnuPG system package (2.4.4 in this build container) | Build-time FFmpeg detached-signature verification in an isolated keyring; not bundled with ME | GPL-3.0-or-later; retain distribution package notices when redistributing the build environment |
 | Fontconfig | Linux font discovery; direct ELF import | Permissive MIT/X11-style notices; distribution copyright file |
 | FreeType | Linux font stack | FreeType License OR GPL-2.0; retain FTL credit when choosing FTL ([terms](https://freetype.org/license.html)) |
 | GNU libc (`libc`, `libm`, loader) | Linux runtime | LGPL-2.1-or-later with component exceptions; distribution copyright files ([upstream](https://sourceware.org/glibc/)) |

@@ -1,0 +1,190 @@
+import { Theme } from "theme.slint";
+import { HintedActionButton, HintedLineEdit } from "hinted-inputs.slint";
+import { TipBody } from "controls.slint";
+
+export struct UnixPermissionBits { mask: int, value: int, valid: bool }
+export struct UnixPermissionView { mode: int, known: int, octal: string, symbolic: string }
+export global UnixPermissionsCodec {
+    pure callback parse(string) -> UnixPermissionBits;
+    pure callback project(int, int, int, int) -> UnixPermissionView;
+}
+
+component PermissionCell inherits Rectangle {
+    in property <string> label;
+    in property <int> state: -1;
+    in property <bool> pending;
+    in property <bool> enabled: true;
+    callback activate(bool);
+    min-width: Theme.font-size * 3.7;
+    height: Theme.control-height;
+    horizontal-stretch: 1;
+    accessible-role: checkbox; accessible-label: root.label;
+    accessible-checkable: true; accessible-checked: root.state == 1;
+    accessible-enabled: root.enabled;
+    accessible-value: (root.pending ? "Change: " : "Current: ")
+        + (root.state < 0 ? "Mixed" : root.state == 1 ? "Set" : "Clear");
+    accessible-description: root.label + ". Click or Space changes this bit. Delete or Shift+Space leaves it unchanged.";
+    accessible-action-default => { if root.enabled { root.activate(false); } }
+    forward-focus: focus;
+    background: area.has-hover && root.enabled ? Theme.hover : transparent;
+    border-radius: 3px;
+    indicator := Rectangle {
+        x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
+        width: max(16px, Theme.font-size * 1.15); height: self.width;
+        border-radius: 3px; border-width: focus.has-focus ? 2px : 1px;
+        border-color: root.pending ? Theme.pending-size : focus.has-focus ? Theme.active-frame : Theme.frame;
+        background: root.state == 1 && root.enabled ? Theme.active-header : Theme.secondary-surface;
+        Text {
+            text: root.state < 0 ? "−" : root.state == 1 ? "✓" : "";
+            color: root.enabled ? Theme.text : Theme.muted-text;
+            font-size: Theme.font-size; font-weight: 600;
+            horizontal-alignment: center; vertical-alignment: center;
+        }
+    }
+    focus := FocusScope {
+        enabled: root.enabled;
+        key-pressed(event) => {
+            if event.text == Key.Space || event.text == Key.Return {
+                root.activate(event.modifiers.shift); return accept;
+            }
+            if event.text == Key.Delete || event.text == Key.Backspace {
+                root.activate(true); return accept;
+            }
+            reject
+        }
+        area := TouchArea { enabled: root.enabled; clicked => { focus.focus(); root.activate(false); } }
+    }
+    Tooltip { TipBody { text: root.accessible-description; } }
+}
+
+export component UnixPermissions inherits VerticalLayout {
+    in property <int> current-mode;
+    in property <int> known-mask;
+    in property <int> supported-mask;
+    in property <bool> enabled: true;
+    in property <bool> busy;
+    in-out property <int> edit-mask;
+    in-out property <int> edit-value;
+    in-out property <bool> octal-edit;
+    in-out property <string> octal-mode;
+    callback edited();
+    private property <UnixPermissionBits> parsed: UnixPermissionsCodec.parse(root.octal-mode);
+    private property <bool> invalid-octal: root.octal-edit && !root.parsed.valid;
+    private property <int> active-mask: root.octal-edit ? (root.parsed.valid ? root.parsed.mask : 0) : root.edit-mask;
+    private property <int> active-value: root.octal-edit ? root.parsed.value : root.edit-value;
+    private property <UnixPermissionView> view: UnixPermissionsCodec.project(
+        root.current-mode, root.known-mask, root.active-mask, root.active-value);
+    private property <string> displayed-octal: root.octal-edit ? root.octal-mode : root.view.octal;
+    // Native typing replaces a LineEdit's one-way text binding. Restore its
+    // displayed value explicitly when matrix edits change the projection.
+    changed displayed-octal => { octal-field.text = root.displayed-octal; }
+    private property <length> label-width: Theme.font-size * 4.5;
+    pure function has(value: int, bit: int) -> bool { mod(floor(value / bit), 2) >= 1 }
+    pure function state(bit: int) -> int {
+        !root.has(root.view.known, bit) ? -1 : root.has(root.view.mode, bit) ? 1 : 0
+    }
+    function change(bit: int, reset: bool) {
+        if root.invalid-octal { return; }
+        if root.octal-edit {
+            root.edit-mask = root.parsed.mask; root.edit-value = root.parsed.value;
+        }
+        // Capture the displayed state before switching away from the octal draft.
+        let value = root.state(bit);
+        root.octal-edit = false; root.octal-mode = "";
+        if reset {
+            if root.has(root.edit-mask, bit) { root.edit-mask -= bit; }
+            if root.has(root.edit-value, bit) { root.edit-value -= bit; }
+        } else {
+            if !root.has(root.edit-mask, bit) { root.edit-mask += bit; }
+            if value == 1 {
+                if root.has(root.edit-value, bit) { root.edit-value -= bit; }
+            } else if !root.has(root.edit-value, bit) { root.edit-value += bit; }
+        }
+        root.edited();
+    }
+    spacing: 6px;
+    min-width: Theme.font-size * 20;
+    HorizontalLayout {
+        Rectangle { width: root.label-width; horizontal-stretch: 0; }
+        for title in ["Read", "Write", "Execute"]: Text {
+            text: title; color: Theme.text; font-size: Theme.font-size;
+            horizontal-alignment: center; min-width: Theme.font-size * 3.7; horizontal-stretch: 1;
+        }
+    }
+    for row in [
+        { label: "Owner", read: 256, write: 128, execute: 64 },
+        { label: "Group", read: 32, write: 16, execute: 8 },
+        { label: "Other", read: 4, write: 2, execute: 1 },
+    ]: HorizontalLayout {
+        Text { text: row.label; color: Theme.text; font-size: Theme.font-size;
+            width: root.label-width; horizontal-stretch: 0; vertical-alignment: center; }
+        for permission in [
+            { label: row.label + " read", bit: row.read },
+            { label: row.label + " write", bit: row.write },
+            { label: row.label + " execute", bit: row.execute },
+        ]: PermissionCell {
+            label: permission.label; state: root.state(permission.bit);
+            pending: root.has(root.active-mask, permission.bit);
+            enabled: root.enabled && !root.busy && !root.invalid-octal && root.has(root.supported-mask, permission.bit);
+            activate(reset) => { root.change(permission.bit, reset); }
+        }
+    }
+    Rectangle { height: 1px; background: Theme.frame; }
+    HorizontalLayout {
+        Text { text: "Bits:"; color: Theme.text; font-size: Theme.font-size;
+            width: root.label-width; horizontal-stretch: 0; vertical-alignment: center; }
+        for special in [
+            { label: "SUID", bit: 2048 }, { label: "SGID", bit: 1024 }, { label: "Sticky", bit: 512 },
+        ]: VerticalLayout {
+            spacing: 0px;
+            PermissionCell {
+                label: special.label; state: root.state(special.bit);
+                pending: root.has(root.active-mask, special.bit);
+                enabled: root.enabled && !root.busy && !root.invalid-octal && root.has(root.supported-mask, special.bit);
+                activate(reset) => { root.change(special.bit, reset); }
+            }
+            Text { text: special.label; color: Theme.text; font-size: Theme.small-font;
+                horizontal-alignment: center; }
+        }
+    }
+    Rectangle { height: 1px; background: Theme.frame; }
+    HorizontalLayout {
+        spacing: 6px;
+        Text { text: "Octal:"; color: Theme.text; font-size: Theme.font-size;
+            width: root.label-width; horizontal-stretch: 0; vertical-alignment: center; }
+        octal-field := HintedLineEdit {
+            text: root.displayed-octal;
+            accessible-label: "Octal permissions"; placeholder-text: "Mixed";
+            enabled: root.enabled && !root.busy;
+            preferred-width: Theme.font-size * 7; horizontal-stretch: 0;
+            hint: "Three digits preserve SUID, SGID and Sticky. Four digits replace those bits too.";
+            edited => {
+                root.octal-mode = self.text; root.octal-edit = true;
+                root.edit-mask = 0; root.edit-value = 0; root.edited();
+            }
+        }
+        Rectangle { horizontal-stretch: 1; }
+    }
+    HorizontalLayout {
+        spacing: 6px;
+        Text { text: "Text:"; color: Theme.text; font-size: Theme.font-size;
+            width: root.label-width; horizontal-stretch: 0; }
+        Text { text: root.invalid-octal ? "Invalid octal permissions" : root.view.symbolic;
+            color: root.invalid-octal ? Theme.pending-size : Theme.text;
+            font-family: "monospace"; font-size: Theme.font-size;
+            accessible-label: "Permission text"; horizontal-stretch: 1; }
+    }
+    Text {
+        text: "A dash in a checkbox means mixed values. Highlighted borders mark edits. Delete or Shift+Space keeps a bit unchanged.";
+        color: Theme.secondary-text; font-size: Theme.small-font; wrap: word-wrap;
+        min-height: self.preferred-height;
+    }
+    HintedActionButton {
+        text: "Leave permissions unchanged";
+        enabled: !root.busy && (root.octal-edit || root.edit-mask != 0);
+        hint: "Discard permission edits and preserve each file's existing permissions.";
+        clicked => {
+            root.octal-edit = false; root.octal-mode = ""; root.edit-mask = 0; root.edit-value = 0; root.edited();
+        }
+    }
+}
