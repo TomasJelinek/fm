@@ -80,6 +80,13 @@ not establish worst-case consumption or a Linux/macOS result.
 
 ## Runtime software
 
+Standard installations include the independent image and video thumbnailers in
+the executable-adjacent `thumbnailers/` directory. Keep its runtime libraries and
+notices with the helpers. The approved FFmpeg libraries are bundled there; users
+do not need a system FFmpeg or libclang installation to run ME. Compiler, GPG and
+libclang packages are build prerequisites only. The video codec allowlist remains
+limited to VP8/VP9, Theora, FFV1 and raw video; this does not add MP4/H.264 support.
+
 **All platforms:** a graphical desktop and readable system fonts covering the
 scripts being displayed. **Hardware GPU acceleration is optional.** The preferred
 renderer is Slint FemtoVG-WGPU: Direct3D 12 on Windows and normally Vulkan on Linux.

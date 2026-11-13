@@ -55,6 +55,44 @@ class WorkerPackages(unittest.TestCase):
         (directory / "licenses").mkdir()
         (directory / "licenses/upstream-MIT").write_text("Actual upstream terms")
 
+    def test_standard_package_requires_both_image_and_video_thumbnailers(self):
+        source = self.thumbnails()
+        with self.assertRaisesRegex(ValueError, "image and video"):
+            packaging.copy_thumbnail_packages(self.stage, source, self.target, require_media=True)
+        self.assertEqual(list(self.stage.iterdir()), [])
+        (source / "video.json").write_text(json.dumps({
+            "protocol": 1, "id": "video", "version": "0.1.0", "executable": "video-worker",
+            "extensions": ["avi"], "video": True,
+        }))
+        (source / "video-worker").write_bytes(b"video fixture")
+        (source / "notices/video-worker").mkdir(parents=True)
+        (source / "notices/video-worker/LICENSE").write_text("Actual upstream licence")
+        result = packaging.copy_thumbnail_packages(self.stage, source, self.target, require_media=True)
+        self.assertEqual({row["video"] for row in result["providers"]}, {False, True})
+
+    def test_standard_package_rejects_a_video_only_installation(self):
+        source = self.thumbnails()
+        manifest = source / "image.json"
+        row = json.loads(manifest.read_text())
+        row["video"] = True
+        manifest.write_text(json.dumps(row))
+        with self.assertRaisesRegex(ValueError, "image and video"):
+            packaging.copy_thumbnail_packages(self.stage, source, self.target, require_media=True)
+        self.assertEqual(list(self.stage.iterdir()), [])
+
+    def test_builtin_video_requires_its_runtime_even_when_all_libraries_are_absent(self):
+        source = self.thumbnails()
+        (source / "video.json").write_text(json.dumps({
+            "protocol": 1, "id": "midnight-video", "version": "0.1.0",
+            "executable": "video-worker", "extensions": ["avi"], "video": True,
+        }))
+        (source / "video-worker").write_bytes(b"video fixture")
+        (source / "notices/video-worker").mkdir(parents=True)
+        (source / "notices/video-worker/LICENSE").write_text("Actual upstream licence")
+        with self.assertRaisesRegex(ValueError, "Incomplete FFmpeg"):
+            packaging.copy_thumbnail_packages(self.stage, source, self.target, require_media=True)
+        self.assertEqual(list(self.stage.iterdir()), [])
+
     def test_both_worker_layouts_preserve_notices_hashes_and_executable_modes(self):
         fs = packaging.copy_filesystem_packages(self.stage, self.filesystem(), self.target)
         thumbs = packaging.copy_thumbnail_packages(self.stage, self.thumbnails(), self.target)

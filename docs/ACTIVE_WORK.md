@@ -39,6 +39,13 @@ limits list labels to one line and reduces notification debounce to 150 ms quiet
 native rendering probes and Debug startup/shutdown. A hidden mandatory line break
 reproduced the clipped text; the original screenshot's filename and build age
 could not be established, so its exact trigger remains unconfirmed.
+Standard builds and release packaging now require both image/video thumbnailers.
+The [required-thumbnailer follow-up](verification/2026-11-13-required-thumbnailers.md)
+records the actual Linux Debug installation, pinned FFmpeg source/signature,
+151 passing targeted checks and five Windows-only skips. Installed discovery,
+sandboxed decoding, cancellation, real package validation and native app startup
+passed. Windows build/deployment integration is source-reviewed, not natively
+qualified by this Linux run.
 These Linux results do not replace the Windows evidence below.
 The later [Linux network investigation](verification/2026-11-13-linux-network-discovery.md)
 installed the missing system `wsdd` helper and fixed WSDD namespace handling;

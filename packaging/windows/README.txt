@@ -1,7 +1,8 @@
 Midnight Explorer 0.2.0 - Windows x64 preview
 
 Extract the complete ZIP to a folder, then run me.exe.
-Keep the viewers folder beside me.exe. Use a private folder in your user profile
+Keep the viewers, filesystems and thumbnailers folders beside me.exe, including
+the thumbnail helpers' adjacent runtime libraries and notices. Use a private folder in your user profile
 or an administrator-managed installation: native plugins are refused if other
 accounts can replace their files or installation directory.
 Rust and Visual Studio are not needed to run the application.

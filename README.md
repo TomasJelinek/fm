@@ -118,26 +118,40 @@ prerequisites to be installed already. Application builds through the helpers al
 platform's independent native and Network Neighborhood
 filesystem packages under `filesystems/native.{windows,linux}/` and
 `filesystems/network.{windows,linux}/`, then the five
-independent viewer packages using the public SDK under `viewers/`. They do
+independent viewer packages using the public SDK under `viewers/`, followed by
+the required image and video thumbnailers under `thumbnailers/`. They do
 not launch the application. Host Linux packages are installed only with explicit
 `--install-deps`; Docker setup installs packages inside its image. The Linux
-Docker path runs the full app/elevation/native-filesystem/network/viewer build
+Docker path runs the full app/elevation/native-filesystem/network/viewer/thumbnailer build
 chain. Direct `cargo build -p midnight-explorer` builds the host only; its elevation
-helper and provider/viewer packages need separate build/staging. Run
+helper and provider/viewer/thumbnailer packages need separate build/staging. Run
 `scripts/build-native-filesystem.ps1` or
 `scripts/build-native-filesystem.sh` before launching it, add Network Neighborhood with
 `scripts/build-network-filesystem.ps1` or `.sh`, and use `scripts/build-viewers.ps1`
-or `scripts/build-viewers.sh` to add viewers. Native browsing and F3 source reads have
+or `scripts/build-viewers.sh` to add viewers, then
+`scripts/build-default-thumbnailers.ps1 -Profile debug` or
+`bash scripts/build-default-thumbnailers.sh debug` for both thumbnailers.
+Native browsing and F3 source reads have
 no built-in fallback when their native filesystem package is absent or incompatible.
-Archive and thumbnail workers have separate builds; the root helpers do not install
-them. Use the archive plugin's `scripts/build.ps1` or `scripts/build.sh` with a
-canonical worker SDK configuration, and `scripts/build-thumbnailers.ps1` or
-`scripts/build-thumbnailers.sh` for thumbnails. Stage the results in executable-adjacent
-`filesystems/` and `thumbnailers/` respectively. See the
+Archive workers still have a separate build. Use the archive plugin's
+`scripts/build.ps1` or `scripts/build.sh` with a canonical worker SDK configuration
+and stage its output under executable-adjacent `filesystems/`. See the
 [filesystem API and build reference](docs/developer/FILESYSTEM_API.md) and
 [worker SDK guide](docs/developer/WORKER_SDK.md). Release packaging accepts these
-package roots, requires one compatible native and one network filesystem provider, and
-preserves executable permissions and notices. Archive and thumbnail packages remain optional.
+package roots, requires native/network filesystem providers and both image/video
+thumbnailers, and preserves executable permissions, notices and FFmpeg corresponding
+source. Archive packages remain optional. Missing thumbnail build prerequisites,
+workers or notices fail the normal build; they are never silently omitted.
+
+Linux thumbnail builds acquire and verify the pinned FFmpeg 9.0.2 source and
+signature, then build the existing restricted LGPL configuration. GPG and libclang
+are build prerequisites; a system FFmpeg installation is not substituted. Windows
+thumbnail builds require the approved MSVC FFmpeg prefix/source and libclang:
+set `MIDNIGHT_FFMPEG_PREFIX`, `MIDNIGHT_FFMPEG_SOURCE_ARCHIVE` and `LIBCLANG_PATH`.
+The [video worker guide](plugins/midnight-thumbnail-video/README.md) documents its
+recipe and codec limits. Use `MIDNIGHT_THUMBNAILERS_OFFLINE=1` to require cached
+SDK/dependency/native downloads, or supply `MIDNIGHT_THUMBNAIL_SDK_CONFIG` for an
+existing released worker SDK. Debug is the default for the thumbnail build helpers.
 The [network plugin guide](plugins/midnight-filesystem-network/README.md) describes
 its optional Linux GIO/GVfs runtime and explicit unavailable/authentication states.
 On Ubuntu/Mint, local network discovery and native SMB share browsing use
@@ -162,6 +176,9 @@ does not elevate ordinary file operations, change ACLs or store passwords. See
 [the authorization boundary](docs/verification/2026-11-11-directory-authorization.md).
 
 ### Windows x64
+
+Install 64-bit PowerShell 7 (`pwsh.exe`) and Python 3.12+ with its `py` launcher
+for the native worker build helpers. `build.bat` checks PowerShell before building.
 
 Install the Visual Studio **Desktop development with C++** workload, including
 the MSVC x64/x86 tools and a Windows SDK, as described in the
@@ -203,7 +220,8 @@ powershell -NoProfile -File scripts/deploy-private.ps1 -SourceDirectory _build/r
 Use the original build EXE, the **Midnight Explorer** desktop shortcut, or the
 private installation path printed by that command. Restart after deployment.
 `-IncludeFilesystems` includes the required native filesystem and any built archive
-workers. Omit `-IncludeThumbnailers` when optional thumbnail packages are absent.
+workers. Keep `-IncludeThumbnailers` to deploy the required image/video workers;
+the normal build deployment enables it and rejects incomplete thumbnail installations.
 The helper does not launch the app or change saved settings. Direct launches:
 
 ```powershell
@@ -286,7 +304,8 @@ install the packages manually. For Ubuntu/Mint:
 
 ```sh
 sudo apt update
-sudo apt install build-essential python3 pkg-config libfontconfig1-dev libfreetype6-dev \
+sudo apt install build-essential python3 pkg-config curl ca-certificates gnupg xz-utils perl libclang-dev \
+    libfontconfig1-dev libfreetype6-dev \
     libxkbcommon-dev libxkbcommon-x11-0 libx11-dev libxcb1-dev libwayland-dev libudev-dev
 ```
 
@@ -294,6 +313,7 @@ Fedora 44+ (maintained desktop release, x86-64):
 
 ```sh
 sudo dnf install gcc gcc-c++ make python3 pkgconf-pkg-config fontconfig-devel freetype-devel \
+    curl ca-certificates gnupg2 xz perl clang-libs clang-devel \
     libxkbcommon-devel libxkbcommon-x11-devel libX11-devel libXcursor-devel \
     libxcb-devel wayland-devel systemd-devel xdg-utils
 ```
@@ -302,6 +322,7 @@ openSUSE Leap 16.x / Tumbleweed (x86-64):
 
 ```sh
 sudo zypper install gcc gcc-c++ make python3 pkg-config xdg-utils \
+    curl ca-certificates gpg2 xz perl clang-devel \
     'pkgconfig(fontconfig)' 'pkgconfig(freetype2)' 'pkgconfig(xkbcommon)' \
     'pkgconfig(xkbcommon-x11)' 'pkgconfig(x11)' 'pkgconfig(xcursor)' \
     'pkgconfig(xcb)' 'pkgconfig(wayland-client)' 'pkgconfig(libudev)'
@@ -418,9 +439,10 @@ For a separate per-user installation of the debug build:
 install -Dm755 _build/debug/me "$HOME/.local/bin/me"
 install -Dm755 _build/debug/midnight-elevated-listing \
     "$HOME/.local/bin/midnight-elevated-listing"
-mkdir -p "$HOME/.local/bin/viewers" "$HOME/.local/bin/filesystems"
+mkdir -p "$HOME/.local/bin/viewers" "$HOME/.local/bin/filesystems" "$HOME/.local/bin/thumbnailers"
 cp -R _build/debug/viewers/. "$HOME/.local/bin/viewers/"
 cp -R _build/debug/filesystems/. "$HOME/.local/bin/filesystems/"
+cp -R _build/debug/thumbnailers/. "$HOME/.local/bin/thumbnailers/"
 python3 -B scripts/install-linux-desktop.py --executable "$HOME/.local/bin/me"
 ```
 

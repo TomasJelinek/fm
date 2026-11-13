@@ -23,6 +23,10 @@ set "MIDNIGHT_VIEWER_PROFILE=release"
 
 :build
 pushd "%~dp0" || exit /b 1
+where pwsh.exe >nul 2>nul
+if errorlevel 1 goto missing_pwsh
+pwsh.exe -NoLogo -NoProfile -NonInteractive -Command "if ($PSVersionTable.PSVersion.Major -lt 7 -or -not $IsWindows -or -not [Environment]::Is64BitProcess) { exit 1 }"
+if errorlevel 1 goto missing_pwsh
 if not exist "_build\tmp\" mkdir "_build\tmp"
 if errorlevel 1 goto temporary_failure
 set "TEMP=%CD%\_build\tmp"
@@ -35,7 +39,7 @@ goto done
 
 :local_cargo
 if not exist ".tools\cargo\bin\cargo.exe" goto missing_cargo
-powershell.exe -NoLogo -NoProfile -File scripts\cargo.ps1 build -p midnight-explorer -p midnight-elevation --locked %MIDNIGHT_BUILD_PROFILE%
+pwsh.exe -NoLogo -NoProfile -File scripts\cargo.ps1 build -p midnight-explorer -p midnight-elevation --locked %MIDNIGHT_BUILD_PROFILE%
 set "MIDNIGHT_BUILD_EXIT=%errorlevel%"
 goto done
 
@@ -44,22 +48,30 @@ goto done
 set "MIDNIGHT_BUILD_EXIT=127"
 goto done
 
+:missing_pwsh
+>&2 echo 64-bit PowerShell 7 ^(pwsh.exe^) is required. Install PowerShell 7 and reopen your terminal.
+set "MIDNIGHT_BUILD_EXIT=127"
+goto exit_build
+
 :temporary_failure
 >&2 echo Could not create the build temporary directory under _build.
 set "MIDNIGHT_BUILD_EXIT=1"
 
 :done
 if not "%MIDNIGHT_BUILD_EXIT%"=="0" goto exit_build
-powershell.exe -NoLogo -NoProfile -File scripts\build-native-filesystem.ps1 -Profile %MIDNIGHT_VIEWER_PROFILE%
+pwsh.exe -NoLogo -NoProfile -File scripts\build-native-filesystem.ps1 -Profile %MIDNIGHT_VIEWER_PROFILE%
 set "MIDNIGHT_BUILD_EXIT=%errorlevel%"
 if not "%MIDNIGHT_BUILD_EXIT%"=="0" goto exit_build
-powershell.exe -NoLogo -NoProfile -File scripts\build-network-filesystem.ps1 -Profile %MIDNIGHT_VIEWER_PROFILE%
+pwsh.exe -NoLogo -NoProfile -File scripts\build-network-filesystem.ps1 -Profile %MIDNIGHT_VIEWER_PROFILE%
 set "MIDNIGHT_BUILD_EXIT=%errorlevel%"
 if not "%MIDNIGHT_BUILD_EXIT%"=="0" goto exit_build
-powershell.exe -NoLogo -NoProfile -File scripts\build-viewers.ps1 -Profile %MIDNIGHT_VIEWER_PROFILE%
+pwsh.exe -NoLogo -NoProfile -File scripts\build-viewers.ps1 -Profile %MIDNIGHT_VIEWER_PROFILE%
 set "MIDNIGHT_BUILD_EXIT=%errorlevel%"
 if not "%MIDNIGHT_BUILD_EXIT%"=="0" goto exit_build
-powershell.exe -NoLogo -NoProfile -File scripts\deploy-build.ps1 -Profile %MIDNIGHT_VIEWER_PROFILE%
+pwsh.exe -NoLogo -NoProfile -File scripts\build-default-thumbnailers.ps1 -Profile %MIDNIGHT_VIEWER_PROFILE%
+set "MIDNIGHT_BUILD_EXIT=%errorlevel%"
+if not "%MIDNIGHT_BUILD_EXIT%"=="0" goto exit_build
+pwsh.exe -NoLogo -NoProfile -File scripts\deploy-build.ps1 -Profile %MIDNIGHT_VIEWER_PROFILE%
 set "MIDNIGHT_BUILD_EXIT=%errorlevel%"
 :exit_build
 popd

@@ -219,7 +219,7 @@ This table is a guide; the linked inventories above contain every selected crate
 | ruzstd 0.9.1 / twox-hash 2.1.5 | Zstandard decoding and frame checksums | MIT |
 | tar 0.4.46 / flate2 1.1.10 and 1.1.11 | TAR/GZIP archive decoding, SDK packaging and image codec dependencies | MIT OR Apache-2.0 |
 | blake3 1.8.7 | Thumbnail cache identities and integrity records | CC0-1.0 OR Apache-2.0 OR Apache-2.0 WITH LLVM-exception |
-| ffmpeg-next 9.0.0 / ffmpeg-sys-next 9.0.1 | Optional isolated video decoder bindings | WTFPL |
+| ffmpeg-next 9.0.0 / ffmpeg-sys-next 9.0.1 | Required isolated video thumbnail decoder bindings | WTFPL |
 | bindgen 0.73.2 | Build-time native video bindings | BSD-3-Clause |
 | regex 1.13.1 | Matching and the source viewer's custom lexer | MIT OR Apache-2.0 |
 | pulldown-cmark 0.13.6 | Markdown parsing | MIT |
@@ -314,8 +314,9 @@ versions, transitive dependencies and graphics drivers vary by installation.
 
 | Component | Use | Upstream license family / provenance |
 | --- | --- | --- |
-| FFmpeg 9.0.2 shared libraries | Optional isolated video thumbnails; pinned source/build, not a dependency of the main executable | LGPL-2.1-or-later in the supplied configuration: GPL, nonfree, version3 and network disabled. Matching source, configuration and notices accompany the four runtime libraries |
-| LLVM/libclang 18.1.1 | Build-time video binding generation, not shipped as application runtime | Apache-2.0 WITH LLVM-exception; retained upstream license |
+| FFmpeg 9.0.2 shared libraries | Required isolated video thumbnails; pinned source/build, not linked into the main executable | LGPL-2.1-or-later in the supplied configuration: GPL, nonfree, version3 and network disabled. Matching source, configuration and notices accompany the four runtime libraries |
+| LLVM/libclang 18.1.1 wheel or system development package (Ubuntu 18.1.3 in this Debug build) | Build-time video binding generation, not shipped as application runtime | Apache-2.0 WITH LLVM-exception; retained upstream license or distribution copyright files |
+| GnuPG system package (2.4.4 in this build container) | Build-time FFmpeg detached-signature verification in an isolated keyring; not bundled with ME | GPL-3.0-or-later; retain distribution package notices when redistributing the build environment |
 | Fontconfig | Linux font discovery; direct ELF import | Permissive MIT/X11-style notices; distribution copyright file |
 | FreeType | Linux font stack | FreeType License OR GPL-2.0; retain FTL credit when choosing FTL ([terms](https://freetype.org/license.html)) |
 | GNU libc (`libc`, `libm`, loader) | Linux runtime | LGPL-2.1-or-later with component exceptions; distribution copyright files ([upstream](https://sourceware.org/glibc/)) |

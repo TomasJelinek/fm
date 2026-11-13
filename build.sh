@@ -86,6 +86,7 @@ if [ "$dry_run" = 1 ]; then
     print_command bash scripts/build-native-filesystem.sh "$build_profile"
     print_command bash scripts/build-network-filesystem.sh "$build_profile"
     print_command bash scripts/build-viewers.sh "$build_profile"
+    print_command bash scripts/build-default-thumbnailers.sh "$build_profile"
     exit 0
 fi
 
@@ -133,4 +134,5 @@ else
 fi
 bash scripts/build-native-filesystem.sh "$build_profile"
 bash scripts/build-network-filesystem.sh "$build_profile"
-exec bash scripts/build-viewers.sh "$build_profile"
+bash scripts/build-viewers.sh "$build_profile"
+exec bash scripts/build-default-thumbnailers.sh "$build_profile"

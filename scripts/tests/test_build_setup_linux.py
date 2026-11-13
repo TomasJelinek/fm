@@ -46,7 +46,7 @@ class LinuxBuildSetupTests(unittest.TestCase):
                          'exit "$BUILD_SETUP_EXIT"\n')
         for name in ("curl", "rustup", "docker"):
             self.command(name, f'printf "UNEXPECTED {name}\\n" >> "$BUILD_SETUP_LOG"\nexit 99\n')
-        for name in ("native-filesystem", "network-filesystem", "viewers"):
+        for name in ("native-filesystem", "network-filesystem", "viewers", "default-thumbnailers"):
             (self.root / f"scripts/build-{name}.sh").write_text(
                 f'#!/bin/sh\nprintf "{name} [%s]\\n" "$1" >> "$BUILD_SETUP_LOG"\n',
                 encoding="utf-8")
@@ -78,10 +78,11 @@ class LinuxBuildSetupTests(unittest.TestCase):
                 self.assertIn("[cargo] [build] [-p] [midnight-explorer] [-p] "
                               "[midnight-elevation] [--locked]" + release, result.stdout)
                 commands = [line for line in result.stdout.splitlines() if line.startswith("Command:")]
-                self.assertEqual(commands[-3:], [
+                self.assertEqual(commands[-4:], [
                     f"Command: [bash] [scripts/build-native-filesystem.sh] [{profile}]",
                     f"Command: [bash] [scripts/build-network-filesystem.sh] [{profile}]",
                     f"Command: [bash] [scripts/build-viewers.sh] [{profile}]",
+                    f"Command: [bash] [scripts/build-default-thumbnailers.sh] [{profile}]",
                 ])
                 self.assertEqual(self.calls(), "")
                 self.assertFalse((self.root / "_build").exists())
@@ -208,7 +209,7 @@ class LinuxBuildSetupTests(unittest.TestCase):
         self.assertIn("cargo [build] [-p] [midnight-explorer] [-p] [midnight-elevation] "
                       "[--locked] [--release]", self.calls())
         self.assertTrue(self.calls().endswith("native-filesystem [release]\n"
-                                            "network-filesystem [release]\nviewers [release]\n"))
+                                            "network-filesystem [release]\nviewers [release]\ndefault-thumbnailers [release]\n"))
         self.assertNotIn("sudo", self.calls())
 
 

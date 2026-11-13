@@ -29,7 +29,8 @@ class BuildSetupTests(unittest.TestCase):
                      "check-clean-mounts-linux.sh", "setup-linux.sh"):
             shutil.copy2(ROOT / "scripts" / name, self.repo / "scripts" / name)
         # Package builds are separate from these host bootstrap tests.
-        for name in ("build-native-filesystem.sh", "build-network-filesystem.sh", "build-viewers.sh"):
+        for name in ("build-native-filesystem.sh", "build-network-filesystem.sh", "build-viewers.sh",
+                     "build-default-thumbnailers.sh"):
             (self.repo / "scripts" / name).write_text("#!/bin/sh\nexit 0\n")
         shutil.copy2(ROOT / "rust-toolchain.toml", self.repo / "rust-toolchain.toml")
         self.log = self.root / "commands"

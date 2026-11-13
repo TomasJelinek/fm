@@ -321,7 +321,7 @@ def library_filesystem_manifest(manifest, package, files, target):
     return library
 
 
-def copy_thumbnail_packages(stage, source, target):
+def copy_thumbnail_packages(stage, source, target, *, require_media=False):
     source = worker_input(stage, source)
     files = plain_tree(source)
     manifests = [file for file in files if file.parent == source and file.suffix == ".json"]
@@ -350,11 +350,14 @@ def copy_thumbnail_packages(stage, source, target):
             raise ValueError("Thumbnail provider is missing its executable or attribution")
         executables.add(executable)
         providers.append(manifest)
+    if require_media and {provider["video"] for provider in providers} != {False, True}:
+        raise ValueError("Standard packages require image and video thumbnailers")
     # The bundled FFmpeg runtime must carry its matching source and licence;
     # independent thumbnail workers are free to use a different implementation.
     ffmpeg = ("avcodec-63.dll", "avformat-63.dll", "avutil-61.dll", "swscale-10.dll") if target.endswith("windows-msvc") else (
         "libavcodec.so.63", "libavformat.so.63", "libavutil.so.61", "libswscale.so.10")
-    if any(source / name in files for name in ffmpeg):
+    if (any(provider["id"] == "midnight-video" for provider in providers)
+            or any(source / name in files for name in ffmpeg)):
         required = [source / name for name in ffmpeg]
         required.extend(source / "notices/ffmpeg-9.0.2" / name for name in (
             "ffmpeg-9.0.2.tar.xz", "COPYING.LGPLv2.1", "build-options.txt", "config.h", "config.mak"))
@@ -522,7 +525,7 @@ def main():
     parser.add_argument("--filesystems-root", type=Path,
                         help="Native and optional archive packages; defaults to filesystems beside executable")
     parser.add_argument("--thumbnailers-root", type=Path,
-                        help="Optional flat worker installation; defaults to thumbnailers beside the executable")
+                        help="Required image/video workers; defaults to thumbnailers beside the executable")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     if not re.fullmatch(r"[a-z0-9][a-z0-9._-]*", args.target):
@@ -556,8 +559,7 @@ def main():
     thumbnail_root = args.thumbnailers_root or args.binary.parent / "thumbnailers"
     filesystems = copy_filesystem_packages(stage, filesystem_root, args.target,
                                           require_native=True, require_network=True)
-    thumbnails = copy_thumbnail_packages(stage, thumbnail_root, args.target) if (
-        args.thumbnailers_root or thumbnail_root.exists()) else {"providers": [], "files": []}
+    thumbnails = copy_thumbnail_packages(stage, thumbnail_root, args.target, require_media=True)
     worker_files = [file for package in filesystems for file in package["files"]] + thumbnails["files"]
     add_notices(stage, json.loads(args.metadata.read_text(encoding="utf-8-sig")),
                 args.dependency_list.read_text(encoding="utf-8-sig"),

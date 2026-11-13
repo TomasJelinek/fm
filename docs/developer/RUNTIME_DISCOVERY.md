@@ -50,18 +50,21 @@ does not disable built-in text comparison.
 
 ## Deployment and build workflow
 
-`build.bat [debug|release]` builds the host and independent viewers, then calls
-`scripts/deploy-build.ps1`. It honors `CARGO_TARGET_DIR`, includes optional
-filesystem/thumbnail packages when their directories exist, and publishes a new
-private deployment. Direct Cargo builds require explicit deployment if their
+`build.bat [debug|release]` builds the host, filesystem providers, independent
+viewers and both required thumbnailers, then calls `scripts/deploy-build.ps1`.
+It requires 64-bit PowerShell 7 and honors `CARGO_TARGET_DIR`; missing image/video
+helpers, video libraries or corresponding source/notices fail before deployment.
+Linux `build.sh` includes both thumbnailers in its native and Docker chains too.
+Direct Cargo builds require explicit deployment if their
 output is not trusted:
 
 ```powershell
 powershell -NoProfile -File scripts/deploy-private.ps1 -SourceDirectory _build/release -RegisterRuntime
 ```
 
-Add `-IncludeFilesystems` and/or `-IncludeThumbnailers` for installed optional
-packages, and `-CreateDesktopShortcut` if wanted. The helper creates a new runtime
+Add `-IncludeFilesystems` and `-IncludeThumbnailers` for a complete normal
+installation, and `-CreateDesktopShortcut` if wanted. The lower-level deployment
+tool retains selective package options for specialist fixtures. The helper creates a new runtime
 installation under the user profile, verifies copied bytes with SHA-256 readback,
 and then publishes the record by an exclusive temporary file and atomic replacement.
 It refuses unsafe pre-existing directories/records and never repairs their ACLs.

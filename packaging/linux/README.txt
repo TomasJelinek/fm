@@ -1,7 +1,9 @@
 Midnight Explorer 0.2.0 - Linux x86-64 preview
 
 Extract the archive with tar, then run ./me in a graphical desktop session.
-Keep the viewers and filesystems folders beside me. Native plugins require a private user-owned
+Keep the viewers, filesystems and thumbnailers folders beside me. The thumbnailers
+folder includes both image/video helpers and their required runtime and notices.
+Native plugins require a private user-owned
 or administrator-managed installation, with no group/other-writable package or
 replaceable parent directory. Native Linux filesystems are recommended; a shared
 Windows mount with permissive drvfs modes will be refused.
@@ -30,9 +32,10 @@ preview has not been qualified on their native desktops. See SYSTEM_REQUIREMENTS
 
 Optional per-user desktop installation from the extracted folder:
   install -Dm755 me "$HOME/.local/bin/me"
-  mkdir -p "$HOME/.local/bin/viewers" "$HOME/.local/bin/filesystems"
+  mkdir -p "$HOME/.local/bin/viewers" "$HOME/.local/bin/filesystems" "$HOME/.local/bin/thumbnailers"
   cp -R viewers/. "$HOME/.local/bin/viewers/"
   cp -R filesystems/. "$HOME/.local/bin/filesystems/"
+  cp -R thumbnailers/. "$HOME/.local/bin/thumbnailers/"
   install -Dm644 io.github.TomasJelinek.MidnightExplorer.desktop \
     "$HOME/.local/share/applications/io.github.TomasJelinek.MidnightExplorer.desktop"
   install -Dm644 midnight-explorer.png \
