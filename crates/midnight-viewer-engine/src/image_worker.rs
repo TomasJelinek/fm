@@ -69,6 +69,7 @@ impl ImageWorker {
         provider: Provider,
         source: Arc<dyn Source>,
         wake: Arc<dyn Fn() -> bool + Send + Sync>,
+        startup: Option<crate::image_startup::Startup>,
     ) -> Result<Self, String> {
         let (sender, requests) = mpsc::sync_channel::<Render>(1);
         let (output, events) = mpsc::sync_channel(1);
@@ -78,9 +79,36 @@ impl ImageWorker {
             .name("viewer-image".into())
             .spawn(move || {
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    let mut session =
+                    // The reservation precedes the session so reverse local destruction
+                    // reaps the native child before releasing its lifetime capacity.
+                    let acquired = startup
+                        .as_ref()
+                        .map(|startup| startup.acquire(&provider, &stopped))
+                        .transpose()
+                        .map_err(|error| error.to_string())?;
+                    let (_permit, prepared) = match acquired {
+                        Some(crate::image_startup::Acquired { permit, prepared }) => {
+                            (Some(permit), prepared)
+                        }
+                        None => (None, None),
+                    };
+                    let mut session = if let Some(prepared) = prepared {
+                        // The manager already rejected stale unused spares. The host performs
+                        // the final identity/source guard immediately before the consuming Open.
+                        ImageSession::open_prepared(
+                            &provider,
+                            prepared,
+                            source,
+                            &stopped,
+                            Duration::from_secs(30),
+                        )
+                    } else {
                         ImageSession::open(&provider, source, &stopped, Duration::from_secs(30))
-                            .map_err(|error| error.to_string())?;
+                    }
+                    .map_err(|error| error.to_string())?;
+                    if let Some(startup) = &startup {
+                        startup.opened(&provider);
+                    }
                     let pages = (0..session.page_count())
                         .filter_map(|page| session.page_metadata(page))
                         .collect();

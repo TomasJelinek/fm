@@ -576,6 +576,9 @@ fn destination_editor(shortcut: Key, moving: bool, preserve: bool) {
     ui.window.hide().unwrap();
 }
 
+type Bounds = (f32, f32, f32, f32);
+type FixedControl = (ItemRc, Bounds);
+
 fn compact_settle(test: &mut ui::TestUi) {
     for _ in 0..3 {
         test.draw();
@@ -643,7 +646,7 @@ fn compact_assert_visible(test: &ui::TestUi, item: &ItemRc, indicator: bool, lab
     assert!(item.is_visible(), "{label} is hidden");
 }
 
-fn compact_fixed_controls(test: &ui::TestUi, action: &str) -> Vec<(ItemRc, (f32, f32, f32, f32))> {
+fn compact_fixed_controls(test: &ui::TestUi, action: &str) -> Vec<FixedControl> {
     // Check the footer first: the old layout exceeds DialogFrame's body clip
     // while the main-sized popup and semantic primary-focus proxy still exist.
     [
@@ -663,7 +666,7 @@ fn compact_fixed_controls(test: &ui::TestUi, action: &str) -> Vec<(ItemRc, (f32,
     .collect()
 }
 
-fn compact_assert_stationary(test: &ui::TestUi, fixed: &[(ItemRc, (f32, f32, f32, f32))]) {
+fn compact_assert_stationary(test: &ui::TestUi, fixed: &[FixedControl]) {
     for (item, before) in fixed {
         compact_assert_visible(test, item, false, "fixed header/footer");
         let after = compact_bounds(item, false);

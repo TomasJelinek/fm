@@ -38,6 +38,22 @@ pub(crate) struct ViewerPluginsState {
 }
 
 impl Presenter {
+    /// Provider choices frozen from the first successfully loaded settings.
+    ///
+    /// The pair contains disabled provider IDs and associations for this startup,
+    /// matching `ViewerLaunch`. Options previews and next-start saves do not
+    /// replace these snapshots. Trusted catalog identity belongs to the viewer
+    /// service; presentation revisions are not provider-policy generations.
+    pub fn viewer_startup_policy(&self) -> Option<(Arc<[String]>, Arc<ViewerAssociations>)> {
+        if !self.editor_preferences_ready() || self.operations.closing {
+            return None;
+        }
+        Some((
+            self.viewer_plugins.startup_disabled.clone()?,
+            self.viewer_plugins.startup_associations.clone(),
+        ))
+    }
+
     pub(crate) fn viewer_plugin_settings_ready(&self) -> bool {
         self.editor_preferences_ready()
             && !self.preferences.options.accepting
@@ -285,5 +301,276 @@ mod tests {
                 .disabled_viewer_plugins
                 .is_empty()
         );
+    }
+
+    fn startup_policy_saved_preferences() -> UserPreferences {
+        UserPreferences {
+            disabled_viewer_plugins: vec!["midnight.viewer.source".into()],
+            viewer_associations: Arc::new(ViewerAssociations {
+                order: vec![
+                    "midnight.viewer.image".into(),
+                    "midnight.viewer.source".into(),
+                ],
+                overrides: [("midnight.viewer.source".into(), vec!["cpp".into()])]
+                    .into_iter()
+                    .collect(),
+            }),
+            ..Default::default()
+        }
+    }
+
+    fn startup_policy_assert_frozen(
+        presenter: &Presenter,
+        expected: &(Arc<[String]>, Arc<ViewerAssociations>),
+    ) {
+        let (disabled, associations) = presenter
+            .viewer_startup_policy()
+            .expect("the successfully loaded startup policy remains available");
+        assert!(Arc::ptr_eq(&disabled, &expected.0));
+        assert!(Arc::ptr_eq(&associations, &expected.1));
+    }
+
+    fn startup_policy_preview_provider_changes(presenter: &mut Presenter) {
+        presenter.begin_options();
+        presenter.set_viewer_plugin_enabled("midnight.viewer.source", true, &|_| {
+            panic!("Options preview must not persist")
+        });
+        let index = presenter
+            .viewer_plugins_ordered()
+            .iter()
+            .position(|plugin| plugin.id == "midnight.viewer.source")
+            .unwrap();
+        presenter.select_viewer_plugin(index, &|_| panic!("selection must not persist"));
+        presenter.edit_viewer_extensions("rs; py");
+        assert!(
+            presenter
+                .save_viewer_extension_draft(&|_| { panic!("extension preview must not persist") })
+        );
+        assert!(
+            presenter
+                .preferences
+                .values
+                .disabled_viewer_plugins
+                .is_empty()
+        );
+        assert_eq!(
+            presenter
+                .preferences
+                .values
+                .viewer_associations
+                .overrides
+                .get("midnight.viewer.source"),
+            Some(&vec!["rs".into(), "py".into()])
+        );
+    }
+
+    #[test]
+    fn startup_policy_waits_for_successful_load_and_failed_read_cannot_be_replaced() {
+        let mut presenter = presenter();
+        assert!(presenter.viewer_startup_policy().is_none());
+        presenter.preferences_loaded(Err(FsError::from_io(
+            "load preferences",
+            std::path::Path::new("preferences"),
+            std::io::ErrorKind::PermissionDenied.into(),
+        )));
+        assert!(presenter.preferences.loaded);
+        assert!(!presenter.window_geometry_ready());
+        assert!(presenter.viewer_startup_policy().is_none());
+        presenter.preferences_loaded(Ok(startup_policy_saved_preferences()));
+        assert!(presenter.viewer_startup_policy().is_none());
+        assert!(presenter.viewer_plugins.startup_disabled.is_none());
+    }
+
+    #[test]
+    fn startup_policy_exposes_saved_nondefault_arcs_without_focus_or_catalog() {
+        let root = std::env::temp_dir().join("viewer-policy-no-focus");
+        let mut presenter = Presenter::new(root.clone(), root);
+        let saved = startup_policy_saved_preferences();
+        let saved_associations = saved.viewer_associations.clone();
+        presenter.preferences_loaded(Ok(saved));
+        assert!(presenter.viewer_plugins.catalog.is_empty());
+        assert!(presenter.viewer_launch(PaneId::Left, false).is_none());
+        let (disabled, associations) = presenter.viewer_startup_policy().unwrap();
+        assert_eq!(&*disabled, ["midnight.viewer.source"]);
+        assert_eq!(
+            associations.order,
+            ["midnight.viewer.image", "midnight.viewer.source"]
+        );
+        assert_eq!(
+            associations.overrides.get("midnight.viewer.source"),
+            Some(&vec!["cpp".into()])
+        );
+        assert!(Arc::ptr_eq(&associations, &saved_associations));
+        assert!(Arc::ptr_eq(
+            &disabled,
+            presenter.viewer_plugins.startup_disabled.as_ref().unwrap()
+        ));
+    }
+
+    #[test]
+    fn startup_policy_rejects_load_reconciliation_overflow_after_startup_fields_are_captured() {
+        let root = std::env::temp_dir().join("viewer-policy-bookmark-collision");
+        let mut presenter = Presenter::new(root.join("local"), root.clone());
+        assert!(
+            presenter.add_bookmark(PaneId::Left, "Early local".into(), None, &|_| {
+                panic!("an early bookmark must wait for the saved preferences")
+            })
+        );
+        assert_eq!(presenter.bookmarks()[0].id, BookmarkId(1));
+        let mut saved = startup_policy_saved_preferences();
+        saved.bookmarks = [1, u64::MAX]
+            .into_iter()
+            .map(|id| Bookmark {
+                id: BookmarkId(id),
+                name: format!("Saved {id}"),
+                path: root.join(format!("saved-{id}")),
+                archive: None,
+                network: None,
+                slot: None,
+            })
+            .collect();
+        saved.validate().unwrap();
+        presenter.preferences_loaded(Ok(saved));
+        assert!(presenter.preferences.loaded);
+        assert!(presenter.viewer_plugins.startup_disabled.is_some());
+        assert!(
+            !presenter
+                .viewer_plugins
+                .startup_associations
+                .overrides
+                .is_empty()
+        );
+        assert!(!presenter.window_geometry_ready());
+        assert!(presenter.viewer_startup_policy().is_none());
+    }
+
+    #[test]
+    fn startup_policy_ignores_options_previews_cancel_and_persistence_races() {
+        let mut presenter = presenter();
+        presenter.preferences_loaded(Ok(startup_policy_saved_preferences()));
+        let frozen = presenter.viewer_startup_policy().unwrap();
+        startup_policy_preview_provider_changes(&mut presenter);
+        startup_policy_assert_frozen(&presenter, &frozen);
+        presenter.reset_options(&|_| panic!("Reset is still an Options preview"));
+        assert!(
+            presenter
+                .preferences
+                .values
+                .viewer_associations
+                .overrides
+                .is_empty()
+        );
+        startup_policy_assert_frozen(&presenter, &frozen);
+        presenter.cancel_options(&|_| panic!("Cancel must not save"));
+        assert_eq!(
+            presenter.preferences.values.disabled_viewer_plugins,
+            ["midnight.viewer.source"]
+        );
+        assert_eq!(presenter.preferences.values.viewer_associations, frozen.1);
+        startup_policy_assert_frozen(&presenter, &frozen);
+
+        startup_policy_preview_provider_changes(&mut presenter);
+        let writes = RefCell::new(Vec::new());
+        presenter.accept_options(&|command| {
+            let Command::SavePreferences {
+                revision,
+                preferences,
+            } = command
+            else {
+                panic!("Options OK must persist through the preferences command")
+            };
+            writes.borrow_mut().push((revision, preferences));
+            false
+        });
+        let rejected = writes.borrow()[0].0;
+        assert!(presenter.preferences.options.open);
+        assert!(!presenter.preferences.options.saving);
+        startup_policy_assert_frozen(&presenter, &frozen);
+        let accept = |command| {
+            let Command::SavePreferences {
+                revision,
+                preferences,
+            } = command
+            else {
+                panic!("Options retry must persist through the preferences command")
+            };
+            assert!(preferences.disabled_viewer_plugins.is_empty());
+            assert_eq!(
+                preferences
+                    .viewer_associations
+                    .overrides
+                    .get("midnight.viewer.source"),
+                Some(&vec!["rs".into(), "py".into()])
+            );
+            writes.borrow_mut().push((revision, preferences));
+            true
+        };
+        presenter.accept_options(&accept);
+        let failed = writes.borrow()[1].0;
+        assert!(failed > rejected);
+        assert!(presenter.preferences.options.saving);
+        assert!(!presenter.viewer_plugin_settings_ready());
+        startup_policy_assert_frozen(&presenter, &frozen);
+        presenter.preferences_saved(
+            failed,
+            Err(FsError::from_io(
+                "save preferences",
+                std::path::Path::new("preferences"),
+                std::io::ErrorKind::PermissionDenied.into(),
+            )),
+        );
+        assert!(presenter.preferences.options.open);
+        assert!(!presenter.preferences.options.saving);
+        startup_policy_assert_frozen(&presenter, &frozen);
+        presenter.accept_options(&accept);
+        let retry = writes.borrow()[2].0;
+        assert!(retry > failed);
+        presenter.preferences_saved(failed, Ok(()));
+        assert!(presenter.preferences.options.open);
+        assert!(presenter.preferences.options.saving);
+        startup_policy_assert_frozen(&presenter, &frozen);
+        presenter.preferences_saved(retry, Ok(()));
+        assert!(!presenter.preferences.options.open);
+        startup_policy_assert_frozen(&presenter, &frozen);
+        let launch = presenter.viewer_launch(PaneId::Left, false).unwrap();
+        assert!(Arc::ptr_eq(&launch.disabled_plugins, &frozen.0));
+        assert!(Arc::ptr_eq(&launch.associations, &frozen.1));
+    }
+
+    #[test]
+    fn startup_policy_ignores_successful_duplicate_load_catalog_and_session_revisions() {
+        let mut presenter = presenter();
+        presenter.preferences_loaded(Ok(startup_policy_saved_preferences()));
+        let frozen = presenter.viewer_startup_policy().unwrap();
+        presenter.preferences_loaded(Ok(UserPreferences::default()));
+        startup_policy_assert_frozen(&presenter, &frozen);
+        assert_eq!(
+            presenter.preferences.values.disabled_viewer_plugins,
+            ["midnight.viewer.source"]
+        );
+        presenter.viewer_plugins_listed(Ok(Vec::new()));
+        assert!(presenter.viewer_plugins.catalog.is_empty());
+        startup_policy_assert_frozen(&presenter, &frozen);
+        let next_wrap = !presenter.viewer_preferences().wrap;
+        assert!(presenter.save_viewer_preferences(
+            ViewerPreferenceChange::Wrap(next_wrap),
+            &|command| {
+                assert!(matches!(command, Command::SavePreferences { .. }));
+                true
+            }
+        ));
+        assert!(presenter.preferences.saving);
+        startup_policy_assert_frozen(&presenter, &frozen);
+    }
+
+    #[test]
+    fn startup_policy_is_unavailable_after_operation_shutdown_begins() {
+        let mut presenter = presenter();
+        presenter.preferences_loaded(Ok(startup_policy_saved_preferences()));
+        assert!(presenter.viewer_startup_policy().is_some());
+        presenter.request_operation_shutdown(&|_| true);
+        assert!(presenter.window_geometry_ready());
+        assert!(presenter.viewer_plugins.startup_disabled.is_some());
+        assert!(presenter.viewer_startup_policy().is_none());
     }
 }

@@ -40,6 +40,7 @@ struct Worker {
     preferences: Arc<ViewerPreferences>,
     runtime: Arc<Runtime>,
     images: Arc<[midnight_image_viewer_host::Provider]>,
+    image_startup: Option<crate::image_startup::Startup>,
     web_providers: Arc<[midnight_web_viewer_host::Provider]>,
     web: Option<web::WebView>,
     closing_web: Option<midnight_web_viewer_host::Session>,
@@ -91,6 +92,7 @@ struct Worker {
 }
 
 pub(crate) struct Services {
+    pub image_startup: crate::image_startup::Startup,
     pub raster_budget: Arc<crate::raster_budget::Budget>,
     pub runtime: Arc<Runtime>,
     pub images: Arc<[midnight_image_viewer_host::Provider]>,
@@ -112,6 +114,7 @@ pub(crate) fn run(
     closed: &Arc<AtomicBool>,
 ) -> Result<(), String> {
     let Services {
+        image_startup,
         raster_budget,
         runtime,
         images,
@@ -148,6 +151,7 @@ pub(crate) fn run(
         runtime,
         images,
         web_providers: web,
+        image_startup: Some(image_startup),
         web: None,
         closing_web: None,
         image_ids: Arc::new(std::sync::atomic::AtomicU64::new(0)),
@@ -487,6 +491,7 @@ impl Worker {
                         self.images[index].clone(),
                         Arc::new(file),
                         self.wake.clone(),
+                        self.image_startup.clone(),
                     )?,
                     self.image_ids.clone(),
                 ));

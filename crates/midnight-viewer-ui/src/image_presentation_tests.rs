@@ -679,8 +679,8 @@ fn toolbar_fit_restores_panned_rasters_at_native_dpi_through_late_frames_and_res
             )))],
         );
         assert_eq!(open.frame.get(), revision);
-        for axis in 0..2 {
-            assert!((image_viewport(&open)[axis] - viewport[axis] as f32).abs() < 0.01);
+        for (axis, &expected_extent) in viewport.iter().enumerate() {
+            assert!((image_viewport(&open)[axis] - expected_extent as f32).abs() < 0.01);
         }
         open.window.invoke_image_drag(12.0, -8.0);
         let panned = open.image_camera.borrow().origin;
@@ -831,8 +831,8 @@ fn toolbar_fit_restores_panned_rasters_at_native_dpi_through_late_frames_and_res
         open.window
             .window()
             .dispatch_event(slint::platform::WindowEvent::Resized { size });
-        for axis in 0..2 {
-            assert!((image_viewport(&open)[axis] - resized_viewport[axis] as f32).abs() < 0.01);
+        for (axis, &expected_extent) in resized_viewport.iter().enumerate() {
+            assert!((image_viewport(&open)[axis] - expected_extent as f32).abs() < 0.01);
         }
         // The retained frame keeps its physical extent until the resized reply arrives.
         assert_eq!(open.window.get_image_viewport_width(), viewport[0] as f32);

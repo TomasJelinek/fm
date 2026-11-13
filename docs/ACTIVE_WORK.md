@@ -6,7 +6,12 @@ ledger, alongside [Feature status](FEATURE_STATUS.md). It reconciles the older
 [requirement IDs](IMPLEMENTATION_BACKLOG.md) without treating their stale status
 text or stage ordering as current evidence.
 
-Prior committed/pushed D `main` base: **`1546030`**, 12 files and verified clean by
+Latest recorded pushed D `main` checkpoint: **`fe8a4177d5f8079147a56ed5bea706714282f33e`**.
+It includes the `338eb0a` presence/Find source, test and documentation checkpoint,
+plus the later CI engine-warning corrections and Clippy-step reorder. These
+CI-only changes did not produce a replacement for the qualified `26ff61f2` EXE.
+
+Earlier committed/pushed D `main` base: **`1546030`**, 12 files and verified clean by
 the Orchestrator at that checkpoint. It integrates the qualified link-maintenance source,
 clipboard helper correction and documentation.
 It includes recursive expansion `ce9eff3`, thumbnail correction `8e205c0` and
@@ -89,21 +94,22 @@ and **qualification** rather than converting every missing receipt into missing 
 
 The [agent workflow](developer/AGENT_WORKFLOW.md) and [project rules](../AGENTS.md)
 govern assignments and handoffs. The current documentation reservation covers only
-this ledger and [Tree panel](developer/TREE_PANEL.md); the earlier accepted
-SECURITY/TREE_PANEL edits are committed in `1546030`. Other rows record ownership and remaining focus, not a claim
+this ledger and [Image viewer API](developer/IMAGE_VIEWER_API.md); the previous
+Tree/ledger changes are committed in `338eb0a`.
+Other rows record ownership and remaining focus, not a claim
 that completed probes are still running or permission to begin unreserved work.
 The Orchestrator records concrete source paths and acceptance before shared edits.
 
 | Owner | Recorded work / remaining focus | Ownership and coordination boundary |
 | --- | --- | --- |
 | Orchestrator | Coordinate the full goal; independently critique/review proposals, changes and evidence; own integration | Owns file reservations, API/UI integration decisions, Cargo target-directory/native-input leases and Git checkpoints. Commit/merge/push remain Orchestrator-owned. |
-| Architect | Retain C native Rename review and Task 4 host handoff | C Rename has a separate tests-only RED assignment; production and Task 4 remain unqualified and undeployed. Review the existing C candidate read-only; any Task 4 host source work requires a separate reservation. The review and handoff do not establish deployment or qualification. Recursive batching, exact Commit, rollback/identity and capacity contracts are implemented in `ce9eff3`; source review is not native/platform qualification. The DirectoryLink contract/applied source are reviewed and Windows-qualified at 51/0/0; the updated Linux fixture passes 1/0/0 on WSL/tmpfs, with desktop/platform acceptance separate. Native Rename/host cutover, provider watches and archive nesting retain separate acceptance. |
-| Backend agent | Native-link presence admission correction and unreproduced Find Open report; C Rename tests-only RED separate | The native-only presence correction passes 12/0/0; durable Find regressions pass 6/0/0 in the same 18-case gate. The earlier diagnostic gate passed 13/0/0 with the exact user fixture unchanged and no differing identity/revision; no production Find correction is demonstrated. Preserve replacement and stale-session rejection. C Linux recovery-locator and Windows original-case restoration follow-up permits the separately authorized tests-only RED apply under separate reservations and build leases; production and Task 4 remain unqualified, with no deployment. API/SDK Task 1/docs are integrated at `e5cba5d`. Recursive Backend refined Windows gate passes 11/0 overlapping the broad 158/1 result; CSC Engine boundary passes 5/0 with mocked helper outcomes. Native Rename candidates are excluded from the retained runtime; the original Linux recursive symlink fixture is verified 1 passed / 0 failed / 0 ignored under WSL/tmpfs at `1714d99`; manual authorization, physical Linux/native-provider acceptance and host cutover remain open. Loaded DirectoryLink maintenance passes the Windows 51/0/0 gate with zero drift; its updated Linux fixture passes 1/0/0 on WSL/tmpfs; the new registered private Windows startup is qualified. C work keeps separate source identities and leases. |
-| Viewer agent | One combined source-scroll/image-startup investigation with UI and Perf | Own viewer phases within the shared investigation; the next approved discriminator is the existing headless image-host diagnostic after the current gate/debug. The two native attempts failed foreground admission and establish no qualified performance baseline. The one-off Source probe completed 1,098 operations/732 exact replays without mismatches and is archived under `_build/`; it is not a reusable repo target or native C++ scrollbar diagnosis. Markdown source/A-B and HTML instrumentation retain their scopes. Full viewer/native scrolling and matching packaged-worker evidence remain separate. |
-| UI agent | One combined native source-scroll/image-startup trace with Viewer and Perf | Own input/presentation phases within that same shared trace; retain the completed local Linux helper gate: clipboard 5 + copy 2 + move 6, all passing. Recursive/tree/CSC UI is 69/0; copy dialog 8/0, selected Native Jobs 2/0 and native-operations UI 4/0 pass on Windows. CSC warning retention is source-corrected; manual CSC/UAC access is unproved. CMD-02 retains its earlier 37/0 scope. The correction in `tests/support/tree_filters.rs` passes the local 13/0/0 Linux runtime gate. Startup does not close full layout/input/platform acceptance or Find Open. |
-| GitHub build system and build tools developer | Run the approved existing headless image-host diagnostic after the completed gate/debug qualification | The targeted presence/Find gate completed 18/0/0 with both compiles 0 and zero drift; its processes exited and source lease was released. Fresh `26ff61f2` application debug/private engine/native UI startup pass with zero drift. The later headless diagnostic remains pending. Linux UI13 completed and its lease is released. Own subsequent build, target-directory and native-input leases; coordinate the shared Viewer/UI/Perf investigation. The prior `269f3419` runtime, preferences and shortcut are preserved. Keep target-directory/native-input leases exclusive and reconcile current CI separately; the exact `1714d99` Linux `tree_clipboard` CI job is 3 passed/2 failed in a stale helper; the previous retained terminal run is `8b18892`. Neither is current-source GREEN. |
-| Perf agent | Analyze the one combined native source-scroll/image-startup trace | Share the Viewer/UI trace and evidence, with no separate competing capture or build. `3bee1dc` is a portable panel scroll regression-test commit (4/0), not a production correction; `8e205c0` has 14/0 thumbnail tests. Deterministic software counts/retention do not establish painted flicker, native frame pacing, SSD latency or RSS. Root confirmed the original watch callback-lock P2 closed against applied `watch/tree.rs` hash `a17e9279…b96d5`. Source scrollbar input-to-paint, recursive scaling and native Rename costs still require their own measurements. |
-| Documentation guru | Maintain prior `1546030` base, current source/evidence and Tree wording | Edit ownership is only D `docs/ACTIVE_WORK.md` and `docs/developer/TREE_PANEL.md`; preserve prior evidence, all requirement IDs and open qualification. Freeze a minimal two-file diff; Root owns commit timing after substantive outcomes. No other docs, new reports, source, Git, Cargo or application runs. |
+| Architect | Review the accepted Task 4B finish/disposal contract and scoped C implementation | C native Rename passes selected Linux 38/0/0 and Windows 22/0/0 audit gates. Task 4A's exact five-file C candidate is accepted by Root/Architect and applied with matching hashes; its direct C host foundation gate passes 44/0/0 with compile/Clippy 0. Root accepted the finite Task 4B finish seam with an owned prepare-failure carrier after Architect agreement; implementation is authorized within 11 C core/host paths. Task 4A's five-file qualification stays separate; 4B has no passed execution gate, engine/UI cutover is unimplemented and native candidates are undeployed. The review and handoff do not establish deployment or qualification. Recursive batching, exact Commit, rollback/identity and capacity contracts are implemented in `ce9eff3`; source review is not native/platform qualification. The DirectoryLink contract/applied source are reviewed and Windows-qualified at 51/0/0; the updated Linux fixture passes 1/0/0 on WSL/tmpfs, with desktop/platform acceptance separate. Native Rename/host cutover, provider watches and archive nesting retain separate acceptance. |
+| Backend agent | Task 4B implementation within the 11-path C core/host reservation; retain prior gate evidence | The native-only presence correction passes 12/0/0; durable Find regressions pass 6/0/0 in the same 18-case gate. The earlier diagnostic gate passed 13/0/0 with the exact user fixture unchanged and no differing identity/revision; no production Find correction is demonstrated. Preserve replacement and stale-session rejection. C Linux recovery-locator audit fixes pass the selected 38/0/0 gate on real WSL/tmpfs; Windows passes 22/0/0 after the fixture-only exact-restoration correction, retaining the preceding 21/1 history. Keep the [native audit receipts](#native-rename-audit-gates) under separate C reservations and build leases; Task 4A is accepted/applied under its five-file C reservation with the direct C host foundation gate passing 44/0/0, compile/Clippy 0 and zero drift; Task 4B's finite finish/owned prepare-failure contract is accepted and its 11-path C implementation is authorized; engine/runtime changes are outside that increment, engine/UI cutover is unimplemented and native candidates are undeployed. API/SDK Task 1/docs are integrated at `e5cba5d`. Recursive Backend refined Windows gate passes 11/0 overlapping the broad 158/1 result; CSC Engine boundary passes 5/0 with mocked helper outcomes. Native Rename candidates are excluded from the retained runtime; the original Linux recursive symlink fixture is verified 1 passed / 0 failed / 0 ignored under WSL/tmpfs at `1714d99`; manual authorization, physical Linux/native-provider acceptance and host cutover remain open. Loaded DirectoryLink maintenance passes the Windows 51/0/0 gate with zero drift; its updated Linux fixture passes 1/0/0 on WSL/tmpfs; the new registered private Windows startup is qualified. C work keeps separate source identities and leases. |
+| Viewer agent | Retain implemented prewarming lifecycle and scoped R3/R2 evidence with Perf | The final 17-file R3 freeze passes compile/strict workspace Clippy with zero drift. R3 host14 plus the retained other30 deterministic successes give 44 unique cases; preserve R2's earlier 43 and initial 34/9 history. Five native headless controls pass 5/0/0 with zero drift and the pinned runtime unchanged. One same-candidate BMP pair records cold 253.919 ms and ready 139.410 ms including 71.182 ms claim validation; preparation is 204.803 ms separately. Final fixture/lint qualification passes; no general image-opening or smooth-scroll improvement is established. The earlier headless host control passed 1/0/0 and measured a 7.192-second process-creation interval before image bytes; that single control is not a prewarm comparison. The two native attempts failed foreground admission and establish no qualified performance baseline. The one-off Source probe completed 1,098 operations/732 exact replays without mismatches and is archived under `_build/`; it is not a reusable repo target or native C++ scrollbar diagnosis. Markdown source/A-B and HTML instrumentation retain their scopes. Full viewer/native scrolling and matching packaged-worker evidence remain separate. |
+| UI agent | Retain the applied copy-dialog test alias and share Viewer/Perf presentation evidence | The Root-approved alias-only correction for `tests/copy_dialog.rs:666` `type_complexity` is applied as `82f0a5a3…edd26`, preserving all bodies/assertions; final fixture/lint qualification passes with strict workspace Clippy 0. Own input/presentation phases within the shared investigation; retain the completed local Linux helper gate: clipboard 5 + copy 2 + move 6, all passing. Recursive/tree/CSC UI is 69/0; copy dialog 8/0, selected Native Jobs 2/0 and native-operations UI 4/0 pass on Windows. CSC warning retention is source-corrected; manual CSC/UAC access is unproved. CMD-02 retains its earlier 37/0 scope. The correction in `tests/support/tree_filters.rs` passes the local 13/0/0 Linux runtime gate. Startup does not close full layout/input/platform acceptance or Find Open. |
+| GitHub build system and build tools developer | Retain final fixture/lint receipts; fresh application debug/startup follows Root's substantive integration | Linux Rename's 38 cases and Windows Rename's 22 cases pass with leases released. The first D prewarm compile/Clippy attempt exited 101 before tests, with zero drift and leases released. R2 compile passes with zero drift and 43 unique deterministic cases pass after the same-binary trusted-fixture host rerun. Five native headless controls pass 5/0/0 with zero drift and the pinned 1,382-file runtime unchanged. Strict workspace Clippy previously exited 101 on the unrelated copy-dialog test type-complexity warning; R3 now passes compile/strict Clippy with zero drift and host14/0/0. Its 44 unique deterministic cases retain the other30 successes; native5 remains the R2 receipt. Fresh application debug/startup and deployment are separate. C Task 4A passes 44/0/0 with compile/Clippy 0, 252 captured inputs without drift and the test child exited/leases released. The CI engine gate passes Clippy/compile and 31/0/0; workflow validation is structural only. Retain the earlier presence/Find 18/0/0, Linux UI13 and qualified `26ff61f2` startup scopes. Own subsequent build, target-directory and native-input leases; coordinate shared Viewer/UI/Perf evidence. Preserve runtime/preferences/shortcut and dated CI failures; selected local gates do not establish remote/workspace GREEN. |
+| Perf agent | Analyze the one combined native source-scroll/image-startup trace | Share the Viewer/UI trace and evidence, with no separate competing capture or build. `3bee1dc` is a portable panel scroll regression-test commit (4/0), not a production correction; `8e205c0` has 14/0 thumbnail tests. Deterministic software counts/retention do not establish painted flicker, native frame pacing, SSD latency or RSS. Root confirmed the original watch callback-lock P2 closed against applied `watch/tree.rs` hash `a17e9279…b96d5`. The earlier 7.192-second CreateProcessW interval is a single headless startup observation, with no qualified prewarm speedup or smooth-scroll claim. Source scrollbar input-to-paint, recursive scaling and native Rename costs still require their own measurements. |
+| Documentation guru | Maintain the integration ledger and implemented image-prewarming lifecycle | Edit only D `docs/ACTIVE_WORK.md` and `docs/developer/IMAGE_VIEWER_API.md`; preserve prior evidence, all requirement IDs and open qualification. Freeze both for the next substantive prewarm commit: final fixture/lint gates pass. Preserve R3 deterministic44 versus retained R2 native5 scopes; no standalone docs commit. Root owns Git and commit timing. No other docs, new reports, source, Cargo or application runs. |
 
 Native Windows Task 2 and Linux Task 3 remain WIP in the existing
 `C:/Users/tjelinek/.codex/worktrees/main-deep-audit/FM` checkout and are excluded
@@ -320,9 +326,87 @@ performance baseline. Owned jobs stopped and source/runtime/preferences/fixtures
 were preserved. The [partial PNG review](../_build/verification/perf-20261113/png-partial/REVIEW.md)
 places the dominant observed gap before the first counted image bytes; it does
 not identify decoder cost or establish F3, completed native redraw or observer
-overhead. The existing headless image-host diagnostic is approved after the
-current gate/debug; it remains a separate common-host control, not a PNG or
-native performance baseline.
+overhead. The subsequent [headless host control](../_build/verification/viewer-20261113/image-startup/headless-host-startup-20261113T005252Z/result.json)
+passed **1/0/0**, compile 0 and zero drift, against the unchanged `269f3419`
+runtime. Its [phase summary](../_build/verification/viewer-20261113/image-startup/headless-host-startup-20261113T005252Z/phase-summary.json)
+records **7,192.133 ms** from environment preparation to process creation returning,
+before counted image bytes. This authored 2x1 BMP common-host control is not PNG
+decoder, production F3, UI/GPU or smooth-scroll qualification. At that earlier
+snapshot, image prewarm was frozen for review/execution and no measured
+improvement had been established.
+
+<a id="image-prewarming-source-and-evidence"></a>
+
+The reviewed [14-file prewarm manifest](../_build/verification/viewer-20261113/image-startup/prewarm-candidate-final.json)
+was SHA256 `d08cd7dfd20d875239b116ed5974e10ac259dcee096ef9e4c0c44f21a39babda`.
+Root and Perf independently matched its source hashes without drift; the
+[source-delta review](../_build/verification/perf-20261113/prewarm-diff-review/final-deltas/reviewed-hashes.json)
+reported no source blocker before execution. The subsequent [compile receipt](../_build/verification/viewer-20261113/image-startup/combined-prewarm-20261113T015808Z/build-result.json)
+and [strict workspace Clippy receipt](../_build/verification/viewer-20261113/image-startup/combined-prewarm-20261113T015808Z/clippy-result.json)
+each exit **101**, with zero drift. Two legacy test `Service` initializers lack
+new fields; the [owner-correction receipt](../_build/verification/viewer-20261113/image-startup/combined-prewarm-20261113T015808Z/owner-correction-needed.json)
+records **0 tests / 0 native runs** and released source/target leases. Viewer owns
+the two mechanical fixture corrections after that release; both are included in
+the subsequent [16-file R2 freeze](../_build/verification/viewer-20261113/image-startup/prewarm-candidate-r2.json),
+SHA256 `748cd46fc9d922f117ee5f264658d78705f2bb199106de963e6e209c5e6fb419`.
+R2 execution resumed under Build. Its [fresh compile receipt](../_build/verification/viewer-20261113/image-startup/combined-prewarm-20261113T020958Z/build-result.json)
+records exit **0** with zero drift. The [first deterministic receipt](../_build/verification/viewer-20261113/image-startup/combined-prewarm-20261113T020958Z/deterministic-result.json)
+is **34 passed / 9 failed / 0 ignored**; all nine failures are host-fixture trust
+rejections before test logic. The [same-binary private-fixture rerun](../_build/verification/viewer-20261113/image-startup/combined-prewarm-20261113T020958Z/host-final-private-result.json)
+passes the 13 host cases with zero failures/ignores/drift. Four host successes
+overlap the initial 34: **34 + 13 − 4 = 43 unique deterministic cases**.
+The final [trusted fixture cleanup](../_build/verification/viewer-20261113/image-startup/combined-prewarm-20261113T020958Z/trusted-fixture-cleanup.json)
+reports zero remaining entries; the [trust receipt](../_build/verification/viewer-20261113/image-startup/combined-prewarm-20261113T020958Z/fixture-root-trust-result.json)
+confirms ancestor ACLs unchanged. Runtime/package hashes remain unchanged.
+
+The [five native headless controls](../_build/verification/viewer-20261113/image-startup/combined-prewarm-20261113T020958Z/native-result.json)
+pass **5/0/0**, with zero drift, all **1,382 runtime files unchanged**, and owned
+children released. The pinned worker package is the retained `269f3419` runtime;
+these controls use the candidate host executable rather than the application UI.
+The [paired control trace](../_build/verification/viewer-20261113/image-startup/combined-prewarm-20261113T020958Z/native-paired/stderr.log)
+records one same-candidate authored 2x1 BMP comparison:
+
+| Host-control interval | Observed time |
+| --- | --- |
+| Cold Open to exact CPU pixels | 253.919 ms |
+| Ready Open to exact CPU pixels, including claim | 139.410 ms |
+| Claim identity validation within ready Open | 71.182 ms |
+| Preparation before ready Open | 204.803 ms |
+
+Preparation performs zero source validations/reads; ready Open records zero
+process-creation attempts/successes. Preparation is separate from ready Open;
+claim validation is already included in 139.410 ms. The
+[final native fixture cleanup](../_build/verification/viewer-20261113/image-startup/combined-prewarm-20261113T020958Z/final-fixture-cleanup.json)
+reports zero remaining entries. The older 7.192-second control retains its own
+build/environment scope. This host pair does not time engine manager/refill,
+application F3, other images, scrolling/smoothness or deployment.
+
+The [R2 strict workspace Clippy receipt](../_build/verification/viewer-20261113/image-startup/combined-prewarm-20261113T020958Z/clippy-result.json)
+exits **101**, zero drift, on the unrelated copy-dialog test `type_complexity`
+warning. The Root-approved [alias-only correction](../_build/verification/ui-20261113/copy-dialog-clippy/applied-receipt.json)
+is applied, preserving every body/assertion; final fixture/lint qualification is
+passed in the final R3 gate below. The qualified application remains `26ff61f2`,
+without a new prewarm application/deployment or Source-gesture qualification.
+
+The final [17-file R3 manifest](../_build/verification/viewer-20261113/image-startup/prewarm-candidate-r3.json)
+is SHA256 `a28d6c5c696b4183fb24285937b07c762eecc4d67ecf8ed51feda34783715054`.
+Its [compile receipt](../_build/verification/viewer-20261113/image-startup/combined-prewarm-20261113T023426Z/build-result.json)
+and [strict workspace Clippy receipt](../_build/verification/viewer-20261113/image-startup/combined-prewarm-20261113T023426Z/clippy-result.json)
+both exit **0**, with zero source drift. The [R3 host receipt](../_build/verification/viewer-20261113/image-startup/combined-prewarm-20261113T023426Z/host14-result.json)
+records **14 selected / 14 passed / 0 failed / 0 ignored**, the child exited,
+fixture root absent, no remaining entries and unchanged ancestor ACLs. Those
+14 host cases replace the earlier 13: **14 + 30 = 44 unique deterministic cases**.
+The retained **five native controls and paired timings are R2 evidence**; R3 does
+not relabel or repeat them. Production prewarm sources and existing native-control
+bodies are byte-identical to R2; R3 changes only fixture cleanup/constructor-panic
+coverage and UI test aliases.
+
+[Perf's measured acceptance](../_build/verification/perf-20261113/image-worker-startup/MEASURED-ACCEPTANCE.md)
+accepts this one same-candidate ready-hit host observation. Ready steady-idle
+memory/CPU, complete-run peak resources, application F3, Source scrolling and
+all-image performance remain unqualified. Root's next integration covers the
+17 source/test files and these two docs; fresh debug/startup follows that
+checkpoint, without a deployment claim from this host-control result.
 
 Earlier size/model tests confirmed that each folder's active flag is separate
 from warning severity: terminal partial totals keep normal metadata number
@@ -346,6 +430,26 @@ workspace/remote CI pass or accepted UAC/polkit qualification.
 
 ### Retained remote CI boundary
 
+At pushed `fe8a4177`, the [CI engine gate](../_build/verification/ci-engine-warnings-20261113/gate-20261113T011857Z/result.json)
+records strict Clippy 0, compile 0 and **31/0/0**: recursive 21 + link 10, zero
+source drift. These overlap earlier feature gates. The unchanged complete Clippy
+step now precedes long workspace tests. [Workflow validation](../_build/verification/ci-engine-warnings-20261113/workflow-static-validation.json)
+passes exact-item-move and step-sequence checks with all other YAML bytes preserved;
+no full YAML parser was invoked and no full-suite pass follows.
+
+The later recorded [run 43345016027](https://github.com/TomasJelinek/fm/actions/runs/43345016027)
+has **18 successful / 2 failed host jobs**. Both hosts stop at `needless_range_loop`
+in `crates/midnight-viewer-ui/src/image_presentation_tests.rs` lines 682/834.
+The two-loop mechanical iterator correction is frozen at SHA256
+`706f96f00ea7dcca842aa76ae44b596f2d2747463afe0501bdc91f5a5cf20369`;
+the combined prewarm compile/Clippy attempt failed before tests at legacy `Service`
+fixtures. Corrected R2 compiles with zero drift and has 43 unique deterministic
+passes; workspace Clippy still exits 101 on the unrelated copy-dialog test
+`type_complexity` warning. Its UI alias-only correction is applied; final
+fixture/lint gate passes compile/strict Clippy 0 and host14/0/0, zero drift. This is a test-only change,
+not a viewer behavior or performance correction. The earlier receipts below keep
+their original source/failure scopes.
+
 The initial local Linux UI compilation stopped on missing `pkg-config`; **no tests
 executed in that attempt**. After documented CI prerequisites were resolved without
 feature changes, the local Linux gate passed **13 selected / 13 passed / 0 failed /
@@ -367,7 +471,7 @@ This job did not reach the Linux recursive target;
 its separate WSL/tmpfs 1/0/0 receipt remains independent.
 
 
-The latest retained terminal remote receipt is
+The older retained terminal remote receipt is
 `github-checkpoint-8b18892-terminal-20261112T221914Z.json`:
 [run 43312251721](https://github.com/TomasJelinek/fm/actions/runs/43312251721) at
 `8b18892` completed with **18 successful / 2 failed host jobs**. Both hosts
@@ -491,9 +595,56 @@ Refresh invalidates discovery TTL caches; public watch subscriptions/general cha
 events remain missing, rather than all invalidation being absent. Archive staging
 writes host-owned private storage and does not enable archive mutation.
 
+<a id="native-rename-audit-gates"></a>
+
+The later C native Rename audit-fix snapshot passes Linux **38 selected /
+38 passed / 0 failed / 0 ignored**, compile 0 and zero source drift, under real
+Linux WSL/tmpfs. The [exact receipt](../_build/verification/backend-rename-audit-fixes-20261113/linux-green-20261113T014351Z/result.json)
+and raw logs cover recovery 23 + prepared Rename 9 + conflicts 6; no fixture
+paths remain and compile/test children stopped with source/target leases released.
+
+The [preceding Windows gate](../_build/verification/backend-rename-audit-fixes-20261113/windows-green-20261113T012845Z/result.json)
+compiled successfully with **21 passed / 1 failed / 0 ignored** from 22 selected,
+zero drift. Both spelling regressions passed; the remaining failure was exact
+DACL/control restoration in the test fixture. Its [fixture-only correction](../_build/verification/backend-rename-audit-fixes-20261113/windows-final-green-freeze.json)
+is applied without changing production ACL/spelling code. The [same 22-case repeat](../_build/verification/backend-rename-audit-fixes-20261113/windows-fixture-green-20261113T014954Z/result.json)
+passes **22/0/0**, compile 0, zero source/binary drift and no remaining temporary
+entries. Recovery/unit 12 + conflicts 6 + prepared Rename 4 retain the original
+selection; exact file/directory ACL readbacks are iterations of one existing test,
+not additional cases. Processes exited and source/target leases were released.
+The preceding 21/1 remains historical. Task 4A's exact candidate is accepted
+independently by Root and Architect and applied in C. Its reservation is exactly
+`admission.rs`, `ffi.rs`, `discovery.rs`, `ffi_tests.rs` and
+`rename_admission_tests.rs` under `crates/midnight-native-filesystem-host/src/`.
+The [applied host freeze](../_build/verification/backend-native-host-task4a-20261113/applied-freeze.json)
+records all five applied hashes matching candidate manifest
+`c8d2463d902a41a6a79fc0ef5834b29ec8307e2504d783a9b1976a83d6c021ae`.
+The [Build handoff](../_build/verification/backend-native-host-task4a-20261113/applied-build-handoff.md)
+selected **44 unique direct host tests** (admission 1 + discovery 14 + FFI 29).
+The [fresh C host foundation receipt](../_build/verification/backend-native-host-task4a-20261113/build44-20261113T020849Z/result.json)
+records compile **0**, Clippy **0**, test exit **0**, **44 passed / 0 failed /
+0 ignored** and **252 captured inputs / 0 drift**. The test executable's before/
+after SHA256 is
+`a965fa7cc8e593530e6079b4ad7d6c89704a4eca991a75b690be78b0ed05f196`;
+the child exited and source/target leases were released. This qualifies the C-only
+host foundation, not deployed application Rename. Root checkpointed these five
+reviewed/qualified host files as `eb2eca8` on C branch `codex/main-deep-audit`;
+the 44/44 and scoped Clippy receipts apply unchanged. Only those five files were
+committed. This C checkpoint is not integrated into D `main`, pushed or deployed;
+unfinished native-plugin sources remain outside that commit.
+
+After Architect agreement, Root accepted Task 4B's finite finish seam with an
+owned prepare-failure carrier and authorized implementation in the separately
+reserved **11 C core/host paths** (2 core + 9 host). The earlier
+[reservation baseline](../_build/verification/backend-native-host-task4b-20261113/baseline.json)
+records those exact paths; its pending-ruling status predates this acceptance.
+No Task 4B passed execution gate is recorded. This increment leaves engine/runtime
+unchanged; engine/UI cutover remains unimplemented. Neither native candidate is
+deployed; physical Linux desktop and installed host workflows remain unqualified.
+
 | Gap | Finite scope and required future evidence |
 | --- | --- |
-| Prepared actions / first VFS-01 Rename slice | Accepted: optional, versioned single-item, same-provider, same-parent prepared Rename. Explicit preparation captures identity before confirmation; it does not guarantee identity from listing time or change the namespace. Opaque source/parent authority retains raw basename, prepared identity/revision, bounded admission/cancel and worker-owned cleanup through refusal, stale delivery and shutdown. Task 1 `f3f8c59` and public docs `852ee0c` are merged into D `e5cba5d` with exact equality of 33 incoming files. Five Architect findings are source-resolved; corrected prepared-Rename tests and strict API/SDK Clippy pass. Direct Windows/network consumer compilation checks pass; Windows Task 2 and Linux Task 3 source work is authorized in C. Both native platform implementations remain WIP/unqualified in C; no new capability/deployment or host cutover is claimed. No-replace is the baseline; replacement must preserve current pinned/versioned/recoverable consent or remain Unsupported. No delete-first/copy/cross-device fallback. Public API/SDK and independent native plugins precede host cutover; no capability is advertised by this in-progress slice. Require compatibility/absent-capability/malformed-handle tests, native prepare/cancel/race/collision/raw-name/case-only/alias tests and installed flat/tree confirmation/queue/cleanup tests. Delete, metadata, transfer and watches stay separate slices. |
+| Prepared actions / first VFS-01 Rename slice | Accepted: optional, versioned single-item, same-provider, same-parent prepared Rename. Explicit preparation captures identity before confirmation; it does not guarantee identity from listing time or change the namespace. Opaque source/parent authority retains raw basename, prepared identity/revision, bounded admission/cancel and worker-owned cleanup through refusal, stale delivery and shutdown. Task 1 `f3f8c59` and public docs `852ee0c` are merged into D `e5cba5d` with exact equality of 33 incoming files. Five Architect findings are source-resolved; corrected prepared-Rename tests and strict API/SDK Clippy pass. Direct Windows/network consumer compilation checks pass; Windows Task 2 and Linux Task 3 source work is authorized in C. Native candidates remain WIP in C with [selected audit-gate receipts](#native-rename-audit-gates); Task 4A is accepted/applied within its five reserved C host files with the direct C host foundation gate passing 44/0/0, compile/Clippy 0 and zero drift, while the finite 4B finish seam/owned prepare-failure carrier is accepted and implementation is authorized within 11 reserved C core/host paths; 4B execution is unqualified and engine/UI cutover remains unimplemented; installed/native qualification remains incomplete, with no deployment or host cutover claimed. No-replace is the baseline; replacement must preserve current pinned/versioned/recoverable consent or remain Unsupported. No delete-first/copy/cross-device fallback. Public API/SDK and independent native plugins precede host cutover; no deployed native capability is established by these selected gates. Require compatibility/absent-capability/malformed-handle tests, native prepare/cancel/race/collision/raw-name/case-only/alias tests and installed flat/tree confirmation/queue/cleanup tests. Delete, metadata, transfer and watches stay separate slices. |
 | Public watches/general invalidation / VFS-01 | Migrate existing [native tree watch scope](../crates/midnight-engine/src/tree_watch_scope.rs) through explicit provider subscription/revision/event/overflow contracts. Preserve bounded eligible loaded-branch observation, fair polling fallback where supported, dirty epochs through reconciliation and no implicit activation/authentication. Require expanded-empty growth, overflow, >32-branch fairness, late navigation/revocation events, worker cleanup and backing-archive revision invalidation checks. Existing explicit Network Refresh remains supported. |
 | Preserved links / COPY-03 | Keep current rejection by default; propose explicit Preserve only for declared endpoint/link kinds. A distinct no-follow link proof captures raw payload/kind/flags, exclusively stages and independently reads back the link representation, revalidates source and publishes safely without opening the referent. Link Move needs separate retained finalization authority; it cannot reuse a regular-file content proof. Require relative/absolute/dangling/cyclic links, junction/kind/privilege limits, Unicode/raw names and untouched external sentinels, plus mismatch/replacement/conflict/cancel/cleanup failures. Hardlink topology and broader metadata remain separate capabilities. |
 
@@ -520,7 +671,7 @@ gestures prove different boundaries.
 | DIALOG-02, META-02, SELECT-01, PANEL-02, NAV-01/02, NOTICE-02, THEME-02, ICON-02, DRIVE-02, STATUS-02 / UI polish | Embedded modal/focus/input source and corrected selection fixtures are in [current checkpoint scope](#current-checkpoint); earlier [panel/selection/palette evidence](verification/2026-11-12-panel-interaction-polish.md) retains its dated scope | UI + Build: qualify normal/320×200, desktop/touch, fonts/DPI/themes, input/focus/IME, resizing, X/Escape and captured callbacks. Ordinary modals stay embedded; independent tools retain native hosts. Preserve warning Copy/retry/close and the tested finished-partial-size presentation. Render matrices do not substitute for native/compositor checks. |
 | VIEW-01/02, SCROLL-02 / viewers and comparison | [Viewer presentation](developer/VIEWER_PRESENTATION.md), [image limits](developer/IMAGE_VIEWER_API.md), [HTML contract](developer/WEB_VIEWER_API.md), [foreground evidence](verification/2026-11-12-foreground-scroll-resume.md) | Viewer + UI + Build: native text/hex/source/Markdown/image/PDF/HTML opening/navigation/search/copy/zoom/font/persisted settings, exact user fixtures, native/archive content and text/image comparison. Qualify Linux frame pacing, physical IME, native Chromium Wayland and configurable browser key arbitration separately; preserve bounded page selection and inert content. |
 | NET-01, PLAT-02 / native environments and permissions | [Network contract](developer/NETWORK_FILESYSTEM.md), [system targets](SYSTEM_REQUIREMENTS.md), [directory authorization](verification/2026-11-11-directory-authorization.md) | Backend + UI + Build: controlled live SMB/GVfs/FUSE, Windows 10, physical Linux desktops/distribution packages, GPU/driver/filesystem and multilingual/RTL/IME evidence. CSC warning/UI and Engine mock gates pass, but actual privileged CSC access, accepted UAC/polkit prompts and physical Linux desktop workflows remain unqualified. The original recursive symlink fixture is verified 1/0/0 under WSL/tmpfs at `1714d99`, with compile/test exit 0. Record exact environment, reduced-RAM measurements and artifact notices; WSL/compilation is narrower evidence. |
-| CI / complete current validation | Exact `1714d99` [Linux job](https://github.com/TomasJelinek/fm/actions/runs/43324388443/job/131555743277) records `tree_clipboard` 3 passed/2 failed in the stale native-child helper before confirmation. The helper correction is committed in `1546030`; local Linux clipboard/copy/move now passes 13/0/0 with compile 0 and zero drift. Previous terminal run `8b18892` had 18 successful/2 failed host jobs; later Windows operations passed 4/0 | Build + Root: retain the completed local 13/0/0 receipt and qualify the current source on remote Windows/Linux with exact outcomes. DirectoryLink Windows 51/0/0 is local qualification; its updated Linux fixture passes 1/0/0 on WSL/tmpfs; the new registered private Windows startup is qualified. Local selected gates, WSL filesystem fixtures and startup do not establish full-suite/desktop success. Native provider/host cutover, viewer performance and manual permissions remain separate. |
+| CI / complete current validation | The [latest recorded remote boundary](#retained-remote-ci-boundary) is run 43345016027: 18 successful/2 failed host jobs, both on the two image-presentation `needless_range_loop` warnings. Engine CI corrections at pushed `fe8a4177` pass Clippy/compile and 31/0/0; the mechanical image-test iterator correction is frozen, but the combined prewarm compile/Clippy attempt failed before tests at legacy `Service` fixtures; corrected R2 compiles with zero drift and 43 unique deterministic cases pass after the same-binary host-fixture rerun. R2 strict workspace Clippy still exits 101 on one unrelated copy-dialog test type-complexity warning; the UI alias correction is applied and the final R3 gate passes compile/strict workspace Clippy 0 with zero drift, host14/0/0 and 44 unique deterministic cases. The five passing headless native controls remain the retained R2 result. Earlier `1714d99` clipboard 3/2, `8b18892` host failures and local Linux UI13 retain their dated scopes. | Build + Root: obtain fresh frozen-source targeted/workspace and remote receipts. Structural workflow validation, selected local gates, C native-plugin gates, WSL fixtures and qualified `26ff61f2` startup do not establish full-suite/desktop success. Native provider/host Task 4, viewer performance and manual permissions remain separate. |
 | Dependencies / release inventory | [Dependency policy](DEPENDENCY_POLICY.md), [third-party inventory](THIRD_PARTY.md) and distribution notices | Every role + Documentation + Build: review actual pinned direct/transitive/native/test/build dependencies and enabled features on changes, verify free intended use/distribution and required notices/source offers. No trial/paid-only path or silent project-license change. No dependency changed in this documentation pass. |
 
 ### Retained extension contracts

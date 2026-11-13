@@ -98,6 +98,7 @@ fn worker() -> (Worker, Mailbox) {
         preferences: Arc::new(ViewerPreferences::default()),
         runtime,
         images: Arc::from([]),
+        image_startup: None,
         web_providers: Arc::from([]),
         web: None,
         closing_web: None,

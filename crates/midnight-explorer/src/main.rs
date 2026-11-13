@@ -580,7 +580,7 @@ fn run_window(
             sent
         }),
     );
-    let viewers = viewers::install(
+    let (viewers, image_preparation) = viewers::install(
         &window,
         presenter.clone(),
         commands.clone(),
@@ -687,6 +687,8 @@ fn run_window(
         .shutdown_drag_drop(&|command| commands.try_send(command).is_ok());
     let result = result.and(window.hide().map_err(|error| error.to_string()));
     window.invoke_close_information_windows();
+    image_preparation.stop();
+    drop(image_preparation);
     viewers.close_all();
     comparators.close_all();
     window.invoke_close_find_windows();

@@ -19,6 +19,7 @@ mod image_geometry;
 mod image_input;
 mod image_pixels;
 mod image_scene;
+mod image_startup;
 mod image_tiles;
 mod image_view;
 mod image_worker;
@@ -40,13 +41,13 @@ mod viewport;
 mod worker;
 
 use midnight_core::{
-    ViewerAppearance, ViewerGeometry, ViewerInput, ViewerLaunch, ViewerOutput,
+    ViewerAppearance, ViewerAssociations, ViewerGeometry, ViewerInput, ViewerLaunch, ViewerOutput,
     ViewerPreferenceChange, ViewerPreferences,
 };
 use midnight_plugin_host::Runtime;
 use std::sync::{
     Arc, Mutex, OnceLock,
-    atomic::{AtomicBool, AtomicUsize, Ordering},
+    atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
     mpsc::{self, SyncSender},
 };
 
@@ -70,6 +71,9 @@ pub struct Service {
     raster_budget: Arc<raster_budget::Budget>,
     fonts: Arc<OnceLock<Arc<[String]>>>,
     catalog_preparation: Arc<catalog_startup::Preparation>,
+    image_startup: image_startup::Startup,
+    image_policy: Arc<Mutex<Option<image_startup::Policy>>>,
+    image_catalog_revision: Arc<AtomicU64>,
 }
 
 type Catalogs = (
@@ -159,6 +163,7 @@ impl Service {
     /// Invoked only by viewer workers. The callback must retain its provider for
     /// the lifetime of every returned content lease.
     pub fn with_native_capture(handle: tokio::runtime::Handle, capture: NativeCapture) -> Self {
+        let image_startup = image_startup::Startup::new(handle.clone());
         Self {
             handle,
             capture,
@@ -169,6 +174,9 @@ impl Service {
             raster_budget: Arc::new(raster_budget::Budget::default()),
             fonts: Arc::new(OnceLock::new()),
             catalog_preparation: Arc::default(),
+            image_startup,
+            image_policy: Arc::default(),
+            image_catalog_revision: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -182,6 +190,66 @@ impl Service {
                 let _ =
                     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| service.catalogs()));
             });
+        });
+    }
+
+    /// Schedule source-free image preparation after effective startup preferences are known.
+    /// Callers pass memory-only policy; discovery, validation and child ownership stay off UI.
+    pub fn prepare_image_workers(
+        &self,
+        disabled: Option<Arc<[String]>>,
+        associations: Arc<ViewerAssociations>,
+    ) {
+        let policy = disabled.map(|disabled| image_startup::Policy {
+            disabled,
+            associations,
+            // UI startup policy has no authority over trusted catalog generations.
+            catalog_revision: 0,
+        });
+        {
+            let mut current = self
+                .image_policy
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            if *current == policy {
+                return;
+            }
+            *current = policy.clone();
+        }
+        // Revoke a prior spare before asynchronously obtaining the replacement catalog.
+        self.image_startup.configure(None, Arc::from([]));
+        let Some(mut policy) = policy else {
+            return;
+        };
+        let service = self.clone();
+        self.handle.spawn_blocking(move || {
+            let Ok((runtime, images, web)) = service.catalogs() else {
+                return;
+            };
+            let mut identities = std::collections::HashMap::new();
+            for id in runtime
+                .catalog()
+                .iter()
+                .map(|provider| &provider.id)
+                .chain(images.iter().map(|provider| &provider.id))
+                .chain(web.iter().map(|provider| &provider.id))
+            {
+                *identities.entry(id.as_str()).or_insert(0usize) += 1;
+            }
+            let eligible = images
+                .iter()
+                .filter(|provider| identities.get(provider.id.as_str()) == Some(&1))
+                .cloned()
+                .collect::<Vec<_>>()
+                .into();
+            let current = service
+                .image_policy
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            if current.as_ref() == Some(&policy) {
+                policy.catalog_revision = service.image_catalog_revision.load(Ordering::Acquire);
+                service.image_startup.configure(Some(policy), eligible);
+            }
         });
     }
 
@@ -230,6 +298,7 @@ impl Service {
                         images,
                         web,
                         capture: service.capture.clone(),
+                        image_startup: service.image_startup.clone(),
                         wake: Arc::new(move || wakes.try_send(worker::Message::Ready).is_ok()),
                         preferences: worker_preferences,
                         raster_budget: service.raster_budget.clone(),
@@ -305,6 +374,7 @@ impl Service {
         *runtime = Some(catalogs.0.clone());
         *images = Some(catalogs.1.clone());
         *web = Some(catalogs.2.clone());
+        self.image_catalog_revision.fetch_add(1, Ordering::AcqRel);
         // Routing still sees all three catalogs together, preserving cross-transport duplicate IDs.
         Ok(catalogs)
     }
