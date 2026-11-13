@@ -139,10 +139,13 @@ pub(super) fn spawn(executable: &Path, limits: ResourcePolicy) -> io::Result<Wor
     )
 }
 
+#[cfg(test)]
+type BeforeResume<'a> = dyn FnMut(&Process) -> io::Result<()> + 'a;
+
 fn spawn_impl(
     executable: &Path,
     limits: ResourcePolicy,
-    #[cfg(test)] before_resume: Option<&mut dyn FnMut(&Process) -> io::Result<()>>,
+    #[cfg(test)] before_resume: Option<&mut BeforeResume<'_>>,
 ) -> io::Result<Worker> {
     #[cfg(feature = "startup-diagnostics")]
     let mut timing = crate::startup_diagnostics::Trace::new("restricted_windows");
@@ -611,9 +614,9 @@ mod tests {
         let mut values = [0u64; 8];
         for (value, bytes) in values
             .iter_mut()
-            .zip(frame[REPORT_PREFIX.len()..].chunks_exact(8))
+            .zip(frame[REPORT_PREFIX.len()..].as_chunks::<8>().0)
         {
-            *value = u64::from_le_bytes(bytes.try_into().unwrap());
+            *value = u64::from_le_bytes(*bytes);
         }
         let handle = usize::try_from(values[0]).map_err(io::Error::other)? as HANDLE;
         if handle.is_null() || handle == INVALID_HANDLE_VALUE {
