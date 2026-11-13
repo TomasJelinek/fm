@@ -14,6 +14,7 @@ mod ffi;
 mod installed;
 mod network;
 pub use network::NetworkProvider;
+mod rename;
 mod revision;
 pub use revision::matches_find_entry;
 mod services;
@@ -33,6 +34,8 @@ mod paths;
 type Cancel<'a> = &'a (dyn Fn() -> bool + Sync);
 
 trait Transport: Debug + Send + Sync {
+    /// Raw Cancelled proves admission ended before the native callback. Provider
+    /// refusals, including cancellation, remain encoded Response::Failed values.
     fn call(&self, request: &Request, cancelled: Cancel<'_>) -> Result<Response, Failure>;
 }
 
@@ -46,7 +49,8 @@ pub struct NativeProvider {
 impl NativeProvider {
     /// Load a discovered, compatible package. Revalidates trust at load time.
     pub fn open(package: &Package) -> Result<Self, Failure> {
-        if package.encoding != paths::ENCODING
+        if package.kind != PackageKind::Native
+            || package.encoding != paths::ENCODING
             || package.capabilities & midnight_filesystem_plugin_api::abi::CAP_NATIVE_ADDRESS == 0
         {
             return Err(discovery::invalid(

@@ -5,13 +5,31 @@ use std::path::Path;
 #[derive(Debug)]
 pub(crate) struct Lease {
     pub(crate) provider: NativeProvider,
-    close: Request,
+    close: Option<Request>,
 }
 impl Lease {
     pub(crate) fn new(provider: &NativeProvider, close: Request) -> Self {
         Self {
             provider: provider.clone(),
-            close,
+            close: Some(close),
+        }
+    }
+
+    /// Acknowledge cleanup before releasing retained owners. Failure keeps this
+    /// lease armed so its enclosing Rename resource can retain the whole chain.
+    pub(crate) fn close(&mut self) -> Result<(), Failure> {
+        let Some(request) = &self.close else {
+            return Ok(());
+        };
+        match self.provider.transport.call(request, &|| false)? {
+            Response::Unit => {
+                self.close = None;
+                Ok(())
+            }
+            Response::Failed(error) => Err(error),
+            _ => Err(invalid(
+                "Filesystem returned an unexpected cleanup response",
+            )),
         }
     }
 }
@@ -19,7 +37,7 @@ impl Drop for Lease {
     fn drop(&mut self) {
         // Cleanup is independent of the canceled operation. The caller owns no
         // mutable source operation; these calls release only plugin resources.
-        let _ = self.provider.transport.call(&self.close, &|| false);
+        let _ = self.close();
     }
 }
 
@@ -79,6 +97,10 @@ impl NativeProvider {
                 Response::Page { cursor, .. } if cursor != 0 => Some(Request::CloseList { cursor }),
                 Response::Opened { reader, .. } if reader != 0 => {
                     Some(Request::CloseRead { reader })
+                }
+                Response::RenamePrepared(prepared) if prepared.handle != 0 => {
+                    crate::rename::close_unexpected(self, prepared.handle);
+                    None
                 }
                 _ => None,
             };

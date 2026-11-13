@@ -35,8 +35,7 @@ impl Instance {
         let mut api = abi::Api::default();
         // SAFETY: exact writable caller-owned descriptor and retained module.
         status(unsafe { entry(&mut api, size_of::<abi::Api>() as u32) })?;
-        api.validate(size_of::<abi::Api>() as u32)
-            .map_err(|code| invalid(format!("Invalid native filesystem ABI ({code})")))?;
+        validate_descriptor(&api)?;
         // SAFETY: bounded non-null immutable metadata promised by the retained plugin.
         let (id, version) = unsafe { (bytes(api.id, 128)?, bytes(api.version, 64)?) };
         if id != package.id.as_bytes()
@@ -98,23 +97,54 @@ impl Transport for Instance {
             request,
             Request::CloseRead { .. } | Request::CloseList { .. } | Request::CloseMount { .. }
         );
-        let _cleanup = cleanup.then(|| self.admission.cleanup());
-        let _ordinary = if cleanup {
-            None
-        } else {
-            Some(self.admission.enter(cancellation)?)
-        };
+        let control = matches!(
+            request,
+            Request::GetRenameState { .. } | Request::CloseRename { .. }
+        );
         if !cleanup && self.poisoned.load(Ordering::Acquire) {
             return Err(invalid(
                 "Native filesystem instance failed; restart required",
             ));
         }
-        let payload = encode_request(
-            request,
-            midnight_filesystem_plugin_api::DEFAULT_REQUEST_BYTES as usize,
-        )
-        .map_err(invalid)?;
-        let cancel = Cancellation(cancellation);
+        let preparing = matches!(request, Request::PrepareRename { .. });
+        // Validate the fixed-size opening/control request before it can activate
+        // persistent reservation. Other payloads remain bounded by admission.
+        let opening_payload = if preparing || control {
+            Some(
+                encode_request(
+                    request,
+                    midnight_filesystem_plugin_api::DEFAULT_REQUEST_BYTES as usize,
+                )
+                .map_err(invalid)?,
+            )
+        } else {
+            None
+        };
+        let _cleanup = cleanup.then(|| self.admission.cleanup());
+        let _control = control.then(|| self.admission.control());
+        let _ordinary = if cleanup || control {
+            None
+        } else if preparing {
+            Some(self.admission.enter_rename(cancellation)?)
+        } else {
+            Some(self.admission.enter(cancellation)?)
+        };
+        // Poison may have been published while this request waited for admission.
+        if !cleanup && self.poisoned.load(Ordering::Acquire) {
+            return Err(invalid(
+                "Native filesystem instance failed; restart required",
+            ));
+        }
+        let payload = match opening_payload {
+            Some(payload) => payload,
+            None => encode_request(
+                request,
+                midnight_filesystem_plugin_api::DEFAULT_REQUEST_BYTES as usize,
+            )
+            .map_err(invalid)?,
+        };
+        // Controls inspect/dispose existing state even after user cancellation.
+        let cancel = Cancellation(if control { &|| false } else { cancellation });
         let call = abi::Call {
             struct_size: size_of::<abi::Call>() as u32,
             operation: request.operation() as u32,
@@ -133,7 +163,12 @@ impl Transport for Instance {
         if let Err(failure) = status(code) {
             // Failure transfers no buffer ownership. A contradictory nonzero
             // output can name somebody else's handle: never release it.
-            if cleanup || buffer.id != 0 || buffer.bytes.len != 0 || !buffer.bytes.data.is_null() {
+            if cleanup
+                || matches!(request, Request::CloseRename { .. })
+                || buffer.id != 0
+                || buffer.bytes.len != 0
+                || !buffer.bytes.data.is_null()
+            {
                 self.poisoned.store(true, Ordering::Release);
             }
             return Err(failure);
@@ -156,11 +191,13 @@ impl Transport for Instance {
                     midnight_filesystem_plugin_api::DEFAULT_REPLY_BYTES,
                 )?
             };
-            decode_response(
+            let response = decode_response(
                 data,
                 midnight_filesystem_plugin_api::DEFAULT_REPLY_BYTES as usize,
             )
-            .map_err(invalid)
+            .map_err(invalid)?;
+            validate_rename_reply(request, &response)?;
+            Ok(response)
         })();
         if code == abi::OK && response.is_err() {
             // An undecodable successful reply may have published an unknown
@@ -178,6 +215,33 @@ impl Transport for Instance {
             return Err(invalid("Native filesystem buffer release failed"));
         }
         response
+    }
+}
+
+fn validate_descriptor(api: &abi::Api) -> Result<(), Failure> {
+    api.validate(size_of::<abi::Api>() as u32)
+        .map_err(|code| invalid(format!("Invalid native filesystem ABI ({code})")))
+}
+
+fn validate_rename_reply(request: &Request, response: &Response) -> Result<(), Failure> {
+    let valid = match request {
+        Request::PrepareRename { .. } => {
+            matches!(response, Response::RenamePrepared(_) | Response::Failed(_))
+        }
+        Request::Rename { .. } | Request::GetRenameState { .. } => {
+            matches!(response, Response::RenameState(_) | Response::Failed(_))
+        }
+        Request::CloseRename { .. } => {
+            matches!(response, Response::Unit)
+                || matches!(response, Response::Failed(error)
+                    if error.code == midnight_filesystem_plugin_api::ErrorCode::Busy)
+        }
+        _ => true,
+    };
+    if valid {
+        Ok(())
+    } else {
+        Err(invalid("Filesystem returned an unexpected Rename response"))
     }
 }
 

@@ -224,6 +224,28 @@ impl StorageService for InstalledProvider {
     }
 }
 
+impl midnight_core::RenameService for InstalledProvider {
+    fn prepare(
+        &self,
+        path: &Path,
+        cancel: &Cancellation,
+    ) -> Result<Arc<dyn midnight_core::PreparedRename>, midnight_core::RenamePrepareFailure> {
+        check_cancel(&|| cancel.is_cancelled()).map_err(|failure| {
+            midnight_core::RenamePrepareFailure {
+                error: fs_error("prepare Rename", path, failure),
+                retained: None,
+            }
+        })?;
+        let provider = self.service("prepare Rename", path).map_err(|error| {
+            midnight_core::RenamePrepareFailure {
+                error,
+                retained: None,
+            }
+        })?;
+        midnight_core::RenameService::prepare(provider, path, cancel)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -270,6 +292,19 @@ mod tests {
         );
         assert!(installed.volume_information(path, &cancel).is_err());
         assert!(installed.capture(path, &|| true).is_err());
+        assert!(installed.provider.get().is_none());
+    }
+
+    #[test]
+    fn cancelled_rename_does_not_start_discovery_or_own_a_resource() {
+        let installed = InstalledProvider::default();
+        let cancel = Cancellation::default();
+        cancel.cancel();
+        let failure = midnight_core::RenameService::prepare(&installed, Path::new("/"), &cancel)
+            .err()
+            .expect("Canceled preparation must fail before discovery");
+        assert_eq!(failure.error.kind, std::io::ErrorKind::Interrupted);
+        assert!(failure.retained.is_none());
         assert!(installed.provider.get().is_none());
     }
 }
