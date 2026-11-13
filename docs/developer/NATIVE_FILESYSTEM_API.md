@@ -89,8 +89,8 @@ The core and native host implement this prepared-Rename lifecycle. Engine/UI
 integration with the contract remains unimplemented. Installed-provider/runtime
 qualification and deployment are tracked in [Active work](../ACTIVE_WORK.md#provider-increments-from-the-architect-review).
 This internal Rust contract does not change the public plugin ABI/SDK.
-`NativeProvider` requires native-address/prepared-Rename capabilities; unsupported
-providers do not fall back to host path mutation.
+Rename preparation requires native-address/prepared-Rename capabilities;
+unsupported providers do not fall back to host path mutation.
 
 `RenameService::prepare(path, cancel)` returns `Arc<dyn PreparedRename>` or
 `RenamePrepareFailure`. Prepare, `attempt`, `query`, `finish` and final resource
