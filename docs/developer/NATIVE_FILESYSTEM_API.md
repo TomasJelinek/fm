@@ -83,6 +83,65 @@ Composition qualification is tracked in the
 [cutover report](../verification/2026-11-08-native-filesystem-cutover.md). Watch/mutation
 contracts and generic provider identities remain separate migration gates.
 
+## Prepared Rename core/host lifecycle
+
+The core and native host implement this prepared-Rename lifecycle. Engine/UI
+integration with the contract remains unimplemented. Installed-provider/runtime
+qualification and deployment are tracked in [Active work](../ACTIVE_WORK.md#provider-increments-from-the-architect-review).
+This internal Rust contract does not change the public plugin ABI/SDK.
+`NativeProvider` requires native-address/prepared-Rename capabilities; unsupported
+providers do not fall back to host path mutation.
+
+`RenameService::prepare(path, cancel)` returns `Arc<dyn PreparedRename>` or
+`RenamePrepareFailure`. Prepare, `attempt`, `query`, `finish` and final resource
+destruction run on backend workers. Only cached `item()`/receipt data is I/O-free;
+a preparation describes the object captured at prepare time, not an earlier
+listing's identity.
+
+Each `RenameAttempt` owns a nonzero sequential number, raw native basename and
+policy. Numbering starts at one; only Conflict permits the next attempt. Reusing
+a number requires the identical name and policy and returns its cached state
+without another mutation. `NoReplace` is the baseline.
+`RecoverableCurrentEntry` requires the latest owner-bound conflict token, the
+same requested basename and an explicitly replaceable observation. Changed
+names/targets require fresh conflict/consent; observed target spelling never
+rewrites the immutable requested name.
+
+`query()` recovers receipts without user cancellation or mutation resubmission.
+A lost/malformed reply or transport failure does not authorize another Rename.
+`RenameOutcome::Unconfirmed` blocks new mutating dispatch on that owner. An already admitted
+handler or its associated receipt recovery can still establish authoritative
+namespace facts without reopening admission. Preserve known terminal facts,
+including Renamed after late cancellation or cleanup failure.
+
+`RenameResource::finish()` is finite, idempotent and serialized with attempt
+admission. Once finishing begins, new mutation is closed; receipt recovery may
+continue while the known handle remains live. Finite does not promise a wall-clock
+bound on a blocked native callback. Rename success and resource disposal are
+recorded separately.
+
+| Finish result | Required ownership |
+| --- | --- |
+| `Closed` | All owned or potentially published resources are disposed. Known handles require acknowledged CloseRename Unit, then acknowledged CloseMount, with callbacks and reply-buffer releases complete. Only then may the caller release its full job/capture/mutation gate/retirement slot. |
+| `Executing` | Identifiable associated work still owns resources. Retain the complete chain until that actual work and receipt recovery finish. Busy alone is not proof of such work. |
+| `Unconfirmed(error)` | Quarantine the complete ownership chain. A handle-only deferred close or endless cleanup retry is insufficient; an unassociated Busy close is unconfirmed. |
+
+`RenamePrepareFailure { error, retained }` is an owned failure, even when no usable
+preview or known handle exists. Uncertain Resolve/Prepare resource publication
+requires `Some(retained)`; `None` is allowed only when no owned or potentially
+published resource remains. Attach the retained owner to the complete caller
+job/capture/gate/retirement payload before reporting the error, and keep it until
+finish acknowledges Closed. Host Drop retains its own unclosed component; it
+cannot preserve the caller's outer owners by itself. See the
+[engine disposal boundary](ENGINE_LIFETIME.md#prepared-rename-disposal-boundary).
+
+Recovery receipts preserve source/displaced-target/empty-stage roles, source
+location, exact native paths and opaque identities. They are provider-reported
+diagnostic observations, not independently verified mutation authority or
+permission to open/delete recovery paths. Retain valid partial recovery details
+when an untrusted response cannot establish a terminal result. Report
+`durability_confirmed` separately from a confirmed Renamed namespace outcome.
+
 ## Building the native package
 
 The root `build.bat` and `build.sh` helpers build the host, then the platform's

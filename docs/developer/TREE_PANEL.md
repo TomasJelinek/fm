@@ -203,7 +203,7 @@ cases and two panel cases. Compilation exits 0 with zero source drift; these
 groups overlap the earlier CSC tests and are not added to them. See the
 [recursive verification note](../verification/2026-11-12-recursive-tree.md).
 
-The recursive worker batches at most **16 returned results** or **50 ms**, with elapsed
+The recursive worker batches at most **128 returned results** or **50 ms**, with elapsed
 time checked only after an actual provider callback returns. These are scheduling
 limits, not a callback timeout or measured latency guarantee. Each batch creates
 one checkpoint/projection and waits for its exact Commit before further recursive
