@@ -31,6 +31,7 @@ impl Transport for Fake {
             Request::CloseMount { .. }
                 | Request::CloseList { .. }
                 | Request::CloseRead { .. }
+                | Request::CloseRename { .. }
                 | Request::ValidateRead { .. }
         ) {
             return Ok(Response::Unit);
@@ -334,3 +335,63 @@ fn missing_capability_and_relative_path_never_invoke_plugin() {
 use crate::test_path;
 #[path = "volume_tests.rs"]
 mod volume;
+
+#[test]
+fn prepared_rename_unexpected_owned_reply_is_closed_on_legacy_operations() {
+    let unexpected = Response::RenamePrepared(midnight_filesystem_plugin_api::PreparedRename {
+        handle: 71,
+        source: RenameObject {
+            identity: vec![1],
+            revision: vec![2],
+            name: NativeText {
+                encoding: test_path::encoding(),
+                bytes: test_path::name("žluťoučký.txt"),
+            },
+            kind: Kind::File,
+            metadata: Metadata {
+                size: Some(5),
+                ..Metadata::default()
+            },
+        },
+        parent_identity: vec![3],
+        recoverable_replace: true,
+    });
+    for during_capture in [false, true] {
+        let (host, fake) = fixture(vec![unexpected.clone()]);
+        if during_capture {
+            assert!(host.capture(&path(), &|| false).is_err());
+        } else {
+            assert!(midnight_core::VolumeService::list_volumes(&host).is_err());
+        }
+        let calls = fake.requests.lock().unwrap();
+        assert_eq!(calls.len(), 2);
+        assert!(matches!(calls[1], Request::CloseRename { prepared: 71 }));
+        if during_capture {
+            assert!(matches!(calls[0], Request::Resolve { .. }));
+        } else {
+            assert!(matches!(calls[0], Request::Volumes));
+        }
+    }
+}
+
+#[test]
+fn prepared_rename_network_kind_is_rejected_before_native_library_load() {
+    let directory = std::env::temp_dir().join("midnight-never-load-network-rename-kind");
+    let package = Package {
+        id: "network.claiming-native-rename".into(),
+        name: None,
+        kind: PackageKind::Network,
+        version: "0.2.0".into(),
+        library: directory.join("not-a-native-filesystem-library"),
+        directory,
+        capabilities: abi::CAP_NATIVE_ADDRESS | abi::CAP_PREPARED_RENAME,
+        encoding: crate::paths::ENCODING,
+    };
+    let failure =
+        NativeProvider::open(&package).expect_err("Network kind acquired native authority");
+    assert_eq!(failure.code, ErrorCode::Invalid);
+    assert_eq!(
+        failure.message,
+        "A virtual discovery provider cannot supply native file access"
+    );
+}
