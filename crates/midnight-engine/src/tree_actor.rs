@@ -227,8 +227,8 @@ impl WorkerBudget {
 }
 
 impl Session {
-    pub(crate) fn retained_rows(&self) -> std::collections::HashSet<TreeRowId> {
-        self.projection_state.retained_rows()
+    pub(crate) fn retains_row(&self, row: TreeRowId) -> bool {
+        self.projection_state.branch(row).is_some()
     }
     pub(crate) fn size_sort(
         &mut self,

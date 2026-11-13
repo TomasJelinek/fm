@@ -34,10 +34,23 @@ model does not spawn threads or promise to interrupt a blocked OS call.
 ## Listing and disclosure
 
 The root listing retains files and folders. Expanded descendants list only
-folders and directory links. Known links are navigation targets but are never
-enumerated by a branch request. Native namespace replacement can still change a
-directory into a link during a live browse; the current read-only adapter does
-not promise handle-relative no-follow branch enumeration.
+folders and directory links. Native directory links, including junctions and
+directory symlinks, can be enumerated by branch work when the provider supplies a
+browse-target identity. Ordinary directories retain their existing browse
+semantics when that identity capability is unsupported.
+
+Before listing, branch work rejects a physical target identity already recorded
+for an ancestor. Returned mount-scoped logical node references are also checked
+against the ancestor chain. Distinct logical aliases elsewhere remain separate
+occurrences. A second target-identity observation after listing rejects an
+observed retarget. These browse-only identities grant no operation authority.
+Native namespace replacement remains live; the adapter does not promise an
+atomic snapshot or handle-relative no-follow branch enumeration.
+
+The native adapter validates immediate child paths and raw basenames before
+binding tokens. It forwards a consumer's callback stop result to the injected
+directory service and stops processing further callbacks after a stop or entry
+failure. This does not promise to interrupt an already blocked OS/provider call.
 
 Unknown, loading, collapsed-with-children, expanded, confirmed empty and failed
 are distinct states. Probes do not expand a branch. An expanded branch requires
@@ -101,6 +114,13 @@ attached container targets. Callers can lower these bounds. Overflow rejects the
 attempt atomically; it does not silently truncate children or label them empty.
 These are admission budgets, not an exact process RSS guarantee. Old presentation
 snapshots and provider caches have separate lifecycle/shared-budget requirements.
+
+The current scaling candidate passes 95 targeted functional checks and Clippy,
+but its [debug controller gate](../ACTIVE_WORK.md#tree-scaling-candidate-gate)
+**fails**. This opt-level 0 synthetic-provider fixture measures no filesystem I/O
+or UI paint. Wide 10k cases take about 50 seconds and the depth-32 broom is
+censored at the 60-second cutoff. Retained model bounds do not establish fast large-tree
+expansion. The qualified `fd94d85` application runtime predates this candidate.
 
 Folder-only listing does not spend its retained-row quota on regular files, but
 still validates every observed token before filtering. A separate 32 MiB token

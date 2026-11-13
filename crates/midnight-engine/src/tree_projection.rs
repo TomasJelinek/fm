@@ -41,9 +41,6 @@ pub(crate) struct ProjectionState {
 }
 
 impl ProjectionState {
-    pub(crate) fn retained_rows(&self) -> HashSet<TreeRowId> {
-        self.branches.keys().copied().collect()
-    }
     pub(crate) fn new(
         tree: &DirectoryTree,
         root: &TreeRootSnapshot,
@@ -343,13 +340,16 @@ impl ProjectionState {
         for id in &matching {
             let mut ancestor = rows[id].parent;
             while let Some(parent) = ancestor {
-                keep.insert(parent);
+                if !keep.insert(parent) {
+                    // Matching ancestors get their own walk; other retained ones were visited.
+                    break;
+                }
                 ancestor = rows[&parent].parent;
             }
         }
         for entries in siblings.values_mut() {
             sort_entries_with_sizes(entries, options.sort, |entry| {
-                if entry.kind == EntryKind::Directory {
+                if matches!(entry.kind, EntryKind::Directory | EntryKind::DirectoryLink) {
                     options
                         .sizes
                         .get(&TreeRowId(entry.id.0))

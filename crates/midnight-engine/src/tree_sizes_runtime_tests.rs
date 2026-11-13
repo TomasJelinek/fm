@@ -170,6 +170,81 @@ fn acknowledge(state: &mut State, events: &[TreeSizeEvent]) {
     }
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn retention_checks_only_cached_sizes_and_preserves_collapsed_rows() {
+    let mut f = tests::fixture();
+    let parent = f.session.projection().rows[1].id;
+    let expanded = action_capture_tests::expand(&mut f.session, parent);
+    let child = expanded
+        .view
+        .rows
+        .iter()
+        .find(|row| row.parent == Some(parent))
+        .unwrap()
+        .id;
+    let stamp = expanded.view.stamp;
+    let (files, _, _) = filesystem(false);
+    let mut state = State::new(
+        files,
+        Arc::new(Notify::new()),
+        crate::ReportArena::testing(),
+    );
+    state.retain(|_| panic!("an empty cache needs no row membership checks"));
+    state.enqueue(
+        TreeRequestId(2),
+        capture(&mut f.session, 2, child),
+        &Cancellation::default(),
+    );
+    let first = state.tick(Some(stamp));
+    acknowledge(&mut state, &first);
+    let complete = until(&mut state, stamp, |events| {
+        events.iter().any(|event| {
+            matches!(event, TreeSizeEvent::Snapshot { sizes }
+                if sizes.get(child).is_some_and(|size| size.finished) && !sizes.running(child))
+        })
+    })
+    .await;
+    f.session
+        .branch(&expanded.view, TreeRequestId(3), parent, BranchAction::Collapse)
+        .unwrap();
+    f.session
+        .update_projection(&Cancellation::default())
+        .unwrap();
+    assert!(
+        !f.session.projection().index.row_positions.contains_key(&child)
+    );
+    let mut checked = Vec::new();
+    state.retain(|row| {
+        checked.push(row);
+        f.session.retains_row(row)
+    });
+    assert_eq!(checked, [child]);
+    assert_eq!(state.sort_sizes()[&child].bytes, 17);
+    state.retain(|_| false);
+    assert!(state.sort_sizes().is_empty());
+    let stamp = f.session.projection().stamp;
+    assert!(
+        state.tick(Some(stamp)).is_empty(),
+        "the outstanding map still needs ACK"
+    );
+    acknowledge(&mut state, &complete);
+    let cleared = until(&mut state, stamp, |events| {
+        events
+            .iter()
+            .any(|event| matches!(event, TreeSizeEvent::Snapshot { .. }))
+    })
+    .await;
+    let sizes = cleared
+        .iter()
+        .find_map(|event| match event {
+            TreeSizeEvent::Snapshot { sizes } => Some(sizes),
+            _ => None,
+        })
+        .unwrap();
+    assert!(sizes.is_empty());
+    assert!(!sizes.running(child));
+}
+
 async fn cancelled_partial_scan(fail_metadata: bool) {
     let mut f = tests::fixture();
     let publication = f.session.publication().unwrap();

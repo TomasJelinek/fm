@@ -94,13 +94,18 @@ pub struct DirectoryTree {
     next_branch: u64,
     next_request: u64,
     nodes: HashMap<BranchId, Node>,
+    // Root address plus every retained node's entry, error, and target charge.
+    payload_bytes: usize,
     limits: TreeLimits,
     active: Arc<AtomicUsize>,
     reports: crate::size_warnings::ReportLog,
 }
 
 /// Bounded rollback state for an atomic model/projection maintenance publication.
-pub(crate) struct TreeCheckpoint(HashMap<BranchId, Node>);
+pub(crate) struct TreeCheckpoint {
+    nodes: HashMap<BranchId, Node>,
+    payload_bytes: usize,
+}
 
 struct Permit(Arc<AtomicUsize>, Cancellation);
 impl Drop for Permit {
@@ -206,7 +211,10 @@ impl DirectoryTree {
         for node in nodes.values_mut() {
             node.pending = None;
         }
-        TreeCheckpoint(nodes)
+        TreeCheckpoint {
+            nodes,
+            payload_bytes: self.payload_bytes,
+        }
     }
 
     /// Restore the published model while preserving all identity high-water marks.
@@ -215,7 +223,8 @@ impl DirectoryTree {
         for node in self.nodes.values() {
             cancel_pending(node);
         }
-        self.nodes = checkpoint.0;
+        self.nodes = checkpoint.nodes;
+        self.payload_bytes = checkpoint.payload_bytes;
     }
 
     pub(crate) fn restore(
@@ -224,11 +233,14 @@ impl DirectoryTree {
         branch: BranchId,
         error: ProviderError,
     ) {
-        self.nodes = checkpoint.0;
-        let available = self.limits.bytes.saturating_sub(self.payload_bytes());
+        self.nodes = checkpoint.nodes;
+        self.payload_bytes = checkpoint.payload_bytes;
+        let available = self.limits.bytes.saturating_sub(self.payload_bytes);
         let details = self.failure_details(branch, &error);
         if let Some(node) = self.nodes.get_mut(&branch) {
+            self.payload_bytes -= error_charge(&node.error);
             node.error = Some(bounded_error(error, available));
+            self.payload_bytes += error_charge(&node.error);
             node.error_details = details;
         }
     }
@@ -384,8 +396,8 @@ impl DirectoryTree {
         if node.target.is_none() && targets >= 64 {
             return Err(ProviderError::ResourceLimited);
         }
-        let bytes = self
-            .payload_bytes()
+        let mut bytes = self
+            .payload_bytes
             .saturating_sub(target_charge(node))
             .saturating_add(target.address().address().len());
         if bytes > self.limits.bytes {
@@ -394,6 +406,7 @@ impl DirectoryTree {
         let removed = self.descendants(node.children.clone());
         for id in removed {
             if let Some(node) = self.nodes.remove(&id) {
+                bytes -= node_charge(&node);
                 cancel_pending(&node);
             }
         }
@@ -408,8 +421,10 @@ impl DirectoryTree {
         node.known = None;
         node.listed = false;
         node.expanded = false;
+        bytes -= error_charge(&node.error);
         node.error = None;
         node.error_details = None;
+        self.payload_bytes = bytes;
         Ok(())
     }
     /// Read-only navigation context. A separate operation service must establish
@@ -481,13 +496,15 @@ impl DirectoryTree {
             kind: EntryKind::Directory,
             metadata: Default::default(),
         });
-        if charge(&entry).saturating_add(location.address().address().len()) > limits.bytes {
+        let payload_bytes = charge(&entry).saturating_add(location.address().address().len());
+        if payload_bytes > limits.bytes {
             return Err(ProviderError::ResourceLimited);
         }
         Ok(Self {
             root,
             next_branch: 1,
             next_request: 1,
+            payload_bytes,
             limits,
             active: Arc::default(),
             reports: crate::tree_diagnostics::log(&reports),
@@ -576,6 +593,7 @@ impl DirectoryTree {
         if let Some((_, previous)) = node.pending.replace((self.next_request, cancel.clone())) {
             previous.cancel();
         }
+        self.payload_bytes -= error_charge(&node.error);
         node.error = None;
         node.error_details = None;
         let (location, target_node) = node.target.as_ref().map_or_else(
@@ -635,10 +653,12 @@ impl DirectoryTree {
             node.browse_identity = result.identity;
         }
         if let Err(error) = outcome {
-            let used = self.payload_bytes();
+            let available = self.limits.bytes.saturating_sub(self.payload_bytes);
             let details = self.failure_details(result.branch, &error);
             if let Some(node) = self.nodes.get_mut(&result.branch) {
-                node.error = Some(bounded_error(error, self.limits.bytes.saturating_sub(used)));
+                self.payload_bytes -= error_charge(&node.error);
+                node.error = Some(bounded_error(error, available));
+                self.payload_bytes += error_charge(&node.error);
                 node.error_details = details;
             }
         }
@@ -710,15 +730,12 @@ impl DirectoryTree {
             .next_branch
             .checked_add(additions as u64)
             .ok_or(ProviderError::ResourceLimited)?;
-        let mut bytes = self.nodes[&self.root].source.address().address().len();
-        for (id, node) in &self.nodes {
-            if !removed.contains(id) {
-                bytes = bytes.saturating_add(error_charge(&node.error));
-                bytes = bytes.saturating_add(target_charge(node));
-                if !retained.contains(id) {
-                    bytes = bytes.saturating_add(charge(&node.entry));
-                }
-            }
+        let mut bytes = self.payload_bytes;
+        for id in &removed {
+            bytes -= node_charge(&self.nodes[id]);
+        }
+        for id in &retained {
+            bytes -= charge(&self.nodes[id].entry);
         }
         for row in &rows {
             bytes = bytes.saturating_add(charge(&row.entry));
@@ -784,6 +801,7 @@ impl DirectoryTree {
         if expand {
             parent.expanded = true;
         }
+        self.payload_bytes = bytes;
         Ok(())
     }
 
@@ -809,20 +827,6 @@ impl DirectoryTree {
             ancestor = node.parent;
         }
         Ok(())
-    }
-
-    fn payload_bytes(&self) -> usize {
-        self.nodes
-            .values()
-            .map(|node| {
-                charge(&node.entry)
-                    .saturating_add(error_charge(&node.error))
-                    .saturating_add(target_charge(node))
-            })
-            .fold(
-                self.nodes[&self.root].source.address().address().len(),
-                usize::saturating_add,
-            )
     }
 
     pub fn collapse(&mut self, branch: BranchId) -> bool {
@@ -940,6 +944,12 @@ fn target_charge(node: &Node) -> usize {
         .map_or(0, |target| target.address().address().len())
 }
 
+fn node_charge(node: &Node) -> usize {
+    charge(&node.entry)
+        .saturating_add(error_charge(&node.error))
+        .saturating_add(target_charge(node))
+}
+
 fn error_charge(error: &Option<ProviderError>) -> usize {
     match error {
         Some(ProviderError::Failed(message)) => message.len(),
@@ -954,8 +964,25 @@ fn bounded_error(mut error: ProviderError, available: usize) -> ProviderError {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
+
+    pub(in crate::providers) fn assert_payload_accounting(tree: &DirectoryTree) {
+        let expected = tree
+            .nodes
+            .values()
+            .map(|node| {
+                charge(&node.entry)
+                    .saturating_add(error_charge(&node.error))
+                    .saturating_add(target_charge(node))
+            })
+            .fold(
+                tree.nodes[&tree.root].source.address().address().len(),
+                usize::saturating_add,
+            );
+        assert_eq!(tree.payload_bytes, expected);
+        assert!(expected <= tree.limits.bytes);
+    }
 
     #[test]
     fn bounded_diagnostic_releases_excess_capacity_even_when_its_text_is_short() {

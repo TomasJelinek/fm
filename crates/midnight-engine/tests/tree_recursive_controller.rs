@@ -2,13 +2,14 @@
 use midnight_core::*;
 use midnight_engine::Engine;
 use std::{
+    collections::HashMap,
     path::{Path, PathBuf},
     sync::{
         Arc, Mutex,
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicU64, AtomicUsize, Ordering},
         mpsc as blocking,
     },
-    time::Duration,
+    time::{Duration, Instant},
 };
 use tokio::sync::{Notify, mpsc, oneshot};
 
@@ -27,12 +28,19 @@ struct Files {
     completed: Notify,
     block: Mutex<Option<Block>>,
     wide: usize,
+    scaling: Option<Scaling>,
 }
 
-struct Active<'a>(&'a Files, bool);
+struct Active<'a>(&'a Files, bool, Option<Instant>);
 impl Drop for Active<'_> {
     fn drop(&mut self) {
         if self.1 {
+            if let (Some(scaling), Some(started)) = (&self.0.scaling, self.2) {
+                scaling.callback_ns.fetch_add(
+                    u64::try_from(started.elapsed().as_nanos()).unwrap(),
+                    Ordering::Relaxed,
+                );
+            }
             self.0.branch_active.fetch_sub(1, Ordering::AcqRel);
             self.0.branch_finished.fetch_add(1, Ordering::Release);
             self.0.completed.notify_one();
@@ -51,6 +59,7 @@ impl Files {
             completed: Notify::new(),
             block: Mutex::default(),
             wide: 0,
+            scaling: None,
         }
     }
 
@@ -75,7 +84,11 @@ impl DirectoryService for Files {
         path: &Path,
         _: &Cancellation,
     ) -> Result<Option<SizeDirectoryTarget>, FsError> {
-        let object = if path == self.root {
+        let object = if let Some(scaling) = &self.scaling {
+            *scaling.indices.get(path).ok_or_else(|| {
+                FsError::from_io("scaling identity", path, std::io::ErrorKind::NotFound.into())
+            })? as u128
+        } else if path == self.root {
             0_u128
         } else if path == self.root.join("folder") {
             1
@@ -104,11 +117,33 @@ impl DirectoryService for Files {
         emit: &mut dyn FnMut(Entry) -> bool,
     ) -> Result<(), FsError> {
         let branch = path.starts_with(self.root.join("folder"));
-        let _active = Active(self, branch);
+        let _active = Active(
+            self,
+            branch,
+            (branch && self.scaling.is_some()).then(Instant::now),
+        );
         if branch {
             self.branch_calls.fetch_add(1, Ordering::AcqRel);
             let active = self.branch_active.fetch_add(1, Ordering::AcqRel) + 1;
             self.max_branch_active.fetch_max(active, Ordering::AcqRel);
+        }
+        if let Some(scaling) = &self.scaling {
+            let index = *scaling.indices.get(path).ok_or_else(|| {
+                FsError::from_io("scaling listing", path, std::io::ErrorKind::NotFound.into())
+            })?;
+            if branch {
+                scaling.visits.lock().unwrap().push(index);
+            }
+            for child in &scaling.children[index] {
+                if !emit(Entry::new(
+                    EntryId(*child as u64),
+                    scaling.paths[*child].clone(),
+                    EntryKind::Directory,
+                )) {
+                    break;
+                }
+            }
+            return Ok(());
         }
         let blocked = {
             let mut block = self.block.lock().unwrap();
@@ -551,4 +586,350 @@ async fn explicit_collapse_rolls_back_staged_rows_and_keeps_a_blocked_native_per
         .await
         .unwrap()
         .unwrap();
+}
+
+struct Scaling {
+    paths: Vec<PathBuf>,
+    indices: HashMap<PathBuf, usize>,
+    children: Vec<Vec<usize>>,
+    visits: Mutex<Vec<usize>>,
+    callback_ns: AtomicU64,
+}
+
+impl Scaling {
+    fn new(root: &Path, nodes: usize, trunk: usize) -> Self {
+        assert!(nodes > trunk + 1);
+        let mut paths = vec![root.to_owned()];
+        let mut children = vec![Vec::new(); nodes];
+        for level in 0..trunk {
+            let name = if level == 0 {
+                "folder".to_owned()
+            } else {
+                format!("d{level:02}")
+            };
+            paths.push(paths[level].join(name));
+            children[level].push(level + 1);
+        }
+        for index in 0..nodes - trunk - 1 {
+            // Gray-code names are short, unique and not emitted in sorted order.
+            let name = format!("n{:04x}", index ^ (index >> 1));
+            children[trunk].push(paths.len());
+            paths.push(paths[trunk].join(name));
+        }
+        let indices = paths
+            .iter()
+            .enumerate()
+            .map(|(index, path)| (path.clone(), index))
+            .collect();
+        Self {
+            paths,
+            indices,
+            children,
+            visits: Mutex::new(Vec::with_capacity(nodes)),
+            callback_ns: AtomicU64::new(0),
+        }
+    }
+}
+
+async fn scaling_event(events: &mut mpsc::Receiver<Event>) -> TreeEvent {
+    loop {
+        match events.recv().await {
+            Some(Event::Tree(event)) => return *event,
+            Some(_) => {}
+            None => panic!("scaling event stream closed"),
+        }
+    }
+}
+
+async fn scaling_ack_size(commands: &mpsc::Sender<Command>, sizes: &TreeSizeSnapshot) {
+    tree(
+        commands,
+        TreeCommand::Sizes(TreeSizeCommand::Acknowledge {
+            stamp: sizes.stamp,
+            version: sizes.version,
+        }),
+    )
+    .await;
+}
+
+async fn scaling_setup_publication(
+    commands: &mpsc::Sender<Command>,
+    events: &mut mpsc::Receiver<Event>,
+) -> TreePublication {
+    loop {
+        match scaling_event(events).await {
+            TreeEvent::Published(publication) => {
+                tree(commands, TreeCommand::Commit(publication.view.clone())).await;
+                assert!(publication.view.rows.iter().all(|row| row.error.is_none()));
+                return publication;
+            }
+            TreeEvent::Sizes(TreeSizeEvent::Snapshot { sizes }) => {
+                scaling_ack_size(commands, &sizes).await;
+            }
+            TreeEvent::Sizes(TreeSizeEvent::Selected { .. }) => {}
+            other => panic!("scaling setup failed: {other:?}"),
+        }
+    }
+}
+
+async fn scaling_seed_size(
+    commands: &mpsc::Sender<Command>,
+    events: &mut mpsc::Receiver<Event>,
+    publication: &TreePublication,
+    request: TreeRequestId,
+) {
+    let leaf = publication.view.rows.last().unwrap().id;
+    tree(
+        commands,
+        TreeCommand::Sizes(TreeSizeCommand::Compute(TreeSizeRequest {
+            view: publication.view.clone(),
+            request,
+            selection_revision: publication.selection_revision,
+            selection: publication.selection.clone(),
+            scope: TreeSizeScope::Single(leaf),
+        })),
+    )
+    .await;
+    let (mut finished, mut settled) = (false, false);
+    while !finished || !settled {
+        match scaling_event(events).await {
+            TreeEvent::Sizes(TreeSizeEvent::Snapshot { sizes }) => {
+                scaling_ack_size(commands, &sizes).await;
+                if !sizes.running(leaf)
+                    && (finished || sizes.get(leaf).is_some_and(|size| size.finished))
+                {
+                    assert_eq!(sizes.len(), 1, "scaling seed final value count");
+                    let size = sizes.get(leaf).expect("scaling seed final leaf value");
+                    assert!(
+                        size.finished && size.errors == 0 && size.bytes == 0,
+                        "invalid scaling seed final value: {size:?}"
+                    );
+                    settled = true;
+                }
+            }
+            TreeEvent::Sizes(TreeSizeEvent::Finished {
+                request: actual,
+                cancelled: false,
+                ..
+            }) if actual == request => finished = true,
+            TreeEvent::Sizes(TreeSizeEvent::Selected { .. }) => {}
+            other => panic!("scaling size seed failed: {other:?}"),
+        }
+    }
+}
+
+#[derive(Debug, Default)]
+struct ScalingMetrics {
+    batches: Vec<usize>,
+    loading_rows: usize,
+    errors: usize,
+    max_receive_to_commit_ns: u128,
+    receive_to_commit_ns: u128,
+    failure: Option<String>,
+}
+
+async fn scaling_setup(
+    files: Arc<Files>,
+    nodes: usize,
+    trunk: usize,
+    sizes: usize,
+) -> (
+    mpsc::Sender<Command>,
+    mpsc::Receiver<Event>,
+    tokio::task::JoinHandle<()>,
+    TreePublication,
+) {
+    let scaling = files.scaling.as_ref().unwrap();
+    let (commands, mut events, engine, mut current) = start(files.clone()).await;
+    tree(&commands, TreeCommand::Commit(current.view.clone())).await;
+    for level in 1..=trunk {
+        let row = current
+            .view
+            .rows
+            .iter()
+            .find(|row| row.entry.native_path() == Some(scaling.paths[level].as_path()))
+            .unwrap()
+            .id;
+        tree(
+            &commands,
+            TreeCommand::Branch {
+                view: current.view.clone(),
+                request: TreeRequestId(level as u64),
+                row,
+                action: TreeBranchAction::Expand,
+            },
+        )
+        .await;
+        loop {
+            current = scaling_setup_publication(&commands, &mut events).await;
+            if current
+                .view
+                .rows
+                .iter()
+                .any(|item| item.id == row && item.disclosure == TreeDisclosure::Expanded)
+            {
+                break;
+            }
+        }
+    }
+    assert_eq!(current.view.rows.len(), nodes - 1, "setup admission");
+    if sizes == 1 {
+        scaling_seed_size(
+            &commands,
+            &mut events,
+            &current,
+            TreeRequestId(trunk as u64 + 1),
+        )
+        .await;
+    }
+    (commands, events, engine, current)
+}
+
+async fn scaling_case(nodes: usize, trunk: usize, sizes: usize, measured: bool) {
+    eprintln!("recursive_scaling phase=setup N={nodes} trunk={trunk} K={sizes} timed={measured}");
+    let mut injected = Files::new();
+    injected.scaling = Some(Scaling::new(&injected.root, nodes, trunk));
+    let files = Arc::new(injected);
+    let scaling = files.scaling.as_ref().unwrap();
+    let (commands, mut events, engine, mut current) = tokio::time::timeout(
+        Duration::from_secs(60),
+        scaling_setup(files.clone(), nodes, trunk, sizes),
+    )
+    .await
+    .expect("scaling setup exceeded its separate 60 s deadline");
+    assert_eq!(files.branch_active.load(Ordering::Acquire), 0);
+    files.branch_calls.store(0, Ordering::Release);
+    files.branch_finished.store(0, Ordering::Release);
+    files.max_branch_active.store(0, Ordering::Release);
+    scaling.visits.lock().unwrap().clear();
+    scaling.callback_ns.store(0, Ordering::Relaxed);
+    let visible = current.view.rows.len();
+    let depth = current.view.rows.iter().map(|row| row.depth).max().unwrap();
+    let root = current.view.rows[0].id;
+    let mut metrics = ScalingMetrics::default();
+    let mut returned = 0;
+    // Every admitted node is visible here, so retained projection rows equal V.
+    eprintln!(
+        "recursive_scaling phase=run timed={measured} N={} R_derived={visible} \
+         V={visible} depth={depth} K={sizes}",
+        visible + 1
+    );
+    let started = Instant::now();
+    let mut progress = tokio::time::interval_at(
+        tokio::time::Instant::now() + Duration::from_secs(10),
+        Duration::from_secs(10),
+    );
+    let result = tokio::time::timeout(Duration::from_secs(60), async {
+        tree(
+            &commands,
+            TreeCommand::Branch {
+                view: current.view.clone(),
+                request: TreeRequestId(trunk as u64 + 2),
+                row: root,
+                action: TreeBranchAction::ExpandRecursive,
+            },
+        )
+        .await;
+        loop {
+            let event = tokio::select! {
+                event = scaling_event(&mut events) => event,
+                _ = progress.tick() => {
+                    eprintln!(
+                        "recursive_scaling phase=progress timed={measured} F={returned} \
+                         B={} callbacks={} \
+                         callback_ns={} max_active={} wall_ns={} errors={} loading_rows={}",
+                        metrics.batches.len(),
+                        files.branch_calls.load(Ordering::Acquire),
+                        scaling.callback_ns.load(Ordering::Relaxed),
+                        files.max_branch_active.load(Ordering::Acquire),
+                        started.elapsed().as_nanos(),
+                        metrics.errors,
+                        metrics.loading_rows,
+                    );
+                    continue;
+                }
+            };
+            match event {
+                TreeEvent::Published(publication) => {
+                    let received = Instant::now();
+                    let finished = files.branch_finished.load(Ordering::Acquire);
+                    tree(&commands, TreeCommand::Commit(publication.view.clone())).await;
+                    let delay = received.elapsed().as_nanos();
+                    metrics.receive_to_commit_ns += delay;
+                    metrics.max_receive_to_commit_ns = metrics.max_receive_to_commit_ns.max(delay);
+                    metrics.batches.push(finished - returned);
+                    returned = finished;
+                    for row in &*publication.view.rows {
+                        metrics.loading_rows +=
+                            usize::from(row.disclosure == TreeDisclosure::Loading);
+                        metrics.errors += usize::from(row.error.is_some());
+                    }
+                    current = publication;
+                    if returned >= nodes - 1 || metrics.errors != 0 || metrics.loading_rows != 0 {
+                        break;
+                    }
+                }
+                TreeEvent::Sizes(TreeSizeEvent::Snapshot { sizes: snapshot }) => {
+                    scaling_ack_size(&commands, &snapshot).await;
+                    if snapshot.len() != sizes {
+                        metrics.failure = Some("settled size count changed".into());
+                        break;
+                    }
+                }
+                TreeEvent::Sizes(TreeSizeEvent::Selected { .. }) => {}
+                other => {
+                    metrics.failure = Some(format!("recursive event: {other:?}"));
+                    break;
+                }
+            }
+        }
+    })
+    .await;
+    let elapsed = started.elapsed();
+    if result.is_err() {
+        metrics.failure = Some("censored at the 60 s timed deadline".into());
+    }
+    eprintln!(
+        "recursive_scaling timed={measured} N={} R_derived={visible} V={} F={returned} K={sizes} \
+         B_publications={} callbacks={} callback_ns={} max_active={} wall_ns={} \
+         metrics={metrics:?}",
+        visible + 1,
+        current.view.rows.len(),
+        metrics.batches.len(),
+        files.branch_calls.load(Ordering::Acquire),
+        scaling.callback_ns.load(Ordering::Relaxed),
+        files.max_branch_active.load(Ordering::Acquire),
+        elapsed.as_nanos(),
+    );
+    commands.send(Command::Shutdown).await.unwrap();
+    tokio::time::timeout(Duration::from_secs(3), engine)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(metrics.failure.is_none(), "{:?}", metrics.failure);
+    assert_eq!(metrics.loading_rows, 0);
+    assert_eq!(metrics.errors, 0);
+    assert!(metrics.batches.iter().all(|count| (1..=16).contains(count)));
+    assert_eq!(returned, nodes - 1);
+    assert_eq!(files.branch_calls.load(Ordering::Acquire), nodes - 1);
+    assert_eq!(files.branch_finished.load(Ordering::Acquire), nodes - 1);
+    assert_eq!(files.max_branch_active.load(Ordering::Acquire), 1);
+    assert_eq!(current.view.rows.len(), nodes - 1);
+    assert!(current.view.rows.iter().all(|row| matches!(
+        row.disclosure,
+        TreeDisclosure::Empty | TreeDisclosure::Expanded
+    )));
+    let mut visits = scaling.visits.lock().unwrap().clone();
+    visits.sort_unstable();
+    assert_eq!(visits, (1..nodes).collect::<Vec<_>>());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "opt-in serial before/after scaling control; externally cap each case at 60 s"]
+async fn recursive_scaling_before_after() {
+    scaling_case(32, 1, 0, false).await;
+    scaling_case(1_000, 1, 0, true).await;
+    scaling_case(10_000, 1, 0, true).await;
+    scaling_case(10_000, 1, 1, true).await;
+    scaling_case(10_000, 32, 0, true).await;
 }

@@ -797,7 +797,7 @@ impl Worker {
             .as_ref()
             .map(|session| session.projection().stamp);
         if let Some(session) = self.session.as_ref() {
-            self.sizes.retain(&session.retained_rows());
+            self.sizes.retain(|row| session.retains_row(row));
         }
         let events = self.sizes.tick(stamp);
         let changed = events
