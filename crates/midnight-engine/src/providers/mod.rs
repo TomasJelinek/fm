@@ -17,7 +17,8 @@ pub use native::{NativeCapture, NativeProvider, native_location};
 pub use registry::ProviderRegistry;
 
 use midnight_core::{
-    ArchiveLocation, ArchiveNode, Cancellation, EntryKind, EntryMetadata, NodeToken, StoredLocation,
+    ArchiveLocation, ArchiveNode, Cancellation, EntryKind, EntryMetadata, NodeToken,
+    SizeDirectoryIdentity, StoredLocation,
 };
 use midnight_plugin_host::ContentSource;
 use std::{fmt, sync::Arc};
@@ -72,6 +73,17 @@ pub trait FilesystemProvider: Send + Sync + 'static {
 /// the mount. Metadata/content can change; capturing content must validate its
 /// own revision, and a node reference is never immutable object identity.
 pub trait MountedFilesystem: Send + Sync + 'static {
+    /// Read-only target identity for ancestor cycle detection. No resolved path
+    /// or operation authority is returned. Unsupported ordinary directories keep
+    /// their existing browsing semantics; directory links require an identity.
+    fn browse_directory_identity(
+        &self,
+        _node: &NodeToken,
+        _cancel: &Cancellation,
+    ) -> Result<Option<SizeDirectoryIdentity>, ProviderError> {
+        Err(ProviderError::Unsupported)
+    }
+
     /// Resolve navigation/action context on a backend worker. Captions, raw names
     /// and opaque tokens must not be parsed by callers to synthesize this target.
     fn resolve_target(
@@ -140,6 +152,8 @@ impl fmt::Display for ProviderError {
 
 impl std::error::Error for ProviderError {}
 
+#[cfg(test)]
+mod browse_identity_tests;
 #[cfg(test)]
 mod contract_tests;
 #[cfg(test)]

@@ -251,7 +251,13 @@ fn service_reads_and_renders_real_unicode_sources_off_thread() {
             },
         )
         .unwrap();
+    eprintln!(
+        "Comparator Unicode waiter test={:?} mailbox={:p}",
+        std::thread::current().name(),
+        session.mailbox.as_ref()
+    );
     let start = std::time::Instant::now();
+    let mut last_status = None;
     loop {
         match session.mailbox.take() {
             Some(Output::Frame { frame, .. }) => {
@@ -264,13 +270,17 @@ fn service_reads_and_renders_real_unicode_sources_off_thread() {
                 assert!(!frame.image);
                 break;
             }
-            Some(Output::Status(error)) => assert!(!error.contains("Cannot"), "{error}"),
+            Some(Output::Status(error)) => {
+                assert!(!error.contains("Cannot"), "{error}");
+                last_status = Some(error);
+            }
             Some(Output::ChooseFiles(choice)) => panic!("Unexpected file choice: {choice:?}"),
             None => {}
         }
         assert!(
             start.elapsed() < Duration::from_secs(15),
-            "Comparison frame timed out"
+            "Comparison frame timed out after {:?}; last status: {last_status:?}",
+            start.elapsed()
         );
         std::thread::sleep(Duration::from_millis(10));
     }

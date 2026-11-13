@@ -8,6 +8,8 @@ mod image_presentation_tests;
 mod image_tiles;
 mod image_zoom;
 #[cfg(test)]
+mod layout_handshake_tests;
+#[cfg(test)]
 mod opening_retirement_tests;
 #[cfg(test)]
 mod opening_tests;
@@ -58,6 +60,22 @@ type PreferencesListener = Rc<dyn Fn(ViewerPreferenceChange)>;
 type PreferencesRelay = Rc<RefCell<PreferencesListener>>;
 type InputSender = Rc<dyn Fn(ViewerInput) -> bool>;
 
+#[derive(Default)]
+struct LayoutState {
+    token: u64,
+    mode: u16,
+    generation_floor: u64,
+    pending_ack: bool,
+    awaiting_frame: bool,
+}
+
+impl LayoutState {
+    fn accepts_frame(&self, frame: &ViewerFrame) -> bool {
+        frame.generation >= self.generation_floor
+            && (self.token == 0 || (!self.pending_ack && frame.mode == self.mode))
+    }
+}
+
 pub struct ViewerWindows {
     service: Service,
     windows: RefCell<Vec<Rc<OpenWindow>>>,
@@ -75,6 +93,7 @@ struct OpenWindow {
     preparation: RefCell<Option<pixel_preparation::Preparation>>,
     prepared_pixels: RefCell<Option<pixel_preparation::PreparedPixels>>,
     last_geometry: Cell<(u32, u32, u32)>,
+    layout: RefCell<LayoutState>,
     frame: Cell<u64>,
     frame_generation: Cell<u64>,
     raster_size: Cell<(u32, u32)>,
@@ -116,6 +135,23 @@ impl OpenWindow {
     }
 
     fn enqueue(&self, input: ViewerInput) -> bool {
+        if self.closed.get() {
+            return false;
+        }
+        if self.layout.borrow().awaiting_frame
+            && !matches!(
+                input,
+                ViewerInput::LayoutReady { .. }
+                    | ViewerInput::Resize(_)
+                    | ViewerInput::Mode(_)
+                    | ViewerInput::NextFile
+                    | ViewerInput::PreviousFile
+                    | ViewerInput::RetainedRaster(_)
+                    | ViewerInput::Close
+            )
+        {
+            return false;
+        }
         let sender = self.input.borrow().clone();
         let interrupts = !matches!(
             input,
@@ -232,6 +268,7 @@ impl ViewerWindows {
         }
         // Installation discovery can overlap native/GPU construction. Content still opens only
         // after show() below supplies the exact physical canvas and monitor scale.
+        let opening_trace = pixel_preparation::OpeningTrace::new();
         self.service.prepare_catalogs();
         let window = match ViewerWindow::new() {
             Ok(window) => window,
@@ -258,16 +295,15 @@ impl ViewerWindows {
                 + u16::from(appearance.background[2])
                 > 384,
         );
-        // Showing synchronizes the Slint layout with the native client size and
-        // monitor scale. The first backend viewport uses the same physical
-        // canvas measurement as subsequent resize requests.
+        // Showing supplies native size and scale for provisional geometry. The
+        // selected backend route receives its measured canvas through LayoutReady.
         if let Err(error) = window.show() {
             let _ = window.hide();
             self.service.retire(launch);
             return Err(error.to_string());
         }
         let geometry = window_geometry(&window);
-        let session = match self.service.open(launch, appearance, geometry) {
+        let session = match self.service.open_with_layout(launch, appearance, geometry) {
             Ok(session) => Rc::new(session),
             Err(error) => {
                 let _ = window.hide();
@@ -293,6 +329,7 @@ impl ViewerWindows {
             preparation: RefCell::new(None),
             prepared_pixels: RefCell::new(None),
             last_geometry: Cell::new((geometry.width, geometry.height, geometry.scale.to_bits())),
+            layout: RefCell::new(LayoutState::default()),
             frame: Cell::new(0),
             frame_generation: Cell::new(0),
             raster_size: Cell::new((1, 1)),
@@ -317,7 +354,9 @@ impl ViewerWindows {
         preferences::present(&open);
         image_motion::install(&open);
         raster_motion::install(&open);
-        if let Err(error) = pixel_delivery::bind(&open, self.service.clone(), copy.clone()) {
+        if let Err(error) =
+            pixel_delivery::bind(&open, self.service.clone(), copy.clone(), opening_trace)
+        {
             open.ready.borrow_mut().take();
             close(&open);
             return Err(error);
@@ -332,36 +371,9 @@ impl ViewerWindows {
                 if open.closed.get() {
                     return;
                 }
-                let window = &open.window;
                 preferences::present_font_catalog(&open);
                 image_motion::refresh_scale(&open);
-                let ViewerGeometry {
-                    width,
-                    height,
-                    scale,
-                } = window_geometry(window);
-                let geometry = (width, height, scale.to_bits());
-                if geometry != open.last_geometry.get()
-                    && open.session.send(ViewerInput::Resize(ViewerGeometry {
-                        width,
-                        height,
-                        scale,
-                    }))
-                {
-                    raster_rebase::cancel_context(&open);
-                    raster_motion::cancel(&open);
-                    open.retained_raster.borrow_mut().camera.suspend();
-                    if window.get_image_mode() {
-                        open.image_zoom.borrow_mut().clear();
-                        open.text_position.borrow_mut().cancel();
-                    } else {
-                        open.text_position.borrow_mut().changing_content();
-                    }
-                    window.set_position_context(
-                        format!("resize:{width}:{height}:{}", geometry.2).into(),
-                    );
-                    open.last_geometry.set(geometry);
-                }
+                pump_geometry(&open);
                 present_output(&open, &service, copy.as_ref());
                 image_motion::fallback(&open);
                 flush_position(&open);
@@ -380,15 +392,146 @@ impl ViewerWindows {
 }
 
 fn window_geometry(window: &ViewerWindow) -> ViewerGeometry {
+    let scale = geometry_properties(window);
+    ViewerGeometry {
+        width: (window.get_content_width() * scale).max(1.0) as u32,
+        height: (window.get_content_height() * scale).max(1.0) as u32,
+        scale,
+    }
+}
+
+fn geometry_properties(window: &ViewerWindow) -> f32 {
     let scale = window.window().scale_factor();
     let width = window.window().size().to_logical(scale).width;
     window.set_compact(width < 500.0);
     window.set_narrow_typography(width < 680.0);
     window.set_image_pixel_scale(1.0 / scale);
-    ViewerGeometry {
-        width: (window.get_content_width() * scale).max(1.0) as u32,
-        height: (window.get_content_height() * scale).max(1.0) as u32,
+    scale
+}
+
+fn layout_geometry(window: &ViewerWindow) -> Option<ViewerGeometry> {
+    let scale = geometry_properties(window);
+    i_slint_core::window::WindowInner::from_pub(window.window()).ensure_tree_instantiated();
+    let width = window.get_content_width();
+    let height = window.get_content_height();
+    if !scale.is_finite()
+        || scale <= 0.0
+        || !width.is_finite()
+        || !height.is_finite()
+        || width <= 0.0
+        || height <= 0.0
+    {
+        return None;
+    }
+    Some(ViewerGeometry {
+        width: (width * scale).max(1.0) as u32,
+        height: (height * scale).max(1.0) as u32,
         scale,
+    })
+}
+
+fn apply_mode(open: &OpenWindow, mode: u16, image_mode: bool, reset_policy: bool) {
+    let window = &open.window;
+    if image_mode != window.get_image_mode() {
+        window.set_search_visible(false);
+        window.invoke_focus_content();
+    }
+    window.set_image_mode(image_mode);
+    let web_mode = mode == VIEWER_MODE_HTML;
+    let web_changed = web_mode != window.get_web_mode();
+    if web_changed || reset_policy {
+        window.set_web_network(false);
+        window.set_web_scripts(false);
+    }
+    if web_changed {
+        window.invoke_focus_content();
+    }
+    window.set_web_mode(web_mode);
+    window.set_source_mode(mode == 2 && !image_mode);
+    window.set_markdown_mode(mode == 4 && !image_mode);
+    window.set_font_available(mode != 3 && !image_mode && !web_mode);
+    preferences::present(open);
+}
+
+fn select_layout(open: &OpenWindow, token: u64, mode: u16, generation: u64) {
+    if open.closed.get() {
+        return;
+    }
+    let mut layout = open.layout.borrow_mut();
+    if token == 0
+        || token <= layout.token
+        || generation < layout.generation_floor
+        || generation < open.frame_generation.get()
+    {
+        return;
+    }
+    layout.token = token;
+    layout.mode = mode;
+    layout.generation_floor = generation;
+    layout.pending_ack = true;
+    layout.awaiting_frame = true;
+    drop(layout);
+    raster_rebase::cancel_context(open);
+    raster_motion::cancel(open);
+    open.retained_raster.borrow_mut().camera.suspend();
+    open.raster_redraw.stop();
+    open.image_camera.borrow_mut().suspend();
+    open.image_zoom.borrow_mut().clear();
+    open.image_redraw.stop();
+    open.text_position.borrow_mut().cancel();
+    open.window
+        .set_position_context(format!("layout:{token}:{generation}").into());
+    apply_mode(open, mode, mode == VIEWER_MODE_IMAGE, true);
+}
+
+/// Returns true while this pump is owned by a layout acknowledgement, including
+/// a refused enqueue. A matching Resize must not overtake or repeat that input.
+fn flush_layout_ack(open: &OpenWindow) -> bool {
+    if open.closed.get() {
+        return false;
+    }
+    let token = {
+        let layout = open.layout.borrow();
+        if !layout.pending_ack {
+            return false;
+        }
+        layout.token
+    };
+    let Some(geometry) = layout_geometry(&open.window) else {
+        return true;
+    };
+    let sender = open.input.borrow().clone();
+    if sender(ViewerInput::LayoutReady { token, geometry }) && !open.closed.get() {
+        let mut layout = open.layout.borrow_mut();
+        if layout.token == token && layout.pending_ack {
+            layout.pending_ack = false;
+            open.last_geometry
+                .set((geometry.width, geometry.height, geometry.scale.to_bits()));
+        }
+    }
+    true
+}
+
+fn pump_geometry(open: &OpenWindow) {
+    if open.closed.get() || flush_layout_ack(open) {
+        return;
+    }
+    let window = &open.window;
+    let geometry = window_geometry(window);
+    let key = (geometry.width, geometry.height, geometry.scale.to_bits());
+    let sender = open.input.borrow().clone();
+    if key != open.last_geometry.get() && sender(ViewerInput::Resize(geometry)) {
+        raster_rebase::cancel_context(open);
+        raster_motion::cancel(open);
+        open.retained_raster.borrow_mut().camera.suspend();
+        if window.get_image_mode() {
+            open.image_zoom.borrow_mut().clear();
+            open.text_position.borrow_mut().cancel();
+        } else {
+            open.text_position.borrow_mut().changing_content();
+        }
+        window.set_position_context(format!("resize:{}:{}:{}", key.0, key.1, key.2).into());
+        open.last_geometry.set(key);
     }
 }
 
@@ -564,11 +707,35 @@ fn present_outputs(
     outputs: Vec<ViewerOutput>,
 ) {
     let window = &open.window;
+    // A newly selected route fences every frame in this batch, including an old
+    // frame prepared before its layout control reached the UI. Closed batches
+    // cannot start another opening or acknowledge its canvas.
+    if !outputs
+        .iter()
+        .any(|output| matches!(output, ViewerOutput::Closed))
+    {
+        for output in &outputs {
+            if let ViewerOutput::LayoutSelected {
+                token,
+                mode,
+                content_generation,
+            } = output
+            {
+                select_layout(open, *token, *mode, *content_generation);
+            }
+        }
+    }
     for output in outputs {
+        if open.closed.get() {
+            service.retire(output);
+            continue;
+        }
         match &output {
+            ViewerOutput::LayoutSelected { .. } => {}
             ViewerOutput::Frame(frame) => {
                 if frame.revision <= open.frame.get()
                     || frame.generation < open.frame_generation.get()
+                    || !open.layout.borrow().accepts_frame(frame)
                     || !raster_rebase::allows(open, frame.raster_rebase)
                 {
                     service.retire(output);
@@ -607,10 +774,12 @@ fn present_outputs(
                         service.retire(output);
                         continue;
                     };
+                    pixel_delivery::trace_frame(open, 40, frame);
                     let model = open
                         .image_textures
                         .borrow_mut()
                         .receive(tiles, info, displayed, replace);
+                    pixel_delivery::trace_frame(open, 41, frame);
                     let Ok(model) = model else {
                         if let Err(message) = model {
                             window.set_status(message.into());
@@ -659,11 +828,7 @@ fn present_outputs(
                 open.frame.set(frame.revision);
                 open.frame_generation.set(frame.generation);
                 let image_mode = frame.image.is_some();
-                if image_mode != window.get_image_mode() {
-                    window.set_search_visible(false);
-                    window.invoke_focus_content();
-                }
-                window.set_image_mode(image_mode);
+                apply_mode(open, frame.mode, image_mode, false);
                 if let Some(info) = &frame.image {
                     // A frame retains its physical viewport while native DPI or
                     // mode-dependent chrome settles. Stretching it to today's
@@ -674,16 +839,6 @@ fn present_outputs(
                     window.set_image_viewport_height((info.visible_source[1] * info.zoom) as f32);
                 }
                 let web_mode = frame.mode == VIEWER_MODE_HTML;
-                if web_mode != window.get_web_mode() {
-                    window.set_web_network(false);
-                    window.set_web_scripts(false);
-                    window.invoke_focus_content();
-                }
-                window.set_web_mode(web_mode);
-                window.set_source_mode(frame.mode == 2 && !image_mode);
-                window.set_markdown_mode(frame.mode == 4 && !image_mode);
-                window.set_font_available(frame.mode != 3 && !image_mode && !web_mode);
-                preferences::present(open);
                 window.set_document_page(frame.image.as_ref().map_or(0, |image| image.page as i32));
                 window.set_document_pages(
                     frame
@@ -718,6 +873,11 @@ fn present_outputs(
                         }
                     }
                 }
+                {
+                    let mut layout = open.layout.borrow_mut();
+                    layout.generation_floor = layout.generation_floor.max(frame.generation);
+                    layout.awaiting_frame = false;
+                }
                 window.set_accessible_text(frame.accessible_text.as_ref().into());
                 window.set_position(frame.position as f32);
                 window.set_displayed_position(frame.position as f32);
@@ -747,22 +907,29 @@ fn present_outputs(
                     }
                 }
                 raster_rebase::presented(open, frame);
+                let opening_report = pixel_delivery::trace_published(open, frame);
                 window.invoke_frame_presented();
+                if let Some(report) = opening_report {
+                    service.retire(report);
+                }
             }
             ViewerOutput::RasterRebase {
                 surface,
                 transition,
             } => {
-                raster_rebase::receive(open, *surface, *transition);
+                if !open.layout.borrow().awaiting_frame {
+                    raster_rebase::receive(open, *surface, *transition);
+                }
             }
             ViewerOutput::RasterUnavailable { surface, message } => {
-                if raster_rebase::unavailable(open, *surface)
-                    || open
-                        .retained_raster
-                        .borrow()
-                        .camera
-                        .info()
-                        .is_some_and(|info| info.surface == *surface)
+                if !open.layout.borrow().awaiting_frame
+                    && (raster_rebase::unavailable(open, *surface)
+                        || open
+                            .retained_raster
+                            .borrow()
+                            .camera
+                            .info()
+                            .is_some_and(|info| info.surface == *surface))
                 {
                     // Keep the displayed pixels and settle at the actual camera.
                     // The failed frontier must not replay indefinitely.
@@ -777,6 +944,7 @@ fn present_outputs(
                 message,
             } => {
                 if *generation >= open.frame_generation.get()
+                    && *generation >= open.layout.borrow().generation_floor
                     && (surface.0 == 0
                         || open
                             .image_info
@@ -801,6 +969,8 @@ fn present_outputs(
                 zoom,
             } => {
                 if *generation >= open.frame_generation.get()
+                    && *generation >= open.layout.borrow().generation_floor
+                    && !open.layout.borrow().awaiting_frame
                     && open.text_position.borrow().context_available()
                 {
                     window.set_web_network(policy.network);
@@ -813,6 +983,7 @@ fn present_outputs(
         service.retire(output);
     }
     if !open.closed.get() {
+        flush_layout_ack(open);
         // A control-only delivery can overtake preparation of the first frame.
         // Do not report successful opening before any pixels were admitted.
         open.acknowledge_opening(open.session.mailbox.take_open_result());
@@ -1326,6 +1497,11 @@ fn close(open: &OpenWindow) {
     raster_rebase::cancel_context(open);
     raster_motion::cancel(open);
     if !open.closed.replace(true) {
+        {
+            let mut layout = open.layout.borrow_mut();
+            layout.pending_ack = false;
+            layout.awaiting_frame = true;
+        }
         if let Some(preparation) = open.preparation.borrow().as_ref() {
             preparation.stop();
         }

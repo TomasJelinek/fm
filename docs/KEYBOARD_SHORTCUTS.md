@@ -188,6 +188,15 @@ controls have tooltips and accessible names.
 Mouse: left click focuses, Ctrl+left click toggles selection, Shift+left click
 selects an inclusive range, and Ctrl+Shift+left click adds that range. An unmodified
 left double-click activates. Clicking a column header switches sorting direction.
+
+**Ctrl+click on a folder expander** starts bounded recursive expansion inline,
+including directory symlink/junction expanders. Collapse/navigation cancels the
+asynchronous walk; cycles and other failures stay local to the affected branch.
+Known-empty directory links show no `+`. Expansion can pause at its capacity
+limit while preserving the valid tree. Ordinary row Ctrl+click keeps the selection
+behavior above. See [tree behavior and limits](developer/TREE_PANEL.md#retry-diagnostics-and-recursive-expansion)
+for details.
+
 Insert and Space clamp at the last row; `..` is never selected or measured.
 In expanded trees, Space measures its focused directory independently of other
 marks. Bulk size calculation uses selected directories, including explicitly

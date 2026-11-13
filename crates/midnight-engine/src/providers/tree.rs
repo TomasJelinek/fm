@@ -1,6 +1,6 @@
 //! Backend branch occurrences. No row caption or position conveys file authority.
 use super::{MountedEntry, MountedLocation, ProviderEntry, ProviderError};
-use midnight_core::{Cancellation, EntryKind, GeneratedTextSource, NodeRef};
+use midnight_core::{Cancellation, EntryKind, GeneratedTextSource, NodeRef, SizeDirectoryIdentity};
 use std::{
     collections::{HashMap, HashSet},
     sync::{
@@ -80,6 +80,8 @@ struct Node {
     known: Option<bool>,
     listed: bool,
     listing_version: u64,
+    browse_identity: Option<SizeDirectoryIdentity>,
+    recursive_excluded: u64,
     error: Option<ProviderError>,
     error_details: Option<Arc<dyn GeneratedTextSource>>,
     pending: Option<(u64, Cancellation)>,
@@ -92,13 +94,18 @@ pub struct DirectoryTree {
     next_branch: u64,
     next_request: u64,
     nodes: HashMap<BranchId, Node>,
+    // Root address plus every retained node's entry, error, and target charge.
+    payload_bytes: usize,
     limits: TreeLimits,
     active: Arc<AtomicUsize>,
     reports: crate::size_warnings::ReportLog,
 }
 
 /// Bounded rollback state for an atomic model/projection maintenance publication.
-pub(crate) struct TreeCheckpoint(HashMap<BranchId, Node>);
+pub(crate) struct TreeCheckpoint {
+    nodes: HashMap<BranchId, Node>,
+    payload_bytes: usize,
+}
 
 struct Permit(Arc<AtomicUsize>, Cancellation);
 impl Drop for Permit {
@@ -115,6 +122,8 @@ pub struct BranchWork {
     location: MountedLocation,
     node: NodeRef,
     ancestors: Vec<NodeRef>,
+    ancestor_identities: Vec<SizeDirectoryIdentity>,
+    directory_link: bool,
     root: bool,
     limit: usize,
     cancel: Cancellation,
@@ -125,10 +134,25 @@ pub struct BranchResult {
     request: u64,
     kind: TreeRequest,
     rows: Result<Vec<MountedEntry>, ProviderError>,
+    identity: Option<SizeDirectoryIdentity>,
     _permit: Permit,
 }
 
 impl BranchWork {
+    fn browse_identity(&self) -> Result<Option<SizeDirectoryIdentity>, ProviderError> {
+        match self
+            .location
+            .browse_directory_identity(&self.node, &self.cancel)
+        {
+            Ok(Some(value)) => Ok(Some(value)),
+            Ok(None) => Err(ProviderError::Failed(
+                "Directory target is no longer a directory.".into(),
+            )),
+            Err(ProviderError::Unsupported) if !self.directory_link => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
+
     /// Link pane cancellation without revoking an independently retained target.
     pub(crate) fn with_cancellation(mut self, lifetime: &Cancellation) -> Self {
         self.cancel = self.cancel.linked(lifetime);
@@ -137,25 +161,40 @@ impl BranchWork {
 
     /// Run with a shared engine blocking-worker permit, never on the UI thread.
     pub fn run(self) -> BranchResult {
-        let rows = if self.root {
-            self.location.list(&self.node, &self.cancel)
-        } else {
-            self.location
-                .list_folders(&self.node, &self.cancel, self.limit)
-        }
-        .and_then(|rows| {
+        let mut identity = None;
+        let rows = (|| {
+            identity = self.browse_identity()?;
+            if identity.is_some_and(|identity| self.ancestor_identities.contains(&identity)) {
+                return Err(ProviderError::Failed(
+                    "Directory target repeats an ancestor.".into(),
+                ));
+            }
+            let rows = if self.root {
+                self.location.list(&self.node, &self.cancel)
+            } else {
+                self.location
+                    .list_folders(&self.node, &self.cancel, self.limit)
+            }?;
             if rows.iter().any(|row| self.ancestors.contains(&row.node)) {
                 return Err(ProviderError::InvalidResponse(
                     "ancestor cycle in directory branch",
                 ));
             }
+            // Two live observations reject a stable A-to-B retarget around this
+            // listing. They do not promise atomic namespace or snapshot identity.
+            if self.browse_identity()? != identity {
+                return Err(ProviderError::Failed(
+                    "Directory target changed while listing.".into(),
+                ));
+            }
             Ok(rows)
-        });
+        })();
         BranchResult {
             branch: self.branch,
             request: self.request,
             kind: self.kind,
             rows,
+            identity,
             _permit: self.permit,
         }
     }
@@ -172,7 +211,20 @@ impl DirectoryTree {
         for node in nodes.values_mut() {
             node.pending = None;
         }
-        TreeCheckpoint(nodes)
+        TreeCheckpoint {
+            nodes,
+            payload_bytes: self.payload_bytes,
+        }
+    }
+
+    /// Restore the published model while preserving all identity high-water marks.
+    /// Cancellation never releases an outstanding worker's native I/O ownership.
+    pub(crate) fn rollback_unpublished(&mut self, checkpoint: TreeCheckpoint) {
+        for node in self.nodes.values() {
+            cancel_pending(node);
+        }
+        self.nodes = checkpoint.nodes;
+        self.payload_bytes = checkpoint.payload_bytes;
     }
 
     pub(crate) fn restore(
@@ -181,11 +233,14 @@ impl DirectoryTree {
         branch: BranchId,
         error: ProviderError,
     ) {
-        self.nodes = checkpoint.0;
-        let available = self.limits.bytes.saturating_sub(self.payload_bytes());
+        self.nodes = checkpoint.nodes;
+        self.payload_bytes = checkpoint.payload_bytes;
+        let available = self.limits.bytes.saturating_sub(self.payload_bytes);
         let details = self.failure_details(branch, &error);
         if let Some(node) = self.nodes.get_mut(&branch) {
+            self.payload_bytes -= error_charge(&node.error);
             node.error = Some(bounded_error(error, available));
+            self.payload_bytes += error_charge(&node.error);
             node.error_details = details;
         }
     }
@@ -205,7 +260,12 @@ impl DirectoryTree {
         let mut pending = vec![self.root];
         while let Some(id) = pending.pop() {
             let node = &self.nodes[&id];
-            if node.target.is_some() || node.entry.kind != EntryKind::Directory {
+            if node.target.is_some()
+                || !matches!(
+                    node.entry.kind,
+                    EntryKind::Directory | EntryKind::DirectoryLink
+                )
+            {
                 continue;
             }
             if node.listed {
@@ -220,7 +280,12 @@ impl DirectoryTree {
         let Some(node) = self.nodes.get(&branch) else {
             return false;
         };
-        if !node.listed || node.entry.kind != EntryKind::Directory {
+        if !node.listed
+            || !matches!(
+                node.entry.kind,
+                EntryKind::Directory | EntryKind::DirectoryLink
+            )
+        {
             return false;
         }
         let mut current = Some(branch);
@@ -228,12 +293,42 @@ impl DirectoryTree {
             let Some(node) = self.nodes.get(&id) else {
                 return false;
             };
-            if node.target.is_some() || node.entry.kind != EntryKind::Directory {
+            if node.target.is_some()
+                || !matches!(
+                    node.entry.kind,
+                    EntryKind::Directory | EntryKind::DirectoryLink
+                )
+            {
                 return false;
             }
             current = node.parent;
         }
         true
+    }
+
+    /// Identity of a successfully installed listing, not a later disclosure probe.
+    /// Linked ancestry requires a complete native identity basis for polling.
+    pub(crate) fn loaded_native_identity(
+        &self,
+        branch: BranchId,
+    ) -> Result<Option<SizeDirectoryIdentity>, ProviderError> {
+        if !self.loaded_native_branch(branch) {
+            return Err(ProviderError::StaleReference);
+        }
+        let identity = self.nodes[&branch].browse_identity;
+        let mut linked = false;
+        let mut missing = false;
+        let mut current = Some(branch);
+        while let Some(id) = current {
+            let node = &self.nodes[&id];
+            linked |= node.entry.kind == EntryKind::DirectoryLink;
+            missing |= node.browse_identity.is_none();
+            current = node.parent;
+        }
+        if linked && missing {
+            return Err(ProviderError::Unsupported);
+        }
+        Ok(identity)
     }
     /// Resolve a visible source entry, not a container mounted on that entry.
     /// The downstream service still establishes action-specific authority.
@@ -301,8 +396,8 @@ impl DirectoryTree {
         if node.target.is_none() && targets >= 64 {
             return Err(ProviderError::ResourceLimited);
         }
-        let bytes = self
-            .payload_bytes()
+        let mut bytes = self
+            .payload_bytes
             .saturating_sub(target_charge(node))
             .saturating_add(target.address().address().len());
         if bytes > self.limits.bytes {
@@ -311,6 +406,7 @@ impl DirectoryTree {
         let removed = self.descendants(node.children.clone());
         for id in removed {
             if let Some(node) = self.nodes.remove(&id) {
+                bytes -= node_charge(&node);
                 cancel_pending(&node);
             }
         }
@@ -325,8 +421,10 @@ impl DirectoryTree {
         node.known = None;
         node.listed = false;
         node.expanded = false;
+        bytes -= error_charge(&node.error);
         node.error = None;
         node.error_details = None;
+        self.payload_bytes = bytes;
         Ok(())
     }
     /// Read-only navigation context. A separate operation service must establish
@@ -398,13 +496,15 @@ impl DirectoryTree {
             kind: EntryKind::Directory,
             metadata: Default::default(),
         });
-        if charge(&entry).saturating_add(location.address().address().len()) > limits.bytes {
+        let payload_bytes = charge(&entry).saturating_add(location.address().address().len());
+        if payload_bytes > limits.bytes {
             return Err(ProviderError::ResourceLimited);
         }
         Ok(Self {
             root,
             next_branch: 1,
             next_request: 1,
+            payload_bytes,
             limits,
             active: Arc::default(),
             reports: crate::tree_diagnostics::log(&reports),
@@ -422,6 +522,8 @@ impl DirectoryTree {
                     known: None,
                     listed: false,
                     listing_version: 0,
+                    browse_identity: None,
+                    recursive_excluded: 0,
                     error: None,
                     error_details: None,
                     pending: None,
@@ -444,7 +546,11 @@ impl DirectoryTree {
             .nodes
             .get(&branch)
             .ok_or(ProviderError::StaleReference)?;
-        if node.entry.kind != EntryKind::Directory && node.target.is_none() {
+        if !matches!(
+            node.entry.kind,
+            EntryKind::Directory | EntryKind::DirectoryLink
+        ) && node.target.is_none()
+        {
             return Err(ProviderError::Unsupported);
         }
         if kind == TreeRequest::Probe && node.expanded {
@@ -458,10 +564,16 @@ impl DirectoryTree {
             .checked_add(1)
             .ok_or(ProviderError::ResourceLimited)?;
         let mut ancestors = Vec::new();
+        let mut ancestor_identities = Vec::new();
         let mut ancestor = Some(branch);
         while let Some(id) = ancestor {
             let node = &self.nodes[&id];
             ancestors.push(node.node.clone());
+            if id != branch
+                && let Some(identity) = node.browse_identity
+            {
+                ancestor_identities.push(identity);
+            }
             if let Some(target) = &node.target {
                 ancestors.push(target.root().clone());
             }
@@ -481,6 +593,7 @@ impl DirectoryTree {
         if let Some((_, previous)) = node.pending.replace((self.next_request, cancel.clone())) {
             previous.cancel();
         }
+        self.payload_bytes -= error_charge(&node.error);
         node.error = None;
         node.error_details = None;
         let (location, target_node) = node.target.as_ref().map_or_else(
@@ -494,6 +607,8 @@ impl DirectoryTree {
             location,
             node: target_node,
             ancestors,
+            ancestor_identities,
+            directory_link: node.entry.kind == EntryKind::DirectoryLink && node.target.is_none(),
             root: branch == self.root,
             limit: self.limits.nodes,
             cancel,
@@ -531,11 +646,19 @@ impl DirectoryTree {
                 )
             }
         });
+        if outcome.is_ok()
+            && result.kind != TreeRequest::Probe
+            && let Some(node) = self.nodes.get_mut(&result.branch)
+        {
+            node.browse_identity = result.identity;
+        }
         if let Err(error) = outcome {
-            let used = self.payload_bytes();
+            let available = self.limits.bytes.saturating_sub(self.payload_bytes);
             let details = self.failure_details(result.branch, &error);
             if let Some(node) = self.nodes.get_mut(&result.branch) {
-                node.error = Some(bounded_error(error, self.limits.bytes.saturating_sub(used)));
+                self.payload_bytes -= error_charge(&node.error);
+                node.error = Some(bounded_error(error, available));
+                self.payload_bytes += error_charge(&node.error);
                 node.error_details = details;
             }
         }
@@ -607,15 +730,12 @@ impl DirectoryTree {
             .next_branch
             .checked_add(additions as u64)
             .ok_or(ProviderError::ResourceLimited)?;
-        let mut bytes = self.nodes[&self.root].source.address().address().len();
-        for (id, node) in &self.nodes {
-            if !removed.contains(id) {
-                bytes = bytes.saturating_add(error_charge(&node.error));
-                bytes = bytes.saturating_add(target_charge(node));
-                if !retained.contains(id) {
-                    bytes = bytes.saturating_add(charge(&node.entry));
-                }
-            }
+        let mut bytes = self.payload_bytes;
+        for id in &removed {
+            bytes -= node_charge(&self.nodes[id]);
+        }
+        for id in &retained {
+            bytes -= charge(&self.nodes[id].entry);
         }
         for row in &rows {
             bytes = bytes.saturating_add(charge(&row.entry));
@@ -658,6 +778,8 @@ impl DirectoryTree {
                         known: None,
                         listed: false,
                         listing_version: 0,
+                        browse_identity: None,
+                        recursive_excluded: 0,
                         error: None,
                         error_details: None,
                         pending: None,
@@ -679,6 +801,7 @@ impl DirectoryTree {
         if expand {
             parent.expanded = true;
         }
+        self.payload_bytes = bytes;
         Ok(())
     }
 
@@ -706,20 +829,6 @@ impl DirectoryTree {
         Ok(())
     }
 
-    fn payload_bytes(&self) -> usize {
-        self.nodes
-            .values()
-            .map(|node| {
-                charge(&node.entry)
-                    .saturating_add(error_charge(&node.error))
-                    .saturating_add(target_charge(node))
-            })
-            .fold(
-                self.nodes[&self.root].source.address().address().len(),
-                usize::saturating_add,
-            )
-    }
-
     pub fn collapse(&mut self, branch: BranchId) -> bool {
         if !self.nodes.contains_key(&branch) {
             return false;
@@ -732,6 +841,25 @@ impl DirectoryTree {
             }
         }
         true
+    }
+
+    pub(crate) fn exclude_recursive(&mut self, branch: BranchId, walk: u64) {
+        if let Some(node) = self.nodes.get_mut(&branch) {
+            node.recursive_excluded = walk;
+        }
+    }
+
+    pub(crate) fn recursive_excluded(&self, branch: BranchId, walk: u64) -> bool {
+        self.nodes
+            .get(&branch)
+            .is_none_or(|node| node.recursive_excluded == walk)
+    }
+
+    pub(crate) fn cancel_work(&mut self, branch: BranchId) {
+        if let Some(node) = self.nodes.get_mut(&branch) {
+            cancel_pending(node);
+            node.pending = None;
+        }
     }
 
     /// Preorder snapshot, built on the backend. Sibling sorting/filter ancestor
@@ -770,7 +898,11 @@ fn cancel_pending(node: &Node) {
     }
 }
 fn disclosure(node: &Node) -> Disclosure {
-    if node.entry.kind != EntryKind::Directory && node.target.is_none() {
+    if !matches!(
+        node.entry.kind,
+        EntryKind::Directory | EntryKind::DirectoryLink
+    ) && node.target.is_none()
+    {
         Disclosure::None
     } else if node
         .pending
@@ -812,6 +944,12 @@ fn target_charge(node: &Node) -> usize {
         .map_or(0, |target| target.address().address().len())
 }
 
+fn node_charge(node: &Node) -> usize {
+    charge(&node.entry)
+        .saturating_add(error_charge(&node.error))
+        .saturating_add(target_charge(node))
+}
+
 fn error_charge(error: &Option<ProviderError>) -> usize {
     match error {
         Some(ProviderError::Failed(message)) => message.len(),
@@ -826,8 +964,25 @@ fn bounded_error(mut error: ProviderError, available: usize) -> ProviderError {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
+
+    pub(in crate::providers) fn assert_payload_accounting(tree: &DirectoryTree) {
+        let expected = tree
+            .nodes
+            .values()
+            .map(|node| {
+                charge(&node.entry)
+                    .saturating_add(error_charge(&node.error))
+                    .saturating_add(target_charge(node))
+            })
+            .fold(
+                tree.nodes[&tree.root].source.address().address().len(),
+                usize::saturating_add,
+            );
+        assert_eq!(tree.payload_bytes, expected);
+        assert!(expected <= tree.limits.bytes);
+    }
 
     #[test]
     fn bounded_diagnostic_releases_excess_capacity_even_when_its_text_is_short() {

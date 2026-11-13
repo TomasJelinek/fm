@@ -68,6 +68,37 @@ impl Deliveries {
     }
 }
 
+fn window_targets(window: &MainWindow, presenter: &RefCell<Presenter>) -> Vec<ThumbnailTarget> {
+    let single_panel = window.get_panel_zoomed() || window.get_compact_window();
+    let active_pane = window.get_active_pane();
+    let (left_hover, left_range) = if !single_panel || active_pane == 0 {
+        (
+            window.get_left_hovered_row(),
+            (
+                window.get_left_thumbnail_row_start().max(0) as usize,
+                window.get_left_thumbnail_row_end().max(0) as usize,
+            ),
+        )
+    } else {
+        (slint::SharedString::default(), (0, 0))
+    };
+    let (right_hover, right_range) = if !single_panel || active_pane == 1 {
+        (
+            window.get_right_hovered_row(),
+            (
+                window.get_right_thumbnail_row_start().max(0) as usize,
+                window.get_right_thumbnail_row_end().max(0) as usize,
+            ),
+        )
+    } else {
+        (slint::SharedString::default(), (0, 0))
+    };
+    presenter.borrow_mut().thumbnail_targets(
+        [left_range, right_range],
+        [left_hover.as_str(), right_hover.as_str()],
+    )
+}
+
 pub(crate) fn install(
     window: &MainWindow,
     presenter: Rc<RefCell<Presenter>>,
@@ -121,20 +152,8 @@ fn install_service(
             if let Some(path) = service.take_cache_location() {
                 window.set_thumbnail_cache_location(path.to_string_lossy().as_ref().into());
             }
-            let left_hover = window.get_left_hovered_row();
-            let right_hover = window.get_right_hovered_row();
-            let ranges = [
-                (
-                    window.get_left_thumbnail_row_start().max(0) as usize,
-                    window.get_left_thumbnail_row_end().max(0) as usize,
-                ),
-                (
-                    window.get_right_thumbnail_row_start().max(0) as usize,
-                    window.get_right_thumbnail_row_end().max(0) as usize,
-                ),
-            ];
+            let rows = window_targets(&window, &presenter);
             let mut state = presenter.borrow_mut();
-            let rows = state.thumbnail_targets(ranges, [left_hover.as_str(), right_hover.as_str()]);
             // Native command artwork shares visible admission, but never enters an image decoder.
             // Retry a rejected send on the next pulse, even when the visible rows are unchanged.
             state.refresh_command_icons(&rows, send.as_ref());

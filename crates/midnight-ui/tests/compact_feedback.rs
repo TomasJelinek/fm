@@ -100,6 +100,7 @@ fn compact_geometry_and_unfinished_sizes_render_in_every_theme() {
                     2 => 2,
                     _ => 0,
                 },
+                size_running: index == 1,
                 size_hint: "Unfinished 文档: scan cancelled".into(),
                 ..Default::default()
             })
@@ -156,7 +157,7 @@ fn compact_geometry_and_unfinished_sizes_render_in_every_theme() {
                     let mut dump = b"P6\n1340 820\n255\n".to_vec();
                     dump.extend(pixels.iter().flat_map(|value| [value.r, value.g, value.b]));
                     let artifacts = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                        .join("../../_build/qa/interaction");
+                        .join("../../_build/verification/interaction/compact-feedback");
                     std::fs::create_dir_all(&artifacts).unwrap();
                     std::fs::write(artifacts.join("compact-feedback-debug.ppm"), dump).unwrap();
                 }

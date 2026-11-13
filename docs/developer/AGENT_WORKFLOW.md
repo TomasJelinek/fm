@@ -51,34 +51,17 @@ unrelated backlog work.
    only their recorded source/environment. A green subset or checked plan does
    not close a requirement's remaining failure, native or platform acceptance.
 
-## Active seven-role batch — 12 November 2026
+Role domains are not blanket file ownership. The Orchestrator records exact file
+reservations and coordinates Cargo and native-input leases across shared and
+explicitly arranged isolated checkouts.
 
-The panel/viewer batch has been integrated. The user has resumed the broader goal:
-implement all accepted app features, test each deeply and polish the UI. Role chats
-now work on the Orchestrator's scoped assignments; onboarding is no longer the
-only assigned work. See [Active work](../ACTIVE_WORK.md) for the current ownership,
-requirements/evidence backlog and corrections to stale stage references.
+Each handoff records its exact source/build identity, changed files, behavior,
+commands and test counts including failures/ignores, environment, native versus
+substituted boundaries, artifacts under `_build/`, unresolved failures and
+remaining acceptance. Documentation-only checks do not qualify the application.
+Commit, merge and push remain coordinated through the Orchestrator.
 
-Perf agent's initial assignment is a read-only review of the current checkpoint
-using existing evidence, with no source edits or benchmarks. The Orchestrator
-remains the independent critic/reviewer and integration owner.
-
-Build owns CI run `43239253816` reporting, the useful `origin/fix/cargo` port and
-`_build` cleanup. Viewer handed off the accepted `cc4857e` Markdown allocation slice;
-host/native latency qualification remains separate. UI owns the filter experience
-and shortcut fixtures. Architect's review proposes prepared-action/watch/link
-increments, and Documentation reconciles status, requirements and evidence. The Orchestrator
-reports CI ended with 18 successful jobs and two failed jobs: Windows comparator
-timeout (Backend) and Linux Ctrl+D expectations (UI). Backend/Viewer completed
-their historical archive/thumbnail comparisons with no code to recover. The user
-authorized selective
-recovery/discard and retirement; the Orchestrator removed those exact-tip branches
-and clean worktrees. See [Active work](../ACTIVE_WORK.md)
-for completed versus pending actions. Exact edit paths and Cargo/native-input
-leases remain Orchestrator-owned; a role's domain is not blanket file ownership.
-
-Each implementation handoff records its exact source/build identity, changed files,
-executed commands, test counts/ignores, native or substituted boundaries, artifacts
-under `_build/`, unresolved failures and remaining acceptance. Documentation-only
-checks do not qualify the application. Commit, merge and push remain coordinated
-through the Orchestrator.
+Current assignments, integration checkpoints, receipts and open requirements live
+in the canonical [Active work checkpoint](../ACTIVE_WORK.md#current-checkpoint)
+and its surrounding ledger. Update that ledger when evidence changes; keep this
+document focused on responsibilities and the working agreement.

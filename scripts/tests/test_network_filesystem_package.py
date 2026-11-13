@@ -45,7 +45,7 @@ class NetworkFilesystemPackages(unittest.TestCase):
         path = package / "plugin.toml"
         original = path.read_text()
         for old, new in [('minimum_host_minor = 2', 'minimum_host_minor = 1'),
-                         ('minimum_host_minor = 2', 'minimum_host_minor = 3'),
+                         ('minimum_host_minor = 2', 'minimum_host_minor = 4'),
                          ('abi_major = 1', 'abi_major = 2'),
                          ('"opaque"', '"unix-bytes"'),
                          ('"activate"', '"read"'),
@@ -58,6 +58,37 @@ class NetworkFilesystemPackages(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     packaging.copy_filesystem_packages(self.stage, source, self.target)
                 self.assertEqual(list(self.stage.iterdir()), [])
+
+    def test_network_minors_two_and_three_keep_discovery_only_capabilities(self):
+        source, package = self.network()
+        path = package / "plugin.toml"
+        original = path.read_text()
+        for minor in (2, 3):
+            with self.subTest(minor=minor):
+                path.write_text(original.replace("minimum_host_minor = 2",
+                                                 f"minimum_host_minor = {minor}"))
+                stage = self.root / f"release-minor-{minor}"
+                stage.mkdir()
+                result = packaging.copy_filesystem_packages(stage, source, self.target,
+                                                            require_network=True)
+                self.assertEqual(result[2]["minimum_host_minor"], minor)
+                self.assertEqual(set(result[2]["capabilities"]),
+                                 {"browse", "stat", "volumes", "activate", "refresh", "resolve-text"})
+                self.assertEqual(result[2]["address_encoding"], "opaque")
+
+    def test_prepared_rename_is_rejected_for_network_at_every_supported_minor(self):
+        source, package = self.network()
+        path = package / "plugin.toml"
+        original = path.read_text()
+        for minor in (2, 3):
+            for replacement in ('"prepared-rename"', '"resolve-text", "prepared-rename"'):
+                with self.subTest(minor=minor, replacement=replacement):
+                    text = original.replace("minimum_host_minor = 2",
+                                            f"minimum_host_minor = {minor}")
+                    path.write_text(text.replace('"resolve-text"', replacement))
+                    with self.assertRaises(ValueError):
+                        packaging.copy_filesystem_packages(self.stage, source, self.target)
+                    self.assertEqual(list(self.stage.iterdir()), [])
 
     def test_network_library_and_notices_required_before_copy(self):
         source, package = self.network()

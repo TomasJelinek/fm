@@ -178,6 +178,7 @@ pub enum Command {
     EnqueueSelectedMove(crate::SelectedCopyRequest),
     EnqueueClipboardMove(crate::ClipboardMoveRequest),
     EnqueueTransferWithMetadata(Box<crate::MetadataTransferRequest>),
+    EnqueueCopyWithOptions(Box<crate::CopyOptionsRequest>),
     EnqueueArchiveCopy(crate::ArchiveCopyRequest),
     DecideCopy(crate::CopyDecision),
     DecideRename(crate::CopyDecision),

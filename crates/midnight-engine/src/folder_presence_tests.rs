@@ -63,6 +63,9 @@ fn fixture() -> (FolderPresenceRequest, Snapshots, Arc<Files>) {
         (3, "folders", EntryKind::Directory),
         (4, "link", EntryKind::DirectoryLink),
         (5, "offscreen", EntryKind::Directory),
+        (6, "empty-link", EntryKind::DirectoryLink),
+        (7, "denied-link", EntryKind::DirectoryLink),
+        (8, "file", EntryKind::File),
     ]
     .into_iter()
     .map(|(id, name, kind)| Entry::new(EntryId(id), path.join(name), kind))
@@ -79,6 +82,7 @@ fn fixture() -> (FolderPresenceRequest, Snapshots, Arc<Files>) {
     let snapshots = crate::test_snapshots([state, SnapshotState::default()]);
     let mut rows = HashMap::new();
     rows.insert(path.join("empty"), vec![]);
+    rows.insert(path.join("empty-link"), vec![]);
     rows.insert(
         path.join("files"),
         vec![Entry::new(
@@ -98,6 +102,21 @@ fn fixture() -> (FolderPresenceRequest, Snapshots, Arc<Files>) {
             Entry::new(
                 EntryId(12),
                 path.join("folders/never inspected"),
+                EntryKind::File,
+            ),
+        ],
+    );
+    rows.insert(
+        path.join("link"),
+        vec![
+            Entry::new(
+                EntryId(13),
+                path.join("link/child-link"),
+                EntryKind::DirectoryLink,
+            ),
+            Entry::new(
+                EntryId(14),
+                path.join("link/never inspected"),
                 EntryKind::File,
             ),
         ],
@@ -154,7 +173,7 @@ fn flat_presence_checks_only_requested_folders_and_stops_at_first_subfolder() {
 }
 
 #[test]
-fn foreign_snapshot_navigation_side_link_roots_and_oversized_requests_do_no_io() {
+fn foreign_snapshot_navigation_side_files_and_oversized_requests_do_no_io() {
     let (original, snapshots, files) = fixture();
     for case in 0..8 {
         let mut request = original.clone();
@@ -163,7 +182,7 @@ fn foreign_snapshot_navigation_side_link_roots_and_oversized_requests_do_no_io()
             1 => request.root.index = Arc::new((*request.root.index).clone()),
             2 => request.root.navigation = NavigationId(2),
             3 => request.root.pane = PaneId::Right,
-            4 => request.visible = vec![EntryId(4)],
+            4 => request.visible = vec![EntryId(1), EntryId(8)],
             5 => request.visible = vec![EntryId(1); FolderPresenceRequest::MAX_VISIBLE + 1],
             6 => request.visible = vec![EntryId(1), EntryId(1)],
             _ => request.visible = vec![EntryId(1), EntryId(999)],
@@ -180,6 +199,85 @@ fn foreign_snapshot_navigation_side_link_roots_and_oversized_requests_do_no_io()
             .is_none()
         );
     }
+    assert!(files.visited.lock().unwrap().is_empty());
+}
+
+#[test]
+fn native_mixed_directory_and_link_presence_retains_every_requested_hint() {
+    let (mut request, snapshots, files) = fixture();
+    request.visible = vec![EntryId(1), EntryId(4), EntryId(2), EntryId(3)];
+    let result = run(
+        &request,
+        &request.cancel,
+        &snapshots,
+        &NativeProvider::new(files.clone()),
+        &Arc::new(Semaphore::new(1)),
+        &crate::ReportArena::testing(),
+    )
+    .expect("one native directory link must not discard the whole visible batch");
+    assert_eq!(
+        result,
+        [
+            (EntryId(1), FolderPresence::Empty),
+            (EntryId(4), FolderPresence::HasFolders),
+            (EntryId(2), FolderPresence::Empty),
+            (EntryId(3), FolderPresence::HasFolders),
+        ]
+    );
+    let root = request.root.entries[0].path.parent().unwrap();
+    assert_eq!(
+        *files.visited.lock().unwrap(),
+        [
+            root.join("empty"),
+            root.join("link"),
+            root.join("files"),
+            root.join("folders")
+        ],
+        "probe only immediate logical roots, never children or the offscreen directory"
+    );
+    assert_eq!(
+        files.emitted.load(Ordering::SeqCst),
+        3,
+        "both directory roots stop at their first subfolder, including a link child"
+    );
+}
+
+#[test]
+fn native_empty_and_denied_links_preserve_their_ordinary_sibling_hint() {
+    let (mut request, snapshots, files) = fixture();
+    request.visible = vec![EntryId(6), EntryId(7), EntryId(3)];
+    let probe = || {
+        run(
+            &request,
+            &request.cancel,
+            &snapshots,
+            &NativeProvider::new(files.clone()),
+            &Arc::new(Semaphore::new(1)),
+            &crate::ReportArena::testing(),
+        )
+    };
+    let result = probe().expect("link availability is an individual hint result");
+    assert_eq!(result.len(), 3);
+    assert_eq!(result[0], (EntryId(6), FolderPresence::Empty));
+    assert_eq!(result[1].0, EntryId(7));
+    assert!(
+        matches!(&result[1].1, FolderPresence::Unavailable(error) if error.as_str().contains("denied")),
+        "a denied link must stay unavailable rather than look empty"
+    );
+    assert_eq!(result[2], (EntryId(3), FolderPresence::HasFolders));
+    let root = request.root.entries[0].path.parent().unwrap();
+    assert_eq!(
+        *files.visited.lock().unwrap(),
+        [
+            root.join("empty-link"),
+            root.join("denied-link"),
+            root.join("folders")
+        ]
+    );
+    assert_eq!(files.emitted.load(Ordering::SeqCst), 1);
+    files.visited.lock().unwrap().clear();
+    request.cancel.cancel();
+    assert!(probe().is_none());
     assert!(files.visited.lock().unwrap().is_empty());
 }
 
@@ -246,8 +344,9 @@ impl ArchiveMount for Archive {
     }
 }
 
-#[test]
-fn archive_presence_uses_captured_member_identity_without_native_fallback() {
+fn archive_fixture(
+    kind: EntryKind,
+) -> (FolderPresenceRequest, Snapshots, Arc<Files>, Arc<Archive>) {
     let (mut request, snapshots, files) = fixture();
     let mount = Arc::new(Archive(AtomicUsize::new(0)));
     let entry = Entry::from_archive(ArchiveNode {
@@ -255,7 +354,7 @@ fn archive_presence_uses_captured_member_identity_without_native_fallback() {
         parent: 1,
         raw_name: Arc::from(b"raw folder".as_slice()),
         display_name: "Folder caption".into(),
-        kind: EntryKind::Directory,
+        kind,
         size: None,
         readable: false,
         modified: None,
@@ -286,6 +385,12 @@ fn archive_presence_uses_captured_member_identity_without_native_fallback() {
     request.root.entries = entries;
     request.root.index = index;
     request.visible = vec![EntryId(2)];
+    (request, snapshots, files, mount)
+}
+
+#[test]
+fn archive_presence_uses_captured_member_identity_without_native_fallback() {
+    let (request, snapshots, files, mount) = archive_fixture(EntryKind::Directory);
     let result = run(
         &request,
         &request.cancel,
@@ -298,4 +403,25 @@ fn archive_presence_uses_captured_member_identity_without_native_fallback() {
     assert_eq!(result, [(EntryId(2), FolderPresence::HasFolders)]);
     assert_eq!(mount.0.load(Ordering::SeqCst), 1);
     assert!(files.visited.lock().unwrap().is_empty());
+}
+
+#[test]
+fn archive_presence_keeps_directory_links_and_files_out_of_probe_batches() {
+    for kind in [EntryKind::DirectoryLink, EntryKind::File] {
+        let (request, snapshots, files, mount) = archive_fixture(kind);
+        assert!(
+            run(
+                &request,
+                &request.cancel,
+                &snapshots,
+                &NativeProvider::new(files.clone()),
+                &Arc::new(Semaphore::new(1)),
+                &crate::ReportArena::testing(),
+            )
+            .is_none(),
+            "archive presence retains the ordinary-directory-only contract: {kind:?}"
+        );
+        assert_eq!(mount.0.load(Ordering::SeqCst), 0);
+        assert!(files.visited.lock().unwrap().is_empty());
+    }
 }

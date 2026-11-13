@@ -16,6 +16,7 @@ impl Session {
         navigation: NavigationId,
         cancel: &Cancellation,
     ) -> Result<TreeNavigationTarget, ProviderError> {
+        self.rollback_unpublished();
         check_cancel(cancel)?;
         self.check_row_view(view, row)?;
         if request.0 == 0 || request.0 <= self.last_request.0 || navigation <= view.stamp.navigation
@@ -48,6 +49,7 @@ impl Session {
         };
         check_cancel(cancel)?;
         self.last_request = request;
+        self.stop_recursive();
         Ok(target)
     }
 }

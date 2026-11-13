@@ -215,7 +215,16 @@ impl Service {
             service: self.picker.clone(),
             cancel: picker_cancel.clone(),
         };
+        #[cfg(test)]
+        let worker_queued = std::time::Instant::now();
         self.handle.spawn_blocking(move || {
+            #[cfg(test)]
+            eprintln!(
+                "Comparator worker={:?} mailbox={:p} phase=worker-started queued_for={:?}",
+                std::thread::current().id(),
+                output.as_ref(),
+                worker_queued.elapsed()
+            );
             let _permit = permit;
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 worker::run(
@@ -249,6 +258,15 @@ impl Service {
     pub fn retire<T: Send + 'static>(&self, value: T) {
         self.handle.spawn_blocking(move || drop(value));
     }
+}
+
+#[cfg(test)]
+fn trace_first_frame(phase: &str, started: std::time::Instant) {
+    eprintln!(
+        "Comparator worker={:?} phase={phase} elapsed={:?}",
+        std::thread::current().id(),
+        started.elapsed()
+    );
 }
 
 fn check_cancel(cancel: &AtomicBool) -> Result<(), String> {

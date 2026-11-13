@@ -371,6 +371,7 @@ fn published_regions_follow_swapping_zoom_and_modal_exclusion() {
     assert_eq!(targets.lock().unwrap().targets[0].pane, PaneId::Right);
     h.ui.window.invoke_show_options();
     h.settle();
+    assert!(h.ui.window.get_embedded_modal_open());
     assert!(
         targets.lock().unwrap().targets.is_empty(),
         "a dialog cannot receive a file drop"
@@ -384,12 +385,30 @@ fn published_regions_follow_swapping_zoom_and_modal_exclusion() {
     ui::key(&h.ui.window, Key::F5);
     h.settle();
     assert!(!h.ui.window.get_copy_draft_token().is_empty());
+    assert!(h.ui.window.get_embedded_modal_open());
+    assert!(
+        !h.ui.window.get_dialog_input_blocked(),
+        "the embedded form keeps its input host enabled"
+    );
+    assert_eq!(
+        h.windows.borrow().len(),
+        1,
+        "the transfer form must use the main adapter"
+    );
+    assert!(
+        !i_slint_core::window::WindowInner::from_pub(h.ui.window.window())
+            .active_popups()
+            .is_empty()
+    );
     assert!(
         targets.lock().unwrap().targets.is_empty(),
-        "the owned copy form excludes native drops on every poll"
+        "the embedded copy form excludes native drops on every poll"
     );
     owned_windows::child_key(&h.windows, Key::Escape);
     h.settle();
+    assert!(h.ui.window.get_copy_draft_token().is_empty());
+    assert!(!h.ui.window.get_embedded_modal_open());
+    assert!(h.ui.window.window().is_visible());
     assert!(!targets.lock().unwrap().targets.is_empty());
 }
 

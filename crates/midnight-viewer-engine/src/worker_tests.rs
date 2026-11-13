@@ -3,6 +3,9 @@ use super::*;
 #[path = "worker_file_navigation_tests.rs"]
 mod file_navigation;
 
+#[path = "worker_layout_tests.rs"]
+mod layout_opening;
+
 #[path = "worker_position_tests.rs"]
 mod position;
 
@@ -98,6 +101,7 @@ fn worker() -> (Worker, Mailbox) {
         preferences: Arc::new(ViewerPreferences::default()),
         runtime,
         images: Arc::from([]),
+        image_startup: None,
         web_providers: Arc::from([]),
         web: None,
         closing_web: None,
@@ -118,6 +122,8 @@ fn worker() -> (Worker, Mailbox) {
         session: None,
         closing: None,
         pending_open: false,
+        layout: Default::default(),
+        pending_layout: None,
         viewport_request: None,
         search_request: None,
         search_cursor: Default::default(),

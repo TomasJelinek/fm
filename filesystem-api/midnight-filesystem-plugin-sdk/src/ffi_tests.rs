@@ -411,3 +411,170 @@ fn failed_publication_cleanup_poisoning_never_exposes_a_buffer_or_reopens_admiss
         assert_eq!(destroy(&api, instance), OK);
     }
 }
+
+#[test]
+fn prepared_rename_capability_requires_minor_three_without_changing_the_table() {
+    let mut table = Api::default();
+    // SAFETY: the aligned output is live and covers the declared table capacity.
+    assert_eq!(
+        unsafe {
+            entry::<Fake>(
+                &mut table,
+                size_of::<Api>() as u32,
+                "rename.test",
+                "0.2.0",
+                CAP_BROWSE | 1024,
+            )
+        },
+        OK
+    );
+    assert_eq!(table.header.minimum_host_minor, 3);
+    assert_eq!(table.header.abi_minor, 3);
+    let mut forged = table;
+    forged.header.minimum_host_minor = 2;
+    assert_eq!(forged.validate(size_of::<Api>() as u32), Err(INCOMPATIBLE));
+    assert_eq!(size_of::<Api>(), 88);
+    table.validate(size_of::<Api>() as u32).unwrap();
+}
+
+struct ControlFixture;
+impl Filesystem for ControlFixture {
+    fn create(_: Config) -> Result<Self, Failure> {
+        Ok(Self)
+    }
+    fn handle(&self, request: Request, context: &CallContext<'_>) -> Result<Reply, Failure> {
+        if let Request::ReadAt { .. } = request {
+            return Reply::stateless(Response::Content {
+                bytes: vec![7; context.config().reply_bytes as usize - 19],
+                eof: false,
+            });
+        }
+        if request.operation() as u32 == 22 {
+            let mut bytes = b"FSBR\x01\0\0\0\x10\0".to_vec();
+            bytes.extend_from_slice(&1u64.to_le_bytes());
+            bytes.extend_from_slice(&0u64.to_le_bytes());
+            bytes.push(0); // Ready; the raw fixture compiles against the previous API.
+            return Reply::stateless(decode_response(&bytes, 1024).unwrap());
+        }
+        Reply::stateless(Response::Unit)
+    }
+}
+fn invoke_control(api: &Api, instance: u64, operation: u32) -> (Status, Buffer) {
+    let mut bytes = b"FSBR\x01\0\0\0".to_vec();
+    bytes.extend_from_slice(&1u64.to_le_bytes());
+    let call = Call {
+        struct_size: size_of::<Call>() as u32,
+        operation,
+        payload: Slice {
+            data: bytes.as_ptr(),
+            len: bytes.len() as u64,
+        },
+        cancel: Cancellation {
+            context: 1,
+            cancelled: Some(cancelled),
+        },
+    };
+    let mut output = Buffer::default();
+    // SAFETY: all descriptor inputs, payload and output remain live for this call.
+    let status = unsafe { api.call.unwrap()(instance, &call, &mut output) };
+    (status, output)
+}
+#[test]
+fn prepared_rename_control_admission_fits_total_buffer_and_byte_ceilings() {
+    for byte_pressure in [false, true] {
+        let api = descriptor::<ControlFixture>();
+        let config = Config {
+            max_calls: 2,
+            max_buffers: if byte_pressure { 8 } else { 3 },
+            reply_bytes: 4096,
+            retained_buffer_bytes: 3 * 4096,
+            ..Config::default()
+        };
+        let instance = create_instance(&api, config);
+        let (status, activation) = invoke_control(&api, instance, 22);
+        assert_eq!(status, OK);
+        assert_eq!(release(&api, instance, activation.id), OK);
+        let request = if byte_pressure {
+            Request::ReadAt {
+                reader: 1,
+                offset: 0,
+                length: 4077,
+            }
+        } else {
+            Request::Volumes
+        };
+        let mut held = vec![];
+        for _ in 0..2 {
+            let (status, buffer) = invoke(&api, instance, request.clone(), Cancellation::default());
+            assert_eq!(status, OK);
+            if byte_pressure {
+                assert_eq!(buffer.bytes.len, 4096);
+            }
+            held.push(buffer);
+        }
+        assert_eq!(
+            invoke(&api, instance, request, Cancellation::default()).0,
+            RESOURCE_LIMIT
+        );
+        let (status, query) = invoke_control(&api, instance, 22);
+        assert_eq!(
+            status, OK,
+            "ordinary saturation must preserve the reserved share"
+        );
+        assert!(!matches!(read(query), Response::Failed(_)));
+        assert_eq!(
+            invoke_control(&api, instance, 23).0,
+            RESOURCE_LIMIT,
+            "the shared instance ceiling still applies"
+        );
+        assert_eq!(destroy(&api, instance), BUSY);
+        assert_eq!(release(&api, instance, query.id), OK);
+        let (status, close) = invoke_control(&api, instance, 23);
+        assert_eq!(status, OK);
+        assert_eq!(read(close), Response::Unit);
+        held.push(close);
+        assert!(held.len() <= config.max_buffers as usize);
+        assert!(
+            held.iter().map(|buffer| buffer.bytes.len).sum::<u64>() <= config.retained_buffer_bytes
+        );
+        for buffer in held {
+            assert_eq!(release(&api, instance, buffer.id), OK);
+        }
+        assert_eq!(destroy(&api, instance), OK);
+    }
+}
+#[test]
+fn prepared_rename_tiny_legacy_configs_keep_browse_but_refuse_rename_admission() {
+    for config in [
+        Config {
+            max_calls: 1,
+            ..Config::default()
+        },
+        Config {
+            max_buffers: 1,
+            ..Config::default()
+        },
+        Config {
+            retained_buffer_bytes: DEFAULT_REPLY_BYTES,
+            ..Config::default()
+        },
+    ] {
+        let api = descriptor::<ControlFixture>();
+        let instance = create_instance(&api, config);
+        assert_eq!(
+            invoke(
+                &api,
+                instance,
+                Request::PrepareRename { mount: 1, node: 2 },
+                Cancellation::default()
+            )
+            .0,
+            RESOURCE_LIMIT
+        );
+        let (status, buffer) = invoke(&api, instance, Request::Volumes, Cancellation::default());
+        assert_eq!(status, OK);
+        assert_eq!(read(buffer), Response::Unit);
+        assert_eq!(release(&api, instance, buffer.id), OK);
+        assert_eq!(destroy(&api, instance), OK);
+    }
+}

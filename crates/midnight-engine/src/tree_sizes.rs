@@ -156,9 +156,9 @@ impl State {
     pub fn sort_sizes(&self) -> Arc<HashMap<TreeRowId, FolderSize>> {
         Arc::new(self.values.clone())
     }
-    pub fn retain(&mut self, rows: &HashSet<TreeRowId>) {
+    pub fn retain(&mut self, mut retained: impl FnMut(TreeRowId) -> bool) {
         let before = self.values.len();
-        self.values.retain(|row, _| rows.contains(row));
+        self.values.retain(|row, _| retained(*row));
         self.dirty |= before != self.values.len();
     }
     pub fn selected(&self, publication: &TreePublication) -> TreeSizeEvent {

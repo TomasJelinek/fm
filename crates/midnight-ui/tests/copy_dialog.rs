@@ -6,11 +6,20 @@ mod modeless;
 #[path = "support/ui.rs"]
 mod ui;
 
+use i_slint_core::{
+    accessibility::AccessibleStringProperty,
+    item_tree::{ItemRc, ParentItemTraversalMode},
+    items::{AccessibleRole, Flickable, TextInput},
+    window::WindowInner,
+};
 use midnight_core::*;
 use midnight_ui::{Presenter, install, refresh};
 use slint::{
     ComponentHandle, Model,
-    platform::{Key, WindowAdapter, WindowEvent, software_renderer::MinimalSoftwareWindow},
+    platform::{
+        Clipboard, Key, Platform, PlatformError, WindowAdapter, WindowEvent,
+        software_renderer::MinimalSoftwareWindow,
+    },
 };
 use std::{
     cell::{Cell, RefCell},
@@ -20,9 +29,40 @@ use std::{
 
 type NativeWindows = Rc<RefCell<Vec<Rc<MinimalSoftwareWindow>>>>;
 
+struct ClipboardWindows {
+    windows: NativeWindows,
+    clipboard: Rc<RefCell<String>>,
+}
+
+impl Platform for ClipboardWindows {
+    fn create_window_adapter(&self) -> Result<Rc<dyn WindowAdapter>, PlatformError> {
+        modeless::Windows(self.windows.clone()).create_window_adapter()
+    }
+
+    fn clipboard_text(&self, clipboard: Clipboard) -> Option<String> {
+        matches!(clipboard, Clipboard::DefaultClipboard).then(|| self.clipboard.borrow().clone())
+    }
+
+    fn set_clipboard_text(&self, text: &str, clipboard: Clipboard) {
+        if matches!(clipboard, Clipboard::DefaultClipboard) {
+            *self.clipboard.borrow_mut() = text.to_owned();
+        }
+    }
+}
+
 fn multi_window_ui() -> (ui::TestUi, NativeWindows) {
+    let (test, windows, _) = multi_window_ui_with_clipboard();
+    (test, windows)
+}
+
+fn multi_window_ui_with_clipboard() -> (ui::TestUi, NativeWindows, Rc<RefCell<String>>) {
     let windows = Rc::new(RefCell::new(Vec::new()));
-    slint::platform::set_platform(Box::new(modeless::Windows(windows.clone()))).unwrap();
+    let clipboard = Rc::new(RefCell::new(String::new()));
+    slint::platform::set_platform(Box::new(ClipboardWindows {
+        windows: windows.clone(),
+        clipboard: clipboard.clone(),
+    }))
+    .unwrap();
     let window = midnight_ui::MainWindow::new().unwrap();
     window.set_preferences_ready(true);
     midnight_ui::install_file_keys(&window);
@@ -39,7 +79,7 @@ fn multi_window_ui() -> (ui::TestUi, NativeWindows) {
         height: 820,
     };
     test.resize(1340, 820);
-    (test, windows)
+    (test, windows, clipboard)
 }
 
 fn accessible_item(
@@ -162,6 +202,16 @@ fn exact_modified_time_copy_requires_explicit_option_and_survives_queue_refusal(
 #[test]
 fn exact_modified_time_move_requires_explicit_option_and_survives_queue_refusal() {
     destination_editor(Key::F6, true, true);
+}
+
+#[test]
+fn compact_copy_controls_remain_reachable_with_large_touch_font() {
+    compact_transfer_controls(Key::F5, false);
+}
+
+#[test]
+fn compact_move_controls_remain_reachable_with_large_touch_font() {
+    compact_transfer_controls(Key::F6, true);
 }
 
 #[derive(Debug)]
@@ -448,7 +498,11 @@ fn destination_editor(shortcut: Key, moving: bool, preserve: bool) {
         before_retry,
         "admission error stays in the same editable embedded draft"
     );
-    assert!(ui.window.get_dialog_input_blocked());
+    assert!(ui.window.get_embedded_modal_open());
+    assert!(
+        !ui.window.get_dialog_input_blocked(),
+        "a rejected draft must keep main input enabled"
+    );
     assert!(!ui.window.get_copy_draft_token().is_empty());
     assert!(commands.borrow().is_empty());
     assert!(child.window().is_visible());
@@ -520,4 +574,436 @@ fn destination_editor(shortcut: Key, moving: bool, preserve: bool) {
         );
     }
     ui.window.hide().unwrap();
+}
+
+type Bounds = (f32, f32, f32, f32);
+type FixedControl = (ItemRc, Bounds);
+
+fn compact_settle(test: &mut ui::TestUi) {
+    for _ in 0..3 {
+        test.draw();
+    }
+}
+
+fn compact_item(test: &ui::TestUi, role: AccessibleRole, label: &str) -> ItemRc {
+    modeless::accessible_popup_item(&test.native, role, label)
+        .unwrap_or_else(|| panic!("missing compact transfer control: {label}"))
+}
+
+fn compact_bounds(item: &ItemRc, indicator: bool) -> (f32, f32, f32, f32) {
+    let rect = item.geometry();
+    let origin = item.map_to_native_window(rect.origin);
+    // The checkbox caption is deliberately wider than this viewport. Its left
+    // indicator and full vertical span must remain visible and actionable.
+    let width = if indicator {
+        rect.width().min(24.0)
+    } else {
+        rect.width()
+    };
+    (
+        origin.x,
+        origin.y,
+        origin.x + width,
+        origin.y + rect.height(),
+    )
+}
+
+fn compact_clip_ancestors(item: &ItemRc) -> Vec<ItemRc> {
+    let mut clips = Vec::new();
+    let mut parent = item.parent_item(ParentItemTraversalMode::StopAtPopups);
+    while let Some(ancestor) = parent {
+        if ancestor.borrow().as_ref().clips_children() {
+            clips.push(ancestor.clone());
+        }
+        parent = ancestor.parent_item(ParentItemTraversalMode::StopAtPopups);
+    }
+    clips
+}
+
+fn compact_contains(outer: (f32, f32, f32, f32), inner: (f32, f32, f32, f32)) -> bool {
+    inner.0 >= outer.0 - 0.5
+        && inner.1 >= outer.1 - 0.5
+        && inner.2 <= outer.2 + 0.5
+        && inner.3 <= outer.3 + 0.5
+}
+
+fn compact_assert_visible(test: &ui::TestUi, item: &ItemRc, indicator: bool, label: &str) {
+    let area = compact_bounds(item, indicator);
+    assert!(area.2 > area.0 && area.3 > area.1, "{label} has no area");
+    let clips = compact_clip_ancestors(item);
+    assert!(!clips.is_empty(), "{label} lost its clipping dialog frame");
+    for clip in clips {
+        let bounds = compact_bounds(&clip, false);
+        assert!(
+            compact_contains(bounds, area),
+            "{label} is clipped by its dialog/scroll ancestor: control={area:?}, clip={bounds:?}"
+        );
+    }
+    assert!(
+        compact_contains((0.0, 0.0, test.width as f32, test.height as f32), area),
+        "{label} extends beyond the main viewport: {area:?}"
+    );
+    assert!(item.is_visible(), "{label} is hidden");
+}
+
+fn compact_fixed_controls(test: &ui::TestUi, action: &str) -> Vec<FixedControl> {
+    // Check the footer first: the old layout exceeds DialogFrame's body clip
+    // while the main-sized popup and semantic primary-focus proxy still exist.
+    [
+        (AccessibleRole::Button, "Cancel"),
+        (AccessibleRole::None, action),
+        (AccessibleRole::Button, action),
+        (AccessibleRole::Text, action),
+        (AccessibleRole::Button, "Cancel dialog"),
+    ]
+    .into_iter()
+    .map(|(role, label)| {
+        let item = compact_item(test, role, label);
+        compact_assert_visible(test, &item, false, label);
+        let bounds = compact_bounds(&item, false);
+        (item, bounds)
+    })
+    .collect()
+}
+
+fn compact_assert_stationary(test: &ui::TestUi, fixed: &[FixedControl]) {
+    for (item, before) in fixed {
+        compact_assert_visible(test, item, false, "fixed header/footer");
+        let after = compact_bounds(item, false);
+        assert!(
+            compact_contains(*before, after) && compact_contains(after, *before),
+            "scrolling the form moved its fixed header/footer: {before:?} -> {after:?}"
+        );
+    }
+}
+
+fn compact_reveal(test: &mut ui::TestUi, item: &ItemRc, indicator: bool, label: &str) -> usize {
+    let ancestors = compact_clip_ancestors(item);
+    let mut wheels = 0;
+    for viewport in ancestors.iter().rev() {
+        let Some(flickable) = viewport.downcast::<Flickable>() else {
+            continue;
+        };
+        for _ in 0..32 {
+            let mut clip = compact_bounds(viewport, false);
+            for ancestor in compact_clip_ancestors(viewport) {
+                let bounds = compact_bounds(&ancestor, false);
+                clip.0 = clip.0.max(bounds.0);
+                clip.1 = clip.1.max(bounds.1);
+                clip.2 = clip.2.min(bounds.2);
+                clip.3 = clip.3.min(bounds.3);
+            }
+            if flickable.as_pin_ref().content_width().get() > viewport.geometry().width() + 0.5 {
+                clip.3 -= 14.0;
+            }
+            let area = compact_bounds(item, indicator);
+            let delta = if area.1 < clip.1 - 0.5 {
+                clip.1 - area.1
+            } else if area.3 > clip.3 + 0.5 {
+                clip.3 - area.3
+            } else {
+                break;
+            };
+            assert!(
+                clip.2 - clip.0 > 16.0 && clip.3 - clip.1 > 16.0,
+                "{label} has no visible wheel target: {clip:?}"
+            );
+            test.window
+                .window()
+                .dispatch_event(WindowEvent::PointerScrolled {
+                    position: slint::LogicalPosition::new(clip.0 + 8.0, clip.3 - 8.0),
+                    delta_x: 0.0,
+                    delta_y: delta.clamp(-120.0, 120.0),
+                });
+            wheels += 1;
+            compact_settle(test);
+        }
+    }
+    compact_assert_visible(test, item, indicator, label);
+    wheels
+}
+
+fn compact_assert_focus(test: &ui::TestUi, control: &ItemRc) {
+    let mut focused = WindowInner::from_pub(test.window.window())
+        .focus_item
+        .borrow()
+        .upgrade();
+    while let Some(item) = focused {
+        if &item == control {
+            return;
+        }
+        focused = item.parent_item(ParentItemTraversalMode::StopAtPopups);
+    }
+    panic!("keyboard focus did not reach the compact transfer control");
+}
+
+fn compact_assert_edit(input: &ItemRc, value: &str, caret: usize) {
+    let input = input
+        .downcast::<TextInput>()
+        .expect("destination text input");
+    let input = input.as_pin_ref();
+    assert_eq!(input.text().as_str(), value);
+    assert_eq!(input.cursor_position_byte_offset() as usize, caret);
+    assert_eq!(input.anchor_position_byte_offset() as usize, caret);
+}
+
+fn compact_transfer_controls(shortcut: Key, moving: bool) {
+    let (mut test, windows, clipboard) = multi_window_ui_with_clipboard();
+    let base = std::env::temp_dir().join("compact transfer 文档");
+    let paths = [base.join("source"), base.join("destination")];
+    let source = paths[0].join("captured native file 文档.txt");
+    let state = Rc::new(RefCell::new(Presenter::new(
+        paths[0].clone(),
+        paths[1].clone(),
+    )));
+    let commands = Rc::new(RefCell::new(Vec::new()));
+    let send: Rc<dyn Fn(Command) -> bool> = Rc::new({
+        let commands = commands.clone();
+        move |command| {
+            commands.borrow_mut().push(command);
+            true
+        }
+    });
+    install(&test.window, state.clone(), send.clone());
+    let mut preferences = UserPreferences {
+        density: UiDensity::Touch,
+        desktop_font_size: 32,
+        touch_font_size: 32,
+        ..Default::default()
+    };
+    for (slot, path) in paths.iter().enumerate() {
+        preferences.tabs[slot].paths = vec![path.clone()];
+    }
+    state.borrow_mut().apply_with_sender(
+        Event::PreferencesLoaded(Ok(Box::new(preferences))),
+        send.as_ref(),
+    );
+    for pane in [PaneId::Left, PaneId::Right] {
+        let navigation = commands
+            .borrow()
+            .iter()
+            .rev()
+            .find_map(|command| match command {
+                Command::Navigate {
+                    pane: target,
+                    navigation,
+                    ..
+                } if *target == pane => Some(*navigation),
+                _ => None,
+            })
+            .expect("preferences must request the latest pane listing");
+        let entries: Arc<[Entry]> = if pane == PaneId::Left {
+            vec![Entry::new(EntryId(1), source.clone(), EntryKind::File)].into()
+        } else {
+            Arc::from([])
+        };
+        state.borrow_mut().apply(Event::ListingFinished {
+            pane,
+            navigation,
+            index: Arc::new(DirectoryIndex::from_entries(&entries)),
+            entries,
+        });
+    }
+    refresh(&test.window, &state.borrow());
+    test.window.invoke_activate(0);
+    test.window.invoke_focus_files();
+    ui::key(&test.window, Key::End);
+    test.resize(320, 200);
+    compact_settle(&mut test);
+    assert_eq!(test.window.get_density_index(), 1);
+    assert_eq!(test.window.get_touch_font_size(), 32);
+    commands.borrow_mut().clear();
+    let action = if moving { "Move" } else { "Copy" };
+
+    ui::key(&test.window, shortcut);
+    compact_settle(&mut test);
+    assert!(!test.window.get_copy_draft_token().is_empty());
+    assert_eq!(test.window.get_copy_draft_move(), moving);
+    assert_eq!(windows.borrow().len(), 1, "draft created a native window");
+    assert!(test.window.get_embedded_modal_open());
+    assert!(!test.window.get_dialog_input_blocked());
+    let fixed = compact_fixed_controls(&test, action);
+    let editor = compact_item(&test, AccessibleRole::TextInput, "Destination folder");
+    let option = compact_item(
+        &test,
+        AccessibleRole::Checkbox,
+        "Preserve exact modified time",
+    );
+    let before = compact_bounds(&editor, false);
+    let mut wheels = compact_reveal(&mut test, &editor, false, "Destination folder");
+    let mut moved = before != compact_bounds(&editor, false);
+    compact_assert_stationary(&test, &fixed);
+    let before = compact_bounds(&option, true);
+    wheels += compact_reveal(&mut test, &option, true, "metadata checkbox indicator");
+    moved |= before != compact_bounds(&option, true);
+    assert!(
+        wheels > 0 && moved,
+        "the compact middle must be reachable through wheel input"
+    );
+    compact_assert_stationary(&test, &fixed);
+    let indicator = compact_bounds(&option, true);
+    ui::click(
+        &test.window,
+        (indicator.0 + indicator.2) / 2.0,
+        (indicator.1 + indicator.3) / 2.0,
+    );
+    compact_settle(&mut test);
+    assert_eq!(
+        option
+            .accessible_string_property(AccessibleStringProperty::Checked)
+            .unwrap(),
+        "true"
+    );
+    let cancel = compact_item(&test, AccessibleRole::Button, "Cancel");
+    compact_assert_visible(&test, &cancel, false, "pointer Cancel");
+    input::click(&test.native, &cancel);
+    compact_settle(&mut test);
+    assert!(test.window.get_copy_draft_token().is_empty());
+    assert!(!test.window.get_embedded_modal_open());
+    assert!(
+        commands.borrow().is_empty(),
+        "pointer Cancel admitted a request"
+    );
+    assert_eq!(test.window.get_operations().row_count(), 0);
+    assert!(!test.window.get_operations_visible());
+
+    ui::key(&test.window, shortcut);
+    compact_settle(&mut test);
+    assert!(!test.window.get_copy_draft_token().is_empty());
+    assert!(test.window.get_embedded_modal_open());
+    compact_assert_focus(
+        &test,
+        &compact_item(&test, AccessibleRole::TextInput, "Destination folder"),
+    );
+    input::key(&test.native, Key::Escape);
+    compact_settle(&mut test);
+    assert!(test.window.get_copy_draft_token().is_empty());
+    assert!(!test.window.get_embedded_modal_open());
+    assert!(commands.borrow().is_empty(), "Escape admitted a request");
+    assert_eq!(test.window.get_operations().row_count(), 0);
+    assert!(!test.window.get_operations_visible());
+
+    ui::key(&test.window, shortcut);
+    compact_settle(&mut test);
+    assert_eq!(windows.borrow().len(), 1);
+    let token = test.window.get_copy_draft_token();
+    assert!(!token.is_empty());
+    compact_fixed_controls(&test, action);
+    let editor = compact_item(&test, AccessibleRole::TextInput, "Destination folder");
+    let option = compact_item(
+        &test,
+        AccessibleRole::Checkbox,
+        "Preserve exact modified time",
+    );
+    assert_eq!(
+        option
+            .accessible_string_property(AccessibleStringProperty::Checked)
+            .unwrap(),
+        "false"
+    );
+    compact_reveal(&mut test, &editor, false, "Destination folder");
+    input::click(&test.native, &editor);
+    let destination = base
+        .join("edited target e\u{301} 文档")
+        .to_str()
+        .expect("the Unicode fixture destination")
+        .to_owned();
+    input::chord(&test.native, &[Key::Control], "a");
+    // Key-event text is NFC-normalized by the pinned Slint input dispatcher.
+    // A pasted native path must retain its actual decomposed Unicode bytes.
+    *clipboard.borrow_mut() = destination.clone();
+    input::chord(&test.native, &[Key::Control], "v");
+    input::key(&test.native, Key::LeftArrow);
+    compact_settle(&mut test);
+    let input = WindowInner::from_pub(test.window.window())
+        .focus_item
+        .borrow()
+        .upgrade()
+        .unwrap();
+    let caret = destination.char_indices().next_back().unwrap().0;
+    compact_assert_edit(&input, &destination, caret);
+    input::key(&test.native, Key::Tab);
+    compact_settle(&mut test);
+    compact_assert_focus(&test, &option);
+    // Keyboard focus itself must reveal this control; a preparatory wheel here
+    // would hide a broken focus/scroll interaction.
+    compact_assert_visible(&test, &option, true, "keyboard metadata checkbox indicator");
+    input::key(&test.native, Key::Space);
+    compact_settle(&mut test);
+    assert_eq!(
+        option
+            .accessible_string_property(AccessibleStringProperty::Checked)
+            .unwrap(),
+        "true"
+    );
+    refresh(&test.window, &state.borrow());
+    compact_settle(&mut test);
+    test.resize(390, 300);
+    compact_settle(&mut test);
+    test.resize(320, 200);
+    compact_settle(&mut test);
+    assert_eq!(test.window.get_copy_draft_token(), token);
+    assert_eq!(
+        compact_item(&test, AccessibleRole::TextInput, "Destination folder"),
+        editor
+    );
+    compact_assert_edit(&input, &destination, caret);
+    assert_eq!(
+        option
+            .accessible_string_property(AccessibleStringProperty::Checked)
+            .unwrap(),
+        "true"
+    );
+    compact_assert_focus(&test, &option);
+    input::chord(&test.native, &[Key::Shift], Key::Tab);
+    compact_settle(&mut test);
+    compact_assert_visible(&test, &editor, false, "keyboard Destination folder");
+    assert_eq!(
+        WindowInner::from_pub(test.window.window())
+            .focus_item
+            .borrow()
+            .upgrade(),
+        Some(input.clone())
+    );
+    input::key(&test.native, "X");
+    let mut edited = destination;
+    edited.insert(caret, 'X');
+    compact_assert_edit(&input, &edited, caret + 1);
+    compact_fixed_controls(&test, action);
+    for _ in 0..3 {
+        input::key(&test.native, Key::Tab);
+        compact_settle(&mut test);
+    }
+    compact_assert_focus(&test, &compact_item(&test, AccessibleRole::Button, action));
+    assert!(
+        commands.borrow().is_empty(),
+        "editing admitted a request before confirmation"
+    );
+    input::key(&test.native, Key::Return);
+    compact_settle(&mut test);
+    assert!(test.window.get_copy_draft_token().is_empty());
+    let queued = commands.borrow();
+    let [Command::EnqueueTransferWithMetadata(request)] = queued.as_slice() else {
+        panic!(
+            "metadata confirmation must admit exactly one captured {action} request: {queued:?}"
+        );
+    };
+    assert_eq!(
+        request.metadata,
+        TransferMetadataPolicy::RequireModifiedTime
+    );
+    assert_eq!(
+        request.intent,
+        if moving {
+            TransferIntent::Move
+        } else {
+            TransferIntent::Copy
+        }
+    );
+    let MetadataTransferInput::Selected(request) = &request.input else {
+        panic!("metadata confirmation changed its captured source kind");
+    };
+    assert_eq!(request.destination, std::path::PathBuf::from(edited));
+    assert_eq!(request.files.fallback.as_ref(), Some(&source));
+    test.window.hide().unwrap();
 }

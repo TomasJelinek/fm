@@ -581,6 +581,7 @@ fn native_choices_keep_gestures_tooltips_and_full_unicode_working_paths() {
             name: "Unfinished folder 文档".into(),
             size: "≈1.0 KiB".into(),
             size_state: 1,
+            size_running: true,
             size_hint: "Still counting; this size is not final.".into(),
             directory: true,
             ..Default::default()

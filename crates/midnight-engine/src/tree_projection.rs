@@ -41,9 +41,6 @@ pub(crate) struct ProjectionState {
 }
 
 impl ProjectionState {
-    pub(crate) fn retained_rows(&self) -> HashSet<TreeRowId> {
-        self.branches.keys().copied().collect()
-    }
     pub(crate) fn new(
         tree: &DirectoryTree,
         root: &TreeRootSnapshot,
@@ -101,6 +98,15 @@ impl ProjectionState {
             .checked_next()
             .ok_or(ProviderError::ResourceLimited)?;
         Ok(current)
+    }
+
+    /// Failed unpublished projections consume their allocated identities too.
+    pub(crate) fn advance_high_water(&mut self, other: &Self) {
+        self.next_row = TreeRowId(self.next_row.0.max(other.next_row.0));
+        self.next_alias = match (self.next_alias, other.next_alias) {
+            (Some(current), Some(next)) => Some(current.max(next)),
+            _ => None,
+        };
     }
 
     pub(crate) fn branch(&self, row: TreeRowId) -> Option<BranchId> {
@@ -238,7 +244,13 @@ impl ProjectionState {
             layout,
             rows,
         )
-        .map_err(ProviderError::InvalidResponse)?;
+        .map_err(|error| match error {
+            // This classification applies only to our complete projection's
+            // local admission guards, never arbitrary provider response errors.
+            "tree projection exceeds its row budget"
+            | "tree projection exceeds its payload budget" => ProviderError::ResourceLimited,
+            _ => ProviderError::InvalidResponse(error),
+        })?;
         if let Some(previous) = previous
             && !previous.same_structure(&projection)
         {
@@ -328,13 +340,16 @@ impl ProjectionState {
         for id in &matching {
             let mut ancestor = rows[id].parent;
             while let Some(parent) = ancestor {
-                keep.insert(parent);
+                if !keep.insert(parent) {
+                    // Matching ancestors get their own walk; other retained ones were visited.
+                    break;
+                }
                 ancestor = rows[&parent].parent;
             }
         }
         for entries in siblings.values_mut() {
             sort_entries_with_sizes(entries, options.sort, |entry| {
-                if entry.kind == EntryKind::Directory {
+                if matches!(entry.kind, EntryKind::Directory | EntryKind::DirectoryLink) {
                     options
                         .sizes
                         .get(&TreeRowId(entry.id.0))

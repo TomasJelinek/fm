@@ -174,6 +174,9 @@ fn real_plugins_render_search_copy_cycle_modes_and_reject_changed_files() {
         windows: Arc::new(AtomicUsize::new(0)),
         fonts: Default::default(),
         catalog_preparation: Default::default(),
+        image_startup: crate::image_startup::Startup::new(executor.handle().clone()),
+        image_policy: Default::default(),
+        image_catalog_revision: Arc::new(AtomicU64::new(0)),
     };
     let files = tempfile::tempdir().unwrap();
     {

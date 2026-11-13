@@ -7,7 +7,11 @@ mod selection;
 #[path = "support/ui.rs"]
 mod ui;
 
-use i_slint_core::{accessibility::AccessibilityAction, items::AccessibleRole};
+use i_slint_core::{
+    accessibility::AccessibilityAction,
+    items::AccessibleRole,
+    window::{WindowInner, WindowKind},
+};
 use midnight_core::*;
 use midnight_ui::{Presenter, install, refresh};
 use slint::{
@@ -233,6 +237,22 @@ fn native_cut_paste_requires_move_confirmation_before_shared_queue_admission() {
     });
     assert!(h.ui.window.get_copy_draft_move());
     assert!(!h.ui.window.get_copy_draft_token().is_empty());
+    assert_eq!(
+        h.windows.borrow().len(),
+        1,
+        "Move confirmation must reuse the main adapter"
+    );
+    assert!(h.ui.window.get_embedded_modal_open());
+    assert!(!h.ui.window.get_dialog_input_blocked());
+    assert_eq!(
+        WindowInner::from_pub(h.ui.window.window())
+            .active_popups()
+            .iter()
+            .filter(|popup| !matches!(popup.window_kind, WindowKind::ToolTip))
+            .count(),
+        1,
+        "Move confirmation must be an active main-window popup"
+    );
     assert!(h.commands.borrow().iter().all(|command| !matches!(
         command,
         Command::EnqueueCopy(_) | Command::EnqueueMove(_) | Command::EnqueueClipboardMove(_)
@@ -250,6 +270,14 @@ fn native_cut_paste_requires_move_confirmation_before_shared_queue_admission() {
     assert_eq!(request.clipboard.paths, vec![h.base.join("a.txt")]);
     assert_eq!(request.destination, h.base);
     assert!(h.ui.window.get_copy_draft_token().is_empty());
+    assert!(!h.ui.window.get_embedded_modal_open());
+    assert!(
+        WindowInner::from_pub(h.ui.window.window())
+            .active_popups()
+            .iter()
+            .all(|popup| matches!(popup.window_kind, WindowKind::ToolTip)),
+        "Enter must retire the admitted Move confirmation popup"
+    );
 }
 
 #[test]

@@ -123,11 +123,18 @@ impl TextComparison {
                 });
             }
         }
+        #[cfg(test)]
+        let renderer_started = std::time::Instant::now();
+        #[cfg(test)]
+        crate::trace_first_frame("renderer-start", renderer_started);
+        let renderer = TextRenderer::default();
+        #[cfg(test)]
+        crate::trace_first_frame("renderer-complete", renderer_started);
         Ok(Self {
             lines,
             rows,
             differences,
-            renderer: TextRenderer::default(),
+            renderer,
             fonts: None,
             top: 0,
             horizontal: 0.0,
@@ -188,13 +195,27 @@ impl TextComparison {
         appearance: &ViewerAppearance,
         cancel: &AtomicBool,
     ) -> Result<Frame, String> {
+        #[cfg(test)]
+        let first_paint = self.fonts.is_none();
         if self.fonts.is_none() {
+            #[cfg(test)]
+            let catalog_started = std::time::Instant::now();
+            #[cfg(test)]
+            crate::trace_first_frame("font-catalog-start", catalog_started);
             let families = midnight_viewer_render::monospace_families(|| {
                 cancel.load(std::sync::atomic::Ordering::Acquire)
             })
             .ok_or("Comparison cancelled.")?;
+            #[cfg(test)]
+            crate::trace_first_frame("font-catalog-complete", catalog_started);
             let selected = resolve_family(&families, &appearance.family);
             self.fonts = Some(FontChoices { families, selected });
+        }
+        #[cfg(test)]
+        let paint_started = std::time::Instant::now();
+        #[cfg(test)]
+        if first_paint {
+            crate::trace_first_frame("text-paint-start", paint_started);
         }
         let family = self
             .fonts
@@ -307,6 +328,10 @@ impl TextComparison {
                 self.rows.len()
             )
         };
+        #[cfg(test)]
+        if first_paint {
+            crate::trace_first_frame("text-paint-complete", paint_started);
+        }
         Ok(Frame {
             fonts: self.fonts.clone(),
             geometry_revision: 0,

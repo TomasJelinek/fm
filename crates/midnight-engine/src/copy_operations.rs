@@ -137,6 +137,9 @@ impl Controller {
     pub(crate) async fn enqueue_metadata(&self, request: MetadataTransferRequest) {
         self.enqueue_input(CopyInput::metadata(request)).await;
     }
+    pub(crate) async fn enqueue_options(&self, request: CopyOptionsRequest) {
+        self.enqueue_input(CopyInput::options(request)).await;
+    }
     pub(crate) async fn enqueue_captured(&self, request: CapturedTransferRequest) {
         self.enqueue_input(request.into()).await;
     }
@@ -494,15 +497,20 @@ async fn execute_input(
             break;
         }
         // Cancellation cannot abort an OS call or relinquish its permit early.
-        let Some(permit) = acquire(io_budget, &cancel).await else {
-            break;
+        let permit = if job.holds_io_permit() {
+            None
+        } else {
+            let Some(permit) = acquire(io_budget, &cancel).await else {
+                break;
+            };
+            Some(permit)
         };
         // Pause may have arrived while waiting for the shared I/O permit.
         if !wait_for_pause(&cancel, &status, outbox, throughput).await {
             break;
         }
         let executed = tokio::task::spawn_blocking(move || {
-            let _permit = permit;
+            job.begin_io_step(permit);
             let step = job.step();
             let completed = job.take_completed_root();
             (job, step, completed)
@@ -513,6 +521,10 @@ async fn execute_input(
             Ok(result) => result,
             Err(error) => return panicked(&status, error.to_string(), &cancel),
         };
+        // Until this point, an abandoned returned job retains its actual I/O
+        // ownership through WorkerOwned retirement and any link-stage cleanup.
+        // Once staging owns cleanup, the same permit stays with this serial job.
+        job.complete_io_step();
         if let Some(source) = completed {
             outbox
                 .send(Event::Copy(CopyEvent::RootCompleted {
@@ -542,9 +554,13 @@ async fn execute_input(
     }
     waiting.store(0, Ordering::Release);
     // Cleanup must run despite cancellation and on a worker, holding I/O capacity.
-    let permit = io_budget.clone().acquire_owned().await.ok();
+    let permit = if job.holds_io_permit() {
+        None
+    } else {
+        io_budget.clone().acquire_owned().await.ok()
+    };
     match tokio::task::spawn_blocking(move || {
-        let _permit = permit;
+        job.begin_io_step(permit);
         ownership::finish(job)
     })
     .await
@@ -688,3 +704,7 @@ fn initial(request: &CopyInput) -> CopyProgress {
 #[cfg(test)]
 #[path = "copy_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "copy_link_tests.rs"]
+mod link_tests;

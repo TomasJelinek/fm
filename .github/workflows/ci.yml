@@ -464,6 +464,8 @@ jobs:
       - name: Source size (Linux)
         if: runner.os == 'Linux'
         run: bash scripts/check-source-size.sh
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - name: Test
         run: python -B scripts/ci-workspace-tests.py --retire-successful-test-artifacts
       - name: Qualify Linux cross-filesystem Trash
@@ -528,8 +530,6 @@ jobs:
           env MIDNIGHT_DND_TEST_ISOLATED=1
           cargo test -p midnight-platform-linux --lib --locked
           file_drag_drop:: -- --ignored --test-threads=1
-      - name: Clippy
-        run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - name: Optimized release build
         run: cargo build -p midnight-explorer -p midnight-elevation --release --locked
       - name: Install independently built viewer and filesystem packages beside executable

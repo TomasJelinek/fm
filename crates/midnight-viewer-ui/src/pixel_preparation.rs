@@ -8,6 +8,191 @@ use std::{
     time::{Duration, Instant},
 };
 
+/// Debug-only, opt-in first-frame timestamps. Disabled instances own no allocation.
+#[derive(Clone, Default)]
+pub(super) struct OpeningTrace {
+    #[cfg(debug_assertions)]
+    state: Option<Arc<Mutex<opening_trace::State>>>,
+}
+
+impl OpeningTrace {
+    pub fn new() -> Self {
+        #[cfg(debug_assertions)]
+        {
+            use std::sync::{
+                OnceLock,
+                atomic::{AtomicU64, Ordering},
+            };
+            static ENABLED: OnceLock<bool> = OnceLock::new();
+            static ORIGIN: OnceLock<Instant> = OnceLock::new();
+            static OPENING: AtomicU64 = AtomicU64::new(1);
+            if *ENABLED.get_or_init(|| {
+                std::env::var_os("MIDNIGHT_VIEWER_OPEN_TRACE").is_some_and(|value| value == "1")
+            }) {
+                let trace = Self {
+                    state: Some(Arc::new(Mutex::new(opening_trace::State::new(
+                        *ORIGIN.get_or_init(Instant::now),
+                        OPENING.fetch_add(1, Ordering::Relaxed),
+                    )))),
+                };
+                trace.mark(1, 0, 0, 0);
+                return trace;
+            }
+        }
+        Self::default()
+    }
+
+    pub fn active(&self) -> bool {
+        #[cfg(debug_assertions)]
+        if let Some(state) = &self.state {
+            return !lock(state).finished;
+        }
+        false
+    }
+
+    pub fn mark(&self, phase: u8, generation: u64, revision: u64, pending: u8) {
+        #[cfg(debug_assertions)]
+        if let Some(state) = &self.state {
+            lock(state).mark(phase, generation, revision, pending);
+        }
+        let _ = (phase, generation, revision, pending);
+    }
+
+    pub fn outputs(&self, phase: u8, outputs: &[ViewerOutput]) {
+        if !self.active() {
+            return;
+        }
+        let frame = outputs.iter().find_map(|output| match output {
+            ViewerOutput::Frame(frame) => Some((frame.generation, frame.revision)),
+            _ => None,
+        });
+        let (generation, revision) = frame.unwrap_or((0, 0));
+        self.mark(phase, generation, revision, u8::from(frame.is_some()));
+    }
+
+    pub fn finish(&self, generation: u64, revision: u64) -> Option<OpeningReport> {
+        #[cfg(debug_assertions)]
+        if let Some(state) = &self.state {
+            return lock(state).finish(generation, revision);
+        }
+        let _ = (generation, revision);
+        None
+    }
+}
+
+/// Only retired through the backend service; formatting and stderr never run on UI.
+pub(super) struct OpeningReport {
+    #[cfg(debug_assertions)]
+    _records: opening_trace::Report,
+}
+
+#[cfg(debug_assertions)]
+mod opening_trace {
+    use super::*;
+    const CAPACITY: usize = 64;
+
+    #[derive(Clone, Copy, Default)]
+    struct Record {
+        phase: u8,
+        at_us: u64,
+        generation: u64,
+        revision: u64,
+        pending: u8,
+    }
+
+    pub(super) struct State {
+        origin: Instant,
+        opening: u64,
+        records: [Record; CAPACITY],
+        used: usize,
+        lost: u64,
+        pub finished: bool,
+    }
+
+    impl State {
+        pub fn new(origin: Instant, opening: u64) -> Self {
+            Self {
+                origin,
+                opening,
+                records: [Record::default(); CAPACITY],
+                used: 0,
+                lost: 0,
+                finished: false,
+            }
+        }
+
+        pub fn mark(&mut self, phase: u8, generation: u64, revision: u64, pending: u8) {
+            if self.finished {
+                return;
+            }
+            // Reserve the final slot for accepted publication even after a burst of signals.
+            if self.used == CAPACITY - 1 && phase != 50 {
+                self.lost = self.lost.saturating_add(1);
+                return;
+            }
+            self.records[self.used] = Record {
+                phase,
+                at_us: self.origin.elapsed().as_micros().min(u128::from(u64::MAX)) as u64,
+                generation,
+                revision,
+                pending,
+            };
+            self.used += 1;
+        }
+
+        pub fn finish(&mut self, generation: u64, revision: u64) -> Option<OpeningReport> {
+            if self.finished {
+                return None;
+            }
+            self.mark(50, generation, revision, 0);
+            self.finished = true;
+            Some(OpeningReport {
+                _records: Report {
+                    opening: self.opening,
+                    created_on: std::thread::current().id(),
+                    records: self.records,
+                    used: self.used,
+                    lost: self.lost,
+                },
+            })
+        }
+    }
+
+    pub(super) struct Report {
+        opening: u64,
+        created_on: std::thread::ThreadId,
+        records: [Record; CAPACITY],
+        used: usize,
+        lost: u64,
+    }
+
+    impl Drop for Report {
+        fn drop(&mut self) {
+            // A shut-down retirement executor may discard its closure on the caller.
+            // Cancellation releases the bounded report without logging on that UI thread.
+            if std::thread::current().id() == self.created_on {
+                return;
+            }
+            use std::io::Write as _;
+            let stderr = std::io::stderr();
+            let mut output = stderr.lock();
+            for record in &self.records[..self.used] {
+                let _ = writeln!(
+                    output,
+                    "viewer_open opening={} phase={} at_us={} generation={} revision={} pending={} lost={}",
+                    self.opening,
+                    record.phase,
+                    record.at_us,
+                    record.generation,
+                    record.revision,
+                    record.pending,
+                    self.lost,
+                );
+            }
+        }
+    }
+}
+
 const RETAINED_BYTES: u64 = 6 * 1024 * 1024 * 4;
 const LEGACY_BYTES: u64 = 16 * 1024 * 1024 * 4;
 const WAKE_RETRY: Duration = Duration::from_millis(50);
@@ -55,20 +240,49 @@ impl Shared {
 /// mailbox retains its existing bounded coalescing and ordering policy.
 pub(super) struct Preparation {
     shared: Arc<Shared>,
+    pub(super) trace: OpeningTrace,
 }
 
 impl Preparation {
-    pub fn new(mailbox: Arc<Mailbox>, notify: Notify) -> Result<Self, String> {
+    pub fn new(mailbox: Arc<Mailbox>, notify: Notify, trace: OpeningTrace) -> Result<Self, String> {
         let source = mailbox.clone();
         let mut cache = Cache::default();
-        let preparation = Self::start(
-            move || source.take(),
-            move |outputs| batch(outputs, &mut cache),
+        let drained = trace.clone();
+        let prepared = trace.clone();
+        let mut preparation = Self::start(
+            move || {
+                let outputs = source.take();
+                drained.outputs(10, &outputs);
+                outputs
+            },
+            move |outputs| {
+                let batch = batch(outputs, &mut cache);
+                prepared.outputs(20, &batch.outputs);
+                batch
+            },
             notify,
         )?;
+        preparation.trace = trace.clone();
         let shared = Arc::downgrade(&preparation.shared);
         mailbox.notify_on_ready(Arc::new(move || {
             if let Some(shared) = shared.upgrade() {
+                if trace.active() {
+                    let pending = {
+                        let state = lock(&shared.state);
+                        state.batch.as_ref().map_or(0, |batch| {
+                            if batch
+                                .outputs
+                                .iter()
+                                .any(|output| matches!(output, ViewerOutput::Frame(_)))
+                            {
+                                2
+                            } else {
+                                1
+                            }
+                        })
+                    };
+                    trace.mark(9, 0, 0, pending);
+                }
                 shared.signal()
             } else {
                 false
@@ -133,7 +347,10 @@ impl Preparation {
                 }
             })
             .map_err(|error| format!("Cannot start viewer pixel preparation: {error}"))?;
-        Ok(Self { shared })
+        Ok(Self {
+            shared,
+            trace: OpeningTrace::default(),
+        })
     }
 
     pub fn take(&self) -> Option<PreparedBatch> {

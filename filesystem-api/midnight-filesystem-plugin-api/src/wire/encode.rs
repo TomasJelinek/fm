@@ -14,7 +14,8 @@ pub fn encode_request(value: &Request, maximum: usize) -> Result<Vec<u8>, WireEr
         | Request::Activate { mount, node }
         | Request::Refresh { mount, node }
         | Request::Parent { mount, node }
-        | Request::OpenRead { mount, node } => {
+        | Request::OpenRead { mount, node }
+        | Request::PrepareRename { mount, node } => {
             out.u64(*mount)?;
             out.u64(*node)?;
         }
@@ -48,6 +49,26 @@ pub fn encode_request(value: &Request, maximum: usize) -> Result<Vec<u8>, WireEr
             out.u64(*offset)?;
             out.u32(*length)?;
         }
+        Request::Rename {
+            prepared,
+            attempt,
+            name,
+            policy,
+        } => {
+            out.u64(*prepared)?;
+            out.u64(*attempt)?;
+            out.rename_name(name)?;
+            match policy {
+                RenamePolicy::NoReplace => out.u8(0)?,
+                RenamePolicy::RecoverableCurrentEntry { conflict } => {
+                    out.u8(1)?;
+                    out.u64(*conflict)?;
+                }
+            }
+        }
+        Request::GetRenameState { prepared } | Request::CloseRename { prepared } => {
+            out.u64(*prepared)?
+        }
         Request::Volumes => {}
         Request::ResolveText { text } => out.text(text)?,
     }
@@ -58,6 +79,19 @@ pub fn encode_response(value: &Response, maximum: usize) -> Result<Vec<u8>, Wire
     validate::response(value)?;
     let mut out = Writer::new(maximum)?;
     match value {
+        Response::RenamePrepared(value) => {
+            out.u16(15)?;
+            out.u64(value.handle)?;
+            out.rename_object(&value.source)?;
+            out.blob(&value.parent_identity)?;
+            out.bool(value.recoverable_replace)?;
+        }
+        Response::RenameState(value) => {
+            out.u16(16)?;
+            out.u64(value.prepared)?;
+            out.u64(value.attempt)?;
+            out.rename_outcome(&value.outcome)?;
+        }
         Response::Activated(target) => {
             out.u16(14)?;
             let (kind, address) = match target {
@@ -243,6 +277,77 @@ impl Writer {
             self.blob(&value.bytes)?;
         }
         Ok(())
+    }
+    fn rename_name(&mut self, value: &NativeText) -> Result<(), WireError> {
+        self.u8(value.encoding as u8)?;
+        self.blob(&value.bytes)
+    }
+    fn rename_object(&mut self, value: &RenameObject) -> Result<(), WireError> {
+        self.blob(&value.identity)?;
+        self.blob(&value.revision)?;
+        self.rename_name(&value.name)?;
+        self.u8(value.kind as u8)?;
+        self.metadata(&value.metadata)
+    }
+    fn failure(&mut self, value: &Failure) -> Result<(), WireError> {
+        self.u16(value.code as u16)?;
+        self.bool(value.os_code.is_some())?;
+        if let Some(code) = value.os_code {
+            self.put(&code.to_le_bytes())?;
+        }
+        self.text(&value.message)
+    }
+    fn rename_recovery(&mut self, values: &[RenameRecovery]) -> Result<(), WireError> {
+        self.u32(values.len() as u32)?;
+        for value in values {
+            self.u8(value.role as u8)?;
+            self.address(&value.address)?;
+            self.blob(&value.identity)?;
+        }
+        Ok(())
+    }
+    fn rename_outcome(&mut self, value: &RenameOutcome) -> Result<(), WireError> {
+        match value {
+            RenameOutcome::Ready => self.u8(0),
+            RenameOutcome::Executing => self.u8(1),
+            RenameOutcome::Conflict(value) => {
+                self.u8(2)?;
+                self.u64(value.token)?;
+                self.rename_object(&value.target)?;
+                self.bool(value.can_replace)
+            }
+            RenameOutcome::Unchanged(error) => {
+                self.u8(3)?;
+                self.failure(error)
+            }
+            RenameOutcome::Renamed {
+                name,
+                same_entry,
+                recovery,
+                durability_confirmed,
+            } => {
+                self.u8(4)?;
+                self.rename_name(name)?;
+                self.bool(*same_entry)?;
+                self.rename_recovery(recovery)?;
+                self.bool(*durability_confirmed)
+            }
+            RenameOutcome::RecoveryRequired {
+                source_location,
+                destination_name,
+                recovery,
+                error,
+            } => {
+                self.u8(5)?;
+                self.u8(*source_location as u8)?;
+                self.bool(destination_name.is_some())?;
+                if let Some(name) = destination_name {
+                    self.rename_name(name)?;
+                }
+                self.rename_recovery(recovery)?;
+                self.failure(error)
+            }
+        }
     }
     fn metadata(&mut self, value: &Metadata) -> Result<(), WireError> {
         self.u16(

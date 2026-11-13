@@ -184,6 +184,7 @@ fn all_themes_states_and_views_render_readable_filename_colors_with_preserved_cu
             prefix_end: if state == 0 { 4 } else { 0 },
             size: "12.4 GB".into(),
             size_state: 1,
+            size_running: true,
             ..Default::default()
         })
         .collect();

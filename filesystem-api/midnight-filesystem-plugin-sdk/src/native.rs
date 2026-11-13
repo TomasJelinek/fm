@@ -10,6 +10,8 @@ use std::{
 };
 mod content;
 mod listing;
+mod rename;
+pub use rename::{NativeRename, PreparedRenameInfo, RENAME_RESOURCE_BYTES};
 mod state;
 use state::{Budget, Mount, Slots, State, failure, lock, model};
 
@@ -48,6 +50,17 @@ pub trait NativeAdapter: Send + Sync + 'static {
     fn volumes(context: &CallContext<'_>) -> Result<Vec<Volume>, Failure>;
     fn storage_kind(path: &Path, context: &CallContext<'_>) -> Result<StorageKind, Failure>;
     fn space_info(path: &Path, context: &CallContext<'_>) -> Result<(u64, u64), Failure>;
+    /// Pin the current source and its parent before confirmation, without writes.
+    /// Default Unsupported preserves adapters that do not advertise this extension.
+    fn prepare_rename(
+        _path: &Path,
+        _context: &CallContext<'_>,
+    ) -> Result<Arc<dyn NativeRename>, Failure> {
+        Err(Failure::new(
+            ErrorCode::Unsupported,
+            "Prepared Rename is unavailable.",
+        ))
+    }
     /// Optional capability: the default preserves existing independent adapters.
     fn volume_label(
         _path: &Path,
@@ -82,9 +95,41 @@ impl<A: NativeAdapter> Filesystem for NativeFilesystem<A> {
         })
     }
     fn handle(&self, request: Request, context: &CallContext<'_>) -> Result<Reply, Failure> {
+        let request = match request {
+            Request::Rename {
+                prepared,
+                attempt,
+                name,
+                policy,
+            } => return self.rename(prepared, attempt, name, policy, context),
+            other => other,
+        };
         let response = self.handle_response(request, context)?;
         let state = self.state.clone();
         match &response {
+            Response::RenamePrepared(prepared) => {
+                let id = prepared.handle;
+                let lease = lock(&state)
+                    .renames
+                    .get(&id)
+                    .cloned()
+                    .ok_or_else(|| failure(ErrorCode::StaleReference))?;
+                Ok(Reply::owned(response, move |published| {
+                    let stale = lease.current().is_err();
+                    if !published || stale {
+                        lease
+                            .closed
+                            .store(true, std::sync::atomic::Ordering::Release);
+                        let retired = lock(&state).renames.remove(&id);
+                        drop(retired);
+                    }
+                    if published && stale {
+                        Err(failure(ErrorCode::StaleReference))
+                    } else {
+                        Ok(())
+                    }
+                }))
+            }
             Response::Resolved { mount, .. } => {
                 let mount = *mount;
                 Ok(Reply::owned(response, move |published| {
@@ -119,13 +164,18 @@ impl<A: NativeAdapter> Filesystem for NativeFilesystem<A> {
                     .ok_or_else(|| failure(ErrorCode::StaleReference))?;
                 Ok(Reply::owned(response, move |published| {
                     use std::sync::atomic::Ordering;
-                    if !published {
+                    let stale = published && cursor.mount.current().is_err();
+                    if !published || stale {
                         cursor.closed.store(true, Ordering::Release);
                         let retired = lock(&state).cursors.remove(&id);
                         drop(retired);
                     }
                     cursor.busy.store(false, Ordering::Release);
-                    Ok(())
+                    if stale {
+                        Err(failure(ErrorCode::StaleReference))
+                    } else {
+                        Ok(())
+                    }
                 }))
             }
             _ => Reply::stateless(response),
@@ -139,6 +189,10 @@ impl<A: NativeAdapter> NativeFilesystem<A> {
         context: &CallContext<'_>,
     ) -> Result<Response, Failure> {
         match request {
+            Request::PrepareRename { mount, node } => self.prepare_rename(mount, node, context),
+            Request::GetRenameState { prepared } => self.get_rename_state(prepared),
+            Request::CloseRename { prepared } => self.close_rename(prepared),
+            Request::Rename { .. } => Err(failure(ErrorCode::Invalid)),
             Request::Resolve { address } => self.resolve(&address, context),
             Request::Stat { mount, node } => {
                 let (_mount, node) = self.node(mount, node)?;
@@ -157,7 +211,15 @@ impl<A: NativeAdapter> NativeFilesystem<A> {
                 cursor,
                 expected_page,
                 max_entries,
-            } => self.list_next(cursor, expected_page, max_entries, context),
+            } => {
+                let lease = lock(&self.state)
+                    .cursors
+                    .get(&cursor)
+                    .cloned()
+                    .ok_or_else(|| failure(ErrorCode::StaleReference))?;
+                lease.mount.current()?;
+                self.list_next(cursor, expected_page, max_entries, context)
+            }
             Request::CloseList { cursor } => self.close_list(cursor),
             Request::Parent { mount, node } => {
                 let (mount, node) = self.node(mount, node)?;
@@ -239,11 +301,13 @@ impl<A: NativeAdapter> NativeFilesystem<A> {
             .get(&mount)
             .cloned()
             .ok_or_else(|| failure(ErrorCode::StaleReference))?;
+        mount.current()?;
         let node = lock(&mount.nodes)
             .by_id
             .get(&node)
             .cloned()
             .ok_or_else(|| failure(ErrorCode::StaleReference))?;
+        mount.current()?;
         Ok((mount, node))
     }
     fn close_mount(&self, id: u64) -> Result<Response, Failure> {
@@ -266,3 +330,7 @@ impl<A: NativeAdapter> NativeFilesystem<A> {
 }
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+#[allow(unsafe_code)]
+mod rename_tests;

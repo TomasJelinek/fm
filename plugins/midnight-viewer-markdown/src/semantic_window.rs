@@ -20,16 +20,20 @@ pub(crate) fn crop(mut page: DocumentPage, window: &Window) -> Result<DocumentPa
 /// Borrow retained context and copy only the complete layout groups being returned.
 pub(crate) fn crop_ref(page: &DocumentPage, window: &Window) -> Option<DocumentPage> {
     let selected = select(page, window)?;
-    Some(DocumentPage {
+    Some(slice_ref(page, selected))
+}
+
+pub(crate) fn slice_ref(page: &DocumentPage, selected: Range<usize>) -> DocumentPage {
+    DocumentPage {
         revision: page.revision,
         source: source(page, &selected),
         blocks: page.blocks[selected.clone()].to_vec(),
         has_before: page.has_before || selected.start != 0,
         has_after: page.has_after || selected.end != page.blocks.len(),
-    })
+    }
 }
 
-fn select(page: &DocumentPage, window: &Window) -> Option<Range<usize>> {
+pub(crate) fn groups(page: &DocumentPage) -> Vec<Range<usize>> {
     let mut groups: Vec<Range<usize>> = Vec::new();
     for (index, block) in page.blocks.iter().enumerate() {
         if block.table.as_ref().is_some_and(|row| !row.header)
@@ -42,6 +46,11 @@ fn select(page: &DocumentPage, window: &Window) -> Option<Range<usize>> {
             groups.push(index..index + 1);
         }
     }
+    groups
+}
+
+pub(crate) fn select(page: &DocumentPage, window: &Window) -> Option<Range<usize>> {
+    let groups = groups(page);
     let first = groups.iter().position(|range| {
         let block = &page.blocks[range.end - 1];
         block.text.source.offset + block.text.source.length > window.anchor

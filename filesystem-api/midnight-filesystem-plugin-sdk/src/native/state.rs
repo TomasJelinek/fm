@@ -72,14 +72,26 @@ pub(super) struct Nodes {
 }
 pub(super) struct Mount {
     pub nodes: Mutex<Nodes>,
+    invalidated: AtomicBool,
     _slot: Slot,
 }
 impl Mount {
     pub fn new(slot: Slot) -> Self {
         Self {
             nodes: Mutex::default(),
+            invalidated: AtomicBool::new(false),
             _slot: slot,
         }
+    }
+    pub fn current(&self) -> Result<(), Failure> {
+        if self.invalidated.load(Ordering::Acquire) {
+            Err(failure(ErrorCode::StaleReference))
+        } else {
+            Ok(())
+        }
+    }
+    pub fn invalidate(&self) {
+        self.invalidated.store(true, Ordering::Release);
     }
     pub fn bind(
         &self,
@@ -88,6 +100,7 @@ impl Mount {
         budget: Arc<Budget>,
     ) -> Result<Arc<Record>, Failure> {
         let mut nodes = lock(&self.nodes);
+        self.current()?;
         if let Some(id) = nodes.by_path.get(&path)
             && let Some(record) = nodes.by_id.get(id)
             && record.kind == kind
@@ -160,6 +173,7 @@ pub(super) struct ReadLease<A: NativeAdapter> {
     pub _slot: Slot,
 }
 pub(super) struct State<A: NativeAdapter> {
+    pub renames: HashMap<u64, Arc<super::rename::RenameLease>>,
     pub cursors: HashMap<u64, Arc<Cursor<A>>>,
     pub readers: HashMap<u64, Arc<ReadLease<A>>>,
     pub mounts: HashMap<u64, Arc<Mount>>,
@@ -172,6 +186,7 @@ pub(super) struct Slots {
     mounts: Arc<AtomicUsize>,
     cursors: Arc<AtomicUsize>,
     readers: Arc<AtomicUsize>,
+    renames: Arc<AtomicUsize>,
 }
 pub(super) struct Slot(Arc<AtomicUsize>);
 impl Slots {
@@ -180,6 +195,9 @@ impl Slots {
     }
     pub fn cursor(&self) -> Result<Slot, Failure> {
         Slot::acquire(self.cursors.clone(), 32)
+    }
+    pub fn rename(&self) -> Result<Slot, Failure> {
+        Slot::acquire(self.renames.clone(), 32)
     }
     pub fn reader(&self) -> Result<Slot, Failure> {
         Slot::acquire(self.readers.clone(), 64)
@@ -203,6 +221,7 @@ impl Drop for Slot {
 impl<A: NativeAdapter> Default for State<A> {
     fn default() -> Self {
         Self {
+            renames: HashMap::new(),
             mounts: HashMap::new(),
             cursors: HashMap::new(),
             readers: HashMap::new(),

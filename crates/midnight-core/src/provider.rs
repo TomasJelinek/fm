@@ -132,7 +132,8 @@ pub enum StorageKind {
     Unknown,
 }
 
-/// Native directory identity used only for read-only sizing cycle detection.
+/// Native directory identity for read-only traversal cycle detection.
+/// This live observation is never mutation authority.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct SizeDirectoryIdentity {
     pub device: u64,
@@ -150,6 +151,19 @@ pub struct SizeDirectoryTarget {
 /// Blocking directory enumeration and metadata access; call on a worker thread.
 /// Paths and names retain their native identity without Unicode normalization.
 pub trait DirectoryService: Send + Sync + 'static {
+    /// Observe a directory's OS-resolved identity for read-only inline browsing.
+    /// `None` means the inspected target is not a directory. Unsupported providers
+    /// may browse ordinary directories but cannot safely follow directory links.
+    /// Run only on bounded backend workers; resolved paths are deliberately absent.
+    fn browse_directory_identity(
+        &self,
+        path: &Path,
+        cancel: &Cancellation,
+    ) -> Result<Option<SizeDirectoryIdentity>, FsError> {
+        self.resolve_size_directory(path, cancel)
+            .map(|target| target.map(|target| target.identity))
+    }
+
     /// Resolve an ordinary directory or directory-link target for explicit sizing.
     /// `None` means a successfully inspected non-directory (for example a file link).
     /// Unsupported providers may still scan ordinary directories, but cannot follow links.

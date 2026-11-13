@@ -313,11 +313,6 @@ fn projection_rejects_contradictory_disclosure_and_context_flags() {
         parent.disclosure = disclosure;
         assert!(checked_projection(vec![parent]).is_err());
     }
-    let mut link = row(1, "link", EntryKind::DirectoryLink);
-    link.navigable = true;
-    link.expanded = true;
-    link.disclosure = TreeDisclosure::Expanded;
-    assert!(checked_projection(vec![link]).is_err());
     let mut context = row(1, "context", EntryKind::Directory);
     context.context_only = true;
     context.selectable = false;
@@ -325,6 +320,29 @@ fn projection_rejects_contradictory_disclosure_and_context_flags() {
     let mut unavailable = row(1, "file", EntryKind::File);
     unavailable.disclosure = TreeDisclosure::Failed;
     assert!(checked_projection(vec![unavailable]).is_err());
+}
+
+#[test]
+fn directory_links_share_coherent_folder_disclosure_validation() {
+    for disclosure in [
+        TreeDisclosure::Unknown,
+        TreeDisclosure::Loading,
+        TreeDisclosure::Collapsed,
+        TreeDisclosure::Expanded,
+        TreeDisclosure::Empty,
+        TreeDisclosure::Failed,
+    ] {
+        let mut link = row(1, "link", EntryKind::DirectoryLink);
+        link.navigable = true;
+        link.expanded = disclosure == TreeDisclosure::Expanded;
+        link.disclosure = disclosure;
+        assert!(
+            checked_projection(vec![link.clone()]).is_ok(),
+            "{disclosure:?}"
+        );
+        link.navigable = false;
+        assert!(checked_projection(vec![link]).is_err());
+    }
 }
 
 #[test]

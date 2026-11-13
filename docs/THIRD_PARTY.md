@@ -164,10 +164,32 @@ already selected; their MIT licenses were checked. Resolution preserves all
 `android-build` 0.1.4 (MIT) and `i-slint-backend-android-activity` 1.18.1 (the same
 Slint Royalty-free 2.0 alternative). Their pinned license files were inspected.
 Neither Android package nor Skia enters the Windows/Linux selected build graphs.
-The native Windows plugin enables additional modules of already pinned
-windows-sys 0.61.2 under its MIT alternative; its independent THIRD-PARTY notice
-contains the corresponding full text. The inventory captures were refreshed for
-these feature changes; there is no change to the selected license alternatives.
+Earlier Browse/Read native Windows captures cover additional modules of pinned
+windows-sys 0.61.2 under its MIT alternative, with the full notice retained.
+The targeted prepared-Rename capture below updates that source selection.
+
+The integrated prepared-Rename native Windows **0.2 source** adds runtime features
+`Wdk_Foundation`, `Wdk_Storage_FileSystem`, `Win32_Globalization`,
+`Win32_Security`, `Win32_Security_Cryptography` and `Win32_System_Threading`
+to pinned windows-sys **0.61.2**, with defaults disabled. Its normal feature tree
+has **19** namespace features; the test/compiled union has **20**, adding only
+`Win32_System_LibraryLoader`. windows-link remains **0.2.1**. The selected **MIT**
+alternative and complete retained notices are unchanged; no separate cryptographic
+library or new third-party package/version is introduced.
+
+The targeted Windows-host/Windows-target metadata/tree captures select windows-sys
+and windows-link for `native-windows`, and no third-party package for
+`native-linux`. The Linux-target libc **0.2.191** `std` declaration/checksum is
+unchanged; no new Linux-host capture or Linux execution is claimed. Both plugins'
+own 0.1-to-0.2 versions are project-owned and excluded. The targeted package/row
+comparison preserves the generated package/license tables and their recorded
+provenance: **646 records / 528 names / 66 direct records**. This is a feature
+refresh, not a full 46-pair recapture or generator `--check`.
+
+Windows/Linux native 0.2 source is integrated in D merge `5baee471` from C commit
+`42d45def` (25 matching paths). The plugins are not deployed and engine/UI cutover
+remains unimplemented; installed-provider/native-runtime qualification is separate. See
+[provider status](ACTIVE_WORK.md#provider-increments-from-the-architect-review).
 
 ## Main functional libraries
 
@@ -343,7 +365,7 @@ Capture JSON and tree text for each scope below, using Windows for
 `native-macos`, which requires only `x86_64-apple-darwin` and
 `aarch64-apple-darwin`. Do not add Darwin captures for the application or other
 workspaces. Name the outputs
-`<scope>-<target>.json` and `<scope>-<target>.tree` in `_build/qa/dependency-inventory/`.
+`<scope>-<target>.json` and `<scope>-<target>.tree` in `_build/verification/dependency-inventory/`.
 
 | Scope | Manifest |
 | --- | --- |
@@ -365,6 +387,7 @@ workspaces. Name the outputs
 | web-viewer-api | `web-viewer-api/Cargo.toml` |
 | html-viewer | `plugins/midnight-viewer-html/Cargo.toml` |
 | image-viewer | `plugins/midnight-viewer-image/Cargo.toml` |
+| image-decoder | `plugins/image-decoder/Cargo.toml` |
 | pdf-viewer | `plugins/midnight-viewer-pdf/Cargo.toml` |
 | archive | `plugins/midnight-fs-archive/Cargo.toml` |
 | thumbnail-image | `plugins/midnight-thumbnail-image/Cargo.toml` |
@@ -381,7 +404,7 @@ matching bundle's absolute config path; plugin lockfiles pin its package checksu
 $scope = 'app'
 $manifest = 'Cargo.toml'
 $target = 'x86_64-pc-windows-msvc'
-$captures = '_build/qa/dependency-inventory'
+$captures = '_build/verification/dependency-inventory'
 New-Item -ItemType Directory -Force $captures | Out-Null
 ./scripts/cargo.ps1 metadata --locked --format-version 1 --manifest-path $manifest `
     --filter-platform $target | Set-Content -Encoding utf8 "$captures/$scope-$target.json"
@@ -407,18 +430,26 @@ exception: its current libc/public-API/SDK graph has no additional build or
 procedural-macro dependencies. Recapture on a Mac if that graph gains such
 dependencies; do not extrapolate its graph to the application. Metadata/tree
 success never establishes native runtime support.
-The generator reads forty-four metadata/tree pairs, excludes project-owned
+The generator requires forty-six metadata/tree pairs across its twenty-three
+scopes, including `image-decoder`; it excludes project-owned
 API/SDK crates, and writes deterministic Markdown/CSV. Explicitly marked vendored
 third-party workspace members remain included. Recapture after every dependency
 or feature change. `--check` verifies tables against the supplied captures; it
 does not prove that those captures are current. Current source hashes are not
 used as a substitute for capture provenance. The four application/renderer pairs
-were refreshed on 11 November 2026; the remaining forty pairs preserve their
-existing native-host or documented macOS cross-target provenance.
+were refreshed on 11 November 2026; other pairs retain their documented native-
+host or macOS cross-target provenance. A complete current input set is required
+for regeneration.
+
+The generator emits package/license/scope records, not enabled-feature columns.
+Retain the affected package's `resolve.nodes[].features` with each metadata
+capture. The older [feature/license CSV](third-party-inventory.csv) belongs to the
+[dated main-branch audit](verification/main-audit.md), as the [docs index](README.md)
+explains; preserve that historical snapshot rather than inserting later feature changes.
 
 ```sh
 python3 -B -m unittest discover -s scripts/tests -v
-python3 -B scripts/dependency-inventory.py --metadata-dir _build/qa/dependency-inventory --check
+python3 -B scripts/dependency-inventory.py --metadata-dir _build/verification/dependency-inventory --check
 ```
 
 The 11 November MEDIA-01 follow-up advances only the first-party

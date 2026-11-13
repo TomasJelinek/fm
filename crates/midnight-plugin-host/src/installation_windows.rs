@@ -27,6 +27,12 @@ struct Registration {
     executable_utf16: Vec<u16>,
 }
 
+#[derive(Clone, Copy)]
+enum ExecutableRole {
+    Launch,
+    RegisteredTarget,
+}
+
 pub(crate) fn resolve() -> Result<PathBuf, Error> {
     let executable = std::env::current_exe()?;
     let registrations = std::env::var_os("USERPROFILE")
@@ -44,7 +50,7 @@ fn resolve_at(executable: &Path, registration_root: Option<&Path>) -> Result<Pat
         Ok(()) => return Ok(executable),
         Err(error) => error,
     };
-    let digest = executable_digest(&executable)?;
+    let digest = executable_digest(&executable, ExecutableRole::Launch)?;
     let Some(registration_root) = registration_root else {
         return missing_registration(executable, direct_error);
     };
@@ -72,7 +78,7 @@ fn resolve_at(executable: &Path, registration_root: Option<&Path>) -> Result<Pat
         &registration.executable_utf16,
     )))?;
     trusted_executable(&target)?;
-    if executable_digest(&target)? != digest {
+    if executable_digest(&target, ExecutableRole::RegisteredTarget)? != digest {
         return Err(Error(
             "Registered plugin runtime executable does not match this build".into(),
         ));
@@ -226,7 +232,7 @@ fn read_registration(path: &Path) -> Result<Registration, Error> {
         .map_err(|error| Error(format!("Invalid plugin runtime registration: {error}")))
 }
 
-fn executable_digest(path: &Path) -> Result<String, Error> {
+fn executable_digest(path: &Path, role: ExecutableRole) -> Result<String, Error> {
     let mut file = locked_file(path)?;
     let before = crate::native::snapshot(&file)?;
     if before.length > MAX_EXECUTABLE_BYTES {
@@ -246,12 +252,32 @@ fn executable_digest(path: &Path) -> Result<String, Error> {
         }
         hash.update(&buffer[..count]);
     }
-    if before != crate::native::snapshot(&file)? || length != before.length {
-        return Err(Error(
-            "Plugin runtime executable changed while hashing".into(),
-        ));
-    }
+    let after = crate::native::snapshot(&file)?;
+    validate_executable_snapshot(path, role, &before, &after, length)?;
     Ok(format!("{:x}", hash.finalize()))
+}
+
+fn validate_executable_snapshot(
+    path: &Path,
+    role: ExecutableRole,
+    before: &crate::native::Snapshot,
+    after: &crate::native::Snapshot,
+    bytes_read: u64,
+) -> Result<(), Error> {
+    if before != after || bytes_read != before.length {
+        let role = match role {
+            ExecutableRole::Launch => "launch_executable",
+            ExecutableRole::RegisteredTarget => "registered_target",
+        };
+        return Err(Error(format!(
+            "Plugin runtime executable changed while hashing: \
+             role={role}; path={path:?}; changed_fields=[{}]; \
+             bytes_read={bytes_read}; expected_length={}",
+            before.changed_fields(after),
+            before.length,
+        )));
+    }
+    Ok(())
 }
 
 #[cfg(test)]

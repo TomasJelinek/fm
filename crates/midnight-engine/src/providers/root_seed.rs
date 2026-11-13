@@ -1,6 +1,6 @@
 //! Captured initial rows, with an explicit native-only subsequent-read policy.
 use super::{MountedFilesystem, OpenedLocation, ProviderEntry, ProviderError, ProviderTarget};
-use midnight_core::{Cancellation, Entry, NodeToken};
+use midnight_core::{Cancellation, Entry, NodeToken, SizeDirectoryIdentity};
 use midnight_plugin_host::ContentSource;
 use std::{
     collections::HashSet,
@@ -97,6 +97,14 @@ struct RootSeed {
 }
 
 impl MountedFilesystem for RootSeed {
+    fn browse_directory_identity(
+        &self,
+        node: &NodeToken,
+        cancel: &Cancellation,
+    ) -> Result<Option<SizeDirectoryIdentity>, ProviderError> {
+        self.source.browse_directory_identity(node, cancel)
+    }
+
     fn list(
         &self,
         directory: &NodeToken,

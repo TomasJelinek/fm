@@ -39,7 +39,13 @@ impl Harness {
         }))
         .unwrap();
         let main = MainWindow::new().unwrap();
+        // MinimalSoftwareWindow starts at 0x0. Give focus restoration the same
+        // visible geometry that the native host supplies before opening a popup.
+        main.window()
+            .set_size(slint::LogicalSize::new(1000.0, 700.0));
         main.show().unwrap();
+        main.window()
+            .dispatch_event(slint::platform::WindowEvent::WindowActiveChanged(true));
         let path = std::env::temp_dir().join("operation-lifetime");
         let state = Rc::new(RefCell::new(Presenter::new(path.clone(), path)));
         let commands = Rc::new(RefCell::new(Vec::new()));
@@ -244,6 +250,12 @@ fn embedded_operation_background_copy_retirement_keeps_owner_item_focus() {
         h.main.invoke_set_command("unchanged draft".into(), 3);
         let inner = i_slint_core::window::WindowInner::from_pub(h.main.window());
         let invoking = inner.focus_item.borrow().upgrade().unwrap();
+        assert!(
+            invoking.is_visible(),
+            "the invoking editor needs a nonempty viewport"
+        );
+        assert!(h.main.get_command_focused());
+        assert!(inner.active());
         h.state.borrow_mut().start_copy(
             midnight_core::FileClipboard {
                 paths: vec![std::env::temp_dir().join("operation-lifetime/source.txt")],
@@ -256,9 +268,15 @@ fn embedded_operation_background_copy_retirement_keeps_owner_item_focus() {
         slint::platform::update_timers_and_animations();
         assert!(h.main.global::<OperationPresentation>().get_active());
         assert_eq!(h.adapters.get(), 1);
+        assert_eq!(inner.active_popups().len(), 1);
+        assert_ne!(inner.focus_item.borrow().upgrade().unwrap(), invoking);
         h.main
             .window()
             .dispatch_event(slint::platform::WindowEvent::WindowActiveChanged(false));
+        assert!(
+            !inner.active(),
+            "the fixture must exercise retirement in the background"
+        );
         let token = h
             .state
             .borrow()
@@ -272,6 +290,15 @@ fn embedded_operation_background_copy_retirement_keeps_owner_item_focus() {
         crate::refresh(&h.main, &h.state.borrow());
         h.tick(0);
         assert!(!h.main.global::<OperationPresentation>().get_active());
+        assert!(inner.active_popups().is_empty());
+        assert!(
+            !inner.active(),
+            "retiring a draft must not activate its owner"
+        );
+        assert!(
+            h.commands.borrow().is_empty(),
+            "retiring a draft must not enqueue work"
+        );
         assert!(
             inner
                 .focus_item

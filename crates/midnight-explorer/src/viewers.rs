@@ -9,6 +9,27 @@ use std::{
 };
 use tokio::sync::mpsc;
 
+pub(crate) fn finish_after_image_spare<T>(
+    result: Result<crate::startup_recovery::Attempt, String>,
+    retire_spare: impl FnOnce() -> (T, Result<(), String>),
+    shutdown_runtime: impl FnOnce(T),
+    retry: impl FnOnce() -> Result<(), String>,
+) -> Result<(), String> {
+    // Transfer the runtime only after a terminal spare result, including startup errors.
+    let (runtime, retirement) = retire_spare();
+    let result = match retirement {
+        Ok(()) => result,
+        Err(error) => Err(match result {
+            Ok(crate::startup_recovery::Attempt::NativeStartupFailed(startup)) | Err(startup) => {
+                format!("{startup}\n{error}")
+            }
+            Ok(crate::startup_recovery::Attempt::Finished) => error,
+        }),
+    };
+    // Existing runtime cleanup still runs on failure; Err cannot enter software retry.
+    crate::startup_recovery::finish(result, || shutdown_runtime(runtime), retry)
+}
+
 pub(crate) fn install(
     window: &MainWindow,
     presenter: Rc<RefCell<Presenter>>,
@@ -16,11 +37,18 @@ pub(crate) fn install(
     runtime: &tokio::runtime::Handle,
     filesystem: std::sync::Arc<midnight_native_filesystem_host::InstalledProvider>,
     resources: std::sync::Arc<dyn midnight_core::TransferService>,
-) -> Rc<ViewerWindows> {
+    retirement: &mut Option<midnight_viewer_engine::ImageSpareRetirement>,
+) -> (Rc<ViewerWindows>, slint::Timer) {
     let service = midnight_viewer_engine::Service::with_native_capture(
         runtime.clone(),
         crate::native_content::factory_with_resources(filesystem, resources),
     );
+    // The outer run owns this ticket on every later Result/early-return path.
+    // Register before timers or ViewerWindows can start catalog preparation.
+    debug_assert!(retirement.is_none());
+    *retirement = Some(service.image_spare_retirement());
+    let image_preparation =
+        prepare_images_after_settings(window.as_weak(), Rc::downgrade(&presenter), service.clone());
     let viewers = Rc::new(ViewerWindows::new(service));
     let settings = presenter.clone();
     let settings_commands = commands.clone();
@@ -46,11 +74,11 @@ pub(crate) fn install(
             let scheduled = scheduled.clone();
             let state = state.clone();
             let sender = sender.clone();
-            let manager = manager.clone();
+            let manager = Rc::downgrade(&manager);
             let weak = weak.clone();
             slint::Timer::single_shot(Duration::ZERO, move || {
                 scheduled.set(false);
-                let Some(window) = weak.upgrade() else {
+                let (Some(window), Some(manager)) = (weak.upgrade(), manager.upgrade()) else {
                     return;
                 };
                 let launch = state.borrow_mut().take_generated_file_list_viewer();
@@ -112,7 +140,96 @@ pub(crate) fn install(
             midnight_ui::refresh(&window, &presenter.borrow());
         }
     });
-    viewers
+    (viewers, image_preparation)
+}
+
+fn prepare_images_after_settings(
+    window: slint::Weak<MainWindow>,
+    presenter: std::rc::Weak<RefCell<Presenter>>,
+    service: midnight_viewer_engine::Service,
+) -> slint::Timer {
+    // Wait only by scheduling: panel startup, preference loading and UI input keep running.
+    // The service suppresses unchanged memory-only policy; discovery and native work are backend.
+    let timer = slint::Timer::default();
+    timer.start(
+        slint::TimerMode::Repeated,
+        Duration::from_millis(200),
+        move || {
+            let (Some(_window), Some(state)) = (window.upgrade(), presenter.upgrade()) else {
+                return;
+            };
+            let policy = state.borrow().viewer_startup_policy();
+            if let Some((disabled, associations)) = policy {
+                service.prepare_image_workers(Some(disabled), associations);
+            } else {
+                service.prepare_image_workers(None, Default::default());
+            }
+        },
+    );
+    timer
+}
+
+#[cfg(test)]
+mod preparation_lifetime_tests {
+    use super::*;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
+
+    struct ClockOnly;
+
+    impl slint::platform::Platform for ClockOnly {
+        fn create_window_adapter(
+            &self,
+        ) -> Result<Rc<dyn slint::platform::WindowAdapter>, slint::platform::PlatformError>
+        {
+            panic!("Preparation lifetime test must not create a native window");
+        }
+
+        fn duration_since_start(&self) -> Duration {
+            Duration::ZERO
+        }
+    }
+
+    struct CaptureLifetime(Arc<AtomicBool>);
+
+    impl Drop for CaptureLifetime {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::Release);
+        }
+    }
+
+    #[test]
+    fn dropping_preparation_timer_releases_service_without_an_event_loop_callback() {
+        slint::platform::set_platform(Box::new(ClockOnly)).unwrap();
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .build()
+            .unwrap();
+        let released = Arc::new(AtomicBool::new(false));
+        let lifetime = CaptureLifetime(released.clone());
+        let capture: midnight_viewer_engine::NativeCapture = Arc::new(move |_, _| {
+            let _lifetime = &lifetime;
+            Err("Lifetime-only capture must not be invoked".into())
+        });
+        let service =
+            midnight_viewer_engine::Service::with_native_capture(runtime.handle().clone(), capture);
+        let timer =
+            prepare_images_after_settings(slint::Weak::default(), std::rc::Weak::new(), service);
+        assert!(!released.load(Ordering::Acquire));
+        timer.stop();
+        assert!(
+            !released.load(Ordering::Acquire),
+            "Stopping retains its callback"
+        );
+        drop(timer);
+        assert!(
+            released.load(Ordering::Acquire),
+            "Shutdown must drop the owned timer"
+        );
+    }
 }
 
 fn open(
@@ -219,12 +336,14 @@ fn pending_viewers_callback(
             scheduled.clone(),
             state.clone(),
             sender.clone(),
-            manager.clone(),
+            Rc::downgrade(&manager),
             weak.clone(),
         );
         slint::Timer::single_shot(Duration::ZERO, move || {
             scheduled.set(false);
-            let Some(window) = weak.upgrade() else { return };
+            let (Some(window), Some(manager)) = (weak.upgrade(), manager.upgrade()) else {
+                return;
+            };
             loop {
                 let launch = take(&mut state.borrow_mut());
                 let Some(launch) = launch else { break };

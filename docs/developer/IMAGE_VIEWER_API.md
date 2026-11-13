@@ -189,6 +189,47 @@ claim to interrupt that call or release its worker early. Source reads share
 the application's weighted I/O budget. Session admission/generation checks and
 discarding obsolete results belong to the viewer engine.
 
+### Worker preparation
+
+The host exposes `PreparedImageWorker::prepare` and
+`ImageSession::open_prepared`. Preparation pins and validates installed code,
+starts the restricted worker and waits for the existing Ready handshake. It owns
+no selected source or content authority, sends no Open and performs no source
+validation, reads or decoding. The prepared transport is consumed once:
+
+```rust
+let prepared = PreparedImageWorker::prepare(&provider, &cancel, timeout)?;
+let session = ImageSession::open_prepared(&provider, prepared, source, &cancel, timeout)?;
+```
+
+The viewer engine shares at most one source-free spare across its service's
+windows. Four actual-child reservations cover starting, ready, active and retiring
+children together. Preparation has a 30-second start budget; an unused ready
+spare expires after 60 seconds. These limits do not interrupt a blocked native
+process-creation call: its reservation remains owned until that call returns and
+the child is terminated and reaped.
+
+Committed disabled-provider/association settings and the installed catalog govern
+eligibility; document providers are not selected for speculative preparation.
+Policy/catalog generation changes, provider mismatch, changed pinned code,
+expiry and shutdown invalidate the spare. Claim revalidates installed identity,
+and the host retains the final live code/source guard immediately before Open.
+A successfully opened session can request one background refill; failed
+preparation does not create a speculative retry loop.
+
+Explicit Open requests take priority over refill and may share a matching start.
+Canceling one waiter only detaches that waiter; another waiter's shared launch
+continues. A stale spare rejected at engine admission is cleaned up before ordinary
+cold Open under the same reservation. Once `open_prepared` begins, Open/broker/
+decoder failures are terminal and never trigger an automatic cold retry.
+
+Preparation, claim, cleanup and process reaping run on backend owners. UI-held
+handles only configure, cancel and wake that owner. Shutdown invalidates pending
+preparation/refill; cancellation and expiry retain child capacity through actual
+cleanup. A prepared child cannot be recycled for another source after consumption.
+The independent image/document API, SDK, MIV1 messages, sandbox and resource-policy
+contracts remain unchanged.
+
 ## Source ranges and archive memory
 
 The user resumed generic archive streaming and private disk spooling on
@@ -343,3 +384,18 @@ behavior changes. Without the feature the timing code is compiled out.
 See the [measured startup attribution](../verification/2026-11-11-image-loading.md)
 for interpreting cold native-process delays separately from decoding and UI
 publication.
+
+### Prewarming checks
+
+The R2 Windows headless controls pass **5/0/0** with candidate host code and
+the unchanged private `269f3419` worker package. One same-candidate authored 2x1 BMP pair records cold Open to exact
+CPU pixels **253.919 ms** and ready Open **139.410 ms**, including **71.182 ms**
+claim validation. Preparation is a separate **204.803 ms** interval with zero
+source validations/reads; ready Open records zero process creations. Source drift
+is zero, all 1,382 runtime file hashes are unchanged and owned cleanup completes.
+The pair calls host startup directly; engine manager/refill and application UI
+are not timed. These are single host-control observations; other images,
+scrolling/smoothness, Ready idle memory/CPU and complete-run peak resources retain
+separate qualification. R3's final fixture/lint gate passes without rerunning or
+relabeling the R2 native controls. See the
+[current source and receipts](../ACTIVE_WORK.md#image-prewarming-source-and-evidence).

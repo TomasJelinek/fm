@@ -31,6 +31,23 @@ viewport revisions cannot publish stale pixels. Transport budgets bound messages
 and viewport memory, not complete file sizes. Frame acknowledgements and close/EOF
 release ownership. No UI callback performs file reads, discovery or process waits.
 
+The application's opt-in `Service::open_with_layout` path uses app-private
+`midnight_core::viewer` messages. `ViewerOutput::LayoutSelected` announces a
+nonzero token, selected mode and `content_generation` before the backend starts
+the viewer transport or HTML browser session. The UI applies the selected mode/chrome,
+settles layout, measures the actual canvas and sends `ViewerInput::LayoutReady`
+with that token and `ViewerGeometry`. It acknowledges unchanged dimensions too,
+retries refused enqueues and suppresses redundant Resize until acceptance.
+
+The content generation fences presentation frames; it is separate from the native
+plugin session generation. Resize preserves the pending token; Close, file cycling,
+mode replacement or fallback invalidate it. Stale/duplicate acknowledgements
+cannot start content, and the UI rejects frames below the announced generation
+floor before they can rewrite chrome. Layout metadata and its acknowledgement do
+not make opening ready: a real frame is required. The public plugin API/wire
+protocol is unchanged; fixed-viewport `Service::open` consumers retain their
+existing explicit-initial-geometry behavior.
+
 HTML starts offline with JavaScript disabled. Explicit online mode grants only
 the captured main document, embedded data and remote resources; relative local
 assets are unavailable. Enabling JavaScript requires online mode and the UI warns

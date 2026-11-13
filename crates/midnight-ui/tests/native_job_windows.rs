@@ -6,7 +6,7 @@ mod input;
 mod modeless;
 
 use midnight_core::*;
-use midnight_ui::{MainWindow, Presenter, install, refresh};
+use midnight_ui::{MainWindow, NoticePresentation, Presenter, install, refresh};
 use slint::{
     ComponentHandle, Model,
     platform::{Key, WindowAdapter, WindowEvent, software_renderer::MinimalSoftwareWindow},
@@ -480,7 +480,7 @@ fn native_decision_failed_creation_preserves_job_and_retries_only_on_resolve() {
     let jobs = h.children(1).remove(0);
     h.refuse_window.set(true);
     h.failure(1, 6);
-    let notice = creation_notice(&h);
+    let notice = creation_notice(&h, "Operation decision");
     assert!(!Rc::ptr_eq(&notice, &jobs));
     let attempts = h.attempts.get();
     for _ in 0..3 {
@@ -496,6 +496,9 @@ fn native_decision_failed_creation_preserves_job_and_retries_only_on_resolve() {
         "failed creation cannot cancel or skip the waiting job"
     );
     input::key(&notice, Key::Escape);
+    assert!(h.main.window().is_visible());
+    assert!(!h.main.get_embedded_modal_open());
+    assert!(h.main.global::<NoticePresentation>().get_token().is_empty());
     h.children(1);
     h.refuse_window.set(false);
     modeless::click(&jobs, "Resolve");
@@ -527,23 +530,47 @@ fn visible_error(item: i_slint_core::item_tree::ItemRc) -> bool {
     false
 }
 
-fn creation_notice(h: &Harness) -> Rc<MinimalSoftwareWindow> {
+fn creation_notice(h: &Harness, expected_title: &str) -> Rc<MinimalSoftwareWindow> {
+    let attempts = h.attempts.get();
+    let adapters = h.windows.borrow().len();
     for _ in 0..3 {
         slint::platform::update_timers_and_animations();
     }
-    let notice = h
-        .windows
-        .borrow()
-        .iter()
-        .skip(1)
-        .rfind(|w| w.window().is_visible())
-        .cloned()
-        .expect("native creation failure must show an owned diagnostic");
+    // Blocking Notice is embedded in Main. A surviving modeless Jobs adapter
+    // must never be mistaken for the diagnostic's presentation owner.
+    let notice = h.windows.borrow()[0].clone();
     modeless::draw(&notice, 320, 200, "jobs-creation-error-compact");
+    assert!(notice.window().is_visible());
+    assert_eq!(
+        h.attempts.get(),
+        attempts,
+        "Notice attempted an extra OS adapter"
+    );
+    assert_eq!(h.windows.borrow().len(), adapters);
+    let presentation = h.main.global::<NoticePresentation>();
+    let generation = h.main.get_message_generation();
+    assert_ne!(generation, 0, "creation failure must publish a diagnostic");
+    assert_eq!(presentation.get_generation(), generation);
+    assert_eq!(presentation.get_token().as_str(), generation.to_string());
+    assert_eq!(presentation.get_title().as_str(), expected_title);
+    assert_eq!(h.main.get_message_title().as_str(), expected_title);
+    assert_eq!(presentation.get_body(), h.main.get_message_body());
+    assert!(h.main.get_embedded_modal_open());
+    assert!(!h.main.get_dialog_input_blocked());
+    let inner = i_slint_core::window::WindowInner::from_pub(notice.window());
+    let component = {
+        let popups = inner.active_popups();
+        let mut notices = popups.iter().filter(|popup| {
+            !matches!(popup.window_kind, i_slint_core::window::WindowKind::ToolTip)
+        });
+        let popup = notices
+            .next()
+            .expect("creation failure must show a Main popup");
+        assert!(notices.next().is_none(), "unexpected competing Main popup");
+        popup.component.clone()
+    };
     assert!(
-        visible_error(i_slint_core::item_tree::ItemRc::new_root(
-            i_slint_core::window::WindowInner::from_pub(notice.window()).component()
-        )),
+        visible_error(i_slint_core::item_tree::ItemRc::new_root(component)),
         "the failure text must be visibly rendered in the compact owned notice"
     );
     notice
@@ -554,13 +581,16 @@ fn native_jobs_failed_creation_reports_visibly_and_only_explicit_open_retries() 
     let h = Harness::new();
     h.refuse_window.set(true);
     h.main.invoke_show_operations();
-    let notice = creation_notice(&h);
+    let notice = creation_notice(&h, "Jobs window");
     let attempts = h.attempts.get();
     assert!(
         h.commands.borrow().is_empty(),
         "failed Jobs creation is presentation-only"
     );
     input::key(&notice, Key::Escape);
+    assert!(h.main.window().is_visible());
+    assert!(!h.main.get_embedded_modal_open());
+    assert!(h.main.global::<NoticePresentation>().get_token().is_empty());
     assert!(!h.main.get_operations_visible());
     for _ in 0..3 {
         refresh(&h.main, &h.state.borrow());

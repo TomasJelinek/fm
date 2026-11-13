@@ -1,6 +1,7 @@
-//! Distinct adapters for installed UI tests that open owned native forms.
+//! Installed UI input routes to embedded popups or independent native tools.
 #![allow(dead_code)]
 use crate::ui::TestUi;
+use i_slint_core::window::{WindowInner, WindowKind};
 use slint::{
     ComponentHandle,
     platform::{
@@ -44,27 +45,37 @@ pub fn with_buffer(buffer: RepaintBufferType) -> (TestUi, Windows) {
     (ui, windows)
 }
 pub fn child_key(windows: &Windows, text: impl Into<slint::SharedString>) {
-    let children: Vec<_> = windows
-        .borrow()
+    slint::platform::update_timers_and_animations();
+    let main = windows.borrow().first().expect("main adapter").clone();
+    let embedded = WindowInner::from_pub(main.window())
+        .active_popups()
         .iter()
-        .skip(1)
-        .filter(|window| window.window().is_visible())
-        .cloned()
-        .collect();
-    assert_eq!(
-        children.len(),
-        1,
-        "exactly one owned form must receive input"
-    );
-    let child = &children[0];
-    child
+        .any(|popup| !matches!(popup.window_kind, WindowKind::ToolTip));
+    let target = if embedded {
+        main
+    } else {
+        let children: Vec<_> = windows
+            .borrow()
+            .iter()
+            .skip(1)
+            .filter(|window| window.window().is_visible())
+            .cloned()
+            .collect();
+        assert_eq!(
+            children.len(),
+            1,
+            "exactly one independent tool must receive input"
+        );
+        children[0].clone()
+    };
+    target
         .window()
         .dispatch_event(WindowEvent::WindowActiveChanged(true));
     let text = text.into();
-    child
+    target
         .window()
         .dispatch_event(WindowEvent::KeyPressed { text: text.clone() });
-    child
+    target
         .window()
         .dispatch_event(WindowEvent::KeyReleased { text });
 }

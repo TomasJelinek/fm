@@ -48,9 +48,11 @@ the caret to its surviving visible ancestor. Loading updates preserve the panel
 viewport.
 
 Details and Brief reserve the same disclosure gutter for every row, including
-files and directory links without an expansion button. Thus a Windows junction
-such as `Documents and Settings` aligns with ordinary folders; its system link
-overlay remains visible. Thumbnail artwork retains its centered layout.
+files and known-empty directory links without an expansion button. Supported
+directory links, including Windows junctions such as `Documents and Settings`,
+can show an expander under the same disclosure rules as ordinary folders; their
+system link overlay remains visible. Thumbnail artwork retains its centered
+layout.
 
 Tree selection uses separate backend snapshots and at most 32 small pending
 intents for immediate visible feedback. Ctrl/Shift input, Insert/Space toggles,
@@ -134,13 +136,15 @@ filter/sort evidence below.
 Flat-panel subfolder hints are independent of tree adoption. At most 256 viewport
 directory IDs are probed against the exact completed listing, with one coalescing
 worker per pane, the existing listing capacity and shared I/O budget. Native
-enumeration stops at the first folder; archive probes retain the captured member
-and mount identity. Links are visible children but are not recursively probed.
+enumeration stops at the first immediate directory or directory-link child; it
+does not descend into that child or recursively walk link targets. Archive probes
+retain the captured member and mount identity.
 Empty/has-folder hints are held in a bounded display cache. Selection, flat action
 authority and navigation stay unchanged until the user's ordinary disclosure
 click requests exact tree adoption. Navigation, refresh and viewport replacement
 cancel obsolete probes. Failed probes preserve provider details for the existing
-warning tooltip and detail viewer, and never become an empty-folder result.
+warning tooltip and modal listing-error notice, and never become an empty-folder
+result.
 
 Presence is an existential display hint, not a validated child listing. Native
 probes use the injected directory service, validate each immediate child path and
@@ -150,6 +154,101 @@ expansion retains the full provider identity and duplicate-node validation.
 File-only directories have no arbitrary record-count cutoff. Cancellation and
 the worker/I/O limits bound concurrent work; archive probes retain their existing
 captured-mount validation and resource policy.
+
+Native flat-panel admission now accepts `DirectoryLink` alongside ordinary
+directories for the exact captured native root. Previously, one directory link
+could discard the entire viewport batch. Archive batches still reject links and
+files; empty or unavailable native links retain individual hints without losing
+ordinary siblings' results. The admission regressions first ran **6 passed /
+2 failed / 0 ignored**. The corrected presence gate passes **12/0/0** (admission
+8 + provider 4), with compile 0 and zero source drift. The
+[current presence and Find gate](../ACTIVE_WORK.md#native-link-presence-and-find-gate)
+records the newer receipts. The corrected Windows debug build and registered
+private entrypoint pass engine/native UI startup. This admission correction does
+not add recursive presence probing or establish protected CSC access.
+
+<a id="planned-retry-diagnostics-and-recursive-expansion"></a>
+
+## Retry diagnostics and recursive expansion
+
+CSC warning retention was implemented in the committed/pushed UI checkpoint
+`20f507c`, with **17 passed / 0 failed** targeted presenter tests. The separate
+Engine authorization tests at `3826298` passed **5 / 0**. The
+[authorization verification note](../verification/2026-11-11-directory-authorization.md#12-november-csc-warning-retention-regression)
+records both source/test boundaries: mocked authorization, event retention and
+helper denial/cancellation/transport. Successful native CSC access through Windows
+UAC remains unproved. The [current checkpoint](../ACTIVE_WORK.md#current-checkpoint)
+records separate application build/startup qualification; source correctness and
+startup do not establish access to protected CSC.
+
+A denied row, including `C:\Windows\CSC`, retains its warning throughout an
+explicit elevation retry until the matching current listing actually succeeds.
+Authorization/helper admission is not listing success. Normal navigation failure
+restores the original committed cursor and scroll position; cancellation or
+another denied result preserves the original row's diagnostic. Retention is
+display-only and bound to the exact committed navigation, entries/index and raw
+row identity. Replacement rows cannot inherit it. Request generations remain
+monotonic and action/session gates stay intact; late presence/tree events cannot
+clear or mark another occurrence.
+
+**Ctrl+click on a folder expander** routes to
+`ExpandRecursive`, including directory symlink/junction expanders within the
+existing model limits. It uses one asynchronous walk per pane through the existing
+actor's depth-first continuation. The UI captures the modifier and submits the
+typed intent; traversal stays on Backend workers. Ordinary row Ctrl+click retains
+selection semantics. Recursive expansion is implemented and tested on Windows
+with software UI coverage. The integrated gate passes **69 tree/CSC UI tests**:
+62 presenter cases (tree 44, folder presence 9, elevation 9), five disclosure
+cases and two panel cases. Compilation exits 0 with zero source drift; these
+groups overlap the earlier CSC tests and are not added to them. See the
+[recursive verification note](../verification/2026-11-12-recursive-tree.md).
+
+The recursive worker batches at most **128 returned results** or **50 ms**, with elapsed
+time checked only after an actual provider callback returns. These are scheduling
+limits, not a callback timeout or measured latency guarantee. Each batch creates
+one checkpoint/projection and waits for its exact Commit before further recursive
+I/O. Explicit input first rolls back unpublished
+model/continuation state; allocated branch/work IDs and row/alias high-water values
+remain consumed and monotonic.
+
+Collapse or navigation cancels obsolete traversal without releasing an in-flight
+provider permit early. Ancestor listing-version checks precede dispatch of an
+already-stacked child: a Refresh that reorders, inserts or removes children pauses
+the walk instead of resuming a stale DFS cursor. Backend compares physical target
+identities along the ancestor chain for browse-only cycle detection. Logical paths
+and captured-occurrence checks remain in force for operations; a cycle-probe
+identity grants no operation authority. Cycles, denied children and other errors
+remain local to the affected branch. Known-empty directory links have no synthetic
+`+` expander.
+
+Allocation, work/publication and stale-occurrence guards remain unchanged.
+Capacity saturation preserves the valid published tree and reports paused/
+incomplete expansion without a retry spin. Paging beyond the retained model is
+an explicit follow-up. Architect owns the API contract, Backend owns traversal/
+cycles, and UI owns modifier/state routing. Backend's broad first run retained one
+legacy fixture failure; its refined Windows junction/Delete subset passes 11/0
+with unchanged production. Those exact scopes and the separate thumbnail RED
+are recorded in the verification note. The current registered private Windows
+runtime passes engine smoke and native UI startup; its exact EXE identity and
+startup-only qualification are recorded in the
+[current checkpoint](../ACTIVE_WORK.md#current-checkpoint). Linux now has separate
+WSL/tmpfs receipts for the original `1714d99` fixture and the updated frozen
+link-maintenance fixture, each **1 passed / 0 failed / 0 ignored** under its own
+source scope. The corrected helper's separate clipboard/copy/move gate passes
+**13/0/0** using software UI and real filesystem fixtures. These later results do
+not establish Linux desktop qualification or broaden the earlier test scopes.
+
+The historical [cap16 tree candidate](../ACTIVE_WORK.md#tree-scaling-candidate-gate)
+passed **95 unique functional cases** and Clippy with zero drift, while its debug
+opt-level 0 synthetic-provider aggregate **failed**. Wide 10k cases took
+**50.83 s** (`K=0`) and **50.01 s** (`K=1`); the depth-32 broom was censored at
+**60 s**, with **9,936 callbacks / 9,920 published entries**. The initial stale
+compiler artifact was rejected before timing. The later integrated
+[cap128 increment](../ACTIVE_WORK.md#recursive-tree-cap128-gate)
+(`2b28cc7` / `02b2f2f`) passed its single debug synthetic aggregate; the current
+`516fc158` runtime includes that source with startup-only qualification.
+These measurements include no native filesystem I/O or UI paint and establish
+no native performance or UI input-to-paint qualification.
 
 ## Directory sizes
 
@@ -176,11 +275,23 @@ Refreshing an occurrence invalidates old measurements and frozen sort values;
 navigation retires the whole scope. Native totals remain live path-based estimates,
 not a transactional filesystem snapshot.
 
-Running values remain highlighted estimates. Actual read failures retain the
-partial-result marker and error indication; the error glyph stays immediately
-beside its size rather than at the opposite edge of the Size column. An unfinished
-or cancelled scan alone is not a filesystem error. Native size scans follow
-directory junction/link targets using native final-path resolution and stable
+Highlighting follows each occurrence's active calculation flag, independently of
+warning severity. Only actively unfinished values remain highlighted estimates.
+A completed scan with inaccessible entries shows its observed partial total with
+`≈` in normal metadata color and weight, even while another root is calculating.
+Its yellow warning glyph and clickable details remain beside the size. An inactive
+unfinished or cancelled total also retains its partial marker; neither condition
+alone is a filesystem error. The [size presenter](../../crates/midnight-ui/src/size_presentation.rs)
+and [row rendering](../../crates/midnight-ui/ui/file-entry.slint) implement this
+follow-up in current source. Earlier recorded size-presentation tests passed the
+selected size/model library groups, `size_errors` (2), `panel_warning_details` (4)
+and `tree_folder_sizes` (7); see [current evidence](../ACTIVE_WORK.md#current-checkpoint).
+The latest modal-only gate does not rerun that entire scope. These
+software UI tests do not establish full native/layout qualification. A completed
+scan with warnings is not a complete count of inaccessible contents.
+
+Native size scans follow directory junction/link targets using native final-path
+resolution and stable
 directory identities. The active ancestry set stops self/ancestor cycles before
 recounting contents; separate noncyclic aliases and separately selected roots keep
 independent logical totals. Cycle/file-link omissions appear as skipped counts in
@@ -288,8 +399,13 @@ archive member/version checks remain authoritative.
 Four live captured batches share an engine-wide permit pool. Opening the draft
 does not reserve a job; confirmation uses the existing 32-job FIFO copy admission.
 Preparation validates duplicate roots, source ancestry and native destination
-ancestry before writes. The ordinary staged copy performs SHA-256 destination
-readback and uses the existing conflict, cancellation and error decisions.
+ancestry before writes. The ordinary staged copy independently reads back the
+destination under the job's frozen verification policy: Full SHA-256 by default,
+or explicit quick verification of exact size plus first/middle/last 64 KiB.
+Quick mode compares every byte for files up to 192 KiB and can miss corruption
+between samples in larger files. Source identity/revision, synchronization,
+publication, conflict consent, cancellation and error guards remain mandatory;
+see the [transfer contract](TRANSFERS.md).
 Supported distinct native regular files retain the optional exact modified-time
 policy; unsupported directory/provider metadata cannot silently downgrade it.
 
@@ -310,20 +426,30 @@ Clipboard and destructive operations have separate authority requirements.
 
 F6 shares F5's capture/draft protocol with an immutable Move intent. Native root
 files and selected native directory occurrences use the ordinary Move worker;
-archive and mixed-provider scopes are refused before preparation. Every file is
-independently verified at the destination before its native source is removed.
-Empty source directories are removed postorder; skipped or failed roots keep
-their marks. A later failure never implies rollback of earlier completed files.
+archive and mixed-provider scopes are refused before preparation. Same-volume
+native Move uses the retained rename capability without reading or hashing file
+contents. Cross-volume Move and copied children in explicit directory merges
+independently verify each copied file under the frozen Full SHA-256 or explicit
+quick size plus first/middle/last 64 KiB policy before removing that file's source.
+The quick-mode limits above apply. Source/parent identity, revisions, conflict
+consent and finalization guards remain authoritative on both routes; verification
+policy does not authorize replacing a changed object. Empty source directories
+are removed postorder; skipped or failed roots keep their marks. A later failure
+never implies rollback of earlier completed files.
 Provider ownership covers prepared authorities, descendants, finalizers and
 cleanup tickets, including a draft abandoned after failed preparation.
 
 Every terminal Copy/Move result marks both adopted native tree sessions dirty,
 including failed or canceled transfers. The backend reconciles the hidden root
 and previously loaded native branches, including collapsed cached branches,
-parent-first through one provider lane. It does not discover unopened branches
-or enumerate foreign/archive mounts. Surviving occurrence IDs, expansion, marks,
-filters and sort options remain; deleted occurrences disappear. Failed listings
-retain their last known contents and report a diagnostic.
+parent-first through one provider lane. The accepted link-maintenance extension
+includes already-loaded provider-resolved native directory links and their loaded
+descendants. It does not discover unopened branches or enumerate foreign/archive
+mounts. Surviving occurrence IDs, expansion, marks, filters and sort options remain;
+deleted occurrences disappear.
+Failed parent listings retain known contents, report a diagnostic and suppress
+descendant work for that pass. Cycle/retarget validation and logical action paths
+remain intact; read-only maintenance grants no mutation, ACL or elevation authority.
 
 Maintenance waits for preceding selection acknowledgements and holds the mutation
 gate through each list/apply step, releasing it before publication backpressure.
@@ -369,8 +495,11 @@ already published OS clipboard entry.
 
 Ctrl+V retains the native panel root as its destination even when a nested row
 has focus. Copy uses the ordinary verified queue; Move intent opens the existing
-Move confirmation. Native source proof, overlap rejection, independent SHA-256
-destination readback and verified per-file source removal happen in that worker.
+Move confirmation. Native source authority and overlap checks remain in that
+worker. Copied files use independent destination readback under the frozen
+Full/quick policy above, with per-file source removal for Move only after its
+proof and identity guards succeed. Same-volume native Move renames without
+content verification. Conflict consent and tree reconciliation remain unchanged.
 Cut alone does not modify files. Clipboard paths are live names, not immutable
 file identities, and external clipboard changes retain ordinary Paste behavior.
 
@@ -383,24 +512,31 @@ protocol; this integration does not enable archive Paste, Cut or mutation.
 ## Native watches and reconciliation
 
 An exactly acknowledged publication supplies the backend's watch scope: the root
-and loaded, expanded native branches visible in the projection. An expanded empty
-branch retains observation so a newly created child appears. Collapsed, filtered
-out, link and foreign-provider branches do not become native watch targets.
+and loaded, expanded native branches visible in the projection. The accepted
+link-maintenance extension includes provider-resolved native directory links and
+their eligible loaded descendants.
+An expanded empty branch retains observation so a new child appears. Collapsed,
+filtered-out and foreign-mount/provider branches stay outside native watch scope.
 Targets come from retained provider registrations, never from displayed paths.
 
-Each pane uses one nonrecursive native batch for its root and up to 31 stable
-branches. A serial fair poll covers all eligible branches, including those beyond
-the native slots. The two existing backend watch workers own subscriptions,
-metadata probes and cleanup. Events use a one-second quiet interval and a
-three-second batching ceiling; slow probes or output backpressure can add delay.
-Polling and failure retries use a 15-second interval.
+Each pane retains a bounded nonrecursive native batch for its root and up to 31
+branch slots. Known physical browse identities deduplicate notification slots;
+logical aliases remain separate display rows, polling targets and action
+occurrences. A serial fair poll covers all eligible logical branches, including
+aliases and those beyond the native slots. Accepted browse-identity changes rebind
+subscriptions. Polling checks identity before and after observation; a mismatch
+requests maintenance rather than accepting the observation as unchanged.
+The two existing backend workers own subscriptions, metadata probes and cleanup.
+Events use a one-second quiet interval and a three-second batching ceiling; slow
+probes or output backpressure can add delay. Polling/failure retries use 15 seconds.
 
 The accepted listing signature and full immediate-directory observation remain
 separate, so files hidden by the folder-only branch view still invalidate sizes
 without causing a perpetual refresh. Unchanged publication commits reuse cached
-targets/signatures, including paced admission failures. A successful sweep and
-its exact acknowledged publication settle only the captured dirty epoch; a newer
-event remains pending. Failed listings retain known rows and report a diagnostic.
+targets/signatures only while accepted browse identities still match, including
+paced admission failures. A successful sweep and its exact acknowledged
+publication settle only the captured dirty epoch; a newer event remains pending.
+Failed listings retain known rows and report a diagnostic.
 
 Navigation or terminal session failure invalidates that generation immediately;
 the backend releases native/provider resources after any outstanding call returns.
@@ -410,9 +546,10 @@ through each maintenance list/apply step, while explicit expansion can proceed
 when maintenance is waiting for a transfer.
 
 See the [watch design](../superpowers/specs/2026-11-10-tree-watch-design.md).
-The [verification record](../verification/2026-11-10-tree-watch.md) gives the actual
-tested scope; this does not add archive watches,
-generic watch providers, or the remaining tree operation consumers.
+The earlier [verification record](../verification/2026-11-10-tree-watch.md) retains
+its dated scope; [ACTIVE_WORK](../ACTIVE_WORK.md#current-checkpoint) records current
+qualification. This does not add archive watches, generic watch providers or the
+remaining tree operation consumers.
 
 ## Delete from expanded native panels
 
@@ -428,10 +565,10 @@ an ordinary directory and its descendants deletes the covering directory once,
 based on captured occurrence ancestry rather than displayed path prefixes or inode
 identity. Separate hard-link names remain separate entries. Overlapping selected
 ancestors and descendants whose captured ancestry crosses a junction or symbolic
-link are rejected before preparation; they must be deleted separately. Current
-inline-tree validation already forbids expanding directory links, so this check
-is defensive for future provider integration, not a reproduced current UI path. A covering
-directory that has changed into a file or link is rejected before confirmation.
+link are rejected before preparation; they must be deleted separately. This Delete
+overlap guard applies independently of browse-only directory-link expansion. A
+covering directory that has changed into a file or link is rejected before
+confirmation.
 
 This is a mutable-subtree operation, not a snapshot of every displayed descendant.
 Native preparation pins the selected topmost roots. Descendants moved away before

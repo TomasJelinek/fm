@@ -1,5 +1,8 @@
 //! Revision-local, bounded semantic pages; scrolling back does not reread content.
-use midnight_plugin_sdk::api::{document::DocumentPage, messages::Viewport};
+use midnight_plugin_sdk::api::{
+    document::{Block, DocumentPage},
+    messages::Viewport,
+};
 use std::{collections::VecDeque, mem::size_of_val, sync::Arc};
 
 const MAX_PAGES: usize = 16;
@@ -74,29 +77,26 @@ impl Cache {
 }
 
 pub(crate) fn size(page: &DocumentPage) -> usize {
-    size_of_val(page)
-        + size_of_val(page.blocks.as_slice())
-        + page
-            .blocks
+    size_of_val(page) + page.blocks.iter().map(block_size).sum::<usize>()
+}
+
+pub(crate) fn block_size(block: &Block) -> usize {
+    size_of_val(block)
+        + block.text.text.len()
+        + size_of_val(block.text.anchors.as_slice())
+        + size_of_val(block.text.spans.as_slice())
+        + size_of_val(block.links.as_slice())
+        + block
+            .links
             .iter()
-            .map(|block| {
-                block.text.text.len()
-                    + size_of_val(block.text.anchors.as_slice())
-                    + size_of_val(block.text.spans.as_slice())
-                    + size_of_val(block.links.as_slice())
-                    + block
-                        .links
-                        .iter()
-                        .map(|link| link.target.len())
-                        .sum::<usize>()
-                    + block
-                        .table
-                        .as_ref()
-                        .map_or(0, |table| size_of_val(table.cells.as_slice()))
-                    + block
-                        .strikethrough
-                        .as_ref()
-                        .map_or(0, |ranges| size_of_val(ranges.as_slice()))
-            })
+            .map(|link| link.target.len())
             .sum::<usize>()
+        + block
+            .table
+            .as_ref()
+            .map_or(0, |table| size_of_val(table.cells.as_slice()))
+        + block
+            .strikethrough
+            .as_ref()
+            .map_or(0, |ranges| size_of_val(ranges.as_slice()))
 }

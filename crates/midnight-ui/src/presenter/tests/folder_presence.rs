@@ -64,7 +64,7 @@ fn flat_hints_arrive_before_click_without_changing_selection_or_flat_authority()
     let selection = p.panes[0].selected.clone();
     let cursor = p.panes[0].cursor;
     let request = request(&mut p);
-    assert_eq!(request.visible, [EntryId(1), EntryId(2)]);
+    assert_eq!(request.visible, [EntryId(1), EntryId(2), EntryId(3)]);
     p.apply(Event::FolderPresence(result(&request)));
     assert_eq!(
         p.panes[0].root_presence_disclosure(&p.panes[0].entries[0]),
@@ -76,7 +76,7 @@ fn flat_hints_arrive_before_click_without_changing_selection_or_flat_authority()
     );
     assert_eq!(
         p.panes[0].root_presence_disclosure(&p.panes[0].entries[2]),
-        0
+        3
     );
     assert!(p.panes[0].tree_view().is_none());
     assert!(p.panes[0].native_capabilities());
@@ -129,6 +129,36 @@ fn flat_presence_retries_outer_queue_and_rejects_foreign_or_superseded_receipts(
 }
 
 #[test]
+fn directory_link_presence_is_probed_and_known_empty_links_have_no_expand_affordance() {
+    let mut p = ready();
+    assert_eq!(
+        p.panes[0].root_presence_disclosure(&p.panes[0].entries[2]),
+        1
+    );
+    let cursor = p.panes[0].cursor;
+    let selection = p.panes[0].selected.clone();
+    let request = request(&mut p);
+    assert_eq!(request.visible, [EntryId(1), EntryId(2), EntryId(3)]);
+    let mut snapshot = result(&request);
+    snapshot.values = vec![
+        (EntryId(1), FolderPresence::Empty),
+        (EntryId(2), FolderPresence::HasFolders),
+        (EntryId(3), FolderPresence::Empty),
+    ]
+    .into();
+    p.apply(Event::FolderPresence(snapshot));
+    assert_eq!(
+        p.panes[0].root_presence_disclosure(&p.panes[0].entries[2]),
+        5,
+        "the same empty disclosure state hides the plus for a directory link"
+    );
+    assert!(p.panes[0].root_presence_error(EntryId(3)).is_empty());
+    assert_eq!(p.panes[0].cursor, cursor);
+    assert!(Arc::ptr_eq(&p.panes[0].selected, &selection));
+    p.flush_folder_presence(&|_| panic!("known empty link metadata is cached"));
+}
+
+#[test]
 fn flat_presence_navigation_cancels_work_and_failed_probe_keeps_its_reason() {
     let mut p = ready();
     let first = request(&mut p);
@@ -171,6 +201,104 @@ fn flat_presence_navigation_cancels_work_and_failed_probe_keeps_its_reason() {
     assert!(pending.cancel.is_cancelled());
     p.apply(Event::FolderPresence(result(&pending)));
     assert!(p.panes[0].tree_view().is_none());
+}
+
+#[test]
+fn denied_folder_navigation_retains_row_warning_and_source_viewport() {
+    let mut p = ready();
+    let offset = p.panes[0].parent_offset();
+    p.focus_display_row(PaneId::Left, offset + 1);
+    let viewport = (offset + 1, offset + 2);
+    p.panes[0].set_tree_viewport(viewport);
+    p.panes[0].preserve_viewport = true;
+    let request = request(&mut p);
+    let destination = p.panes[0].entries[1].path.clone();
+    let mut failed_probe = result(&request);
+    failed_probe.values = vec![(
+        EntryId(2),
+        FolderPresence::Unavailable(TreeDiagnostic::new(
+            "Access denied while checking subfolders",
+        )),
+    )]
+    .into();
+    p.apply(Event::FolderPresence(failed_probe));
+    assert_eq!(
+        p.panes[0].root_presence_disclosure(&p.panes[0].entries[1]),
+        6
+    );
+    let entries = p.panes[0].entries.clone();
+    let index = p.panes[0].index.clone();
+    let committed = p.panes[0].successful_generation;
+    let cursor = p.panes[0].cursor;
+    let parent_cursor = p.panes[0].parent_cursor;
+    let source_path = p.panes[0].path.clone();
+    assert!(p.open(PaneId::Left, offset + 1, &|_| true));
+    let denied = NavigationId(p.panes[0].generation);
+    p.apply(Event::ListingFailed {
+        pane: PaneId::Left,
+        navigation: denied,
+        error: FsError::from_io("list", &destination, io::ErrorKind::PermissionDenied.into()),
+    });
+    p.flush_folder_presence(&|_| panic!("a failed open cannot probe the retired source"));
+    assert_eq!(
+        p.panes[0].root_presence_disclosure(&p.panes[0].entries[1]),
+        6,
+        "a denied open restores the source row with its warning"
+    );
+    assert!(!p.panes[0].root_presence_error(EntryId(2)).is_empty());
+    assert_eq!(p.panes[0].path, source_path);
+    assert!(Arc::ptr_eq(&p.panes[0].entries, &entries));
+    assert!(Arc::ptr_eq(&p.panes[0].index, &index));
+    assert_eq!(p.panes[0].generation, denied.0);
+    assert_eq!(p.panes[0].successful_generation, committed);
+    assert_eq!(p.panes[0].cursor, cursor);
+    assert_eq!(p.panes[0].parent_cursor, parent_cursor);
+    assert_eq!(p.panes[0].tree.viewport, viewport);
+    assert!(p.panes[0].preserve_viewport);
+    assert!(!p.panes[0].root_disclosure_available());
+    p.apply(Event::FolderPresence(result(&request)));
+    assert_eq!(
+        p.panes[0].root_presence_disclosure(&p.panes[0].entries[1]),
+        6,
+        "a retired probe's success cannot erase the observed denial"
+    );
+    let identity = p.panes[0].row_identity(&p.panes[0].entries[1]);
+    p.disclose_tree(PaneId::Left, &identity, &|_| {
+        panic!("retained diagnostic presentation cannot revive old tree authority")
+    });
+    assert!(p.take_warning_viewer().is_none());
+
+    let replacement_path = test_root().join("replacement-root");
+    let replacement = begin(&mut p, PaneId::Left, replacement_path.to_str().unwrap());
+    finish(
+        &mut p,
+        PaneId::Left,
+        replacement,
+        vec![Entry::new(
+            EntryId(2),
+            replacement_path.join("different-folder"),
+            EntryKind::Directory,
+        )],
+    );
+    let mut late_denial = result(&request);
+    late_denial.values = vec![(
+        EntryId(2),
+        FolderPresence::Unavailable(TreeDiagnostic::new("obsolete failure")),
+    )]
+    .into();
+    p.apply(Event::FolderPresence(late_denial));
+    p.apply(Event::ListingFailed {
+        pane: PaneId::Left,
+        navigation: denied,
+        error: FsError::from_io("list", &destination, io::ErrorKind::PermissionDenied.into()),
+    });
+    assert_eq!(p.panes[0].generation, replacement.0);
+    assert_eq!(
+        p.panes[0].root_presence_disclosure(&p.panes[0].entries[0]),
+        1
+    );
+    assert!(p.panes[0].root_presence_error(EntryId(2)).is_empty());
+    assert!(p.panes[0].error.is_empty());
 }
 
 #[test]
@@ -225,6 +353,7 @@ fn red_folder_error_icon_uses_modal_details_instead_of_a_viewer() {
             )),
         ),
         (EntryId(2), FolderPresence::HasFolders),
+        (EntryId(3), FolderPresence::HasFolders),
     ]
     .into();
     p.apply(Event::FolderPresence(snapshot));

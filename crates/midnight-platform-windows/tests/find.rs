@@ -139,3 +139,59 @@ fn native_find_metadata_uses_existing_backend_locale_date_and_time() {
         metadata.localized_modified
     );
 }
+
+#[test]
+fn native_find_nested_child_capture_matches_untouched_absolute_reopen() {
+    use std::time::{Duration, SystemTime};
+
+    let fixture_parent = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../_build/tmp/find-result-revision/windows");
+    fs::create_dir_all(&fixture_parent).unwrap();
+    let fixture = tempfile::tempdir_in(fs::canonicalize(fixture_parent).unwrap()).unwrap();
+    let root = fixture.path().join("source");
+    let parent = root.join("nested 文档");
+    fs::create_dir_all(&parent).unwrap();
+    let target = parent.join("DynamicMatrixCacheLimit.h");
+    fs::write(&target, vec![b'x'; 2670]).unwrap();
+    let modified = SystemTime::UNIX_EPOCH + Duration::new(1_729_610_254, 308_620_000);
+    fs::File::options()
+        .write(true)
+        .open(&target)
+        .unwrap()
+        .set_times(fs::FileTimes::new().set_modified(modified))
+        .unwrap();
+    let service = WindowsFileSystem::new(None);
+    let cancel = Cancellation::default();
+    let mut ancestors = vec![service.open_find_source(&root, &cancel).unwrap()];
+    for path in [&parent, &target] {
+        let directory = ancestors.last_mut().unwrap();
+        let child = loop {
+            match directory.next_child(&cancel).unwrap() {
+                Some(FindChild::Entry(child)) if child.entry().path == *path => break child,
+                Some(FindChild::Failed(error)) => panic!("native child capture failed: {error:?}"),
+                Some(_) => {}
+                None => panic!("owned fixture child was not found: {path:?}"),
+            }
+        };
+        ancestors.push(child);
+    }
+    let captured = ancestors.last().unwrap().entry().clone();
+    assert_eq!(captured.path, target);
+    assert_eq!(captured.kind, EntryKind::File);
+    assert_eq!(captured.metadata.size, Some(2670));
+    assert_eq!(captured.metadata.modified, Some(modified));
+    let assert_reopen = || {
+        let current = service.open_find_source(&target, &cancel).unwrap();
+        assert_eq!(current.entry().revision, captured.revision);
+        assert!(current.entry().matches_capture(&captured));
+        current.revalidate(&cancel).unwrap();
+    };
+    for _ in 0..3 {
+        assert_reopen();
+        ancestors.last().unwrap().revalidate(&cancel).unwrap();
+    }
+    drop(ancestors);
+    for _ in 0..3 {
+        assert_reopen();
+    }
+}

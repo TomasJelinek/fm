@@ -16,6 +16,7 @@ from pathlib import Path
 
 REQUIRED_VIEWERS = ("midnight.viewer.basic", "midnight.viewer.source", "midnight.viewer.markdown",
                     "midnight.viewer.image", "midnight.viewer.pdf")
+FILESYSTEM_ABI_MINOR = 3
 
 
 def portable_component(name):
@@ -288,9 +289,12 @@ def library_filesystem_manifest(manifest, package, files, target):
               "abi_major", "minimum_host_minor", "capabilities", "address_encoding"}
     network = manifest["kind"] == "filesystem-network"
     supported = ({"browse", "stat", "volumes", "activate", "refresh", "resolve-text"} if network else
-                 {"browse", "read", "stat", "volumes", "storage", "native-address", "volume-details"})
+                 {"browse", "read", "stat", "volumes", "storage", "native-address", "volume-details",
+                  "prepared-rename"})
     capabilities = manifest.get("capabilities")
     version = manifest.get("version")
+    minimum_host_minor = manifest.get("minimum_host_minor")
+    minimum_minor = 2 if network else 0
     encoding = "opaque" if network else "windows-utf16le" if "windows" in target else "unix-bytes"
     required = supported if network else {"native-address"}
     if (set(manifest) != fields or type(manifest.get("schema_version")) is not int
@@ -298,12 +302,13 @@ def library_filesystem_manifest(manifest, package, files, target):
             or not isinstance(version, str) or not 1 <= len(version.encode("utf-8")) <= 64
             or type(manifest.get("protocol")) is not int or manifest["protocol"] != 1
             or type(manifest.get("abi_major")) is not int or manifest["abi_major"] != 1
-            or type(manifest.get("minimum_host_minor")) is not int
-            or manifest["minimum_host_minor"] not in ((2,) if network else (0, 1))
+            or type(minimum_host_minor) is not int
+            or not minimum_minor <= minimum_host_minor <= FILESYSTEM_ABI_MINOR
             or manifest.get("address_encoding") != encoding
             or not isinstance(capabilities, list) or not 1 <= len(capabilities) <= len(supported)
             or any(not isinstance(value, str) or value not in supported for value in capabilities)
-            or len(set(capabilities)) != len(capabilities) or not required.issubset(capabilities)):
+            or len(set(capabilities)) != len(capabilities) or not required.issubset(capabilities)
+            or ("prepared-rename" in capabilities and minimum_host_minor < 3)):
         raise ValueError("Incompatible library filesystem manifest")
     library = manifest.get("entry_library")
     if not isinstance(library, str):

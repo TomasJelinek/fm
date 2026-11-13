@@ -2,7 +2,10 @@
 #[path = "support/modeless.rs"]
 mod modeless;
 use i_slint_core::{
-    accessibility::AccessibleStringProperty, items::AccessibleRole, window::WindowInner,
+    accessibility::AccessibleStringProperty,
+    item_tree::ParentItemTraversalMode,
+    items::{AccessibleRole, Clip},
+    window::WindowInner,
 };
 use midnight_core::{Command, Event, FilterMode, PaneId, PanelFilter, UserPreferences};
 use midnight_ui::{
@@ -16,6 +19,7 @@ use std::{
     cell::{Cell, RefCell},
     path::PathBuf,
     rc::Rc,
+    sync::Arc,
 };
 
 struct Boundary {
@@ -98,6 +102,28 @@ impl Harness {
                 accept.get()
             }),
         );
+        // The installed host requests both initial listings. Complete those
+        // exact identities before testing actions that require a ready panel.
+        let initial_listings: Vec<_> = commands
+            .borrow()
+            .iter()
+            .filter_map(|command| match command {
+                Command::Navigate {
+                    pane, navigation, ..
+                } => Some((*pane, *navigation)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(initial_listings.len(), 2);
+        for (pane, navigation) in initial_listings {
+            state.borrow_mut().apply(Event::ListingFinished {
+                pane,
+                navigation,
+                entries: Arc::from([]),
+                index: Arc::default(),
+            });
+        }
+        refresh(&main, &state.borrow());
         modeless::draw(&windows.borrow()[0], 1000, 700, "embedded-panel-main");
         commands.borrow_mut().clear();
         Self {
@@ -176,17 +202,61 @@ fn replace(window: &MinimalSoftwareWindow, text: &str) {
     key(window, text);
 }
 
+fn assert_control_in_clips(window: &MinimalSoftwareWindow, role: AccessibleRole, label: &str) {
+    let item = modeless::accessible_popup_item(window, role, label).unwrap();
+    assert!(
+        item.is_visible(),
+        "{label} must be visible at this viewport"
+    );
+    let bounds = item.geometry();
+    let origin = item.map_to_native_window(bounds.origin);
+    let mut clipped = false;
+    let mut ancestor = item.parent_item(ParentItemTraversalMode::StopAtPopups);
+    while let Some(parent) = ancestor {
+        if parent
+            .downcast::<Clip>()
+            .is_some_and(|clip| clip.as_pin_ref().clip())
+        {
+            clipped = true;
+            let clip_bounds = parent.geometry();
+            let clip_origin = parent.map_to_native_window(clip_bounds.origin);
+            assert!(
+                origin.x >= clip_origin.x - 0.5
+                    && origin.y >= clip_origin.y - 0.5
+                    && origin.x + bounds.width() <= clip_origin.x + clip_bounds.width() + 0.5
+                    && origin.y + bounds.height() <= clip_origin.y + clip_bounds.height() + 0.5,
+                "{label} must remain inside its clipped dialog body: control={origin:?} {bounds:?}, clip={clip_origin:?} {clip_bounds:?}"
+            );
+        }
+        ancestor = parent.parent_item(ParentItemTraversalMode::StopAtPopups);
+    }
+    assert!(
+        clipped,
+        "the installed Filter must retain its clipping frame"
+    );
+}
+
 #[test]
 fn embedded_filter_retains_text_on_resize_and_cancels_pending_validation() {
     let h = Harness::new();
     h.main.invoke_open_panel_filter(0);
     let main = h.form();
+    // Controls must fit the actual clipped body, even though the popup fills Main.
+    for (role, label) in [
+        (AccessibleRole::TextInput, "File filter expression"),
+        (AccessibleRole::Button, "Help"),
+        (AccessibleRole::Button, "OK"),
+        (AccessibleRole::Button, "Cancel"),
+    ] {
+        assert_control_in_clips(&main, role, label);
+    }
     forms::click_control(&main, "File filter expression", AccessibleRole::TextInput);
     replace(&main, "*.文档");
     assert_eq!(value(&main), "*.文档");
     h.main.invoke_activate(1);
     modeless::draw(&main, 320, 200, "embedded-filter-minimum");
     refresh(&h.main, &h.state.borrow());
+    assert_control_in_clips(&main, AccessibleRole::Button, "Cancel");
     assert_eq!(value(&main), "*.文档");
     modeless::click(&main, "OK");
     let request = h
@@ -337,13 +407,24 @@ fn embedded_filter_queue_rejection_and_theme_changes_keep_the_same_edited_contro
             .contains("queue is busy")
     );
     let token = h.main.global::<PanelFilterPresentation>().get_token();
-    for (width, height, scheme, density, font) in [(320, 200, 1, 1, 32), (1000, 700, 2, 0, 12)] {
+    for (width, height, scheme, density, font) in [
+        (320, 200, 1, 1, 32),
+        (1000, 700, 1, 1, 32),
+        (1000, 700, 2, 0, 12),
+    ] {
         let theme = h.main.global::<Theme>();
         theme.set_scheme(scheme);
         theme.set_density(density);
         theme.set_desktop_font_size(font);
         theme.set_touch_font_size(font);
         modeless::draw(&main, width, height, "embedded-filter-feedback-theme");
+        // Compact scroll content may be offscreen; the fixed dismiss control must fit.
+        assert_control_in_clips(&main, AccessibleRole::Button, "Cancel");
+        if width == 1000 && density == 1 {
+            assert_control_in_clips(&main, AccessibleRole::TextInput, "File filter expression");
+            forms::click_control(&main, "File filter expression", AccessibleRole::TextInput);
+            replace(&main, "kind = file");
+        }
         assert_eq!(value(&main), "kind = file");
         assert_eq!(
             h.main.global::<PanelFilterPresentation>().get_token(),
@@ -388,13 +469,28 @@ fn embedded_filter_history_recall_and_clear_edit_only_while_show_all_removes_the
     assert!(h.commands.borrow().is_empty());
     modeless::click(&main, "Show all");
     h.filter_closed();
-    assert!(!h.main.get_panel_filter_view().enabled);
+    assert!(h.main.get_left_filter_label().is_empty());
+    assert!(h.commands.borrow().iter().any(|command| {
+        matches!(command, Command::SavePreferences { preferences, .. }
+            if !preferences.panel_filters[0].enabled
+                && preferences.panel_filters[0].expression == "*.txt")
+    }));
     assert!(
         h.commands
             .borrow()
             .iter()
             .all(|command| !matches!(command, Command::ValidatePanelFilter(_)))
     );
+    h.main.invoke_open_panel_filter(0);
+    h.form();
+    assert!(!h.main.get_panel_filter_view().enabled);
+    assert_eq!(
+        value(&main),
+        "*.txt",
+        "Show all retains the reusable expression"
+    );
+    key(&main, Key::Escape);
+    h.filter_closed();
 }
 
 #[path = "support/native_panel_failure.rs"]
@@ -432,7 +528,7 @@ fn retained_filter_and_help_items_cannot_act_on_replacement_popups() {
     let h = Harness::new();
     h.main.invoke_open_panel_filter(0);
     let main = h.form();
-    let old_buttons: Vec<_> = ["OK", "Cancel", "Help", "Show all"]
+    let old_buttons: Vec<_> = ["OK", "Cancel", "Cancel dialog", "Help", "Show all"]
         .into_iter()
         .map(|label| modeless::accessible_popup_item(&main, AccessibleRole::Button, label).unwrap())
         .collect();
@@ -441,21 +537,51 @@ fn retained_filter_and_help_items_cannot_act_on_replacement_popups() {
     h.form();
     let presentation = h.main.global::<PanelFilterPresentation>();
     let token = presentation.get_token();
+    let filter_focus = WindowInner::from_pub(main.window())
+        .focus_item
+        .borrow()
+        .upgrade()
+        .unwrap();
     for button in old_buttons {
         button.accessible_action(&AccessibilityAction::Default);
     }
+    assert!(
+        WindowInner::from_pub(main.window())
+            .focus_item
+            .borrow()
+            .upgrade()
+            .is_some_and(|focused| focused == filter_focus),
+        "retired Filter controls must not take focus from the current occurrence"
+    );
     assert_eq!(presentation.get_token(), token);
     assert!(presentation.get_help_token().is_empty());
     assert!(h.commands.borrow().is_empty());
     modeless::click(&main, "Help");
     modeless::draw(&main, 1000, 700, "embedded-help-first-occurrence");
-    let old_close =
-        modeless::accessible_popup_item(&main, AccessibleRole::Button, "Close").unwrap();
+    let old_close: Vec<_> = ["Close", "Close dialog"]
+        .into_iter()
+        .map(|label| modeless::accessible_popup_item(&main, AccessibleRole::Button, label).unwrap())
+        .collect();
     key(&main, Key::Escape);
     modeless::click(&main, "Help");
     modeless::draw(&main, 1000, 700, "embedded-help-second-occurrence");
     let help = presentation.get_help_token();
-    old_close.accessible_action(&AccessibilityAction::Default);
+    let help_focus = WindowInner::from_pub(main.window())
+        .focus_item
+        .borrow()
+        .upgrade()
+        .unwrap();
+    for button in old_close {
+        button.accessible_action(&AccessibilityAction::Default);
+    }
+    assert!(
+        WindowInner::from_pub(main.window())
+            .focus_item
+            .borrow()
+            .upgrade()
+            .is_some_and(|focused| focused == help_focus),
+        "retired Help controls must not take focus from the current occurrence"
+    );
     assert_eq!(presentation.get_help_token(), help);
     assert!(!help.is_empty());
     key(&main, Key::Escape);

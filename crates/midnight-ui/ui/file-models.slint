@@ -13,6 +13,8 @@ export struct FileRow {
     dim-icon: bool,
     size: string,
     size-state: int,
+    // Active calculation is independent of retained warning severity.
+    size-running: bool,
     size-hint: string,
     warning-revision: string,
     modified-date: string,
@@ -33,6 +35,7 @@ export struct FileRow {
 export struct TreePress {
     active: bool,
     cancelled: bool,
+    control: bool,
     identity: string,
     disclosure: int,
     expanded: bool,

@@ -4,6 +4,7 @@ use super::*;
 struct PendingEnable {
     root: TreeRootSnapshot,
     entry: EntryId,
+    action: TreeBranchAction,
     sent: Option<SelectionRevision>,
 }
 
@@ -12,7 +13,7 @@ pub(super) struct State {
     pub(super) publication: Option<TreePublication>,
     pending: Option<PendingEnable>,
     pub(super) commit_pending: bool,
-    expand_after_commit: Option<TreeRowId>,
+    expand_after_commit: Option<(TreeRowId, TreeBranchAction)>,
     pub(super) request: TreeRequestId,
     pub(super) options: tree_options::State,
     pub(super) sizes: tree_sizes::State,
@@ -179,6 +180,25 @@ impl Presenter {
         identity: &str,
         send: &dyn Fn(Command) -> bool,
     ) {
+        self.disclose_tree_impl(pane, identity, false, send);
+    }
+
+    pub(crate) fn disclose_tree_recursive(
+        &mut self,
+        pane: PaneId,
+        identity: &str,
+        send: &dyn Fn(Command) -> bool,
+    ) {
+        self.disclose_tree_impl(pane, identity, true, send);
+    }
+
+    fn disclose_tree_impl(
+        &mut self,
+        pane: PaneId,
+        identity: &str,
+        recursive: bool,
+        send: &dyn Fn(Command) -> bool,
+    ) {
         let p = &self.panes[pane.index()];
         if p.loading || p.network.is_some() || p.network_request {
             return;
@@ -203,7 +223,19 @@ impl Presenter {
             if identity != p.row_identity(&row.entry) {
                 return;
             }
-            let action = if row.expanded {
+            let action = if recursive {
+                if !row.expanded
+                    && !matches!(
+                        row.disclosure,
+                        TreeDisclosure::Unknown
+                            | TreeDisclosure::Collapsed
+                            | TreeDisclosure::Failed
+                    )
+                {
+                    return;
+                }
+                TreeBranchAction::ExpandRecursive
+            } else if row.expanded {
                 TreeBranchAction::Collapse
             } else {
                 match row.disclosure {
@@ -213,7 +245,16 @@ impl Presenter {
                     _ => return,
                 }
             };
-            self.send_tree_branch(pane, id, action, send);
+            if self.send_tree_branch(pane, id, action, send)
+                && self.panes[pane.index()]
+                    .tree
+                    .expand_after_commit
+                    .is_some_and(|(pending, _)| {
+                        pending == id || action == TreeBranchAction::ExpandRecursive
+                    })
+            {
+                self.panes[pane.index()].tree.expand_after_commit = None;
+            }
             return;
         }
         if !p.root_disclosure_available() {
@@ -229,7 +270,9 @@ impl Presenter {
         else {
             return;
         };
-        if entry.kind != EntryKind::Directory || identity != p.row_identity(entry) {
+        if !matches!(entry.kind, EntryKind::Directory | EntryKind::DirectoryLink)
+            || identity != p.row_identity(entry)
+        {
             return;
         }
         let pending = PendingEnable {
@@ -240,6 +283,11 @@ impl Presenter {
                 index: p.index.clone(),
             },
             entry: entry.id,
+            action: if recursive {
+                TreeBranchAction::ExpandRecursive
+            } else {
+                TreeBranchAction::Expand
+            },
             sent: None,
         };
         self.retired.push(Box::new(
@@ -341,8 +389,8 @@ impl Presenter {
             if !p.tree.replay.is_empty() {
                 continue;
             }
-            if let Some(row) = p.tree.expand_after_commit {
-                if self.send_tree_branch(pane, row, TreeBranchAction::Expand, send) {
+            if let Some((row, action)) = p.tree.expand_after_commit {
+                if self.send_tree_branch(pane, row, action, send) {
                     self.panes[pane.index()].tree.expand_after_commit = None;
                 }
                 // Do not let a probe publication overtake the explicitly requested expansion.
@@ -827,11 +875,12 @@ impl Presenter {
             focused = p
                 .cursor
                 .and_then(|id| view.index.root_rows.get(&id).copied());
-            p.tree.expand_after_commit = p
-                .tree
-                .pending
-                .as_ref()
-                .and_then(|pending| view.index.root_rows.get(&pending.entry).copied());
+            p.tree.expand_after_commit = p.tree.pending.as_ref().and_then(|pending| {
+                view.index
+                    .root_rows
+                    .get(&pending.entry)
+                    .map(|row| (*row, pending.action))
+            });
         }
         p.cursor = focused
             .and_then(|id| view.index.row_positions.get(&id))

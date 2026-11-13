@@ -19,6 +19,7 @@ impl From<CapturedTransferRequest> for CopyInput {
             intent: request.sources.intent(),
             metadata: request.metadata,
             verification: request.verification,
+            links: CopyLinkPolicy::Reject,
             _retention: None,
             sources: Sources::Captured(request.sources),
         }
@@ -32,6 +33,7 @@ impl From<ArchiveCopyRequest> for CopyInput {
             intent: TransferIntent::Copy,
             metadata: TransferMetadataPolicy::ContentOnly,
             verification: request.verification,
+            links: CopyLinkPolicy::Reject,
             _retention: None,
             sources: Sources::Archive(Box::new(request)),
         }
@@ -58,6 +60,8 @@ pub(super) struct CopyInput {
     pub(super) intent: TransferIntent,
     pub(super) metadata: TransferMetadataPolicy,
     pub(super) verification: TransferVerification,
+    // Frozen at admission with the source capture and reused on every Retry.
+    pub(super) links: CopyLinkPolicy,
     sources: Sources,
     // Preparation retains failed/retried admission and hands successful ownership
     // to Job. WorkerOwned keeps cancellation destruction off UI.
@@ -72,6 +76,7 @@ impl From<CopyRequest> for CopyInput {
             intent: TransferIntent::Copy,
             metadata: TransferMetadataPolicy::ContentOnly,
             verification: request.verification,
+            links: CopyLinkPolicy::Reject,
             _retention: None,
             sources: Sources::Paths(request.clipboard),
         }
@@ -86,6 +91,7 @@ impl From<SelectedCopyRequest> for CopyInput {
             intent: TransferIntent::Copy,
             metadata: TransferMetadataPolicy::ContentOnly,
             verification: request.verification,
+            links: CopyLinkPolicy::Reject,
             _retention: None,
             sources: Sources::Selection(request.files),
         }
@@ -93,6 +99,15 @@ impl From<SelectedCopyRequest> for CopyInput {
 }
 
 impl CopyInput {
+    pub(super) fn options(request: CopyOptionsRequest) -> Self {
+        let mut input = match request.input {
+            CopyOptionsInput::Native(request) => Self::metadata(request),
+            CopyOptionsInput::Captured(request) => Self::from(request),
+        };
+        input.links = request.links;
+        input
+    }
+
     pub(super) fn metadata(request: MetadataTransferRequest) -> Self {
         let mut input = match request.input {
             MetadataTransferInput::Paths(paths) => Self::from(paths),
@@ -110,6 +125,7 @@ impl CopyInput {
             intent: TransferIntent::Move,
             metadata: TransferMetadataPolicy::ContentOnly,
             verification: request.verification,
+            links: CopyLinkPolicy::Reject,
             _retention: None,
             sources: Sources::SharedPaths(request.clipboard),
         }
@@ -145,6 +161,29 @@ impl CopyInput {
     }
 
     pub(super) fn validate(&self) -> Result<(), FsError> {
+        if self.links == CopyLinkPolicy::Preserve {
+            if self.intent != TransferIntent::Copy {
+                return Err(error(
+                    &self.destination,
+                    io::ErrorKind::Unsupported,
+                    "Link preservation is available only for Copy; sources have been retained.",
+                ));
+            }
+            if self.metadata != TransferMetadataPolicy::ContentOnly {
+                return Err(error(
+                    &self.destination,
+                    io::ErrorKind::Unsupported,
+                    "Link preservation cannot require modified time.",
+                ));
+            }
+            if matches!(self.sources, Sources::Archive(_)) {
+                return Err(error(
+                    &self.destination,
+                    io::ErrorKind::Unsupported,
+                    "Archive sources do not support link preservation.",
+                ));
+            }
+        }
         let clipboard = match &self.sources {
             Sources::Paths(files) => Some(files),
             Sources::SharedPaths(files) => Some(files.as_ref()),
@@ -169,6 +208,7 @@ impl CopyInput {
         service: &dyn TransferService,
         cancel: &Cancellation,
     ) -> Result<Resolved, FsError> {
+        self.validate()?;
         let clipboard = match self.sources {
             Sources::Captured(sources) => {
                 if self.metadata != TransferMetadataPolicy::ContentOnly
@@ -188,7 +228,7 @@ impl CopyInput {
                         "Captured transfer intent changed.",
                     ));
                 }
-                let prepared = sources.prepare(service, cancel)?;
+                let prepared = sources.prepare_with_links(service, self.links, cancel)?;
                 let count = match &prepared {
                     PreparedCapturedTransfer::Copy(roots)
                         if self.intent == TransferIntent::Copy =>

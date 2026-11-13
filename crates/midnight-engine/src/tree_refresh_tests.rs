@@ -2,6 +2,131 @@ use super::*;
 use midnight_core::{TreeEvent, TreeRefreshRequest, TreeSelectionAction};
 
 #[test]
+fn refresh_loaded_native_links_and_cached_descendants_keep_logical_paths() {
+    for collapsed in [false, true] {
+        let mut fixture = fixture_with_directory_kind(0, EntryKind::DirectoryLink);
+        branch(&mut fixture, "z-parent", BranchAction::Expand);
+        branch(&mut fixture, "child", BranchAction::Expand);
+        if collapsed {
+            branch(&mut fixture, "z-parent", BranchAction::Collapse);
+        }
+        fixture
+            .graph
+            .rows
+            .lock()
+            .unwrap()
+            .insert(4, vec![directory(6, "grandchild")]);
+        // A stable new target is inspected on this explicit refresh; its
+        // identity never replaces the logical path used by captured actions.
+        fixture.graph.browse_identities.lock().unwrap().insert(
+            1,
+            Ok(Some(midnight_core::SizeDirectoryIdentity {
+                device: 2,
+                object: 17_u128.to_le_bytes(),
+            })),
+        );
+        fixture.graph.listed.lock().unwrap().clear();
+        refresh(&mut fixture);
+        assert!(matches!(
+            finish(&mut fixture),
+            TreeEvent::Refreshed { result: Ok(()), .. }
+        ));
+        assert_eq!(*fixture.graph.listed.lock().unwrap(), [0, 1, 4]);
+        let loaded = fixture.session.tree.loaded_native_branches();
+        assert_eq!(loaded.len(), 3);
+        let descendants = fixture.session.tree.watch_listing(loaded[2]).unwrap().1;
+        assert_eq!(descendants.len(), 1);
+        assert_eq!(
+            fixture
+                .session
+                .tree
+                .state(descendants[0])
+                .unwrap()
+                .entry
+                .display_name,
+            "grandchild"
+        );
+        let view = fixture.session.projection().clone();
+        let link = view
+            .rows
+            .iter()
+            .find(|row| row.entry.display_name == "z-parent")
+            .unwrap();
+        assert_eq!(link.expanded, !collapsed);
+        let link_id = link.id;
+        fixture.session.commit(&view);
+        let captured = fixture
+            .session
+            .capture_target(&view, link_id, &Cancellation::default())
+            .unwrap();
+        assert!(matches!(
+            captured.target.value().unwrap(),
+            ProviderTarget::Native(path) if path == &fixture.graph.root_path.join("z-parent")
+        ));
+    }
+}
+
+#[test]
+fn a_loaded_link_that_becomes_cyclic_skips_cached_descendants_and_refreshes_its_sibling() {
+    let mut fixture = fixture_with_directory_kind(0, EntryKind::DirectoryLink);
+    branch(&mut fixture, "z-parent", BranchAction::Expand);
+    branch(&mut fixture, "child", BranchAction::Expand);
+    branch(&mut fixture, "a-parent", BranchAction::Expand);
+    fixture.graph.browse_identities.lock().unwrap().insert(
+        1,
+        Ok(Some(midnight_core::SizeDirectoryIdentity {
+            device: 1,
+            object: 0_u128.to_le_bytes(),
+        })),
+    );
+    fixture.graph.listed.lock().unwrap().clear();
+    let original_session = fixture.session.projection().stamp.session;
+    refresh(&mut fixture);
+    let TreeEvent::Refreshed {
+        result: Err(error), ..
+    } = finish(&mut fixture)
+    else {
+        panic!("a newly cyclic link must fail its refresh locally");
+    };
+    assert!(error.as_str().contains("ancestor"));
+    assert_eq!(*fixture.graph.listed.lock().unwrap(), [0, 2]);
+    assert_eq!(fixture.session.projection().stamp.session, original_session);
+    assert!(
+        fixture
+            .session
+            .projection()
+            .rows
+            .iter()
+            .any(|row| row.entry.display_name == "child")
+    );
+}
+
+#[test]
+fn watch_scope_includes_exact_expanded_native_links_and_their_loaded_descendants() {
+    let mut fixture = fixture_with_directory_kind(0, EntryKind::DirectoryLink);
+    branch(&mut fixture, "z-parent", BranchAction::Expand);
+    branch(&mut fixture, "child", BranchAction::Expand);
+    branch(&mut fixture, "a-parent", BranchAction::Expand);
+    let view = fixture.session.projection().clone();
+    fixture.session.commit(&view);
+    let scope = fixture.session.watch_scope().unwrap().unwrap();
+    assert_eq!(
+        scope
+            .targets
+            .iter()
+            .map(|target| target.path.clone())
+            .collect::<Vec<_>>(),
+        [
+            fixture.graph.root_path.clone(),
+            fixture.graph.root_path.join("a-parent"),
+            fixture.graph.root_path.join("z-parent"),
+            fixture.graph.root_path.join("z-parent/child"),
+        ],
+        "automatic refresh must observe the already expanded native link occurrences"
+    );
+}
+
+#[test]
 fn unchanged_watch_failure_diagnostic_retains_snapshot_identity_for_coalescing() {
     let mut fixture = fixture();
     branch(&mut fixture, "z-parent", BranchAction::Expand);

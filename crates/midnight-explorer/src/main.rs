@@ -149,12 +149,32 @@ fn run() -> Result<(), String> {
     }
     let restart_arguments = std::env::args_os().skip(1).collect::<Vec<_>>();
     let restart_cwd = std::env::current_dir().map_err(|error| error.to_string())?;
-    let result = run_window(engine_lifetime, &runtime, local, filesystem, &options);
+    let mut image_spare_retirement = None;
+    let result = run_window(
+        engine_lifetime,
+        &runtime,
+        local,
+        filesystem,
+        &options,
+        &mut image_spare_retirement,
+    );
     // Normal close drains mutation cancellation before hiding the window.
     // A failed startup also stops its runtime before another process is started.
-    startup_recovery::finish(
+    viewers::finish_after_image_spare(
         result,
-        || runtime.shutdown_timeout(Duration::from_secs(1)),
+        || {
+            let retirement_result = if let Some(retirement) = image_spare_retirement.as_ref() {
+                retirement.stop_spare();
+                // The event loop has closed. Await the terminal owner result before bounded
+                // runtime shutdown; only successful retirement can permit software retry.
+                runtime.block_on(retirement.wait())
+            } else {
+                Ok(())
+            };
+            // Keep the ticket in this outer scope through runtime cleanup and fatal handling.
+            (runtime, retirement_result)
+        },
+        |runtime| runtime.shutdown_timeout(Duration::from_secs(1)),
         || {
             let executable = std::env::current_exe().map_err(|error| error.to_string())?;
             let status =
@@ -251,6 +271,7 @@ fn run_window(
     local: Arc<LocalFileSystem>,
     filesystem: Arc<midnight_native_filesystem_host::InstalledProvider>,
     options: &Options,
+    image_spare_retirement: &mut Option<midnight_viewer_engine::ImageSpareRetirement>,
 ) -> Result<startup_recovery::Attempt, String> {
     // Desktop integration and mutations keep their explicit platform services.
     // Browsing, volume queries and viewer reads route only through the native plugin.
@@ -580,13 +601,14 @@ fn run_window(
             sent
         }),
     );
-    let viewers = viewers::install(
+    let (viewers, image_preparation) = viewers::install(
         &window,
         presenter.clone(),
         commands.clone(),
         runtime.handle(),
         filesystem.clone(),
         local.clone(),
+        &mut *image_spare_retirement,
     );
     let thumbnail_timer = thumbnails::install(
         &window,
@@ -687,6 +709,11 @@ fn run_window(
         .shutdown_drag_drop(&|command| commands.try_send(command).is_ok());
     let result = result.and(window.hide().map_err(|error| error.to_string()));
     window.invoke_close_information_windows();
+    image_preparation.stop();
+    drop(image_preparation);
+    if let Some(retirement) = image_spare_retirement.as_ref() {
+        retirement.stop_spare();
+    }
     viewers.close_all();
     comparators.close_all();
     window.invoke_close_find_windows();

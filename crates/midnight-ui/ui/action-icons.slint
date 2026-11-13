@@ -120,6 +120,7 @@ export component ActionButton inherits Rectangle {
     in property <bool> primary;
     in property <bool> compact;
     in property <length> minimum-control-height: 32px;
+    in property <length> vertical-padding: 5px;
     in property <bool> removal-icon;
     in property <bool> destructive;
     in property <bool> enabled: true;
@@ -161,7 +162,9 @@ export component ActionButton inherits Rectangle {
         : root.destructive ? Theme.error-text
         : root.has-focus || root.primary || root.checked ? Theme.active-frame : Theme.frame;
     content := HorizontalLayout {
-        padding-left: root.compact ? 4px : 12px; padding-right: root.compact ? 4px : 12px; padding-top: 5px; padding-bottom: 5px;
+        padding-left: root.compact ? 4px : 12px;
+        padding-right: root.compact ? 4px : 12px;
+        padding-top: root.vertical-padding; padding-bottom: root.vertical-padding;
         spacing: 4px; alignment: center; cross-axis-alignment: center;
         if root.has-icon: Image {
             source: root.artwork; image-fit: contain;
@@ -179,6 +182,8 @@ export component ActionButton inherits Rectangle {
         }
     }
     input := Button {
+        // Explicit placement keeps native input geometry out of content sizing.
+        x: 0px; y: 0px;
         width: root.width; height: root.height;
         opacity: 0; accessible-role: none;
         text: root.text; enabled: root.enabled;

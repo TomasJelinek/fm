@@ -83,6 +83,21 @@ cleanup domain; it cannot grow replacement capacity or block the UI's Drop call.
 Similarly, an arbitrary blocked provider destructor has no guaranteed completion time.
 One unwinding destructor is isolated; Rust's double-panic/process-abort rules still apply.
 
+## Prepared Rename disposal boundary
+
+The implemented [core/host Rename contract](NATIVE_FILESYSTEM_API.md#prepared-rename-corehost-lifecycle)
+adds a finite `RenameResource::finish()` acknowledgment and an owned
+`RenamePrepareFailure.retained` carrier. Engine integration remains unimplemented;
+current destructor ordering/retirement acknowledgment does not implement that
+handshake.
+
+The caller must retain the prepared owner or prepare-failure carrier together
+with its full job, captured provider owners, mutation permit and outer retirement
+slot. Release that chain only after `Closed`; `Executing` retains it through
+actual work, and `Unconfirmed` quarantines the whole chain. Dropping a host owner
+alone cannot retain caller-owned captures/gates. This contract adds no cleanup
+pool or retirement capacity and does not establish engine/UI cutover.
+
 ## Child tasks and service ownership
 
 The service bundle has its own startup lease, shared through `TaskLifetime`. The run
@@ -118,6 +133,32 @@ worker cancelled before first invocation. Open ClipboardSession objects stay on
 one native thread through create/pump/Drop. Controller Drop cancels even a pump
 waiting on a full result queue. Rejected clipboard requests retire through one
 serialized acknowledgement; cancelling that await never cancels resource cleanup.
+
+## Image viewer spare shutdown
+
+The [image viewer](IMAGE_VIEWER_API.md) keeps at most one source-free decoder
+spare. `ImageSpareRetirement` is an application-owned completion ticket for that
+spare; it does not retain the service or wait for active foreground sessions.
+`stop_spare()` is memory-only and idempotent: it seals speculative configuration
+and refill, cancels a starting spare and marks a ready spare for backend cleanup.
+Foreground sessions and ordinary cold admission remain independent.
+
+Normal close stops and drops the preparation controller, requests spare stop,
+then closes viewer windows. After the event loop exits, including startup failure,
+the application stops the spare and awaits `wait()` outside UI callbacks before
+shutting down Tokio. Success follows any late spare creation, actual native
+cleanup and normal owner exit. Keep the ticket through runtime cleanup and fatal
+handling; a UI destructor does not wait for this acknowledgment.
+
+`OwnerFailed` is terminal but leaves cleanup unconfirmed. Preserve residual
+ownership, still run runtime cleanup and suppress software-renderer startup retry.
+A retry is allowed only after successful spare retirement and runtime cleanup.
+This fence does not drain active foreground sessions or establish a general
+natural auxiliary-process lifetime guarantee.
+
+On Windows, worker creation includes the configured resource-limited Job in
+`PROC_THREAD_ATTRIBUTE_JOB_LIST`. Assignment occurs during `CreateProcessW`;
+the suspended main thread resumes only after its owned process guard is installed.
 
 ## Generated File Lists and network discovery
 

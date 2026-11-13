@@ -107,6 +107,20 @@ impl CapturedTransferSources for Sources {
         service: &dyn TransferService,
         cancel: &Cancellation,
     ) -> Result<PreparedCapturedTransfer, FsError> {
+        self.prepare_with_links(service, CopyLinkPolicy::Reject, cancel)
+    }
+    fn prepare_with_links(
+        &self,
+        service: &dyn TransferService,
+        links: CopyLinkPolicy,
+        cancel: &Cancellation,
+    ) -> Result<PreparedCapturedTransfer, FsError> {
+        if links == CopyLinkPolicy::Preserve && self.intent != TransferIntent::Copy {
+            return Err(FsError {
+                kind: io::ErrorKind::Unsupported,
+                ..failure("Tree link preservation is available only for Copy.")
+            });
+        }
         if self.intent == TransferIntent::Move {
             return self
                 .prepare_move(service, cancel)
@@ -125,6 +139,12 @@ impl CapturedTransferSources for Sources {
                 .value()
                 .map_err(|error| failure(&error.to_string()))?
             {
+                if links == CopyLinkPolicy::Preserve {
+                    return Err(FsError {
+                        kind: io::ErrorKind::Unsupported,
+                        ..failure("Archive sources do not support link preservation.")
+                    });
+                }
                 let node = target
                     .original
                     .as_ref()
@@ -164,7 +184,9 @@ impl CapturedTransferSources for Sources {
                 .map_err(|error| failure(&error.to_string()))?
             {
                 ProviderTarget::Native(path) => {
-                    let source = service.prepare_transfer_source(path, cancel)?;
+                    // The captured occurrence is the selected entry, including a
+                    // link itself; a browsed referent is separate authority.
+                    let source = service.prepare_transfer_source_with_links(path, links, cancel)?;
                     if source.entry().item.path != *path || source.native_identity().is_none() {
                         return Err(failure("Provider returned a different native source."));
                     }
@@ -286,6 +308,12 @@ impl TransferSource for LeasedSource {
     }
     fn revalidate(&self, cancel: &Cancellation) -> Result<(), FsError> {
         self.source.revalidate(cancel)
+    }
+    fn link_representation(
+        &self,
+        cancel: &Cancellation,
+    ) -> Result<TransferLinkRepresentation, FsError> {
+        self.source.link_representation(cancel)
     }
     fn open_child(
         &self,

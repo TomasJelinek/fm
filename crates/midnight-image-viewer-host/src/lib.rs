@@ -7,6 +7,8 @@ pub use providers::{Discovery, Provider, discover, discover_with_diagnostics};
 mod raster_reply;
 mod session;
 pub use session::{ImageSession, Source};
+mod startup;
+pub use startup::PreparedImageWorker;
 
 #[cfg(windows)]
 #[path = "paths_windows.rs"]

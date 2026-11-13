@@ -19,7 +19,9 @@ fn size_warning_is_an_accessible_detail_button_with_the_actual_reason_in_every_v
             identity: "warning:17".into(),
             name: "Folder 文档".into(),
             directory: true,
+            size: "≈ 4 KB".into(),
             size_state: 3,
+            size_running: false,
             size_hint: reason.into(),
             ..Default::default()
         }])));
@@ -65,9 +67,16 @@ fn diagnostic_clicks_in_both_panels_do_not_select_open_drag_or_retry() {
             for tree in [false, true] {
                 let rows = Rc::new(VecModel::from(vec![FileRow {
                     identity: "exact:17".into(),
-                    name: "Unavailable folder".into(),
+                    name: if tree {
+                        "Unavailable folder"
+                    } else {
+                        "Partially counted folder"
+                    }
+                    .into(),
                     directory: true,
+                    size: if tree { "" } else { "≈ 4 KB" }.into(),
                     size_state: if tree { 0 } else { 3 },
+                    size_running: false,
                     size_hint: "Access denied in private child".into(),
                     tree_disclosure: if tree { 6 } else { 0 },
                     tree_error: "Permission denied while reading folder".into(),

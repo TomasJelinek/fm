@@ -43,3 +43,25 @@ fn focused_name_preserves_unpaired_native_utf16() {
     );
     assert_eq!(p.focused_name(PaneId::Left), Some(PathBuf::from(raw)));
 }
+
+#[test]
+fn tree_command_insertion_preserves_unpaired_utf16_and_refuses_lossy_editor_text() {
+    let raw = OsString::from_wide(&[0x0072, 0xd800, 0x002e, 0x0074, 0x0078, 0x0074]);
+    for pane in [PaneId::Left, PaneId::Right] {
+        for kind in [EntryKind::Directory, EntryKind::File] {
+            let (p, path) = acknowledged_native_tree(pane, kind, &raw);
+            let name = p
+                .focused_name(pane)
+                .expect("the raw basename must be retained");
+            let full = p
+                .focused_full_path(pane)
+                .expect("the raw native path must be retained");
+            assert_eq!(name, PathBuf::from(&raw));
+            assert_eq!(full, path);
+            assert!(name.to_str().is_none());
+            assert!(full.to_str().is_none());
+            assert!(crate::command_line::command_path_text(&name).is_err());
+            assert!(crate::command_line::command_path_text(&full).is_err());
+        }
+    }
+}

@@ -125,6 +125,7 @@ export component DialogFrame inherits Rectangle {
 }
 
 export component DialogHeader inherits Rectangle {
+    in property <bool> enabled: true;
     in property <string> title;
     in property <string> detail;
     in property <image> native-icon;
@@ -160,6 +161,7 @@ export component DialogHeader inherits Rectangle {
         }
     }
     TouchArea {
+        enabled: root.enabled;
         x: 0px; y: 0px; height: root.heading-height;
         width: max(0px, parent.width - root.close-size - 8px);
         private property <length> anchor-x;
@@ -178,6 +180,7 @@ export component DialogHeader inherits Rectangle {
         }
     }
     CloseButton {
+        enabled: root.enabled;
         x: parent.width - self.width; y: (root.heading-height - self.height) / 2;
         width: root.close-size; height: root.close-size;
         label: root.close-label;

@@ -63,6 +63,9 @@ pub unsafe fn entry<F: Filesystem>(
         if capabilities & (CAP_ACTIVATE | CAP_REFRESH | CAP_RESOLVE_TEXT) != 0 {
             header.minimum_host_minor = 2;
         }
+        if capabilities & CAP_PREPARED_RENAME != 0 {
+            header.minimum_host_minor = 3;
+        }
         let table = Api {
             header,
             capabilities,
@@ -146,18 +149,41 @@ unsafe extern "C" fn call<F: Filesystem>(id: u64, input: *const Call, out: *mut 
             // SAFETY: non-null bounded slice metadata and caller's immutable mapped borrow.
             unsafe { std::slice::from_raw_parts(input.payload.data, length) }
         };
-        let mut permit = match runtime::Permit::acquire(instance.clone()) {
+        let decode = || {
+            api::decode_request(
+                input.operation,
+                bytes,
+                instance.config.request_bytes as usize,
+            )
+            .map_err(|error| {
+                if error == api::WireError::Unsupported {
+                    UNSUPPORTED
+                } else {
+                    INVALID
+                }
+            })
+        };
+        // Only the new family decodes before changing its reserved control share.
+        // Legacy requests retain their existing quota/decoding precedence.
+        let decoded = if (20..=23).contains(&input.operation) {
+            match decode() {
+                Ok(request) => Some(request),
+                Err(status) => return status,
+            }
+        } else {
+            None
+        };
+        let effectful = input.operation == 21;
+        let mut permit = match runtime::Permit::acquire(instance.clone(), input.operation) {
             Ok(permit) => permit,
             Err(status) => return status,
         };
-        let request = match api::decode_request(
-            input.operation,
-            bytes,
-            instance.config.request_bytes as usize,
-        ) {
-            Ok(request) => request,
-            Err(api::WireError::Unsupported) => return UNSUPPORTED,
-            Err(_) => return INVALID,
+        let request = match decoded {
+            Some(request) => request,
+            None => match decode() {
+                Ok(request) => request,
+                Err(status) => return status,
+            },
         };
         let context = CallContext {
             cancel: &input.cancel,
@@ -165,7 +191,11 @@ unsafe extern "C" fn call<F: Filesystem>(id: u64, input: *const Call, out: *mut 
         };
         let cleanup = matches!(
             request,
-            Request::CloseList { .. } | Request::CloseRead { .. } | Request::CloseMount { .. }
+            Request::CloseList { .. }
+                | Request::CloseRead { .. }
+                | Request::CloseMount { .. }
+                | Request::GetRenameState { .. }
+                | Request::CloseRename { .. }
         );
         let response = if !cleanup && context.is_cancelled() {
             Reply::stateless(Response::Failed(Failure::new(
@@ -185,7 +215,7 @@ unsafe extern "C" fn call<F: Filesystem>(id: u64, input: *const Call, out: *mut 
         };
         let (mut response, completion) = response.into_parts();
         let mut publication = permit.completion(completion);
-        if !cleanup && context.is_cancelled() {
+        if !cleanup && !effectful && context.is_cancelled() {
             if let Err(status) = publication.finish(false) {
                 return status;
             }
@@ -194,10 +224,18 @@ unsafe extern "C" fn call<F: Filesystem>(id: u64, input: *const Call, out: *mut 
                 "Filesystem request canceled.",
             ));
         }
-        let bytes = match api::encode_response(&response, instance.config.reply_bytes as usize) {
+        let paired = match input.operation {
+            20 => matches!(response, Response::RenamePrepared(_) | Response::Failed(_)),
+            21 | 22 => matches!(response, Response::RenameState(_) | Response::Failed(_)),
+            23 => matches!(response, Response::Unit | Response::Failed(_)),
+            _ => true,
+        };
+        if !paired {
+            return INVALID;
+        }
+        let bytes = match permit.encode(&response) {
             Ok(bytes) => bytes,
-            Err(api::WireError::Limit) => return RESOURCE_LIMIT,
-            Err(_) => return INVALID,
+            Err(status) => return status,
         };
         drop(response);
         match permit.publish(bytes) {

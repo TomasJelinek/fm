@@ -1,3 +1,8 @@
+use i_slint_core::{
+    item_tree::{ItemRc, ParentItemTraversalMode},
+    items::TextInput,
+    window::WindowInner,
+};
 use midnight_core::*;
 #[path = "support/selection.rs"]
 mod selection;
@@ -53,6 +58,41 @@ fn hold(window: &MainWindow, key: Key, pressed: bool) {
         WindowEvent::KeyReleased { text: key.into() }
     });
 }
+
+fn transfer_destination_input(window: &MainWindow) -> ItemRc {
+    assert!(window.get_embedded_modal_open());
+    assert!(
+        !window.get_dialog_input_blocked(),
+        "the embedded form must keep its main-window input host enabled"
+    );
+    let inner = WindowInner::from_pub(window.window());
+    let popups = inner.active_popups();
+    assert_eq!(popups.len(), 1, "the transfer form owns one embedded popup");
+    let popup_root = ItemRc::new_root(popups[0].component.clone());
+    let focused = inner
+        .focus_item
+        .borrow()
+        .upgrade()
+        .expect("destination focus");
+    let mut scope_root = focused.clone();
+    while let Some(parent) = scope_root.parent_item(ParentItemTraversalMode::StopAtPopups) {
+        scope_root = parent;
+    }
+    assert_eq!(
+        scope_root, popup_root,
+        "keyboard focus escaped the transfer popup"
+    );
+    let input = focused
+        .downcast::<TextInput>()
+        .expect("the destination editor owns actual focus");
+    assert_eq!(
+        input.as_pin_ref().text(),
+        window.get_copy_draft_destination()
+    );
+    assert!(!window.get_command_focused());
+    focused
+}
+
 fn complete(
     presenter: &Rc<RefCell<Presenter>>,
     commands: &RefCell<Vec<Command>>,
@@ -412,55 +452,63 @@ fn toolbar_and_header_callbacks_transfer_actual_keyboard_focus() {
         Command::ShowSelectionProperties { .. }
     ));
     commands.borrow_mut().clear();
-    // F5 now captures a copy draft and deliberately contains file shortcuts.
-    key(&window, Key::F5);
-    assert!(!window.get_copy_draft_token().is_empty());
-    assert!(window.get_dialog_input_blocked());
-    assert!(
-        commands.borrow().is_empty(),
-        "opening a copy draft does not queue a copy"
-    );
-    slint::platform::update_timers_and_animations();
-    assert_eq!(
-        windows.borrow().len(),
-        1,
-        "transfer draft must share the main adapter"
-    );
-    assert!(
-        !i_slint_core::window::WindowInner::from_pub(window.window())
-            .active_popups()
-            .is_empty()
-    );
-    key(&window, Key::Escape);
-    slint::platform::update_timers_and_animations();
-    assert!(!window.get_dialog_input_blocked());
-    assert!(window.get_copy_draft_token().is_empty());
-    assert_eq!(window.get_focused_pane(), 0);
-    // F6 similarly waits for explicit recovery confirmation and releases focus on Escape.
-    key(&window, Key::F6);
-    assert!(!window.get_copy_draft_token().is_empty());
-    assert!(window.get_copy_draft_move());
-    assert!(window.get_dialog_input_blocked());
-    assert!(
-        commands.borrow().is_empty(),
-        "opening a Move draft does not queue a transfer"
-    );
-    slint::platform::update_timers_and_animations();
-    assert_eq!(
-        windows.borrow().len(),
-        1,
-        "transfer draft must share the main adapter"
-    );
-    assert!(
-        !i_slint_core::window::WindowInner::from_pub(window.window())
-            .active_popups()
-            .is_empty()
-    );
-    key(&window, Key::Escape);
-    slint::platform::update_timers_and_animations();
-    assert!(!window.get_dialog_input_blocked());
-    assert!(window.get_copy_draft_token().is_empty());
-    assert_eq!(window.get_focused_pane(), 0);
+    // F5/F6 contain keyboard editing in their embedded destination input, then
+    // cancellation returns to the exact invoking file-pane focus item.
+    for (shortcut, moving) in [(Key::F5, false), (Key::F6, true)] {
+        let inner = WindowInner::from_pub(window.window());
+        let invoking = inner.focus_item.borrow().upgrade().unwrap();
+        let command_draft = window.get_command_text();
+        key(&window, shortcut);
+        assert!(!window.get_copy_draft_token().is_empty());
+        assert_eq!(window.get_copy_draft_move(), moving);
+        assert!(
+            commands.borrow().is_empty(),
+            "opening a draft must not queue a transfer"
+        );
+        slint::platform::update_timers_and_animations();
+        native.draw_if_needed(|renderer| {
+            renderer.render(&mut pixels, 1340);
+        });
+        assert_eq!(
+            windows.borrow().len(),
+            1,
+            "transfer draft must share the main adapter"
+        );
+        let destination = transfer_destination_input(&window);
+        let initial = window.get_copy_draft_destination();
+        key(&window, Key::End);
+        key(&window, " 文档");
+        assert_eq!(
+            destination
+                .downcast::<TextInput>()
+                .unwrap()
+                .as_pin_ref()
+                .text(),
+            format!("{initial} 文档"),
+            "typing belongs to the destination editor"
+        );
+        assert_eq!(window.get_command_text(), command_draft);
+        assert!(
+            commands.borrow().is_empty(),
+            "editing a draft must not enqueue work"
+        );
+        key(&window, Key::Escape);
+        slint::platform::update_timers_and_animations();
+        assert!(!window.get_embedded_modal_open());
+        assert!(!window.get_dialog_input_blocked());
+        assert!(inner.active_popups().is_empty());
+        assert!(window.get_copy_draft_token().is_empty());
+        assert_eq!(
+            inner.focus_item.borrow().upgrade().unwrap(),
+            invoking,
+            "{shortcut:?}: cancellation must restore actual invoking focus"
+        );
+        assert_eq!(window.get_focused_pane(), 0);
+        assert!(
+            commands.borrow().is_empty(),
+            "cancellation must not submit the edited draft"
+        );
+    }
     hold(&window, Key::Control, true);
     hold(&window, Key::Shift, true);
     key(&window, "S");

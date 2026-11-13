@@ -205,6 +205,10 @@ fn startup_and_replacement_notices_never_request_another_adapter() {
     main.set_message_generation(1);
     slint::platform::update_timers_and_animations();
     main.show().unwrap();
+    // The software adapter has no preferred-size negotiation. Establish the
+    // client viewport before testing native-close delivery to visible controls.
+    let host = windows.borrow()[0].clone();
+    modeless::draw(&host, 640, 420, "replacement-notice-main");
     main.invoke_refresh_information_windows();
     assert_notice_open(&main);
     assert_eq!(attempts.get(), 1);
@@ -232,6 +236,11 @@ fn startup_and_replacement_notices_never_request_another_adapter() {
     presentation.invoke_dismiss(first);
     assert_eq!(presentation.get_token(), replacement);
     assert_notice_open(&main);
+    assert!(
+        modeless::accessible_popup_item(&host, AccessibleRole::Button, "Close")
+            .is_some_and(|item| item.is_visible()),
+        "native close must target the replacement's visible controls"
+    );
     windows.borrow()[0]
         .window()
         .dispatch_event(WindowEvent::CloseRequested);

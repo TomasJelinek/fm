@@ -213,6 +213,7 @@ fn parse_manifest(text: &str, directory: &Path) -> Result<Package, Failure> {
             "activate" => abi::CAP_ACTIVATE,
             "refresh" => abi::CAP_REFRESH,
             "resolve-text" => abi::CAP_RESOLVE_TEXT,
+            "prepared-rename" => abi::CAP_PREPARED_RENAME,
             _ => return Err(invalid("Unknown native filesystem capability")),
         };
         if capabilities & bit != 0 {
@@ -233,6 +234,9 @@ fn parse_manifest(text: &str, directory: &Path) -> Result<Package, Failure> {
     }
     if !network && capabilities & abi::CAP_NATIVE_ADDRESS == 0 {
         return Err(invalid("Native address capability is required"));
+    }
+    if capabilities & abi::CAP_PREPARED_RENAME != 0 && manifest.minimum_host_minor < 3 {
+        return Err(invalid("Prepared Rename requires ABI 1.3"));
     }
     Ok(Package {
         id: manifest.id,
@@ -257,6 +261,277 @@ pub(crate) fn invalid(error: impl std::fmt::Display) -> Failure {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn rename_foundation_native_manifest(minimum_host_minor: u16, capabilities: &[&str]) -> String {
+        format!(
+            concat!(
+                "schema_version=1\n",
+                "id='native.rename-foundation'\n",
+                "kind='filesystem-native'\n",
+                "version='0.1.0'\n",
+                "entry_library='native-test-library'\n",
+                "target='{target}'\n",
+                "abi_major={abi_major}\n",
+                "minimum_host_minor={minimum_host_minor}\n",
+                "protocol=1\n",
+                "capabilities={capabilities:?}\n",
+                "address_encoding='{encoding}'\n",
+            ),
+            target = host_target(),
+            abi_major = abi::ABI_MAJOR,
+            minimum_host_minor = minimum_host_minor,
+            capabilities = capabilities,
+            encoding = crate::paths::MANIFEST_ENCODING,
+        )
+    }
+
+    fn rename_foundation_network_manifest(
+        minimum_host_minor: u16,
+        capabilities: &[&str],
+    ) -> String {
+        rename_foundation_native_manifest(minimum_host_minor, capabilities)
+            .replace("kind='filesystem-native'", "kind='filesystem-network'")
+            .replace(
+                &format!("address_encoding='{}'", crate::paths::MANIFEST_ENCODING),
+                "address_encoding='opaque'",
+            )
+    }
+
+    #[test]
+    fn rename_foundation_accepts_prepared_rename_for_current_native_platform() {
+        for minimum_host_minor in 3..=abi::ABI_MINOR {
+            let text = rename_foundation_native_manifest(
+                minimum_host_minor,
+                &["browse", "native-address", "prepared-rename"],
+            );
+            let package = parse_manifest(&text, Path::new("package"))
+                .expect("ABI-compatible native prepared-rename manifest must be accepted");
+            assert_eq!(package.kind, PackageKind::Native);
+            assert_eq!(package.encoding, crate::paths::ENCODING);
+            assert_eq!(
+                package.capabilities,
+                abi::CAP_BROWSE | abi::CAP_NATIVE_ADDRESS | abi::CAP_PREPARED_RENAME
+            );
+        }
+    }
+
+    #[test]
+    fn rename_foundation_accepts_prepared_rename_without_unrelated_capabilities() {
+        let text = rename_foundation_native_manifest(3, &["native-address", "prepared-rename"]);
+        let package = parse_manifest(&text, Path::new("package"))
+            .expect("native prepared-rename does not require unrelated Browse/Read capabilities");
+        assert_eq!(package.kind, PackageKind::Native);
+        assert_eq!(package.encoding, crate::paths::ENCODING);
+        assert_eq!(
+            package.capabilities,
+            abi::CAP_NATIVE_ADDRESS | abi::CAP_PREPARED_RENAME
+        );
+    }
+
+    #[test]
+    fn rename_foundation_preserves_legacy_native_manifests_without_prepared_rename() {
+        for minimum_host_minor in 0..=abi::ABI_MINOR {
+            let text = rename_foundation_native_manifest(
+                minimum_host_minor,
+                &["browse", "native-address"],
+            );
+            let package = parse_manifest(&text, Path::new("package"))
+                .expect("legacy native Browse manifests must remain accepted");
+            assert_eq!(package.kind, PackageKind::Native);
+            assert_eq!(package.encoding, crate::paths::ENCODING);
+            assert_eq!(
+                package.capabilities,
+                abi::CAP_BROWSE | abi::CAP_NATIVE_ADDRESS
+            );
+        }
+    }
+
+    #[test]
+    fn rename_foundation_rejects_prepared_rename_before_minor_three() {
+        for minimum_host_minor in [0, 1, 2] {
+            let text = rename_foundation_native_manifest(
+                minimum_host_minor,
+                &["browse", "native-address", "prepared-rename"],
+            );
+            let error = parse_manifest(&text, Path::new("package")).unwrap_err();
+            assert_eq!(
+                error.code,
+                ErrorCode::Invalid,
+                "prepared-rename must reject minimum_host_minor={minimum_host_minor}"
+            );
+        }
+    }
+
+    #[test]
+    fn rename_foundation_rejects_prepared_rename_without_native_address() {
+        for capabilities in [&["prepared-rename"][..], &["browse", "prepared-rename"][..]] {
+            let text = rename_foundation_native_manifest(3, capabilities);
+            let error = parse_manifest(&text, Path::new("package")).unwrap_err();
+            assert_eq!(error.code, ErrorCode::Invalid, "{capabilities:?}");
+        }
+    }
+
+    #[test]
+    fn rename_foundation_rejects_prepared_rename_for_network_discovery() {
+        for capabilities in [
+            &[
+                "browse",
+                "stat",
+                "volumes",
+                "activate",
+                "refresh",
+                "resolve-text",
+                "prepared-rename",
+            ][..],
+            &[
+                "browse",
+                "stat",
+                "volumes",
+                "activate",
+                "refresh",
+                "resolve-text",
+                "native-address",
+                "prepared-rename",
+            ][..],
+        ] {
+            let text = rename_foundation_network_manifest(3, capabilities);
+            let error = parse_manifest(&text, Path::new("package")).unwrap_err();
+            assert_eq!(error.code, ErrorCode::Invalid, "{capabilities:?}");
+        }
+    }
+
+    #[test]
+    fn rename_foundation_rejects_prepared_rename_with_opaque_or_foreign_native_addresses() {
+        let text =
+            rename_foundation_native_manifest(3, &["browse", "native-address", "prepared-rename"]);
+        for encoding in ["opaque", "windows-utf16le", "unix-bytes"] {
+            if encoding == crate::paths::MANIFEST_ENCODING {
+                continue;
+            }
+            let invalid_text = text.replace(
+                &format!("address_encoding='{}'", crate::paths::MANIFEST_ENCODING),
+                &format!("address_encoding='{encoding}'"),
+            );
+            let error = parse_manifest(&invalid_text, Path::new("package")).unwrap_err();
+            assert_eq!(error.code, ErrorCode::Invalid, "{encoding}");
+        }
+    }
+
+    #[test]
+    fn rename_foundation_rejects_duplicate_prepared_rename() {
+        for capabilities in [
+            &[
+                "browse",
+                "native-address",
+                "prepared-rename",
+                "prepared-rename",
+            ][..],
+            &[
+                "prepared-rename",
+                "browse",
+                "prepared-rename",
+                "native-address",
+            ][..],
+        ] {
+            let text = rename_foundation_native_manifest(3, capabilities);
+            let error = parse_manifest(&text, Path::new("package")).unwrap_err();
+            assert_eq!(error.code, ErrorCode::Invalid, "{capabilities:?}");
+        }
+    }
+
+    #[test]
+    fn rename_foundation_rejects_unknown_capabilities_with_prepared_rename() {
+        for unknown in ["unknown", "prepared_rename", "prepared-rename-extra"] {
+            let text = rename_foundation_native_manifest(
+                3,
+                &["browse", "native-address", "prepared-rename", unknown],
+            );
+            let error = parse_manifest(&text, Path::new("package")).unwrap_err();
+            assert_eq!(error.code, ErrorCode::Invalid, "{unknown}");
+        }
+    }
+
+    #[test]
+    fn rename_foundation_preserves_abi_and_target_validation() {
+        for capabilities in [
+            &["browse", "native-address"][..],
+            &["browse", "native-address", "prepared-rename"][..],
+        ] {
+            let text = rename_foundation_native_manifest(3, capabilities);
+            for invalid_text in [
+                text.replace(
+                    &format!("abi_major={}", abi::ABI_MAJOR),
+                    &format!("abi_major={}", abi::ABI_MAJOR + 1),
+                ),
+                text.replace(
+                    "minimum_host_minor=3",
+                    &format!("minimum_host_minor={}", abi::ABI_MINOR + 1),
+                ),
+                text.replace(
+                    &format!("target='{}'", host_target()),
+                    "target='foreign-test-target'",
+                ),
+            ] {
+                let error = parse_manifest(&invalid_text, Path::new("package")).unwrap_err();
+                assert_eq!(error.code, ErrorCode::Invalid, "{invalid_text}");
+            }
+        }
+    }
+
+    #[test]
+    fn rename_foundation_preserves_network_discovery_only_capabilities() {
+        let discovery = [
+            "browse",
+            "stat",
+            "volumes",
+            "activate",
+            "refresh",
+            "resolve-text",
+        ];
+        let discovery_bits = abi::CAP_BROWSE
+            | abi::CAP_STAT
+            | abi::CAP_VOLUMES
+            | abi::CAP_ACTIVATE
+            | abi::CAP_REFRESH
+            | abi::CAP_RESOLVE_TEXT;
+        for minimum_host_minor in 2..=abi::ABI_MINOR {
+            let text = rename_foundation_network_manifest(minimum_host_minor, &discovery);
+            let package = parse_manifest(&text, Path::new("package"))
+                .expect("existing discovery-only network manifests must remain accepted");
+            assert_eq!(package.kind, PackageKind::Network);
+            assert_eq!(package.encoding, AddressEncoding::Opaque);
+            assert_eq!(package.capabilities, discovery_bits);
+        }
+        for minimum_host_minor in [0, 1] {
+            let text = rename_foundation_network_manifest(minimum_host_minor, &discovery);
+            let error = parse_manifest(&text, Path::new("package")).unwrap_err();
+            assert_eq!(error.code, ErrorCode::Invalid, "minor {minimum_host_minor}");
+        }
+        for missing in 0..discovery.len() {
+            let mut capabilities = discovery.to_vec();
+            capabilities.remove(missing);
+            let text = rename_foundation_network_manifest(2, &capabilities);
+            let error = parse_manifest(&text, Path::new("package")).unwrap_err();
+            assert_eq!(error.code, ErrorCode::Invalid, "{capabilities:?}");
+        }
+        for extra in ["read", "storage", "volume-details", "native-address"] {
+            let mut capabilities = discovery.to_vec();
+            capabilities.push(extra);
+            let text = rename_foundation_network_manifest(2, &capabilities);
+            let error = parse_manifest(&text, Path::new("package")).unwrap_err();
+            assert_eq!(error.code, ErrorCode::Invalid, "{capabilities:?}");
+        }
+        let text = rename_foundation_network_manifest(2, &discovery);
+        for encoding in ["windows-utf16le", "unix-bytes"] {
+            let invalid_text = text.replace(
+                "address_encoding='opaque'",
+                &format!("address_encoding='{encoding}'"),
+            );
+            let error = parse_manifest(&invalid_text, Path::new("package")).unwrap_err();
+            assert_eq!(error.code, ErrorCode::Invalid, "{encoding}");
+        }
+    }
+
     #[test]
     fn filesystem_friendly_name_metadata_is_optional_and_validated() {
         let legacy = format!(

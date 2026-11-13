@@ -7,8 +7,13 @@ mod owned_windows;
 #[path = "support/ui.rs"]
 mod ui;
 
+use i_slint_core::{
+    item_tree::ItemRc,
+    window::{WindowInner, WindowKind},
+};
 use midnight_core::*;
 use midnight_ui::{Presenter, install, refresh};
+use slint::ComponentHandle;
 use slint::platform::{Key, WindowAdapter, software_renderer::MinimalSoftwareWindow};
 use std::{cell::RefCell, path::PathBuf, rc::Rc, sync::Arc};
 use ui::TestUi;
@@ -191,6 +196,15 @@ fn show(
             matches!(commands.borrow().as_slice(), [Command::CancelOperation(id)] if *id == previous)
         );
         assert!(ui.window.get_operation_token().is_empty());
+        slint::platform::update_timers_and_animations();
+        assert!(!ui.window.get_embedded_modal_open());
+        assert!(
+            WindowInner::from_pub(ui.window.window())
+                .active_popups()
+                .iter()
+                .all(|popup| matches!(popup.window_kind, WindowKind::ToolTip)),
+            "Escape must retire the actual confirmation popup"
+        );
     }
     commands.borrow_mut().clear();
     ui.window.invoke_mutation(
@@ -214,17 +228,17 @@ fn show(
         .borrow_mut()
         .apply(Event::Operation(OperationEvent::Preview(Arc::new(preview))));
     refresh(&ui.window, &state.borrow());
-    let child = child(windows);
-    modeless::draw(&child, 540, 360, "summary-layout");
+    let (main, popup) = confirmation(windows);
+    modeless::draw(&main, 540, 360, "summary-layout");
+    assert!(ui.window.get_embedded_modal_open());
+    assert!(!ui.window.get_dialog_input_blocked());
     let body = ui.window.get_operation_body();
+    // Compact confirmations place the warning in the same scrollable Text as
+    // the summary. Both presentations must retain the complete exact body.
+    let warning_and_body = format!("{}\n\n{body}", ui.window.get_operation_warning());
     assert!(
-        has_text(
-            i_slint_core::item_tree::ItemRc::new_root(
-                i_slint_core::window::WindowInner::from_pub(child.window()).component()
-            ),
-            &body
-        ),
-        "the actual native child must display the bounded metadata summary"
+        has_text(popup.clone(), &body) || has_text(popup, &warning_and_body),
+        "the actual embedded confirmation must display the bounded metadata summary"
     );
     assert!(
         commands.borrow().iter().all(|command| matches!(
@@ -236,25 +250,33 @@ fn show(
     ui.window.get_operation_body().to_string()
 }
 
-fn child(windows: &owned_windows::Windows) -> Rc<MinimalSoftwareWindow> {
-    let visible: Vec<_> = windows
-        .borrow()
+fn confirmation(windows: &owned_windows::Windows) -> (Rc<MinimalSoftwareWindow>, ItemRc) {
+    slint::platform::update_timers_and_animations();
+    assert_eq!(
+        windows.borrow().len(),
+        1,
+        "delete confirmation must reuse the main adapter"
+    );
+    let main = windows.borrow()[0].clone();
+    assert!(main.window().is_visible());
+    let roots: Vec<_> = WindowInner::from_pub(main.window())
+        .active_popups()
         .iter()
-        .skip(1)
-        .filter(|window| window.window().is_visible())
-        .cloned()
+        .filter(|popup| !matches!(popup.window_kind, WindowKind::ToolTip))
+        .map(|popup| ItemRc::new_root(popup.component.clone()))
         .collect();
     assert_eq!(
-        visible.len(),
+        roots.len(),
         1,
-        "exactly one native confirmation must be visible"
+        "exactly one confirmation popup must be active"
     );
-    visible.into_iter().next().unwrap()
+    (main, roots.into_iter().next().unwrap())
 }
 fn snapshot(windows: &owned_windows::Windows, label: &str) {
-    modeless::draw(&child(windows), 540, 360, label);
+    let (main, _) = confirmation(windows);
+    modeless::draw(&main, 540, 360, label);
 }
-fn has_text(item: i_slint_core::item_tree::ItemRc, value: &str) -> bool {
+fn has_text(item: ItemRc, value: &str) -> bool {
     use i_slint_core::items::{ComplexText, SimpleText};
     let text = item
         .downcast::<SimpleText>()

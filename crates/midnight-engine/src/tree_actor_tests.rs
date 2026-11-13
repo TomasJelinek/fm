@@ -14,6 +14,8 @@ mod rename_capture_tests;
 #[path = "tree_user_command_capture_tests.rs"]
 mod user_command_capture_tests;
 
+#[path = "tree_recursive_tests.rs"]
+mod recursive_tests;
 #[path = "tree_refresh_tests.rs"]
 mod refresh_tests;
 
@@ -25,6 +27,9 @@ struct Graph {
     failures: Mutex<std::collections::HashSet<u64>>,
     target_calls: AtomicUsize,
     target_failure: Mutex<Option<u64>>,
+    target_paths: Mutex<HashMap<u64, PathBuf>>,
+    browse_identities:
+        Mutex<HashMap<u64, Result<Option<midnight_core::SizeDirectoryIdentity>, ProviderError>>>,
     blocked: Mutex<Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>>,
 }
 
@@ -43,6 +48,24 @@ fn directory(value: u64, name: &str) -> ProviderEntry {
 }
 
 impl MountedFilesystem for Graph {
+    fn browse_directory_identity(
+        &self,
+        node: &NodeToken,
+        cancel: &Cancellation,
+    ) -> Result<Option<midnight_core::SizeDirectoryIdentity>, ProviderError> {
+        check_cancel(cancel)?;
+        let value = u64::from_le_bytes(node.as_bytes().try_into().unwrap());
+        self.browse_identities
+            .lock()
+            .unwrap()
+            .get(&value)
+            .cloned()
+            .unwrap_or(Ok(Some(midnight_core::SizeDirectoryIdentity {
+                device: 1,
+                object: u128::from(value).to_le_bytes(),
+            })))
+    }
+
     fn list(
         &self,
         node: &NodeToken,
@@ -83,6 +106,9 @@ impl MountedFilesystem for Graph {
         if *self.target_failure.lock().unwrap() == Some(value) {
             return Err(ProviderError::ResourceLimited);
         }
+        if let Some(path) = self.target_paths.lock().unwrap().get(&value) {
+            return Ok(ProviderTarget::Native(path.clone()));
+        }
         let path = match value {
             0 => self.root_path.clone(),
             1 => self.root_path.join("z-parent"),
@@ -118,7 +144,12 @@ fn fixture_with_extra_directories(extra: usize) -> Fixture {
 }
 
 pub(super) fn fixture_with_directory_kind(extra: usize, kind: EntryKind) -> Fixture {
+    fixture_with_root_path(extra, kind, None)
+}
+
+fn fixture_with_root_path(extra: usize, kind: EntryKind, root_path: Option<PathBuf>) -> Fixture {
     let directory_root = tempfile::tempdir().unwrap();
+    let root_path = root_path.unwrap_or_else(|| directory_root.path().to_owned());
     let mut file = directory(3, "file.txt");
     file.kind = EntryKind::File;
     let mut roots = vec![directory(1, "z-parent"), directory(2, "a-parent"), file];
@@ -129,14 +160,14 @@ pub(super) fn fixture_with_directory_kind(extra: usize, kind: EntryKind) -> Fixt
         .map(|row| {
             midnight_core::Entry::new(
                 EntryId(u64::from_le_bytes(row.token.as_bytes().try_into().unwrap())),
-                directory_root.path().join(&row.display_name),
+                root_path.join(&row.display_name),
                 row.kind,
             )
         })
         .collect::<Vec<_>>()
         .into();
     let graph = Arc::new(Graph {
-        root_path: directory_root.path().to_owned(),
+        root_path,
         lists: AtomicUsize::new(0),
         rows: Mutex::new(HashMap::from([
             (0, roots),
@@ -147,6 +178,8 @@ pub(super) fn fixture_with_directory_kind(extra: usize, kind: EntryKind) -> Fixt
         failures: Mutex::default(),
         target_calls: AtomicUsize::new(0),
         target_failure: Mutex::default(),
+        target_paths: Mutex::default(),
+        browse_identities: Mutex::default(),
     });
     let root = TreeRootSnapshot {
         pane: PaneId::Left,
@@ -772,4 +805,208 @@ fn acknowledged_row_gesture_never_rebinds_a_replaced_or_hidden_occurrence() {
             "stale row must not reach the provider"
         );
     }
+}
+
+#[test]
+fn explicit_size_sort_uses_cached_totals_for_ordinary_and_linked_folders() {
+    for kind in [EntryKind::Directory, EntryKind::DirectoryLink] {
+        let mut fixture = fixture_with_directory_kind(1, kind);
+        let initial = fixture.session.projection().clone();
+        let sizes = initial
+            .rows
+            .iter()
+            .filter_map(|row| {
+                let bytes = match row.entry.display_name.as_str() {
+                    "a-parent" => 10,
+                    "z-parent" => 20,
+                    _ => return None,
+                };
+                Some((
+                    row.id,
+                    midnight_core::FolderSize {
+                        bytes,
+                        finished: true,
+                        ..Default::default()
+                    },
+                ))
+            })
+            .collect();
+        fixture.session.size_sort(Arc::new(sizes));
+        assert!(Arc::ptr_eq(fixture.session.projection(), &initial));
+        for (request, descending, expected) in [
+            (
+                1,
+                false,
+                ["a-parent", "z-parent", "b-folder-000", "file.txt"],
+            ),
+            (
+                2,
+                true,
+                ["z-parent", "a-parent", "b-folder-000", "file.txt"],
+            ),
+        ] {
+            let current = fixture.session.publication().unwrap();
+            assert!(fixture.session.commit(&current.view));
+            let changed = fixture
+                .session
+                .reproject_request(
+                    &midnight_core::TreeReprojectRequest {
+                        view: current.view,
+                        request: TreeRequestId(request),
+                        selection_revision: current.selection_revision,
+                        selection: current.selection,
+                        options: midnight_core::TreeProjectionOptions {
+                            sort: midnight_core::SortSpec {
+                                column: midnight_core::SortColumn::Size,
+                                descending,
+                            },
+                            ..Default::default()
+                        },
+                    },
+                    &Cancellation::default(),
+                )
+                .unwrap();
+            assert_eq!(
+                changed
+                    .view
+                    .rows
+                    .iter()
+                    .map(|row| row.entry.display_name.as_str())
+                    .collect::<Vec<_>>(),
+                expected,
+                "kind {kind:?}, descending {descending}"
+            );
+        }
+    }
+}
+
+#[test]
+fn filtering_overlapping_matches_keeps_intervening_and_shared_ancestor_context() {
+    let mut fixture = fixture();
+    {
+        let mut rows = fixture.graph.rows.lock().unwrap();
+        rows.insert(1, vec![directory(4, "child"), directory(7, "keep")]);
+        rows.insert(4, vec![directory(6, "grandchild")]);
+        rows.insert(6, vec![directory(8, "leaf")]);
+    }
+    fixture.graph.target_paths.lock().unwrap().insert(
+        8,
+        fixture
+            .graph
+            .root_path
+            .join("z-parent/child/grandchild/leaf"),
+    );
+    for (request, name) in [(1, "z-parent"), (2, "child"), (3, "grandchild")] {
+        let view = fixture.session.projection().clone();
+        assert!(fixture.session.commit(&view));
+        let row = view
+            .rows
+            .iter()
+            .find(|row| row.entry.display_name == name)
+            .unwrap()
+            .id;
+        fixture
+            .session
+            .branch(&view, TreeRequestId(request), row, BranchAction::Expand)
+            .unwrap();
+        let job = fixture.session.take_work().unwrap().unwrap();
+        fixture
+            .session
+            .apply(job.run(), &Cancellation::default())
+            .unwrap();
+    }
+    for (expression, contexts, search_rows) in [
+        (
+            "name = \"leaf\" or name = \"keep\"",
+            [true, true, true, false, false],
+            vec![],
+        ),
+        (
+            "name = \"child\" or name = \"leaf\" or name = \"keep\"",
+            [true, false, true, false, false],
+            vec![1],
+        ),
+    ] {
+        fixture
+            .session
+            .reproject(
+                ProjectionOptions {
+                    filter: midnight_core::PanelFilter {
+                        enabled: true,
+                        mode: midnight_core::FilterMode::Expression,
+                        expression: expression.into(),
+                        case_sensitive: true,
+                    },
+                    search: midnight_core::TreeSearchOptions {
+                        query: "CH".into(),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+                &Cancellation::default(),
+            )
+            .unwrap();
+        let filtered = fixture.session.projection();
+        assert_eq!(
+            filtered
+                .rows
+                .iter()
+                .map(|row| row.entry.display_name.as_str())
+                .collect::<Vec<_>>(),
+            ["z-parent", "child", "grandchild", "leaf", "keep"]
+        );
+        for (row, context_only) in filtered.rows.iter().zip(contexts) {
+            assert_eq!(row.context_only, context_only);
+            assert_eq!(row.selectable, !context_only);
+            if context_only {
+                assert_eq!(row.prefix_end, 0);
+                assert!(!row.search_match);
+            }
+        }
+        assert_eq!(&*filtered.index.search_rows, search_rows);
+    }
+}
+
+#[test]
+fn retained_row_membership_keeps_collapsed_children_but_excludes_removed_children() {
+    let mut fixture = fixture();
+    let parent = fixture.session.projection().rows[1].id;
+    let expanded = action_capture_tests::expand(&mut fixture.session, parent);
+    let child = expanded
+        .view
+        .rows
+        .iter()
+        .find(|row| row.parent == Some(parent))
+        .unwrap()
+        .id;
+    assert!(fixture.session.retains_row(child));
+    fixture
+        .session
+        .branch(
+            &expanded.view,
+            TreeRequestId(2),
+            parent,
+            BranchAction::Collapse,
+        )
+        .unwrap();
+    fixture
+        .session
+        .update_projection(&Cancellation::default())
+        .unwrap();
+    let collapsed = fixture.session.projection().clone();
+    assert!(!collapsed.index.row_positions.contains_key(&child));
+    assert!(fixture.session.retains_row(child));
+    fixture.graph.rows.lock().unwrap().insert(1, vec![]);
+    assert!(fixture.session.commit(&collapsed));
+    fixture
+        .session
+        .branch(&collapsed, TreeRequestId(3), parent, BranchAction::Refresh)
+        .unwrap();
+    let job = fixture.session.take_work().unwrap().unwrap();
+    fixture
+        .session
+        .apply(job.run(), &Cancellation::default())
+        .unwrap();
+    assert!(!fixture.session.retains_row(child));
+    assert!(fixture.session.retains_row(parent));
 }

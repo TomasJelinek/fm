@@ -74,11 +74,7 @@ impl Session {
                     Some(&pending.branch) == maintenance.remaining.front()
                         && pending.kind != TreeRequest::Probe
                 })
-                && (self.prefer_maintenance
-                    || !self
-                        .queue
-                        .iter()
-                        .any(|pending| pending.kind != TreeRequest::Probe))
+                && (self.prefer_maintenance || !self.explicit_work_ready())
         })
     }
 
@@ -94,12 +90,9 @@ impl Session {
     }
 
     pub(super) fn runnable_maintenance(&self) -> bool {
-        self.next_is_maintenance()
-            && !(self.budget.mutation.available_permits() == 0
-                && self
-                    .queue
-                    .iter()
-                    .any(|pending| pending.kind != TreeRequest::Probe))
+        !self.recursive_batch_active()
+            && self.next_is_maintenance()
+            && !(self.budget.mutation.available_permits() == 0 && self.explicit_work_ready())
     }
 
     pub(super) fn take_refresh_branch(&mut self) -> Result<PendingBranch, ProviderError> {

@@ -10,6 +10,8 @@ use std::{
 mod discovery;
 #[path = "copy_failures.rs"]
 mod failures;
+#[path = "copy_link_worker.rs"]
+mod link_job;
 #[path = "copy_metadata_worker.rs"]
 mod metadata_job;
 #[path = "move_worker.rs"]
@@ -43,6 +45,7 @@ struct EntryWork {
     native_identity: Option<TransferIdentity>,
     source: Option<Box<dyn TransferSource>>,
     copy: Option<VerifiedFileCopy>,
+    link: Option<link_job::LinkCopy>,
     destination: Arc<dyn TransferDirectory>,
     name: OsString,
     target: Option<Arc<dyn TransferTarget>>,
@@ -88,12 +91,16 @@ pub(super) struct Job {
     move_work: Option<move_job::MoveWork>,
     metadata: Option<metadata_job::MetadataWork>,
     verification: TransferVerification,
+    links: CopyLinkPolicy,
     work_budget: work_budget::Budget,
     active_root: Option<RootCompletion>,
     completed_root: Option<CompletedCopySource>,
-    // Declared last: native sources, captures and cleanup authority close before
+    // Native sources, captures and cleanup authority close before
     // the provider registration and shared capture permit are released.
     drop_retention: Option<Arc<crate::drag_drop::Retention>>,
+    // Last: cleanup-bearing link work retains the dedicated Copy I/O guard
+    // through actual cleanup and every stage/source/provider destruction.
+    link_retirement: Arc<link_job::LinkRetirement>,
 }
 pub(super) fn check_move_bounds<'a>(
     destination: &Path,
@@ -162,6 +169,31 @@ impl Job {
         cancel: Cancellation,
         status: Status,
     ) -> Result<Self, FsError> {
+        Self::prepare_native(request, service, cancel, status, CopyLinkPolicy::Reject)
+    }
+
+    pub(super) fn prepare_with_options(
+        request: CopyRequest,
+        service: &dyn TransferService,
+        cancel: Cancellation,
+        status: Status,
+        metadata: TransferMetadataPolicy,
+        links: CopyLinkPolicy,
+    ) -> Result<Self, FsError> {
+        if links == CopyLinkPolicy::Reject {
+            return Self::prepare_with_metadata(request, service, cancel, status, metadata);
+        }
+        link_job::validate_options(&request.destination, &status, metadata)?;
+        Self::prepare_native(request, service, cancel, status, links)
+    }
+
+    fn prepare_native(
+        request: CopyRequest,
+        service: &dyn TransferService,
+        cancel: Cancellation,
+        status: Status,
+        links: CopyLinkPolicy,
+    ) -> Result<Self, FsError> {
         let destination = service.prepare_transfer_destination(&request.destination, &cancel)?;
         if destination.path() != request.destination {
             return Err(error(
@@ -179,7 +211,7 @@ impl Job {
             if !seen.insert(path) {
                 continue;
             }
-            let source = service.prepare_transfer_source(path, &cancel)?;
+            let source = service.prepare_transfer_source_with_links(path, links, &cancel)?;
             if source.entry().item.path != *path {
                 return Err(error(
                     path,
@@ -192,7 +224,9 @@ impl Job {
             }
             roots.push_back(source);
         }
+        link_job::admit_roots(&roots, destination.as_ref(), links, &cancel)?;
         let mut job = Self::from_sources(destination, roots, cancel, status);
+        job.links = links;
         job.set_verification(request.verification);
         Ok(job)
     }
@@ -223,6 +257,44 @@ impl Job {
         status: Status,
         metadata: TransferMetadataPolicy,
     ) -> Result<Self, FsError> {
+        Self::prepare_captured(
+            path,
+            roots,
+            service,
+            cancel,
+            status,
+            metadata,
+            CopyLinkPolicy::Reject,
+        )
+    }
+
+    pub(super) fn prepare_sources_with_options(
+        path: std::path::PathBuf,
+        roots: VecDeque<Box<dyn TransferSource>>,
+        service: &dyn TransferService,
+        cancel: Cancellation,
+        status: Status,
+        metadata: TransferMetadataPolicy,
+        links: CopyLinkPolicy,
+    ) -> Result<Self, FsError> {
+        if links == CopyLinkPolicy::Reject {
+            return Self::prepare_sources(path, roots, service, cancel, status, metadata);
+        }
+        Self::prepare_captured(path, roots, service, cancel, status, metadata, links)
+    }
+
+    fn prepare_captured(
+        path: std::path::PathBuf,
+        roots: VecDeque<Box<dyn TransferSource>>,
+        service: &dyn TransferService,
+        cancel: Cancellation,
+        status: Status,
+        metadata: TransferMetadataPolicy,
+        links: CopyLinkPolicy,
+    ) -> Result<Self, FsError> {
+        if links == CopyLinkPolicy::Preserve {
+            link_job::validate_options(&path, &status, metadata)?;
+        }
         if roots.is_empty() || roots.len() > 4096 {
             return Err(error(
                 &path,
@@ -259,11 +331,13 @@ impl Job {
             if !matches!(
                 source.entry().item.kind,
                 EntryKind::File | EntryKind::Directory
-            ) {
+            ) && !(links == CopyLinkPolicy::Preserve
+                && link_job::is_link_kind(source.entry().item.kind))
+            {
                 return Err(error(
                     &path,
                     io::ErrorKind::Unsupported,
-                    "Captured Copy requires ordinary files or directories.",
+                    "Captured Copy source kind is unsupported by this link policy.",
                 ));
             }
             if let Some(id) = source.native_identity() {
@@ -323,7 +397,9 @@ impl Job {
         for source in &roots {
             source.revalidate(&cancel)?;
         }
+        link_job::admit_roots(&roots, destination.as_ref(), links, &cancel)?;
         let mut job = Self::from_sources(destination, roots, cancel, status);
+        job.links = links;
         if metadata != TransferMetadataPolicy::ContentOnly {
             if job.roots.len() > 64 {
                 return Err(error(
@@ -349,6 +425,10 @@ impl Job {
             .collect();
         let mut progress = snapshot(&status);
         progress.requested_roots = roots.len() as u64;
+        let link_retirement = Arc::new(link_job::LinkRetirement::new(
+            status.clone(),
+            cancel.clone(),
+        ));
         Self {
             progress,
             status,
@@ -371,10 +451,12 @@ impl Job {
             move_work: None,
             metadata: None,
             verification: TransferVerification::default(),
+            links: CopyLinkPolicy::Reject,
             work_budget: work_budget::Budget::default(),
             active_root: None,
             completed_root: None,
             drop_retention: None,
+            link_retirement,
         }
     }
 
@@ -383,7 +465,14 @@ impl Job {
             conflict.id == decision.id
                 && conflict.version == decision.version
                 && match decision.choice {
-                    CopyChoice::Retry | CopyChoice::SkipAllErrors => false,
+                    CopyChoice::Retry => {
+                        self.links == CopyLinkPolicy::Preserve
+                            && self
+                                .current
+                                .as_ref()
+                                .is_some_and(|work| link_job::is_link_kind(work.entry.item.kind))
+                    }
+                    CopyChoice::SkipAllErrors => false,
                     CopyChoice::ReplaceRecoverable { .. } => conflict.can_replace,
                     CopyChoice::Merge { .. } => conflict.can_merge,
                     _ => true,
@@ -695,6 +784,7 @@ impl Job {
             native_identity: source.native_identity(),
             source: Some(source),
             copy: None,
+            link: None,
             destination,
             name,
             target: None,
@@ -709,7 +799,9 @@ impl Job {
 
     fn process(&mut self, mut work: EntryWork) -> Step {
         self.progress.current_path = Some(work.entry().item.path.clone());
-        let result = if work.copy.is_some() {
+        let result = if work.link.is_some() {
+            self.link_step(&mut work)
+        } else if work.copy.is_some() {
             self.copy_step(&mut work)
         } else {
             self.prepare_entry(&mut work)
@@ -761,6 +853,9 @@ impl Job {
             .as_ref()
             .expect("unstarted entry source")
             .revalidate(&self.cancel)?;
+        if link_job::is_link_kind(work.entry.item.kind) {
+            return self.prepare_link(work);
+        }
         if work.consent.is_none()
             && let Some(target) = self.observe_target(work)?
         {
@@ -1147,6 +1242,11 @@ impl Job {
         {
             self.record_cleanup_error(error);
         }
+        if let Some(link) = &mut work.link
+            && let Err(failure) = link.cleanup()
+        {
+            self.record_link_cleanup(failure);
+        }
     }
     fn drop_current(&mut self) {
         if let Some(mut work) = self.current.take() {
@@ -1176,10 +1276,12 @@ impl Job {
         // Clean and drop the active native object in the same order as normal
         // disposal. Keep only its diagnostic until the unused stages and Move
         // recovery finish, so they cannot evict the current partial's path.
-        let current_cleanup = self
-            .current
-            .take()
-            .and_then(|mut work| work.copy.as_mut().and_then(|copy| copy.cleanup().err()));
+        let (current_cleanup, current_link_cleanup) =
+            self.current.take().map_or((None, None), |mut work| {
+                let file = work.copy.as_mut().and_then(|copy| copy.cleanup().err());
+                let link = work.link.as_mut().and_then(|copy| copy.cleanup().err());
+                (file, link)
+            });
         self.progress.current_path = None;
         if let Some(metadata) = self.metadata.as_mut() {
             for failure in metadata.cleanup() {
@@ -1193,6 +1295,9 @@ impl Job {
         }
         if let Some(error) = current_cleanup {
             self.record_cleanup_error(error);
+        }
+        if let Some(failure) = current_link_cleanup {
+            self.record_link_cleanup(failure);
         }
         self.finish_discovery();
         // Keep heartbeat status nonterminal until owned native resources finish

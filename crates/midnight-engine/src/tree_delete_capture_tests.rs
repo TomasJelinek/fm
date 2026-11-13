@@ -259,29 +259,79 @@ fn tree_delete_retains_distinct_hard_link_names_as_two_targets() {
 }
 
 #[test]
-fn tree_delete_current_inline_model_does_not_expand_directory_links() {
+fn tree_delete_expanded_directory_link_prepares_only_its_logical_occurrence() {
     let mut f = fixture();
     f.graph.rows.lock().unwrap().get_mut(&1).unwrap()[0].kind = EntryKind::DirectoryLink;
+    f.graph
+        .rows
+        .lock()
+        .unwrap()
+        .insert(4, vec![directory(6, "grandchild")]);
     let parent = f.session.projection().rows[1].id;
     let expanded = super::super::action_capture_tests::expand(&mut f.session, parent);
     let link = expanded.view.rows[2].id;
     assert_eq!(
         expanded.view.rows[2].disclosure,
-        midnight_core::TreeDisclosure::None
+        midnight_core::TreeDisclosure::Unknown
     );
-    assert!(matches!(
-        f.session
-            .branch(&expanded.view, TreeRequestId(2), link, BranchAction::Expand),
-        Err(ProviderError::Unsupported)
-    ));
-    assert!(f.session.take_work().unwrap().is_none());
-    // The link itself remains a valid exact Delete occurrence.
+    f.session
+        .branch(&expanded.view, TreeRequestId(2), link, BranchAction::Expand)
+        .unwrap();
+    let job = f.session.take_work().unwrap().unwrap();
+    f.session
+        .apply(job.run(), &Cancellation::default())
+        .unwrap();
+    let view = f.session.projection();
+    assert!(
+        view.rows
+            .iter()
+            .find(|row| row.id == link)
+            .unwrap()
+            .expanded
+    );
+    assert!(
+        view.rows
+            .iter()
+            .any(|row| row.entry.display_name == "grandchild")
+    );
+
+    // Browsing a link does not turn its visible children into Delete roots.
     let req = request(&mut f.session, Some(link), DeleteMode::Permanent);
     let captured = f
         .session
         .capture_delete(&req, &Arc::new(Semaphore::new(4)), &Cancellation::default())
         .unwrap();
     assert_eq!(captured.root_count, 1);
+    assert_eq!(captured.sources.root_count(), 1);
+    assert_eq!(captured.sources.stamp(), req.view.stamp);
+
+    struct ObservePreparation(Mutex<Vec<PathBuf>>);
+    impl MutationService for ObservePreparation {
+        fn prepare(
+            &self,
+            path: &std::path::Path,
+            _: &Cancellation,
+        ) -> Result<Arc<dyn midnight_core::PreparedMutation>, midnight_core::FsError> {
+            self.0.lock().unwrap().push(path.to_owned());
+            Err(midnight_core::FsError::from_io(
+                "observe Delete preparation",
+                path,
+                std::io::ErrorKind::Unsupported.into(),
+            ))
+        }
+    }
+    let service = ObservePreparation(Mutex::default());
+    assert!(
+        captured
+            .sources
+            .prepare(&service, &Cancellation::default())
+            .is_err()
+    );
+    assert_eq!(
+        *service.0.lock().unwrap(),
+        [f.graph.root_path.join("z-parent/child")],
+        "native preparation receives only the logical link, never its browsed descendants"
+    );
 }
 
 #[test]

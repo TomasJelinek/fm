@@ -4,6 +4,8 @@ use std::{collections::HashMap, num::NonZeroU32, sync::Mutex};
 
 #[path = "tree_failure_tests.rs"]
 mod failure_tests;
+#[path = "tree_link_tests.rs"]
+mod link_tests;
 
 #[derive(Default)]
 struct Graph(Mutex<HashMap<u64, Result<Vec<ProviderEntry>, ProviderError>>>);
@@ -338,11 +340,9 @@ fn several_branches_keep_root_files_but_insert_only_folders() {
         [0, 1, 1, 0, 1, 0]
     );
     assert_eq!(rows[1].entry.raw_name.as_ref(), &[0xff, 4]);
-    assert_eq!(rows[2].disclosure, Disclosure::None);
-    assert!(matches!(
-        tree.request(rows[2].id, TreeRequest::Expand),
-        Err(ProviderError::Unsupported)
-    ));
+    assert_eq!(rows[2].disclosure, Disclosure::Unknown);
+    run(&mut tree, Some(rows[2].id), TreeRequest::Expand);
+    assert_eq!(row(&tree, 6).error, Some(ProviderError::Unsupported));
     assert!(tree.collapse(first));
     assert_eq!(row(&tree, 2).disclosure, Disclosure::Expanded);
     assert_eq!(tree.rows().len(), 4);

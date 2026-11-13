@@ -1,5 +1,8 @@
 //! Killable persistent worker and bounded read-only broker. All entry points run on backend workers.
-use crate::{DocumentMetadata, Frame, Metadata, Provider, Viewport};
+use crate::{
+    DocumentMetadata, Frame, Metadata, PreparedImageWorker, Provider, Viewport,
+    startup::{ProviderIdentity, WorkerTransport, cancelled, check_cancel},
+};
 use midnight_image_viewer_api::{self as api, Message};
 use std::{
     fs::File,
@@ -7,9 +10,8 @@ use std::{
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
-        mpsc,
     },
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 /// Host-owned native/virtual source contract. Implementations preserve their raw provider identity.
@@ -44,12 +46,8 @@ impl Source for midnight_plugin_host::CapturedFile {
 /// Memory is capped at 512 MiB, retained RGBA at 128 MiB; cumulative process CPU is 60 seconds.
 /// Each operation additionally has the supplied wall-clock deadline and cancellation flag.
 pub struct ImageSession {
-    input: File,
-    output: BufReader<File>,
-    process: midnight_worker_platform::Process,
-    source: Arc<dyn Source>,
-    length: u64,
-    version: Vec<u8>,
+    transport: WorkerTransport,
+    source: CapturedSource,
     metadata: Metadata,
     document: Option<DocumentMetadata>,
     request_id: u64,
@@ -67,30 +65,65 @@ impl ImageSession {
         #[cfg(feature = "startup-diagnostics")]
         let mut startup = midnight_worker_platform::startup_diagnostics::Trace::new("image_open");
         check_cancel(cancel)?;
-        provider.validate()?;
+        let identity = ProviderIdentity::capture(provider)?;
         #[cfg(feature = "startup-diagnostics")]
         startup.mark("provider_validated");
-        source.validate()?;
+        let source = CapturedSource::capture(source)?;
         #[cfg(feature = "startup-diagnostics")]
         startup.mark("source_validated");
-        let length = source.length();
-        let version = source.version();
-        let worker = midnight_worker_platform::spawn(
-            &provider.executable,
-            midnight_worker_platform::Limits {
-                memory_bytes: 512 * 1024 * 1024,
-                cpu_seconds: 60,
-            },
-        )?;
+        let transport = WorkerTransport::spawn(provider)?;
         #[cfg(feature = "startup-diagnostics")]
         startup.mark("spawned");
-        let mut session = Self {
-            input: worker.input,
-            output: BufReader::new(worker.output),
-            process: worker.process,
+        Self::new(transport, source).open_source(
+            provider,
+            identity,
+            cancel,
+            timeout,
+            true,
+            #[cfg(feature = "startup-diagnostics")]
+            &mut startup,
+        )
+    }
+
+    /// Consume one prepared source-free child and open a newly captured source exactly once.
+    /// Invalid preparation fails before Open. Any Open, broker or decode error is terminal and
+    /// must not trigger an automatic cold retry. Creation, adoption and cleanup are backend-only.
+    pub fn open_prepared(
+        provider: &Provider,
+        prepared: PreparedImageWorker,
+        source: Arc<dyn Source>,
+        cancel: &AtomicBool,
+        timeout: Duration,
+    ) -> io::Result<Self> {
+        #[cfg(feature = "startup-diagnostics")]
+        let mut startup =
+            midnight_worker_platform::startup_diagnostics::Trace::new("image_open_prepared");
+        check_cancel(cancel)?;
+        if !prepared.catalog_matches(provider) {
+            return Err(io::Error::other("Prepared image worker catalog changed"));
+        }
+        #[cfg(feature = "startup-diagnostics")]
+        startup.mark("catalog_matched");
+        let source = CapturedSource::capture(source)?;
+        #[cfg(feature = "startup-diagnostics")]
+        startup.mark("source_validated");
+        check_cancel(cancel)?;
+        let (transport, identity) = prepared.into_parts();
+        Self::new(transport, source).open_source(
+            provider,
+            identity,
+            cancel,
+            timeout,
+            false,
+            #[cfg(feature = "startup-diagnostics")]
+            &mut startup,
+        )
+    }
+
+    fn new(transport: WorkerTransport, source: CapturedSource) -> Self {
+        Self {
+            transport,
             source,
-            length,
-            version,
             metadata: Metadata {
                 width: 1,
                 height: 1,
@@ -98,13 +131,35 @@ impl ImageSession {
             request_id: 0,
             document: None,
             failed: false,
-        };
-        let metadata = session.exchange(cancel, timeout, |input, output, source, stopped| {
+        }
+    }
+
+    fn open_source(
+        mut self,
+        provider: &Provider,
+        identity: ProviderIdentity,
+        cancel: &AtomicBool,
+        timeout: Duration,
+        read_ready: bool,
+        #[cfg(feature = "startup-diagnostics")]
+        startup: &mut midnight_worker_platform::startup_diagnostics::Trace,
+    ) -> io::Result<Self> {
+        let length = self.source.length;
+        let metadata = self.exchange(cancel, timeout, |input, output, source, stopped| {
             #[cfg(feature = "startup-diagnostics")]
             startup.mark("broker_started");
-            midnight_worker_sdk::read_ready(output)?;
+            if read_ready {
+                midnight_worker_sdk::read_ready(output)?;
+            }
             #[cfg(feature = "startup-diagnostics")]
             startup.mark("ready");
+            check_cancel(cancel)?;
+            check_cancel(stopped)?;
+            identity.validate_for(provider)?;
+            #[cfg(feature = "startup-diagnostics")]
+            startup.mark("identity_revalidated");
+            check_cancel(cancel)?;
+            check_cancel(stopped)?;
             api::write_message(
                 input,
                 &Message::Open {
@@ -187,13 +242,13 @@ impl ImageSession {
         })?;
         #[cfg(feature = "startup-diagnostics")]
         startup.mark("metadata");
-        session.metadata = metadata.0;
-        session.document = metadata.1;
-        session.validate_source()?;
+        self.metadata = metadata.0;
+        self.document = metadata.1;
+        self.validate_source()?;
         #[cfg(feature = "startup-diagnostics")]
         startup.mark("complete");
         check_cancel(cancel)?;
-        Ok(session)
+        Ok(self)
     }
 
     pub fn metadata(&self) -> Metadata {
@@ -284,7 +339,7 @@ impl ImageSession {
         })();
         if result.is_err() {
             self.failed = true;
-            let _ = self.process.kill();
+            self.transport.kill();
         }
         result
     }
@@ -296,7 +351,7 @@ impl ImageSession {
             .and_then(|()| check_cancel(cancel));
         if self.failed || result.is_err() {
             self.failed = true;
-            let _ = self.process.kill();
+            self.transport.kill();
             return result.and(Err(io::Error::other("Image session already ended")));
         }
         result
@@ -304,12 +359,14 @@ impl ImageSession {
 
     /// Terminate and reap on the owning backend worker. UI close handlers only signal cancellation.
     pub fn close(mut self) {
-        let _ = self.process.kill();
+        self.transport.kill();
     }
 
     fn validate_source(&self) -> io::Result<()> {
-        self.source.validate()?;
-        if self.source.length() != self.length || self.source.version() != self.version {
+        self.source.source.validate()?;
+        if self.source.source.length() != self.source.length
+            || self.source.source.version() != self.source.version
+        {
             return Err(io::Error::other("Image source version changed"));
         }
         Ok(())
@@ -327,63 +384,37 @@ impl ImageSession {
         ) -> io::Result<T>
         + Send,
     ) -> io::Result<T> {
-        check_cancel(cancel)?;
-        let start = Instant::now();
-        let stopped = AtomicBool::new(false);
-        let input = &mut self.input;
-        let output = &mut self.output;
-        let source = self.source.as_ref();
-        let process = &mut self.process;
-        let result = std::thread::scope(|scope| {
-            let (sender, receiver) = mpsc::sync_channel(1);
-            let stopped = &stopped;
-            let broker = scope.spawn(move || {
-                let _ = sender.send(operation(input, output, source, stopped));
+        let source = self.source.source.as_ref();
+        let result = self
+            .transport
+            .exchange(cancel, timeout, |input, output, stopped| {
+                operation(input, output, source, stopped)
             });
-            let result = loop {
-                if cancel.load(Ordering::Acquire) {
-                    break Err(cancelled());
-                }
-                if start.elapsed() >= timeout {
-                    break Err(io::Error::new(
-                        io::ErrorKind::TimedOut,
-                        "Image viewer timed out",
-                    ));
-                }
-                match receiver.recv_timeout(Duration::from_millis(10)) {
-                    Ok(result) => break result,
-                    Err(mpsc::RecvTimeoutError::Timeout) => {}
-                    Err(mpsc::RecvTimeoutError::Disconnected) => {
-                        break Err(io::Error::other("Image broker stopped"));
-                    }
-                }
-            };
-            stopped.store(true, Ordering::Release);
-            if result.is_err() {
-                let _ = process.kill();
-            }
-            broker
-                .join()
-                .map_err(|_| io::Error::other("Image broker panicked"))?;
-            result
-        });
         if result.is_err() {
             self.failed = true;
-            let _ = self.process.kill();
+            self.transport.kill();
         }
         result
     }
 }
 
-fn check_cancel(cancel: &AtomicBool) -> io::Result<()> {
-    if cancel.load(Ordering::Acquire) {
-        Err(cancelled())
-    } else {
-        Ok(())
-    }
+struct CapturedSource {
+    source: Arc<dyn Source>,
+    length: u64,
+    version: Vec<u8>,
 }
-fn cancelled() -> io::Error {
-    io::Error::new(io::ErrorKind::Interrupted, "Image viewer cancelled")
+
+impl CapturedSource {
+    fn capture(source: Arc<dyn Source>) -> io::Result<Self> {
+        source.validate()?;
+        let length = source.length();
+        let version = source.version();
+        Ok(Self {
+            source,
+            length,
+            version,
+        })
+    }
 }
 fn rejected() -> io::Error {
     io::Error::new(

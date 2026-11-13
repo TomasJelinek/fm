@@ -303,8 +303,6 @@ impl TreeProjection {
                     TreeDisclosure::Expanded | TreeDisclosure::Loading | TreeDisclosure::Failed
                 ))
                 || (row.disclosure != TreeDisclosure::None && !row.navigable)
-                || (row.entry.kind == EntryKind::DirectoryLink
-                    && row.disclosure != TreeDisclosure::None)
                 || (!row.expanded && row.disclosure == TreeDisclosure::Expanded)
             {
                 return Err("tree disclosure contradicts its expanded state");

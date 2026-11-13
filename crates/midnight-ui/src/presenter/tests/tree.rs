@@ -1,6 +1,6 @@
 use super::*;
 
-pub(super) fn fixture() -> (Presenter, TreeRootSnapshot) {
+fn flat_fixture(kind: EntryKind) -> (Presenter, TreeRootSnapshot) {
     let path = test_root().join("tree");
     let mut p = Presenter::new(path.clone(), path.clone());
     let navigation = begin(&mut p, PaneId::Left, path.to_str().unwrap());
@@ -9,7 +9,7 @@ pub(super) fn fixture() -> (Presenter, TreeRootSnapshot) {
         PaneId::Left,
         navigation,
         vec![
-            Entry::new(EntryId(42), path.join("folder"), EntryKind::Directory),
+            Entry::new(EntryId(42), path.join("folder"), kind),
             Entry::new(EntryId(11), path.join("child"), EntryKind::File),
         ],
     );
@@ -19,6 +19,11 @@ pub(super) fn fixture() -> (Presenter, TreeRootSnapshot) {
         entries: p.panes[0].entries.clone(),
         index: p.panes[0].index.clone(),
     };
+    (p, root)
+}
+
+pub(super) fn fixture() -> (Presenter, TreeRootSnapshot) {
+    let (mut p, root) = flat_fixture(EntryKind::Directory);
     let identity = p.panes[0].row_identity(&root.entries[0]);
     p.disclose_tree(PaneId::Left, &identity, &|_| true);
     (p, root)
@@ -86,6 +91,304 @@ pub(super) fn publication(
         TreeSelectionSnapshot::from_bits(view.clone(), vec![if selected { 1 } else { 0 }]).unwrap(),
     );
     TreePublication::new(view, SelectionRevision(0), selection).unwrap()
+}
+
+#[test]
+fn recursive_disclosure_retains_action_through_enable_commit_and_branch_backpressure() {
+    for kind in [EntryKind::Directory, EntryKind::DirectoryLink] {
+        let (mut p, root) = flat_fixture(kind);
+        let identity = p.panes[0].row_identity(&root.entries[0]);
+        let original_selection = p.panes[0].selected.clone();
+        let sent = RefCell::new(Vec::new());
+        p.disclose_tree_recursive(PaneId::Left, &identity, &|command| {
+            sent.borrow_mut().push(command);
+            false
+        });
+        assert!(matches!(&sent.borrow()[0], Command::Tree(command)
+            if matches!(command.as_ref(), TreeCommand::Enable { root: offered, .. }
+                if offered.same_snapshot(&root))));
+        assert!(Arc::ptr_eq(&p.panes[0].selected, &original_selection));
+        sent.borrow_mut().clear();
+        p.flush_trees(&|command| {
+            sent.borrow_mut().push(command);
+            true
+        });
+        assert!(matches!(&sent.borrow()[0], Command::Tree(command)
+            if matches!(command.as_ref(), TreeCommand::Enable { root: offered, .. }
+                if offered.same_snapshot(&root))));
+
+        let mut foreign = root.clone();
+        foreign.index = Arc::new((*foreign.index).clone());
+        p.apply_with_sender(
+            Event::Tree(Box::new(TreeEvent::Published(publication(
+                foreign, 1, false, false,
+            )))),
+            &|_| panic!("a foreign publication cannot commit or expand"),
+        );
+        assert!(p.panes[0].tree_view().is_none());
+        sent.borrow_mut().clear();
+        p.apply_with_sender(
+            Event::Tree(Box::new(TreeEvent::Published(publication(
+                root, 1, false, false,
+            )))),
+            &|command| {
+                sent.borrow_mut().push(command);
+                false
+            },
+        );
+        assert!(sent.borrow().iter().any(|command| matches!(command,
+            Command::Tree(command) if matches!(command.as_ref(), TreeCommand::Commit(_)))));
+        assert!(!sent.borrow().iter().any(|command| matches!(command,
+            Command::Tree(command) if matches!(command.as_ref(), TreeCommand::Branch { .. }))));
+        p.disclose_tree_recursive(PaneId::Left, &identity, &|_| {
+            panic!("a retired flat row cannot retarget the adopted tree")
+        });
+
+        let view = p.panes[0].tree_view().unwrap().clone();
+        sent.borrow_mut().clear();
+        p.flush_trees(&|command| {
+            let accepted = !matches!(&command,
+                Command::Tree(command) if matches!(command.as_ref(), TreeCommand::Branch { .. }));
+            sent.borrow_mut().push(command);
+            accepted
+        });
+        let sent_commands = sent.borrow();
+        assert!(matches!(&sent_commands[0], Command::Tree(command)
+            if matches!(command.as_ref(), TreeCommand::Commit(committed)
+                if Arc::ptr_eq(committed, &view))));
+        assert!(matches!(&sent_commands[1], Command::Tree(command)
+            if matches!(command.as_ref(), TreeCommand::Branch {
+                view: requested, row: TreeRowId(7), action: TreeBranchAction::ExpandRecursive, ..
+            } if Arc::ptr_eq(requested, &view))));
+        assert!(!sent_commands.iter().any(|command| matches!(command,
+            Command::Tree(command) if matches!(command.as_ref(), TreeCommand::Select(_)))));
+        drop(sent_commands);
+        sent.borrow_mut().clear();
+        p.flush_trees(&|command| {
+            sent.borrow_mut().push(command);
+            true
+        });
+        assert_eq!(sent.borrow().len(), 1);
+        assert!(matches!(&sent.borrow()[0], Command::Tree(command)
+            if matches!(command.as_ref(), TreeCommand::Branch {
+                view: requested, row: TreeRowId(7), action: TreeBranchAction::ExpandRecursive, ..
+            } if Arc::ptr_eq(requested, &view))));
+        assert_eq!(p.panes[0].selected_count(), 0);
+        sent.borrow_mut().clear();
+        p.flush_trees(&|command| {
+            sent.borrow_mut().push(command);
+            true
+        });
+        assert!(
+            sent.borrow().is_empty(),
+            "accepted recursive intent is sent once"
+        );
+    }
+}
+
+#[test]
+fn recursive_disclosure_expands_open_rows_while_ordinary_disclosure_collapses() {
+    let (mut p, root) = fixture();
+    p.apply_with_sender(
+        Event::Tree(Box::new(TreeEvent::Published(publication(
+            root.clone(),
+            1,
+            true,
+            false,
+        )))),
+        &|_| true,
+    );
+    let view = p.panes[0].tree_view().unwrap().clone();
+    let identity = p.panes[0].row_identity(&view.rows[0].entry);
+    let cursor = p.panes[0].cursor;
+    let sent = RefCell::new(Vec::new());
+    let send = |command| {
+        sent.borrow_mut().push(command);
+        true
+    };
+    p.disclose_tree_recursive(PaneId::Left, &identity, &send);
+    p.disclose_tree(PaneId::Left, &identity, &send);
+    let commands = sent.borrow();
+    assert_eq!(commands.len(), 2);
+    assert!(matches!(&commands[0], Command::Tree(command)
+        if matches!(command.as_ref(), TreeCommand::Branch {
+            view: requested, row: TreeRowId(7), action: TreeBranchAction::ExpandRecursive, ..
+        } if Arc::ptr_eq(requested, &view))));
+    assert!(matches!(&commands[1], Command::Tree(command)
+        if matches!(command.as_ref(), TreeCommand::Branch {
+            view: requested, row: TreeRowId(7), action: TreeBranchAction::Collapse, ..
+        } if Arc::ptr_eq(requested, &view))));
+    assert_eq!(p.panes[0].cursor, cursor);
+    assert_eq!(p.panes[0].selected_count(), 0);
+    drop(commands);
+    p.apply_with_sender(
+        Event::Tree(Box::new(TreeEvent::Published(publication(
+            root, 2, true, false,
+        )))),
+        &|_| true,
+    );
+    p.disclose_tree_recursive(PaneId::Left, &identity, &|_| {
+        panic!("a stale row identity cannot recursively expand a newer publication")
+    });
+}
+
+#[test]
+fn recursive_disclosure_intent_is_retired_by_navigation_before_commit() {
+    let (mut p, root) = flat_fixture(EntryKind::Directory);
+    let identity = p.panes[0].row_identity(&root.entries[0]);
+    p.disclose_tree_recursive(PaneId::Left, &identity, &|_| true);
+    p.apply_with_sender(
+        Event::Tree(Box::new(TreeEvent::Published(publication(
+            root.clone(),
+            1,
+            false,
+            false,
+        )))),
+        &|_| false,
+    );
+    begin(
+        &mut p,
+        PaneId::Left,
+        test_root().join("elsewhere").to_str().unwrap(),
+    );
+    p.apply_with_sender(
+        Event::Tree(Box::new(TreeEvent::Published(publication(
+            root, 2, false, false,
+        )))),
+        &|command| {
+            assert!(
+                !matches!(command, Command::Tree(_)),
+                "retired recursive intent cannot send"
+            );
+            true
+        },
+    );
+    assert!(p.panes[0].tree_view().is_none());
+}
+
+#[test]
+fn accepted_ordinary_disclosure_supersedes_a_queued_recursive_intent_for_the_same_row() {
+    for (expanded, ordinary) in [
+        (false, TreeBranchAction::Expand),
+        (true, TreeBranchAction::Collapse),
+    ] {
+        let (mut p, root) = flat_fixture(EntryKind::Directory);
+        let identity = p.panes[0].row_identity(&root.entries[0]);
+        p.disclose_tree_recursive(PaneId::Left, &identity, &|_| true);
+        let sent = RefCell::new(Vec::new());
+        p.apply_with_sender(
+            Event::Tree(Box::new(TreeEvent::Published(publication(root, 1, expanded, false)))),
+            &|command| {
+                let accepted = !matches!(&command,
+                    Command::Tree(command) if matches!(command.as_ref(), TreeCommand::Branch { .. }));
+                sent.borrow_mut().push(command);
+                accepted
+            },
+        );
+        assert!(sent.borrow().iter().any(|command| matches!(command,
+        Command::Tree(command) if matches!(command.as_ref(), TreeCommand::Branch {
+            row: TreeRowId(7), action: TreeBranchAction::ExpandRecursive, ..
+        }))));
+        let view = p.panes[0].tree_view().unwrap().clone();
+        let identity = p.panes[0].row_identity(&view.rows[0].entry);
+        p.disclose_tree(PaneId::Left, &identity, &|_| false);
+        sent.borrow_mut().clear();
+        p.flush_trees(&|command| {
+            sent.borrow_mut().push(command);
+            false
+        });
+        assert!(
+            matches!(&sent.borrow()[0], Command::Tree(command)
+            if matches!(command.as_ref(), TreeCommand::Branch {
+                view: requested, row: TreeRowId(7), action: TreeBranchAction::ExpandRecursive, ..
+            } if Arc::ptr_eq(requested, &view))),
+            "a rejected newer gesture leaves the older recursive intent available"
+        );
+
+        sent.borrow_mut().clear();
+        p.disclose_tree(PaneId::Left, &identity, &|command| {
+            sent.borrow_mut().push(command);
+            true
+        });
+        assert_eq!(sent.borrow().len(), 1);
+        assert!(matches!(&sent.borrow()[0], Command::Tree(command)
+            if matches!(command.as_ref(), TreeCommand::Branch {
+                view: requested, row: TreeRowId(7), action, ..
+            } if Arc::ptr_eq(requested, &view) && *action == ordinary)));
+        sent.borrow_mut().clear();
+        p.flush_trees(&|command| {
+            sent.borrow_mut().push(command);
+            true
+        });
+        assert!(
+            !sent.borrow().iter().any(|command| matches!(command,
+            Command::Tree(command) if matches!(command.as_ref(), TreeCommand::Branch { .. }))),
+            "an accepted newer gesture must not be overridden by the older recursive retry"
+        );
+        assert_eq!(p.panes[0].selected_count(), 0);
+    }
+}
+
+#[test]
+fn accepted_recursive_disclosure_of_another_row_supersedes_the_older_queued_start() {
+    let (mut p, root) = flat_fixture(EntryKind::Directory);
+    let first = p.panes[0].row_identity(&root.entries[0]);
+    p.disclose_tree_recursive(PaneId::Left, &first, &|_| true);
+    let sent = RefCell::new(Vec::new());
+    p.apply_with_sender(
+        Event::Tree(Box::new(TreeEvent::Published(publication(
+            root, 1, true, false,
+        )))),
+        &|command| {
+            let accepted = !matches!(&command,
+                Command::Tree(command) if matches!(command.as_ref(), TreeCommand::Branch { .. }));
+            sent.borrow_mut().push(command);
+            accepted
+        },
+    );
+    assert!(sent.borrow().iter().any(|command| matches!(command,
+    Command::Tree(command) if matches!(command.as_ref(), TreeCommand::Branch {
+        row: TreeRowId(7), action: TreeBranchAction::ExpandRecursive, ..
+    }))));
+    let view = p.panes[0].tree_view().unwrap().clone();
+    assert_eq!(view.rows[0].entry.kind, EntryKind::Directory);
+    assert_eq!(view.rows[1].entry.kind, EntryKind::Directory);
+    let second = p.panes[0].row_identity(&view.rows[1].entry);
+    p.disclose_tree_recursive(PaneId::Left, &second, &|_| false);
+    sent.borrow_mut().clear();
+    p.flush_trees(&|command| {
+        sent.borrow_mut().push(command);
+        false
+    });
+    assert!(
+        matches!(&sent.borrow()[0], Command::Tree(command)
+        if matches!(command.as_ref(), TreeCommand::Branch {
+            view: requested, row: TreeRowId(7), action: TreeBranchAction::ExpandRecursive, ..
+        } if Arc::ptr_eq(requested, &view))),
+        "a rejected recursive start on B leaves the queued start on A intact"
+    );
+
+    sent.borrow_mut().clear();
+    p.disclose_tree_recursive(PaneId::Left, &second, &|command| {
+        sent.borrow_mut().push(command);
+        true
+    });
+    assert_eq!(sent.borrow().len(), 1);
+    assert!(matches!(&sent.borrow()[0], Command::Tree(command)
+        if matches!(command.as_ref(), TreeCommand::Branch {
+            view: requested, row: TreeRowId(11), action: TreeBranchAction::ExpandRecursive, ..
+        } if Arc::ptr_eq(requested, &view))));
+    sent.borrow_mut().clear();
+    p.flush_trees(&|command| {
+        sent.borrow_mut().push(command);
+        true
+    });
+    assert!(
+        !sent.borrow().iter().any(|command| matches!(command,
+        Command::Tree(command) if matches!(command.as_ref(), TreeCommand::Branch { .. }))),
+        "the older start on A cannot replace the accepted recursive operation on B"
+    );
+    assert_eq!(p.panes[0].selected_count(), 0);
 }
 
 #[test]

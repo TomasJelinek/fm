@@ -32,6 +32,7 @@ fn viewport(host: &mut Host, anchor: u64, backwards: bool) -> Vec<u8> {
 fn exact_fixture_refill_profile() {
     let fixture = std::env::var_os("ME_MARKDOWN_PROFILE_FIXTURE").expect("fixture path");
     let output = std::env::var_os("ME_MARKDOWN_PROFILE_OUTPUT").expect("wire output path");
+    let nearby = std::env::var("ME_MARKDOWN_PROFILE_PATTERN").as_deref() == Ok("nearby");
     // Only the test broker materializes its fixture. Production reads remain bounded.
     let input = std::fs::read(&fixture).expect("fixture");
     let mut wire = std::fs::File::create(output).expect("wire output under _build");
@@ -61,7 +62,11 @@ fn exact_fixture_refill_profile() {
         for backwards in [false, true] {
             for step in 0..60 {
                 let step = if backwards { 59 - step } else { step };
-                let anchor = input.len() as u64 * (10 + step) / 100;
+                let anchor = if nearby {
+                    input.len() as u64 / 10 + step * (input.len() as u64 / 1000).clamp(1, 97)
+                } else {
+                    input.len() as u64 * (10 + step) / 100
+                };
                 let baseline = meter::start();
                 let started = Instant::now();
                 let payload = viewport(&mut host, anchor, backwards);
@@ -86,7 +91,7 @@ fn exact_fixture_refill_profile() {
     }
     timings.sort_unstable();
     println!(
-        "refill-profile fixture={fixture:?} samples={} median_us={} p95_us={} max_us={} \
+        "refill-profile fixture={fixture:?} nearby={nearby} samples={} median_us={} p95_us={} max_us={} \
          source_reads={reads} requested_bytes={requested_bytes} incremental_heap_peak_bytes={peak}",
         timings.len(),
         timings[timings.len() / 2],

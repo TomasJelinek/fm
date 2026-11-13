@@ -2,7 +2,7 @@ use crate::{content::Reader, system};
 use midnight_filesystem_plugin_api::*;
 use midnight_filesystem_plugin_sdk::{
     CallContext,
-    native::{NativeAdapter, NativeEntry, NativeInfo},
+    native::{NativeAdapter, NativeEntry, NativeInfo, NativeRename},
 };
 use std::{
     ffi::{OsStr, OsString},
@@ -13,6 +13,7 @@ use std::{
         fs::MetadataExt,
     },
     path::{Path, PathBuf},
+    sync::Arc,
 };
 pub struct Linux;
 impl NativeAdapter for Linux {
@@ -64,6 +65,12 @@ impl NativeAdapter for Linux {
     }
     fn open_reader(path: &Path, context: &CallContext<'_>) -> Result<Reader, Failure> {
         Reader::open(path, context)
+    }
+    fn prepare_rename(
+        path: &Path,
+        context: &CallContext<'_>,
+    ) -> Result<Arc<dyn NativeRename>, Failure> {
+        crate::rename::prepare(path, context)
     }
     fn volumes(context: &CallContext<'_>) -> Result<Vec<Volume>, Failure> {
         let file = File::open("/proc/self/mountinfo").map_err(Failure::from_io)?;
