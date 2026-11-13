@@ -9,6 +9,7 @@ const IMAGE_CACHE_CAPACITY: usize = 256;
 pub(crate) struct DesktopState {
     pub(crate) shell: Option<ShellFlavor>,
     pub(crate) locations: Vec<NavigationLocation>,
+    pub(crate) system_locations: Vec<SystemLocationChoice>,
     pub(crate) network_position: Option<usize>,
     pub(crate) error: String,
     pub(crate) status: String,
@@ -28,6 +29,7 @@ pub(crate) struct DesktopState {
     images: HashMap<IconKey, (Image, bool)>,
     image_order: VecDeque<IconKey>,
     pub(super) requests: HashSet<DesktopRequestId>,
+    pub(super) system_location_requests: HashMap<DesktopRequestId, SystemLocation>,
     open_requests: HashMap<DesktopRequestId, (PaneId, NavigationId, PathBuf)>,
     open_directories: [Option<(NavigationId, PathBuf)>; 2],
     generation: u64,
@@ -127,6 +129,7 @@ impl Presenter {
                 shell,
                 locations,
                 network_position,
+                system_locations,
             } => {
                 self.desktop.shell = Some(shell);
                 self.desktop.network_position = Some(network_position);
@@ -135,11 +138,18 @@ impl Presenter {
                     &mut self.desktop.locations,
                     locations,
                 )));
+                self.retired.push(Box::new(mem::replace(
+                    &mut self.desktop.system_locations,
+                    system_locations,
+                )));
                 self.desktop.error.clear();
                 self.sync_navigation_choices();
             }
             Event::DesktopContextFailed(error) => {
                 self.desktop.error = crate::error_presentation::describe(&error);
+                self.retired
+                    .push(Box::new(mem::take(&mut self.desktop.system_locations)));
+                self.sync_navigation_choices();
             }
             Event::CommandIconLoaded {
                 generation,
@@ -164,7 +174,13 @@ impl Presenter {
                     self.desktop.terminal_pending = None;
                 }
                 let opened = self.desktop.open_requests.remove(&request);
+                let system_location = self.desktop.system_location_requests.remove(&request);
                 match result {
+                    Ok(DesktopActionResult::SystemLocationOpened { location }) => {
+                        if system_location == Some(location) {
+                            self.desktop.status = "System Recycle Bin/Trash opened".into();
+                        }
+                    }
                     Ok(DesktopActionResult::TerminalStarted { history, .. }) => {
                         let status = if history.command.is_empty() {
                             "Terminal opened"

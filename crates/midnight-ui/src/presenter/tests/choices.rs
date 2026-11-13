@@ -5,6 +5,7 @@ fn one_drive_accounts_remain_in_menu_without_repeated_toolbar_buttons() {
     let root = test_root();
     let mut p = Presenter::new(root.clone(), root.clone());
     p.apply(Event::DesktopContext {
+        system_locations: Vec::new(),
         network_position: 0,
         shell: ShellFlavor::Posix,
         locations: vec![
@@ -38,6 +39,217 @@ fn location(id: &str, kind: LocationKind, path: PathBuf) -> NavigationLocation {
     }
 }
 
+fn recycle_context(root: &Path, position: Option<usize>) -> Event {
+    Event::DesktopContext {
+        shell: ShellFlavor::Posix,
+        network_position: 1,
+        system_locations: position.map_or_else(Vec::new, |special_position| {
+            vec![SystemLocationChoice {
+                location: SystemLocation::RecycleBin,
+                label: "System Trash 文档".into(),
+                special_position,
+            }]
+        }),
+        locations: vec![
+            location("disk", LocationKind::Volume, root.to_owned()),
+            location("home", LocationKind::Home, root.join("Home")),
+            location("documents", LocationKind::Documents, root.join("Documents")),
+            location("personal", LocationKind::OneDrive, root.join("Personal")),
+            location("business", LocationKind::OneDrive, root.join("Business")),
+            location("last", LocationKind::Temporary, root.join("Last")),
+        ],
+    }
+}
+
+#[test]
+fn recycle_bin_has_one_backend_position_on_both_surfaces_without_consuming_native_rows() {
+    let root = test_root();
+    let mut p = Presenter::new(root.clone(), root.clone());
+    let mut context = recycle_context(&root, Some(2));
+    if let Event::DesktopContext {
+        system_locations, ..
+    } = &mut context
+    {
+        system_locations.push(system_locations[0].clone());
+    }
+    p.apply(context);
+    let menu = crate::navigation_models::ordered_choices(&p);
+    let toolbar = crate::navigation_models::toolbar_choices(&p, &menu);
+    for rows in [&menu, &toolbar] {
+        let recycle: Vec<_> = rows
+            .iter()
+            .enumerate()
+            .filter(|(_, row)| row.kind == crate::LocationRole::RecycleBin)
+            .collect();
+        assert_eq!(recycle.len(), 1);
+        assert_eq!(recycle[0].0, 4);
+        assert_eq!(recycle[0].1.label, "System Trash 文档");
+        assert_eq!(recycle[0].1.tooltip, "Open system Recycle Bin/Trash");
+    }
+    let recycle = menu[4].identity.clone();
+    let expected = vec![
+        p.navigation_choice_token(0),
+        p.navigation_choice_token(1),
+        p.network_choice_token(),
+        p.navigation_choice_token(2),
+        recycle.to_string(),
+        p.navigation_choice_token(3),
+        p.navigation_choice_token(5),
+    ];
+    assert_eq!(
+        toolbar
+            .iter()
+            .map(|row| row.identity.to_string())
+            .collect::<Vec<_>>(),
+        expected
+    );
+    assert!(
+        menu.iter()
+            .any(|row| row.identity == p.navigation_choice_token(4))
+    );
+    let projected =
+        crate::navigation_models::locations(&toolbar, Some(&p.navigation_choice_token(5)));
+    assert!(
+        projected.last().unwrap().selected,
+        "last native mapping must survive both synthetic rows"
+    );
+    let recycle = projected
+        .iter()
+        .find(|row| row.kind == crate::LocationRole::RecycleBin)
+        .unwrap();
+    assert!(!recycle.is_drive && recycle.path.is_empty() && !recycle.selected);
+}
+
+#[test]
+fn recycle_bin_tokens_expire_when_position_native_inventory_or_capability_changes() {
+    let root = test_root();
+    let mut p = Presenter::new(root.clone(), root.clone());
+    let token = |p: &Presenter| {
+        crate::navigation_models::ordered_choices(p)
+            .into_iter()
+            .find(|row| row.kind == crate::LocationRole::RecycleBin)
+            .unwrap()
+            .identity
+            .to_string()
+    };
+    p.apply(recycle_context(&root, Some(2)));
+    let first = token(&p);
+    p.apply(recycle_context(&root, Some(0)));
+    let reordered = token(&p);
+    assert_ne!(first, reordered);
+    assert!(!p.choose_system_location(&first, &|_| panic!("stale position")));
+    p.apply(recycle_context(&root, None));
+    assert!(!p.choose_system_location(&reordered, &|_| panic!("revoked capability")));
+    assert!(
+        !crate::navigation_models::ordered_choices(&p)
+            .iter()
+            .any(|row| row.kind == crate::LocationRole::RecycleBin)
+    );
+    p.apply(recycle_context(&root, Some(0)));
+    assert!(!p.choose_system_location(&reordered, &|_| panic!(
+        "re-added capability cannot revive a token"
+    )));
+    let current = token(&p);
+    p.apply(Event::VolumesUpdated(vec![]));
+    assert!(!p.choose_system_location(&current, &|_| panic!("changed native inventory")));
+}
+
+#[test]
+fn recycle_bin_refused_send_and_typed_completion_never_change_panel_authority() {
+    let root = test_root();
+    let mut p = Presenter::new(root.join("left"), root.join("right"));
+    p.apply(recycle_context(&root, Some(2)));
+    let token = crate::navigation_models::ordered_choices(&p)
+        .into_iter()
+        .find(|row| row.kind == crate::LocationRole::RecycleBin)
+        .unwrap()
+        .identity
+        .to_string();
+    let before = [0, 1].map(|index| {
+        (
+            p.panes[index].display_path().to_owned(),
+            p.panes[index].generation,
+            p.panes[index].cursor,
+            p.panes[index].selected.clone(),
+        )
+    });
+    assert!(!p.choose_system_location(&token, &|_| false));
+    let sent = RefCell::new(Vec::new());
+    assert!(p.choose_system_location(&token, &|command| {
+        sent.borrow_mut().push(command);
+        true
+    }));
+    let request = match sent.borrow().as_slice() {
+        [
+            Command::OpenSystemLocation {
+                request,
+                location: SystemLocation::RecycleBin,
+            },
+        ] => *request,
+        commands => panic!("only a typed system shell request is permitted: {commands:?}"),
+    };
+    let status = p.desktop.status.clone();
+    p.apply(Event::DesktopActionFinished {
+        request: DesktopRequestId(request.0 + 1),
+        result: Ok(DesktopActionResult::SystemLocationOpened {
+            location: SystemLocation::RecycleBin,
+        }),
+    });
+    assert_eq!(p.desktop.status, status);
+    p.apply(Event::DesktopActionFinished {
+        request,
+        result: Ok(DesktopActionResult::SystemLocationOpened {
+            location: SystemLocation::RecycleBin,
+        }),
+    });
+    assert_ne!(p.desktop.status, status);
+    for index in [0, 1] {
+        assert_eq!(p.panes[index].display_path(), before[index].0.as_path());
+        assert_eq!(p.panes[index].generation, before[index].1);
+        assert_eq!(p.panes[index].cursor, before[index].2);
+        assert!(Arc::ptr_eq(&p.panes[index].selected, &before[index].3));
+    }
+    let completed = p.desktop.status.clone();
+    p.apply(Event::DesktopActionFinished {
+        request,
+        result: Ok(DesktopActionResult::SystemLocationOpened {
+            location: SystemLocation::RecycleBin,
+        }),
+    });
+    assert_eq!(p.desktop.status, completed);
+    assert!(
+        !p.choose_navigation_choice(PaneId::Left, &token, &|_| panic!(
+            "a system choice is not a filesystem location"
+        ))
+    );
+}
+
+#[test]
+fn recycle_bin_discovery_failure_invalidates_its_cached_capability() {
+    let root = test_root();
+    let mut p = Presenter::new(root.clone(), root.clone());
+    p.apply(recycle_context(&root, Some(0)));
+    let token = crate::navigation_models::ordered_choices(&p)
+        .into_iter()
+        .find(|row| row.kind == crate::LocationRole::RecycleBin)
+        .unwrap()
+        .identity
+        .to_string();
+    p.apply(Event::DesktopContextFailed(FsError::from_io(
+        "desktop context",
+        &root,
+        std::io::Error::from(std::io::ErrorKind::Unsupported),
+    )));
+    assert!(!p.choose_system_location(&token, &|_| panic!(
+        "failed discovery has no current capability"
+    )));
+    assert!(
+        !crate::navigation_models::ordered_choices(&p)
+            .iter()
+            .any(|row| row.kind == crate::LocationRole::RecycleBin)
+    );
+}
+
 #[test]
 fn canonical_choices_cover_every_volume_and_preserve_same_path_semantic_aliases() {
     let root = test_root();
@@ -56,6 +268,7 @@ fn canonical_choices_cover_every_volume_and_preserve_same_path_semantic_aliases(
         },
     ]));
     p.apply(Event::DesktopContext {
+        system_locations: Vec::new(),
         network_position: 0,
         shell: ShellFlavor::Posix,
         locations: vec![
@@ -84,6 +297,7 @@ fn an_arbitrary_mount_using_home_id_remains_a_drive() {
     let mount = root.join("mounted/home");
     let mut p = Presenter::new(root.clone(), root);
     p.apply(Event::DesktopContext {
+        system_locations: Vec::new(),
         network_position: 0,
         shell: ShellFlavor::Posix,
         locations: vec![location("home", LocationKind::Home, home)],
@@ -109,6 +323,7 @@ fn authoritative_volumes_replace_old_context_roots_and_invalidate_reused_identit
     let new_root = root.join("new");
     let mut p = Presenter::new(root.clone(), root);
     p.apply(Event::DesktopContext {
+        system_locations: Vec::new(),
         network_position: 0,
         shell: ShellFlavor::Posix,
         locations: vec![location("same", LocationKind::Volume, old_root.clone())],
@@ -145,6 +360,7 @@ fn choices_keep_metadata_tokens_and_resolve_raw_targets_with_volume_memory() {
         root: root.clone(),
     }]));
     p.apply(Event::DesktopContext {
+        system_locations: Vec::new(),
         network_position: 0,
         shell: ShellFlavor::Posix,
         locations: vec![location("desktop", LocationKind::Desktop, special.clone())],
@@ -183,6 +399,7 @@ fn reordered_equal_labels_reject_old_tokens_and_rejected_navigation_keeps_alias(
     let shared = root.join("shared");
     let mut p = Presenter::new(shared.clone(), root.clone());
     p.apply(Event::DesktopContext {
+        system_locations: Vec::new(),
         network_position: 0,
         shell: ShellFlavor::Posix,
         locations: vec![
@@ -197,6 +414,7 @@ fn reordered_equal_labels_reject_old_tokens_and_rejected_navigation_keeps_alias(
     assert!(!p.choose_navigation_choice(PaneId::Left, &home, &|_| false));
     assert_eq!(p.navigation_choice_index(PaneId::Left), -1);
     p.apply(Event::DesktopContext {
+        system_locations: Vec::new(),
         network_position: 0,
         shell: ShellFlavor::Posix,
         locations: vec![
@@ -217,6 +435,7 @@ fn drive_shortcuts_only_use_typed_native_metadata_for_the_current_raw_root() {
     let mut disk = location("disk", LocationKind::Volume, root.clone());
     disk.drive_letter = Some('Q');
     p.apply(Event::DesktopContext {
+        system_locations: Vec::new(),
         network_position: 0,
         shell: ShellFlavor::Posix,
         locations: vec![disk],
@@ -231,6 +450,7 @@ fn drive_shortcuts_only_use_typed_native_metadata_for_the_current_raw_root() {
     let mut disk = location("disk", LocationKind::Volume, new_root.clone());
     disk.drive_letter = Some('Q');
     p.apply(Event::DesktopContext {
+        system_locations: Vec::new(),
         network_position: 0,
         shell: ShellFlavor::Posix,
         locations: vec![disk],
@@ -264,6 +484,7 @@ fn backend_locale_order_reaches_both_surfaces_without_reordering_hot_path_slots(
             .collect(),
     ));
     p.apply(Event::DesktopContext {
+        system_locations: Vec::new(),
         network_position: 0,
         shell: ShellFlavor::Posix,
         locations: ordered

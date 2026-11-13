@@ -238,6 +238,10 @@ pub enum Command {
     Selection(SelectionRequest),
     ListVolumes,
     ListDesktopContext,
+    OpenSystemLocation {
+        request: DesktopRequestId,
+        location: crate::SystemLocation,
+    },
     LoadPreferences,
     ListFontFamilies,
     ResolveDefaultEditor,
@@ -566,6 +570,8 @@ pub enum Event {
         /// Virtual Network position within the special-location section. Zero
         /// places it after all drives and before every local special folder.
         network_position: usize,
+        /// Finite, capability-filtered entries; currently at most one Recycle Bin.
+        system_locations: Vec<crate::SystemLocationChoice>,
     },
     DesktopContextFailed(FsError),
     CommandIconLoaded {

@@ -1,7 +1,7 @@
 //! Explicit desktop activation; called only by the backend's bounded native workers.
 
 use crate::WindowsFileSystem;
-use midnight_core::{FsError, OpenEntryResult, OpenService};
+use midnight_core::{FsError, OpenEntryResult, OpenService, SystemLocation};
 use std::{
     fs::{self, OpenOptions},
     io,
@@ -20,12 +20,25 @@ use windows_sys::Win32::{
     },
     System::Com::COINIT_APARTMENTTHREADED,
     UI::{
-        Shell::{SEE_MASK_FLAG_NO_UI, SEE_MASK_NOASYNC, SHELLEXECUTEINFOW, ShellExecuteExW},
+        Shell::{
+            Common::ITEMIDLIST, FOLDERID_RecycleBinFolder, ILFree, KF_FLAG_DONT_VERIFY,
+            SEE_MASK_FLAG_NO_UI, SEE_MASK_IDLIST, SEE_MASK_NOASYNC, SHELLEXECUTEINFOW,
+            SHGetKnownFolderIDList, ShellExecuteExW,
+        },
         WindowsAndMessaging::SW_SHOWNORMAL,
     },
 };
 
 impl OpenService for WindowsFileSystem {
+    fn open_system_location(
+        &self,
+        location: SystemLocation,
+    ) -> Result<Option<Box<dyn midnight_core::TerminalProcess>>, FsError> {
+        launch_system_location(location)
+            .map(|()| None)
+            .map_err(|error| FsError::from_io("open system location", Path::new(""), error))
+    }
+
     fn open_entry(&self, path: &Path) -> Result<OpenEntryResult, FsError> {
         open_with(path, launch_association)
     }
@@ -77,6 +90,88 @@ impl ShellOpen {
             ..Default::default()
         }
     }
+}
+
+fn system_folder_id(location: SystemLocation) -> windows_sys::core::GUID {
+    match location {
+        SystemLocation::RecycleBin => FOLDERID_RecycleBinFolder,
+    }
+}
+
+struct SystemPidl(*mut ITEMIDLIST);
+impl Drop for SystemPidl {
+    fn drop(&mut self) {
+        if !self.0.is_null() {
+            // SAFETY: only SHGetKnownFolderIDList output enters this owner; ILFree is its pair.
+            unsafe { ILFree(self.0) };
+        }
+    }
+}
+
+fn known_folder_status(result: i32, pidl: *mut ITEMIDLIST) -> io::Result<()> {
+    if result < 0 {
+        return Err(io::Error::other(format!(
+            "Cannot resolve system Shell location (HRESULT 0x{:08X}).",
+            result as u32
+        )));
+    }
+    if pidl.is_null() {
+        return Err(io::Error::other(
+            "System Shell location returned no item identifier.",
+        ));
+    }
+    Ok(())
+}
+
+fn system_open_info(pidl: *mut ITEMIDLIST) -> SHELLEXECUTEINFOW {
+    SHELLEXECUTEINFOW {
+        cbSize: size_of::<SHELLEXECUTEINFOW>() as u32,
+        fMask: SEE_MASK_IDLIST | SEE_MASK_FLAG_NO_UI | SEE_MASK_NOASYNC,
+        lpVerb: windows_sys::w!("open"),
+        lpIDList: pidl.cast(),
+        nShow: SW_SHOWNORMAL,
+        ..Default::default()
+    }
+}
+
+fn system_launch_result(error: Option<io::Error>) -> io::Result<()> {
+    match error {
+        None => Ok(()),
+        Some(error) if error.raw_os_error() == Some(0) => Err(io::Error::other(
+            "The system Shell did not accept the location launch request.",
+        )),
+        Some(error) => Err(error),
+    }
+}
+
+fn launch_system_location(location: SystemLocation) -> io::Result<()> {
+    let _com = crate::desktop::ComGuard::initialize(COINIT_APARTMENTTHREADED as u32)
+        .ok_or_else(|| io::Error::other("cannot initialize system location COM apartment"))?;
+    let folder = system_folder_id(location);
+    let mut raw = ptr::null_mut();
+    // SAFETY: folder is a fixed host-known GUID, output storage is valid, and no token is supplied.
+    let status = unsafe {
+        SHGetKnownFolderIDList(
+            &folder,
+            KF_FLAG_DONT_VERIFY as u32,
+            ptr::null_mut(),
+            &mut raw,
+        )
+    };
+    let pidl = SystemPidl(raw);
+    known_folder_status(status, pidl.0)?;
+    let mut info = system_open_info(pidl.0);
+    // SAFETY: the absolute PIDL and static verb outlive this call. File, parameters and directory
+    // are null; SEE_MASK_IDLIST selects the PIDL. No caller text or filesystem path is interpreted.
+    let succeeded = unsafe { ShellExecuteExW(&mut info) } != 0;
+    // Capture thread-local last error before handle/PIDL/COM cleanup can overwrite it.
+    let error = (!succeeded).then(io::Error::last_os_error);
+    if !info.hProcess.is_null() {
+        // SAFETY: any returned process handle is owned. NOCLOSEPROCESS is absent, as for file opens.
+        unsafe { CloseHandle(info.hProcess) };
+    }
+    // NOASYNC does not establish namespace/UI completion; success means accepted launch only.
+    system_launch_result(error)
 }
 
 fn open_with(
@@ -381,6 +476,62 @@ mod tests {
             ))
             .is_err()
         );
+    }
+
+    #[test]
+    fn recycle_bin_request_uses_only_fixed_pidl_open_fields() {
+        let mut marker = 0_u8;
+        let pidl = std::ptr::from_mut(&mut marker).cast::<ITEMIDLIST>();
+        let info = system_open_info(pidl);
+        assert_eq!(info.cbSize as usize, size_of::<SHELLEXECUTEINFOW>());
+        assert_eq!(
+            info.fMask,
+            SEE_MASK_IDLIST | SEE_MASK_FLAG_NO_UI | SEE_MASK_NOASYNC
+        );
+        assert_eq!(info.lpIDList, pidl.cast());
+        // SAFETY: request construction supplies the fixed five-unit, terminated static open verb.
+        let verb = unsafe { std::slice::from_raw_parts(info.lpVerb, 5) };
+        assert_eq!(
+            verb,
+            &[b'o' as u16, b'p' as u16, b'e' as u16, b'n' as u16, 0]
+        );
+        assert!(info.lpFile.is_null());
+        assert!(info.lpParameters.is_null());
+        assert!(info.lpDirectory.is_null());
+        assert!(info.hwnd.is_null());
+        assert!(info.hProcess.is_null());
+        assert_eq!(info.nShow, SW_SHOWNORMAL);
+    }
+
+    #[test]
+    fn recycle_bin_known_folder_is_fixed_and_failure_or_null_is_rejected() {
+        let id = system_folder_id(SystemLocation::RecycleBin);
+        let expected = FOLDERID_RecycleBinFolder;
+        assert_eq!(
+            (id.data1, id.data2, id.data3, id.data4),
+            (
+                expected.data1,
+                expected.data2,
+                expected.data3,
+                expected.data4
+            )
+        );
+        let mut marker = 0_u8;
+        let pidl = std::ptr::from_mut(&mut marker).cast::<ITEMIDLIST>();
+        assert!(known_folder_status(0, pidl).is_ok());
+        assert!(known_folder_status(0, ptr::null_mut()).is_err());
+        let error = known_folder_status(0x80070005_u32 as i32, pidl).unwrap_err();
+        assert!(error.to_string().contains("80070005"));
+    }
+
+    #[test]
+    fn recycle_bin_launch_result_preserves_captured_error_and_rejects_zero_error() {
+        assert!(system_launch_result(None).is_ok());
+        let denied = io::Error::from_raw_os_error(ERROR_ACCESS_DENIED as i32);
+        let error = system_launch_result(Some(denied)).unwrap_err();
+        assert_eq!(error.raw_os_error(), Some(ERROR_ACCESS_DENIED as i32));
+        let error = system_launch_result(Some(io::Error::from_raw_os_error(0))).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::Other);
     }
 }
 

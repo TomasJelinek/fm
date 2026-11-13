@@ -199,6 +199,7 @@ fn native_choices_keep_gestures_tooltips_and_full_unicode_working_paths() {
         },
     ]));
     presenter.borrow_mut().apply(Event::DesktopContext {
+        system_locations: Vec::new(),
         network_position: 0,
         shell: ShellFlavor::Posix,
         locations: vec![

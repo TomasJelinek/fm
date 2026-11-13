@@ -41,7 +41,7 @@ fn decoder_deadline_cancels_a_broker_queued_behind_the_shared_io_gate() {
     let helper = std::env::var_os("MIDNIGHT_IMAGE_TEST_HELPER").unwrap();
     let gate = midnight_work_budget::shared_io();
     let held = gate
-        .acquire(midnight_work_budget::IO_SLOTS, || false)
+        .acquire(midnight_work_budget::Admission::Exclusive, || false)
         .unwrap();
     let start = std::time::Instant::now();
     let queued = AtomicBool::new(false);
@@ -242,7 +242,7 @@ fn decoder_cooperative_source_observes_viewport_and_timeout_cancellation() {
         assert!(source.observed.load(Ordering::Acquire));
         assert_eq!(
             midnight_work_budget::shared_io().snapshot().available,
-            midnight_work_budget::IO_SLOTS
+            midnight_work_budget::DEFAULT_IO_LIMIT
         );
     }
 }

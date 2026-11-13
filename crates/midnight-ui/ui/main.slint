@@ -507,6 +507,7 @@ export component MainWindow inherits Window {
     in property <string> right-time-column-sample;
     in-out property <bool> remember-command-history: true;
     in-out property <bool> copy-checksum-verification: true;
+    in-out property <int> disk-io-concurrency-index;
     in-out property <int> options-topic-index;
     in property <[UserCommandRow]> user-commands;
     in property <string> command-preview-token;
@@ -611,6 +612,7 @@ export component MainWindow inherits Window {
     callback sizes-format-changed(bool);
     callback remember-command-history-changed(bool);
     callback copy-verification-changed(bool);
+    callback disk-io-concurrency-changed(bool, int);
     callback insert-path(int);
     callback insert-name();
     callback insert-full-path();
@@ -1390,6 +1392,7 @@ export component MainWindow inherits Window {
                 quick-search-filter: root.quick-search-filter; sizes-in-bytes: root.sizes-in-bytes;
                 remember-command-history: root.remember-command-history;
                 copy-checksum-verification: root.copy-checksum-verification;
+                disk-io-concurrency-index: root.disk-io-concurrency-index;
                 command-history-empty: root.command-history.length == 0;
                 thumbnails-enabled: root.thumbnails-enabled;
                 thumbnails-network: root.thumbnails-network;
@@ -1404,6 +1407,7 @@ export component MainWindow inherits Window {
                 sizes-format-changed(value) => { root.sizes-format-changed(value); }
                 remember-command-history-changed(value) => { root.remember-command-history-changed(value); }
                 copy-verification-changed(value) => { root.copy-verification-changed(value); }
+                disk-io-concurrency-changed(automatic, maximum) => { root.disk-io-concurrency-changed(automatic, maximum); }
                 command-history-clear => { root.command-history-clear(); }
                 confirm => { root.options-accepted(); }
                 reset => { root.options-reset(); }

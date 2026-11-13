@@ -98,13 +98,39 @@ pub(super) fn ordered_choices(presenter: &Presenter) -> Vec<NavigationChoiceRow>
         .take_while(|row| row.kind == LocationRole::Drive)
         .count();
     let specials = rows.len() - drives;
+    let recycle_position = presenter
+        .desktop
+        .system_locations
+        .iter()
+        .find(|choice| choice.location == SystemLocation::RecycleBin)
+        .map(|choice| {
+            let position = choice.special_position.min(specials);
+            rows.insert(
+                drives + position,
+                NavigationChoiceRow {
+                    identity: presenter
+                        .system_location_choice_token(choice.location)
+                        .into(),
+                    label: choice.label.as_str().into(),
+                    compact_label: choice.label.as_str().into(),
+                    tooltip: "Open system Recycle Bin/Trash".into(),
+                    icon: presenter
+                        .desktop
+                        .image(&IconKey::action(ActionIcon::RecycleBin)),
+                    kind: LocationRole::RecycleBin,
+                },
+            );
+            position
+        });
     let position = presenter
         .desktop
         .network_position
         .unwrap_or(0)
         .min(specials);
+    // Both positions count real native specials. Preserve Network's boundary;
+    // on a tie it precedes Recycle Bin without consuming a native row.
     rows.insert(
-        drives + position,
+        drives + position + usize::from(recycle_position.is_some_and(|recycle| recycle < position)),
         NavigationChoiceRow {
             identity: presenter.network_choice_token().into(),
             label: NETWORK_NEIGHBORHOOD_LABEL.into(),
@@ -135,7 +161,7 @@ pub(super) fn toolbar_choices(
     choices
         .iter()
         .filter_map(|row| {
-            if row.kind == LocationRole::Network {
+            if matches!(row.kind, LocationRole::Network | LocationRole::RecycleBin) {
                 return Some(row.clone());
             }
             let native = native.next()?;

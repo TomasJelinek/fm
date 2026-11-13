@@ -172,7 +172,7 @@ fn deadline_kills_a_worker_waiting_on_the_shared_read_budget() {
     let _serial = SERIAL.lock().unwrap();
     let gate = midnight_work_budget::shared_io();
     let held = gate
-        .acquire(midnight_work_budget::IO_SLOTS, || false)
+        .acquire(midnight_work_budget::Admission::Exclusive, || false)
         .unwrap();
     let source = Arc::new(Bytes::new(bitmap()));
     let started = Instant::now();

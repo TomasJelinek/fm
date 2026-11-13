@@ -1,7 +1,8 @@
 //! Portable preferences codec and atomic publication; native adapters own path/security policy.
 use midnight_core::{
-    Bookmark, BookmarkId, CommandHistoryEntry, PaneTabPreferences, PanelViewMode, PreferenceTheme,
-    ShellFlavor, ShortcutBinding, SizeDisplay, UiDensity, UserPreferences, WindowsShell,
+    Bookmark, BookmarkId, CommandHistoryEntry, DiskIoConcurrency, PaneTabPreferences,
+    PanelViewMode, PreferenceTheme, ShellFlavor, ShortcutBinding, SizeDisplay, UiDensity,
+    UserPreferences, WindowsShell,
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -39,12 +40,18 @@ mod shortcuts_tests;
 
 /// An aggregate storage bound, never a native path length restriction.
 pub const MAX_PREFERENCES_BYTES: usize = 4 * 1024 * 1024;
-const CURRENT_PREFERENCES_VERSION: u32 = 30;
+const CURRENT_PREFERENCES_VERSION: u32 = 31;
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct StoredPreferences {
     version: u32,
+    #[serde(
+        default,
+        deserialize_with = "present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    disk_io_concurrency: Option<StoredDiskIoConcurrency>,
     #[serde(
         default,
         deserialize_with = "present",
@@ -161,6 +168,13 @@ struct StoredPreferences {
         skip_serializing_if = "Option::is_none"
     )]
     panel_filter_history: Option<Vec<StoredPanelFilter>>,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(tag = "mode", rename_all = "snake_case", deny_unknown_fields)]
+enum StoredDiskIoConcurrency {
+    Automatic {},
+    Manual { limit: u8 },
 }
 
 #[derive(Serialize, Deserialize)]
@@ -624,6 +638,20 @@ pub fn decode_preferences(bytes: &[u8]) -> io::Result<UserPreferences> {
         _ => return Err(invalid("missing or unexpected window geometry")),
     };
     let mut preferences = UserPreferences {
+        disk_io_concurrency: match (stored.version, stored.disk_io_concurrency) {
+            (1..=30, None) => DiskIoConcurrency::Automatic,
+            (31..=CURRENT_PREFERENCES_VERSION, Some(StoredDiskIoConcurrency::Automatic {})) => {
+                DiskIoConcurrency::Automatic
+            }
+            (31..=CURRENT_PREFERENCES_VERSION, Some(StoredDiskIoConcurrency::Manual { limit })) => {
+                DiskIoConcurrency::Manual(limit)
+            }
+            _ => {
+                return Err(invalid(
+                    "missing or unexpected disk I/O concurrency preference",
+                ));
+            }
+        },
         copy_checksum_verification: match (stored.version, stored.copy_checksum_verification) {
             (1..=27, None) => true,
             (28..=CURRENT_PREFERENCES_VERSION, Some(enabled)) => enabled,
@@ -757,8 +785,10 @@ pub fn encode_preferences(preferences: UserPreferences) -> io::Result<Vec<u8>> {
         .bookmarks
         .iter()
         .any(|bookmark| bookmark.network.is_some());
-    let rule_choices =
-        !preferences.editor.rules.is_empty() || !preferences.panel_filter_history.is_empty();
+    let disk_choices = preferences.disk_io_concurrency != DiskIoConcurrency::Automatic;
+    let rule_choices = disk_choices
+        || !preferences.editor.rules.is_empty()
+        || !preferences.panel_filter_history.is_empty();
     let verification_choices =
         rule_choices || network_bookmarks || !preferences.copy_checksum_verification;
     let association_choices = verification_choices
@@ -812,6 +842,10 @@ pub fn encode_preferences(preferences: UserPreferences) -> io::Result<Vec<u8>> {
     let store_previews =
         archive_choices || !preferences.thumbnails_enabled || preferences.thumbnails_network;
     let stored = StoredPreferences {
+        disk_io_concurrency: disk_choices.then_some(match preferences.disk_io_concurrency {
+            DiskIoConcurrency::Automatic => StoredDiskIoConcurrency::Automatic {},
+            DiskIoConcurrency::Manual(limit) => StoredDiskIoConcurrency::Manual { limit },
+        }),
         copy_checksum_verification: verification_choices
             .then_some(preferences.copy_checksum_verification),
         viewer_associations: association_choices
@@ -847,7 +881,9 @@ pub fn encode_preferences(preferences: UserPreferences) -> io::Result<Vec<u8>> {
         viewer: viewer_choices
             .then(|| viewers::StoredViewerPreferences::try_from(&preferences.viewer))
             .transpose()?,
-        version: if rule_choices {
+        version: if disk_choices {
+            31
+        } else if rule_choices {
             30
         } else if network_bookmarks {
             29

@@ -4,7 +4,10 @@ use std::{
     future::{Future, poll_fn},
     io,
     path::{Path, PathBuf},
-    sync::{Arc, Condvar, Mutex},
+    sync::{
+        Arc, Condvar, Mutex,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+    },
     time::Duration,
 };
 use tokio::sync::{Notify, mpsc};
@@ -892,6 +895,7 @@ async fn plugin_refresh_delivers_all_three_catalog_results_through_a_bounded_cha
 enum RejectedWork {
     Terminal,
     Open,
+    SystemOpen,
     LoadPreferences,
     SavePreferences,
     FolderScan,
@@ -918,6 +922,10 @@ impl RejectedWork {
                 pane: PaneId::Left,
                 navigation: NavigationId(1),
                 path: "captured/file".into(),
+            },
+            Self::SystemOpen => Command::OpenSystemLocation {
+                request,
+                location: SystemLocation::RecycleBin,
             },
             Self::LoadPreferences => Command::LoadPreferences,
             Self::SavePreferences => Command::SavePreferences {
@@ -956,6 +964,7 @@ async fn rejected_work_cannot_accumulate_unbounded_responses_behind_a_stopped_co
     for case in [
         RejectedWork::Terminal,
         RejectedWork::Open,
+        RejectedWork::SystemOpen,
         RejectedWork::LoadPreferences,
         RejectedWork::SavePreferences,
         RejectedWork::FolderScan,
@@ -1001,6 +1010,7 @@ async fn closing_full_output_releases_rejected_dispatch_and_allows_shutdown() {
     for case in [
         RejectedWork::Terminal,
         RejectedWork::Open,
+        RejectedWork::SystemOpen,
         RejectedWork::LoadPreferences,
         RejectedWork::SavePreferences,
         RejectedWork::FolderScan,
@@ -1039,4 +1049,581 @@ async fn closing_full_output_releases_rejected_dispatch_and_allows_shutdown() {
             .await
             .unwrap_or_else(|_| panic!("Closing output stranded {case:?}"));
     }
+}
+
+#[derive(Clone, Copy)]
+enum SystemOpenMode {
+    Direct,
+    Failure,
+    Blocked,
+    Child,
+    FailedHelper,
+}
+
+#[derive(Default)]
+struct SystemChildState {
+    done: AtomicBool,
+    wait_error: AtomicBool,
+    polls: AtomicUsize,
+    next_id: AtomicUsize,
+    polled_ids: Mutex<std::collections::HashSet<usize>>,
+    dropped_count: AtomicUsize,
+    dropped: AtomicBool,
+    backend_dropped: AtomicBool,
+    changed: Notify,
+}
+
+struct SystemChild(Arc<SystemChildState>, usize);
+impl TerminalProcess for SystemChild {
+    fn id(&self) -> u32 {
+        707 + self.1 as u32
+    }
+    fn try_wait(&mut self) -> io::Result<Option<std::process::ExitStatus>> {
+        self.0.polls.fetch_add(1, Ordering::SeqCst);
+        self.0.polled_ids.lock().unwrap().insert(self.1);
+        self.0.changed.notify_one();
+        if self.0.wait_error.swap(false, Ordering::SeqCst) {
+            return Err(io::Error::other("system helper wait failed"));
+        }
+        Ok(self
+            .0
+            .done
+            .load(Ordering::SeqCst)
+            .then(std::process::ExitStatus::default))
+    }
+}
+impl Drop for SystemChild {
+    fn drop(&mut self) {
+        assert!(
+            self.0.done.load(Ordering::SeqCst),
+            "live system child was discarded"
+        );
+        self.0.dropped.store(true, Ordering::SeqCst);
+        self.0.dropped_count.fetch_add(1, Ordering::SeqCst);
+        self.0.changed.notify_one();
+    }
+}
+
+struct ReleaseSystemChild(Arc<SystemChildState>);
+impl Drop for ReleaseSystemChild {
+    fn drop(&mut self) {
+        self.0.done.store(true, Ordering::SeqCst);
+    }
+}
+
+struct SystemServices {
+    base: Services,
+    available: bool,
+    mode: SystemOpenMode,
+    capabilities: Mutex<Vec<std::thread::ThreadId>>,
+    calls: Mutex<Vec<(SystemLocation, std::thread::ThreadId)>>,
+    entered: Notify,
+    release: (Mutex<bool>, Condvar),
+    process: Arc<SystemChildState>,
+}
+impl SystemServices {
+    fn new(available: bool, mode: SystemOpenMode) -> Self {
+        Self {
+            base: Services::default(),
+            available,
+            mode,
+            capabilities: Mutex::default(),
+            calls: Mutex::default(),
+            entered: Notify::new(),
+            release: (Mutex::new(false), Condvar::new()),
+            process: Arc::default(),
+        }
+    }
+}
+impl Drop for SystemServices {
+    fn drop(&mut self) {
+        self.process.backend_dropped.store(true, Ordering::SeqCst);
+        self.process.changed.notify_one();
+    }
+}
+struct ReleaseSystemOpen(Arc<SystemServices>);
+impl Drop for ReleaseSystemOpen {
+    fn drop(&mut self) {
+        *self.0.release.0.lock().unwrap() = true;
+        self.0.release.1.notify_all();
+    }
+}
+impl OpenService for SystemServices {
+    fn open_entry(&self, path: &Path) -> Result<OpenEntryResult, FsError> {
+        self.base.open_entry(path)
+    }
+    fn open_system_location(
+        &self,
+        location: SystemLocation,
+    ) -> Result<Option<Box<dyn TerminalProcess>>, FsError> {
+        self.calls
+            .lock()
+            .unwrap()
+            .push((location, std::thread::current().id()));
+        self.entered.notify_one();
+        match self.mode {
+            SystemOpenMode::Direct => Ok(None),
+            SystemOpenMode::Failure => Err(FsError::from_io(
+                "open system location",
+                Path::new(""),
+                io::Error::new(io::ErrorKind::PermissionDenied, "system dispatch refused"),
+            )),
+            SystemOpenMode::Blocked => {
+                let mut released = self.release.0.lock().unwrap();
+                while !*released {
+                    released = self.release.1.wait(released).unwrap();
+                }
+                Ok(None)
+            }
+            SystemOpenMode::Child => Ok(Some(Box::new(SystemChild(
+                self.process.clone(),
+                self.process.next_id.fetch_add(1, Ordering::SeqCst),
+            )))),
+            SystemOpenMode::FailedHelper => {
+                // A trusted harness helper exits nonzero; no desktop application is opened.
+                let child = std::process::Command::new(std::env::current_exe().unwrap())
+                    .arg("--__midnight_invalid_probe_option")
+                    .stdin(std::process::Stdio::null())
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .spawn()
+                    .unwrap();
+                Ok(Some(Box::new(child)))
+            }
+        }
+    }
+}
+impl LocationService for SystemServices {
+    fn locations(&self) -> Result<Vec<NavigationLocation>, FsError> {
+        Ok([
+            ("drive", "A drive", LocationKind::Volume),
+            ("zulu", "Zulu", LocationKind::Documents),
+            ("alpha", "Alpha", LocationKind::Home),
+        ]
+        .into_iter()
+        .map(|(id, label, kind)| NavigationLocation {
+            id: id.into(),
+            label: label.into(),
+            path: id.into(),
+            kind,
+            drive_letter: None,
+        })
+        .collect())
+    }
+    fn supports_system_location(&self, location: SystemLocation) -> bool {
+        assert_eq!(location, SystemLocation::RecycleBin);
+        self.capabilities
+            .lock()
+            .unwrap()
+            .push(std::thread::current().id());
+        self.available
+    }
+}
+impl IconService for SystemServices {
+    fn load_icon(&self, key: &IconKey) -> Result<Option<IconPixels>, FsError> {
+        let pixels = self.base.load_icon(key)?;
+        Ok(if *key == IconKey::action(ActionIcon::RecycleBin) {
+            Some(IconPixels::new(1, 1, vec![1, 2, 3, 255]).unwrap())
+        } else {
+            pixels
+        })
+    }
+}
+impl TerminalService for SystemServices {
+    fn shell_flavor(&self) -> ShellFlavor {
+        ShellFlavor::Posix
+    }
+    fn launch_terminal(&self, _: &TerminalRequest) -> Result<Box<dyn TerminalProcess>, FsError> {
+        panic!("system activation must not launch a terminal")
+    }
+}
+impl PropertyService for SystemServices {
+    fn show_properties(&self, _: &[PathBuf]) -> Result<bool, FsError> {
+        panic!("system activation must not show path properties")
+    }
+}
+impl DirectoryService for SystemServices {
+    fn read_directory(
+        &self,
+        _: &Path,
+        _: &Cancellation,
+        _: &mut dyn FnMut(Entry) -> bool,
+    ) -> Result<(), FsError> {
+        panic!("system activation must not enumerate a fabricated path")
+    }
+    fn entry_metadata(&self, _: &Path) -> Result<EntryMetadata, FsError> {
+        panic!("system activation must not stat a fabricated path")
+    }
+}
+impl VolumeService for SystemServices {
+    fn list_volumes(&self) -> Result<Vec<Volume>, FsError> {
+        Ok(Vec::new())
+    }
+}
+impl StorageService for SystemServices {
+    fn space_info(&self, _: &Path) -> Result<SpaceInfo, FsError> {
+        panic!("system activation must not query space for a fabricated path")
+    }
+}
+
+fn start_system_engine(
+    services: Arc<SystemServices>,
+    install: bool,
+) -> (
+    mpsc::Sender<Command>,
+    mpsc::Receiver<Event>,
+    tokio::task::JoinHandle<()>,
+) {
+    let (commands, receiver) = mpsc::channel(16);
+    let (sender, events) = mpsc::channel(16);
+    let mut engine = Engine::new(Engine::lifetime().unwrap(), services.clone(), sender);
+    if install {
+        engine.configure_desktop().unwrap().install(services);
+    }
+    (commands, events, tokio::spawn(engine.run(receiver)))
+}
+fn system_command(id: u64) -> Command {
+    Command::OpenSystemLocation {
+        request: DesktopRequestId(id),
+        location: SystemLocation::RecycleBin,
+    }
+}
+async fn system_result(
+    events: &mut mpsc::Receiver<Event>,
+    id: u64,
+) -> Result<DesktopActionResult, FsError> {
+    loop {
+        if let Event::DesktopActionFinished { request, result } = next(events).await {
+            assert_eq!(request, DesktopRequestId(id));
+            return result;
+        }
+    }
+}
+async fn await_system_state(state: &SystemChildState, ready: impl Fn() -> bool) {
+    tokio::time::timeout(Duration::from_secs(4), async {
+        loop {
+            let changed = state.changed.notified();
+            if ready() {
+                break;
+            }
+            changed.await;
+        }
+    })
+    .await
+    .expect("system helper lifecycle barrier");
+}
+
+#[tokio::test]
+async fn system_location_context_is_capability_filtered_ordered_and_uses_action_icon() {
+    for available in [false, true] {
+        let caller = std::thread::current().id();
+        let services = Arc::new(SystemServices::new(available, SystemOpenMode::Direct));
+        let (commands, mut events, task) = start_system_engine(services.clone(), true);
+        commands.send(Command::ListDesktopContext).await.unwrap();
+        let key = IconKey::action(ActionIcon::RecycleBin);
+        let (mut context_seen, mut icon_seen) = (false, false);
+        while !(context_seen && icon_seen) {
+            match next(&mut events).await {
+                Event::DesktopContext {
+                    locations,
+                    network_position,
+                    system_locations,
+                    ..
+                } => {
+                    assert_eq!(network_position, 0);
+                    assert_eq!(
+                        locations
+                            .iter()
+                            .map(|item| item.id.as_str())
+                            .collect::<Vec<_>>(),
+                        ["drive", "alpha", "zulu"]
+                    );
+                    if available {
+                        assert_eq!(system_locations.len(), 1);
+                        assert_eq!(system_locations[0].location, SystemLocation::RecycleBin);
+                        assert_eq!(system_locations[0].label, "Recycle Bin");
+                        assert_eq!(system_locations[0].special_position, 1);
+                    } else {
+                        assert!(system_locations.is_empty());
+                    }
+                    context_seen = true;
+                }
+                Event::IconLoaded { key: loaded, .. } if loaded == key => icon_seen = true,
+                Event::DesktopContextFailed(error) => panic!("{error}"),
+                _ => {}
+            }
+        }
+        assert!(services.base.icon_keys.lock().unwrap().contains(&key));
+        assert!(
+            services
+                .capabilities
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|thread| *thread != caller)
+        );
+        assert!(services.calls.lock().unwrap().is_empty());
+        commands.send(Command::Shutdown).await.unwrap();
+        drop(events);
+        task.await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn system_location_dispatch_has_typed_success_and_preserves_native_errors() {
+    for mode in [SystemOpenMode::Direct, SystemOpenMode::Failure] {
+        let caller = std::thread::current().id();
+        let services = Arc::new(SystemServices::new(true, mode));
+        let (commands, mut events, task) = start_system_engine(services.clone(), true);
+        commands.send(system_command(81)).await.unwrap();
+        let result = system_result(&mut events, 81).await;
+        match mode {
+            SystemOpenMode::Direct => assert!(matches!(
+                result,
+                Ok(DesktopActionResult::SystemLocationOpened {
+                    location: SystemLocation::RecycleBin
+                })
+            )),
+            SystemOpenMode::Failure => {
+                let error = result.unwrap_err();
+                assert_eq!(error.kind, io::ErrorKind::PermissionDenied);
+                assert_eq!(error.message, "system dispatch refused");
+                assert!(error.path.as_os_str().is_empty());
+            }
+            _ => unreachable!(),
+        }
+        assert_eq!(services.calls.lock().unwrap().len(), 1);
+        assert!(
+            services
+                .calls
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|(location, thread)| *location == SystemLocation::RecycleBin
+                    && *thread != caller)
+        );
+        assert!(services.base.opened.lock().unwrap().is_empty());
+        commands.send(Command::Shutdown).await.unwrap();
+        drop(events);
+        task.await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn system_location_unavailable_or_missing_service_never_falls_back_to_paths() {
+    for install in [false, true] {
+        let services = Arc::new(SystemServices::new(false, SystemOpenMode::Direct));
+        let (commands, mut events, task) = start_system_engine(services.clone(), install);
+        commands.send(system_command(82)).await.unwrap();
+        let error = system_result(&mut events, 82).await.unwrap_err();
+        assert_eq!(error.kind, io::ErrorKind::Unsupported);
+        assert!(services.calls.lock().unwrap().is_empty());
+        assert!(services.base.opened.lock().unwrap().is_empty());
+        commands.send(Command::Shutdown).await.unwrap();
+        drop(events);
+        task.await.unwrap();
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn system_location_dispatch_shares_the_four_native_open_launch_slots() {
+    let services = Arc::new(SystemServices::new(true, SystemOpenMode::Blocked));
+    let release = ReleaseSystemOpen(services.clone());
+    let (commands, mut events, task) = start_system_engine(services.clone(), true);
+    for id in 1..=4 {
+        commands.send(system_command(id)).await.unwrap();
+    }
+    tokio::time::timeout(Duration::from_secs(4), async {
+        loop {
+            let entered = services.entered.notified();
+            if services.calls.lock().unwrap().len() == 4 {
+                break;
+            }
+            entered.await;
+        }
+    })
+    .await
+    .unwrap();
+    commands
+        .send(Command::OpenEntry {
+            request: DesktopRequestId(5),
+            pane: PaneId::Left,
+            navigation: NavigationId(1),
+            path: "must-not-dispatch".into(),
+        })
+        .await
+        .unwrap();
+    assert!(
+        system_result(&mut events, 5)
+            .await
+            .unwrap_err()
+            .message
+            .contains("busy")
+    );
+    commands.send(system_command(6)).await.unwrap();
+    assert!(
+        system_result(&mut events, 6)
+            .await
+            .unwrap_err()
+            .message
+            .contains("busy")
+    );
+    assert_eq!(services.calls.lock().unwrap().len(), 4);
+    assert!(services.base.opened.lock().unwrap().is_empty());
+    drop(release);
+    let mut finished = std::collections::HashSet::new();
+    while finished.len() < 4 {
+        if let Event::DesktopActionFinished { request, result } = next(&mut events).await {
+            assert!((1..=4).contains(&request.0));
+            assert!(matches!(
+                result,
+                Ok(DesktopActionResult::SystemLocationOpened {
+                    location: SystemLocation::RecycleBin
+                })
+            ));
+            assert!(finished.insert(request.0));
+        }
+    }
+    commands.send(Command::Shutdown).await.unwrap();
+    drop(events);
+    task.await.unwrap();
+}
+
+#[tokio::test]
+async fn system_location_helper_success_is_typed_and_nonzero_exit_is_visible() {
+    for mode in [SystemOpenMode::Child, SystemOpenMode::FailedHelper] {
+        let services = Arc::new(SystemServices::new(true, mode));
+        services.process.done.store(true, Ordering::SeqCst);
+        let (commands, mut events, task) = start_system_engine(services.clone(), true);
+        commands.send(system_command(83)).await.unwrap();
+        let result = system_result(&mut events, 83).await;
+        match mode {
+            SystemOpenMode::Child => assert!(matches!(
+                result,
+                Ok(DesktopActionResult::SystemLocationOpened {
+                    location: SystemLocation::RecycleBin
+                })
+            )),
+            SystemOpenMode::FailedHelper => {
+                let error = result.unwrap_err();
+                assert!(error.message.contains("Desktop opener exited"));
+                assert_eq!(error.operation, "open system location");
+                assert!(error.path.as_os_str().is_empty());
+            }
+            _ => unreachable!(),
+        }
+        commands.send(Command::Shutdown).await.unwrap();
+        drop(events);
+        task.await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn system_location_wait_failure_retains_child_until_exit_after_shutdown_and_output_loss() {
+    let services = Arc::new(SystemServices::new(true, SystemOpenMode::Child));
+    let state = services.process.clone();
+    let _release = ReleaseSystemChild(state.clone());
+    state.wait_error.store(true, Ordering::SeqCst);
+    let weak = Arc::downgrade(&services);
+    let (commands, mut events, task) = start_system_engine(services, true);
+    commands.send(system_command(84)).await.unwrap();
+    let error = system_result(&mut events, 84).await.unwrap_err();
+    assert_eq!(error.operation, "wait for system location opener");
+    assert!(error.message.contains("system helper wait failed"));
+    assert!(!state.dropped.load(Ordering::SeqCst));
+    commands.send(Command::Shutdown).await.unwrap();
+    drop(events);
+    task.await.unwrap();
+    assert!(
+        weak.upgrade().is_some(),
+        "pending child must retain its backend lifetime"
+    );
+    assert!(!state.dropped.load(Ordering::SeqCst));
+    state.done.store(true, Ordering::SeqCst);
+    await_system_state(&state, || {
+        state.dropped.load(Ordering::SeqCst) && state.backend_dropped.load(Ordering::SeqCst)
+    })
+    .await;
+    assert!(weak.upgrade().is_none());
+}
+
+#[tokio::test]
+async fn system_location_live_child_survives_closed_outbox_and_shutdown() {
+    let services = Arc::new(SystemServices::new(true, SystemOpenMode::Child));
+    let state = services.process.clone();
+    let _release = ReleaseSystemChild(state.clone());
+    let weak = Arc::downgrade(&services);
+    let (commands, mut events, task) = start_system_engine(services, true);
+    commands.send(system_command(85)).await.unwrap();
+    await_system_state(&state, || state.polls.load(Ordering::SeqCst) > 0).await;
+    assert!(!state.dropped.load(Ordering::SeqCst));
+    while let Ok(event) = events.try_recv() {
+        assert!(
+            !matches!(event, Event::DesktopActionFinished { .. }),
+            "a live helper must not publish dispatch success"
+        );
+    }
+    drop(events);
+    commands.send(Command::Shutdown).await.unwrap();
+    task.await.unwrap();
+    assert!(weak.upgrade().is_some());
+    assert!(!state.dropped.load(Ordering::SeqCst));
+    state.done.store(true, Ordering::SeqCst);
+    await_system_state(&state, || {
+        state.dropped.load(Ordering::SeqCst) && state.backend_dropped.load(Ordering::SeqCst)
+    })
+    .await;
+    assert!(weak.upgrade().is_none());
+}
+
+#[tokio::test]
+async fn system_location_pending_helpers_keep_the_existing_shared_opener_quota() {
+    let services = Arc::new(SystemServices::new(true, SystemOpenMode::Child));
+    let state = services.process.clone();
+    let _release = ReleaseSystemChild(state.clone());
+    let (commands, mut events, task) = start_system_engine(services.clone(), true);
+    // Each real reaper observation proves a distinct child has left launch work.
+    for id in 1..=16 {
+        commands.send(system_command(id)).await.unwrap();
+        await_system_state(&state, || {
+            state.polled_ids.lock().unwrap().len() == id as usize
+        })
+        .await;
+    }
+    commands
+        .send(Command::OpenEntry {
+            request: DesktopRequestId(90),
+            pane: PaneId::Left,
+            navigation: NavigationId(1),
+            path: "must-not-spawn-seventeenth".into(),
+        })
+        .await
+        .unwrap();
+    let error = system_result(&mut events, 90).await.unwrap_err();
+    assert!(
+        error
+            .message
+            .contains("Too many desktop file-opening helpers")
+    );
+    assert_eq!(services.calls.lock().unwrap().len(), 16);
+    assert!(services.base.opened.lock().unwrap().is_empty());
+    assert_eq!(state.dropped_count.load(Ordering::SeqCst), 0);
+    state.done.store(true, Ordering::SeqCst);
+    let mut completed = std::collections::HashSet::new();
+    while completed.len() < 16 {
+        if let Event::DesktopActionFinished { request, result } = next(&mut events).await {
+            assert!((1..=16).contains(&request.0));
+            assert!(matches!(
+                result,
+                Ok(DesktopActionResult::SystemLocationOpened {
+                    location: SystemLocation::RecycleBin
+                })
+            ));
+            assert!(completed.insert(request.0));
+        }
+    }
+    await_system_state(&state, || state.dropped_count.load(Ordering::SeqCst) == 16).await;
+    commands.send(Command::Shutdown).await.unwrap();
+    drop(events);
+    task.await.unwrap();
 }

@@ -72,6 +72,7 @@ export component OptionsBody inherits Rectangle {
     in property <bool> sizes-in-bytes;
     in property <bool> remember-command-history;
     in property <bool> copy-checksum-verification: true;
+    in property <int> disk-io-concurrency-index;
     in property <bool> command-history-empty;
     in property <bool> thumbnails-enabled;
     in property <bool> thumbnails-network;
@@ -83,6 +84,7 @@ export component OptionsBody inherits Rectangle {
     callback sizes-format-changed(bool);
     callback remember-command-history-changed(bool);
     callback copy-verification-changed(bool);
+    callback disk-io-concurrency-changed(bool, int);
     callback command-history-clear();
     callback thumbnail-options-changed(bool, bool, int);
     callback thumbnail-size-changed(int);
@@ -233,6 +235,22 @@ export component OptionsBody inherits Rectangle {
                 if !root.copy-checksum-verification : Text {
                     text: "Quick verification: size + first/middle/last 64 KiB. Bytes between samples are not checked.";
                     color: Theme.text; font-size: Theme.small-font; wrap: word-wrap;
+                }
+                Rectangle { height: 1px; background: Theme.frame; }
+                Text { text: "Disk operations"; color: Theme.strong-text; font-size: Theme.font-size; font-weight: 600; }
+                OptionPicker {
+                    narrow: root.narrow;
+                    label: "Disk I/O concurrency";
+                    model: ["Automatic (4)", "Manual: 1", "Manual: 2", "Manual: 3", "Manual: 4",
+                        "Manual: 5", "Manual: 6", "Manual: 7", "Manual: 8", "Manual: 9",
+                        "Manual: 10", "Manual: 11", "Manual: 12", "Manual: 13", "Manual: 14",
+                        "Manual: 15", "Manual: 16", "Manual: 17", "Manual: 18", "Manual: 19",
+                        "Manual: 20", "Manual: 21", "Manual: 22", "Manual: 23", "Manual: 24",
+                        "Manual: 25", "Manual: 26", "Manual: 27", "Manual: 28", "Manual: 29",
+                        "Manual: 30", "Manual: 31", "Manual: 32"];
+                    current-index: root.disk-io-concurrency-index;
+                    hint: "Maximum simultaneous disk operations, including folder-size calculations. Automatic allows up to 4. Parallel I/O requires a confirmed local SSD; HDD, network and unknown storage may use fewer workers or run serially. OK saves; Cancel discards changes.";
+                    selected(index) => { root.disk-io-concurrency-changed(index == 0, index); }
                 }
                 Rectangle { height: 1px; background: Theme.frame; }
                 Text { text: "Command line"; color: Theme.strong-text; font-size: Theme.font-size; font-weight: 600; }

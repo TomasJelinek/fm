@@ -233,6 +233,7 @@ fn action_names(role: ActionIcon) -> &'static [&'static str] {
         ActionIcon::NewFolder => &["folder-new"],
         ActionIcon::NewFile => &["document-new"],
         ActionIcon::Delete => &["edit-delete"],
+        ActionIcon::RecycleBin => &["user-trash"],
         ActionIcon::UserMenu => &["applications-other"],
         ActionIcon::Menu => &["open-menu"],
         ActionIcon::SaveAgain => &["document-save"],
@@ -487,5 +488,13 @@ mod tests {
         };
         assert_eq!(icon_names(&unsafe_key), ["text-x-generic"]);
         assert_eq!(icon_names(&IconKey::folder()), ["folder"]);
+    }
+
+    #[test]
+    fn recycle_bin_action_uses_the_host_trash_theme_name_without_path_lookup() {
+        let key = IconKey::action(ActionIcon::RecycleBin);
+        let names =
+            icon_names_with_storage(&key, |_| panic!("system action must not inspect a path"));
+        assert_eq!(names, ["user-trash"]);
     }
 }

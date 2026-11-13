@@ -26,6 +26,7 @@ fn special_location_keeps_the_containing_volume_selected() {
     let special = root.join("Documents 文档");
     let mut presenter = Presenter::new(special.clone(), root.clone());
     presenter.apply(Event::DesktopContext {
+        system_locations: Vec::new(),
         network_position: 0,
         shell: ShellFlavor::Posix,
         locations: vec![

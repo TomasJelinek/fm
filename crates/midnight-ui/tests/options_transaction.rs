@@ -1,4 +1,6 @@
 //! Options previews are reversible and only OK commits the edit session.
+#[path = "support/popup_scroll.rs"]
+mod popup_scroll;
 #[path = "support/render.rs"]
 mod render;
 #[path = "support/ui.rs"]
@@ -66,6 +68,100 @@ impl Harness {
         refresh(&self.ui.window, &self.presenter.borrow());
         self.ui.draw();
     }
+}
+
+fn disk_io_choice(h: &mut Harness, index: i32) {
+    let current = h.ui.window.get_disk_io_concurrency_index();
+    popup_scroll::click(&mut h.ui, "Disk I/O concurrency", AccessibleRole::Combobox);
+    let direction = if index >= current {
+        Key::DownArrow
+    } else {
+        Key::UpArrow
+    };
+    for _ in 0..(index - current).abs() {
+        ui::key(&h.ui.window, direction);
+    }
+    ui::key(&h.ui.window, Key::Return);
+    h.ui.draw();
+}
+
+#[test]
+fn disk_io_general_picker_defaults_to_automatic_and_only_ok_saves_manual_boundaries() {
+    let mut h = Harness::new();
+    assert_eq!(h.ui.window.get_disk_io_concurrency_index(), 0);
+    for (index, save) in [(1, false), (32, true)] {
+        h.ui.window.set_options_topic_index(0);
+        h.ui.window.invoke_show_options();
+        h.ui.draw();
+        disk_io_choice(&mut h, index);
+        assert_eq!(h.ui.window.get_disk_io_concurrency_index(), index);
+        assert!(
+            h.saves().is_empty(),
+            "editing cannot persist a disk-I/O limit"
+        );
+        ui::click_popup(
+            &h.ui.window,
+            if save { "OK" } else { "Cancel" },
+            AccessibleRole::Button,
+        );
+        h.ui.draw();
+        if save {
+            let writes = h.saves();
+            assert_eq!(writes.len(), 1);
+            assert_eq!(
+                writes[0].1.disk_io_concurrency,
+                DiskIoConcurrency::Manual(32)
+            );
+            h.event(Event::PreferencesSaved {
+                revision: writes[0].0,
+                result: Ok(()),
+            });
+            assert!(!ui::has_popup(&h.ui.window));
+        } else {
+            assert_eq!(h.ui.window.get_disk_io_concurrency_index(), 0);
+            assert!(h.saves().is_empty());
+        }
+    }
+    h.ui.window.invoke_show_options();
+    h.ui.draw();
+    disk_io_choice(&mut h, 0);
+    assert_eq!(h.saves().len(), 1);
+    ui::click_popup(&h.ui.window, "OK", AccessibleRole::Button);
+    let writes = h.saves();
+    assert_eq!(writes.len(), 2);
+    assert_eq!(
+        writes[1].1.disk_io_concurrency,
+        DiskIoConcurrency::Automatic
+    );
+}
+
+#[test]
+fn disk_io_general_picker_keeps_a_failed_save_draft_and_cancel_restores_automatic() {
+    let mut h = Harness::new();
+    h.ui.resize(320, 600);
+    h.ui.window.invoke_show_options();
+    h.ui.draw();
+    disk_io_choice(&mut h, 1);
+    ui::click_popup(&h.ui.window, "OK", AccessibleRole::Button);
+    let writes = h.saves();
+    assert_eq!(
+        writes[0].1.disk_io_concurrency,
+        DiskIoConcurrency::Manual(1)
+    );
+    h.event(Event::PreferencesSaved {
+        revision: writes[0].0,
+        result: Err(FsError::from_io(
+            "save",
+            std::path::Path::new("settings"),
+            std::io::Error::from(std::io::ErrorKind::PermissionDenied),
+        )),
+    });
+    assert!(ui::has_popup(&h.ui.window));
+    assert_eq!(h.ui.window.get_disk_io_concurrency_index(), 1);
+    ui::click_popup(&h.ui.window, "Cancel", AccessibleRole::Button);
+    h.ui.draw();
+    assert_eq!(h.ui.window.get_disk_io_concurrency_index(), 0);
+    assert_eq!(h.saves().len(), 1);
 }
 
 #[test]

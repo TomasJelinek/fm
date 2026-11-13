@@ -68,6 +68,7 @@ fn location_buttons_restore_a_drive_independently_for_each_pane() {
     let home = test_root().join("home");
     let mut p = Presenter::new(drive.clone(), drive.clone());
     p.apply(Event::DesktopContext {
+        system_locations: Vec::new(),
         network_position: 0,
         shell: ShellFlavor::Posix,
         locations: vec![
@@ -121,6 +122,7 @@ fn submitted_command_freezes_cwd_and_blocks_repeat_until_result() {
     let mut p = Presenter::new(left, right.clone());
     p.active = PaneId::Right;
     p.apply(Event::DesktopContext {
+        system_locations: Vec::new(),
         network_position: 0,
         shell: ShellFlavor::Posix,
         locations: vec![],
@@ -328,6 +330,7 @@ fn preference_loading_is_global_and_does_not_disturb_navigation() {
 fn loaded_windows_shell_is_frozen_in_the_explicit_terminal_request() {
     let mut p = Presenter::new("left".into(), "right".into());
     p.apply(Event::DesktopContext {
+        system_locations: Vec::new(),
         network_position: 0,
         shell: ShellFlavor::PowerShell,
         locations: vec![],

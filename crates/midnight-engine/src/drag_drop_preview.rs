@@ -158,7 +158,9 @@ pub(super) fn execute(
     let result = (|| {
         let gate = midnight_work_budget::shared_io();
         let _permit = gate
-            .acquire(midnight_work_budget::IO_SLOTS, || cancel.is_cancelled())
+            .acquire(midnight_work_budget::Admission::Exclusive, || {
+                cancel.is_cancelled()
+            })
             .ok_or_else(|| error(io::ErrorKind::Interrupted, "Hover preview cancelled."))?;
         {
             let snapshots = snapshots.lock().unwrap_or_else(|e| e.into_inner());

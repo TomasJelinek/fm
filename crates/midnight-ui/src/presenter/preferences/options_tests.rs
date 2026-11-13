@@ -8,6 +8,169 @@ fn loaded() -> Presenter {
 }
 
 #[test]
+fn disk_io_automatic_and_manual_boundaries_are_staged_until_ok() {
+    for (automatic, maximum, expected) in [
+        (true, 0, DiskIoConcurrency::Automatic),
+        (false, 1, DiskIoConcurrency::Manual(1)),
+        (false, 32, DiskIoConcurrency::Manual(32)),
+    ] {
+        let mut p = loaded();
+        p.preferences.values.disk_io_concurrency = DiskIoConcurrency::Manual(7);
+        p.begin_options();
+        p.change_disk_io_concurrency(automatic, maximum, &|_| panic!("preview cannot save"));
+        assert_eq!(p.preferences.values.disk_io_concurrency, expected);
+        assert!(p.pending_preferences_save().is_none());
+        let commands = RefCell::new(Vec::new());
+        p.accept_options(&|command| {
+            commands.borrow_mut().push(command);
+            true
+        });
+        let writes = saved(&commands.borrow());
+        assert_eq!(writes.len(), 1);
+        assert_eq!(writes[0].1.disk_io_concurrency, expected);
+        p.preferences_saved(writes[0].0, Ok(()));
+        assert!(!p.preferences.options.open);
+    }
+}
+
+#[test]
+fn disk_io_invalid_manual_callbacks_leave_the_accepted_preference_untouched() {
+    let mut p = loaded();
+    p.preferences.values.disk_io_concurrency = DiskIoConcurrency::Manual(7);
+    for maximum in [0, 33, -1, 256] {
+        p.change_disk_io_concurrency(false, maximum, &|_| panic!("invalid input cannot save"));
+        assert_eq!(
+            p.preferences.values.disk_io_concurrency,
+            DiskIoConcurrency::Manual(7)
+        );
+        assert!(!p.preferences.edited.disk_io_concurrency);
+        assert!(!p.preferences.unsaved);
+        assert!(p.pending_preferences_save().is_none());
+    }
+}
+
+#[test]
+fn disk_io_preview_cancel_and_reset_do_not_leak_into_hot_path_or_shutdown_saves() {
+    let root = std::env::temp_dir().join("disk-options-hot-path");
+    let mut p = Presenter::new(root.clone(), root);
+    p.preferences_loaded(Ok(UserPreferences::default()));
+    p.preferences.values.disk_io_concurrency = DiskIoConcurrency::Manual(8);
+    p.begin_options();
+    p.change_disk_io_concurrency(false, 32, &|_| panic!("preview cannot save"));
+    let commands = RefCell::new(Vec::new());
+    assert!(
+        p.add_bookmark(PaneId::Left, "During Options".into(), Some(1), &|command| {
+            commands.borrow_mut().push(command);
+            true
+        })
+    );
+    let writes = saved(&commands.borrow());
+    assert_eq!(writes.len(), 1);
+    assert_eq!(
+        writes[0].1.disk_io_concurrency,
+        DiskIoConcurrency::Manual(8)
+    );
+    assert_eq!(writes[0].1.bookmarks[0].name, "During Options");
+    let Command::SavePreferences { preferences, .. } = p.pending_preferences_save().unwrap() else {
+        panic!("the unrelated admitted write remains pending")
+    };
+    assert_eq!(
+        preferences.disk_io_concurrency,
+        DiskIoConcurrency::Manual(8)
+    );
+    p.preferences_saved(writes[0].0, Ok(()));
+    p.cancel_options(&|_| panic!("cancel cannot save"));
+    assert_eq!(
+        p.preferences.values.disk_io_concurrency,
+        DiskIoConcurrency::Manual(8)
+    );
+    assert_eq!(p.bookmarks()[0].name, "During Options");
+    p.begin_options();
+    p.reset_options(&|_| panic!("reset is only preview"));
+    assert_eq!(
+        p.preferences.values.disk_io_concurrency,
+        DiskIoConcurrency::Automatic
+    );
+    p.cancel_options(&|_| panic!("cancel cannot save"));
+    assert_eq!(
+        p.preferences.values.disk_io_concurrency,
+        DiskIoConcurrency::Manual(8)
+    );
+    p.begin_options();
+    p.reset_options(&|_| panic!("reset is only preview"));
+    p.accept_options(&|command| {
+        commands.borrow_mut().push(command);
+        true
+    });
+    let writes = saved(&commands.borrow());
+    assert_eq!(writes.len(), 2);
+    assert_eq!(
+        writes[1].1.disk_io_concurrency,
+        DiskIoConcurrency::Automatic
+    );
+}
+
+#[test]
+fn disk_io_failed_ok_retains_the_draft_for_explicit_retry() {
+    let mut p = loaded();
+    p.begin_options();
+    p.change_disk_io_concurrency(false, 32, &|_| panic!("preview cannot save"));
+    let commands = RefCell::new(Vec::new());
+    let send = |command| {
+        commands.borrow_mut().push(command);
+        true
+    };
+    p.accept_options(&send);
+    let first = saved(&commands.borrow())[0].0;
+    p.preferences_saved(first, Err(save_failure()));
+    assert!(p.preferences.options.open);
+    assert!(!p.preferences.options.saving);
+    assert_eq!(
+        p.preferences.values.disk_io_concurrency,
+        DiskIoConcurrency::Manual(32)
+    );
+    let Command::SavePreferences { preferences, .. } = p.pending_preferences_save().unwrap() else {
+        panic!("an unrelated save must still exclude the failed Options draft")
+    };
+    assert_eq!(
+        preferences.disk_io_concurrency,
+        DiskIoConcurrency::Automatic
+    );
+    p.accept_options(&send);
+    let writes = saved(&commands.borrow());
+    assert!(writes[1].0 > first);
+    assert_eq!(
+        writes[1].1.disk_io_concurrency,
+        DiskIoConcurrency::Manual(32)
+    );
+    p.preferences_saved(writes[1].0, Ok(()));
+    assert!(!p.preferences.options.open);
+}
+
+#[test]
+fn disk_io_explicit_early_choice_survives_late_load_without_replacing_other_fields() {
+    for (automatic, maximum, expected) in [
+        (true, 0, DiskIoConcurrency::Automatic),
+        (false, 1, DiskIoConcurrency::Manual(1)),
+        (false, 32, DiskIoConcurrency::Manual(32)),
+    ] {
+        let mut p = Presenter::new("left".into(), "right".into());
+        p.change_disk_io_concurrency(automatic, maximum, &|_| {
+            panic!("initial load precedes save")
+        });
+        p.preferences_loaded(Ok(UserPreferences {
+            disk_io_concurrency: DiskIoConcurrency::Manual(7),
+            theme: PreferenceTheme::Light,
+            desktop_font_size: 21,
+            ..Default::default()
+        }));
+        assert_eq!(p.preferences.values.disk_io_concurrency, expected);
+        assert_eq!(p.preferences.values.theme, PreferenceTheme::Light);
+        assert_eq!(p.preferences.values.desktop_font_size, 21);
+    }
+}
+
+#[test]
 fn verification_preview_cancel_and_ok_only_affect_new_jobs_after_commit() {
     let mut p = loaded();
     assert_eq!(p.transfer_verification(), TransferVerification::FullSha256);

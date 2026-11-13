@@ -1,4 +1,4 @@
-use midnight_core::{Bookmark, BookmarkId, UserPreferences};
+use midnight_core::{Bookmark, BookmarkId, DiskIoConcurrency, UserPreferences};
 use std::path::PathBuf;
 
 fn bookmark() -> Bookmark {
@@ -68,4 +68,46 @@ fn malformed_id_name_slot_path_and_duplicate_bookmarks_are_rejected() {
     );
     preferences.bookmarks[1].path = std::env::current_dir().unwrap().join("other");
     assert!(preferences.validate().is_ok());
+}
+
+#[test]
+fn automatic_preserves_the_existing_four_operation_default() {
+    let preferences = UserPreferences::default();
+    assert_eq!(
+        preferences.disk_io_concurrency,
+        DiskIoConcurrency::Automatic
+    );
+    assert_eq!(preferences.disk_io_concurrency.effective_limit(), Ok(4));
+    preferences.validate().unwrap();
+}
+
+#[test]
+fn every_manual_limit_in_the_supported_range_is_valid() {
+    for limit in 1..=32 {
+        let preferences = UserPreferences {
+            disk_io_concurrency: DiskIoConcurrency::Manual(limit),
+            ..Default::default()
+        };
+        assert_eq!(preferences.disk_io_concurrency.effective_limit(), Ok(limit));
+        preferences.validate().unwrap();
+    }
+}
+
+#[test]
+fn invalid_api_limits_are_rejected_instead_of_wrapped_or_clamped() {
+    for limit in [0, 33, u8::MAX] {
+        let preferences = UserPreferences {
+            disk_io_concurrency: DiskIoConcurrency::Manual(limit),
+            ..Default::default()
+        };
+        assert!(preferences.disk_io_concurrency.effective_limit().is_err());
+        assert_eq!(
+            preferences.validate().unwrap_err().kind,
+            std::io::ErrorKind::InvalidInput
+        );
+        assert_eq!(
+            preferences.disk_io_concurrency,
+            DiskIoConcurrency::Manual(limit)
+        );
+    }
 }

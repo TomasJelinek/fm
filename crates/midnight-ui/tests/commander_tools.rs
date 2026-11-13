@@ -70,6 +70,7 @@ fn alt_history_wraps_without_changing_terminal_or_executing() {
         }),
     );
     p.borrow_mut().apply(Event::DesktopContext {
+        system_locations: Vec::new(),
         network_position: 0,
         shell: ShellFlavor::PowerShell,
         locations: vec![],

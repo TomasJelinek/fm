@@ -1,7 +1,7 @@
 //! Explicit desktop activation; called only by the backend's bounded native workers.
 
 use crate::LinuxFileSystem;
-use midnight_core::{FsError, OpenEntryResult, OpenService, TerminalProcess};
+use midnight_core::{FsError, OpenEntryResult, OpenService, SystemLocation, TerminalProcess};
 use std::{
     fs, io,
     os::unix::{ffi::OsStrExt, fs::PermissionsExt},
@@ -10,6 +10,17 @@ use std::{
 };
 
 impl OpenService for LinuxFileSystem {
+    fn open_system_location(
+        &self,
+        location: SystemLocation,
+    ) -> Result<Option<Box<dyn TerminalProcess>>, FsError> {
+        open_system_with(location, DesktopOpener::find_system(), |mut command| {
+            command
+                .spawn()
+                .map(|child| Box::new(child) as Box<dyn TerminalProcess>)
+        })
+    }
+
     fn open_entry(&self, path: &Path) -> Result<OpenEntryResult, FsError> {
         open_with(path, |path| {
             let opener = DesktopOpener::find()?;
@@ -48,6 +59,44 @@ impl DesktopOpener {
         ))
     }
 
+    fn find_system() -> io::Result<Self> {
+        Self::find_system_with(|path| {
+            fs::metadata(path).is_ok_and(|metadata| {
+                metadata.is_file() && metadata.permissions().mode() & 0o111 != 0
+            })
+        })
+    }
+
+    fn find_system_with(mut available: impl FnMut(&Path) -> bool) -> io::Result<Self> {
+        // Prefer GIO's direct URI handling; xdg-open is a fallback only when GIO is absent.
+        for candidate in [Self::Gio, Self::Xdg] {
+            if available(candidate.executable()) {
+                return Ok(candidate);
+            }
+        }
+        Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "no system Trash opener is installed (/usr/bin/gio or /usr/bin/xdg-open)",
+        ))
+    }
+
+    fn system_command(self, location: SystemLocation) -> Command {
+        let uri = match location {
+            SystemLocation::RecycleBin => "trash:///",
+        };
+        let mut command = Command::new(self.executable());
+        if matches!(self, Self::Gio) {
+            command.args(["open", "--"]);
+        }
+        // Fixed typed target only: no panel CWD, caller URI, shell source or Trash filesystem path.
+        command
+            .arg(uri)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        command
+    }
+
     fn command(self, path: &Path) -> io::Result<Command> {
         validate_path(path)?;
         let mut command = Command::new(self.executable());
@@ -67,6 +116,26 @@ impl DesktopOpener {
             .stderr(Stdio::null());
         Ok(command)
     }
+}
+
+/// Called by desktop-context discovery on a backend worker; never launches a helper.
+pub(crate) fn supports_system_location(location: SystemLocation) -> bool {
+    match location {
+        SystemLocation::RecycleBin => DesktopOpener::find_system().is_ok(),
+    }
+}
+
+fn open_system_with(
+    location: SystemLocation,
+    opener: io::Result<DesktopOpener>,
+    launch: impl FnOnce(Command) -> io::Result<Box<dyn TerminalProcess>>,
+) -> Result<Option<Box<dyn TerminalProcess>>, FsError> {
+    // The Engine reserves its existing opener slot before this call and owns the returned child.
+    // Successful spawn is not a successful desktop launch: the tracker observes the helper exit.
+    opener
+        .and_then(|opener| launch(opener.system_command(location)))
+        .map(Some)
+        .map_err(|error| FsError::from_io("open system location", Path::new(""), error))
 }
 
 fn open_with(
@@ -257,5 +326,120 @@ mod tests {
         assert_eq!(error.path, file);
         assert_eq!(error.kind, io::ErrorKind::PermissionDenied);
         assert!(error.to_string().contains("association denied"));
+    }
+
+    #[test]
+    fn trash_commands_use_fixed_trusted_programs_and_literal_uri_only() {
+        for (opener, expected_program, expected_arguments) in [
+            (
+                DesktopOpener::Gio,
+                "/usr/bin/gio",
+                vec!["open", "--", "trash:///"],
+            ),
+            (DesktopOpener::Xdg, "/usr/bin/xdg-open", vec!["trash:///"]),
+        ] {
+            let command = opener.system_command(SystemLocation::RecycleBin);
+            assert_eq!(command.get_program(), OsStr::new(expected_program));
+            assert_eq!(
+                command.get_args().collect::<Vec<_>>(),
+                expected_arguments
+                    .iter()
+                    .map(OsStr::new)
+                    .collect::<Vec<_>>()
+            );
+            assert!(command.get_current_dir().is_none());
+        }
+    }
+
+    #[test]
+    fn trash_prefers_gio_and_only_probes_xdg_when_gio_is_unavailable() {
+        let mut probes = Vec::new();
+        let chosen = DesktopOpener::find_system_with(|path| {
+            probes.push(path.to_owned());
+            true
+        })
+        .unwrap();
+        assert!(matches!(chosen, DesktopOpener::Gio));
+        assert_eq!(probes, [PathBuf::from("/usr/bin/gio")]);
+        let mut probes = Vec::new();
+        let chosen = DesktopOpener::find_system_with(|path| {
+            probes.push(path.to_owned());
+            path == Path::new("/usr/bin/xdg-open")
+        })
+        .unwrap();
+        assert!(matches!(chosen, DesktopOpener::Xdg));
+        assert_eq!(
+            probes,
+            [
+                PathBuf::from("/usr/bin/gio"),
+                PathBuf::from("/usr/bin/xdg-open")
+            ]
+        );
+        assert!(DesktopOpener::find_system_with(|_| false).is_err());
+    }
+
+    struct PendingSystemOpener(std::sync::Arc<std::sync::atomic::AtomicUsize>);
+    impl TerminalProcess for PendingSystemOpener {
+        fn id(&self) -> u32 {
+            77
+        }
+        fn try_wait(&mut self) -> io::Result<Option<std::process::ExitStatus>> {
+            Ok(None)
+        }
+    }
+    impl Drop for PendingSystemOpener {
+        fn drop(&mut self) {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
+    #[test]
+    fn trash_launch_transfers_the_live_child_to_the_engine_owner() {
+        let drops = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut child = open_system_with(
+            SystemLocation::RecycleBin,
+            Ok(DesktopOpener::Gio),
+            |command| {
+                assert_eq!(
+                    command.get_args().collect::<Vec<_>>(),
+                    [
+                        OsStr::new("open"),
+                        OsStr::new("--"),
+                        OsStr::new("trash:///")
+                    ]
+                );
+                Ok(Box::new(PendingSystemOpener(drops.clone())))
+            },
+        )
+        .unwrap()
+        .expect("the process owner must be returned");
+        assert_eq!(drops.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert_eq!(child.id(), 77);
+        assert!(child.try_wait().unwrap().is_none());
+        drop(child);
+        assert_eq!(drops.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn missing_trash_opener_and_launch_errors_are_reported_without_native_paths() {
+        let missing = DesktopOpener::find_system_with(|_| false);
+        let error = open_system_with(SystemLocation::RecycleBin, missing, |_| {
+            panic!("must not launch")
+        })
+        .err()
+        .expect("missing capability must fail");
+        assert_eq!(error.kind, io::ErrorKind::NotFound);
+        assert!(error.path.as_os_str().is_empty());
+        let error = open_system_with(SystemLocation::RecycleBin, Ok(DesktopOpener::Gio), |_| {
+            Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "launch denied",
+            ))
+        })
+        .err()
+        .expect("failed launch must fail");
+        assert_eq!(error.kind, io::ErrorKind::PermissionDenied);
+        assert!(error.message.contains("launch denied"));
+        assert!(error.path.as_os_str().is_empty());
     }
 }

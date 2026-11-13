@@ -20,6 +20,7 @@ pub(crate) struct Controller {
 
 struct Shared {
     state: Mutex<State>,
+    disk_io: Arc<midnight_work_budget::Gate>,
     work: Notify,
     stopping: Notify,
     complete: watch::Sender<bool>,
@@ -54,9 +55,26 @@ impl Controller {
         outbox: Outbox,
         tasks: &mut JoinSet<()>,
     ) -> Self {
+        Self::with_io(
+            scope,
+            service,
+            outbox,
+            tasks,
+            midnight_work_budget::shared_io(),
+        )
+    }
+
+    fn with_io(
+        scope: TaskLifetime,
+        service: Arc<dyn SettingsService>,
+        outbox: Outbox,
+        tasks: &mut JoinSet<()>,
+        disk_io: Arc<midnight_work_budget::Gate>,
+    ) -> Self {
         let (complete, completion) = watch::channel(false);
         let shared = Arc::new(Shared {
             state: Mutex::new(State::default()),
+            disk_io,
             work: Notify::new(),
             stopping: Notify::new(),
             complete,
@@ -187,10 +205,19 @@ async fn run(
         let event = match shared.take_work() {
             Work::Load => {
                 let service = service.clone();
-                let result =
-                    tokio::task::spawn_blocking(scope.blocking(move || service.load_preferences()))
-                        .await
-                        .unwrap_or_else(|_| Err(worker_error("load preferences")));
+                let disk_io = shared.disk_io.clone();
+                let result = tokio::task::spawn_blocking(scope.blocking(move || {
+                    let preferences = service.load_preferences()?;
+                    preferences.validate()?;
+                    let limit = preferences
+                        .disk_io_concurrency
+                        .effective_limit()
+                        .map_err(disk_policy_error)?;
+                    disk_io.set_limit(limit).map_err(disk_policy_error)?;
+                    Ok(preferences)
+                }))
+                .await
+                .unwrap_or_else(|_| Err(worker_error("load preferences")));
                 shared
                     .state
                     .lock()
@@ -200,16 +227,22 @@ async fn run(
             }
             Work::Save(save) => {
                 let save = *save;
+                let revision = save.revision;
                 let service = service.clone();
-                let result = tokio::task::spawn_blocking(
-                    scope.blocking(move || service.save_preferences(save.preferences)),
-                )
+                let disk_io = shared.disk_io.clone();
+                let result = tokio::task::spawn_blocking(scope.blocking(move || {
+                    save.preferences.validate()?;
+                    let limit = save
+                        .preferences
+                        .disk_io_concurrency
+                        .effective_limit()
+                        .map_err(disk_policy_error)?;
+                    service.save_preferences(save.preferences)?;
+                    disk_io.set_limit(limit).map_err(disk_policy_error)
+                }))
                 .await
                 .unwrap_or_else(|_| Err(worker_error("save preferences")));
-                Event::PreferencesSaved {
-                    revision: save.revision,
-                    result,
-                }
+                Event::PreferencesSaved { revision, result }
             }
             Work::Wait => {
                 shared.work.notified().await;
@@ -254,6 +287,14 @@ fn worker_error(operation: &'static str) -> FsError {
         operation,
         Path::new(""),
         io::Error::other("The settings worker failed."),
+    )
+}
+
+fn disk_policy_error(message: &'static str) -> FsError {
+    FsError::from_io(
+        "configure disk I/O concurrency",
+        Path::new(""),
+        io::Error::new(io::ErrorKind::InvalidInput, message),
     )
 }
 

@@ -203,5 +203,6 @@ export component LocationImage inherits NativeActionImage {
         : root.kind == LocationRole.downloads ? FallbackIcons.downloads
         : root.kind == LocationRole.hot-path ? FallbackIcons.bookmarks
         : root.kind == LocationRole.folder ? FallbackIcons.documents
+        : root.kind == LocationRole.recycle-bin ? FallbackIcons.delete
         : root.kind == LocationRole.network ? FallbackIcons.network : FallbackIcons.drive;
 }

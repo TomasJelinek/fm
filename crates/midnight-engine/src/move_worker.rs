@@ -723,7 +723,9 @@ pub(super) fn permit(
     path: &Path,
 ) -> Result<midnight_work_budget::Permit, FsError> {
     midnight_work_budget::shared_io()
-        .acquire(midnight_work_budget::IO_SLOTS, || cancel.is_cancelled())
+        .acquire(midnight_work_budget::Admission::Exclusive, || {
+            cancel.is_cancelled()
+        })
         .ok_or_else(|| {
             error(
                 path,

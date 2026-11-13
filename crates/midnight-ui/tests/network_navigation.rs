@@ -41,6 +41,7 @@ fn network_follows_all_drives_before_special_locations_on_both_surfaces() {
     assert_eq!(initial[2].kind, midnight_ui::LocationRole::Network);
     assert_eq!(initial[3].kind, midnight_ui::LocationRole::Home);
     presenter.apply(Event::DesktopContext {
+        system_locations: Vec::new(),
         network_position: 0,
         shell: ShellFlavor::Posix,
         locations: [
@@ -112,6 +113,7 @@ fn network_activation_rejects_tokens_from_old_order_or_provider_availability() {
         }),
     );
     let context = |network_position| Event::DesktopContext {
+        system_locations: Vec::new(),
         shell: ShellFlavor::Posix,
         network_position,
         locations: vec![NavigationLocation {

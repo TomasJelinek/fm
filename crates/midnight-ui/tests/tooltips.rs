@@ -401,6 +401,7 @@ fn shared_tooltips_keep_cursor_clear_in_panels_dropdowns_and_options() {
                 ..Default::default()
             }))));
         presenter.borrow_mut().apply(Event::DesktopContext {
+            system_locations: Vec::new(),
             network_position: 0,
             shell: ShellFlavor::Posix,
             locations: vec![NavigationLocation {

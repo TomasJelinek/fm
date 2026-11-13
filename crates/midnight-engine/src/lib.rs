@@ -852,6 +852,7 @@ impl EngineServices {
                         Some(Command::ProbeFolderPresence(request)) => folder_presence.submit(request).await,
                         Some(Command::Selection(request)) => selection.submit(request),
                         Some(Command::ListDesktopContext) => desktop.context(),
+                        Some(Command::OpenSystemLocation { request, location }) => desktop.open_system_location(request, location, &mut tasks).await,
                         Some(Command::SetCommandIconView { generation, targets }) => desktop.command_icons(generation, targets),
                         Some(Command::ListViewerPlugins) => viewer_plugins.refresh(),
                         Some(Command::ResolveDefaultEditor) => desktop.resolve_editor(self.editor.clone(), &mut tasks).await,

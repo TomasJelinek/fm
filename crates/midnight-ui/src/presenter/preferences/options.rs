@@ -30,6 +30,7 @@ pub(super) fn restore_fields(to: &mut UserPreferences, from: &UserPreferences) {
     to.size_display = from.size_display;
     to.remember_command_history = from.remember_command_history;
     to.copy_checksum_verification = from.copy_checksum_verification;
+    to.disk_io_concurrency = from.disk_io_concurrency;
     to.command_history.clone_from(&from.command_history);
     to.editor.clone_from(&from.editor);
     to.shortcuts.clone_from(&from.shortcuts);

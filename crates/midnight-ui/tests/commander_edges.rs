@@ -479,6 +479,7 @@ fn presenter(test: &ui::TestUi, values: UserPreferences) -> Rc<RefCell<Presenter
     let presenter = Rc::new(RefCell::new(Presenter::new("left".into(), "right".into())));
     install(&test.window, presenter.clone(), Rc::new(|_| true));
     presenter.borrow_mut().apply(Event::DesktopContext {
+        system_locations: Vec::new(),
         network_position: 0,
         shell: ShellFlavor::PowerShell,
         locations: vec![],

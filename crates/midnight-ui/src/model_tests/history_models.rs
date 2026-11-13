@@ -206,6 +206,7 @@ fn command_history_models_follow_late_load_shell_dedup_clear_and_late_icons() {
     let model = window.get_command_history();
     assert_eq!(model.row_count(), 0);
     presenter.borrow_mut().apply(Event::DesktopContext {
+        system_locations: Vec::new(),
         shell: ShellFlavor::PowerShell,
         locations: vec![],
         network_position: 0,

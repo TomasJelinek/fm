@@ -19,6 +19,7 @@ plans and old verification reports do not establish current functionality.
 | Release optimizations and qualification limits | [Release build](RELEASE_BUILD.md) |
 | Native and inline panel navigation/actions | [Tree panel contract](developer/TREE_PANEL.md) |
 | Copy/Move integrity and limitations | [Transfers](developer/TRANSFERS.md) |
+| Disk operations | [Maximum parallel background disk work](DISK_OPERATIONS.md) |
 | File coloring and default palette | [Filename colors](developer/FILENAME_COLOR_OPTIONS.md) |
 | Parallel targeted test execution | [Test execution](developer/TEST_EXECUTION.md) |
 | Agent roles and coordinated integration | [Agent workflow](developer/AGENT_WORKFLOW.md) |

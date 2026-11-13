@@ -562,6 +562,7 @@ fn plain_typing_searches_the_focused_panes_original_snapshot_without_navigating(
     assert_eq!(window.get_left_rows().row_count(), 4);
     let drive = root.join("drive");
     presenter.borrow_mut().apply(Event::DesktopContext {
+        system_locations: Vec::new(),
         network_position: 0,
         shell: ShellFlavor::Posix,
         locations: vec![NavigationLocation {

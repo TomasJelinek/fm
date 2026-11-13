@@ -241,6 +241,16 @@ Jobs, About, Custom Commands settings, Manage Hot Paths and the three panel view
 modes have configurable action entries without default keys. See the
 [main menu design](superpowers/specs/2026-11-08-main-menu.md).
 
+**Recycle Bin / Trash** appears at the same position among special locations in
+the drive dropdown and drive toolbar, using a system icon with a fallback.
+It opens the Windows Shell Recycle Bin or, on Linux including Ubuntu, desktop
+Trash through the fixed `trash:///` URI. The panel location, selection and history
+stay unchanged; this typed desktop action adds no internal filesystem provider.
+Linux availability follows the backend-reported desktop opener, and opening
+failures are shown to the user.
+References: [GIO Trash handling](https://gnome.pages.gitlab.gnome.org/gtk/gio/migrating-gnome-vfs.html)
+and [desktop URI opening](https://portland.freedesktop.org/doc/xdg-open.html).
+
 The Hot Paths star adds the current folder; its arrow lists saved paths, then
 Add path and Manage below a separator. Saved paths also appear in their own group
 in the drive dropdown after drives and special locations. Both menus show

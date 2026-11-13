@@ -56,6 +56,11 @@ pub(super) fn refresh(window: &MainWindow, presenter: &Presenter) {
     window.set_sizes_in_bytes(presenter.preferences.values.size_display == SizeDisplay::Bytes);
     window.set_remember_command_history(presenter.preferences.values.remember_command_history);
     window.set_copy_checksum_verification(presenter.preferences.values.copy_checksum_verification);
+    window.set_disk_io_concurrency_index(match presenter.preferences.values.disk_io_concurrency {
+        DiskIoConcurrency::Automatic => 0,
+        DiskIoConcurrency::Manual(maximum @ 1..=32) => i32::from(maximum),
+        DiskIoConcurrency::Manual(_) => -1,
+    });
     let mut hot_paths = bookmark_choices(presenter);
     hot_paths.push(NavigationChoiceRow {
         identity: "add-hot-path".into(),

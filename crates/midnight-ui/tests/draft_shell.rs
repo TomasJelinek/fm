@@ -50,6 +50,7 @@ fn nonempty_editor_and_inserted_paths_keep_their_shell_across_late_load_and_pick
         }),
     );
     presenter.borrow_mut().apply(Event::DesktopContext {
+        system_locations: Vec::new(),
         network_position: 0,
         shell: ShellFlavor::PowerShell,
         locations: vec![],

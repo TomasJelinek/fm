@@ -128,11 +128,12 @@ pub enum ActionIcon {
     SortAscending,
     SortDescending,
     Network,
+    RecycleBin,
 }
 
 impl ActionIcon {
     /// Bounded prefetch palette. Consumers use named roles rather than numeric indexes.
-    pub const ALL: [Self; 35] = [
+    pub const ALL: [Self; 36] = [
         Self::Back,
         Self::Forward,
         Self::Parent,
@@ -168,6 +169,7 @@ impl ActionIcon {
         Self::SortAscending,
         Self::SortDescending,
         Self::Network,
+        Self::RecycleBin,
     ];
 }
 
@@ -332,6 +334,23 @@ pub struct NavigationLocation {
 /// Shared display text for locale ordering of the virtual network entry point.
 pub const NETWORK_NEIGHBORHOOD_LABEL: &str = "Network Neighborhood";
 
+/// Typed desktop destinations that have no filesystem navigation path.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum SystemLocation {
+    RecycleBin,
+}
+
+/// Backend-prepared, capability-filtered system entry for desktop controls.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SystemLocationChoice {
+    pub location: SystemLocation,
+    pub label: String,
+    /// Insertion rank among non-volume native local special folders only.
+    /// Drives and Network do not count; Network remains before all local/system
+    /// special folders. The backend applies locale ordering and deterministic ties.
+    pub special_position: usize,
+}
+
 #[derive(Clone, Debug)]
 pub struct TerminalRequest {
     pub command: String,
@@ -357,6 +376,11 @@ pub enum DesktopActionResult {
         body: String,
     },
     FileOpened,
+    /// Native desktop dispatch completed, or its returned helper exited successfully.
+    /// This does not assert that a desktop window is visible or ready.
+    SystemLocationOpened {
+        location: SystemLocation,
+    },
     OpenDirectory {
         pane: PaneId,
         navigation: NavigationId,
@@ -406,6 +430,24 @@ pub trait OpenService: Send + Sync + 'static {
     /// Inspect the target on a backend worker, following an explicitly activated
     /// link. Reject missing/special files and use literal native arguments only.
     fn open_entry(&self, path: &Path) -> Result<OpenEntryResult, FsError>;
+
+    /// Explicit typed activation on a backend worker, without filesystem fallback.
+    /// None means native dispatch was accepted. A returned helper remains owned
+    /// and reaped by the caller; success is published only after its successful exit.
+    /// Facility support does not guarantee that the desktop has a working handler.
+    fn open_system_location(
+        &self,
+        _location: SystemLocation,
+    ) -> Result<Option<Box<dyn TerminalProcess>>, FsError> {
+        Err(FsError::from_io(
+            "open system location",
+            Path::new(""),
+            std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "This desktop system location is unavailable.",
+            ),
+        ))
+    }
 
     /// Resolve an explicitly activated directory link without launching any
     /// file association. Ordinary platforms keep the raw navigation path and
@@ -501,6 +543,12 @@ pub trait PropertyService: Send + Sync + 'static {
 pub trait LocationService: Send + Sync + 'static {
     /// Real volumes and supported physical special locations; no UI-side lookup.
     fn locations(&self) -> Result<Vec<NavigationLocation>, FsError>;
+
+    /// Discover dispatch capability on a backend worker, never in a UI callback.
+    /// False omits the typed entry and refuses activation; legacy adapters opt out.
+    fn supports_system_location(&self, _location: SystemLocation) -> bool {
+        false
+    }
 }
 
 /// A thread-affine native clipboard owner. Create, use and drop it on one backend worker.

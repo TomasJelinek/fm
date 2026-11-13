@@ -517,7 +517,9 @@ fn io_permit(cancel: &Cancellation, path: &Path) -> Result<midnight_work_budget:
     // Transfer capabilities currently carry no verified storage classification. Conservatively
     // serialize source and target calls; concurrent copies require both to be confirmed SSDs.
     midnight_work_budget::shared_io()
-        .acquire(midnight_work_budget::IO_SLOTS, || cancel.is_cancelled())
+        .acquire(midnight_work_budget::Admission::Exclusive, || {
+            cancel.is_cancelled()
+        })
         .ok_or_else(|| io_error(path, io::ErrorKind::Interrupted.into()))
 }
 fn check_cancel(cancel: &Cancellation, path: &Path) -> Result<(), FsError> {

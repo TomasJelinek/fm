@@ -206,6 +206,7 @@ fn toolbar_and_header_callbacks_transfer_actual_keyboard_focus() {
     assert_eq!(window.get_command_text().as_str(), left_directory);
 
     presenter.borrow_mut().apply(Event::DesktopContext {
+        system_locations: Vec::new(),
         network_position: 0,
         shell: ShellFlavor::Posix,
         locations: vec![NavigationLocation {
@@ -697,6 +698,7 @@ fn toolbar_and_header_callbacks_transfer_actual_keyboard_focus() {
         "Blue must restore the default blue surface"
     );
     presenter.borrow_mut().apply(Event::DesktopContext {
+        system_locations: Vec::new(),
         network_position: 0,
         shell: ShellFlavor::PowerShell,
         locations: vec![],

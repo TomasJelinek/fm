@@ -652,7 +652,9 @@ fn with_io<T>(
     action: impl FnOnce() -> Result<T, FsError>,
 ) -> Result<T, FsError> {
     let _permit = midnight_work_budget::shared_io()
-        .acquire(midnight_work_budget::IO_SLOTS, || cancel.is_cancelled())
+        .acquire(midnight_work_budget::Admission::Exclusive, || {
+            cancel.is_cancelled()
+        })
         .ok_or_else(|| {
             fail(
                 path,

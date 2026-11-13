@@ -148,6 +148,7 @@ impl Harness {
             send.as_ref(),
         );
         presenter.borrow_mut().apply(Event::DesktopContext {
+            system_locations: Vec::new(),
             network_position: 0,
             shell: ShellFlavor::Posix,
             locations: Vec::new(),

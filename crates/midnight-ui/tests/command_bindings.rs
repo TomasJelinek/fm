@@ -223,6 +223,7 @@ fn control_enter_appends_literal_basename_and_control_p_uses_active_panel() {
         }),
     );
     presenter.borrow_mut().apply(Event::DesktopContext {
+        system_locations: Vec::new(),
         network_position: 0,
         shell: ShellFlavor::Posix,
         locations: vec![],

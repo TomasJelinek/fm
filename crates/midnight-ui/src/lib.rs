@@ -1081,7 +1081,10 @@ pub fn install(
         let _ = w;
     });
     callback!(on_navigation_choice, |w, p, s, id, token| {
-        let navigated = if token == "other-panel" {
+        let navigated = if token.starts_with("system-location:") {
+            p.choose_system_location(token.as_str(), s);
+            false
+        } else if token == "other-panel" {
             p.navigate_as_other_panel(pane(id), s)
         } else if token.starts_with("network:") {
             p.choose_network_choice(pane(id), token.as_str(), s)
@@ -1132,6 +1135,13 @@ pub fn install(
         p.change_copy_verification(enabled, s);
         let _ = w;
     });
+    callback!(
+        on_disk_io_concurrency_changed,
+        |w, p, s, automatic, maximum| {
+            p.change_disk_io_concurrency(automatic, maximum, s);
+            let _ = w;
+        }
+    );
     callback!(on_command_history_clear, |w, p, s| {
         p.clear_command_history(s);
         let _ = w;

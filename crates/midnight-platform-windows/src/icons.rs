@@ -26,13 +26,13 @@ use windows_sys::Win32::{
         Shell::{
             Common::ITEMIDLIST, FOLDERID_Desktop, FOLDERID_Documents, FOLDERID_Downloads,
             FOLDERID_Music, FOLDERID_OneDrive, FOLDERID_Pictures, FOLDERID_Profile,
-            FOLDERID_Videos, ILFree, KF_FLAG_DONT_VERIFY, SHFILEINFOW, SHGFI_ICON, SHGFI_PIDL,
-            SHGFI_SMALLICON, SHGFI_USEFILEATTRIBUTES, SHGSI_ICON, SHGSI_LINKOVERLAY,
-            SHGSI_SMALLICON, SHGetFileInfoW, SHGetKnownFolderIDList, SHGetStockIconInfo,
-            SHSTOCKICONINFO, SIID_DELETE, SIID_DOCNOASSOC, SIID_DRIVECD, SIID_DRIVEFIXED,
-            SIID_DRIVENET, SIID_DRIVERAM, SIID_DRIVEREMOVE, SIID_DRIVEUNKNOWN, SIID_FIND,
-            SIID_FOLDER, SIID_FOLDEROPEN, SIID_HELP, SIID_INFO, SIID_MYNETWORK, SIID_RENAME,
-            SIID_SETTINGS,
+            FOLDERID_RecycleBinFolder, FOLDERID_Videos, ILFree, KF_FLAG_DONT_VERIFY, SHFILEINFOW,
+            SHGFI_ICON, SHGFI_PIDL, SHGFI_SMALLICON, SHGFI_USEFILEATTRIBUTES, SHGSI_ICON,
+            SHGSI_LINKOVERLAY, SHGSI_SMALLICON, SHGetFileInfoW, SHGetKnownFolderIDList,
+            SHGetStockIconInfo, SHSTOCKICONINFO, SIID_DELETE, SIID_DOCNOASSOC, SIID_DRIVECD,
+            SIID_DRIVEFIXED, SIID_DRIVENET, SIID_DRIVERAM, SIID_DRIVEREMOVE, SIID_DRIVEUNKNOWN,
+            SIID_FIND, SIID_FOLDER, SIID_FOLDEROPEN, SIID_HELP, SIID_INFO, SIID_MYNETWORK,
+            SIID_RECYCLER, SIID_RENAME, SIID_SETTINGS,
         },
         WindowsAndMessaging::{DI_NORMAL, DestroyIcon, DrawIconEx, HICON},
     },
@@ -144,7 +144,11 @@ impl Drop for OwnedIcon {
 
 fn native_icon(key: &IconKey) -> Option<OwnedIcon> {
     match key.kind {
-        IconKind::Action(role) => return action_stock_id(role).and_then(stock_icon),
+        IconKind::Action(role) => {
+            return action_known_folder_id(role)
+                .and_then(known_folder_icon_id)
+                .or_else(|| action_stock_id(role).and_then(stock_icon));
+        }
         IconKind::Location(LocationKind::Volume) => return stock_icon(SIID_DRIVEFIXED),
         IconKind::Location(kind) => {
             return known_folder_icon(kind).or_else(|| stock_icon(SIID_FOLDER));
@@ -196,6 +200,13 @@ fn link_stock_request(kind: IconKind) -> Option<(i32, u32)> {
     Some((stock, SHGSI_ICON | SHGSI_SMALLICON | SHGSI_LINKOVERLAY))
 }
 
+fn action_known_folder_id(role: ActionIcon) -> Option<windows_sys::core::GUID> {
+    match role {
+        ActionIcon::RecycleBin => Some(FOLDERID_RecycleBinFolder),
+        _ => None,
+    }
+}
+
 fn action_stock_id(role: ActionIcon) -> Option<i32> {
     match role {
         ActionIcon::Options => Some(SIID_SETTINGS),
@@ -208,6 +219,8 @@ fn action_stock_id(role: ActionIcon) -> Option<i32> {
         ActionIcon::NewFile => Some(SIID_DOCNOASSOC),
         ActionIcon::OpenPath => Some(SIID_FOLDEROPEN),
         ActionIcon::Network => Some(SIID_MYNETWORK),
+        // Fallback artwork only; the empty stock icon makes no claim about current contents.
+        ActionIcon::RecycleBin => Some(SIID_RECYCLER),
         // Windows has no appropriate documented stock icon for these roles.
         ActionIcon::Back
         | ActionIcon::Forward
@@ -263,7 +276,10 @@ impl Drop for OwnedPidl {
 }
 
 fn known_folder_icon(kind: LocationKind) -> Option<OwnedIcon> {
-    let id = location_folder_id(kind)?;
+    known_folder_icon_id(location_folder_id(kind)?)
+}
+
+fn known_folder_icon_id(id: windows_sys::core::GUID) -> Option<OwnedIcon> {
     let _mode = ErrorMode::new().ok()?;
     let mut raw = ptr::null_mut();
     // SAFETY: only fixed host-known GUIDs enter here. The output pointer is valid,
@@ -911,5 +927,22 @@ mod tests {
                 "type".encode_utf16().chain(Some(0)).collect::<Vec<_>>()
             );
         }
+    }
+
+    #[test]
+    fn recycle_bin_action_uses_known_folder_then_neutral_empty_stock_fallback() {
+        let id = action_known_folder_id(ActionIcon::RecycleBin).unwrap();
+        let expected = FOLDERID_RecycleBinFolder;
+        assert_eq!(
+            (id.data1, id.data2, id.data3, id.data4),
+            (
+                expected.data1,
+                expected.data2,
+                expected.data3,
+                expected.data4
+            )
+        );
+        assert_eq!(action_stock_id(ActionIcon::RecycleBin), Some(SIID_RECYCLER));
+        assert!(action_known_folder_id(ActionIcon::Delete).is_none());
     }
 }

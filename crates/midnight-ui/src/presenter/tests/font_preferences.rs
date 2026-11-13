@@ -193,6 +193,7 @@ fn theme_and_terminal_changes_preserve_font_choices_and_sizes() {
     p.change_fonts(1, 12, 18, -1, &|_| true);
     p.change_preferences(2, 1, -1, &|_| true);
     p.apply(Event::DesktopContext {
+        system_locations: Vec::new(),
         network_position: 0,
         shell: ShellFlavor::PowerShell,
         locations: vec![],

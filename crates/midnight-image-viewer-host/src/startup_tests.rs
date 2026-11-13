@@ -683,7 +683,7 @@ fn prepared_open_deadline_kills_a_worker_waiting_on_the_read_budget() {
         PreparedImageWorker::prepare(&provider, &cancel, Duration::from_secs(15)).unwrap();
     let budget = midnight_work_budget::shared_io();
     let held = budget
-        .acquire(midnight_work_budget::IO_SLOTS, || false)
+        .acquire(midnight_work_budget::Admission::Exclusive, || false)
         .unwrap();
     let source = bitmap();
     let start = Instant::now();

@@ -86,3 +86,79 @@ fn named_volumes_precede_raw_mount_paths_without_mutating_paths() {
             .all(|item| item.path == Path::new("raw/../same 文档"))
     );
 }
+
+#[test]
+fn recycle_bin_rank_excludes_volumes_and_keeps_network_at_the_front() {
+    let (ordered, network_position) = locations(
+        vec![
+            location("disk", "A disk", LocationKind::Volume),
+            location("z", "Zulu", LocationKind::Home),
+            location("a", "Alpha", LocationKind::Documents),
+            location("tie", "Recycle Bin", LocationKind::Pictures),
+        ],
+        None,
+    )
+    .unwrap();
+    let choices = system_locations(&ordered, true, None).unwrap();
+    assert_eq!(network_position, 0);
+    assert_eq!(choices.len(), 1);
+    assert_eq!(choices[0].location, SystemLocation::RecycleBin);
+    assert_eq!(choices[0].label, "Recycle Bin");
+    // Equal native labels precede the system entry; the volume is not counted.
+    assert_eq!(choices[0].special_position, 2);
+    assert!(system_locations(&ordered, false, None).unwrap().is_empty());
+}
+
+struct RecycleLocale;
+impl LocaleService for RecycleLocale {
+    fn number_locale(&self) -> Result<midnight_core::NumberLocale, FsError> {
+        Ok(midnight_core::NumberLocale::default())
+    }
+    fn collation_key(&self, label: &OsStr) -> Result<Option<Vec<u8>>, FsError> {
+        Ok(match label.to_str().unwrap() {
+            "Zulu" => Some(vec![1]),
+            "Recycle Bin" => Some(vec![2]),
+            "Alpha" => Some(vec![3]),
+            _ => None,
+        })
+    }
+}
+
+#[test]
+fn recycle_bin_rank_uses_worker_locale_keys_and_raw_name_fallback() {
+    let input = vec![
+        location("a", "Alpha", LocationKind::Documents),
+        location("z", "Zulu", LocationKind::Home),
+        location("raw", "/unrepresentable", LocationKind::Temporary),
+    ];
+    let (ordered, _) = locations(input, Some(&RecycleLocale)).unwrap();
+    let choices = system_locations(&ordered, true, Some(&RecycleLocale)).unwrap();
+    assert_eq!(choices[0].special_position, 1);
+    assert_eq!(
+        system_locations(&ordered, true, None).unwrap()[0].special_position,
+        1
+    );
+}
+
+struct OversizedRecycleKey;
+impl LocaleService for OversizedRecycleKey {
+    fn number_locale(&self) -> Result<midnight_core::NumberLocale, FsError> {
+        Ok(midnight_core::NumberLocale::default())
+    }
+    fn collation_key(&self, label: &OsStr) -> Result<Option<Vec<u8>>, FsError> {
+        assert_eq!(label, OsStr::new("Recycle Bin"));
+        Ok(Some(vec![0; MAX_COLLATION_KEY_BYTES + 1]))
+    }
+}
+
+#[test]
+fn recycle_bin_key_budget_is_checked_and_unavailable_capability_does_no_label_work() {
+    assert!(
+        system_locations(&[], false, Some(&OversizedRecycleKey))
+            .unwrap()
+            .is_empty()
+    );
+    let error = system_locations(&[], true, Some(&OversizedRecycleKey)).unwrap_err();
+    assert_eq!(error.kind, io::ErrorKind::InvalidData);
+    assert!(error.path.as_os_str().is_empty());
+}

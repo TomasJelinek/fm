@@ -36,7 +36,7 @@ pub(crate) fn read(file: &CapturedFile, cancel: &AtomicBool) -> Result<String, S
         check_cancel(cancel)?;
         let budget = midnight_work_budget::shared_io();
         let _permit = budget
-            .acquire(midnight_work_budget::storage_cost(false), || {
+            .acquire(midnight_work_budget::storage_admission(false), || {
                 cancel.load(std::sync::atomic::Ordering::Acquire)
             })
             .ok_or("Comparison cancelled.")?;

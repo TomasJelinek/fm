@@ -8,6 +8,10 @@ use std::{os::windows::ffi::OsStrExt, path::PathBuf};
 use windows_sys::Win32::{System::Com::COINIT_MULTITHREADED, UI::Shell::*};
 
 impl LocationService for WindowsFileSystem {
+    fn supports_system_location(&self, location: midnight_core::SystemLocation) -> bool {
+        matches!(location, midnight_core::SystemLocation::RecycleBin)
+    }
+
     fn locations(&self) -> Result<Vec<NavigationLocation>, FsError> {
         let _error_mode = crate::volume_details::ErrorMode::new().map_err(|error| {
             FsError::from_io(
@@ -174,5 +178,11 @@ mod tests {
         append_onedrive_account(&mut locations, "Business2", "Work", business.clone());
         assert_eq!(locations.len(), 2);
         assert_eq!(locations[1].path, business);
+    }
+
+    #[test]
+    fn recycle_bin_capability_is_semantic_and_requires_no_folder_discovery() {
+        let filesystem = WindowsFileSystem::new(None);
+        assert!(filesystem.supports_system_location(midnight_core::SystemLocation::RecycleBin));
     }
 }

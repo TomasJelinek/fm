@@ -1,5 +1,11 @@
-use midnight_core::{ActionIcon, IconKey, IconKind, LocationKind, NavigationLocation};
-use std::{collections::HashSet, path::PathBuf};
+use midnight_core::{
+    ActionIcon, FsError, IconKey, IconKind, LocationKind, LocationService, NavigationLocation,
+    OpenEntryResult, OpenService, SystemLocation,
+};
+use std::{
+    collections::HashSet,
+    path::{Path, PathBuf},
+};
 
 #[test]
 fn finite_action_palette_keeps_each_semantic_role_distinct() {
@@ -13,6 +19,41 @@ fn finite_action_palette_keeps_each_semantic_role_distinct() {
             && key.drive_root.is_none()
             && key.size == 32
     }));
+}
+
+#[test]
+fn recycle_bin_has_a_distinct_finite_semantic_icon() {
+    let key = IconKey::action(ActionIcon::RecycleBin);
+    assert!(ActionIcon::ALL.contains(&ActionIcon::RecycleBin));
+    assert_ne!(key, IconKey::action(ActionIcon::Delete));
+    assert_ne!(key, IconKey::folder());
+    assert_ne!(key, IconKey::drive());
+    assert!(key.extension.is_none());
+    assert!(key.drive_root.is_none());
+}
+
+struct LegacyDesktop;
+impl LocationService for LegacyDesktop {
+    fn locations(&self) -> Result<Vec<NavigationLocation>, FsError> {
+        Ok(Vec::new())
+    }
+}
+impl OpenService for LegacyDesktop {
+    fn open_entry(&self, _: &Path) -> Result<OpenEntryResult, FsError> {
+        panic!("system locations must not fall back to path activation")
+    }
+}
+
+#[test]
+fn system_locations_require_explicit_service_opt_in() {
+    let service = LegacyDesktop;
+    assert!(!service.supports_system_location(SystemLocation::RecycleBin));
+    let error = service
+        .open_system_location(SystemLocation::RecycleBin)
+        .err()
+        .unwrap();
+    assert_eq!(error.kind, std::io::ErrorKind::Unsupported);
+    assert!(error.path.as_os_str().is_empty());
 }
 
 #[test]

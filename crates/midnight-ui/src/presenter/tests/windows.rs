@@ -40,6 +40,7 @@ fn native_choice_tokens_preserve_unpaired_utf16_and_reject_display_alias_replace
     assert_eq!(first.to_string_lossy(), second.to_string_lossy());
     let mut p = Presenter::new(test_root(), test_root());
     let update = |path| Event::DesktopContext {
+        system_locations: Vec::new(),
         network_position: 0,
         shell: ShellFlavor::PowerShell,
         locations: vec![NavigationLocation {

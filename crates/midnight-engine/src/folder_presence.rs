@@ -215,7 +215,9 @@ fn run(
             }
         };
         let gate = midnight_work_budget::shared_io();
-        let _io = gate.acquire(midnight_work_budget::IO_SLOTS, || cancel.is_cancelled())?;
+        let _io = gate.acquire(midnight_work_budget::Admission::Exclusive, || {
+            cancel.is_cancelled()
+        })?;
         let value = (|| {
             if let Some(location) = ready.archive() {
                 let node = entry

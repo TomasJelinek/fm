@@ -435,9 +435,10 @@ async fn cancellation_and_shutdown_retain_an_inflight_read_and_its_io_permit() {
     // Prove all permits can be reacquired, rather than sampling a transient idle state.
     let permit = tokio::task::spawn_blocking(|| {
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
-        midnight_work_budget::shared_io().acquire(midnight_work_budget::IO_SLOTS, || {
-            std::time::Instant::now() >= deadline
-        })
+        midnight_work_budget::shared_io()
+            .acquire(midnight_work_budget::Admission::Exclusive, || {
+                std::time::Instant::now() >= deadline
+            })
     })
     .await
     .unwrap();

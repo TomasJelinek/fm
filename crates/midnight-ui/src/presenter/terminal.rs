@@ -243,6 +243,7 @@ mod tests {
             let mut p = Presenter::new("left".into(), right.clone());
             p.active = PaneId::Right;
             p.apply(Event::DesktopContext {
+                system_locations: Vec::new(),
                 network_position: 0,
                 shell: host,
                 locations: vec![],
@@ -311,6 +312,7 @@ mod tests {
         let mut p = Presenter::new("left".into(), "right".into());
         assert!(!p.open_terminal(&|_| panic!("desktop context is not available")));
         p.apply(Event::DesktopContext {
+            system_locations: Vec::new(),
             network_position: 0,
             shell: ShellFlavor::PowerShell,
             locations: vec![],
@@ -362,6 +364,7 @@ mod tests {
     fn bound_draft_defers_loaded_defaults_and_rejects_cross_grammar_selection() {
         let mut p = Presenter::new("left".into(), "right".into());
         p.apply(Event::DesktopContext {
+            system_locations: Vec::new(),
             network_position: 0,
             shell: ShellFlavor::PowerShell,
             locations: vec![],
@@ -389,6 +392,7 @@ mod tests {
         p.track_draft(true);
         assert_eq!(p.effective_shell(), None);
         p.apply(Event::DesktopContext {
+            system_locations: Vec::new(),
             network_position: 0,
             shell: ShellFlavor::PowerShell,
             locations: vec![],
@@ -405,6 +409,7 @@ mod tests {
     fn posix_elevation_is_session_only_and_waits_for_explicit_submission() {
         let mut p = Presenter::new("left".into(), "right".into());
         p.apply(Event::DesktopContext {
+            system_locations: Vec::new(),
             network_position: 0,
             shell: ShellFlavor::Posix,
             locations: vec![],
@@ -424,6 +429,7 @@ mod tests {
         );
         let mut restarted = Presenter::new("left".into(), "right".into());
         restarted.apply(Event::DesktopContext {
+            system_locations: Vec::new(),
             network_position: 0,
             shell: ShellFlavor::Posix,
             locations: vec![],
@@ -435,6 +441,7 @@ mod tests {
     fn windows_choice_persists_and_wins_over_late_preferences_loading() {
         let mut p = Presenter::new("left".into(), "right".into());
         p.apply(Event::DesktopContext {
+            system_locations: Vec::new(),
             network_position: 0,
             shell: ShellFlavor::PowerShell,
             locations: vec![],

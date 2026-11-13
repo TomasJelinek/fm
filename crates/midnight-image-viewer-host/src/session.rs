@@ -197,7 +197,7 @@ impl ImageSession {
                             let budget = midnight_work_budget::shared_io();
                             let _permit = budget
                                 .acquire(
-                                    midnight_work_budget::storage_cost(
+                                    midnight_work_budget::storage_admission(
                                         source.confirmed_local_ssd(),
                                     ),
                                     || {

@@ -14,6 +14,7 @@ pub(super) struct ChoicesState {
     pub(crate) items: Vec<NavigationChoice>,
     network_position: Option<usize>,
     network_available: bool,
+    system_locations: Vec<(SystemLocation, usize)>,
     preferred: [Option<u64>; 2],
 }
 
@@ -36,6 +37,46 @@ impl Presenter {
 
     pub(crate) fn network_choice_token(&self) -> String {
         format!("network:{}", self.choices.revision)
+    }
+
+    pub(crate) fn system_location_choice_token(&self, location: SystemLocation) -> String {
+        let key = match location {
+            SystemLocation::RecycleBin => "recycle-bin",
+        };
+        format!("system-location:{}:{key}", self.choices.revision)
+    }
+
+    pub(crate) fn choose_system_location(
+        &mut self,
+        token: &str,
+        send: &dyn Fn(Command) -> bool,
+    ) -> bool {
+        if self.operations.closing {
+            return false;
+        }
+        let Some(location) = self
+            .desktop
+            .system_locations
+            .iter()
+            .find(|choice| token == self.system_location_choice_token(choice.location))
+            .map(|choice| choice.location)
+        else {
+            return false;
+        };
+        let request = self.desktop.request();
+        if !send(Command::OpenSystemLocation { request, location }) {
+            self.desktop.report(
+                "Desktop queue busy",
+                "Try opening the system Recycle Bin/Trash again.".into(),
+            );
+            return false;
+        }
+        self.desktop.requests.insert(request);
+        self.desktop
+            .system_location_requests
+            .insert(request, location);
+        self.desktop.status = "Opening system Recycle Bin/Trash…".into();
+        true
     }
 
     pub(crate) fn choose_network_choice(
@@ -115,7 +156,14 @@ impl Presenter {
         let mut seen = HashSet::new();
         locations.retain(|location| seen.insert(identity(location)));
         self.retired.push(Box::new(seen));
-        let structural = self.choices.network_position != self.desktop.network_position
+        let system_locations = self
+            .desktop
+            .system_locations
+            .iter()
+            .map(|choice| (choice.location, choice.special_position))
+            .collect::<Vec<_>>();
+        let structural = self.choices.system_locations != system_locations
+            || self.choices.network_position != self.desktop.network_position
             || self.choices.network_available != self.network_available
             || locations.len() != self.choices.items.len()
             || locations
@@ -132,6 +180,8 @@ impl Presenter {
                 self.retired.push(Box::new(locations));
                 self.retired
                     .push(Box::new(mem::take(&mut self.choices.items)));
+                self.retired
+                    .push(Box::new(mem::take(&mut self.desktop.system_locations)));
                 self.desktop.report(
                     "Navigation identities exhausted",
                     "Restart Midnight Explorer before navigating through these choices.".into(),
@@ -159,6 +209,8 @@ impl Presenter {
                 self.retired.push(Box::new(previous));
                 self.retired.push(Box::new(by_identity));
                 self.retired.push(Box::new(remaining));
+                self.retired
+                    .push(Box::new(mem::take(&mut self.desktop.system_locations)));
                 self.desktop.report(
                     "Navigation identities exhausted",
                     "Restart Midnight Explorer before navigating through these choices.".into(),
@@ -171,6 +223,10 @@ impl Presenter {
         self.choices.revision = revision;
         self.choices.network_position = self.desktop.network_position;
         self.choices.network_available = self.network_available;
+        self.retired.push(Box::new(mem::replace(
+            &mut self.choices.system_locations,
+            system_locations,
+        )));
         self.retired.push(Box::new(previous));
         self.retired.push(Box::new(by_identity));
     }

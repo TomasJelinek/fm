@@ -2,7 +2,7 @@
 
 use super::*;
 use midnight_core::StorageKind;
-use midnight_work_budget::{Gate, IO_SLOTS, Permit};
+use midnight_work_budget::{Admission, Gate, MAX_IO_LIMIT, Permit};
 use std::{
     cell::{Cell, RefCell},
     io,
@@ -14,13 +14,12 @@ use std::{
     thread,
 };
 
-const ROOT_WORKERS: usize = 4;
 const QUANTUM_ENTRIES: usize = 256;
 const QUANTUM_TIME: Duration = Duration::from_millis(100);
 const WAIT_INTERVAL: Duration = Duration::from_millis(10);
 
 /// Shared across both pane operations. Classification is a separate, single
-/// control query; unknown/network/rotational bulk I/O takes all four I/O slots.
+/// control query; unknown/network/rotational bulk I/O is exclusive.
 pub(crate) struct IoBudget {
     io: Arc<Gate>,
     classification: Arc<Gate>,
@@ -30,7 +29,7 @@ impl IoBudget {
     #[cfg(test)]
     fn isolated() -> Self {
         Self {
-            io: Arc::new(Gate::new(IO_SLOTS)),
+            io: Arc::new(Gate::new(midnight_work_budget::DEFAULT_IO_LIMIT)),
             classification: Arc::new(Gate::new(1)),
         }
     }
@@ -40,11 +39,12 @@ impl IoBudget {
             classification: Arc::new(Gate::new(1)),
         }
     }
-    fn acquire_io(self: &Arc<Self>, cost: u8, cancel: &Cancellation) -> Option<Permit> {
-        self.io.acquire(cost, || cancel.is_cancelled())
+    fn acquire_io(self: &Arc<Self>, admission: Admission, cancel: &Cancellation) -> Option<Permit> {
+        self.io.acquire(admission, || cancel.is_cancelled())
     }
     fn acquire_classification(self: &Arc<Self>, cancel: &Cancellation) -> Option<Permit> {
-        self.classification.acquire(1, || cancel.is_cancelled())
+        self.classification
+            .acquire(Admission::Exclusive, || cancel.is_cancelled())
     }
 }
 
@@ -68,8 +68,12 @@ pub(crate) fn compute_batched(
     let next = AtomicUsize::new(0);
     let local_cancel = cancel.child();
     let (progress, receiver) = mpsc::sync_channel(8);
+    // Existing teams keep their scoped lanes; the shared gate applies changes to every I/O.
+    // Four admitted teams can have 128 root lanes at Manual 32. Frontiers stay lazily
+    // allocated per scan; this does not allocate 128 eager 16 MiB buffers.
+    let workers = usize::from(budget.io.effective_limit().min(MAX_IO_LIMIT)).min(roots.len());
     thread::scope(|scope| {
-        for _ in 0..ROOT_WORKERS.min(roots.len()) {
+        for _ in 0..workers {
             let progress = progress.clone();
             let next = &next;
             let local_cancel = &local_cancel;
@@ -147,21 +151,19 @@ struct BudgetedSource<'a> {
     budget: &'a Arc<IoBudget>,
     cancel: &'a Cancellation,
     active: Cell<bool>,
-    resolution_permit: RefCell<Option<(u8, Permit)>>,
+    resolution_permit: RefCell<Option<(Admission, Permit)>>,
 }
 
 impl BudgetedSource<'_> {
-    fn io_cost(&self, path: &Path, cancel: &Cancellation) -> Option<u8> {
+    fn io_admission(&self, path: &Path, cancel: &Cancellation) -> Option<Admission> {
         let _classification = self.budget.acquire_classification(cancel)?;
         let kind = self
             .filesystem
             .storage_kind(path)
             .unwrap_or(StorageKind::Unknown);
-        Some(if kind == StorageKind::LocalSsd {
-            1
-        } else {
-            IO_SLOTS
-        })
+        Some(midnight_work_budget::storage_admission(
+            kind == StorageKind::LocalSsd,
+        ))
     }
 }
 
@@ -171,10 +173,10 @@ impl ScanSource for BudgetedSource<'_> {
         path: &Path,
         cancel: &Cancellation,
     ) -> Result<Option<SizeDirectoryTarget>, FsError> {
-        let Some((cost, permit)) = self.io_cost(path, cancel).and_then(|cost| {
+        let Some((admission, permit)) = self.io_admission(path, cancel).and_then(|admission| {
             self.budget
-                .acquire_io(cost, cancel)
-                .map(|permit| (cost, permit))
+                .acquire_io(admission, cancel)
+                .map(|permit| (admission, permit))
         }) else {
             return Err(FsError::from_io(
                 "resolve directory size target",
@@ -186,7 +188,7 @@ impl ScanSource for BudgetedSource<'_> {
         // Keep the ticket through the following enumeration. Otherwise a small
         // waiting root spends its only fair turn resolving identity, then queues
         // behind the large iterator again without counting any contents.
-        *self.resolution_permit.borrow_mut() = Some((cost, permit));
+        *self.resolution_permit.borrow_mut() = Some((admission, permit));
         result
     }
     fn finish_size_resolution(&self) {
@@ -198,15 +200,15 @@ impl ScanSource for BudgetedSource<'_> {
         cancel: &Cancellation,
         emit: &mut dyn FnMut(Entry) -> bool,
     ) -> Result<(), FsError> {
-        let Some(cost) = self.io_cost(path, cancel) else {
+        let Some(admission) = self.io_admission(path, cancel) else {
             return Ok(());
         };
         let mut permit = self
             .resolution_permit
             .take()
-            .and_then(|(held_cost, permit)| (held_cost == cost).then_some(permit));
+            .and_then(|(held_admission, permit)| (held_admission == admission).then_some(permit));
         if permit.is_none() {
-            permit = self.budget.acquire_io(cost, cancel);
+            permit = self.budget.acquire_io(admission, cancel);
         }
         if permit.is_none() {
             return Ok(());
@@ -222,7 +224,7 @@ impl ScanSource for BudgetedSource<'_> {
             if entries >= QUANTUM_ENTRIES || since_yield.elapsed() >= QUANTUM_TIME {
                 self.active.set(false);
                 drop(permit.take());
-                permit = self.budget.acquire_io(cost, cancel);
+                permit = self.budget.acquire_io(admission, cancel);
                 self.active.set(permit.is_some());
                 entries = 0;
                 since_yield = Instant::now();
@@ -236,7 +238,7 @@ impl ScanSource for BudgetedSource<'_> {
 
     fn entry_metadata(&self, path: &Path) -> Result<EntryMetadata, FsError> {
         // scan_root invokes metadata synchronously inside its enumeration
-        // callback: re-acquiring here would deadlock a conservative 4-slot scan.
+        // callback: re-acquiring here would deadlock a conservative exclusive scan.
         if !self.active.get() || self.cancel.is_cancelled() {
             return Err(FsError::from_io(
                 "folder size metadata",

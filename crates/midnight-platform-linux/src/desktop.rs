@@ -220,6 +220,10 @@ impl PropertyService for LinuxFileSystem {
 }
 
 impl LocationService for LinuxFileSystem {
+    fn supports_system_location(&self, location: midnight_core::SystemLocation) -> bool {
+        crate::open::supports_system_location(location)
+    }
+
     fn locations(&self) -> Result<Vec<NavigationLocation>, FsError> {
         let mut locations: Vec<_> = crate::platform_volumes()?
             .into_iter()

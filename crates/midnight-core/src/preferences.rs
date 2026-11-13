@@ -200,6 +200,38 @@ pub enum PanelViewMode {
     Thumbnails,
 }
 
+/// Maximum admitted disk I/O in the shared backend gate. Other resource limits
+/// and conservative exclusive admission can make an operation use fewer workers.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum DiskIoConcurrency {
+    #[default]
+    Automatic,
+    Manual(u8),
+}
+
+impl DiskIoConcurrency {
+    pub const AUTOMATIC_LIMIT: u8 = 4;
+    pub const MINIMUM: u8 = 1;
+    pub const MAXIMUM: u8 = 32;
+
+    pub fn validate(self) -> Result<(), &'static str> {
+        match self {
+            Self::Automatic => Ok(()),
+            Self::Manual(limit) if (Self::MINIMUM..=Self::MAXIMUM).contains(&limit) => Ok(()),
+            Self::Manual(_) => Err("Disk I/O concurrency must be between 1 and 32."),
+        }
+    }
+
+    /// Resolve Automatic without clamping or accepting an invalid API value.
+    pub fn effective_limit(self) -> Result<u8, &'static str> {
+        self.validate()?;
+        Ok(match self {
+            Self::Automatic => Self::AUTOMATIC_LIMIT,
+            Self::Manual(limit) => limit,
+        })
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct UserPreferences {
     pub user_commands: Arc<Vec<crate::UserCommand>>,
@@ -228,6 +260,7 @@ pub struct UserPreferences {
     /// Show only matching names during panel type-to-search instead of jumping.
     pub quick_search_filter: bool,
     pub size_display: SizeDisplay,
+    pub disk_io_concurrency: DiskIoConcurrency,
     pub remember_command_history: bool,
     /// Full SHA-256 for new Copy/Move jobs; false checks length and three64 KiB samples.
     pub copy_checksum_verification: bool,
@@ -283,6 +316,7 @@ impl Default for UserPreferences {
             touch_font_size: 15,
             quick_search_filter: false,
             size_display: SizeDisplay::default(),
+            disk_io_concurrency: DiskIoConcurrency::default(),
             remember_command_history: true,
             copy_checksum_verification: true,
             command_history: Vec::new(),
@@ -356,6 +390,9 @@ impl UserPreferences {
             None
         };
         let mut message = message;
+        if let Err(error) = self.disk_io_concurrency.validate() {
+            message = Some(error);
+        }
         if let Err(error) = self.file_list.validate() {
             message = Some(error);
         }

@@ -131,7 +131,10 @@ impl Desktop {
                             .send(TrackedChild {
                                 child,
                                 _slot: tracking_slot,
-                                completion: (!editing).then_some((request, tracking_path)),
+                                completion: (!editing).then_some((
+                                    request,
+                                    OpenCompletionTarget::File(tracking_path),
+                                )),
                             })
                             .await;
                         if !editing {

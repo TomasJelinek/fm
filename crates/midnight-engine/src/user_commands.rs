@@ -268,7 +268,7 @@ async fn execute(work: WorkerOwned<Work>, context: &Arc<Context>) {
         }?;
         for process in prepared.processes.iter() {
             let _permit = midnight_work_budget::shared_io()
-                .acquire(midnight_work_budget::IO_SLOTS, || {
+                .acquire(midnight_work_budget::Admission::Exclusive, || {
                     work.cancel.is_cancelled()
                 })
                 .ok_or_else(cancelled)?;

@@ -518,7 +518,7 @@ fn render(
     let source = {
         let budget = midnight_work_budget::shared_io();
         let _permit = budget
-            .acquire(midnight_work_budget::IO_SLOTS, || {
+            .acquire(midnight_work_budget::Admission::Exclusive, || {
                 cancel.load(Ordering::Acquire)
             })
             .ok_or_else(|| io::Error::from(io::ErrorKind::Interrupted))?;

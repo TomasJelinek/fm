@@ -59,6 +59,7 @@ pub(super) struct EditedFields {
     pub(super) size_display: bool,
     pub(super) remember_command_history: bool,
     pub(super) copy_checksum_verification: bool,
+    pub(super) disk_io_concurrency: bool,
     pub(super) command_history: bool,
     pub(super) command_history_cleared: bool,
     pub(super) panel_view_modes: [bool; 2],
@@ -288,6 +289,9 @@ impl Presenter {
                 }
                 if edited.copy_checksum_verification {
                     loaded.copy_checksum_verification = local.copy_checksum_verification;
+                }
+                if edited.disk_io_concurrency {
+                    loaded.disk_io_concurrency = local.disk_io_concurrency;
                 }
                 if edited.shortcuts {
                     loaded.shortcuts = local.shortcuts.clone();
@@ -553,6 +557,33 @@ impl Presenter {
         );
     }
 
+    pub(crate) fn change_disk_io_concurrency(
+        &mut self,
+        automatic: bool,
+        maximum: i32,
+        send: &dyn Fn(Command) -> bool,
+    ) {
+        let disk_io_concurrency = if automatic {
+            DiskIoConcurrency::Automatic
+        } else {
+            let Ok(maximum) = u8::try_from(maximum) else {
+                return;
+            };
+            if !(1..=32).contains(&maximum) {
+                return;
+            }
+            DiskIoConcurrency::Manual(maximum)
+        };
+        self.preferences.edited.disk_io_concurrency = true;
+        self.update_preferences(
+            UserPreferences {
+                disk_io_concurrency,
+                ..self.preferences.values.clone()
+            },
+            send,
+        );
+    }
+
     pub(crate) fn transfer_verification(&self) -> TransferVerification {
         // Preview changes belong to Options until OK; queued requests retain this value.
         let preferences = self
@@ -662,6 +693,8 @@ impl Presenter {
         edited.size_display |= preferences.size_display != previous.size_display;
         edited.copy_checksum_verification |=
             preferences.copy_checksum_verification != previous.copy_checksum_verification;
+        edited.disk_io_concurrency |=
+            preferences.disk_io_concurrency != previous.disk_io_concurrency;
         edited.remember_command_history |=
             preferences.remember_command_history != previous.remember_command_history;
         edited.command_history |= preferences.command_history != previous.command_history;

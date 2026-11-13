@@ -84,6 +84,7 @@ struct Files {
     kind: StorageKind,
     overrides: HashMap<PathBuf, Option<StorageKind>>,
     queries: Mutex<Vec<PathBuf>>,
+    root_threads: Mutex<HashSet<thread::ThreadId>>,
     opens: HashMap<PathBuf, Arc<Blocker>>,
     missing: HashSet<PathBuf>,
     io: Counter,
@@ -115,6 +116,10 @@ impl DirectoryService for Files {
         cancel: &Cancellation,
         emit: &mut dyn FnMut(Entry) -> bool,
     ) -> Result<(), FsError> {
+        self.root_threads
+            .lock()
+            .unwrap()
+            .insert(thread::current().id());
         if let Some(probe) = &self.fairness_probe
             && path == probe.consumer
         {
@@ -341,13 +346,15 @@ fn rotational_network_and_unknown_reads_are_serial_across_two_operations() {
 #[test]
 fn fifo_tickets_prevent_a_new_small_request_from_bypassing_a_waiting_exclusive_request() {
     let budget = Arc::new(IoBudget::isolated());
-    let held = budget.acquire_io(4, &Cancellation::default()).unwrap();
+    let held = budget
+        .acquire_io(Admission::Exclusive, &Cancellation::default())
+        .unwrap();
     let (granted, order) = mpsc::channel();
     let first_budget = budget.clone();
     let first_granted = granted.clone();
     let first = thread::spawn(move || {
         let _permit = first_budget
-            .acquire_io(4, &Cancellation::default())
+            .acquire_io(Admission::Exclusive, &Cancellation::default())
             .unwrap();
         first_granted.send(1).unwrap();
     });
@@ -355,7 +362,7 @@ fn fifo_tickets_prevent_a_new_small_request_from_bypassing_a_waiting_exclusive_r
     let second_budget = budget.clone();
     let second = thread::spawn(move || {
         let _permit = second_budget
-            .acquire_io(1, &Cancellation::default())
+            .acquire_io(Admission::Shared, &Cancellation::default())
             .unwrap();
         granted.send(2).unwrap();
     });
@@ -619,7 +626,9 @@ fn batched_unicode_totals_preserve_each_root_identity_and_partial_errors() {
 #[test]
 fn external_cancellation_removes_waiting_root_workers_without_releasing_someone_elses_io() {
     let budget = Arc::new(IoBudget::isolated());
-    let held = budget.acquire_io(4, &Cancellation::default()).unwrap();
+    let held = budget
+        .acquire_io(Admission::Exclusive, &Cancellation::default())
+        .unwrap();
     let cancel = Cancellation::default();
     let mut files = Files {
         kind: StorageKind::LocalSsd,
@@ -652,4 +661,147 @@ fn external_cancellation_removes_waiting_root_workers_without_releasing_someone_
     assert_eq!(budget.io.snapshot().queued, 0);
     drop(held);
     assert_eq!(budget.io.snapshot().available, 4);
+}
+
+// Source-only boundary tests authored before configurable team implementation.
+fn blocked_roots(count: usize, kind: StorageKind) -> (Arc<Files>, Vec<Entry>, Arc<Blocker>) {
+    let block = Arc::new(Blocker::default());
+    let mut files = Files {
+        kind,
+        ..Files::default()
+    };
+    let roots = (0..count)
+        .map(|id| {
+            let path = format!("configured-root-{id}");
+            files.files(&path, 1);
+            files.opens.insert(path.clone().into(), block.clone());
+            root(id as u64, &path)
+        })
+        .collect();
+    (Arc::new(files), roots, block)
+}
+
+#[test]
+fn a_new_team_can_use_six_ssd_lanes_and_finishes_every_root() {
+    let budget = Arc::new(IoBudget::isolated());
+    budget.io.set_limit(6).unwrap();
+    let (files, roots, block) = blocked_roots(9, StorageKind::LocalSsd);
+    let _release = ReleaseOnDrop(block.clone());
+    let worker = start(files.clone(), roots, budget.clone());
+    block.wait(6);
+    assert_eq!(files.io.maximum.load(Ordering::SeqCst), 6);
+    assert_eq!(budget.io.snapshot().active_shared, 6);
+    block.release();
+    let results = worker.join().unwrap();
+    assert_eq!(results.len(), 9);
+    assert!(
+        results
+            .iter()
+            .all(|(_, size)| size.bytes == 1 && size.errors == 0)
+    );
+    assert_eq!(files.io.maximum.load(Ordering::SeqCst), 6);
+    assert_eq!(budget.io.snapshot().available, 6);
+}
+
+#[test]
+fn an_existing_one_lane_team_stays_small_after_growth_but_the_next_team_uses_six() {
+    let budget = Arc::new(IoBudget::isolated());
+    budget.io.set_limit(1).unwrap();
+    let (files, roots, block) = blocked_roots(9, StorageKind::LocalSsd);
+    let _release = ReleaseOnDrop(block.clone());
+    let worker = start(files.clone(), roots, budget.clone());
+    block.wait(1);
+    budget.io.set_limit(6).unwrap();
+    block.release();
+    assert_eq!(worker.join().unwrap().len(), 9);
+    // Once the gate has six slots, extra root lanes would overlap on real callbacks.
+    assert_eq!(files.io.maximum.load(Ordering::SeqCst), 1);
+    assert_eq!(files.root_threads.lock().unwrap().len(), 1);
+    let (next_files, next_roots, next_block) = blocked_roots(9, StorageKind::LocalSsd);
+    let _next_release = ReleaseOnDrop(next_block.clone());
+    let next = start(next_files.clone(), next_roots, budget.clone());
+    next_block.wait(6);
+    assert_eq!(next_files.io.maximum.load(Ordering::SeqCst), 6);
+    next_block.release();
+    assert_eq!(next.join().unwrap().len(), 9);
+}
+
+#[test]
+fn an_existing_six_lane_team_drains_after_shrink_without_releasing_blocked_io() {
+    let budget = Arc::new(IoBudget::isolated());
+    budget.io.set_limit(6).unwrap();
+    let (files, roots, block) = blocked_roots(12, StorageKind::LocalSsd);
+    let _release = ReleaseOnDrop(block.clone());
+    let worker = start(files.clone(), roots, budget.clone());
+    block.wait(6);
+    budget.io.set_limit(1).unwrap();
+    assert_eq!(budget.io.snapshot().active_shared, 6);
+    assert_eq!(budget.io.snapshot().available, 0);
+    block.release();
+    assert_eq!(worker.join().unwrap().len(), 12);
+    assert_eq!(budget.io.snapshot().active_shared, 0);
+    assert_eq!(budget.io.snapshot().available, 1);
+    let (next_files, next_roots, next_block) = blocked_roots(8, StorageKind::LocalSsd);
+    let _next_release = ReleaseOnDrop(next_block.clone());
+    let next = start(next_files.clone(), next_roots, budget.clone());
+    next_block.wait(1);
+    next_block.release();
+    assert_eq!(next.join().unwrap().len(), 8);
+    assert_eq!(next_files.io.maximum.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn four_maximum_teams_share_one_32_io_limit() {
+    let budget = Arc::new(IoBudget::isolated());
+    budget.io.set_limit(32).unwrap();
+    let (files, roots, block) = blocked_roots(160, StorageKind::LocalSsd);
+    let _release = ReleaseOnDrop(block.clone());
+    let workers: Vec<_> = roots
+        .chunks(40)
+        .map(|roots| start(files.clone(), roots.to_vec(), budget.clone()))
+        .collect();
+    block.wait(32);
+    queued(&budget, 96);
+    // Four sampled teams of 32 lanes: 32 callbacks hold admission, 96 lanes await it.
+    assert_eq!(budget.io.snapshot().queued, 96);
+    assert_eq!(budget.io.snapshot().active_shared, 32);
+    assert_eq!(files.io.maximum.load(Ordering::SeqCst), 32);
+    block.release();
+    let results: Vec<_> = workers
+        .into_iter()
+        .flat_map(|worker| worker.join().unwrap())
+        .collect();
+    assert_eq!(results.len(), 160);
+    assert!(
+        results
+            .iter()
+            .all(|(_, size)| size.bytes == 1 && size.errors == 0)
+    );
+    assert_eq!(files.io.maximum.load(Ordering::SeqCst), 32);
+    assert_eq!(files.root_threads.lock().unwrap().len(), 128);
+    assert_eq!(budget.io.snapshot().queued, 0);
+    assert_eq!(budget.io.snapshot().available, 32);
+}
+
+#[test]
+fn manual_six_keeps_rotational_network_and_unknown_scans_exclusive() {
+    for kind in [
+        StorageKind::Rotational,
+        StorageKind::Network,
+        StorageKind::Unknown,
+    ] {
+        let budget = Arc::new(IoBudget::isolated());
+        budget.io.set_limit(6).unwrap();
+        let (files, roots, block) = blocked_roots(8, kind);
+        let _release = ReleaseOnDrop(block.clone());
+        let worker = start(files.clone(), roots, budget.clone());
+        block.wait(1);
+        queued(&budget, 5);
+        assert!(budget.io.snapshot().exclusive);
+        assert_eq!(files.io.maximum.load(Ordering::SeqCst), 1);
+        block.release();
+        assert_eq!(worker.join().unwrap().len(), 8);
+        assert_eq!(files.io.maximum.load(Ordering::SeqCst), 1);
+        assert_eq!(budget.io.snapshot().available, 6);
+    }
 }

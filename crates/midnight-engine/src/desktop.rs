@@ -1,8 +1,10 @@
 //! Bounded optional desktop work, independent of navigation and folder scans.
 
 use crate::{
-    Outbox, retirement::RetirementWaiter, task_lifetime::TaskLifetime,
-    user_command_runtime::ProcessTracker,
+    Outbox,
+    retirement::RetirementWaiter,
+    task_lifetime::TaskLifetime,
+    user_command_runtime::{ProcessTicket, ProcessTracker},
 };
 use midnight_core::*;
 use std::{
@@ -68,7 +70,18 @@ pub(crate) struct Desktop {
 pub(crate) struct TrackedChild {
     pub(crate) child: Box<dyn TerminalProcess>,
     pub(crate) _slot: Arc<OwnedSemaphorePermit>,
-    pub(crate) completion: Option<(DesktopRequestId, PathBuf)>,
+    pub(crate) completion: Option<(DesktopRequestId, OpenCompletionTarget)>,
+}
+
+pub(crate) enum OpenCompletionTarget {
+    File(PathBuf),
+    System(SystemLocation),
+}
+
+struct OpenAdmission {
+    permit: Arc<OwnedSemaphorePermit>,
+    slot: Arc<OwnedSemaphorePermit>,
+    ticket: ProcessTicket,
 }
 
 impl Desktop {
@@ -290,22 +303,14 @@ impl Desktop {
                 .await;
             return;
         };
-        let Ok(permit) = self.open_budget.clone().try_acquire_owned() else {
-            self.fail(request, "File opening is busy. Try again.").await;
+        let Some(OpenAdmission {
+            permit,
+            slot,
+            ticket,
+        }) = self.reserve_open(request).await
+        else {
             return;
         };
-        let Ok(slot) = self.open_slots.clone().try_acquire_owned() else {
-            self.fail(request, "Too many desktop file-opening helpers are active.")
-                .await;
-            return;
-        };
-        let Ok(ticket) = self.processes.openers.try_reserve() else {
-            self.fail(request, "Desktop opener cleanup is busy. Try again.")
-                .await;
-            return;
-        };
-        let slot = Arc::new(slot);
-        let permit = Arc::new(permit);
         let worker_permit = permit.clone();
         let outbox = self.outbox.clone();
         let children = self.children.clone();
@@ -350,6 +355,94 @@ impl Desktop {
             .finish(result)
             .await;
         }));
+    }
+
+    pub(crate) async fn open_system_location(
+        &self,
+        request: DesktopRequestId,
+        location: SystemLocation,
+        tasks: &mut JoinSet<()>,
+    ) {
+        let Some(services) = self.services.clone() else {
+            self.outbox
+                .send(Event::DesktopActionFinished {
+                    request,
+                    result: Err(unsupported_system_location()),
+                })
+                .await;
+            return;
+        };
+        let Some(OpenAdmission {
+            permit,
+            slot,
+            ticket,
+        }) = self.reserve_open(request).await
+        else {
+            return;
+        };
+        let worker_permit = permit.clone();
+        let tracking_slot = slot.clone();
+        let scope = self.scope.clone();
+        let process_scope = Arc::new(scope.clone());
+        let children = self.children.clone();
+        let outbox = self.outbox.clone();
+        tasks.spawn(self.scope.future(async move {
+            let _permit = permit;
+            let result = tokio::task::spawn_blocking(scope.blocking(move || {
+                let _permit = worker_permit;
+                if !services.supports_system_location(location) {
+                    return Err(unsupported_system_location());
+                }
+                // The ticket and helper quota exist before dispatch. A returned
+                // child becomes owned before it can cross cancellation boundaries.
+                services.open_system_location(location).map(|child| {
+                    child.map(|child| -> Box<dyn TerminalProcess> {
+                        Box::new(ticket.own(child, slot, process_scope))
+                    })
+                })
+            }))
+            .await;
+            let result = match result {
+                Ok(Ok(Some(child))) => {
+                    let _ = children
+                        .send(TrackedChild {
+                            child,
+                            _slot: tracking_slot,
+                            completion: Some((request, OpenCompletionTarget::System(location))),
+                        })
+                        .await;
+                    return;
+                }
+                Ok(Ok(None)) => Ok(DesktopActionResult::SystemLocationOpened { location }),
+                Ok(Err(error)) => Err(error),
+                Err(error) => Err(worker_error("open system location", Path::new(""), error)),
+            };
+            outbox
+                .send(Event::DesktopActionFinished { request, result })
+                .await;
+        }));
+    }
+
+    async fn reserve_open(&self, request: DesktopRequestId) -> Option<OpenAdmission> {
+        let Ok(permit) = self.open_budget.clone().try_acquire_owned() else {
+            self.fail(request, "File opening is busy. Try again.").await;
+            return None;
+        };
+        let Ok(slot) = self.open_slots.clone().try_acquire_owned() else {
+            self.fail(request, "Too many desktop file-opening helpers are active.")
+                .await;
+            return None;
+        };
+        let Ok(ticket) = self.processes.openers.try_reserve() else {
+            self.fail(request, "Desktop opener cleanup is busy. Try again.")
+                .await;
+            return None;
+        };
+        Some(OpenAdmission {
+            permit: Arc::new(permit),
+            slot: Arc::new(slot),
+            ticket,
+        })
     }
 
     pub(crate) async fn properties(
@@ -498,6 +591,47 @@ fn editor_error(message: &str) -> FsError {
     )
 }
 
+fn unsupported_system_location() -> FsError {
+    FsError::from_io(
+        "open system location",
+        Path::new(""),
+        io::Error::new(
+            io::ErrorKind::Unsupported,
+            "This desktop system location is unavailable.",
+        ),
+    )
+}
+
+impl OpenCompletionTarget {
+    fn success(self) -> DesktopActionResult {
+        match self {
+            Self::File(_) => DesktopActionResult::FileOpened,
+            Self::System(location) => DesktopActionResult::SystemLocationOpened { location },
+        }
+    }
+    fn error(&self, waiting: bool, error: io::Error) -> FsError {
+        let (operation, path) = match self {
+            Self::File(path) => (
+                if waiting {
+                    "wait for desktop opener"
+                } else {
+                    "open entry"
+                },
+                path.as_path(),
+            ),
+            Self::System(_) => (
+                if waiting {
+                    "wait for system location opener"
+                } else {
+                    "open system location"
+                },
+                Path::new(""),
+            ),
+        };
+        FsError::from_io(operation, path, error)
+    }
+}
+
 struct OpenCompletion {
     request: DesktopRequestId,
     pane: PaneId,
@@ -534,7 +668,7 @@ impl OpenCompletion {
                     .send(TrackedChild {
                         child,
                         _slot: self.slot,
-                        completion: Some((self.request, path)),
+                        completion: Some((self.request, OpenCompletionTarget::File(path))),
                     })
                     .await;
                 return;
@@ -632,16 +766,23 @@ async fn context_worker(
         let worker = services.clone();
         let locale = locale.clone();
         let result = tokio::task::spawn_blocking(scope.blocking(move || {
-            worker
-                .locations()
-                .and_then(|locations| {
-                    crate::navigation_ordering::locations(locations, locale.as_deref())
-                })
-                .map(|locations| (worker.shell_flavor(), locations))
+            let (locations, network_position) =
+                crate::navigation_ordering::locations(worker.locations()?, locale.as_deref())?;
+            let system_locations = crate::navigation_ordering::system_locations(
+                &locations,
+                worker.supports_system_location(SystemLocation::RecycleBin),
+                locale.as_deref(),
+            )?;
+            Ok((
+                worker.shell_flavor(),
+                locations,
+                network_position,
+                system_locations,
+            ))
         }))
         .await;
         let (event, keys) = match result {
-            Ok(Ok((shell, (locations, network_position)))) => {
+            Ok(Ok((shell, locations, network_position, system_locations))) => {
                 // Keep the finite semantic aliases ahead of large mount inventories.
                 let keys = locations
                     .iter()
@@ -659,6 +800,7 @@ async fn context_worker(
                         shell,
                         locations,
                         network_position,
+                        system_locations,
                     },
                     keys,
                 )
@@ -811,13 +953,12 @@ fn poll_children(mut children: Vec<TrackedChild>) -> (Vec<TrackedChild>, Vec<Eve
     let mut completed = Vec::new();
     children.retain_mut(|child| match child.child.try_wait() {
         Ok(Some(status)) => {
-            if let Some((request, path)) = child.completion.take() {
+            if let Some((request, target)) = child.completion.take() {
                 let result = if status.success() {
-                    Ok(DesktopActionResult::FileOpened)
+                    Ok(target.success())
                 } else {
-                    Err(FsError::from_io(
-                        "open entry",
-                        &path,
+                    Err(target.error(
+                        false,
                         io::Error::other(format!("Desktop opener exited with {status}")),
                     ))
                 };
@@ -827,10 +968,10 @@ fn poll_children(mut children: Vec<TrackedChild>) -> (Vec<TrackedChild>, Vec<Eve
         }
         Ok(None) => true,
         Err(error) => {
-            if let Some((request, path)) = child.completion.take() {
+            if let Some((request, target)) = child.completion.take() {
                 completed.push(Event::DesktopActionFinished {
                     request,
-                    result: Err(FsError::from_io("wait for desktop opener", &path, error)),
+                    result: Err(target.error(true, error)),
                 });
             }
             true
