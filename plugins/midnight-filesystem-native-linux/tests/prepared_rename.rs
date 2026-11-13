@@ -107,7 +107,7 @@ fn prepare_close_and_cancel_leave_namespace_untouched() {
     let temp = Temp::new();
     let path = temp.path.join("selected");
     fs::write(&path, b"selected bytes").unwrap();
-    fs::set_permissions(&path, fs::Permissions::from_mode(0)).unwrap();
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o0)).unwrap();
     let before = fs::symlink_metadata(&path).unwrap();
     let client = Client::new();
     let prepared = prepare(&client, &path);
