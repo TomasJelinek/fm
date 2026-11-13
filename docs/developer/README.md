@@ -65,6 +65,10 @@ application services remain separate from independently developed plugin APIs.
 
 ## Architecture and ownership
 
+This diagram and the ownership paragraph below describe the semantic native viewer
+C ABI 1.0. Image/PDF, thumbnail, archive and HTML process providers use their
+[separate protocols and hosts](#discovery-and-trust).
+
 ```mermaid
 flowchart LR
     UI[Application viewer UI] --> Engine[Application orchestration]
@@ -76,11 +80,12 @@ flowchart LR
     Host --> UI
 ```
 
-The host owns file authority, native handles, worker scheduling, windowing,
-selection, clipboard, fonts and themes. Plugins own decoding, parsing, indexing,
-search and bounded caches. A plugin returns semantic data, never Slint objects,
-executable markup, a GUI event loop, a Tokio runtime, or Rust trait objects across
-the ABI. Source mode uses the Text model with semantic styles.
+For the semantic native viewer ABI, the application host owns file authority,
+native handles, backend scheduling, windowing, selection, clipboard, fonts and
+themes. Native viewer plugins own decoding, parsing, indexing, search and bounded
+caches. They return semantic data, never Slint objects, executable markup, a GUI
+event loop, a Tokio runtime, or Rust trait objects across this ABI. Source mode
+uses the Text model with semantic styles.
 
 One Git repository contains **separate Cargo workspaces**:
 
@@ -88,7 +93,7 @@ One Git repository contains **separate Cargo workspaces**:
 | --- | --- | --- |
 | `Cargo.toml`, `crates/` | Application, engine, UI, native host and platform services | Internal application crates |
 | `api/Cargo.toml` | Public ABI, schemas, SDK and maintainer packaging/header tools | No application crates or concrete parsers |
-| `filesystem-api/Cargo.toml` | Read-only executable filesystem protocol | Versioned public wire definitions; no application crates |
+| `filesystem-api/Cargo.toml` | Archive worker protocol and native filesystem API/SDK | Separate public wire and C ABI contracts; no application crates |
 | `worker-api/Cargo.toml` | Restricted executable startup SDK | Public platform containment contract |
 | `thumbnail-api/Cargo.toml` | Brokered media reads and bounded RGBA frame protocol | Independent public API/SDK; no application crates |
 | `image-viewer-api/Cargo.toml` | Raster image/document protocol and SDK 0.2.0 | Versioned public page metadata and bounded viewport messages |
@@ -197,29 +202,43 @@ listed boundaries are exact. See [source mappings](VIEWER_PROTOCOL.md#source-map
 
 ## Filesystem/provider API status
 
-The [read-only filesystem worker API](FILESYSTEM_API.md) is implemented as the
-separate `midnight-filesystem-api` package `0.1.0`, executable protocol 1. Independent
-archive workers use the [worker SDK](WORKER_SDK.md), exchange bounded source/list/read
-messages through pipes, and integrate with pane navigation, persistent tabs and
-F3 content leases. The reference plugin supports ZIP, GZIP, TAR/TAR.GZ and 7z.
-Missing packages remove that capability. See the API reference for exact limits,
-identity rules, installation, errors and independent builds.
+The [archive worker API](FILESYSTEM_API.md) is the separate
+[`midnight-filesystem-api` package `0.4.0`](../../filesystem-api/midnight-filesystem-api/Cargo.toml),
+with [wire protocols 1, 2 and 3](../../filesystem-api/PROTOCOL.md). Independent
+archive workers use the [worker SDK](WORKER_SDK.md) and bounded source/list/read
+messages through pipes. Browse/Read, pane navigation, persistent tabs, F3 content
+leases and verified F5 copy-out are implemented. Host-side extraction/copy-out
+uses member reads and the [verified transfer pipeline](TRANSFERS.md), including
+independent destination readback before native publication. The archive worker receives
+no extraction or write request; archive mutation remains outside its read-only API.
+Missing packages remove the corresponding capability. See the API reference for
+advertised formats, limits, identity rules, installation and independent builds.
 
-`KIND_FILESYSTEM = 2` in the viewer C ABI remains a reserved kind; executable
-filesystem workers do not use that loader. General native/network providers,
-credentials, extraction and mutation remain future public contracts. Internal
-Rust mount traits are application implementation details, not plugin exports.
+Installed [native filesystem libraries](NATIVE_FILESYSTEM_API.md) implement
+Browse/Read and related metadata/storage services through a separate C ABI.
+[Network Neighborhood](NETWORK_FILESYSTEM.md) uses that ABI's 1.2 activation,
+refresh and text-resolution extensions. The application loads these DLL/SO providers
+through its native filesystem host. The viewer C ABI's `KIND_FILESYSTEM = 2`
+remains reserved; neither filesystem libraries nor archive workers use that
+viewer loader.
 
-Accepted direction and future requirements are recorded in the
-[dynamic viewer/filesystem design](../superpowers/specs/2026-11-05-dynamic-viewer-filesystem-plugins-design.md),
+Current native [API](../../filesystem-api/midnight-filesystem-plugin-api/Cargo.toml)
+and [SDK](../../filesystem-api/midnight-filesystem-plugin-sdk/Cargo.toml) source
+packages are `0.2.0`. The [ABI definitions](../../filesystem-api/midnight-filesystem-plugin-api/src/abi.rs)
+add optional [ABI 1.3 prepared same-parent Rename](../../filesystem-api/NATIVE_PLUGIN_PROTOCOL.md#optional-prepared-rename-abi-minor-3).
+The core/host lifecycle is implemented; engine/UI integration and installed-provider
+runtime qualification/deployment remain open. Generic provider mutation and
+credential/authentication brokering remain separate work. Browse/Read grants no
+write or source-removal authority. Internal Rust mount traits remain application
+implementation details, not public plugin exports.
+
+The [dynamic viewer/filesystem design](../superpowers/specs/2026-11-05-dynamic-viewer-filesystem-plugins-design.md),
 [viewer/VFS design](../superpowers/specs/2026-11-04-viewer-vfs-design.md) and
-[network filesystem design](../superpowers/specs/2026-11-05-network-filesystem-design.md).
-They cover independent native providers and archive/network providers, opaque
-identities, capability reporting and content leases. The initial archive direction
-is read-only browsing/reading; extraction, verified copying and mutation need
-their own later contracts. The
+[network filesystem design](../superpowers/specs/2026-11-05-network-filesystem-design.md)
+record earlier staging and remaining requirements; the current API contracts above
+define implemented routes. The
 [viewer implementation extension](../superpowers/specs/2026-11-05-viewer-implementation-extension.md)
-records the implemented viewer scope and its deviations from earlier staging.
+records the semantic native viewer scope and its deviations from earlier staging.
 
 ## Application internals are a separate development surface
 
