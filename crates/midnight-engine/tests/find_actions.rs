@@ -17,24 +17,60 @@ async fn search(
     root: &Path,
     generation: u64,
 ) -> Vec<Arc<FindResult>> {
-    send.send(Command::StartFind(Box::new(FindRequest::new(
-        FindSessionId(1),
-        FindGeneration(generation),
-        vec![root.to_owned()],
-    ))))
+    search_request(
+        send,
+        receive,
+        FindRequest::new(
+            FindSessionId(1),
+            FindGeneration(generation),
+            vec![root.to_owned()],
+        ),
+    )
     .await
-    .unwrap();
+    .0
+}
+async fn search_request(
+    send: &mpsc::Sender<Command>,
+    receive: &mut mpsc::Receiver<Event>,
+    request: FindRequest,
+) -> (Vec<Arc<FindResult>>, FindSummary) {
+    let owner = (request.session, request.generation);
+    send.send(Command::StartFind(Box::new(request)))
+        .await
+        .unwrap();
     let mut results = Vec::new();
     loop {
         if let Event::Find(update) = event(receive).await {
-            if update.generation != FindGeneration(generation) {
+            if (update.session, update.generation) != owner {
                 continue;
             }
             match update.update {
                 FindUpdate::Batch(batch) => results.extend(batch.iter().cloned()),
-                FindUpdate::Finished(_) => return results,
+                FindUpdate::Finished(summary) => return (results, summary),
                 _ => {}
             }
+        }
+    }
+}
+fn same_request(actual: FindValidationRequest, expected: FindValidationRequest) -> bool {
+    actual.session == expected.session
+        && actual.generation == expected.generation
+        && actual.result == expected.result
+        && actual.token == expected.token
+}
+async fn validate(
+    send: &mpsc::Sender<Command>,
+    receive: &mut mpsc::Receiver<Event>,
+    request: FindValidationRequest,
+) -> Result<Box<FindEntry>, FsError> {
+    send.send(Command::ValidateFindResult(request))
+        .await
+        .unwrap();
+    loop {
+        if let Event::FindResultValidated(result) = event(receive).await
+            && same_request(result.request, request)
+        {
+            return result.result;
         }
     }
 }
@@ -45,17 +81,16 @@ async fn capture(
     generation: u64,
     token: u64,
 ) -> Result<Arc<dyn CapturedFindFile>, FsError> {
-    send.send(Command::CaptureFindFile(FindValidationRequest {
+    let request = FindValidationRequest {
         session: FindSessionId(1),
         generation: FindGeneration(generation),
         result,
         token,
-    }))
-    .await
-    .unwrap();
+    };
+    send.send(Command::CaptureFindFile(request)).await.unwrap();
     loop {
         if let Event::FindFileCaptured(result) = event(receive).await
-            && result.request.token == token
+            && same_request(result.request, request)
         {
             return result.result;
         }
@@ -224,4 +259,63 @@ fn capture_provider_final_drop_survives_runtime_shutdown_off_caller_thread() {
         observe.recv_timeout(Duration::from_secs(5)).unwrap(),
         std::thread::current().id()
     );
+}
+
+#[tokio::test]
+async fn nested_immutable_find_result_keeps_revision_through_repeated_actions() {
+    let fixture_parent =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../_build/tmp/find-result-revision/engine");
+    std::fs::create_dir_all(&fixture_parent).unwrap();
+    let fixture = tempfile::tempdir_in(std::fs::canonicalize(fixture_parent).unwrap()).unwrap();
+    let nested = fixture.path().join("nested 文档").join("include");
+    std::fs::create_dir_all(&nested).unwrap();
+    let target = nested.join("DynamicMatrixCacheLimit.h");
+    std::fs::write(&target, vec![b'x'; 2670]).unwrap();
+    let modified = std::time::UNIX_EPOCH + Duration::new(1_700_000_000, 123_456_700);
+    std::fs::File::options()
+        .write(true)
+        .open(&target)
+        .unwrap()
+        .set_times(std::fs::FileTimes::new().set_modified(modified))
+        .unwrap();
+    let (send, mut receive, running) = engine();
+    let outcome = tokio::time::timeout(Duration::from_secs(30), async {
+        let mut query = FindRequest::new(
+            FindSessionId(1),
+            FindGeneration(1),
+            vec![fixture.path().to_owned()],
+        );
+        query.masks = "*cache*".into();
+        let (results, summary) = search_request(&send, &mut receive, query).await;
+        assert_eq!(summary.completion, FindCompletion::Completed);
+        let result = results
+            .iter()
+            .find(|result| result.entry.path == target)
+            .unwrap();
+        assert_eq!(result.entry.metadata.size, Some(2670));
+        assert_eq!(result.entry.metadata.modified, Some(modified));
+        for token in 1..=4 {
+            let request = FindValidationRequest {
+                session: FindSessionId(1),
+                generation: FindGeneration(1),
+                result: result.id,
+                token,
+            };
+            let validated = validate(&send, &mut receive, request).await.unwrap();
+            assert_eq!(validated.revision, result.entry.revision);
+            assert!(validated.matches_capture(&result.entry));
+            let source = capture(&send, &mut receive, result.id, 1, token)
+                .await
+                .unwrap();
+            assert_eq!(source.entry().revision, result.entry.revision);
+            assert!(source.entry().matches_capture(&result.entry));
+            source.validate(&Cancellation::default()).unwrap();
+        }
+    })
+    .await;
+    let stopped = send.send(Command::Shutdown).await;
+    let joined = tokio::time::timeout(Duration::from_secs(10), running).await;
+    stopped.unwrap();
+    joined.unwrap().unwrap();
+    outcome.unwrap();
 }

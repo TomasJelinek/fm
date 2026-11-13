@@ -180,6 +180,7 @@ fn run(
     let ready = snapshots.lock().unwrap_or_else(|e| e.into_inner())[request.root.pane.index()]
         .capture_tree_root(&request.root)
         .ok()?;
+    let native_root = ready.archive().is_none();
     let mut seen = HashSet::new();
     for id in &request.visible {
         if cancel.is_cancelled() {
@@ -191,7 +192,9 @@ fn run(
             .by_id
             .get(id)
             .and_then(|position| request.root.entries.get(*position))?;
-        if entry.id != *id || entry.kind != EntryKind::Directory || !seen.insert(*id) {
+        let directory = entry.kind == EntryKind::Directory
+            || (native_root && entry.kind == EntryKind::DirectoryLink);
+        if entry.id != *id || !directory || !seen.insert(*id) {
             return None;
         }
     }

@@ -48,9 +48,11 @@ the caret to its surviving visible ancestor. Loading updates preserve the panel
 viewport.
 
 Details and Brief reserve the same disclosure gutter for every row, including
-files and directory links without an expansion button. Thus a Windows junction
-such as `Documents and Settings` aligns with ordinary folders; its system link
-overlay remains visible. Thumbnail artwork retains its centered layout.
+files and known-empty directory links without an expansion button. Supported
+directory links, including Windows junctions such as `Documents and Settings`,
+can show an expander under the same disclosure rules as ordinary folders; their
+system link overlay remains visible. Thumbnail artwork retains its centered
+layout.
 
 Tree selection uses separate backend snapshots and at most 32 small pending
 intents for immediate visible feedback. Ctrl/Shift input, Insert/Space toggles,
@@ -134,8 +136,9 @@ filter/sort evidence below.
 Flat-panel subfolder hints are independent of tree adoption. At most 256 viewport
 directory IDs are probed against the exact completed listing, with one coalescing
 worker per pane, the existing listing capacity and shared I/O budget. Native
-enumeration stops at the first folder; archive probes retain the captured member
-and mount identity. Links are visible children but are not recursively probed.
+enumeration stops at the first immediate directory or directory-link child; it
+does not descend into that child or recursively walk link targets. Archive probes
+retain the captured member and mount identity.
 Empty/has-folder hints are held in a bounded display cache. Selection, flat action
 authority and navigation stay unchanged until the user's ordinary disclosure
 click requests exact tree adoption. Navigation, refresh and viewport replacement
@@ -151,6 +154,18 @@ File-only directories have no arbitrary record-count cutoff. Cancellation and
 the worker/I/O limits bound concurrent work; archive probes retain their existing
 captured-mount validation and resource policy.
 
+Native flat-panel admission now accepts `DirectoryLink` alongside ordinary
+directories for the exact captured native root. Previously, one directory link
+could discard the entire viewport batch. Archive batches still reject links and
+files; empty or unavailable native links retain individual hints without losing
+ordinary siblings' results. The admission regressions first ran **6 passed /
+2 failed / 0 ignored**. The corrected presence gate passes **12/0/0** (admission
+8 + provider 4), with compile 0 and zero source drift. The
+[current presence and Find gate](../ACTIVE_WORK.md#native-link-presence-and-find-gate)
+records the newer receipts. The corrected Windows debug build and registered
+private entrypoint pass engine/native UI startup. This admission correction does
+not add recursive presence probing or establish protected CSC access.
+
 <a id="planned-retry-diagnostics-and-recursive-expansion"></a>
 
 ## Retry diagnostics and recursive expansion
@@ -161,7 +176,9 @@ Engine authorization tests at `3826298` passed **5 / 0**. The
 [authorization verification note](../verification/2026-11-11-directory-authorization.md#12-november-csc-warning-retention-regression)
 records both source/test boundaries: mocked authorization, event retention and
 helper denial/cancellation/transport. Successful native CSC access through Windows
-UAC and a fresh qualified application EXE remain unproved.
+UAC remains unproved. The [current checkpoint](../ACTIVE_WORK.md#current-checkpoint)
+records separate application build/startup qualification; source correctness and
+startup do not establish access to protected CSC.
 
 A denied row, including `C:\Windows\CSC`, retains its warning throughout an
 explicit elevation retry until the matching current listing actually succeeds.
@@ -210,9 +227,15 @@ an explicit follow-up. Architect owns the API contract, Backend owns traversal/
 cycles, and UI owns modifier/state routing. Backend's broad first run retained one
 legacy fixture failure; its refined Windows junction/Delete subset passes 11/0
 with unchanged production. Those exact scopes and the separate thumbnail RED
-are recorded in the verification note. The new registered private runtime passes
-engine smoke and native UI startup. Its exact EXE identity and startup-only
-qualification are recorded there; the Linux native fixture has not yet executed.
+are recorded in the verification note. The current registered private Windows
+runtime passes engine smoke and native UI startup; its exact EXE identity and
+startup-only qualification are recorded in the
+[current checkpoint](../ACTIVE_WORK.md#current-checkpoint). Linux now has separate
+WSL/tmpfs receipts for the original `1714d99` fixture and the updated frozen
+link-maintenance fixture, each **1 passed / 0 failed / 0 ignored** under its own
+source scope. The corrected helper's separate clipboard/copy/move gate passes
+**13/0/0** using software UI and real filesystem fixtures. These later results do
+not establish Linux desktop qualification or broaden the earlier test scopes.
 
 ## Directory sizes
 
