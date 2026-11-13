@@ -236,6 +236,7 @@ fn cleanup_receipt_survives(pending_stages: u8) {
         native_identity: source_pin.native_identity(),
         source: None,
         copy: Some(VerifiedFileCopy::new(source_pin, staged).unwrap()),
+        link: None,
         destination: directory,
         name: "final".into(),
         target: None,

@@ -238,14 +238,17 @@ source scope. The corrected helper's separate clipboard/copy/move gate passes
 **13/0/0** using software UI and real filesystem fixtures. These later results do
 not establish Linux desktop qualification or broaden the earlier test scopes.
 
-The corrected [tree scaling candidate](../ACTIVE_WORK.md#tree-scaling-candidate-gate)
-passes 95 unique functional cases and Clippy with zero drift, but the debug
-opt-level 0 synthetic-provider aggregate **fails**; it measures no filesystem I/O
-or UI paint. Wide 10k cases take **50.83 s** (`K=0`) and **50.01 s** (`K=1`);
-the depth-32 broom is censored at **60 s**, with **9,936 callbacks / 9,920 published
-entries**. The initial stale compiler artifact was rejected before timing.
-The current `fd94d85` startup-qualified runtime predates this candidate; no
-large-tree speed or UI input-to-paint qualification follows.
+The historical [cap16 tree candidate](../ACTIVE_WORK.md#tree-scaling-candidate-gate)
+passed **95 unique functional cases** and Clippy with zero drift, while its debug
+opt-level 0 synthetic-provider aggregate **failed**. Wide 10k cases took
+**50.83 s** (`K=0`) and **50.01 s** (`K=1`); the depth-32 broom was censored at
+**60 s**, with **9,936 callbacks / 9,920 published entries**. The initial stale
+compiler artifact was rejected before timing. The later integrated
+[cap128 increment](../ACTIVE_WORK.md#recursive-tree-cap128-gate)
+(`2b28cc7` / `02b2f2f`) passed its single debug synthetic aggregate; the current
+`516fc158` runtime includes that source with startup-only qualification.
+These measurements include no native filesystem I/O or UI paint and establish
+no native performance or UI input-to-paint qualification.
 
 ## Directory sizes
 

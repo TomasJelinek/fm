@@ -1,6 +1,7 @@
 import { Theme } from "theme.slint";
 import { FileRow, TreePress } from "file-models.slint";
 import { FallbackIcons } from "action-icons.slint";
+import { TipBody } from "controls.slint";
 
 // Separate input ownership keeps expansion out of selection, drag and activation.
 export component TreeDisclosure inherits Rectangle {
@@ -24,6 +25,12 @@ export component TreeDisclosure inherits Rectangle {
     accessible-label: root.label + root.item.name;
     accessible-enabled: root.available;
     accessible-action-default => { if root.available { root.disclose(root.item.identity); } }
+    Tooltip {
+        TipBody {
+            text: root.label + root.item.name
+                + "\nCtrl+click: expand subfolders, including links.\nCollapse to stop expanding this branch.";
+        }
+    }
     if !root.expanded && root.item.tree-disclosure == 6 : Image {
         source: FallbackIcons.refresh; colorize: Theme.secondary-text;
         width: min(16px, parent.width); height: min(16px, parent.height);

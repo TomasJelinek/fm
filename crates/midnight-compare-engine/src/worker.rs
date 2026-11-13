@@ -114,6 +114,10 @@ fn compare(
     capture: &Capture<'_>,
 ) -> Result<(), String> {
     let cancel = capture.cancel;
+    #[cfg(test)]
+    let first_frame_started = std::time::Instant::now();
+    #[cfg(test)]
+    crate::trace_first_frame("capture-start", first_frame_started);
     let left = capture.open(&paths[0]).map_err(|error| {
         format!(
             "File A could not be opened: {error}\n{}",
@@ -127,6 +131,8 @@ fn compare(
         )
     })?;
     let sources = [left, right];
+    #[cfg(test)]
+    crate::trace_first_frame("capture-complete", first_frame_started);
     // Image viewers are optional: a missing registered runtime cannot disable text diff.
     let providers = midnight_plugin_host::installed_executable()
         .ok()
@@ -161,17 +167,32 @@ fn compare(
         }
         [None, None] => {
             output.put(Output::Status("Reading and comparing text…".into()));
+            #[cfg(test)]
+            crate::trace_first_frame("text-read-start", first_frame_started);
             let left = crate::text::read(&sources[0], cancel)?;
+            #[cfg(test)]
+            crate::trace_first_frame("left-text-read-complete", first_frame_started);
             let right = crate::text::read(&sources[1], cancel)?;
-            Content::Text(Box::new(TextComparison::new(&left, &right, cancel)?))
+            #[cfg(test)]
+            crate::trace_first_frame("text-reads-complete", first_frame_started);
+            let text = TextComparison::new(&left, &right, cancel)?;
+            #[cfg(test)]
+            crate::trace_first_frame("text-prepare-complete", first_frame_started);
+            Content::Text(Box::new(text))
         }
         _ => return Err("Select two supported images or two text files.".into()),
     };
     viewport.geometry = bounded(viewport.geometry);
     let mut dirty = true;
+    #[cfg(test)]
+    let mut first_frame = true;
     loop {
         check_cancel(cancel)?;
         if dirty {
+            #[cfg(test)]
+            if first_frame {
+                crate::trace_first_frame("first-frame-revalidate", first_frame_started);
+            }
             for source in &sources {
                 source
                     .revalidate()
@@ -181,6 +202,10 @@ fn compare(
                 Content::Text(text) => text.paint(viewport.geometry, appearance, cancel)?,
                 Content::Images(images) => images.paint(viewport.geometry, cancel)?,
             };
+            #[cfg(test)]
+            if first_frame {
+                crate::trace_first_frame("first-frame-painted", first_frame_started);
+            }
             frame.geometry_revision = viewport.revision;
             check_cancel(cancel)?;
             for source in &sources {
@@ -193,6 +218,11 @@ fn compare(
                 frame,
                 names: paths.each_ref().map(|path| path.display().to_string()),
             });
+            #[cfg(test)]
+            if first_frame {
+                crate::trace_first_frame("first-frame-published", first_frame_started);
+                first_frame = false;
+            }
             dirty = false;
         }
         match receiver.recv_timeout(Duration::from_millis(30)) {

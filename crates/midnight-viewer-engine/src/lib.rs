@@ -25,6 +25,7 @@ mod image_view;
 mod image_worker;
 mod input_queue;
 mod interaction;
+mod layout_handshake;
 mod mailbox;
 mod navigation;
 #[cfg(test)]
@@ -290,6 +291,29 @@ impl Service {
         appearance: ViewerAppearance,
         geometry: ViewerGeometry,
     ) -> Result<WindowSession, String> {
+        self.open_impl(launch, appearance, geometry, false)
+    }
+
+    /// Negotiate each backend-selected layout before opening its content.
+    /// The initial geometry is provisional; the frontend must acknowledge every
+    /// LayoutSelected with its token and settled canvas, including unchanged sizes.
+    /// Existing fixed-viewport consumers should continue to use open().
+    pub fn open_with_layout(
+        &self,
+        launch: ViewerLaunch,
+        appearance: ViewerAppearance,
+        geometry: ViewerGeometry,
+    ) -> Result<WindowSession, String> {
+        self.open_impl(launch, appearance, geometry, true)
+    }
+
+    fn open_impl(
+        &self,
+        launch: ViewerLaunch,
+        appearance: ViewerAppearance,
+        geometry: ViewerGeometry,
+        negotiate_layout: bool,
+    ) -> Result<WindowSession, String> {
         if let Err(error) = launch.preferences.validate() {
             self.retire(launch);
             return Err(error.to_owned());
@@ -308,7 +332,11 @@ impl Service {
         }
         let (sender, receiver) = mpsc::sync_channel(64);
         let wakes = sender.clone();
-        let mailbox = Arc::new(Mailbox::default());
+        let mailbox = Arc::new(if negotiate_layout {
+            Mailbox::with_layout()
+        } else {
+            Mailbox::default()
+        });
         let closed = Arc::new(AtomicBool::new(false));
         let service = self.clone();
         let output = mailbox.clone();
@@ -333,6 +361,7 @@ impl Service {
                         wake: Arc::new(move || wakes.try_send(worker::Message::Ready).is_ok()),
                         preferences: worker_preferences,
                         raster_budget: service.raster_budget.clone(),
+                        negotiate_layout,
                     },
                     launch,
                     appearance,

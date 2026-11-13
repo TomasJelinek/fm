@@ -35,8 +35,11 @@ impl Preparation {
                 "Transfer preparation has already completed.",
             ));
         }
+        // Refuse incompatible options before revalidating or preparing providers.
+        self.input.validate()?;
         self.service.revalidate(&cancel)?;
         let metadata = self.input.metadata;
+        let links = self.input.links;
         let resolved = self.input.clone().resolve(&self.service, &cancel)?;
         let requested_roots = match &resolved {
             Resolved::Native(request) | Resolved::NativeMove(request) => {
@@ -60,19 +63,25 @@ impl Preparation {
                 status,
                 metadata,
             ),
-            Resolved::Native(request) => {
-                worker::Job::prepare_with_metadata(request, &self.service, cancel, status, metadata)
-            }
+            Resolved::Native(request) => worker::Job::prepare_with_options(
+                request,
+                &self.service,
+                cancel,
+                status,
+                metadata,
+                links,
+            ),
             Resolved::Captured {
                 destination,
                 sources: PreparedCapturedTransfer::Copy(sources),
-            } => worker::Job::prepare_sources(
+            } => worker::Job::prepare_sources_with_options(
                 destination,
                 sources,
                 &self.service,
                 cancel,
                 status,
                 metadata,
+                links,
             ),
             Resolved::Captured {
                 destination,
@@ -105,7 +114,7 @@ impl Preparation {
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 enum Authority {
-    Copy,
+    Copy(CopyLinkPolicy),
     Move,
 }
 
@@ -170,7 +179,11 @@ impl RetainedService {
             previous
         } else {
             let (source, capture) = match authority {
-                Authority::Copy => (self.service.prepare_transfer_source(path, cancel)?, None),
+                Authority::Copy(links) => (
+                    self.service
+                        .prepare_transfer_source_with_links(path, links, cancel)?,
+                    None,
+                ),
                 Authority::Move => {
                     let prepared = self.service.prepare_move_source(path, cancel)?;
                     (prepared.source, Some(prepared.capture))
@@ -200,7 +213,7 @@ impl RetainedService {
             previous
         } else {
             let directory = match authority {
-                Authority::Copy => self.service.prepare_transfer_destination(path, cancel)?,
+                Authority::Copy(_) => self.service.prepare_transfer_destination(path, cancel)?,
                 Authority::Move => self.service.prepare_move_destination(path, cancel)?,
             };
             let destination = PinnedDirectory {
@@ -232,7 +245,18 @@ impl TransferService for RetainedService {
         path: &Path,
         cancel: &Cancellation,
     ) -> Result<Box<dyn TransferSource>, FsError> {
-        Ok(Box::new(self.source(path, Authority::Copy, cancel)?.source))
+        self.prepare_transfer_source_with_links(path, CopyLinkPolicy::Reject, cancel)
+    }
+
+    fn prepare_transfer_source_with_links(
+        &self,
+        path: &Path,
+        links: CopyLinkPolicy,
+        cancel: &Cancellation,
+    ) -> Result<Box<dyn TransferSource>, FsError> {
+        Ok(Box::new(
+            self.source(path, Authority::Copy(links), cancel)?.source,
+        ))
     }
 
     fn prepare_transfer_destination(
@@ -240,7 +264,7 @@ impl TransferService for RetainedService {
         path: &Path,
         cancel: &Cancellation,
     ) -> Result<Arc<dyn TransferDirectory>, FsError> {
-        self.destination(path, Authority::Copy, cancel)
+        self.destination(path, Authority::Copy(CopyLinkPolicy::Reject), cancel)
     }
 
     fn prepare_move_source(
@@ -386,6 +410,14 @@ impl TransferSource for SharedSource {
             ));
         }
         Ok(())
+    }
+
+    fn link_representation(
+        &self,
+        cancel: &Cancellation,
+    ) -> Result<TransferLinkRepresentation, FsError> {
+        self.revalidate(cancel)?;
+        self.source()?.link_representation(cancel)
     }
 
     fn open_child(

@@ -1,6 +1,10 @@
 //! Blocking, identity-pinned copy capabilities. Call only on backend workers.
 //! Ordinary Copy never removes sources; explicit Move finalization is separate.
 //! Replacement requires an explicit provider contract.
+#[path = "transfer_links.rs"]
+mod links;
+pub use links::*;
+
 use crate::{Cancellation, FsError, MutationItem};
 use std::{
     ffi::OsStr,
@@ -93,6 +97,26 @@ pub trait TransferService: Send + Sync {
         path: &Path,
         cancel: &Cancellation,
     ) -> Result<Box<dyn TransferSource>, FsError>;
+    /// Optional explicit link-preserving Copy capture. Reject keeps legacy source
+    /// preparation unchanged. Preserve requires a positive no-follow native
+    /// capability; never fall back to a readable referent or Move preparation.
+    /// Retain this policy in directory sources so next_child/open_child capture
+    /// link objects recursively. Capture original raw binding, identity and
+    /// revision/representation; retries keep these pins rather than recapturing.
+    fn prepare_transfer_source_with_links(
+        &self,
+        path: &Path,
+        links: CopyLinkPolicy,
+        cancel: &Cancellation,
+    ) -> Result<Box<dyn TransferSource>, FsError> {
+        match links {
+            CopyLinkPolicy::Reject => self.prepare_transfer_source(path, cancel),
+            CopyLinkPolicy::Preserve => Err(transfer_unsupported(
+                path,
+                "link-preserving source preparation is unsupported",
+            )),
+        }
+    }
     fn prepare_transfer_destination(
         &self,
         path: &Path,
@@ -100,9 +124,28 @@ pub trait TransferService: Send + Sync {
     ) -> Result<Arc<dyn TransferDirectory>, FsError>;
 }
 
-/// A regular file or directory opened without following the selected entry's links.
-/// Iteration opens at most one child per call. Retain directory sources on the traversal stack.
+/// A no-follow regular file, ordinary directory or explicitly preserved link.
+/// Iteration opens at most one child per call. Retain directory sources on the traversal stack;
+/// preserved links are leaves and never grant referent reads or traversal.
 pub trait TransferSource: Send {
+    /// Independently read the retained native link's exact bounded representation
+    /// without opening its target. Success must revalidate the ORIGINAL retained
+    /// parent/ancestor bindings and raw source name against the captured object,
+    /// not merely certify that a retained descriptor/handle still refers to it.
+    /// Compare its current revision/payload against the original capture: an
+    /// in-place change must fail even if native identity is unchanged. Never
+    /// adopt a new binding, revision or payload, or return cached creation bytes.
+    /// The caller repeats this query immediately before publication. Declared
+    /// native kind/format, not the display EntryKind, establishes link authority.
+    fn link_representation(
+        &self,
+        _cancel: &Cancellation,
+    ) -> Result<TransferLinkRepresentation, FsError> {
+        Err(transfer_unsupported(
+            &self.entry().item.path,
+            "native link representation is unsupported",
+        ))
+    }
     /// Metadata-only independent traversal of this pinned source. Never consumes its copy
     /// iterator, reads file contents, follows links or grants mutation authority.
     fn discover(
@@ -214,6 +257,35 @@ pub trait TransferSource: Send {
 }
 
 pub trait TransferDirectory: Send + Sync {
+    /// Read-only positive admission for this exact native kind/format/flags and
+    /// payload on the retained destination. Reject unsupported formats, local
+    /// junction forms, permissions or filesystem features explicitly; never
+    /// open a target. Admission does not grant replacement or Move authority.
+    fn admit_link(
+        &self,
+        _representation: &TransferLinkRepresentation,
+        _cancel: &Cancellation,
+    ) -> Result<(), FsError> {
+        Err(transfer_unsupported(
+            self.path(),
+            "link staging is unsupported",
+        ))
+    }
+    /// Exclusively create an owned native link stage after positive admission;
+    /// never normalize/rebase its target or create/open referent content. Validate
+    /// format lengths before allocation. After partial creation, failure MUST
+    /// return the owned partial stage for explicit worker cleanup; it grants no
+    /// publication/resume authority. No-stage failure certifies no owned residue.
+    fn stage_link(
+        &self,
+        _representation: &TransferLinkRepresentation,
+        _cancel: &Cancellation,
+    ) -> Result<Box<dyn StagedTransferLink>, TransferLinkStageError> {
+        Err(TransferLinkStageError {
+            error: transfer_unsupported(self.path(), "link staging is unsupported"),
+            stage: None,
+        })
+    }
     /// Open one existing ordinary child through this pinned native directory.
     fn open_read_child(
         &self,

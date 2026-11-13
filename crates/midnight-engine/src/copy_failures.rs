@@ -34,7 +34,9 @@ impl Job {
                 let work = self.current.as_ref().expect("failed entry remains owned");
                 let stage = work.copy.as_ref().map_or_else(
                     || {
-                        if work.entry().item.kind == EntryKind::Directory {
+                        if let Some(link) = &work.link {
+                            link.failure_stage()
+                        } else if work.entry().item.kind == EntryKind::Directory {
                             CopyErrorStage::CreatingDirectory
                         } else {
                             CopyErrorStage::Preparing
@@ -45,16 +47,21 @@ impl Job {
                 (
                     stage,
                     Some(work.entry().item.path.clone()),
-                    work.copy.as_ref().map_or(work.source.is_some(), |copy| {
-                        copy.can_retry()
-                            || matches!(
-                                copy.phase(),
-                                CopyPhase::Copying
-                                    | CopyPhase::Syncing
-                                    | CopyPhase::Verifying
-                                    | CopyPhase::ReadyToPublish
-                            )
-                    }),
+                    work.link.as_ref().map_or_else(
+                        || {
+                            work.copy.as_ref().map_or(work.source.is_some(), |copy| {
+                                copy.can_retry()
+                                    || matches!(
+                                        copy.phase(),
+                                        CopyPhase::Copying
+                                            | CopyPhase::Syncing
+                                            | CopyPhase::Verifying
+                                            | CopyPhase::ReadyToPublish
+                                    )
+                            })
+                        },
+                        link_job::LinkCopy::can_retry,
+                    ),
                     true,
                 )
             }

@@ -26,6 +26,29 @@ pub trait CapturedTransferSources: std::fmt::Debug + Send + Sync {
         service: &dyn TransferService,
         cancel: &Cancellation,
     ) -> Result<PreparedCapturedTransfer, FsError>;
+    /// Optional explicit link-preserving Copy capture. Reject delegates exactly
+    /// to legacy preparation; unimplemented Preserve fails before opening roots.
+    /// Implementations retain the policy and original raw occurrence/pins through
+    /// recursive children and retry, never recapturing a link's browsed referent.
+    /// Preserve with a Move intent must be rejected before preparation or writes.
+    fn prepare_with_links(
+        &self,
+        service: &dyn TransferService,
+        links: CopyLinkPolicy,
+        cancel: &Cancellation,
+    ) -> Result<PreparedCapturedTransfer, FsError> {
+        match links {
+            CopyLinkPolicy::Reject => self.prepare(service, cancel),
+            CopyLinkPolicy::Preserve => Err(FsError::from_io(
+                "prepare captured transfer",
+                std::path::Path::new(""),
+                std::io::Error::new(
+                    std::io::ErrorKind::Unsupported,
+                    "link-preserving captured preparation is unsupported",
+                ),
+            )),
+        }
+    }
 }
 
 /// Prepared authority remains intent-specific; Copy roots cannot grant removal.

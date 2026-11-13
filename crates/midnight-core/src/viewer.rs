@@ -211,6 +211,12 @@ pub enum ViewerInput {
         frame: u64,
         input: viewer_web::CommandKind,
     },
+    /// Acknowledge the current backend-selected layout after measuring its canvas.
+    /// This token is independent of ordinary Resize and grants no input authority.
+    LayoutReady {
+        token: u64,
+        geometry: ViewerGeometry,
+    },
     Resize(ViewerGeometry),
     Scroll {
         x: f32,
@@ -294,6 +300,14 @@ pub struct ViewerFrame {
 
 #[derive(Clone, Debug)]
 pub enum ViewerOutput {
+    /// App-private layout selection before opening content on opted-in sessions.
+    /// The content generation is a floor for ViewerFrame::generation. This is
+    /// neither a pixel-ready acknowledgement nor a permission grant.
+    LayoutSelected {
+        token: u64,
+        mode: u16,
+        content_generation: u64,
+    },
     WebState {
         generation: u64,
         policy: viewer_web::Policy,

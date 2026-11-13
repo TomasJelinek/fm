@@ -108,33 +108,53 @@ fn open(service: &Service, launch: FileCompareLaunch) -> Result<Session, String>
     )
 }
 
-fn wait_for<T>(mut poll: impl FnMut() -> Option<T>) -> T {
+fn wait_for<T>(mut poll: impl FnMut(&mut Option<String>) -> Option<T>) -> T {
     let start = Instant::now();
+    let mut last_status = None;
     loop {
-        if let Some(value) = poll() {
+        if let Some(value) = poll(&mut last_status) {
             return value;
         }
         assert!(
             start.elapsed() < Duration::from_secs(15),
-            "Worker timed out"
+            "Worker timed out after {:?}; last status: {last_status:?}",
+            start.elapsed()
         );
         std::thread::sleep(Duration::from_millis(5));
     }
 }
 
 fn frame(session: &Session) -> Frame {
-    wait_for(|| match session.mailbox.take() {
+    eprintln!(
+        "Comparator frame waiter test={:?} mailbox={:p}",
+        std::thread::current().name(),
+        session.mailbox.as_ref()
+    );
+    wait_for(|last_status| match session.mailbox.take() {
         Some(Output::Frame { frame, .. }) => Some(frame),
         Some(Output::ChooseFiles(choice)) => panic!("Unexpected file choice: {choice:?}"),
-        _ => None,
+        Some(Output::Status(status)) => {
+            *last_status = Some(status);
+            None
+        }
+        None => None,
     })
 }
 
 fn choice(session: &Session) -> FileChoice {
-    wait_for(|| match session.mailbox.take() {
+    eprintln!(
+        "Comparator choice waiter test={:?} mailbox={:p}",
+        std::thread::current().name(),
+        session.mailbox.as_ref()
+    );
+    wait_for(|last_status| match session.mailbox.take() {
         Some(Output::ChooseFiles(choice)) => Some(choice),
         Some(Output::Frame { .. }) => panic!("Capture failure must not produce a frame"),
-        _ => None,
+        Some(Output::Status(status)) => {
+            *last_status = Some(status);
+            None
+        }
+        None => None,
     })
 }
 
@@ -269,7 +289,7 @@ fn close_cancels_either_capture_retains_capacity_until_return_and_suppresses_lat
             observed_calls.fetch_add(1, Ordering::Relaxed);
             if path == blocked_path {
                 entered.send(std::ptr::from_ref(cancel).addr()).unwrap();
-                wait_for(|| cancel.load(Ordering::Acquire).then_some(()));
+                wait_for(|_| cancel.load(Ordering::Acquire).then_some(()));
                 observed.send(()).unwrap();
                 returned
                     .lock()
@@ -294,7 +314,7 @@ fn close_cancels_either_capture_retains_capacity_until_return_and_suppresses_lat
             "Capture still owns its slot"
         );
         release.send(()).unwrap();
-        let next = wait_for(|| open(&service, unresolved()).ok());
+        let next = wait_for(|_| open(&service, unresolved()).ok());
         assert_eq!(calls.load(Ordering::Relaxed), blocked + 1);
         assert_eq!(reads.load(Ordering::Relaxed), 0);
         assert!(

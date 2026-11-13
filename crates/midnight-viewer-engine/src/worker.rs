@@ -17,6 +17,8 @@ use std::{
 
 #[path = "worker_image.rs"]
 mod image;
+#[path = "worker_layout.rs"]
+mod layout;
 #[path = "worker_position.rs"]
 mod position;
 #[path = "worker_raster.rs"]
@@ -61,6 +63,8 @@ struct Worker {
     session: Option<Session>,
     closing: Option<Session>,
     pending_open: bool,
+    layout: crate::layout_handshake::Handshake,
+    pending_layout: Option<layout::PreparedOpening>,
     viewport_request: Option<u64>,
     search_request: Option<u64>,
     search_cursor: crate::search_cursor::SearchCursor,
@@ -100,6 +104,7 @@ pub(crate) struct Services {
     pub capture: crate::NativeCapture,
     pub wake: Arc<dyn Fn() -> bool + Send + Sync>,
     pub preferences: Arc<crate::preferences::Preferences>,
+    pub negotiate_layout: bool,
 }
 
 pub(crate) use crate::input_queue::Message;
@@ -122,6 +127,7 @@ pub(crate) fn run(
         capture,
         wake,
         preferences: preference_state,
+        negotiate_layout,
     } = services;
     output.put(ViewerOutput::Status("Preparing file identities…".into()));
     let prepared = crate::capture::prepare_with(&launch, closed, capture)?;
@@ -171,6 +177,8 @@ pub(crate) fn run(
         session: None,
         closing: None,
         pending_open: false,
+        layout: crate::layout_handshake::Handshake::new(negotiate_layout),
+        pending_layout: None,
         viewport_request: None,
         search_request: None,
         search_cursor: Default::default(),
@@ -205,6 +213,7 @@ pub(crate) fn run(
     let mut capture_finished = false;
     while !closed.load(Ordering::Acquire) {
         match receiver.recv_timeout(Duration::from_millis(12)) {
+            Ok(_) if closed.load(Ordering::Acquire) => break,
             Ok(message) => match message.into_input() {
                 Some(ViewerInput::Close) => break,
                 Some(input) => worker.input(input, output),
@@ -215,9 +224,15 @@ pub(crate) fn run(
         }
         // A bounded batch combines wheel/resize events into a single raster frame.
         for input in receiver.try_iter().take(63) {
+            if closed.load(Ordering::Acquire) || worker.layout.closed() {
+                break;
+            }
             if let Some(input) = input.into_input() {
                 worker.input(input, output);
             }
+        }
+        if closed.load(Ordering::Acquire) || worker.layout.closed() {
+            break;
         }
         worker.sync_preferences(output);
         for _ in 0..16 {
@@ -365,6 +380,7 @@ impl Worker {
     }
 
     fn error(&mut self, error: String, output: &Mailbox) {
+        self.invalidate_layout();
         output.finish_open(Err(error.clone()));
         self.status(error, output);
     }
@@ -375,6 +391,7 @@ impl Worker {
     }
 
     fn open(&mut self, output: &Mailbox) {
+        self.invalidate_layout();
         self.cancel_locate();
         self.position_context(output);
         // A pending close/capture must not repaint old-file content under the
@@ -452,91 +469,12 @@ impl Worker {
         let (path, captured) = self.files[self.current].clone();
         self.caption = format!("{} — Midnight Explorer", path.display());
         let result = (|| {
-            let file = captured
-                .as_ref()
-                .ok_or("File identity is not ready")?
-                .as_ref()
-                .map_err(Clone::clone)?
-                .clone();
-            let route = crate::routing::choose(
-                self.runtime.catalog(),
-                self.images
-                    .iter()
-                    .map(|provider| crate::routing::ProcessCandidate {
-                        id: &provider.id,
-                        extensions: &provider.extensions,
-                    })
-                    .chain(self.web_providers.iter().map(|provider| {
-                        crate::routing::ProcessCandidate {
-                            id: &provider.id,
-                            extensions: &provider.extensions,
-                        }
-                    })),
-                &path,
-                self.basic,
-                &self.disabled_plugins,
-                &self.associations,
-            )
-            .ok_or_else(|| {
-                "No compatible viewer plugin is installed beside the executable in viewers/."
-                    .to_owned()
-            })?;
-            if let crate::routing::Route::Process { index } = route {
-                if index >= self.images.len() {
-                    self.open_web(self.web_providers[index - self.images.len()].clone(), file)?;
-                    return Ok(None);
-                }
-                self.image = Some(crate::image_view::ImageView::new(
-                    crate::image_worker::ImageWorker::open(
-                        self.images[index].clone(),
-                        Arc::new(file),
-                        self.wake.clone(),
-                        self.image_startup.clone(),
-                    )?,
-                    self.image_ids.clone(),
-                ));
-                self.mode = VIEWER_MODE_IMAGE;
-                self.modes = vec![VIEWER_MODE_IMAGE];
-                self.binary = false;
-                return Ok(None);
-            }
-            let crate::routing::Route::Native {
-                index,
-                mut mode,
-                detect_binary,
-            } = route
-            else {
-                return Err("Unsupported viewer route.".into());
-            };
-            let plugin = &self.runtime.catalog()[index];
-            if detect_binary {
-                mode = file.preferred_basic_mode().map_err(|e| e.to_string())?;
-            }
-            if let Some(selected) = self
-                .selected_mode
-                .filter(|mode| plugin.modes.contains(mode))
-            {
-                mode = selected;
-            }
-            self.mode = mode;
-            self.modes = plugin.modes.clone();
-            self.binary = mode == viewer::MODE_BINARY;
-            self.length = file.length();
-            self.runtime
-                .open(&plugin.id, file, self.generation, mode)
-                .map(Some)
-                .map_err(|e| e.to_string())
+            let file = captured.ok_or("File identity is not ready")??;
+            let opening = self.prepare_opening(&path, file)?;
+            self.select_opening(opening, output)
         })();
-        match result {
-            Ok(session) => {
-                self.apply_font();
-                if let Some(session) = &session {
-                    session.notify_on_ready(self.wake.clone());
-                }
-                self.session = session;
-                self.status("Opening…".into(), output);
-            }
-            Err(error) => self.error(error, output),
+        if let Err(error) = result {
+            self.error(error, output);
         }
     }
 
@@ -619,6 +557,37 @@ impl Worker {
     }
 
     fn input(&mut self, input: ViewerInput, output: &Mailbox) {
+        if matches!(input, ViewerInput::Close) {
+            self.layout.close();
+            self.pending_layout = None;
+            self.pending_open = false;
+            return;
+        }
+        if self.layout.closed() {
+            return;
+        }
+        if let ViewerInput::LayoutReady { token, geometry } = input {
+            if let Some(opening) = self.take_layout_ready(token, geometry)
+                && let Err(error) = self.start_opening(opening, output)
+            {
+                self.error(error, output);
+            }
+            return;
+        }
+        if self.layout.waiting() {
+            match &input {
+                ViewerInput::Resize(geometry) => {
+                    self.image_size = [geometry.width.max(1), geometry.height.max(1)];
+                    self.geometry = bounded_geometry(*geometry);
+                    return;
+                }
+                ViewerInput::NextFile
+                | ViewerInput::PreviousFile
+                | ViewerInput::Mode(_)
+                | ViewerInput::RetainedRaster(_) => {}
+                _ => return,
+            }
+        }
         if self.web.is_some() && self.web_input(&input, output) {
             return;
         }

@@ -811,6 +811,7 @@ impl EngineServices {
                         Some(Command::EnqueueSelectedMove(request)) => copies.enqueue_selected_move(request).await,
                         Some(Command::EnqueueClipboardMove(request)) => copies.enqueue_clipboard_move(request).await,
                         Some(Command::EnqueueTransferWithMetadata(request)) => copies.enqueue_metadata(*request).await,
+                        Some(Command::EnqueueCopyWithOptions(request)) => copies.enqueue_options(*request).await,
                         Some(Command::EnqueueArchiveCopy(request)) => copies.enqueue_archive(request).await,
                         Some(Command::EnqueueCapturedTransfer(request)) => copies.enqueue_captured(request).await,
                         Some(Command::DecideCopy(decision)) => copies.decide(decision).await,
