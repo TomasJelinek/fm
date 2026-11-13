@@ -113,14 +113,31 @@ to the project's own API/SDK code.
 
 ## Discovery and trust
 
-Only direct packages in `viewers/<package>/` inside the **resolved installation**
-are discovered. Normally this is the actual executable's directory; shared
-Windows builds can use an explicitly registered private copy with an identical
-host hash. See [runtime discovery](RUNTIME_DISCOVERY.md). The current working
-directory is not the plugin root. A package contains `plugin.toml`, its native library and distribution
-notices. The directory name need not equal the manifest ID. Discovery reads
-metadata without loading code; first use loads and checks the ABI descriptor.
-Duplicate IDs disable all packages with that ID and produce diagnostics.
+Only direct viewer packages in `viewers/<package>/` inside the **resolved
+installation** are discovered. Normally this is the actual executable's directory;
+shared Windows builds can use an explicitly registered private copy with an
+identical host hash. See [runtime discovery](RUNTIME_DISCOVERY.md). The current
+working directory is not the plugin root. A native viewer package contains
+`plugin.toml`, its native library and distribution notices. The directory name
+need not equal the manifest ID. Native discovery reads metadata without loading
+code; first use loads and checks the ABI descriptor. Duplicate IDs disable all
+native packages with that ID and produce diagnostics.
+
+A viewer package with `image-viewer.json` or `web-viewer.json` as its sole transport
+manifest is delegated to the matching process host. Mixed transport manifests
+remain unavailable and diagnostic; catalog discovery does not load or launch
+plugin code. See the [native host reference](../../crates/midnight-plugin-host/README.md).
+
+The application uses both library and process hosting:
+
+- Basic, Source and Markdown viewers are native in-process libraries (DLLs on
+  Windows, shared objects on Linux). Native and Network Neighborhood filesystem
+  providers also use in-process libraries through their separate
+  [filesystem ABI](NATIVE_FILESYSTEM_API.md) and [network contract](NETWORK_FILESYSTEM.md).
+- [Image/PDF viewers](IMAGE_VIEWER_API.md), [thumbnail decoders](WORKER_SDK.md) and
+  [archive filesystem providers](FILESYSTEM_API.md) run as process workers.
+- [HTML](WEB_VIEWER_API.md) is process-hosted CEF. On Windows its bootstrap EXE
+  loads the same-basename client DLL inside the helper process.
 
 Extension matches are case-insensitive. Matching Document mode wins over Source,
 then Text; manifest priority breaks ties within that ranking. A Text plugin with
@@ -130,10 +147,13 @@ extension-routing preference. Disabled IDs are filtered using the application's
 startup settings. No concrete plugin ID or parser is hardcoded into the loader.
 
 Native plugins are trusted code running with the application's privileges.
-Manifest validation, pointer metadata checks and scheduling budgets are not a
-sandbox. Install only code you trust. The installation, package, manifest and
-entry library must resolve to their expected canonical locations; redirections
-and insecure ownership/write permissions are refused at discovery or first load.
+Rust, ABI/manifest validation, pointer metadata checks and scheduling budgets
+are not a sandbox. An EXE alone is not a sandbox; restrictions come from the
+documented [worker containment](WORKER_SDK.md#startup-and-containment) or
+[web process policy](WEB_VIEWER_API.md). Install only code you trust. The
+installation, package, manifest and entry library must resolve to their expected
+canonical locations; redirections and insecure ownership/write permissions are
+refused at discovery or first load.
 
 Linux accepts current-user/root ownership and rejects group/other writes,
 including unsafe ancestors; a trusted-owned sticky ancestor can be allowed.
