@@ -69,6 +69,13 @@ impl NativeAdapter for Windows {
     fn open_reader(path: &Path, _context: &CallContext<'_>) -> Result<Reader, Failure> {
         Reader::open(path)
     }
+    fn prepare_rename(
+        path: &Path,
+        context: &CallContext<'_>,
+    ) -> Result<std::sync::Arc<dyn midnight_filesystem_plugin_sdk::native::NativeRename>, Failure>
+    {
+        crate::rename::prepare(path, context)
+    }
     fn volumes(context: &CallContext<'_>) -> Result<Vec<Volume>, Failure> {
         system::volumes(context)
     }
@@ -107,7 +114,7 @@ fn enumerated(entry: fs::DirEntry) -> Result<NativeEntry, Failure> {
 fn wide(value: &OsStr) -> Vec<u8> {
     value.encode_wide().flat_map(u16::to_le_bytes).collect()
 }
-fn info(kind: fs::FileType, metadata: Option<&fs::Metadata>) -> NativeInfo {
+pub(crate) fn info(kind: fs::FileType, metadata: Option<&fs::Metadata>) -> NativeInfo {
     let kind = if kind.is_symlink_dir() {
         Kind::DirectoryLink
     } else if kind.is_symlink() {

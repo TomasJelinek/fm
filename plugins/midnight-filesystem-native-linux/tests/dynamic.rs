@@ -91,5 +91,68 @@ fn actual_loaded_shared_library_owns_its_callbacks_and_content() {
         }
     );
     assert_eq!(client.call(Request::CloseRead { reader }), Response::Unit);
+
+    assert_ne!(client.api.capabilities & CAP_PREPARED_RENAME, 0);
+    assert_eq!(client.api.header.minimum_host_minor, 3);
+    // SAFETY: the loaded module retains this immutable bounded descriptor string.
+    assert_eq!(
+        unsafe {
+            std::slice::from_raw_parts(client.api.version.data, client.api.version.len as usize)
+        },
+        b"0.2.0"
+    );
+    use std::os::unix::fs::MetadataExt;
+    let source_metadata = std::fs::symlink_metadata(&path).unwrap();
+    let Response::RenamePrepared(prepared) = client.call(Request::PrepareRename {
+        mount,
+        node: node.id,
+    }) else {
+        panic!("Loaded module did not prepare Rename");
+    };
+    assert!(matches!(
+        client.call(Request::CloseMount { mount }),
+        Response::Failed(Failure {
+            code: ErrorCode::Busy,
+            ..
+        })
+    ));
+    let new_name = NativeText {
+        encoding: NameEncoding::UnixBytes,
+        bytes: b"dynamic-renamed-\xff".to_vec(),
+    };
+    let Response::RenameState(state) = client.call(Request::Rename {
+        prepared: prepared.handle,
+        attempt: 1,
+        name: new_name.clone(),
+        policy: RenamePolicy::NoReplace,
+    }) else {
+        panic!("Loaded module did not execute Rename");
+    };
+    assert!(
+        matches!(&state.outcome, RenameOutcome::Renamed {
+        name, same_entry: false, recovery, durability_confirmed: true,
+    } if *name == new_name && recovery.is_empty()),
+        "{state:?}"
+    );
+    let destination = temp.path.join(std::ffi::OsStr::from_bytes(&new_name.bytes));
+    let published = std::fs::symlink_metadata(&destination).unwrap();
+    assert_eq!(
+        (published.dev(), published.ino()),
+        (source_metadata.dev(), source_metadata.ino())
+    );
+    assert!(!path.exists());
+    assert_eq!(std::fs::read(&destination).unwrap(), expected);
+    assert_eq!(
+        client.call(Request::GetRenameState {
+            prepared: prepared.handle
+        }),
+        Response::RenameState(state)
+    );
+    assert_eq!(
+        client.call(Request::CloseRename {
+            prepared: prepared.handle
+        }),
+        Response::Unit
+    );
     assert_eq!(client.call(Request::CloseMount { mount }), Response::Unit);
 }

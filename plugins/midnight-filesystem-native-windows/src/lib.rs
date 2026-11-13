@@ -1,9 +1,20 @@
 #![cfg(windows)]
 #![deny(unsafe_code, unsafe_op_in_unsafe_fn)]
-//! Independent native Windows Browse/Read provider. No application crate dependencies.
+//! Independent native Windows Browse/Read/Rename provider. No application crate dependencies.
 mod adapter;
 mod content;
 mod path;
+mod rename;
+#[allow(unsafe_code)]
+mod rename_native;
+mod rename_recovery;
+#[cfg(test)]
+#[allow(unsafe_code)]
+#[path = "../tests/support/mod.rs"]
+mod test_support;
+
+#[cfg(test)]
+extern crate self as midnight_filesystem_native_windows;
 #[allow(unsafe_code)]
 mod storage_kind;
 #[allow(unsafe_code)]
@@ -18,7 +29,7 @@ use midnight_filesystem_plugin_api::abi::*;
 midnight_filesystem_plugin_sdk::export_filesystem!(
     Provider,
     "native.windows",
-    "0.1.0",
+    "0.2.0",
     CAP_BROWSE
         | CAP_READ
         | CAP_STAT
@@ -26,4 +37,5 @@ midnight_filesystem_plugin_sdk::export_filesystem!(
         | CAP_STORAGE
         | CAP_NATIVE_ADDRESS
         | CAP_VOLUME_DETAILS
+        | CAP_PREPARED_RENAME
 );

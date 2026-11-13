@@ -5,8 +5,14 @@ windows-link 0.2.1 dependency under their MIT alternative. Both sources and
 enabled features were inspected. Runtime features: Win32_Foundation and
 Win32_Storage_FileSystem, Win32_System_IO, Win32_System_Ioctl,
 Win32_System_WindowsProgramming, Win32_System_Diagnostics_Debug and
-Win32_System_SystemServices. These are feature-only additions to the same pinned,
-MIT-selected bindings for read-only volume queries. Conformance tests additionally enable
+Win32_System_SystemServices; prepared Rename additionally enables Wdk_Foundation,
+Wdk_Storage_FileSystem, Win32_Globalization, Win32_Security,
+Win32_Security_Cryptography and Win32_System_Threading. These remain feature-only
+additions to the same pinned, MIT-selected bindings. The new calls provide
+metadata-only native handles, no-replace renaming, protected recovery-directory
+security descriptors, ordinal case comparison and BCrypt stage nonces. No new
+third-party package/version or separate cryptographic library is added.
+Conformance tests additionally enable
 Win32_System_LibraryLoader. No mandatory fees/subscriptions/royalties apply.
 
 The API/SDK are project-owned and this does not change the project's license.
