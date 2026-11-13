@@ -4,6 +4,10 @@
 mod adapter;
 mod content;
 mod mounts;
+mod rename;
+mod rename_recovery;
+#[allow(unsafe_code)]
+mod rename_sys;
 mod storage_kind;
 #[allow(unsafe_code)]
 mod system;
@@ -15,7 +19,7 @@ use midnight_filesystem_plugin_api::abi::*;
 midnight_filesystem_plugin_sdk::export_filesystem!(
     Provider,
     "native.linux",
-    "0.1.0",
+    "0.2.0",
     CAP_BROWSE
         | CAP_READ
         | CAP_STAT
@@ -23,4 +27,16 @@ midnight_filesystem_plugin_sdk::export_filesystem!(
         | CAP_STORAGE
         | CAP_NATIVE_ADDRESS
         | CAP_VOLUME_DETAILS
+        | CAP_PREPARED_RENAME
 );
+
+#[cfg(test)]
+extern crate self as midnight_filesystem_native_linux;
+#[cfg(test)]
+mod rename_test_hooks;
+#[cfg(test)]
+#[allow(unsafe_code)]
+#[path = "../tests/support/mod.rs"]
+mod rename_test_support;
+#[cfg(test)]
+mod rename_tests;

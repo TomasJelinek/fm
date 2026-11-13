@@ -100,5 +100,90 @@ fn actual_loaded_dll_owns_descriptor_buffers_and_selected_file_content() {
         }
     );
     assert_eq!(client.call(Request::CloseRead { reader }), Response::Unit);
+    assert_ne!(client.api.capabilities & CAP_PREPARED_RENAME, 0);
+    assert_eq!(client.api.header.minimum_host_minor, 3);
+    // SAFETY: descriptor strings belong to the retained loaded DLL.
+    assert_eq!(
+        unsafe {
+            std::slice::from_raw_parts(client.api.version.data, client.api.version.len as usize)
+        },
+        b"0.2.0"
+    );
+    let original_identity = file_identity(&path);
+    let Response::RenamePrepared(prepared) = client.call(Request::PrepareRename {
+        mount,
+        node: node.id,
+    }) else {
+        panic!("Loaded DLL did not prepare Rename")
+    };
+    assert_eq!(prepared.source.metadata.size, Some(expected.len() as u64));
+    assert_eq!(std::fs::read(&path).unwrap(), expected);
+    let renamed = temp.path.join("renamed DLL 文档.bin");
+    let name = NativeText {
+        encoding: NameEncoding::WindowsUtf16Le,
+        bytes: renamed
+            .file_name()
+            .unwrap()
+            .encode_wide()
+            .flat_map(u16::to_le_bytes)
+            .collect(),
+    };
+    let request = Request::Rename {
+        prepared: prepared.handle,
+        attempt: 1,
+        name: name.clone(),
+        policy: RenamePolicy::NoReplace,
+    };
+    let result = client.call(request.clone());
+    let Response::RenameState(state) = &result else {
+        panic!("Loaded DLL did not retain Rename outcome")
+    };
+    assert!(
+        matches!(&state.outcome, RenameOutcome::Renamed { name: actual, same_entry: false, recovery, .. } if actual == &name && recovery.is_empty())
+    );
+    assert!(!path.exists());
+    assert_eq!(file_identity(&renamed), original_identity);
+    assert_eq!(std::fs::read(&renamed).unwrap(), expected);
+    assert_eq!(
+        client.cancelled(
+            Request::GetRenameState {
+                prepared: prepared.handle
+            },
+            1
+        ),
+        result
+    );
+    assert_eq!(client.call(request), result);
+    assert_eq!(
+        client.cancelled(
+            Request::CloseRename {
+                prepared: prepared.handle
+            },
+            1
+        ),
+        Response::Unit
+    );
     assert_eq!(client.call(Request::CloseMount { mount }), Response::Unit);
+}
+
+fn file_identity(path: &std::path::Path) -> (u64, [u8; 16]) {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_ID_INFO, FileIdInfo, GetFileInformationByHandleEx,
+    };
+    let file = std::fs::File::open(path).unwrap();
+    let mut info = FILE_ID_INFO::default();
+    // SAFETY: the owned fixture handle is live and the output has its declared size.
+    assert_ne!(
+        unsafe {
+            GetFileInformationByHandleEx(
+                file.as_raw_handle(),
+                FileIdInfo,
+                (&mut info as *mut FILE_ID_INFO).cast(),
+                size_of::<FILE_ID_INFO>() as u32,
+            )
+        },
+        0
+    );
+    (info.VolumeSerialNumber, info.FileId.Identifier)
 }
