@@ -324,14 +324,21 @@ async fn recursive(commands: &mpsc::Sender<Command>, publication: &TreePublicati
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn recursive_controller_reuses_one_branch_worker_and_waits_for_publication_commit() {
     let mut injected = Files::new();
-    injected.wide = 48;
+    injected.wide = 256;
+    let expected_calls = injected.wide + 1;
+    let expected_rows = injected.wide + 2;
+    assert!(expected_calls > 128, "the walk must exceed one full batch");
     let files = Arc::new(injected);
     let (commands, mut events, engine, initial) = start(files.clone()).await;
     recursive(&commands, &initial).await;
     let mut current = publication(&mut events).await;
     let first_calls = files.branch_calls.load(Ordering::Acquire);
     files.wait_finished(first_calls).await;
-    assert!((1..=16).contains(&first_calls));
+    assert!((1..=128).contains(&first_calls));
+    assert!(
+        first_calls < expected_calls,
+        "unvisited work must remain when the first Commit is withheld"
+    );
     assert!(
         current
             .view
@@ -339,6 +346,20 @@ async fn recursive_controller_reuses_one_branch_worker_and_waits_for_publication
             .iter()
             .all(|row| row.disclosure != TreeDisclosure::Loading)
     );
+    tree(&commands, TreeCommand::Commit(initial.view.clone())).await;
+    let same_value = Arc::new((*current.view).clone());
+    assert_eq!(same_value.stamp, current.view.stamp);
+    assert!(!Arc::ptr_eq(&same_value, &current.view));
+    tree(&commands, TreeCommand::Commit(same_value)).await;
+    match next_tree(&mut events).await {
+        TreeEvent::Rejected {
+            stamp,
+            request: TreeRequestId(0),
+            row: TreeRowId(0),
+            ..
+        } => assert_eq!(stamp, current.view.stamp),
+        other => panic!("same-value Arc cannot acknowledge the emitted view: {other:?}"),
+    }
     assert!(
         tokio::time::timeout(Duration::from_millis(80), next_tree(&mut events))
             .await
@@ -347,11 +368,11 @@ async fn recursive_controller_reuses_one_branch_worker_and_waits_for_publication
     assert_eq!(
         files.branch_calls.load(Ordering::Acquire),
         first_calls,
-        "withheld Commit stops the next batch"
+        "withheld exact Commit stops the next batch despite stale and same-value replies"
     );
     let mut publications = 0;
     loop {
-        let done = current.view.rows.len() == 50
+        let done = current.view.rows.len() == expected_rows
             && current
                 .view
                 .rows
@@ -369,13 +390,13 @@ async fn recursive_controller_reuses_one_branch_worker_and_waits_for_publication
                 });
         tree(&commands, TreeCommand::Commit(current.view)).await;
         publications += 1;
-        assert!(publications <= 49);
+        assert!(publications <= expected_calls);
         if done {
             break;
         }
         current = publication(&mut events).await;
     }
-    assert_eq!(files.branch_calls.load(Ordering::Acquire), 49);
+    assert_eq!(files.branch_calls.load(Ordering::Acquire), expected_calls);
     assert_eq!(files.max_branch_active.load(Ordering::Acquire), 1);
     commands.send(Command::Shutdown).await.unwrap();
     tokio::time::timeout(Duration::from_secs(3), engine)
@@ -511,7 +532,7 @@ async fn real_projection_capacity_reports_against_the_emitted_view_and_keeps_nav
     assert!(
         matches!(next_tree(&mut events).await, TreeEvent::Navigated { target: TreeNavigationTarget::Native(path), .. } if path == files.root.join("other"))
     );
-    assert!(files.branch_calls.load(Ordering::Acquire) <= 16);
+    assert!(files.branch_calls.load(Ordering::Acquire) <= 128);
     commands.send(Command::Shutdown).await.unwrap();
     tokio::time::timeout(Duration::from_secs(3), engine)
         .await
@@ -913,7 +934,12 @@ async fn scaling_case(nodes: usize, trunk: usize, sizes: usize, measured: bool) 
     assert!(metrics.failure.is_none(), "{:?}", metrics.failure);
     assert_eq!(metrics.loading_rows, 0);
     assert_eq!(metrics.errors, 0);
-    assert!(metrics.batches.iter().all(|count| (1..=16).contains(count)));
+    assert!(
+        metrics
+            .batches
+            .iter()
+            .all(|count| (1..=128).contains(count))
+    );
     assert_eq!(returned, nodes - 1);
     assert_eq!(files.branch_calls.load(Ordering::Acquire), nodes - 1);
     assert_eq!(files.branch_finished.load(Ordering::Acquire), nodes - 1);

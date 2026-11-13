@@ -57,6 +57,26 @@ fn complete_recursive(fixture: &mut Fixture, job: BranchJob, elapsed: bool) -> b
         .unwrap()
 }
 
+fn wide_fixture() -> Fixture {
+    let fixture = fixture();
+    fixture.graph.rows.lock().unwrap().insert(
+        1,
+        (10..266)
+            .map(|value| directory(value, &format!("child-{value}")))
+            .collect(),
+    );
+    fixture
+}
+
+fn stage_unpublished(fixture: &mut Fixture, count: usize) {
+    let published = fixture.session.projection().clone();
+    for _ in 0..count {
+        let job = fixture.session.take_work().unwrap().unwrap();
+        assert!(!complete_recursive(fixture, job, false));
+        assert!(Arc::ptr_eq(fixture.session.projection(), &published));
+    }
+}
+
 fn one_batch(fixture: &mut Fixture) -> usize {
     let original = fixture.session.projection().clone();
     let mut results = 0;
@@ -67,8 +87,8 @@ fn one_batch(fixture: &mut Fixture) -> usize {
         complete_recursive(fixture, job, false);
         results += 1;
         assert!(
-            results <= 16,
-            "a batch must yield after at most 16 returned results"
+            results <= 128,
+            "a batch must yield after at most 128 returned results"
         );
     }
     results
@@ -165,19 +185,34 @@ fn recursive_expansion_waits_for_exact_current_commit_between_batches() {
 
 #[test]
 fn the_real_fifty_ms_guard_yields_after_an_already_elapsed_deadline_without_sleeping() {
-    let mut fixture = fixture();
+    let mut fixture = wide_fixture();
     let published = fixture.session.projection().clone();
     expand_recursive(&mut fixture, "z-parent", 1);
+    stage_unpublished(&mut fixture, 32);
+    let calls = fixture.graph.lists.load(Ordering::Relaxed);
+    assert_eq!(calls, 33, "root listing plus 32 returned recursive calls");
+    assert_eq!(fixture.session.budget.branch.available_permits(), 1);
+    assert_eq!(fixture.session.budget.listing.available_permits(), 2);
     let job = fixture.session.take_work().unwrap().unwrap();
     assert!(fixture.session.expire_recursive_batch_deadline());
+    assert!(Arc::ptr_eq(fixture.session.projection(), &published));
+    assert_eq!(fixture.graph.lists.load(Ordering::Relaxed), calls);
+    assert_eq!(fixture.session.budget.branch.available_permits(), 0);
+    assert_eq!(fixture.session.budget.listing.available_permits(), 1);
+    assert!(fixture.session.take_work().unwrap().is_none());
+    let completion = job.run();
+    assert!(Arc::ptr_eq(fixture.session.projection(), &published));
+    assert_eq!(fixture.session.budget.branch.available_permits(), 0);
     assert!(
         fixture
             .session
-            .apply(job.run(), &Cancellation::default())
+            .apply(completion, &Cancellation::default())
             .unwrap()
     );
     assert!(!Arc::ptr_eq(fixture.session.projection(), &published));
-    assert_eq!(fixture.graph.lists.load(Ordering::Relaxed), 2);
+    assert_eq!(fixture.graph.lists.load(Ordering::Relaxed), calls + 1);
+    assert_eq!(fixture.session.budget.branch.available_permits(), 1);
+    assert_eq!(fixture.session.budget.listing.available_permits(), 2);
     assert!(
         fixture.session.take_work().unwrap().is_none(),
         "the next batch still requires Commit"
@@ -212,50 +247,62 @@ fn recursive_results_share_one_checkpoint_and_projection_until_the_batch_finishe
 }
 
 #[test]
-fn a_batch_yields_after_sixteen_results_and_requires_commit_for_the_next_batch() {
-    let mut fixture = fixture();
-    fixture.graph.rows.lock().unwrap().insert(
-        1,
-        (10..58)
-            .map(|value| directory(value, &format!("child-{value}")))
-            .collect(),
-    );
+fn a_batch_yields_after_128_results_and_requires_exact_current_commit_for_the_next_batch() {
+    let mut fixture = wide_fixture();
+    let previous = fixture.session.projection().clone();
     expand_recursive(&mut fixture, "z-parent", 1);
     let count = one_batch(&mut fixture);
-    assert_eq!(count, 16);
+    assert_eq!(count, 128, "257 callbacks cannot finish in the first batch");
     let calls = fixture.graph.lists.load(Ordering::Relaxed);
+    assert_eq!(calls, 129, "root listing plus the capped batch");
+    let published = fixture.session.projection().clone();
+    assert!(!Arc::ptr_eq(&published, &previous));
+    assert!(fixture.session.take_work().unwrap().is_none());
+    assert!(!fixture.session.commit(&previous));
+    assert!(fixture.session.take_work().unwrap().is_none());
+    let copy = Arc::new((*published).clone());
+    assert_eq!(copy.stamp, published.stamp);
+    assert!(!fixture.session.commit(&copy));
     assert!(fixture.session.take_work().unwrap().is_none());
     assert_eq!(fixture.graph.lists.load(Ordering::Relaxed), calls);
-    let published = fixture.session.projection().clone();
-    fixture.session.commit(&published);
-    assert!(fixture.session.take_work().unwrap().is_some());
+    assert!(fixture.session.commit(&published));
+    let next = fixture.session.take_work().unwrap().unwrap();
+    assert!(next.recursive());
+    assert_eq!(fixture.graph.lists.load(Ordering::Relaxed), calls);
+    assert!(!complete_recursive(&mut fixture, next, false));
+    assert_eq!(fixture.graph.lists.load(Ordering::Relaxed), calls + 1);
 }
 
 #[test]
 fn explicit_input_rolls_back_unpublished_occurrences_without_reusing_their_ids() {
-    let mut fixture = fixture();
+    let mut fixture = wide_fixture();
     let published = fixture.session.projection().clone();
+    let initial_rows = fixture.session.tree.rows().len();
     expand_recursive(&mut fixture, "z-parent", 1);
-    let first = fixture.session.take_work().unwrap().unwrap();
-    complete_recursive(&mut fixture, first, false);
+    stage_unpublished(&mut fixture, 32);
     let abandoned = fixture
         .session
         .tree
         .rows()
         .into_iter()
-        .find(|row| row.entry.display_name == "child")
+        .find(|row| row.entry.display_name == "child-10")
         .unwrap()
         .id;
-    assert!(fixture.session.rollback_unpublished());
+    let delayed = fixture.session.take_work().unwrap().unwrap();
+    let abandoned_work = delayed.pending.version;
+    let next_work = fixture.session.next_work;
+    let root = row_named(&fixture.session, "z-parent");
+    fixture
+        .session
+        .branch(&published, TreeRequestId(2), root, BranchAction::Collapse)
+        .unwrap();
+    assert!(!fixture.session.recursive_batch_active());
     assert!(Arc::ptr_eq(fixture.session.projection(), &published));
-    assert!(
-        !fixture
-            .session
-            .tree
-            .rows()
-            .iter()
-            .any(|row| row.entry.display_name == "child")
-    );
+    assert_eq!(fixture.session.tree.rows().len(), initial_rows);
+    assert_eq!(fixture.session.next_work, next_work);
+    assert_eq!(fixture.session.budget.branch.available_permits(), 0);
+    assert_eq!(fixture.session.budget.listing.available_permits(), 1);
+    assert!(fixture.session.take_work().unwrap().is_none());
     let target = fixture
         .session
         .capture_target(
@@ -267,14 +314,30 @@ fn explicit_input_rolls_back_unpublished_occurrences_without_reusing_their_ids()
     assert!(
         matches!(target.target.value().unwrap(), ProviderTarget::Native(path) if path == &fixture.graph.root_path.join("z-parent"))
     );
+    let completion = delayed.run();
+    assert_eq!(fixture.session.budget.branch.available_permits(), 0);
+    assert!(
+        !fixture
+            .session
+            .apply(completion, &Cancellation::default())
+            .unwrap(),
+        "a canceled unpublished callback cannot reopen rolled-back occurrences"
+    );
+    assert!(Arc::ptr_eq(fixture.session.projection(), &published));
+    assert_eq!(fixture.session.tree.rows().len(), initial_rows);
+    assert_eq!(fixture.session.next_work, next_work);
+    assert_eq!(fixture.session.budget.branch.available_permits(), 1);
+    assert_eq!(fixture.session.budget.listing.available_permits(), 2);
+    expand_recursive(&mut fixture, "z-parent", 3);
     let retry = fixture.session.take_work().unwrap().unwrap();
+    assert!(retry.pending.version > abandoned_work);
     complete_recursive(&mut fixture, retry, false);
     let replacement = fixture
         .session
         .tree
         .rows()
         .into_iter()
-        .find(|row| row.entry.display_name == "child")
+        .find(|row| row.entry.display_name == "child-10")
         .unwrap()
         .id;
     assert_ne!(
@@ -287,7 +350,7 @@ fn explicit_input_rolls_back_unpublished_occurrences_without_reusing_their_ids()
 fn reordered_inserted_and_removed_children_pause_the_occurrence_cursor_after_refresh() {
     for change in 0..3 {
         let mut fixture = fixture();
-        let original = (10..42)
+        let original = (10..266)
             .map(|value| directory(value, &format!("child-{value}")))
             .collect::<Vec<_>>();
         fixture
@@ -301,7 +364,7 @@ fn reordered_inserted_and_removed_children_pause_the_occurrence_cursor_after_ref
         let mut changed = original;
         match change {
             0 => changed.reverse(),
-            1 => changed.insert(0, directory(100, "inserted")),
+            1 => changed.insert(0, directory(1000, "inserted")),
             _ => {
                 changed.remove(0);
             }
@@ -608,7 +671,7 @@ fn cumulative_legitimate_long_paths_hit_the_real_projection_guard_without_losing
     );
     let original = fixture.session.projection().clone();
     expand_recursive(&mut fixture, "z-parent", 1);
-    assert!(drain(&mut fixture, 16) <= 16);
+    assert!(drain(&mut fixture, 128) <= 128);
     assert!(
         fixture.graph.target_calls.load(Ordering::Relaxed) >= 2500,
         "real projection materialization reached its cumulative guard"

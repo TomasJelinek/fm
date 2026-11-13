@@ -3,7 +3,7 @@ use super::*;
 use midnight_core::{EntryKind, TreeDiagnostic, TreeEvent};
 use std::time::{Duration, Instant};
 
-const MAX_BATCH_RESULTS: usize = 16;
+const MAX_BATCH_RESULTS: usize = 128;
 const MAX_BATCH_TIME: Duration = Duration::from_millis(50);
 
 #[derive(Clone)]
