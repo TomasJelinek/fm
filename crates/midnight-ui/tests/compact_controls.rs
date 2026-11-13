@@ -297,7 +297,7 @@ fn icon_shell_picker_commits_only_on_enter_and_restores_editor_focus() {
         "a fresh drive-row click still commits"
     );
     draw(&mut pixels);
-    let position = ui::root_position(&window, "F11 Connect — unavailable", AccessibleRole::Button);
+    let position = ui::root_position(&window, "F2 Rename — unavailable", AccessibleRole::Button);
     window
         .window()
         .dispatch_event(WindowEvent::PointerMoved { position });

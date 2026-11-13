@@ -6,6 +6,30 @@ use i_slint_core::{
 };
 use std::cell::Cell;
 
+pub(super) fn install_permissions(window: &MainWindow) {
+    window.global::<UnixPermissionsCodec>().on_parse(|text| {
+        match crate::unix_permissions::parse_octal(&text) {
+            Ok((mask, value)) => UnixPermissionBits {
+                mask: mask as i32,
+                value: value as i32,
+                valid: true,
+            },
+            Err(_) => UnixPermissionBits::default(),
+        }
+    });
+    window
+        .global::<UnixPermissionsCodec>()
+        .on_project(|mode, known, mask, value| {
+            let view = crate::unix_permissions::project(mode, known, mask, value);
+            UnixPermissionView {
+                mode: view.mode as i32,
+                known: view.known as i32,
+                octal: view.octal.into(),
+                symbolic: view.text.into(),
+            }
+        });
+}
+
 /// Close only transient controls owned by this dialog, before replacing fields.
 /// Accessible actions can switch topics while a ComboBox popup is still open.
 fn dismiss_controls(window: &MainWindow) {
@@ -40,6 +64,7 @@ pub(super) fn bind(
     state: &Rc<RefCell<Presenter>>,
     send: &Rc<dyn Fn(Command) -> bool>,
 ) {
+    install_permissions(window);
     let weak = window.as_weak();
     window.on_dismiss_metadata_hints(move || {
         if let Some(window) = weak.upgrade() {
@@ -144,6 +169,15 @@ pub(super) fn refresh(window: &MainWindow, presenter: &Presenter) {
     window.set_metadata_can_windows(caps.windows_attributes != 0);
     window.set_metadata_windows_mask(caps.windows_attributes as i32);
     window.set_metadata_can_unix(caps.unix_permissions != 0);
+    window.set_metadata_unix_supported_mask((caps.unix_permissions & 0o7777) as i32);
+    let (known, mode) = state.preview.as_ref().map_or((0, 0), |preview| {
+        crate::unix_permissions::common_modes(
+            preview.sample.iter().map(|row| row.current.unix_mode),
+            preview.total,
+        )
+    });
+    window.set_metadata_unix_current_mode(mode as i32);
+    window.set_metadata_unix_known_mask(known as i32);
     window.set_metadata_can_compress(caps.compressed);
     window.set_metadata_can_created(caps.created);
     window.set_metadata_can_modified(caps.modified);

@@ -21,9 +21,33 @@ export component FunctionBar inherits Rectangle {
     callback action(string, int);
     callback jobs();
     private property <[string]> pressed-actions;
+    private property <[bool]> pressed-visibility;
     private property <int> pressed-pane;
     private property <bool> pointer-snapshot;
     private property <bool> press-cancelled;
+    private property <[bool]> live-visibility: [root.visible-action(0), root.visible-action(1), root.visible-action(2),
+        root.visible-action(3), root.visible-action(4), root.visible-action(5), root.visible-action(6),
+        root.visible-action(7), root.visible-action(8), root.visible-action(9), root.visible-action(10), root.visible-action(11)];
+    private property <[bool]> slot-visibility: root.pointer-snapshot ? root.pressed-visibility : root.live-visibility;
+    private property <int> visible-count: root.visible-before(12);
+    pure function visible-action(index: int) -> bool {
+        let action = ShortcutHints.function-key(index, root.modifiers, root.searching).action;
+        return root.network-available || (action != "network.connect" && action != "network.disconnect");
+    }
+    pure function visible-before(index: int) -> int {
+        return (index > 0 && root.slot-visibility[0] ? 1 : 0)
+            + (index > 1 && root.slot-visibility[1] ? 1 : 0)
+            + (index > 2 && root.slot-visibility[2] ? 1 : 0)
+            + (index > 3 && root.slot-visibility[3] ? 1 : 0)
+            + (index > 4 && root.slot-visibility[4] ? 1 : 0)
+            + (index > 5 && root.slot-visibility[5] ? 1 : 0)
+            + (index > 6 && root.slot-visibility[6] ? 1 : 0)
+            + (index > 7 && root.slot-visibility[7] ? 1 : 0)
+            + (index > 8 && root.slot-visibility[8] ? 1 : 0)
+            + (index > 9 && root.slot-visibility[9] ? 1 : 0)
+            + (index > 10 && root.slot-visibility[10] ? 1 : 0)
+            + (index > 11 && root.slot-visibility[11] ? 1 : 0);
+    }
     pure function enabled-action(action: string) -> bool {
         return ActionAvailability.enabled(action, root.native-filesystem, root.can-target-cursor,
             root.can-target-selection, root.network-available, root.can-measure-folders);
@@ -34,19 +58,22 @@ export component FunctionBar inherits Rectangle {
     }
     public function capture-press(x: length, y: length) {
         root.press-cancelled = false;
-        root.pointer-snapshot = x >= root.absolute-position.x && x < root.absolute-position.x + keys.width
+        let over-footer = x >= root.absolute-position.x && x < root.absolute-position.x + root.width
             && y >= root.absolute-position.y && y < root.absolute-position.y + root.height;
-        if root.pointer-snapshot {
+        if over-footer {
             // Snapshot values now, before Flickable forwards a delayed pointer-down.
             root.pressed-pane = root.pane;
             root.pressed-actions = [root.capture-action(0), root.capture-action(1), root.capture-action(2),
                 root.capture-action(3), root.capture-action(4), root.capture-action(5), root.capture-action(6),
                 root.capture-action(7), root.capture-action(8), root.capture-action(9), root.capture-action(10), root.capture-action(11)];
+            root.pressed-visibility = root.live-visibility;
         }
+        root.pointer-snapshot = over-footer;
     }
     public function release-press() { root.pointer-snapshot = false; }
     public function cancel-press() { root.press-cancelled = true; }
-    private property <length> cell-width: max(root.compact ? 36px : 0px, (root.width - 48px) / 13);
+    private property <length> cell-width: max(root.compact ? 36px : 0px,
+        (root.width - 4px * root.visible-count) / (root.visible-count + 1));
     private property <length> key-width: max(Theme.touch ? 44px : 40px, root.cell-width);
     height: root.compact ? min(32px, Theme.bottom-height) : Theme.bottom-height;
     min-width: 0px;
@@ -55,15 +82,17 @@ export component FunctionBar inherits Rectangle {
         width: max(0px, root.width - root.cell-width - 4px); height: root.height;
         horizontal-scrollbar-policy: always-off; vertical-scrollbar-policy: always-off;
         mouse-drag-pan-enabled: true;
-        content-width: max(self.visible-width, 12 * root.key-width + 44px);
+        content-width: max(self.visible-width,
+            root.visible-count * root.key-width + max(0, root.visible-count - 1) * 4px);
         content-height: self.visible-height;
         Rectangle {
             width: keys.content-width; height: keys.visible-height;
             for index in 12 : FunctionButton {
                 // Modifier changes must not move the pressed cell before pointer-up.
                 preferred-width: self.min-width;
-                min-width: 0px; width: root.key-width; height: root.height;
-                x: index * (root.key-width + 4px);
+                visible: root.slot-visibility[index];
+                min-width: 0px; width: self.visible ? root.key-width : 0px; height: root.height;
+                x: root.visible-before(index) * (root.key-width + 4px);
                 private property <FunctionSlot> slot: ShortcutHints.function-key(index, root.modifiers, root.searching);
                 private property <int> icon-role: self.slot.icon;
                 action-id: self.slot.action;

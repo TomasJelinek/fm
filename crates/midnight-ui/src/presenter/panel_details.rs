@@ -196,6 +196,9 @@ impl Presenter {
             return value == crate::volume_presentation::panel_space(self, pane)
                 && self.queue_clipboard_text(value.to_owned(), send);
         }
+        let (full_path, token) = token
+            .strip_prefix("path:")
+            .map_or((false, token), |token| (true, token));
         let Some(field) = self
             .panel_details(pane)
             .into_iter()
@@ -203,6 +206,22 @@ impl Presenter {
         else {
             return false;
         };
+        if full_path {
+            if field.label != "Name" {
+                return false;
+            }
+            let Some(path) = self.focused_full_path(pane) else {
+                return false;
+            };
+            let Some(text) = path.to_str() else {
+                self.desktop.report(
+                    "Cannot copy full path",
+                    "This native path cannot be represented exactly as clipboard text.".into(),
+                );
+                return false;
+            };
+            return self.queue_clipboard_text(text.to_owned(), send);
+        }
         self.queue_clipboard_text(field.value, send)
     }
 }
@@ -232,6 +251,114 @@ fn folder_summary(summary: SelectedFolderSizes, locale: &NumberLocale) -> Option
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn focused_status_entry(path: PathBuf) -> Presenter {
+        let root = path.parent().unwrap().to_owned();
+        let mut p = Presenter::new(root.clone(), root);
+        let mut entry = Entry::new(EntryId(7), path, EntryKind::File);
+        entry.display_name = "displayed 文档.txt".into();
+        entry.metadata.size = Some(32);
+        p.panes[0].entries = vec![entry].into();
+        p.panes[0].index = Arc::new(DirectoryIndex::from_entries(&p.panes[0].entries));
+        p.panes[0].cursor = Some(EntryId(7));
+        p.panes[0].parent_cursor = false;
+        p
+    }
+
+    #[test]
+    fn status_name_full_path_copy_uses_native_identity_and_keeps_plain_copy_unchanged() {
+        let path = std::env::temp_dir()
+            .join("資料 e\u{301} 🧪")
+            .join("native ' $().txt");
+        let mut p = focused_status_entry(path.clone());
+        let name = p.panel_details(PaneId::Left).remove(0).identity;
+        let sent = std::cell::RefCell::new(Vec::new());
+        let send = |command| {
+            sent.borrow_mut().push(command);
+            true
+        };
+        assert!(p.copy_panel_detail(PaneId::Left, &name, &send));
+        assert!(p.copy_panel_detail(PaneId::Left, &format!("path:{name}"), &send));
+        let sent = sent.borrow();
+        assert!(matches!(&sent[0], Command::CopyText { text, .. } if text == "displayed 文档.txt"));
+        assert!(
+            matches!(&sent[1], Command::CopyText { text, .. } if text == path.to_str().unwrap())
+        );
+    }
+
+    #[test]
+    fn status_name_full_path_copy_rejects_non_name_stale_parent_and_loading_requests() {
+        let mut p = focused_status_entry(std::env::temp_dir().join("native.txt"));
+        let details = p.panel_details(PaneId::Left);
+        let name = details[0].identity.clone();
+        let bytes = details[1].identity.clone();
+        assert!(
+            !p.copy_panel_detail(PaneId::Left, &format!("path:{bytes}"), &|_| panic!(
+                "not a name"
+            ))
+        );
+        p.panes[0].loading = true;
+        assert!(
+            !p.copy_panel_detail(PaneId::Left, &format!("path:{name}"), &|_| panic!(
+                "loading"
+            ))
+        );
+        p.panes[0].loading = false;
+        p.panes[0].generation += 1;
+        assert!(
+            !p.copy_panel_detail(PaneId::Left, &format!("path:{name}"), &|_| panic!(
+                "stale name"
+            ))
+        );
+        p.panes[0].parent_cursor = true;
+        let parent = p.panel_details(PaneId::Left)[0].identity.clone();
+        assert!(
+            !p.copy_panel_detail(PaneId::Left, &format!("path:{parent}"), &|_| panic!(
+                "parent"
+            ))
+        );
+    }
+
+    #[test]
+    fn status_name_full_path_copy_does_not_reinterpret_archive_member_captions() {
+        let mut p = focused_status_entry(std::env::temp_dir().join("native.txt"));
+        let entry = Entry::from_archive(ArchiveNode {
+            id: VirtualEntryId { mount: 1, entry: 7 },
+            parent: 0,
+            raw_name: b"member.txt".to_vec().into(),
+            display_name: "looks-like-a-native-path.txt".into(),
+            kind: EntryKind::File,
+            size: Some(32),
+            readable: true,
+            modified: None,
+        });
+        p.panes[0].entries = vec![entry].into();
+        p.panes[0].index = Arc::new(DirectoryIndex::from_entries(&p.panes[0].entries));
+        let name = p.panel_details(PaneId::Left)[0].identity.clone();
+        assert!(
+            !p.copy_panel_detail(PaneId::Left, &format!("path:{name}"), &|_| panic!(
+                "virtual name has no native path"
+            ))
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn status_name_full_path_copy_rejects_lossy_native_bytes() {
+        use std::{ffi::OsString, os::unix::ffi::OsStringExt};
+        let path = std::env::temp_dir().join(OsString::from_vec(b"raw-\xff.txt".to_vec()));
+        let mut p = focused_status_entry(path);
+        let name = p.panel_details(PaneId::Left)[0].identity.clone();
+        assert!(
+            !p.copy_panel_detail(PaneId::Left, &format!("path:{name}"), &|_| panic!(
+                "lossy replacement text is not the native path"
+            ))
+        );
+        assert_eq!(
+            p.desktop.notice.as_ref().unwrap().0,
+            "Cannot copy full path"
+        );
+    }
 
     #[test]
     fn selected_file_bytes_are_exact_and_never_include_folder_estimates() {

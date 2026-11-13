@@ -30,8 +30,12 @@ Search commands by name or command ID, select a command, then focus **Press shor
 keys** and press a combination. **Assign** adds it while preserving the command's
 other aliases; choose an existing alias and use **Remove** to remove just that one.
 An action accepts up to four alternate single chords. The editor displays the
-effective context and current owners before assignment; overlapping conflicts are
-rejected before saving. **Restore command** restores one action; **Restore all
+effective context and current owners before assignment. An overlapping assignment
+opens a **Replace shortcut** dialog listing the affected commands. **Replace**
+removes that chord from those commands and assigns it to the selected command;
+other aliases and nonoverlapping contexts remain intact. **Cancel**, Escape or
+the default Enter response keep the existing assignments. Invalid or reserved
+shortcuts remain unavailable. **Restore command** restores one action; **Restore all
 defaults** asks before resetting the complete map. Tab or Escape records that key
 and leaves the capture field without running an application command.
 Changes preview immediately; **OK** saves them with the other preferences and
@@ -55,6 +59,11 @@ unassigned cells are disabled. Changing, removing or restoring a binding updates
 its caption, tooltip and click action, including unmodified function keys. AltGr
 is typing input and does not activate a modified layer. Operating-system-reserved
 combinations may be intercepted before they reach the app.
+
+Connect/Disconnect buttons are hidden when the operating system has no network
+drive dialog service, including on Linux. The remaining buttons use the available
+space. This follows the effective action after remapping; supported Ctrl+F11 Zoom
+and Ctrl+F12 Filter actions remain visible.
 
 At normal widths the action text takes priority over its icon. Very narrow cells
 show the function key; the tooltip and accessibility label retain the complete
@@ -165,7 +174,7 @@ digits; change or disable them in Options → Keyboard to free those numbers.
 | F7 | Create an absolute or relative folder path, including `..` and missing intermediate folders |
 | Delete / F8 | Confirm moving the selection (or focused entry) to the system Trash |
 | Shift+Delete / Shift+F8 | Explicitly confirm permanent deletion |
-| F11 / F12 | Connect / disconnect network drive through Windows system dialogs; inactive on Linux |
+| F11 / F12 | Connect / disconnect network drive through Windows system dialogs; unavailable on Linux, where these footer buttons are hidden |
 | F9 | User menu; no custom command execution is configured in this milestone |
 | F10 | All important actions grouped into Files, Selection, Panels and navigation, Tools, Application; includes Options and Jobs |
 | Alt+F4 | Exit |
@@ -314,8 +323,9 @@ remain explicit in the transfer contract.
 Options is the gear at the right end of the top toolbar. The application moon
 icon immediately to its right opens About, including the application version;
 Escape or Close dismisses it. Both controls remain fixed when panel tools scroll.
-The bottom bar contains F1–F12 and Jobs. Jobs shows queued/running operations and
-allows cancellation. In active Copy/Move/Delete progress, Escape or X asks whether
+The bottom bar contains F1–F12 and Jobs, omitting unavailable buttons for network
+drive dialogs. Jobs shows queued/running operations and allows cancellation.
+In active Copy/Move/Delete progress, Escape or X asks whether
 to cancel; Continue is the default, and Escape in that question leaves work running.
 Cancellation retains changes already completed. No Trash
 failure ever falls back to permanent deletion. F7 accepts paths outside the active

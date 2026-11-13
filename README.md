@@ -38,7 +38,8 @@ file operations include confirmed rename, recursive directory creation, empty-fi
 creation (toolbar or Shift+F4), and queued deletion (system Trash by default,
 permanent deletion with Shift). Empty-file creation accepts a name and never
 overwrites an existing entry.
-Explicitly opened files use host associations,
+Explicitly opened documents use host associations; on Linux, executable programs
+run directly and executable shell scripts run in a terminal,
 and explicitly submitted shell commands run with
 the selected user/sudo permissions. F3 opens an installed internal viewer; Alt+F3 forces
 plain text, and F4 opens the configured external editor. Ctrl+C/Ctrl+V copies files and ordinary folders through a
@@ -139,6 +140,10 @@ package roots, requires one compatible native and one network filesystem provide
 preserves executable permissions and notices. Archive and thumbnail packages remain optional.
 The [network plugin guide](plugins/midnight-filesystem-network/README.md) describes
 its optional Linux GIO/GVfs runtime and explicit unavailable/authentication states.
+On Ubuntu/Mint, local network discovery and native SMB share browsing use
+`gvfs-backends gvfs-fuse wsdd`; install these system runtime packages if missing.
+The `wsdd` helper supplies Windows computer discovery. A known server can also
+be entered as `smb://server/` in a panel's path.
 See the [native filesystem build instructions](docs/developer/NATIVE_FILESYSTEM_API.md#building-the-native-package)
 for package-only builds, test switches and offline options.
 The Cargo package remains `midnight-explorer`; its executable is `me.exe` on Windows
@@ -389,26 +394,40 @@ When Windows and WSL use the same checkout, give Linux its separate cache:
 
 ### Linux desktop launcher
 
-The moon icon is embedded for X11. Native Wayland resolves it using the application
-ID and an installed desktop entry. Optional per-user installation after a release
-build, from the repository root:
+Ubuntu GNOME resolves the running application's moon icon through an installed
+desktop entry, including in X11 sessions. Native Wayland also uses the matching
+application ID and desktop entry. Register a debug build directly from the
+repository root:
 
 ```sh
-install -Dm755 _build/release/me "$HOME/.local/bin/me"
-install -Dm755 _build/release/midnight-elevated-listing \
-    "$HOME/.local/bin/midnight-elevated-listing"
-mkdir -p "$HOME/.local/bin/viewers"
-cp -R _build/release/viewers/. "$HOME/.local/bin/viewers/"
-install -Dm644 packaging/linux/io.github.TomasJelinek.MidnightExplorer.desktop \
-    "$HOME/.local/share/applications/io.github.TomasJelinek.MidnightExplorer.desktop"
-install -Dm644 assets/branding/midnight-explorer.png \
-    "$HOME/.local/share/icons/hicolor/256x256/apps/io.github.TomasJelinek.MidnightExplorer.png"
+python3 -B scripts/install-linux-desktop.py
 ```
 
-The graphical session's `PATH` must include `$HOME/.local/bin`; sign in again after
-changing that environment. If using custom XDG data directories, install the entry
-and icon under `$XDG_DATA_HOME` instead of `$HOME/.local/share`. These commands
-install the application but do not make it the default file manager.
+For another existing executable, use
+`python3 -B scripts/install-linux-desktop.py --executable _build/custom/debug/me`.
+The script installs the desktop entry and committed icon under `$XDG_DATA_HOME`
+(default `$HOME/.local/share`), with an absolute executable path, and invalidates
+the icon theme cache after registration. It leaves the
+application and its plugins in place and does not require a graphical-session
+`PATH` change. Restart Midnight Explorer after registration to refresh its running
+icon. Repeat registration after moving the checkout or selecting another build.
+
+For a separate per-user installation of the debug build:
+
+```sh
+install -Dm755 _build/debug/me "$HOME/.local/bin/me"
+install -Dm755 _build/debug/midnight-elevated-listing \
+    "$HOME/.local/bin/midnight-elevated-listing"
+mkdir -p "$HOME/.local/bin/viewers" "$HOME/.local/bin/filesystems"
+cp -R _build/debug/viewers/. "$HOME/.local/bin/viewers/"
+cp -R _build/debug/filesystems/. "$HOME/.local/bin/filesystems/"
+python3 -B scripts/install-linux-desktop.py --executable "$HOME/.local/bin/me"
+```
+
+Registration uses only the dedicated `io.github.TomasJelinek.MidnightExplorer`
+desktop-entry and icon paths. It refuses symbolic links in installation paths and
+unrelated existing desktop entries. These commands do not make Midnight Explorer
+the default file manager.
 
 ### Rendering diagnostics
 
@@ -470,7 +489,11 @@ editor scope and shortcuts reserved for later stages.
   appear immediately while backend confirmations arrive. Panel status shows
   selected file/folder counts; attributes use readable flags or Unix chmod notation.
 - Enter / unmodified left double click: enter a directory or open a file in its
-  default system application. Directory links stay inside the file manager.
+  default system application. On Linux, executable ELF programs run directly;
+  executable shebang scripts and `.sh` files run in a terminal. Directory links
+  stay inside the file manager. Files without execute permission are not run.
+- In the bottom details bar, clicking the filename copies its name; Ctrl+click
+  copies the full native path. Other fields still copy their displayed value.
 - Backspace / toolbar Up: parent directory.
 - Alt+Left / Alt+Right: back / forward history; adjacent dropdowns choose a
   particular history entry. Click a highlighted path prefix to visit its ancestor.
@@ -502,6 +525,9 @@ editor scope and shortcuts reserved for later stages.
   preserves the command draft. Its adjacent arrow chooses PowerShell/cmd on Windows
   or Terminal/Terminal(sudo) on Linux. A nonempty draft stays bound to its grammar;
   clear it before switching PowerShell/cmd. Sudo selection is session-only.
+  Linux uses the executable shell in `$SHELL`, with Bash/sh fallbacks, and reads
+  its normal interactive configuration. A missing/basic prompt gets a dynamic
+  user/host/current-directory default without replacing custom shell prompts.
 - The compact terminal icon and navigation controls explain themselves through
   tooltips. Drive tooltips show free space and Windows volume names; expanded
   drive choices include those details. Quick buttons and their dropdown share
@@ -591,6 +617,8 @@ editor scope and shortcuts reserved for later stages.
   file count/total file bytes and folder count; folder contents are not recursively
   counted just to open the confirmation.
 - F11/F12: Windows system dialogs for connecting/disconnecting network drives.
+  Their footer buttons are hidden when these dialogs are unavailable, including
+  on Linux. Supported modifier actions such as Ctrl+F11 and Ctrl+F12 remain visible.
   The Options gear is at the right of the top toolbar; Jobs shows the operation
   queue and session history; Open displays the selected operation's progress.
 - Hold Ctrl to show the effective Ctrl+F1–F12 captions and actions in the footer.
@@ -630,8 +658,11 @@ editor scope and shortcuts reserved for later stages.
   Ctrl+F7 opens the same editor with case conversion enabled. Other edits start
   as Leave unchanged. Preview the captured selection, then Apply to queue the
   reviewed draft. Native Windows attributes/compression/timestamps and Linux
-  permissions/timestamps follow reported capabilities. Unicode case conversion
-  supports whole names, basenames and extensions. Recursive edits process
+  permissions/timestamps follow reported capabilities. Linux permissions have an
+  Owner/Group/Other read/write/execute grid, SUID/SGID/Sticky bits, and synchronized
+  octal and symbolic text. Mixed bits remain unchanged until edited; three octal
+  digits preserve special bits, while four explicitly replace them. Unicode case
+  conversion supports whole names, basenames and extensions. Recursive edits process
   children first without following links or crossing mount points. Name conflicts
   offer Skip, Skip all or Cancel; existing entries are never overwritten.
 - Click the blank area after the top breadcrumb to enter a custom path; Enter
@@ -642,7 +673,12 @@ editor scope and shortcuts reserved for later stages.
   visible page. Active prefix search retains its existing match navigation.
   Installed thumbnailer plugins provide cached previews for supported image/video
   formats; see the [thumbnail design](docs/superpowers/specs/2026-11-05-panel-views-thumbnails-design.md).
-  **Options → Previews → Thumbnail size** offers 48, 64, 72 (default), 96, 128,
+  **Options → Previews → Allow previews inside archives** is enabled by default,
+  including for older saved settings. Turning it off hides archive-member previews
+  and removes them from background scheduling. Network archives also require
+  **Allow previews on network locations**. Options OK saves these choices;
+  Cancel restores their previous values.
+  **Options → Previews → Thumbnail size** offers 48, 64, 72, 96 (default), 128,
   192 and 256 logical pixels. Larger sizes retain the current preview while a
   sharper image is prepared for that file; smaller sizes reuse larger cached
   images. The setting previews immediately, Cancel restores it and OK saves it.
@@ -654,12 +690,14 @@ editor scope and shortcuts reserved for later stages.
   retained and sorted on the backend; Refresh invalidates these live estimates.
 
 Application hotkeys can be changed, disabled, or restored in **Options → Keyboard**.
-Bindings are validated for conflicts in their applicable contexts; native text editing
-and IME behavior are protected. The [shortcut reference](docs/KEYBOARD_SHORTCUTS.md)
+An occupied shortcut offers **Replace** or **Cancel**, identifying the affected
+commands. Replacement preserves their other aliases and nonoverlapping contexts;
+Options **OK** saves the change, and Options **Cancel** rolls it back. Native text
+editing and IME behavior are protected. The [shortcut reference](docs/KEYBOARD_SHORTCUTS.md)
 lists defaults. Numbered tab and Hot Path bindings use physical digits across layouts.
 
 Options, tabs, bookmarks, panel filters, enabled command history, viewer preferences
-and shortcut overrides are stored as versioned UTF-8 JSON (supported schemas through 21) in the native
+and shortcut overrides are stored as versioned UTF-8 JSON (supported schemas through 31) in the native
 `%LOCALAPPDATA%\Midnight Explorer\preferences.json` on Windows, or
 `$XDG_CONFIG_HOME/midnight-explorer/preferences.json` /
 `~/.config/midnight-explorer/preferences.json` on Linux. When the new file is absent,
@@ -716,8 +754,8 @@ does not inspect a link target merely to choose its icon.
 Paths and file identities are kept separately from their displayed text. A failed
 navigation preserves the last usable directory and reports the failed operation.
 Each pane remembers its last visited directory for each volume during this run.
-Visible directories are watched on the backend. Changes are batched after one
-second of quiet, with a three-second cap during continuous activity. A 15-second
+Visible directories are watched on the backend. Changes are batched after
+150 ms of quiet, with a 500 ms cap during continuous activity. A 15-second
 metadata check catches missing native/network notifications. Automatic refresh
 preserves the viewport, selection and command editing; it invalidates earlier
 recursive folder-size estimates.

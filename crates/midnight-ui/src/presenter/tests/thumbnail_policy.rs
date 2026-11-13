@@ -31,6 +31,65 @@ fn archive_previews_snapshot_readable_members_without_doing_io_on_ui_thread() {
 }
 
 #[test]
+fn disabling_archive_previews_stops_member_admission_without_blocking_native_previews() {
+    let mut p = super::archives::archive_pane();
+    p.preferences.values.panel_view_modes = [PanelViewMode::Thumbnails; 2];
+    let native_path = test_root().join("native-preview.png");
+    let entries: Arc<[Entry]> = vec![Entry::new(
+        EntryId(70),
+        native_path.clone(),
+        EntryKind::File,
+    )]
+    .into();
+    p.panes[1].index = Arc::new(DirectoryIndex::from_entries(&entries));
+    p.panes[1].entries = entries;
+    p.panes[1].storage_kind = StorageKind::LocalSsd;
+    assert_eq!(p.thumbnail_targets([(0, 10); 2], ["", ""]).len(), 3);
+
+    p.preferences.values.thumbnails_archives = false;
+    let targets = p.thumbnail_targets([(0, 10); 2], ["", ""]);
+    assert_eq!(
+        targets.len(),
+        1,
+        "archive opt-out must leave native previews available"
+    );
+    assert!(
+        matches!(&targets[0].content, crate::ThumbnailContent::Native(path) if path == &native_path)
+    );
+}
+
+#[test]
+fn disabling_archive_previews_hides_resident_pixels_and_rejects_frames_before_timer() {
+    let mut p = super::archives::archive_pane();
+    p.preferences.values.panel_view_modes[0] = PanelViewMode::Thumbnails;
+    let entry = p.panes[0].entries[1].clone();
+    let targets = p.thumbnail_targets([(0, 10), (0, 0)], ["", ""]);
+    let identity = targets[0].identity.clone();
+    assert!(p.receive_thumbnail(&identity, 0, 1, 1, &[10, 20, 30, 255]));
+    assert!(p.thumbnail_image(PaneId::Left, &entry).is_some());
+
+    p.preferences.values.thumbnails_archives = false;
+    assert!(
+        p.thumbnail_image(PaneId::Left, &entry).is_none(),
+        "hide cached pixels before the next target pulse"
+    );
+    assert!(
+        !p.receive_thumbnail(&identity, 1, 1, 1, &[255; 4]),
+        "an already-visible archive target must not accept a late frame after opt-out"
+    );
+    assert!(p.thumbnail_targets([(0, 10), (0, 0)], ["", ""]).is_empty());
+    assert!(!p.receive_thumbnail(&identity, 2, 1, 1, &[255; 4]));
+
+    // Like the master preview switch, re-enabling can reuse completed pixels
+    // without inventing new listing identities or inspecting the archive here.
+    p.preferences.values.thumbnails_archives = true;
+    let resumed = p.thumbnail_targets([(0, 10), (0, 0)], ["", ""]);
+    assert_eq!(resumed[0].identity, identity);
+    assert_eq!(p.thumbnail_coverage(&identity, 0), 96);
+    assert!(p.thumbnail_image(PaneId::Left, &entry).is_some());
+}
+
+#[test]
 fn archive_previews_keep_resident_pixels_when_scrolled_back_and_reject_stale_listing() {
     let mut p = super::archives::archive_pane();
     p.preferences.values.panel_view_modes[0] = PanelViewMode::Thumbnails;

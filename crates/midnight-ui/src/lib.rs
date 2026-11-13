@@ -14,7 +14,9 @@ mod dialog_focus;
 mod dialog_host;
 mod dialog_native;
 mod dialog_presentation;
+mod window_position;
 pub use dialog_native::configure_dialog_window_attributes;
+pub use window_position::restore_window_position;
 mod decision_windows;
 mod drag_bridge;
 mod drag_lifecycle;
@@ -50,6 +52,7 @@ mod panel_view_navigation;
 mod path_paste;
 mod path_paste_input;
 mod picker_window;
+mod unix_permissions;
 pub use picker_window::native_path_picker_owner;
 mod plugin_options;
 mod presenter;
@@ -580,6 +583,7 @@ fn refresh_properties(window: &MainWindow, presenter: &Presenter, reset_rows: bo
     window.set_right_view_mode(mode_index(presenter.preferences.values.panel_view_modes[1]));
     window.set_thumbnails_enabled(presenter.preferences.values.thumbnails_enabled);
     window.set_thumbnails_network(presenter.preferences.values.thumbnails_network);
+    window.set_thumbnails_archives(presenter.preferences.values.thumbnails_archives);
     window.set_thumbnail_size(i32::from(presenter.preferences.values.thumbnail_size));
     window.set_quick_search_filter(presenter.preferences.values.quick_search_filter);
     window.set_active_pane(presenter.active.index() as i32);
@@ -861,6 +865,7 @@ fn update_model<T: Clone + PartialEq + 'static>(
 /// [`install`] includes this initializer. UI-only hosts that attach individual
 /// callbacks can use it without a presenter or backend; native editors retain focus.
 pub fn install_file_keys(window: &MainWindow) {
+    metadata_presentation::install_permissions(window);
     filename_colors::install(window);
     job_presentation::install(window);
     shortcut_bridge::install_default(window);
@@ -1442,8 +1447,8 @@ pub fn install(
     });
     callback!(
         on_thumbnail_options_changed,
-        |w, p, s, enabled, network, field| {
-            p.change_thumbnail_options(enabled, network, field, s);
+        |w, p, s, enabled, network, archives, field| {
+            p.change_thumbnail_options(enabled, network, archives, field, s);
             let _ = w;
         }
     );

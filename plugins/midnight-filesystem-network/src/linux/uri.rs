@@ -45,7 +45,7 @@ pub(super) fn classify(key: &[u8]) -> Result<NodeKind, Failure> {
         return Err(invalid());
     }
     let (scheme, rest) = uri.split_once("://").ok_or_else(invalid)?;
-    if !matches!(scheme, "network" | "smb" | "dns-sd") {
+    if !matches!(scheme, "network" | "smb" | "dns-sd" | "wsdd") {
         return Err(invalid());
     }
     if rest.is_empty() {
@@ -85,6 +85,7 @@ pub(super) fn classify(key: &[u8]) -> Result<NodeKind, Failure> {
     }
     match scheme {
         "network" if authority.is_empty() && path.is_empty() => Ok(NodeKind::Root),
+        "wsdd" if uri == "wsdd:///" => Ok(NodeKind::Container),
         "dns-sd" if !authority.is_empty() => Ok(NodeKind::Container),
         "smb" if authority.is_empty() && path.is_empty() => Ok(NodeKind::Container),
         "smb" if !authority.is_empty() && components == 0 => Ok(NodeKind::Server),

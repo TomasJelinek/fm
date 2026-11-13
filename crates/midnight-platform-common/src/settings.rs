@@ -39,7 +39,7 @@ mod shortcuts_tests;
 
 /// An aggregate storage bound, never a native path length restriction.
 pub const MAX_PREFERENCES_BYTES: usize = 4 * 1024 * 1024;
-const CURRENT_PREFERENCES_VERSION: u32 = 30;
+const CURRENT_PREFERENCES_VERSION: u32 = 31;
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -168,6 +168,12 @@ struct StoredPreferences {
 struct StoredPreviews {
     enabled: bool,
     network: bool,
+    #[serde(
+        default,
+        deserialize_with = "present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    archives: Option<bool>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -403,11 +409,19 @@ pub fn decode_preferences(bytes: &[u8]) -> io::Result<UserPreferences> {
     {
         return Err(invalid("archive addresses require preferences version 11"));
     }
-    let (thumbnails_enabled, thumbnails_network) = match (stored.version, stored.previews) {
-        (1..=11, None) => (true, false),
-        (12..=CURRENT_PREFERENCES_VERSION, Some(previews)) => (previews.enabled, previews.network),
-        _ => return Err(invalid("missing or unexpected preview preferences")),
-    };
+    let (thumbnails_enabled, thumbnails_network, thumbnails_archives) =
+        match (stored.version, stored.previews) {
+            (1..=11, None) => (true, false, true),
+            (12..=CURRENT_PREFERENCES_VERSION, Some(previews)) => {
+                let archives = match (stored.version, previews.archives) {
+                    (12..=30, None) => true,
+                    (31..=CURRENT_PREFERENCES_VERSION, Some(enabled)) => enabled,
+                    _ => return Err(invalid("missing or unexpected archive preview preference")),
+                };
+                (previews.enabled, previews.network, archives)
+            }
+            _ => return Err(invalid("missing or unexpected preview preferences")),
+        };
     let theme = PreferenceTheme::from_storage_name(&stored.theme)
         .ok_or_else(|| invalid("unknown preferences theme"))?;
     let density = match stored.density.as_str() {
@@ -713,6 +727,7 @@ pub fn decode_preferences(bytes: &[u8]) -> io::Result<UserPreferences> {
         panel_view_modes,
         thumbnails_enabled,
         thumbnails_network,
+        thumbnails_archives,
         thumbnail_size,
         shortcuts,
         panel_filters,
@@ -757,8 +772,11 @@ pub fn encode_preferences(preferences: UserPreferences) -> io::Result<Vec<u8>> {
         .bookmarks
         .iter()
         .any(|bookmark| bookmark.network.is_some());
-    let rule_choices =
-        !preferences.editor.rules.is_empty() || !preferences.panel_filter_history.is_empty();
+    let archive_preview_choices = !preferences.thumbnails_archives;
+    // Newer schemas still include the required rule/history fields introduced in version 30.
+    let rule_choices = archive_preview_choices
+        || !preferences.editor.rules.is_empty()
+        || !preferences.panel_filter_history.is_empty();
     let verification_choices =
         rule_choices || network_bookmarks || !preferences.copy_checksum_verification;
     let association_choices = verification_choices
@@ -847,7 +865,9 @@ pub fn encode_preferences(preferences: UserPreferences) -> io::Result<Vec<u8>> {
         viewer: viewer_choices
             .then(|| viewers::StoredViewerPreferences::try_from(&preferences.viewer))
             .transpose()?,
-        version: if rule_choices {
+        version: if archive_preview_choices {
+            31
+        } else if rule_choices {
             30
         } else if network_bookmarks {
             29
@@ -899,6 +919,7 @@ pub fn encode_preferences(preferences: UserPreferences) -> io::Result<Vec<u8>> {
         previews: store_previews.then_some(StoredPreviews {
             enabled: preferences.thumbnails_enabled,
             network: preferences.thumbnails_network,
+            archives: archive_preview_choices.then_some(preferences.thumbnails_archives),
         }),
         disabled_viewer_plugins: Some(preferences.disabled_viewer_plugins),
         editor: Some(StoredEditor {

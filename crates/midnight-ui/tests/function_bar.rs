@@ -4,10 +4,16 @@ mod render;
 #[path = "support/ui.rs"]
 mod ui;
 
-use i_slint_core::items::AccessibleRole;
-use midnight_core::{Event, UserPreferences};
-use midnight_ui::{Presenter, ShortcutHints, install, refresh};
-use slint::{ComponentHandle, platform::Key};
+use i_slint_core::{
+    accessibility::AccessibleStringProperty, item_tree::ItemRc, items::AccessibleRole,
+    window::WindowInner,
+};
+use midnight_core::{Event, ShortcutBinding, UserPreferences};
+use midnight_ui::{MainWindow, Presenter, ShortcutHints, install, refresh};
+use slint::{
+    ComponentHandle,
+    platform::{Key, PointerEventButton},
+};
 use std::{cell::RefCell, rc::Rc};
 
 const DEFAULT_ACTIONS: [[&str; 12]; 8] = [
@@ -124,6 +130,170 @@ fn chord(mask: i32, index: usize) -> String {
         }
     }
     format!("{text}F{}", index + 1)
+}
+
+fn visible_button(window: &MainWindow, label: &str) -> Option<ItemRc> {
+    fn find(item: ItemRc, label: &str) -> Option<ItemRc> {
+        if !item.is_visible() {
+            return None;
+        }
+        if item.accessible_role() == AccessibleRole::Button
+            && item
+                .accessible_string_property(AccessibleStringProperty::Label)
+                .is_some_and(|value| value == label)
+        {
+            return Some(item);
+        }
+        let mut child = item.first_child();
+        while let Some(item) = child {
+            child = item.next_sibling();
+            if let Some(found) = find(item, label) {
+                return Some(found);
+            }
+        }
+        None
+    }
+    find(
+        ItemRc::new_root(WindowInner::from_pub(window.window()).component()),
+        label,
+    )
+}
+
+fn button_bounds(window: &MainWindow, label: &str) -> (f32, f32) {
+    let item = visible_button(window, label).unwrap_or_else(|| panic!("missing button: {label}"));
+    let rect = item.geometry();
+    (item.map_to_native_window(rect.origin).x, rect.width())
+}
+
+#[test]
+fn unavailable_network_dialogs_are_hidden_without_hiding_supported_modifier_actions() {
+    let mut test = ready();
+    test.draw();
+    let full_width = button_bounds(&test.window, "F1 Help").1;
+    assert!(visible_button(&test.window, "F11 Connect").is_some());
+    assert!(visible_button(&test.window, "F12 Disconnect").is_some());
+    test.window.set_network_available(false);
+    test.draw();
+    assert!(visible_button(&test.window, "F11 Connect — unavailable").is_none());
+    assert!(visible_button(&test.window, "F12 Disconnect — unavailable").is_none());
+    assert!(button_bounds(&test.window, "F1 Help").1 > full_width + 10.0);
+    let menu = button_bounds(&test.window, "F10 Menu");
+    let jobs = button_bounds(&test.window, "Jobs");
+    assert!((jobs.0 - menu.0 - menu.1 - 4.0).abs() < 1.0);
+    render::snapshot(&test, "function-bar-linux-no-network-dialogs");
+
+    modifiers(&test, 1, true);
+    test.draw();
+    assert!(visible_button(&test.window, "Ctrl+F11 Zoom").is_some());
+    assert!(visible_button(&test.window, "Ctrl+F12 Filter").is_some());
+    modifiers(&test, 1, false);
+    test.resize(320, 200);
+    assert!(visible_button(&test.window, "F11 Connect — unavailable").is_none());
+    assert!(visible_button(&test.window, "F12 Disconnect — unavailable").is_none());
+    let jobs = button_bounds(&test.window, "Jobs");
+    assert!(jobs.0 >= 0.0 && jobs.0 + jobs.1 <= 320.5);
+    render::snapshot(&test, "function-bar-linux-no-network-dialogs-compact");
+    test.resize(1340, 820);
+    test.window.set_network_available(true);
+    test.draw();
+    assert!(visible_button(&test.window, "F11 Connect").is_some());
+    assert!(visible_button(&test.window, "F12 Disconnect").is_some());
+}
+
+#[test]
+fn unavailable_network_actions_follow_remapped_slots_and_close_the_gap() {
+    let mut test = ready();
+    let presenter = Rc::new(RefCell::new(Presenter::new("left".into(), "right".into())));
+    presenter
+        .borrow_mut()
+        .apply(Event::PreferencesLoaded(Ok(Box::new(UserPreferences {
+            shortcuts: vec![
+                ShortcutBinding {
+                    action: "files.edit".into(),
+                    keys: vec![],
+                },
+                ShortcutBinding {
+                    action: "network.connect".into(),
+                    keys: vec!["F4".into()],
+                },
+            ],
+            ..Default::default()
+        }))));
+    install(&test.window, presenter.clone(), Rc::new(|_| true));
+    refresh(&test.window, &presenter.borrow());
+    test.window.set_network_available(false);
+    test.draw();
+    assert!(visible_button(&test.window, "F4 Connect — unavailable").is_none());
+    let previous = button_bounds(&test.window, "F3 View — unavailable");
+    let next = button_bounds(&test.window, "F5 Copy — unavailable");
+    assert!((next.0 - previous.0 - previous.1 - 4.0).abs() < 1.0);
+}
+
+#[test]
+fn hiding_network_actions_preserves_pressed_geometry_action_and_pane_until_release() {
+    let mut test = ready();
+    let copied = Rc::new(RefCell::new(Vec::new()));
+    let output = copied.clone();
+    test.window
+        .on_file_clipboard(move |pane, operation| output.borrow_mut().push((pane, operation)));
+    for (control, network_available) in [(true, false), (false, true)] {
+        test.window.set_network_available(false);
+        test.window.set_active_pane(0);
+        test.window.invoke_focus_files();
+        test.draw();
+        let before = button_bounds(&test.window, "F5 Copy");
+        let point = ui::root_position(&test.window, "F5 Copy", AccessibleRole::Button);
+        test.window.invoke_capture_function_press(point.x, point.y);
+        ui::pointer_button(&test.window, point, PointerEventButton::Left, true);
+        test.window.set_active_pane(1);
+        if control {
+            modifiers(&test, 1, true);
+        }
+        test.window.set_network_available(network_available);
+        test.draw();
+        let label = if control {
+            "Ctrl+F5 Modified"
+        } else {
+            "F5 Copy"
+        };
+        assert_eq!(button_bounds(&test.window, label), before);
+        ui::pointer_button(&test.window, point, PointerEventButton::Left, false);
+        test.window.invoke_release_function_press();
+        test.draw();
+        assert_ne!(button_bounds(&test.window, label), before);
+        if control {
+            modifiers(&test, 1, false);
+        }
+    }
+    assert_eq!(&*copied.borrow(), &[(0, 2), (0, 2)]);
+}
+
+#[test]
+fn jobs_stays_under_the_pointer_while_function_slots_change() {
+    let mut test = ready();
+    for (control, network_available) in [(true, false), (false, true)] {
+        test.window.set_network_available(false);
+        test.draw();
+        let before = button_bounds(&test.window, "Jobs");
+        let center = ui::root_position(&test.window, "Jobs", AccessibleRole::Button);
+        let point = slint::LogicalPosition::new(before.0 + 5.0, center.y);
+        test.window.invoke_capture_function_press(point.x, point.y);
+        ui::pointer_button(&test.window, point, PointerEventButton::Left, true);
+        if control {
+            modifiers(&test, 1, true);
+        }
+        test.window.set_network_available(network_available);
+        test.draw();
+        assert_eq!(button_bounds(&test.window, "Jobs"), before);
+        ui::pointer_button(&test.window, point, PointerEventButton::Left, false);
+        test.window.invoke_release_function_press();
+        test.draw();
+        assert!(test.window.get_operations_visible());
+        test.window.invoke_close_operations();
+        if control {
+            modifiers(&test, 1, false);
+        }
+    }
 }
 
 #[test]

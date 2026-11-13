@@ -1,7 +1,7 @@
 Midnight Explorer 0.2.0 - Linux x86-64 preview
 
 Extract the archive with tar, then run ./me in a graphical desktop session.
-Keep the viewers folder beside me. Native plugins require a private user-owned
+Keep the viewers and filesystems folders beside me. Native plugins require a private user-owned
 or administrator-managed installation, with no group/other-writable package or
 replaceable parent directory. Native Linux filesystems are recommended; a shared
 Windows mount with permissive drvfs modes will be refused.
@@ -14,6 +14,11 @@ Ubuntu 24.04 / Mint 22 runtime packages:
     libvulkan1 xdg-utils xterm
 Use the graphics driver and Vulkan implementation supplied for your hardware.
 
+Local network discovery and mounted SMB share browsing additionally need:
+  sudo apt install gvfs-backends gvfs-fuse wsdd
+The wsdd helper discovers Windows computers. Allow time for discovery, then
+refresh Network Neighborhood. A known server can be entered as smb://server/.
+
 Example:
   ./me --left "$HOME" --right /tmp
 
@@ -25,8 +30,9 @@ preview has not been qualified on their native desktops. See SYSTEM_REQUIREMENTS
 
 Optional per-user desktop installation from the extracted folder:
   install -Dm755 me "$HOME/.local/bin/me"
-  mkdir -p "$HOME/.local/bin/viewers"
+  mkdir -p "$HOME/.local/bin/viewers" "$HOME/.local/bin/filesystems"
   cp -R viewers/. "$HOME/.local/bin/viewers/"
+  cp -R filesystems/. "$HOME/.local/bin/filesystems/"
   install -Dm644 io.github.TomasJelinek.MidnightExplorer.desktop \
     "$HOME/.local/share/applications/io.github.TomasJelinek.MidnightExplorer.desktop"
   install -Dm644 midnight-explorer.png \

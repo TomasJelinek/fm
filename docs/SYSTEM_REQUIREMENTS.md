@@ -119,6 +119,12 @@ and an installed terminal. Build prerequisites and package names are in the READ
 External file drag-and-drop targets X11/XWayland; native Wayland needs separate
 protocol integration, while in-application operations remain available.
 
+Local Network Neighborhood browsing additionally needs GIO/GVfs discovery and
+SMB backends; opening shares as native paths needs the GVfs FUSE bridge. On
+Ubuntu/Mint, install `gvfs-backends gvfs-fuse wsdd`. The `wsdd` helper enables
+Windows computer discovery; an advertised GVfs backend alone does not prove
+that the helper is installed. A known server can be opened as `smb://server/`.
+
 The initial generic Linux build targets the **Ubuntu 24.04 / glibc 2.39** userspace baseline.
 Build distributable Linux binaries on that baseline, and inspect their ELF versioned
 dependencies before publication. Building on a newer distro can raise the required

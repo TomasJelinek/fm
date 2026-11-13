@@ -6,24 +6,32 @@ import { WrappingCheckBox } from "wrapping-check-box.slint";
 export component ThumbnailOptions inherits VerticalLayout {
     in property <bool> thumbnails-enabled;
     in property <bool> thumbnails-network;
+    in-out property <bool> thumbnails-archives: true;
     in property <int> thumbnail-size: 96;
     in property <string> thumbnail-cache-location;
     callback size-changed(int);
-    callback changed(bool, bool, int);
+    callback changed(bool, bool, bool, int);
     callback clear-cache();
     spacing: 16px; alignment: start;
     WrappingCheckBox {
         text: "Show image and video previews";
         checked: root.thumbnails-enabled; min-height: Theme.control-height;
         hint: "Use installed thumbnail plugins in Thumbnails view. Decoding runs in background workers and results are cached.";
-        toggled => { root.changed(self.checked, root.thumbnails-network, 0); }
+        toggled => { root.changed(self.checked, root.thumbnails-network, root.thumbnails-archives, 0); }
     }
     WrappingCheckBox {
         text: "Allow previews on network locations";
         checked: root.thumbnails-network; enabled: root.thumbnails-enabled;
         min-height: Theme.control-height;
         hint: "Allow background reads on network or unclassified storage. These reads remain serial.";
-        toggled => { root.changed(root.thumbnails-enabled, self.checked, 1); }
+        toggled => { root.changed(root.thumbnails-enabled, self.checked, root.thumbnails-archives, 1); }
+    }
+    WrappingCheckBox {
+        text: "Allow previews inside archives";
+        checked <=> root.thumbnails-archives; enabled: root.thumbnails-enabled;
+        min-height: Theme.control-height;
+        hint: "Show image and video previews of files inside archives. Archives on network locations also require network previews to be allowed.";
+        toggled => { root.changed(root.thumbnails-enabled, root.thumbnails-network, self.checked, 2); }
     }
     VerticalLayout {
         spacing: 4px;

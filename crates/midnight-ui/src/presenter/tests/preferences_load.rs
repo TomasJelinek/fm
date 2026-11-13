@@ -107,6 +107,7 @@ fn early_theme_preview_defers_saving_and_preserves_every_untouched_loaded_field(
         panel_view_modes: Default::default(),
         thumbnails_enabled: true,
         thumbnails_network: false,
+        thumbnails_archives: true,
         thumbnail_size: 192,
         shortcuts: vec![],
         panel_filters: Default::default(),

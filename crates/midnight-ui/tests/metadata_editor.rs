@@ -11,6 +11,30 @@ use midnight_ui::{MetadataDraft, MetadataFileRow};
 use slint::{ComponentHandle, ModelRc, VecModel, platform::Key};
 use std::{cell::RefCell, rc::Rc};
 
+#[test]
+fn unix_permissions_offer_owner_group_other_and_special_bits() {
+    let mut test = ui::TestUi::new();
+    test.window.set_metadata_can_unix(true);
+    test.window.set_metadata_token("unix-grid:1".into());
+    settle(&mut test);
+    for label in [
+        "Owner read",
+        "Owner write",
+        "Owner execute",
+        "Group read",
+        "Group write",
+        "Group execute",
+        "Other read",
+        "Other write",
+        "Other execute",
+        "SUID",
+        "SGID",
+        "Sticky",
+    ] {
+        ui::popup_item(&test.window, label, AccessibleRole::Checkbox);
+    }
+}
+
 fn settle(test: &mut ui::TestUi) {
     // Slint repositions embedded popups through a deferred property-tracker timer.
     for _ in 0..2 {

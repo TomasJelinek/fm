@@ -10,6 +10,41 @@ code or a green subset into complete qualification.
 
 ## Current checkpoint
 
+The separate Linux branch `codex/filter-linux-drive-list` has Debug-built desktop,
+permissions, terminal, activation and status-bar fixes based on merge `2b62996`.
+Its [scoped Linux verification report](verification/2026-11-13-linux-desktop-fixes.md)
+records 106 passing targeted tests and native X11/startup checks. The first
+Colors occurrence was restarted before capture. A later live hang revealed a
+Slint popup-borrow panic followed by an idle image-owner runtime shutdown wait;
+the report distinguishes those captured stacks, the reproduced tooltip panic
+and their source fixes from the unavailable original UI callback.
+The shortcut Replace/Cancel dialog, unavailable network-button hiding, tooltip
+teardown and panic cleanup pass 68 final targeted Debug tests. Refreshing a stale
+installed native filesystem plugin adds 8 passing mount tests; the resulting
+Debug installation passes native startup/shutdown with the filtered drive bar.
+Three separate presenter tests also passed. Exact follow-up receipts are in the
+same report.
+The later Options sidebar correction measures the full selected topic labels
+and grows with the font; 51 targeted UI tests pass, with font-12/font-24 renders
+visually reviewed. Its separate receipts and scope are recorded in the report's
+[font-scaling follow-up](verification/2026-11-13-linux-desktop-fixes.md#options-navigation-font-scaling).
+The subsequent default-on **Allow previews inside archives** setting includes
+strict schema 31 persistence, reversible Options edits and archive-only scheduling/
+presentation gating. Its [scoped follow-up](verification/2026-11-13-linux-desktop-fixes.md#archive-preview-option)
+records 214 passing targeted tests and a visually reviewed default-checked control;
+this does not broaden installed archive-format qualification.
+The following [row-layout and notification follow-up](verification/2026-11-13-linux-desktop-fixes.md#panel-row-alignment-and-notification-cadence)
+limits list labels to one line and reduces notification debounce to 150 ms quiet /
+500 ms continuous activity. It records 55 passing targeted tests, three complete
+native rendering probes and Debug startup/shutdown. A hidden mandatory line break
+reproduced the clipped text; the original screenshot's filename and build age
+could not be established, so its exact trigger remains unconfirmed.
+These Linux results do not replace the Windows evidence below.
+The later [Linux network investigation](verification/2026-11-13-linux-network-discovery.md)
+installed the missing system `wsdd` helper and fixed WSDD namespace handling;
+84 targeted tests pass, including installed-plugin discovery through GIO. Native
+enumeration currently returns zero devices; remote SMB/FUSE remains unverified.
+
 Root committed/pushed **`174c5fd6d426d23f873285eb5c70ffaa6ec28124`**:
 38 exact source/documentation files including the COPY core/queue layer and
 app-private HTML layout handshake. Root committed/pushed the later three-file

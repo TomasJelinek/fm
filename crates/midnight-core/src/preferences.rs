@@ -241,6 +241,8 @@ pub struct UserPreferences {
     pub thumbnails_enabled: bool,
     /// Network sources require an explicit user choice independently of the master enable switch.
     pub thumbnails_network: bool,
+    /// Allow previews for archive entries when preview decoding is enabled.
+    pub thumbnails_archives: bool,
     /// Square thumbnail artwork edge in logical pixels; decoding resolves physical pixels separately.
     pub thumbnail_size: u16,
     /// Only deviations from the application shortcut catalog are persisted.
@@ -291,6 +293,7 @@ impl Default for UserPreferences {
             panel_view_modes: Default::default(),
             thumbnails_enabled: true,
             thumbnails_network: false,
+            thumbnails_archives: true,
             thumbnail_size: DEFAULT_THUMBNAIL_SIZE,
             shortcuts: Vec::new(),
             panel_filters: Default::default(),

@@ -1352,6 +1352,7 @@ impl Presenter {
         if text.starts_with("smb://")
             || text.starts_with("network://")
             || text.starts_with("dns-sd://")
+            || text.starts_with("wsdd://")
             || (self.network_available
                 && text.starts_with("\\\\")
                 && !Path::new(text).is_absolute())

@@ -269,6 +269,11 @@ raises the direct count to 62; the complete inventory remains 490 records and 45
 names. Full selected license texts and runtime notes
 ship inside the package's [THIRD-PARTY.md](../plugins/midnight-filesystem-network/THIRD-PARTY.md).
 Optional GLib/GIO and GVfs/backends/FUSE are system-provided and are not bundled.
+GVfs Windows discovery also uses the optional system `wsdd` helper. Ubuntu
+`wsdd` 2:0.7.1-5 (upstream 0.7.1) and its Debian packaging were inspected under
+MIT, with system Python 3 as the only declared dependency and no optional build
+features. It is not bundled or added to the Cargo inventory; its full runtime
+provenance is recorded in the network package's THIRD-PARTY.md.
 The inspected GLib package is LGPL-2.1-or-later with per-file notices; GVfs 1.54.4
 COPYING is GNU Library GPL v2, with inspected backend/client headers allowing later
 versions. Any future native runtime bundle needs its own full license, backend

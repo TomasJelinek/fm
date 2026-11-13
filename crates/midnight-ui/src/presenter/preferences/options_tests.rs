@@ -55,6 +55,36 @@ fn saved(commands: &[Command]) -> Vec<(PreferencesRevision, UserPreferences)> {
 }
 
 #[test]
+fn archive_preview_draft_stays_out_of_session_saves_and_cancel_restores_it() {
+    let mut p = loaded();
+    let commands = RefCell::new(Vec::new());
+    let send = |command| {
+        commands.borrow_mut().push(command);
+        true
+    };
+    p.begin_options();
+    let mut draft = p.preferences.values.clone();
+    draft.thumbnails_archives = false;
+    p.update_preferences(draft, &send);
+    assert!(!p.preferences.values.thumbnails_archives);
+    assert!(
+        saved(&commands.borrow()).is_empty(),
+        "archive preview is an Options draft"
+    );
+    p.change_panel_view_mode(PaneId::Left, 1, &send);
+    let writes = saved(&commands.borrow());
+    assert_eq!(writes.len(), 1);
+    assert!(
+        writes[0].1.thumbnails_archives,
+        "unrelated session saves retain the committed archive policy"
+    );
+    p.preferences_saved(writes[0].0, Ok(()));
+    p.cancel_options(&send);
+    assert!(p.preferences.values.thumbnails_archives);
+    assert_eq!(saved(&commands.borrow()).len(), 1, "Cancel must not save");
+}
+
+#[test]
 fn cancelling_restores_all_options_and_runtime_shortcuts_without_saving() {
     let mut p = loaded();
     let baseline = p.preferences.values.clone();
@@ -71,6 +101,7 @@ fn cancelling_restores_all_options_and_runtime_shortcuts_without_saving() {
     draft.copy_checksum_verification = false;
     draft.thumbnails_enabled = false;
     draft.thumbnails_network = true;
+    draft.thumbnails_archives = false;
     draft.thumbnail_size = 192;
     draft.disabled_viewer_plugins = vec!["midnight-viewer-source".into()];
     draft
@@ -377,6 +408,7 @@ fn reset_preserves_user_content_and_commits_defaults_only_after_ok() {
     custom.theme = PreferenceTheme::from_index(1).unwrap();
     custom.font_family = "Consolas".into();
     custom.thumbnails_enabled = false;
+    custom.thumbnails_archives = false;
     custom.thumbnail_size = 256;
     custom.remember_command_history = false;
     custom.filename_colors = Arc::new(Vec::new());
