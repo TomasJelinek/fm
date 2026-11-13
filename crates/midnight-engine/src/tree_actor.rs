@@ -101,8 +101,14 @@ struct WorkerPermit {
 }
 
 enum WorkOrigin {
-    User { _row: TreeRowId },
-    Recursive { walk: TreeRequestId, row: TreeRowId },
+    User {
+        _row: TreeRowId,
+    },
+    Recursive {
+        walk: TreeRequestId,
+        #[cfg(test)]
+        row: TreeRowId,
+    },
     Maintenance,
 }
 

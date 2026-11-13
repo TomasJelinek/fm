@@ -274,6 +274,7 @@ impl Session {
             branch,
             origin: WorkOrigin::Recursive {
                 walk: walk.request,
+                #[cfg(test)]
                 row: walk.row,
             },
             kind: TreeRequest::Expand,

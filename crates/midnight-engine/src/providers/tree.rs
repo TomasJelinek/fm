@@ -628,10 +628,11 @@ impl DirectoryTree {
                 )
             }
         });
-        if outcome.is_ok() && result.kind != TreeRequest::Probe {
-            if let Some(node) = self.nodes.get_mut(&result.branch) {
-                node.browse_identity = result.identity;
-            }
+        if outcome.is_ok()
+            && result.kind != TreeRequest::Probe
+            && let Some(node) = self.nodes.get_mut(&result.branch)
+        {
+            node.browse_identity = result.identity;
         }
         if let Err(error) = outcome {
             let used = self.payload_bytes();
