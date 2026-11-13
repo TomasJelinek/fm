@@ -1,1 +1,30 @@
+#pragma code_page(65001)
+#include "application-version.h"
+
 1 ICON "midnight-explorer.ico"
+
+1 VERSIONINFO
+FILEVERSION MIDNIGHT_VERSION_NUMBERS
+PRODUCTVERSION MIDNIGHT_VERSION_NUMBERS
+FILEOS 0x00040004L // VOS_NT_WINDOWS32
+FILETYPE 0x00000001L // VFT_APP
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904B0"
+        BEGIN
+            VALUE "CompanyName", "\0"
+            VALUE "FileDescription", "Midnight Explorer\0"
+            VALUE "FileVersion", MIDNIGHT_VERSION_STRING
+            VALUE "InternalName", "me\0"
+            VALUE "LegalCopyright", "© 2026 Tomas Jelinek\0"
+            VALUE "OriginalFilename", "me.exe\0"
+            VALUE "ProductName", "Midnight Explorer\0"
+            VALUE "ProductVersion", MIDNIGHT_VERSION_STRING
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x0409, 1200
+    END
+END
