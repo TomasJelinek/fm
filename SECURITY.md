@@ -217,6 +217,11 @@ is made. Tests mutate fresh, owned fixtures only; they never empty a user's Tras
 - Folder scans share weighted capacity across panes. Only a positive local SSD
   hint allows up to four I/O streams; HDD/network/unknown takes exclusive scan
   capacity. Hints are conservative and do not prove immutable physical topology.
+  Linux recognizes local LVM/device-mapper and md stacks only when every backing
+  leaf passes the existing physical ATA/PCIe NVMe checks. Partition normalization,
+  cycle detection, cancellation, depth 32 and 128-node/128-slave budgets bound
+  the sysfs walk. Any missing, remote, virtual, removable or unknown leaf keeps
+  the result unknown; network preview opt-in is unchanged.
 - Preferences use bounded strict versioned decoding and opened-file validation.
   Supported schemas through version 31 include window geometry, monitor identity
   and a validated integer panel split ratio,

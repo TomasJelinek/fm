@@ -1,7 +1,9 @@
 use crate::desktop::read_bounded;
 use midnight_core::StorageKind;
 use std::{
+    collections::{HashMap, HashSet},
     ffi::OsString,
+    io,
     os::unix::{
         ffi::{OsStrExt, OsStringExt},
         fs::MetadataExt,
@@ -133,24 +135,141 @@ fn mount_kind(input: &[u8], path: &Path) -> (StorageKind, Option<(u32, u32)>) {
     best.unwrap_or((StorageKind::Unknown, None))
 }
 
+const MAX_STORAGE_DEPTH: usize = 32;
+const MAX_STORAGE_NODES: usize = 128;
+
+#[derive(Clone)]
+enum BlockNode {
+    Partition(PathBuf),
+    Backing(Vec<PathBuf>),
+    Physical(StorageKind),
+}
+
+struct StorageGraph<'a> {
+    cancelled: &'a dyn Fn() -> bool,
+    probe: &'a mut dyn FnMut(&Path) -> Option<BlockNode>,
+    active: HashSet<PathBuf>,
+    completed: HashMap<PathBuf, StorageKind>,
+    visited: usize,
+}
+
+impl StorageGraph<'_> {
+    fn visit(&mut self, disk: &Path, depth: usize) -> Option<StorageKind> {
+        if (self.cancelled)() || depth > MAX_STORAGE_DEPTH {
+            return None;
+        }
+        if let Some(kind) = self.completed.get(disk) {
+            return Some(*kind);
+        }
+        if self.visited >= MAX_STORAGE_NODES || !self.active.insert(disk.to_owned()) {
+            return None;
+        }
+        self.visited += 1;
+        let kind = match (self.probe)(disk)? {
+            BlockNode::Partition(parent) => self.visit(&parent, depth + 1)?,
+            BlockNode::Backing(children)
+                if !children.is_empty() && children.len() <= MAX_STORAGE_NODES =>
+            {
+                let mut kind = StorageKind::LocalSsd;
+                for child in children {
+                    match self.visit(&child, depth + 1)? {
+                        StorageKind::LocalSsd => {}
+                        StorageKind::Rotational => kind = StorageKind::Rotational,
+                        _ => return None,
+                    }
+                }
+                kind
+            }
+            BlockNode::Physical(kind @ (StorageKind::LocalSsd | StorageKind::Rotational)) => kind,
+            _ => return None,
+        };
+        if (self.cancelled)() {
+            return None;
+        }
+        self.active.remove(disk);
+        self.completed.insert(disk.to_owned(), kind);
+        Some(kind)
+    }
+}
+
+fn classify_graph(
+    root: PathBuf,
+    cancelled: &dyn Fn() -> bool,
+    probe: &mut dyn FnMut(&Path) -> Option<BlockNode>,
+) -> StorageKind {
+    StorageGraph {
+        cancelled,
+        probe,
+        active: HashSet::new(),
+        completed: HashMap::new(),
+        visited: 0,
+    }
+    .visit(&root, 0)
+    .unwrap_or(StorageKind::Unknown)
+}
+
+/// Read at most one excess entry to reject a directory larger than the graph budget.
+fn collect_backing(
+    mut entries: impl Iterator<Item = io::Result<PathBuf>>,
+    cancelled: &dyn Fn() -> bool,
+) -> Option<Vec<PathBuf>> {
+    let mut backing = Vec::new();
+    loop {
+        if cancelled() {
+            return None;
+        }
+        let Some(entry) = entries.next() else {
+            return Some(backing);
+        };
+        if backing.len() >= MAX_STORAGE_NODES {
+            return None;
+        }
+        let path = entry.ok()?;
+        if !path.starts_with("/sys/devices") {
+            return None;
+        }
+        backing.push(path);
+    }
+}
+
 fn physical_kind(major: u32, minor: u32) -> Option<StorageKind> {
-    let mut disk = Path::new("/sys/dev/block")
+    let disk = Path::new("/sys/dev/block")
         .join(format!("{major}:{minor}"))
         .canonicalize()
         .ok()?;
-    if !disk.starts_with("/sys/devices") {
+    Some(classify_graph(disk, &|| false, &mut |disk| {
+        probe_block(disk, &|| false)
+    }))
+}
+
+fn probe_block(disk: &Path, cancelled: &dyn Fn() -> bool) -> Option<BlockNode> {
+    if cancelled() || !disk.starts_with("/sys/devices") {
         return None;
     }
-    if read_bounded(&disk.join("partition"), 32).is_some() {
-        disk = disk.parent()?.to_path_buf();
+    let partition = disk.join("partition");
+    if partition.try_exists().ok()? {
+        let number = read_bounded(&partition, 32)?;
+        if !decimal(number.trim_ascii()) {
+            return None;
+        }
+        return Some(BlockNode::Partition(disk.parent()?.to_owned()));
     }
-    // Do not traverse device-mapper/RAID dependencies; any stacked leaf is unknown.
-    if std::fs::read_dir(disk.join("slaves"))
-        .ok()?
-        .next()
-        .is_some()
-    {
-        return None;
+    let backing = collect_backing(
+        std::fs::read_dir(disk.join("slaves"))
+            .ok()?
+            .map(|entry| entry.and_then(|entry| entry.path().canonicalize())),
+        cancelled,
+    )?;
+    if !backing.is_empty() {
+        // Follow only recognized kernel block stacks. Their physical leaves must
+        // independently prove local storage; a stack's own rotational flag is insufficient.
+        let name = disk.file_name()?.as_bytes();
+        if !name.strip_prefix(b"dm-").is_some_and(decimal)
+            && !name.strip_prefix(b"md").is_some_and(decimal)
+        {
+            return None;
+        }
+        return Some(BlockNode::Backing(backing));
     }
     let rotational = read_bounded(&disk.join("queue/rotational"), 16)?;
     let removable = read_bounded(&disk.join("removable"), 16)?;
@@ -171,13 +290,13 @@ fn physical_kind(major: u32, minor: u32) -> Option<StorageKind> {
             read_bounded(&disk.join("device/model"), 128)?,
         )
     };
-    Some(classify_physical(
-        &disk,
+    Some(BlockNode::Physical(classify_physical(
+        disk,
         &rotational,
         &removable,
         &transport,
         &model,
-    ))
+    )))
 }
 
 fn decimal(bytes: &[u8]) -> bool {
@@ -364,3 +483,7 @@ mod tests {
         assert_ne!(detect(Path::new("/proc")), StorageKind::LocalSsd);
     }
 }
+
+#[cfg(test)]
+#[path = "storage_graph_tests.rs"]
+mod graph_tests;

@@ -46,6 +46,13 @@ records the actual Linux Debug installation, pinned FFmpeg source/signature,
 sandboxed decoding, cancellation, real package validation and native app startup
 passed. Windows build/deployment integration is source-reviewed, not natively
 qualified by this Linux run.
+The subsequent [local-preview and Copy refresh correction](verification/2026-11-13-local-previews-copy-progress.md)
+verifies bounded LVM backing-device classification and independent 250 ms Copy
+status publication. A real PNG from the reported Screenshots folder failed
+admission before the provider correction and decoded/persisted afterward.
+The two dropped-progress regressions also failed before correction. The final
+scope records 75 passing targeted checks plus native Debug startup/shutdown;
+the native provider was replaced atomically and the running app was not restarted.
 These Linux results do not replace the Windows evidence below.
 The later [Linux network investigation](verification/2026-11-13-linux-network-discovery.md)
 installed the missing system `wsdd` helper and fixed WSDD namespace handling;

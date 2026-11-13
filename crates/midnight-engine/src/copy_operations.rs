@@ -415,13 +415,22 @@ async fn run_input(
                 let changed = refresh_pause(&status, &cancel);
                 let progress = sample_throughput(&status, &throughput)
                     .or_else(|| changed.then(|| snapshot(&status)));
-                if let Some(progress) = progress
-                    && outbox.sender.try_send(Event::Copy(CopyEvent::Progress(Arc::new(progress)))).is_ok()
-                {
-                    (outbox.wakeup)();
-                }
+                publish_progress_tick(outbox, &status, progress);
             },
         }
+    }
+}
+
+fn publish_progress_tick(outbox: &Outbox, status: &Status, progress: Option<CopyProgress>) {
+    // An I/O step can already have sampled this interval. Publication still
+    // follows the timer, independently of which caller refreshed throughput.
+    let progress = progress.unwrap_or_else(|| snapshot(status));
+    if outbox
+        .sender
+        .try_send(Event::Copy(CopyEvent::Progress(Arc::new(progress))))
+        .is_ok()
+    {
+        (outbox.wakeup)();
     }
 }
 
@@ -708,3 +717,7 @@ mod tests;
 #[cfg(test)]
 #[path = "copy_link_tests.rs"]
 mod link_tests;
+
+#[cfg(test)]
+#[path = "copy_progress_tick_tests.rs"]
+mod progress_tick_tests;

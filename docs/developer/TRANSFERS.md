@@ -151,6 +151,13 @@ occurred simultaneously. Current labels remain the latest actual interval rates,
 not aggregated peaks. The UI displays one chart for the selected
 job, caches its geometry by snapshot identity and never measures I/O itself.
 
+The Copy/Move timer publishes the latest progress on each existing 250 ms tick,
+including a sample already collected by the native I/O worker. Sampling a rate
+and delivering that status are independent decisions. A full UI outbox drops only
+that periodic attempt; the next tick tries the latest snapshot without blocking
+the copy owner. UI wakeup follows successful delivery. Stalled native I/O can
+leave byte counters unchanged while elapsed time and zero-activity samples advance.
+
 Copy/Move charts distinguish written bytes/s from SHA-256 readback and additional
 Move proof reads. Verification is not added to copied bytes. Labels use IEC units
 (KiB/s, MiB/s). Delete charts use processed items/s, including reported directories;
