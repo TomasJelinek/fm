@@ -342,7 +342,11 @@ mod layout_tests {
                 .count(),
             5
         );
-        assert!(outputs.iter().any(|output| matches!(output, ViewerOutput::Frame(_))));
+        assert!(
+            outputs
+                .iter()
+                .any(|output| matches!(output, ViewerOutput::Frame(_)))
+        );
         assert!(outputs.iter().any(|output| matches!(
             output,
             ViewerOutput::RasterRebase {
@@ -391,14 +395,16 @@ mod layout_tests {
                 .count(),
             1
         );
-        assert!(outputs.iter().any(|output| matches!(output, ViewerOutput::Frame(_))));
-        assert!(outputs.iter().any(|output| matches!(
-            output,
-            ViewerOutput::RasterRebase {
-                transition: 41,
-                ..
-            }
-        )));
+        assert!(
+            outputs
+                .iter()
+                .any(|output| matches!(output, ViewerOutput::Frame(_)))
+        );
+        assert!(
+            outputs
+                .iter()
+                .any(|output| matches!(output, ViewerOutput::RasterRebase { transition: 41, .. }))
+        );
     }
 
     #[test]
@@ -476,14 +482,16 @@ mod layout_tests {
                 .count(),
             6
         );
-        assert!(outputs.iter().any(|output| matches!(output, ViewerOutput::Frame(_))));
-        assert!(outputs.iter().any(|output| matches!(
-            output,
-            ViewerOutput::RasterRebase {
-                transition: 41,
-                ..
-            }
-        )));
+        assert!(
+            outputs
+                .iter()
+                .any(|output| matches!(output, ViewerOutput::Frame(_)))
+        );
+        assert!(
+            outputs
+                .iter()
+                .any(|output| matches!(output, ViewerOutput::RasterRebase { transition: 41, .. }))
+        );
     }
 
     #[test]

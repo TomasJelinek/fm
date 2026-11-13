@@ -37,8 +37,7 @@ impl Worker {
             &self.associations,
         )
         .ok_or_else(|| {
-            "No compatible viewer plugin is installed beside the executable in viewers/."
-                .to_owned()
+            "No compatible viewer plugin is installed beside the executable in viewers/.".to_owned()
         })?;
         let route = match route {
             crate::routing::Route::Process { index } => {
@@ -58,7 +57,9 @@ impl Worker {
             } => {
                 let plugin = &self.runtime.catalog()[index];
                 if detect_binary {
-                    mode = file.preferred_basic_mode().map_err(|error| error.to_string())?;
+                    mode = file
+                        .preferred_basic_mode()
+                        .map_err(|error| error.to_string())?;
                 }
                 if let Some(selected) = self
                     .selected_mode
@@ -150,7 +151,12 @@ impl Worker {
             }
             crate::routing::Route::Native { index, mode, .. } => Some(
                 self.runtime
-                    .open(&self.runtime.catalog()[index].id, file, self.generation, mode)
+                    .open(
+                        &self.runtime.catalog()[index].id,
+                        file,
+                        self.generation,
+                        mode,
+                    )
                     .map_err(|error| error.to_string())?,
             ),
         };

@@ -47,7 +47,10 @@ fn html_selection_retains_source_without_opening_any_transport() {
     assert!(worker.web.is_none());
     assert!(worker.image.is_none());
     assert!(worker.session.is_none());
-    assert_eq!(worker.pending_layout.as_ref().unwrap().file.path(), expected_path.as_path());
+    assert_eq!(
+        worker.pending_layout.as_ref().unwrap().file.path(),
+        expected_path.as_path()
+    );
     assert!(output.take_open_result().is_none());
 }
 
@@ -106,9 +109,19 @@ fn matching_acknowledgement_supplies_the_first_bounded_and_raw_viewports() {
         scale: 2.25,
     };
     let ready = worker.take_layout_ready(token, geometry).unwrap();
-    assert!(matches!(ready.route, crate::routing::Route::Process { index: 0 }));
-    assert_eq!(worker.image_size, [2952, 1611], "Fit retains the raw viewport");
-    assert_eq!([worker.geometry.width, worker.geometry.height], [2772, 1512]);
+    assert!(matches!(
+        ready.route,
+        crate::routing::Route::Process { index: 0 }
+    ));
+    assert_eq!(
+        worker.image_size,
+        [2952, 1611],
+        "Fit retains the raw viewport"
+    );
+    assert_eq!(
+        [worker.geometry.width, worker.geometry.height],
+        [2772, 1512]
+    );
     assert!((worker.geometry.scale - 2.1130342).abs() < 0.000001);
     assert_eq!(worker.positions.generation, generation);
     assert!(!worker.layout.waiting());
@@ -178,12 +191,18 @@ fn file_cycle_invalidates_pending_html_and_preserves_the_next_startup_error() {
     let (token, _, _) = selection(&output);
     worker.files = vec![
         (PathBuf::from("first.html"), Some(Err("first".into()))),
-        (PathBuf::from("second.txt"), Some(Err("retained failure".into()))),
+        (
+            PathBuf::from("second.txt"),
+            Some(Err("retained failure".into())),
+        ),
     ];
     worker.input(ViewerInput::NextFile, &output);
     assert_eq!(worker.current, 1);
     assert!(worker.pending_layout.is_none());
-    assert_eq!(output.take_open_result(), Some(Err("retained failure".into())));
+    assert_eq!(
+        output.take_open_result(),
+        Some(Err("retained failure".into()))
+    );
     assert!(worker.take_layout_ready(token, worker.geometry).is_none());
 }
 
@@ -198,10 +217,12 @@ fn capture_wait_retries_do_not_publish_or_replace_layout_tokens() {
         assert!(worker.pending_open);
         assert!(!worker.layout.waiting());
         assert!(worker.pending_layout.is_none());
-        assert!(output.take().iter().all(|item| !matches!(
-            item,
-            ViewerOutput::LayoutSelected { .. }
-        )));
+        assert!(
+            output
+                .take()
+                .iter()
+                .all(|item| !matches!(item, ViewerOutput::LayoutSelected { .. }))
+        );
     }
     assert!(output.take_open_result().is_none());
 }
@@ -242,12 +263,18 @@ fn supported_native_mode_change_invalidates_an_unacknowledged_opening() {
         mode: viewer::MODE_TEXT,
         detect_binary: false,
     };
-    worker.files = vec![(opening.file.path().to_owned(), Some(Err("retained failure".into())))];
+    worker.files = vec![(
+        opening.file.path().to_owned(),
+        Some(Err("retained failure".into())),
+    )];
     worker.select_opening(opening, &output).unwrap();
     let (token, _, _) = selection(&output);
     worker.input(ViewerInput::Mode(viewer::MODE_BINARY), &output);
     assert_eq!(worker.selected_mode, Some(viewer::MODE_BINARY));
     assert!(worker.pending_layout.is_none());
     assert!(worker.take_layout_ready(token, worker.geometry).is_none());
-    assert_eq!(output.take_open_result(), Some(Err("retained failure".into())));
+    assert_eq!(
+        output.take_open_result(),
+        Some(Err("retained failure".into()))
+    );
 }
