@@ -2,6 +2,38 @@
 
 Datum: 4. listopadu 2026
 
+## Změna politiky — 13. listopadu 2026
+
+**Přijatá politika; souběžný scheduler zůstává soukromý a nekvalifikovaný.**
+Producer/UI má omezenou headless kvalifikaci; nativní scheduler a teardown
+zůstávají soukromé. Požadovaná politika stanoví, že
+nové Copy/Move mají být ve výchozím stavu připravené k souběžnému běhu. Volba **Wait for other
+operations to finish** je v každém novém dialogu nezaškrtnutá a neukládá se.
+Její zaškrtnutí při potvrzení zachytí pouze dříve přijaté nedokončené Copy/Move.
+Budoucí úlohy se nepřidávají; neúspěch či zrušení
+předchůdce čekání uvolní až po skutečném dokončení práce a úklidu. Bezpečnostní
+závislost destruktivních mutací nadále vyžaduje ověřený úspěch všech předchůdců.
+
+Tento požadavek nahrazuje historickou automatickou serializaci celých úloh a
+historická tvrzení o jediné aktivní úloze v textu a matici níže. Omezení více
+proudů **uvnitř jedné úlohy** na prokázaná lokální SSD na obou koncích,
+globální konfigurované limity workerů, backpressure a konzervativní fyzické I/O
+rozpočty zůstávají. Připravenost úlohy nezaručuje okamžité přidělení prostředků.
+Finální kontrakt ponechává každé úloze jeden skutečný globální I/O slot a sdílenou
+namespace autoritu po celou dobu až do zániku nativních/providerových vlastníků.
+Pauza, čekání na rozhodnutí i čekání již připnuté úlohy na scope úmyslně
+neuvolňují I/O slot; další blokované úlohy hlásí Resources. První verze nepřidává souběh
+nativních volání uvnitř jedné úlohy. Při globálním limitu jedna se úlohy řadí;
+nezávislá práce při limitu alespoň dva musí prokázat skutečný nativní souběh.
+Úplné scope se rezervují atomicky před zápisem, podle skutečných nativních
+identit, potomků a lookup pravidel; společný rodič sám konflikt nezakládá.
+Neznámá geometrie vyloučí ostatní transfery, nikoli odhad podle textových cest.
+Starší návrhy krátkých lease a obecné přestavby retirement byly nahrazeny.
+Přesný
+[kontrakt čekání](2026-11-07-copy-predecessor-fence.md) a
+[kontrakt průběhu](../../developer/OPERATION_PROGRESS.md) rozlišují přijatou
+politiku od dosud neověřené implementace. Starší měření a návrh jsou zachovány.
+
 Historický návrh. Aktuální Move a přepínatelné ověřování popisuje
 [pozdější kontrakt přenosů](2026-11-10-transfer-verification-and-native-move.md).
 Níže uvedený stav k 6. listopadu není současným seznamem funkcí.

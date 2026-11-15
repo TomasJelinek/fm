@@ -6,6 +6,10 @@ job ID and window session. Multiple operations may have visible windows at once.
 The Jobs window is a session ledger; Open displays a selected operation's progress
 or retained diagnostics. It does not mix an active transfer with previous jobs.
 
+**Status:** producer/UI behavior has bounded headless-fixture qualification.
+Concurrent scheduling, native namespace/retirement cutover and fresh application
+delivery remain pending; the scheduler section below is the accepted contract.
+
 ## Lifetime and controls
 
 - Cancel in the confirmation form admits no destructive work and no Jobs receipt.
@@ -35,6 +39,37 @@ or retained diagnostics. It does not mix an active transfer with previous jobs.
   metadata payloads go through backend reclamation rather than being freed on the
   UI thread. No queue persistence is implied.
 
+## Admission policy and waits
+
+Requests default to `TransferStartPolicy::Immediate`. The accepted scheduler
+contract makes these jobs runnable concurrently, subject to configured worker,
+physical I/O and safety admission. The dialog's **Wait for other operations to
+finish** option starts unchecked for every new draft and is not persisted.
+Confirmation freezes the choice; rejection, reconfirmation and Retry retain it.
+Other submission routes default to Immediate.
+
+`WaitForEarlier` atomically captures earlier unfinished Copy/Move admissions,
+excluding self and future jobs. Paused/decision-waiting predecessors are unfinished.
+Failure or cancellation releases this scheduling wait only after actual native
+cleanup/retirement. The separate destructive-operation fence still requires
+verified success. Later ready jobs may bypass waiters and unfilled handoffs.
+
+`EarlierTransfers` means an outstanding explicit dependency; `Resources` means
+actual I/O, namespace or scope admission is blocked. Selecting a policy alone is
+not a current wait. Display Queued/waiting or Waiting for available capacity;
+Discovering/Calculating requires actual discovery activity. Clear wait reasons on
+acquisition, cancel-request and terminal publication. Cancellation, pause and
+decision state take precedence over ordinary wait/discovery presentation.
+
+The frozen first cut retains one real configured global I/O slot, one whole-job
+namespace share and complete native scopes through actual provider destruction.
+Pause, decisions and already-pinned scope waits intentionally keep the I/O slot.
+Initial I/O/namespace acquisition is a try-pair with rollback; legacy consumers
+remain exclusive. One job performs one native call at a time; limit one serializes
+jobs. Future within-job multiple streams still require positive local SSD
+classification at both endpoints and shared budgets. See the
+[admission and safety contract](../superpowers/specs/2026-11-07-copy-predecessor-fence.md).
+
 ## Discovery and truthful progress
 
 Backend `OperationDiscovery` snapshots distinguish NotStarted, Scanning, Complete
@@ -56,12 +91,42 @@ all descendants. Permanent Delete can report recursive entries. Labels identify
 selected-root scope instead of implying that one renamed/trashed directory is one
 recursive file. Links are not followed by destructive traversal.
 
-The chart shows a separate horizontal overall-completion fill. The speed curve
-retains the full history from time zero inside that completed region. Its vertical
-scale includes earlier peaks. Unknown totals retain an indeterminate indicator;
-no fictional percentage is shown. One file's byte meter describes written bytes,
-not verified publication; it may reach 100 while the phase says Verifying. Overall
-completion remains below 100 until successful completion is reported by the backend.
+One acknowledged 250 ms heartbeat (at most 4 Hz) coalesces ordinary discovery,
+throughput, verification-pass and wait-state updates. There is one publisher.
+A full outbox leaves the latest change unacknowledged for retry on the next tick,
+including a blocked wait clear; discovery changes do not depend on throughput.
+Initial, decision and terminal boundary delivery remain explicit.
+
+## Verification and charts
+
+During readback the headline and per-file meter use `current_file_verified /
+verification.readback_bytes(current_file_size)`: full SHA-256 uses file length;
+sampled mode uses distinct ranges up to 192 KiB. Empty or unknown budgets show
+state without a fabricated percentage. Outside readback the per-file byte meter
+describes written bytes. Move's SHA explanation applies only when copying is
+required; native rename reads no content and shows no hash percentage.
+
+`verification_pass_id` and `verification_throughput` belong to the same current
+copy as its size/copied/verified counters. Every new copy attempt or explicit
+Retry of the current copy gets a fresh checked nonzero ID and empty rate history.
+Checkpoint Retry keeps actual verified offsets and baselines rates there without
+replaying reads. Pause/resume retains the ID/history and excludes paused time;
+proof/removal-only Retry creates no copy pass. No current copy, native rename,
+proof-only work and terminal cleanup publish zero/empty pass fields.
+
+The pass history contains only current-file readback, at most 240 samples, and
+captures fast final read intervals between heartbeat ticks. It excludes writes
+and Move proof bytes. UI binds the exact pass ID/history during current-file
+verification, including its paused view, and restores whole-job history outside
+that phase. The separate verification chart has a clear 0..100% byte scale;
+reading 100% does not establish digest success, publication or source removal.
+
+Whole-job completion remains independent and below 100 until backend success.
+Its speed history retains earlier peaks and starts at job time zero. Unknown
+totals remain indeterminate. Cumulative `verified_bytes` includes destination
+readback retries; `validation_bytes` contains additional Move proofs. Neither,
+nor their combined throughput, is a whole-job logical verification percentage.
+Do not use advisory remaining-work estimates as an unconditional denominator.
 
 Logical committed bytes are separate from actual I/O counters. Retries and
 verification reads cannot inflate completion. Cross-volume Move keeps files in
@@ -82,22 +147,13 @@ not a guarantee against future stalls or conflicts. See the
 Copy and byte-transfer Move display bytes/s (IEC units) with independent
 verification activity. Native same-volume Move displays renamed items/s.
 Delete displays items/s, as Windows Explorer does. Current source and destination
-are retained in Details; Delete shows its current item and remaining count. The
-shared view can host per-file meters; current serial execution has one active lane.
-Adding concurrent lanes must preserve distinct immutable source/target identities.
+are retained in Details; Delete shows its current item and remaining count. Each
+per-file meter retains the immutable source/target identities of its own lane.
 
-## Qualification
+## Related contracts and evidence
 
-The November 11 follow-up adds focused native-window tests for separate operations,
-Trash/permanent Delete progress, X/Escape cancellation, command refusal, exact-ID
-Pause/Resume, completed-job reopening and retained session history. Meter tests
-cover unknown/partial totals, retries, verification and changes invalidating totals.
-UI snapshots cover themes, small windows and enlarged fonts. Final integrated
-build/runtime qualification is recorded in the settings/UI follow-up report;
-source implementation alone is not evidence that the installed executable changed.
-
-Native Delete from expanded panel branches uses this same confirmation and progress
-component. Its immutable capture keeps provider identity in the backend; unsupported
-archive writes remain disabled. The [12 November integration record](../verification/2026-11-12-tree-delete-integration.md)
-covers real native tree deletion, the shared Delete window, full affected suites
-and the exact installed debug executable.
+See [native transfers](TRANSFERS.md), the
+[initial Copy/Move form](../superpowers/specs/2026-11-07-copy-dialog-design.md)
+and [retained native tree-Delete evidence](../verification/2026-11-12-tree-delete-integration.md).
+Exact current commands, source hashes, selected results and screenshot limits
+remain in the scoped implementation/verification packet.

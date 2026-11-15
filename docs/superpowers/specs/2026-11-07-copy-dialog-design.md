@@ -1,5 +1,40 @@
 # F5 copy dialog and captured-selection admission
 
+## 13 November initial-form amendment
+
+**53-path batch has bounded headless-fixture qualification only.** Root's
+15 November batch includes policy request routing, typed waits, current-pass
+presentation, conditional Move SHA and initial-form polish, including the reviewed
+paused/cancel header fix. Qualification is limited to headless producer/UI
+fixtures; concurrent scheduling/native retirement and fresh app delivery remain pending.
+Every new
+Copy/Move dialog starts with **Wait for other operations to finish** unchecked;
+the choice is not persisted. The accepted scheduling policy requires concurrent
+runnability under worker/resource and safety limits; the scheduler cutover is
+still pending. Checking the option waits only for earlier
+unfinished Copy/Move admissions, not future jobs; failed/cancelled predecessors
+release it after actual cleanup. Freeze the choice with the submitted job and
+retain it through rejected admission/reconfirmation and Retry. F5/F6, clipboard,
+drop, archive and captured routes default to
+Immediate unless the user explicitly selects waiting. The destructive-mutation
+verified-success fence remains separate.
+
+Polish the initial form so source/selection, the captured default destination,
+verification choice, waiting checkbox and actions remain readable and usable at
+compact sizes and enlarged fonts. Preserve captured/raw identities, destination
+editing, Enter/Escape behavior, single admission and the existing application
+minimum; prove layout with targeted input tests and snapshots. Move's SHA-256
+note must say **when copying is required**: native rename reads/hashes no content,
+while copied data uses the job's selected full/quick verification policy.
+
+Progress separates explicit earlier-transfer waiting, capacity waiting and
+actual discovery, then shows current-readback bytes and a fresh 0..100% chart per
+file/attempt. The [progress amendment](../../developer/OPERATION_PROGRESS.md)
+defines those meters. The first increment and dated evidence below remain
+baseline history; they do not qualify this new form or concurrent execution.
+
+## Original 7 November increment - retained history
+
 This implements the first UI increment of the accepted copy/move stage. F5 and
 the bottom Copy button open a compact dialog with the captured source location,
 selection summary, editable destination folder (the other panel by default), Copy

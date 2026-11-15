@@ -1,5 +1,51 @@
 # Copy predecessors and mutation safety
 
+## 13 November policy amendment
+
+**Accepted requirements; concurrent implementation/qualification pending.**
+The required Copy/Move policy defaults to `TransferStartPolicy::Immediate`: runnable
+subject to worker, I/O and safety admission. An unchecked, non-persisted
+**Wait for other operations to finish** option selects `WaitForEarlier`.
+Atomically snapshot earlier unfinished Copy/Move receipts and register the new
+receipt in one critical section, excluding self and future admissions. Retry
+reuses that snapshot; numeric job IDs do not establish admission order. Later
+runnable jobs must bypass waiters and unfilled native/drop placeholders.
+
+Keep `Predecessors::wait` success-required for destructive mutations. A separate
+finished latch settles the checkbox after every captured predecessor retires,
+including failure/cancellation; those same unsuccessful outcomes still refuse
+the destructive mutation. A cancellation request alone is not completion:
+native work, cleanup and retained owners must actually retire before a receipt
+resolves or its admission capacity returns. Paused/decision-waiting jobs remain
+unfinished. Cancelling a waiter must not start its I/O or require unrelated work
+to finish. Delayed handoffs, abandoned senders and shutdown preserve ownership.
+
+The frozen first cut owns one actual configured global Shared I/O permit, one
+whole-job namespace share and the complete atomic native scope set until actual
+retirement. Transfers take namespace weight 1; legacy exclusive users take the
+named full weight 32. Pause, decisions and pinned scope waits keep the real I/O
+slot; no second budget or per-step namespace lease is introduced.
+
+Copy sources claim Read; Move sources and destinations claim Write. Entry scopes
+exclude siblings; Subtree scopes cover descendants. Native object, parent/lookup
+domain/key and ancestor facts determine intersection, not display paths or generic
+case folding. Read/read coexists; intersecting writes wait. Shared parents alone
+do not conflict. Unknown authority takes a conservative global-transfer scope
+without a shared-to-exclusive upgrade; revalidation errors remain failures.
+
+The Copy-specific cleanup seal retains guards through checked cleanup and actual
+native/provider destruction, then releases scopes/namespace/I/O and settles the
+finished latch. Ordinary reported cleanup failure can settle failed after that
+confirmed teardown. An unconfirmed unwind is Quarantined: retain claims,
+configured I/O and admission ownership, and leave the finished latch pending.
+The existing generic retirement worker is reused without a generic API rewrite.
+Complete scheduling, native geometry and this strong retirement implementation
+remain Backend-private. The 53-path policy/producer/UI source batch is not their
+acceptance. Headless producer/UI checks do not establish concurrent/native
+teardown. The checkbox never weakens the verified-success fence.
+
+## Original 7 November contract and verification - retained history
+
 The copy and mutation actors share an execution gate, but their independent queues
 let a later mutation overtake an earlier queued copy. Existing-entry mutations
 (rename, delete and metadata edits) will capture the outstanding copy receipts at
