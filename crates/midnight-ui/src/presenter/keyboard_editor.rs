@@ -5,7 +5,35 @@ use super::*;
 pub(crate) struct ShortcutEditor {
     pub(crate) filter: String,
     pub(crate) candidate: Option<ShortcutChord>,
+    pub(crate) replacement: Option<ShortcutReplacement>,
+    replacement_sequence: u64,
 }
+
+pub(crate) struct ShortcutReplacement {
+    token: String,
+    body: String,
+    action: String,
+    chord: ShortcutChord,
+    map: Arc<keyboard::KeyboardBindings>,
+    editor_revision: String,
+}
+
+struct Assignment {
+    values: UserPreferences,
+    owners: Vec<String>,
+}
+
+const CONTEXTS: [ShortcutContext; 9] = [
+    ShortcutContext::Files,
+    ShortcutContext::Search,
+    ShortcutContext::Command,
+    ShortcutContext::Other,
+    ShortcutContext::Volume,
+    ShortcutContext::Viewer,
+    ShortcutContext::ViewerSearch,
+    ShortcutContext::Comparison,
+    ShortcutContext::ComparisonSearch,
+];
 
 pub(crate) struct ShortcutInspection {
     pub(crate) scope: String,
@@ -100,30 +128,17 @@ impl Presenter {
         let scope = action.scope_for(chord);
         inspection.scope = scope.label().into();
         let map = &self.keyboard.snapshot.map;
-        let contexts = [
-            ShortcutContext::Files,
-            ShortcutContext::Search,
-            ShortcutContext::Command,
-            ShortcutContext::Other,
-            ShortcutContext::Volume,
-            ShortcutContext::Viewer,
-            ShortcutContext::ViewerSearch,
-            ShortcutContext::Comparison,
-            ShortcutContext::ComparisonSearch,
-        ];
         let mut seen = HashSet::new();
         let mut owners = Vec::new();
-        let mut conflict = false;
-        for context in contexts {
-            if let Some(owner) = map.resolve(chord, context) {
-                conflict |= owner.id != action.id && scope.includes(context);
-                if seen.insert(owner.id.as_str()) {
-                    owners.push(format!(
-                        "{} — {}",
-                        owner.label,
-                        owner.scope_for(chord).label()
-                    ));
-                }
+        for context in CONTEXTS {
+            if let Some(owner) = map.resolve(chord, context)
+                && seen.insert(owner.id.as_str())
+            {
+                owners.push(format!(
+                    "{} — {}",
+                    owner.label,
+                    owner.scope_for(chord).label()
+                ));
             }
         }
         inspection.used_by = if owners.is_empty() {
@@ -131,20 +146,30 @@ impl Presenter {
         } else {
             owners.join("\n")
         };
+        match self.shortcut_assignment() {
+            Ok(_) => inspection.can_assign = true,
+            Err(error) => inspection.issue = error,
+        }
+        inspection
+    }
+
+    fn shortcut_assignment(&self) -> Result<Assignment, String> {
+        let map = &self.keyboard.snapshot.map;
+        let action = &map.definitions()[self.keyboard.selected];
+        let chord = self
+            .keyboard
+            .editor
+            .candidate
+            .as_ref()
+            .ok_or("Capture a shortcut first.")?;
         if !matches_filter(action, &self.keyboard.editor.filter) {
-            inspection.issue = "Select a command from the matching results.".into();
-            return inspection;
+            return Err("Select a command from the matching results.".into());
         }
         let aliases = map
             .bindings(&action.id)
             .expect("catalog action has bindings");
         if aliases.contains(chord) {
-            inspection.issue = "Already assigned to this command.".into();
-            return inspection;
-        }
-        if conflict {
-            inspection.issue = "This shortcut is used by another command in the same context. Remove that assignment first.".into();
-            return inspection;
+            return Err("Already assigned to this command.".into());
         }
         let mut keys = aliases
             .iter()
@@ -152,12 +177,42 @@ impl Presenter {
             .collect::<Vec<_>>();
         keys.push(chord.display());
         let mut values = self.preferences.values.clone();
-        replace_aliases(&mut values, &action.id, keys);
-        match ShortcutMap::with_user_commands(&values.shortcuts, &values.user_commands) {
-            Ok(_) => inspection.can_assign = true,
-            Err(error) => inspection.issue = error,
+        let scope = action.scope_for(chord);
+        let mut owners = Vec::new();
+        for owner in map.definitions() {
+            if owner.id == action.id
+                || !CONTEXTS.into_iter().any(|context| {
+                    scope.includes(context) && owner.scope_for(chord).includes(context)
+                })
+            {
+                continue;
+            }
+            let aliases = map
+                .bindings(&owner.id)
+                .expect("catalog action has bindings");
+            if !aliases.contains(chord) {
+                continue;
+            }
+            owners.push(format!(
+                "{} — {}",
+                owner.label,
+                owner.scope_for(chord).label()
+            ));
+            replace_aliases(
+                &mut values,
+                &owner.id,
+                aliases
+                    .iter()
+                    .filter(|alias| *alias != chord)
+                    .map(ShortcutChord::display)
+                    .collect(),
+            );
         }
-        inspection
+        replace_aliases(&mut values, &action.id, keys);
+        // Validate the complete proposed map before offering confirmation. This
+        // retains alias/override limits and native editor/IME reservations.
+        ShortcutMap::with_user_commands(&values.shortcuts, &values.user_commands)?;
+        Ok(Assignment { values, owners })
     }
 
     pub(crate) fn assign_editor_shortcut(
@@ -173,22 +228,99 @@ impl Presenter {
         if action != definition.id || candidate != chord.display() {
             return false;
         }
-        let inspection = self.inspect_editor_shortcut();
-        if !inspection.can_assign {
-            self.keyboard.error = inspection.issue;
+        let assignment = match self.shortcut_assignment() {
+            Ok(assignment) => assignment,
+            Err(error) => {
+                self.keyboard.error = error;
+                return false;
+            }
+        };
+        if assignment.owners.is_empty() {
+            return self.apply_shortcut_values(assignment.values, send);
+        }
+        if !self.replacement_options_ready() {
             return false;
         }
-        let mut aliases = self
-            .keyboard
-            .snapshot
-            .map
-            .bindings(action)
-            .expect("catalog action")
-            .iter()
-            .map(ShortcutChord::display)
-            .collect::<Vec<_>>();
-        aliases.push(chord.display());
-        self.change_shortcuts(action, aliases, send)
+        let Some(sequence) = self.keyboard.editor.replacement_sequence.checked_add(1) else {
+            self.keyboard.error =
+                "Shortcut confirmation identities are exhausted. Restart the application.".into();
+            return false;
+        };
+        let chord = chord.clone();
+        let body = format!(
+            "Assign {} to {}?\n\nThis removes this shortcut from:\n{}\n\nEach listed assignment is removed for its full scope. Other shortcuts and commands remain unchanged.",
+            chord.display(),
+            definition.label,
+            assignment.owners.join("\n")
+        );
+        self.keyboard.reset_editor();
+        self.keyboard.editor.replacement_sequence = sequence;
+        self.keyboard.editor.replacement = Some(ShortcutReplacement {
+            token: format!("shortcut-replace:{sequence}"),
+            body,
+            action: action.to_owned(),
+            chord,
+            map: self.keyboard.snapshot.clone(),
+            editor_revision: self.keyboard.editor_revision_text.to_string(),
+        });
+        true
+    }
+
+    fn replacement_options_ready(&self) -> bool {
+        self.preferences.loaded
+            && self.preferences.options.open
+            && !self.preferences.options.accepting
+            && !self.preferences.options.saving
+    }
+
+    fn replacement_current(&self, replacement: &ShortcutReplacement) -> bool {
+        self.replacement_options_ready()
+            && Arc::ptr_eq(&self.keyboard.snapshot, &replacement.map)
+            && self.keyboard.editor_revision_text.as_str() == replacement.editor_revision.as_str()
+            && self.keyboard.snapshot.map.definitions()[self.keyboard.selected].id
+                == replacement.action
+            && self.keyboard.editor.candidate.as_ref() == Some(&replacement.chord)
+    }
+
+    pub(crate) fn shortcut_replacement(&self) -> Option<(&str, &str)> {
+        self.keyboard
+            .editor
+            .replacement
+            .as_ref()
+            .and_then(|replacement| {
+                self.replacement_current(replacement)
+                    .then_some((replacement.token.as_str(), replacement.body.as_str()))
+            })
+    }
+
+    pub(crate) fn decide_shortcut_replacement(
+        &mut self,
+        token: &str,
+        replace: bool,
+        send: &dyn Fn(Command) -> bool,
+    ) -> bool {
+        let Some(replacement) = &self.keyboard.editor.replacement else {
+            return false;
+        };
+        if replacement.token != token {
+            return false;
+        }
+        let current = self.replacement_current(replacement);
+        self.keyboard.reset_editor();
+        if !current {
+            return false;
+        }
+        if !replace {
+            return true;
+        }
+        let assignment = match self.shortcut_assignment() {
+            Ok(assignment) => assignment,
+            Err(error) => {
+                self.keyboard.error = error;
+                return false;
+            }
+        };
+        self.apply_shortcut_values(assignment.values, send)
     }
 
     pub(crate) fn remove_editor_shortcut(
@@ -269,7 +401,7 @@ mod tests {
         let mut presenter = editor("files.copy");
         presenter.capture_editor_shortcut(ShortcutChord::parse("Ctrl+V").unwrap());
         let inspection = presenter.inspect_editor_shortcut();
-        assert!(!inspection.can_assign);
+        assert!(inspection.can_assign);
         assert!(inspection.used_by.contains("Paste files"));
         assert!(
             !presenter

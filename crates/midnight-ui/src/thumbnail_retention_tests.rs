@@ -287,6 +287,8 @@ fn a_large_visited_folder_retains_completed_images_when_pixels_fit_the_budget() 
 #[test]
 fn retained_pixels_do_not_override_disabled_or_unclassified_network_preview_policy() {
     let mut presenter = presenter();
+    // Opting out of archive members must not suppress native pixel retention.
+    presenter.preferences.values.thumbnails_archives = false;
     let offset = presenter.panes[0].parent_offset();
     let first = presenter.panes[0].entries[0].clone();
     let targets = presenter.thumbnail_targets([(offset, offset + 1), (0, 0)], ["", ""]);

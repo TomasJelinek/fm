@@ -22,7 +22,8 @@ class BuildHookTests(unittest.TestCase):
         self.environment = dict(os.environ, PATH=str(fake_bin) + os.pathsep + os.environ["PATH"],
                                 BUILD_TEST_LOG=str(self.log), BUILD_TEST_APP_EXIT="0",
                                 BUILD_TEST_NATIVE_EXIT="0", BUILD_TEST_NETWORK_EXIT="0", BUILD_TEST_VIEWER_EXIT="0",
-                                BUILD_TEST_DEPLOY_EXIT="0")
+                                BUILD_TEST_DEPLOY_EXIT="0", BUILD_TEST_THUMBNAIL_EXIT="0",
+                                BUILD_TEST_ARCHIVE_EXIT="0")
         if os.name == "nt":
             entry = "build.bat"
             (fake_bin / "cargo.cmd").write_text(
@@ -36,6 +37,12 @@ class BuildHookTests(unittest.TestCase):
             (self.root / "scripts/build-network-filesystem.ps1").write_text(
                 'param([string]$Profile)\nAdd-Content -LiteralPath $env:BUILD_TEST_LOG "network $Profile"\n'
                 'exit ([int]$env:BUILD_TEST_NETWORK_EXIT)\n')
+            (self.root / "scripts/build-default-thumbnailers.ps1").write_text(
+                'param([string]$Profile)\nAdd-Content -LiteralPath $env:BUILD_TEST_LOG "thumbnail $Profile"\n'
+                'exit ([int]$env:BUILD_TEST_THUMBNAIL_EXIT)\n')
+            (self.root / "scripts/build-archive-filesystem.ps1").write_text(
+                'param([string]$Profile)\nAdd-Content -LiteralPath $env:BUILD_TEST_LOG "archive $Profile"\n'
+                'exit ([int]$env:BUILD_TEST_ARCHIVE_EXIT)\n')
             (self.root / "scripts/deploy-build.ps1").write_text(
                 'param([string]$Profile)\nAdd-Content -LiteralPath $env:BUILD_TEST_LOG "deploy $Profile"\n'
                 'exit ([int]$env:BUILD_TEST_DEPLOY_EXIT)\n')
@@ -56,14 +63,21 @@ class BuildHookTests(unittest.TestCase):
             (self.root / "scripts/build-network-filesystem.sh").write_text(
                 '#!/bin/sh\nprintf "network %s\\n" "$1" >> "$BUILD_TEST_LOG"\n'
                 'exit "$BUILD_TEST_NETWORK_EXIT"\n')
+            (self.root / "scripts/build-default-thumbnailers.sh").write_text(
+                '#!/bin/sh\nprintf "thumbnail %s\\n" "$1" >> "$BUILD_TEST_LOG"\n'
+                'exit "$BUILD_TEST_THUMBNAIL_EXIT"\n')
+            (self.root / "scripts/build-archive-filesystem.sh").write_text(
+                '#!/bin/sh\nprintf "archive %s\\n" "$1" >> "$BUILD_TEST_LOG"\n'
+                'exit "$BUILD_TEST_ARCHIVE_EXIT"\n')
             self.command = ["sh", str(self.root / entry)]
         shutil.copyfile(repository / entry, self.root / entry)
 
-    def run_build(self, profile="release", app_exit="0", native_exit="0", network_exit="0", viewer_exit="0", deploy_exit="0"):
+    def run_build(self, profile="release", app_exit="0", native_exit="0", network_exit="0", viewer_exit="0", deploy_exit="0", thumbnail_exit="0", archive_exit="0"):
         environment = dict(self.environment, BUILD_TEST_APP_EXIT=app_exit,
                            BUILD_TEST_NATIVE_EXIT=native_exit, BUILD_TEST_NETWORK_EXIT=network_exit,
                            BUILD_TEST_VIEWER_EXIT=viewer_exit,
-                           BUILD_TEST_DEPLOY_EXIT=deploy_exit)
+                           BUILD_TEST_DEPLOY_EXIT=deploy_exit, BUILD_TEST_THUMBNAIL_EXIT=thumbnail_exit,
+                           BUILD_TEST_ARCHIVE_EXIT=archive_exit)
         result = subprocess.run(self.command + [profile], cwd=self.root, env=environment,
                                 capture_output=True, text=True, timeout=30)
         calls = self.log.read_text().splitlines() if self.log.exists() else []
@@ -74,10 +88,41 @@ class BuildHookTests(unittest.TestCase):
         code, calls = self.run_build()
         self.assertEqual(code, 0, self.build_output)
         expected = ["cargo build -p midnight-explorer -p midnight-elevation --locked --release", "native release",
-                    "network release", "viewer release"]
+                    "network release", "viewer release", "thumbnail release", "archive release"]
         if os.name == "nt":
             expected.append("deploy release")
         self.assertEqual(calls, expected)
+
+    def test_thumbnail_failure_prevents_deployment_and_is_returned(self):
+        code, calls = self.run_build(thumbnail_exit="46")
+        self.assertEqual(code, 46, self.build_output)
+        self.assertEqual(calls[-1], "thumbnail release")
+        self.assertNotIn("deploy release", calls)
+
+    def test_default_build_includes_debug_thumbnailers(self):
+        result = subprocess.run(self.command, cwd=self.root, env=self.environment,
+                                capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("thumbnail debug", self.log.read_text().splitlines())
+        self.assertIn("archive debug", self.log.read_text().splitlines())
+
+    def test_archive_failure_prevents_deployment_and_is_returned(self):
+        code, calls = self.run_build(archive_exit="48")
+        self.assertEqual(code, 48, self.build_output)
+        self.assertEqual(calls[-2:], ["thumbnail release", "archive release"])
+        self.assertNotIn("deploy release", calls)
+
+    @unittest.skipUnless(os.name == "nt", "Windows PowerShell prerequisite")
+    def test_missing_powershell_seven_fails_before_cargo_or_plugin_builds(self):
+        environment = dict(self.environment)
+        # Keep cmd.exe/where.exe available while excluding the PowerShell 7 install.
+        environment["PATH"] = str(self.root / "bin") + os.pathsep + str(
+            Path(os.environ["SystemRoot"]) / "System32")
+        result = subprocess.run(self.command, cwd=self.root, env=environment,
+                                capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.returncode, 127, result.stdout + result.stderr)
+        self.assertIn("64-bit PowerShell 7", result.stderr)
+        self.assertFalse(self.log.exists(), "Missing prerequisite started a build")
 
     def test_application_failure_skips_viewer_build(self):
         code, calls = self.run_build(app_exit="35")
@@ -111,7 +156,7 @@ class BuildHookTests(unittest.TestCase):
         code, calls = self.run_build(deploy_exit="47")
         self.assertEqual(code, 47, self.build_output)
         self.assertEqual(calls, ["cargo build -p midnight-explorer -p midnight-elevation --locked --release",
-                                 "native release", "network release", "viewer release", "deploy release"])
+                                 "native release", "network release", "viewer release", "thumbnail release", "archive release", "deploy release"])
 
 
 if __name__ == "__main__":

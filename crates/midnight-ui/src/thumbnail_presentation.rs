@@ -48,9 +48,10 @@ impl Presenter {
         let pane = &self.panes[side.index()];
         self.preferences.values.thumbnails_enabled
             && self.preferences.values.panel_view_modes[side.index()] == PanelViewMode::Thumbnails
-            && (pane
-                .thumbnail_archive_location()
-                .is_some_and(|location| location.mount.is_some())
+            && ((self.preferences.values.thumbnails_archives
+                && pane
+                    .thumbnail_archive_location()
+                    .is_some_and(|location| location.mount.is_some()))
                 || (pane.native_capabilities()
                     && (self.preferences.values.thumbnails_network
                         || !matches!(
@@ -203,8 +204,10 @@ impl Presenter {
                 } => Some(*network_allowed),
                 _ => None,
             });
-        if archive_policy.is_some_and(|policy| policy != self.preferences.values.thumbnails_network)
-        {
+        if archive_policy.is_some_and(|policy| {
+            !self.preferences.values.thumbnails_archives
+                || policy != self.preferences.values.thumbnails_network
+        }) {
             return false;
         }
         let coverage = self.thumbnail_coverage(identity, frame);

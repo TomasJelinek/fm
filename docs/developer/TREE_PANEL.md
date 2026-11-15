@@ -527,7 +527,7 @@ aliases and those beyond the native slots. Accepted browse-identity changes rebi
 subscriptions. Polling checks identity before and after observation; a mismatch
 requests maintenance rather than accepting the observation as unchanged.
 The two existing backend workers own subscriptions, metadata probes and cleanup.
-Events use a one-second quiet interval and a three-second batching ceiling; slow
+Events use a 150 ms quiet interval and a 500 ms batching ceiling; slow
 probes or output backpressure can add delay. Polling/failure retries use 15 seconds.
 
 The accepted listing signature and full immediate-directory observation remain

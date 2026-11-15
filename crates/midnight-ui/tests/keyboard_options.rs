@@ -267,6 +267,387 @@ fn shortcut_editor_filters_commands_and_captures_without_dispatching_actions() {
 }
 
 #[test]
+fn occupied_shortcut_assign_opens_replace_cancel_dialog_without_mutating_bindings() {
+    let mut h = Harness::new(&[]);
+    h.open_keyboard();
+    h.select_action("files.copy");
+    h.edit("Ctrl+V");
+    h.commands.borrow_mut().clear();
+    assert!(
+        h.ui.window.global::<KeyboardEditorView>().get_can_assign(),
+        "a replaceable occupied shortcut must offer Assign"
+    );
+    for dismiss in ["Cancel", "Escape", "Enter"] {
+        ui::click_popup(&h.ui.window, "Assign", AccessibleRole::Button);
+        h.draw();
+        if dismiss == "Cancel" {
+            modeless::bitmap::snapshot(
+                &h.ui.pixels,
+                h.ui.width,
+                h.ui.height,
+                "keyboard-shortcut-replacement",
+            );
+        }
+        let inner = WindowInner::from_pub(h.ui.window.window());
+        let text = {
+            let popups = inner.active_popups();
+            let dialogs = popups
+                .iter()
+                .filter(|popup| !matches!(popup.window_kind, WindowKind::ToolTip))
+                .collect::<Vec<_>>();
+            assert_eq!(
+                dialogs.len(),
+                2,
+                "replacement must be a separate modal above Options"
+            );
+            ui::visible_text_values(ItemRc::new_root(dialogs[1].component.clone()))
+                .iter()
+                .map(|text| text.as_str())
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        for expected in ["Ctrl+V", "Copy files to clipboard", "Paste files"] {
+            assert!(
+                text.contains(expected),
+                "replacement dialog must identify {expected}: {text}"
+            );
+        }
+        ui::popup_item(&h.ui.window, "Replace", AccessibleRole::Button);
+        ui::popup_item(&h.ui.window, "Cancel", AccessibleRole::Button);
+        assert_eq!(
+            h.ui.window
+                .global::<KeyboardEditorView>()
+                .get_aliases()
+                .iter()
+                .collect::<Vec<_>>(),
+            ["Ctrl+C"],
+            "opening confirmation must leave the effective map untouched"
+        );
+        match dismiss {
+            "Escape" => ui::key(&h.ui.window, Key::Escape),
+            "Enter" => ui::key(&h.ui.window, Key::Return),
+            _ => ui::click_popup(&h.ui.window, "Cancel", AccessibleRole::Button),
+        }
+        h.draw();
+        assert!(
+            h.ui.window.get_options_open(),
+            "only replacement confirmation closes"
+        );
+        assert!(ui::try_popup_item(&h.ui.window, "Replace", AccessibleRole::Button).is_none());
+        assert_eq!(
+            h.ui.window
+                .global::<KeyboardEditorView>()
+                .get_aliases()
+                .iter()
+                .collect::<Vec<_>>(),
+            ["Ctrl+C"],
+            "Cancel, Escape and the default Enter action must preserve aliases"
+        );
+    }
+    assert!(
+        !h.commands
+            .borrow()
+            .iter()
+            .any(|command| matches!(command, Command::SavePreferences { .. })),
+        "confirmation and cancellation must not save preferences"
+    );
+}
+
+#[test]
+fn replacing_occupied_shortcut_preserves_aliases_and_nonoverlapping_contexts_until_ok() {
+    let mut h = Harness::new(&[
+        ("files.rename", &[]),
+        ("files.copy", &["Ctrl+C", "F2"]),
+        ("command.history-older", &["Alt+Up", "F2"]),
+        ("panel.as-other", &["Period", "F2"]),
+        ("viewer.wrap", &["Ctrl+W", "F2"]),
+    ]);
+    h.open_keyboard();
+    h.select_action("app.help");
+    ui::click_popup(
+        &h.ui.window,
+        "Press shortcut keys",
+        AccessibleRole::TextInput,
+    );
+    ui::key(&h.ui.window, Key::F2);
+    h.draw();
+    h.commands.borrow_mut().clear();
+    let view = h.ui.window.global::<KeyboardEditorView>();
+    assert_eq!(
+        view.get_candidate(),
+        "F2",
+        "capture requires the actual function-key event"
+    );
+    assert!(
+        view.get_can_assign(),
+        "candidate={} selected={} issue={} used_by={}",
+        view.get_candidate(),
+        view.get_selected_id(),
+        view.get_issue(),
+        view.get_used_by()
+    );
+    ui::click_popup(&h.ui.window, "Assign", AccessibleRole::Button);
+    h.draw();
+    ui::click_popup(&h.ui.window, "Replace", AccessibleRole::Button);
+    h.draw();
+    assert!(ui::try_popup_item(&h.ui.window, "Replace", AccessibleRole::Button).is_none());
+    for (action, expected) in [
+        ("app.help", vec!["F1", "F2"]),
+        ("files.copy", vec!["Ctrl+C"]),
+        ("command.history-older", vec!["Alt+Up"]),
+        ("panel.as-other", vec!["Period"]),
+        ("viewer.wrap", vec!["Ctrl+W", "F2"]),
+    ] {
+        h.select_action(action);
+        assert_eq!(
+            h.ui.window
+                .global::<KeyboardEditorView>()
+                .get_aliases()
+                .iter()
+                .map(|key| key.to_string())
+                .collect::<Vec<_>>(),
+            expected,
+            "replacement must preserve every other alias and unrelated context: {action}"
+        );
+    }
+    assert!(
+        !h.commands
+            .borrow()
+            .iter()
+            .any(|command| matches!(command, Command::SavePreferences { .. }))
+    );
+    h.commit();
+    let commands = h.commands.borrow();
+    let saves = commands
+        .iter()
+        .filter_map(|command| match command {
+            Command::SavePreferences { preferences, .. } => Some(preferences),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(saves.len(), 1, "Options OK persists the replacement once");
+    let map = ShortcutMap::new(&saves[0].shortcuts).unwrap();
+    let chord = ShortcutChord::parse("F2").unwrap();
+    for context in [
+        ShortcutContext::Files,
+        ShortcutContext::Search,
+        ShortcutContext::Command,
+        ShortcutContext::Volume,
+    ] {
+        assert_eq!(map.resolve(&chord, context).unwrap().id, "app.help");
+    }
+    assert_eq!(
+        map.resolve(&chord, ShortcutContext::Viewer).unwrap().id,
+        "viewer.wrap"
+    );
+}
+
+fn assert_stale_shortcut_replacement(invalidation: &str) {
+    let mut h = Harness::new(&[]);
+    h.open_keyboard();
+    h.select_action("files.copy");
+    h.edit("Ctrl+V");
+    ui::click_popup(&h.ui.window, "Assign", AccessibleRole::Button);
+    h.draw();
+    let window = h.ui.window.clone_strong();
+    let view = window.global::<KeyboardEditorView>();
+    let token = view.get_replacement_token();
+    assert!(!token.is_empty());
+    h.commands.borrow_mut().clear();
+    match invalidation {
+        "candidate" => view.invoke_capture_chord("Ctrl+Alt+Y".into()),
+        "selection" => view.invoke_select("files.paste".into()),
+        "map" => view.invoke_remove("files.copy".into(), "Ctrl+C".into()),
+        _ => h.ui.window.invoke_cancel_options(),
+    }
+    h.draw();
+    assert!(view.get_replacement_token().is_empty());
+    view.invoke_decide_replacement(token, true);
+    h.draw();
+    let aliases = view
+        .get_aliases()
+        .iter()
+        .map(|key| key.to_string())
+        .collect::<Vec<_>>();
+    let expected = match invalidation {
+        "selection" => vec!["Ctrl+V"],
+        "map" => vec![],
+        _ => vec!["Ctrl+C"],
+    };
+    assert_eq!(aliases, expected, "stale confirmation after {invalidation}");
+    assert!(
+        !h.commands
+            .borrow()
+            .iter()
+            .any(|command| matches!(command, Command::SavePreferences { .. }))
+    );
+}
+
+#[test]
+fn stale_shortcut_replacement_after_candidate_change_is_rejected() {
+    assert_stale_shortcut_replacement("candidate");
+}
+
+#[test]
+fn stale_shortcut_replacement_after_selection_change_is_rejected() {
+    assert_stale_shortcut_replacement("selection");
+}
+
+#[test]
+fn stale_shortcut_replacement_after_map_change_is_rejected() {
+    assert_stale_shortcut_replacement("map");
+}
+
+#[test]
+fn stale_shortcut_replacement_after_options_close_is_rejected() {
+    assert_stale_shortcut_replacement("closed");
+}
+
+#[test]
+fn old_shortcut_confirmation_token_cannot_confirm_or_close_a_new_prompt() {
+    let mut h = Harness::new(&[]);
+    h.open_keyboard();
+    h.select_action("files.copy");
+    h.edit("Ctrl+V");
+    ui::click_popup(&h.ui.window, "Assign", AccessibleRole::Button);
+    h.draw();
+    let window = h.ui.window.clone_strong();
+    let view = window.global::<KeyboardEditorView>();
+    let previous = view.get_replacement_token();
+    ui::click_popup(&h.ui.window, "Cancel", AccessibleRole::Button);
+    h.draw();
+    ui::click_popup(&h.ui.window, "Assign", AccessibleRole::Button);
+    h.draw();
+    let current = view.get_replacement_token();
+    assert!(!current.is_empty());
+    assert_ne!(current, previous);
+    view.invoke_decide_replacement(previous, true);
+    h.draw();
+    assert_eq!(view.get_replacement_token(), current);
+    assert_eq!(view.get_aliases().iter().collect::<Vec<_>>(), ["Ctrl+C"]);
+    ui::popup_item(&h.ui.window, "Replace", AccessibleRole::Button);
+    ui::click_popup(&h.ui.window, "Cancel", AccessibleRole::Button);
+}
+
+#[test]
+fn retired_shortcut_replace_widget_cannot_confirm_a_new_prompt() {
+    let mut h = Harness::new(&[]);
+    h.open_keyboard();
+    h.select_action("files.copy");
+    h.edit("Ctrl+V");
+    ui::click_popup(&h.ui.window, "Assign", AccessibleRole::Button);
+    h.draw();
+    let retired = ui::popup_item(&h.ui.window, "Replace", AccessibleRole::Button);
+    let window = h.ui.window.clone_strong();
+    let view = window.global::<KeyboardEditorView>();
+    let previous = view.get_replacement_token();
+    ui::click_popup(&window, "Cancel", AccessibleRole::Button);
+    h.draw();
+
+    h.edit("Ctrl+X");
+    ui::click_popup(&window, "Assign", AccessibleRole::Button);
+    // Keep the retired delegate alive while the current popup's bindings settle.
+    for _ in 0..3 {
+        h.draw();
+    }
+    let current = view.get_replacement_token();
+    assert!(!current.is_empty());
+    assert_ne!(current, previous);
+    assert_eq!(view.get_aliases().iter().collect::<Vec<_>>(), ["Ctrl+C"]);
+    h.commands.borrow_mut().clear();
+
+    retired.accessible_action(&i_slint_core::accessibility::AccessibilityAction::Default);
+    h.draw();
+
+    assert_eq!(
+        view.get_replacement_token(),
+        current,
+        "a queued action from a retired widget must not accept or close the current prompt"
+    );
+    assert_eq!(
+        view.get_aliases().iter().collect::<Vec<_>>(),
+        ["Ctrl+C"],
+        "a retired widget must not mutate current assignments"
+    );
+    assert!(
+        !h.commands
+            .borrow()
+            .iter()
+            .any(|command| matches!(command, Command::SavePreferences { .. }))
+    );
+    ui::popup_item(&window, "Replace", AccessibleRole::Button);
+    ui::click_popup(&window, "Cancel", AccessibleRole::Button);
+}
+
+#[test]
+fn occupied_shortcut_replacement_cannot_bypass_the_alias_limit() {
+    let mut h = Harness::new(&[(
+        "files.copy",
+        &["Ctrl+C", "Ctrl+Alt+Y", "Ctrl+Alt+Z", "Ctrl+Alt+J"],
+    )]);
+    h.open_keyboard();
+    h.select_action("files.copy");
+    h.edit("Ctrl+V");
+    let window = h.ui.window.clone_strong();
+    let view = window.global::<KeyboardEditorView>();
+    assert!(!view.get_can_assign());
+    assert!(view.get_issue().contains("four"));
+    ui::click_popup(&h.ui.window, "Assign", AccessibleRole::Button);
+    h.draw();
+    assert!(view.get_replacement_token().is_empty());
+    assert!(ui::try_popup_item(&h.ui.window, "Replace", AccessibleRole::Button).is_none());
+    assert_eq!(view.get_aliases().row_count(), 4);
+    assert!(
+        !h.commands
+            .borrow()
+            .iter()
+            .any(|command| matches!(command, Command::SavePreferences { .. }))
+    );
+}
+
+#[test]
+fn options_cancel_rolls_back_an_accepted_shortcut_replacement_without_saving() {
+    let mut h = Harness::new(&[]);
+    h.open_keyboard();
+    h.select_action("files.copy");
+    h.edit("Ctrl+V");
+    h.commands.borrow_mut().clear();
+    ui::click_popup(&h.ui.window, "Assign", AccessibleRole::Button);
+    h.draw();
+    ui::click_popup(&h.ui.window, "Replace", AccessibleRole::Button);
+    h.draw();
+    assert_eq!(
+        h.ui.window
+            .global::<KeyboardEditorView>()
+            .get_aliases()
+            .iter()
+            .collect::<Vec<_>>(),
+        ["Ctrl+C", "Ctrl+V"]
+    );
+    ui::click_popup(&h.ui.window, "Cancel", AccessibleRole::Button);
+    h.draw();
+    assert!(!h.ui.window.get_options_open());
+    h.open_keyboard();
+    for (action, expected) in [("files.copy", "Ctrl+C"), ("files.paste", "Ctrl+V")] {
+        h.select_action(action);
+        assert_eq!(
+            h.ui.window
+                .global::<KeyboardEditorView>()
+                .get_aliases()
+                .iter()
+                .collect::<Vec<_>>(),
+            [expected]
+        );
+    }
+    assert!(
+        !h.commands
+            .borrow()
+            .iter()
+            .any(|command| matches!(command, Command::SavePreferences { .. }))
+    );
+}
+
+#[test]
 fn shortcut_capture_keeps_physical_digits_and_tab_escape_exit_without_dispatch() {
     let mut h = Harness::new(&[]);
     h.open_keyboard();
@@ -818,7 +1199,7 @@ fn keyboard_options_validate_apply_disable_and_restore_effective_bindings() {
     h.select_action("files.copy");
     h.commands.borrow_mut().clear();
     h.edit("Ctrl+V");
-    assert!(!h.ui.window.global::<KeyboardEditorView>().get_can_assign());
+    assert!(h.ui.window.global::<KeyboardEditorView>().get_can_assign());
     assert!(
         h.ui.window
             .global::<KeyboardEditorView>()

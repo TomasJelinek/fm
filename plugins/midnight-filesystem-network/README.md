@@ -7,7 +7,8 @@ macOS discovery is not implemented.
 
 Windows uses WNet provider enumeration. Linux loads system GIO/GLib lazily and
 follows the exact `standard::target-uri` supplied by GVfs for network, SMB and
-DNS-SD entries. A bare hostname can be entered explicitly. Listing does not scan
+DNS-SD entries, including the separate `wsdd:///` discovery namespace. A bare
+hostname can be entered explicitly. Listing does not scan
 subnets, mount shares or prompt for credentials. Discovery visibility depends on
 the operating system's installed providers, services and network configuration.
 
@@ -16,6 +17,18 @@ credential UI. A share activates only when the OS supplies a usable native path;
 Linux therefore needs the actual GIO native/FUSE path. Unavailable runtime,
 offline, mount required, authentication required, permission denied and unsupported
 handoff are separate outcomes. This version has no credential-entry workflow.
+
+On Ubuntu/Mint, local network browsing needs the desktop's runtime packages:
+
+```sh
+sudo apt install gvfs-backends gvfs-fuse wsdd
+```
+
+The `wsdd` helper supplies Windows computer discovery. GVfs can otherwise return
+an empty `network:///` listing while `gio list wsdd:///` reports that its helper
+cannot start. Devices may take a moment to appear; refresh the Network view after
+discovery settles. A known server can also be entered as `smb://server/` in the
+panel path. Other distributions supply equivalent GIO/GVfs/discovery packages.
 
 The catalog streams up to 128 entries per page and caches only complete listings
 for 30 seconds. Refresh retires old cursors and prevents stale publication.

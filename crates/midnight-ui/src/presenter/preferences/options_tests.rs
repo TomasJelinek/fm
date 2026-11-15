@@ -218,6 +218,36 @@ fn saved(commands: &[Command]) -> Vec<(PreferencesRevision, UserPreferences)> {
 }
 
 #[test]
+fn archive_preview_draft_stays_out_of_session_saves_and_cancel_restores_it() {
+    let mut p = loaded();
+    let commands = RefCell::new(Vec::new());
+    let send = |command| {
+        commands.borrow_mut().push(command);
+        true
+    };
+    p.begin_options();
+    let mut draft = p.preferences.values.clone();
+    draft.thumbnails_archives = false;
+    p.update_preferences(draft, &send);
+    assert!(!p.preferences.values.thumbnails_archives);
+    assert!(
+        saved(&commands.borrow()).is_empty(),
+        "archive preview is an Options draft"
+    );
+    p.change_panel_view_mode(PaneId::Left, 1, &send);
+    let writes = saved(&commands.borrow());
+    assert_eq!(writes.len(), 1);
+    assert!(
+        writes[0].1.thumbnails_archives,
+        "unrelated session saves retain the committed archive policy"
+    );
+    p.preferences_saved(writes[0].0, Ok(()));
+    p.cancel_options(&send);
+    assert!(p.preferences.values.thumbnails_archives);
+    assert_eq!(saved(&commands.borrow()).len(), 1, "Cancel must not save");
+}
+
+#[test]
 fn cancelling_restores_all_options_and_runtime_shortcuts_without_saving() {
     let mut p = loaded();
     let baseline = p.preferences.values.clone();
@@ -232,8 +262,10 @@ fn cancelling_restores_all_options_and_runtime_shortcuts_without_saving() {
     draft.size_display = SizeDisplay::Bytes;
     draft.remember_command_history = false;
     draft.copy_checksum_verification = false;
+    draft.disk_io_concurrency = DiskIoConcurrency::Manual(31);
     draft.thumbnails_enabled = false;
     draft.thumbnails_network = true;
+    draft.thumbnails_archives = false;
     draft.thumbnail_size = 192;
     draft.disabled_viewer_plugins = vec!["midnight-viewer-source".into()];
     draft
@@ -540,6 +572,8 @@ fn reset_preserves_user_content_and_commits_defaults_only_after_ok() {
     custom.theme = PreferenceTheme::from_index(1).unwrap();
     custom.font_family = "Consolas".into();
     custom.thumbnails_enabled = false;
+    custom.thumbnails_archives = false;
+    custom.disk_io_concurrency = DiskIoConcurrency::Manual(31);
     custom.thumbnail_size = 256;
     custom.remember_command_history = false;
     custom.filename_colors = Arc::new(Vec::new());
@@ -652,4 +686,115 @@ fn reset_waits_for_an_open_native_picker_without_discarding_its_result() {
     p.reset_options(&|_| panic!("reset only stages defaults"));
     assert!(!p.editor.dirty);
     assert_eq!(p.preferences.values.theme, PreferenceTheme::default());
+}
+
+#[test]
+fn archive_and_disk_previews_share_rollback_without_leaking_into_session_saves() {
+    let mut p = loaded();
+    p.preferences.values.disk_io_concurrency = DiskIoConcurrency::Manual(7);
+    p.preferences.values.thumbnails_archives = false;
+    p.begin_options();
+    p.change_disk_io_concurrency(false, 32, &|_| panic!("Options preview cannot save"));
+    p.change_thumbnail_options(true, false, true, 2, &|_| {
+        panic!("Options preview cannot save")
+    });
+    assert_eq!(
+        p.preferences.values.disk_io_concurrency,
+        DiskIoConcurrency::Manual(32)
+    );
+    assert!(p.preferences.values.thumbnails_archives);
+    let commands = RefCell::new(Vec::new());
+    let send = |command| {
+        commands.borrow_mut().push(command);
+        true
+    };
+    p.change_panel_view_mode(PaneId::Left, 1, &send);
+    let writes = saved(&commands.borrow());
+    assert_eq!(writes.len(), 1);
+    assert_eq!(
+        writes[0].1.disk_io_concurrency,
+        DiskIoConcurrency::Manual(7)
+    );
+    assert!(!writes[0].1.thumbnails_archives);
+    p.preferences_saved(writes[0].0, Ok(()));
+    p.cancel_options(&send);
+    assert_eq!(
+        p.preferences.values.disk_io_concurrency,
+        DiskIoConcurrency::Manual(7)
+    );
+    assert!(!p.preferences.values.thumbnails_archives);
+    assert_eq!(
+        p.preferences.values.panel_view_modes[0],
+        PanelViewMode::Brief
+    );
+    p.begin_options();
+    p.reset_options(&send);
+    assert_eq!(
+        p.preferences.values.disk_io_concurrency,
+        DiskIoConcurrency::Automatic
+    );
+    assert!(p.preferences.values.thumbnails_archives);
+    p.cancel_options(&send);
+    assert_eq!(
+        p.preferences.values.disk_io_concurrency,
+        DiskIoConcurrency::Manual(7)
+    );
+    assert!(!p.preferences.values.thumbnails_archives);
+    p.begin_options();
+    p.reset_options(&send);
+    p.accept_options(&send);
+    let writes = saved(&commands.borrow());
+    assert_eq!(writes.len(), 2);
+    assert_eq!(
+        writes[1].1.disk_io_concurrency,
+        DiskIoConcurrency::Automatic
+    );
+    assert!(writes[1].1.thumbnails_archives);
+    p.preferences_saved(writes[1].0, Ok(()));
+    assert!(!p.preferences.options.open);
+}
+
+#[test]
+fn archive_and_disk_early_callbacks_merge_independently_with_late_preferences() {
+    for (edit_disk, edit_archives) in [(true, false), (false, true), (true, true)] {
+        let mut p = Presenter::new("left".into(), "right".into());
+        if edit_disk {
+            p.change_disk_io_concurrency(false, 32, &|_| panic!("initial load precedes save"));
+        }
+        if edit_archives {
+            // An explicit selection of the default still takes precedence over saved opt-out.
+            p.change_thumbnail_options(true, false, true, 2, &|_| {
+                panic!("initial load precedes save")
+            });
+        }
+        p.preferences_loaded(Ok(UserPreferences {
+            disk_io_concurrency: DiskIoConcurrency::Manual(7),
+            thumbnails_archives: false,
+            thumbnails_enabled: false,
+            thumbnails_network: true,
+            desktop_font_size: 21,
+            ..Default::default()
+        }));
+        let expected_disk = if edit_disk {
+            DiskIoConcurrency::Manual(32)
+        } else {
+            DiskIoConcurrency::Manual(7)
+        };
+        assert_eq!(p.preferences.values.disk_io_concurrency, expected_disk);
+        assert_eq!(p.preferences.values.thumbnails_archives, edit_archives);
+        assert!(!p.preferences.values.thumbnails_enabled);
+        assert!(p.preferences.values.thumbnails_network);
+        assert_eq!(p.preferences.values.desktop_font_size, 21);
+        let commands = RefCell::new(Vec::new());
+        p.flush_loaded_preferences(&|command| {
+            commands.borrow_mut().push(command);
+            true
+        });
+        let writes = saved(&commands.borrow());
+        assert_eq!(writes.len(), 1);
+        assert_eq!(writes[0].1.disk_io_concurrency, expected_disk);
+        assert_eq!(writes[0].1.thumbnails_archives, edit_archives);
+        assert!(!writes[0].1.thumbnails_enabled);
+        assert!(writes[0].1.thumbnails_network);
+    }
 }

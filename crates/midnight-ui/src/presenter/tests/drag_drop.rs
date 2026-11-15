@@ -431,3 +431,49 @@ fn drag_hover_is_latest_only_and_escape_cancels_under_queue_backpressure() {
             .all(|command| !matches!(command, Command::InternalDrop(_)))
     );
 }
+
+#[test]
+fn flat_file_drop_targets_the_root_only_with_current_native_identity() {
+    for kind in [
+        EntryKind::File,
+        EntryKind::Directory,
+        EntryKind::DirectoryLink,
+        EntryKind::Symlink,
+        EntryKind::Other,
+    ] {
+        let base = test_root().join("drop target kinds");
+        let mut p = Presenter::new(base.clone(), base.clone());
+        let navigation = begin(&mut p, PaneId::Left, base.to_str().unwrap());
+        finish(
+            &mut p,
+            PaneId::Left,
+            navigation,
+            vec![Entry::new(EntryId(1), base.join("target"), kind)],
+        );
+        let current = identity(&p, 1);
+        let destination = p.preview_internal_drag_target(PaneId::Left, Some((1, &current)));
+        match kind {
+            EntryKind::File => assert!(matches!(destination,
+                Some(InternalDropDestination::PaneRoot { pane: PaneId::Left, navigation: captured })
+                    if captured == navigation
+            )),
+            EntryKind::Directory => assert!(matches!(destination,
+                Some(InternalDropDestination::PanelEntry { pane: PaneId::Left, navigation: captured, entry: EntryId(1) })
+                    if captured == navigation
+            )),
+            _ => assert!(destination.is_none()),
+        }
+        assert!(
+            p.preview_internal_drag_target(PaneId::Left, Some((1, "stale-identity")))
+                .is_none()
+        );
+        assert!(
+            p.preview_internal_drag_target(PaneId::Left, Some((0, &current)))
+                .is_none()
+        );
+        assert!(
+            p.preview_internal_drag_target(PaneId::Left, Some((2, &current)))
+                .is_none()
+        );
+    }
+}

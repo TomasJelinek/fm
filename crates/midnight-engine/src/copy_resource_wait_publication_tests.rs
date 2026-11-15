@@ -109,7 +109,12 @@ async fn resource_wait_clear_retries_after_full_outbox_without_a_second_heartbea
         &mut published_pass,
         false,
     );
-    assert!(events.try_recv().is_err(), "unchanged wait was republished");
+    // The timer also publishes unchanged preparation state as a heartbeat.
+    assert_eq!(next_progress(&mut events).wait_reason, None);
+    assert!(
+        events.try_recv().is_err(),
+        "one tick published duplicate progress"
+    );
     drop(permit);
     assert_eq!(budget.available_permits(), 1);
 }

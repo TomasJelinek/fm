@@ -10,11 +10,12 @@ import { DialogText } from "dialog-text.slint";
 import { FallbackIcons } from "action-icons.slint";
 import { MetadataFileRow } from "metadata-list.slint";
 import { MetadataAttribute } from "metadata-attribute.slint";
+import { UnixPermissions } from "unix-permissions.slint";
 export { MetadataFileRow }
 
 export struct MetadataDraft {
     read-only: int, hidden: int, system: int, archive: int, compressed: int,
-    unix-edit: bool, unix-mode: string,
+    unix-edit: bool, unix-mode: string, unix-mask: int, unix-value: int,
     created-mode: int, created-text: string,
     modified-mode: int, modified-text: string,
     accessed-mode: int, accessed-text: string,
@@ -129,6 +130,9 @@ export component MetadataDialog inherits Rectangle {
     in property <bool> can-windows;
     in property <int> windows-mask;
     in property <bool> can-unix;
+    in property <int> unix-current-mode;
+    in property <int> unix-known-mask;
+    in property <int> unix-supported-mask;
     in property <bool> can-compress;
     in property <bool> can-created;
     in property <bool> can-modified;
@@ -140,6 +144,7 @@ export component MetadataDialog inherits Rectangle {
     callback cancel();
     callback dismiss-hints();
     private property <MetadataDraft> draft;
+    out property <bool> unix-visible: root.can-unix || root.draft.unix-edit || root.draft.unix-mask != 0;
     private property <int> topic;
     private property <bool> draft-edited: true;
     private property <bool> has-reviewed: false;
@@ -176,7 +181,7 @@ export component MetadataDialog inherits Rectangle {
     public function begin(case-enabled: bool) {
         root.draft = {
             read-only: 0, hidden: 0, system: 0, archive: 0, compressed: 0,
-            unix-edit: false, unix-mode: "",
+            unix-edit: false, unix-mode: "", unix-mask: 0, unix-value: 0,
             created-mode: 0, created-text: "", modified-mode: 0, modified-text: "",
             accessed-mode: 0, accessed-text: "",
             case-enabled: case-enabled, case-mode: 0, case-scope: 0, recursive: false,
@@ -241,21 +246,15 @@ export component MetadataDialog inherits Rectangle {
                                 enabled: mod(floor(root.windows-mask / 32), 2) >= 1;
                                 choice <=> root.draft.archive; edited => { root.edited(); } }
                         }
-                        if root.can-unix : VerticalLayout {
-                            spacing: 8px;
-                            WrappingCheckBox {
-                                text: "Set permissions (octal)"; checked <=> root.draft.unix-edit;
-                                hint: "Three digits preserve setuid, setgid and sticky bits. Four digits explicitly replace them too.";
-                                toggled => { root.edited(); }
-                            }
-                            HintedLineEdit {
-                                accessible-label: "Octal permissions";
-                                text <=> root.draft.unix-mode; enabled: root.draft.unix-edit;
-                                placeholder-text: "755"; hint: "For example 640, 755 or 2755. Native access checks apply.";
-                                edited => { root.edited(); }
-                            }
+                        if root.unix-visible : UnixPermissions {
+                            current-mode: root.unix-current-mode; known-mask: root.unix-known-mask;
+                            supported-mask: root.unix-supported-mask;
+                            enabled: root.can-unix; busy: root.busy;
+                            edit-mask <=> root.draft.unix-mask; edit-value <=> root.draft.unix-value;
+                            octal-edit <=> root.draft.unix-edit; octal-mode <=> root.draft.unix-mode;
+                            edited => { root.edited(); }
                         }
-                        MetadataAttribute {
+                        if root.can-windows || root.can-compress : MetadataAttribute {
                             label: "Compression"; enabled: root.can-compress;
                             set-caption: "Compress"; clear-caption: "Uncompress";
                             choice <=> root.draft.compressed;

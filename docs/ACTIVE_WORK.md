@@ -10,6 +10,72 @@ code or a green subset into complete qualification.
 
 ## Current checkpoint
 
+The current Linux integration was explicitly requested after this branch was verified.
+The current [required-module integration report](verification/2026-11-13-required-runtime-modules.md)
+records the merge of main `e77eafa` with Linux head `e6d0dbd`, the schema-32
+migration of both legacy schema-31 variants, mandatory runtime packaging and the
+archive activation fix. The schema-31 references below describe their original
+branch evidence, before the integration migration.
+The separate Windows checkpoint below remains historical; merging its source does
+not resume its pending Custom Commands/comparator backlog.
+
+The separate Linux branch `codex/filter-linux-drive-list` has Debug-built desktop,
+permissions, terminal, activation and status-bar fixes based on merge `2b62996`.
+Its [scoped Linux verification report](verification/2026-11-13-linux-desktop-fixes.md)
+records 106 passing targeted tests and native X11/startup checks. The first
+Colors occurrence was restarted before capture. A later live hang revealed a
+Slint popup-borrow panic followed by an idle image-owner runtime shutdown wait;
+the report distinguishes those captured stacks, the reproduced tooltip panic
+and their source fixes from the unavailable original UI callback.
+The shortcut Replace/Cancel dialog, unavailable network-button hiding, tooltip
+teardown and panic cleanup pass 68 final targeted Debug tests. Refreshing a stale
+installed native filesystem plugin adds 8 passing mount tests; the resulting
+Debug installation passes native startup/shutdown with the filtered drive bar.
+Three separate presenter tests also passed. Exact follow-up receipts are in the
+same report.
+The later Options sidebar correction measures the full selected topic labels
+and grows with the font; 51 targeted UI tests pass, with font-12/font-24 renders
+visually reviewed. Its separate receipts and scope are recorded in the report's
+[font-scaling follow-up](verification/2026-11-13-linux-desktop-fixes.md#options-navigation-font-scaling).
+The subsequent default-on **Allow previews inside archives** setting includes
+strict schema 31 persistence, reversible Options edits and archive-only scheduling/
+presentation gating. Its [scoped follow-up](verification/2026-11-13-linux-desktop-fixes.md#archive-preview-option)
+records 214 passing targeted tests and a visually reviewed default-checked control;
+this does not broaden installed archive-format qualification.
+The following [row-layout and notification follow-up](verification/2026-11-13-linux-desktop-fixes.md#panel-row-alignment-and-notification-cadence)
+limits list labels to one line and reduces notification debounce to 150 ms quiet /
+500 ms continuous activity. It records 55 passing targeted tests, three complete
+native rendering probes and Debug startup/shutdown. A hidden mandatory line break
+reproduced the clipped text; the original screenshot's filename and build age
+could not be established, so its exact trigger remains unconfirmed.
+Standard builds and release packaging now require both image/video thumbnailers.
+The [required-thumbnailer follow-up](verification/2026-11-13-required-thumbnailers.md)
+records the actual Linux Debug installation, pinned FFmpeg source/signature,
+151 passing targeted checks and five Windows-only skips. Installed discovery,
+sandboxed decoding, cancellation, real package validation and native app startup
+passed. Windows build/deployment integration is source-reviewed, not natively
+qualified by this Linux run.
+The subsequent [local-preview and Copy refresh correction](verification/2026-11-13-local-previews-copy-progress.md)
+verifies bounded LVM backing-device classification and independent 250 ms Copy
+status publication. A real PNG from the reported Screenshots folder failed
+admission before the provider correction and decoded/persisted afterward.
+The two dropped-progress regressions also failed before correction. The final
+scope records 75 passing targeted checks plus native Debug startup/shutdown;
+the native provider was replaced atomically and the running app was not restarted.
+The later [file-tile drop correction](verification/file-drag-drop.md#2026-11-13-file-tiles-target-the-current-folder)
+lets flat-panel ordinary files and screenshot tiles target the current folder.
+Its actual pointer regression preserves the selected view through drag startup;
+66 targeted checks pass, including folder/identity/tree guards and backend
+containment/admission. Native Debug startup/shutdown also passes; the user's
+`www` folder was not moved or copied by verification.
+These Linux results do not replace the Windows evidence below.
+The later [Linux network investigation](verification/2026-11-13-linux-network-discovery.md)
+installed the missing system `wsdd` helper and fixed WSDD namespace handling;
+84 targeted tests pass, including installed-plugin discovery through GIO. Native
+enumeration currently returns zero devices; remote SMB/FUSE remains unverified.
+
+### Separate Windows checkpoint
+
 **PAUSED by explicit user request on 13 November 2026.** The user requested a
 checkpoint of all current work and a push; Root owns review, integration and Git.
 No new implementation, design, documentation polish or qualification work is

@@ -20,6 +20,35 @@ fn accepts_discovery_server_and_share_addresses_without_changing_identity() {
         Linux::validate(&record.target).unwrap();
     }
 }
+
+#[test]
+fn wsdd_discovery_namespace_accepts_only_the_exact_root_container() {
+    let root = Linux::manual("wsdd:///").unwrap();
+    assert_eq!(root.target.key, b"wsdd:///");
+    assert_eq!(root.target.kind, NodeKind::Container);
+    Linux::validate(&root.target).unwrap();
+    for invalid in [
+        "wsdd://",
+        "wsdd:////",
+        "wsdd://host/",
+        "wsdd:///device",
+        "wsdd://user:secret@host/",
+        "wsdd://%75ser%40host/",
+        "wsdd:///%00",
+        "wsdd:///%2f",
+        "wsdd:///%2e%2e",
+        "wsdd:///?query=value",
+        "wsdd:///#fragment",
+        "wsdd:///\n",
+        "WSDD:///",
+    ] {
+        assert_eq!(
+            Linux::manual(invalid).unwrap_err().code,
+            ErrorCode::Invalid,
+            "{invalid:?}",
+        );
+    }
+}
 #[test]
 fn rejects_credentials_unsupported_schemes_and_ambiguous_addresses() {
     for uri in [
@@ -244,6 +273,35 @@ fn discovery_filters_credential_and_unsupported_targets_without_exposing_them() 
             .key,
         b"smb://safe/"
     );
+}
+
+#[test]
+fn discovery_keeps_wsdd_root_while_filtering_other_wsdd_addresses() {
+    let fake = Fake::default();
+    for uri in [
+        "wsdd://user:secret@host/",
+        "wsdd:///device",
+        "wsdd:////",
+        "wsdd:///",
+    ] {
+        fake.entries.borrow_mut().push_back(Entry {
+            uri: uri.as_bytes().to_vec(),
+            display: "WS-Discovery Network".into(),
+        });
+    }
+    let mut cursor = backend::begin(&fake, &Linux::root().target, &context(&|| false)).unwrap();
+    let root = backend::next(&fake, &mut cursor, &context(&|| false))
+        .unwrap()
+        .expect("the supported WS-Discovery root must survive discovery filtering");
+    assert_eq!(root.target.key, b"wsdd:///");
+    assert_eq!(root.target.kind, NodeKind::Container);
+    assert_eq!(root.display, "WS-Discovery Network");
+    assert!(
+        backend::next(&fake, &mut cursor, &context(&|| false))
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(fake.mounts.get(), 0);
 }
 #[test]
 fn explicit_namespace_activation_returns_only_provider_ready_marker() {

@@ -21,7 +21,7 @@ path, including when cancellation or construction failure was the original cause
 Existing destination originals, unfinished sources and earlier completed files are
 preserved; a filesystem refusal cannot be reported as successful cleanup.
 
-The optional Chromium HTML viewer has a separate browser-process profile. CEF's
+The Chromium HTML viewer has a separate browser-process profile. CEF's
 renderer sandbox remains enabled; the decoder's single-process policy is not
 weakened. HTML starts offline with scripts disabled. Enabling online mode revokes
 all local relative resources and recreates the browser/context; scripts require
@@ -160,15 +160,26 @@ is made. Tests mutate fresh, owned fixtures only; they never empty a user's Tras
   link/junction follows OS directory-navigation semantics; enumeration and metadata
   inspection do not recursively follow links or open special-file contents.
 - Explicit Enter or an unmodified left double click is a separate activation
-  action: directories stay internal, regular files use the host association,
-  which can execute programs. Selection, hover, right click and refresh never
+  action: directories stay internal; ordinary files use the host association,
+  while executable activation can run programs. Selection, hover, right click
+  and refresh never
   activate files. Native metadata/launch and helper reaping stay on bounded
   backend workers, separate from navigation. Missing/special files fail with
   context; native symlinks are classified only after explicit activation.
   Windows passes raw UTF-16 to `ShellExecuteExW(open)` with no command parameters;
-  Linux passes the raw absolute path as a literal argument to a fixed system
-  desktop opener, without a shell or inherited standard streams. No automatic
-  elevation is requested. Host association/path limits are reported faithfully.
+  Linux passes ordinary documents and desktop launchers as literal raw paths to
+  a fixed system desktop opener, without inherited standard streams. Files with
+  execute bits are classified using at most four bytes from a nonblocking regular
+  descriptor, with identity/revision checks before and after reading: ELF programs
+  run directly; shebang scripts and `.sh` files run in an ordinary-user terminal.
+  A fixed wrapper invokes the script's raw path as one positional argument, never
+  filename-derived shell source, then opens the configured interactive shell.
+  Legacy executable `.sh` files without a shebang use the normal POSIX command
+  fallback. Unknown document types retain associations even if a mount supplies
+  execute bits. If an executable's header cannot be read, execution permissions
+  remain the kernel's decision. Execute bits are never added automatically and
+  no automatic elevation is requested. Host association/path limits are reported
+  faithfully.
   Frozen row identity prevents sort/refresh from substituting another displayed
   entry between clicks; generation checks reject obsolete directory-link results.
   This ordinary path-based activation does not promise immutable inode identity
@@ -206,14 +217,25 @@ is made. Tests mutate fresh, owned fixtures only; they never empty a user's Tras
 - Folder scans share weighted capacity across panes. Only a positive local SSD
   hint allows up to four I/O streams; HDD/network/unknown takes exclusive scan
   capacity. Hints are conservative and do not prove immutable physical topology.
+  Linux recognizes local LVM/device-mapper and md stacks only when every backing
+  leaf passes the existing physical ATA/PCIe NVMe checks. Partition normalization,
+  cycle detection, cancellation, depth 32 and 128-node/128-slave budgets bound
+  the sysfs walk. Any missing, remote, virtual, removable or unknown leaf keeps
+  the result unknown; network preview opt-in is unchanged.
 - Preferences use bounded strict versioned decoding and opened-file validation.
-  Supported schemas through version 25 include window geometry, monitor identity
+  Supported schemas through version 32 include window geometry, monitor identity
   and a validated integer panel split ratio,
   typed Network tabs, panel modes, native and archive bookmarks, fonts, command history, shortcuts,
-  filters, editor, viewer, archive, preview size and filename-color choices. Earlier
+  filters, editor, viewer, archive, preview size, archive-preview and filename-color choices. Earlier
   schemas migrate with explicit defaults; unsupported fields and versions fail
   atomically. Viewer options store presentation choices, never query text,
   document contents or per-file reading positions.
+  Archive previews have a separate default-on preference, while their network
+  admission still follows the actual container storage classification and the
+  network opt-in. Disabling archive previews immediately hides retained member
+  pixels and rejects late archive frames; the next normal scheduling pulse removes
+  their targets and requests backend cancellation. Source access and decoding stay
+  on backend workers.
   Shortcut settings accept only known semantic action
   IDs and bounded key chords, never executable commands. Duplicate, malformed and
   overlapping bindings fail validation atomically. Native editor/IME chords cannot be
@@ -598,6 +620,9 @@ Linux creation timestamps are not editable. Unsupported operations fail explicit
 Incoming native drops enter the same Copy service as clipboard paste. Internal
 folder drops also support Move through the ordinary transfer service: the backend
 resolves exact entry/provider captures and volume evidence, never UI path strings.
+In flat native panels, hovering an ordinary file resolves to the current pane
+root after identity/navigation checks; the file itself is not a write target.
+Folder targets and tree occurrence authority retain their existing validation.
 Automatic drops move on a proven same volume and otherwise copy; Ctrl forces Copy,
 Shift forces Move. The verification policy is frozen at submission. Native rename
 does not read file contents; other moves verify each copied file before deleting

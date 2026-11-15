@@ -80,6 +80,20 @@ not establish worst-case consumption or a Linux/macOS result.
 
 ## Runtime software
 
+Normal builds and distributions include all six viewers (basic, source, Markdown,
+image, PDF and Chromium HTML), the platform's native/network filesystem providers,
+the archive worker and both thumbnailers. Keep the complete module directories
+beside the executable. The HTML module includes the pinned CEF runtime; Linux
+also needs its system NSS/NSPR and ALSA libraries. CMake and Ninja are build tools,
+not application runtime requirements. Browser sandbox policy remains required.
+
+Standard installations include the independent image and video thumbnailers in
+the executable-adjacent `thumbnailers/` directory. Keep its runtime libraries and
+notices with the helpers. The approved FFmpeg libraries are bundled there; users
+do not need a system FFmpeg or libclang installation to run ME. Compiler, GPG and
+libclang packages are build prerequisites only. The video codec allowlist remains
+limited to VP8/VP9, Theora, FFV1 and raw video; this does not add MP4/H.264 support.
+
 **All platforms:** a graphical desktop and readable system fonts covering the
 scripts being displayed. **Hardware GPU acceleration is optional.** The preferred
 renderer is Slint FemtoVG-WGPU: Direct3D 12 on Windows and normally Vulkan on Linux.
@@ -118,6 +132,12 @@ runtime libraries. Desktop integration also uses host tools such as `xdg-open`
 and an installed terminal. Build prerequisites and package names are in the README.
 External file drag-and-drop targets X11/XWayland; native Wayland needs separate
 protocol integration, while in-application operations remain available.
+
+Local Network Neighborhood browsing additionally needs GIO/GVfs discovery and
+SMB backends; opening shares as native paths needs the GVfs FUSE bridge. On
+Ubuntu/Mint, install `gvfs-backends gvfs-fuse wsdd`. The `wsdd` helper enables
+Windows computer discovery; an advertised GVfs backend alone does not prove
+that the helper is installed. A known server can be opened as `smb://server/`.
 
 The initial generic Linux build targets the **Ubuntu 24.04 / glibc 2.39** userspace baseline.
 Build distributable Linux binaries on that baseline, and inspect their ELF versioned

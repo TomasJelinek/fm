@@ -38,6 +38,7 @@ pub(super) fn restore_fields(to: &mut UserPreferences, from: &UserPreferences) {
     to.filename_colors.clone_from(&from.filename_colors);
     to.thumbnails_enabled = from.thumbnails_enabled;
     to.thumbnails_network = from.thumbnails_network;
+    to.thumbnails_archives = from.thumbnails_archives;
     to.thumbnail_size = from.thumbnail_size;
     to.disabled_viewer_plugins
         .clone_from(&from.disabled_viewer_plugins);

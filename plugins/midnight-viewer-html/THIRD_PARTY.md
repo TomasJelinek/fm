@@ -1,7 +1,7 @@
 # Chromium provider dependencies and distribution notices
 
 This independent workspace consumes only the published `midnight-web-viewer-api`
-0.1.0 contract. The public API retains the repository's terms; this plugin does
+0.2.0 contract. The public API retains the repository's terms; this plugin does
 not assign or change them. No private host/application crate is linked.
 
 The exact Rust lock pins `cef` and `cef-dll-sys` to

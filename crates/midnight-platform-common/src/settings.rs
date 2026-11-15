@@ -40,7 +40,7 @@ mod shortcuts_tests;
 
 /// An aggregate storage bound, never a native path length restriction.
 pub const MAX_PREFERENCES_BYTES: usize = 4 * 1024 * 1024;
-const CURRENT_PREFERENCES_VERSION: u32 = 31;
+const CURRENT_PREFERENCES_VERSION: u32 = 32;
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -182,6 +182,12 @@ enum StoredDiskIoConcurrency {
 struct StoredPreviews {
     enabled: bool,
     network: bool,
+    #[serde(
+        default,
+        deserialize_with = "present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    archives: Option<bool>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -386,6 +392,24 @@ pub fn decode_preferences(bytes: &[u8]) -> io::Result<UserPreferences> {
     if !(1..=CURRENT_PREFERENCES_VERSION).contains(&stored.version) {
         return Err(invalid("unsupported preferences version"));
     }
+    // Two independently published version-31 schemas added different fields.
+    // Their shapes identify the legacy branch; version 32 requires both.
+    let archive_preview_present = stored
+        .previews
+        .as_ref()
+        .is_some_and(|previews| previews.archives.is_some());
+    match (
+        stored.version,
+        stored.disk_io_concurrency.is_some(),
+        archive_preview_present,
+    ) {
+        (1..=30, false, false) | (31, true, false) | (31, false, true) | (32, true, true) => {}
+        _ => {
+            return Err(invalid(
+                "missing or unexpected versioned preference extensions",
+            ));
+        }
+    }
     let thumbnail_size = match (stored.version, stored.thumbnail_size) {
         (1..=24, None) => midnight_core::DEFAULT_THUMBNAIL_SIZE,
         (25..=CURRENT_PREFERENCES_VERSION, Some(size)) => size,
@@ -417,11 +441,19 @@ pub fn decode_preferences(bytes: &[u8]) -> io::Result<UserPreferences> {
     {
         return Err(invalid("archive addresses require preferences version 11"));
     }
-    let (thumbnails_enabled, thumbnails_network) = match (stored.version, stored.previews) {
-        (1..=11, None) => (true, false),
-        (12..=CURRENT_PREFERENCES_VERSION, Some(previews)) => (previews.enabled, previews.network),
-        _ => return Err(invalid("missing or unexpected preview preferences")),
-    };
+    let (thumbnails_enabled, thumbnails_network, thumbnails_archives) =
+        match (stored.version, stored.previews) {
+            (1..=11, None) => (true, false, true),
+            (12..=CURRENT_PREFERENCES_VERSION, Some(previews)) => {
+                let archives = match (stored.version, previews.archives) {
+                    (12..=31, None) => true,
+                    (31..=CURRENT_PREFERENCES_VERSION, Some(enabled)) => enabled,
+                    _ => return Err(invalid("missing or unexpected archive preview preference")),
+                };
+                (previews.enabled, previews.network, archives)
+            }
+            _ => return Err(invalid("missing or unexpected preview preferences")),
+        };
     let theme = PreferenceTheme::from_storage_name(&stored.theme)
         .ok_or_else(|| invalid("unknown preferences theme"))?;
     let density = match stored.density.as_str() {
@@ -639,7 +671,7 @@ pub fn decode_preferences(bytes: &[u8]) -> io::Result<UserPreferences> {
     };
     let mut preferences = UserPreferences {
         disk_io_concurrency: match (stored.version, stored.disk_io_concurrency) {
-            (1..=30, None) => DiskIoConcurrency::Automatic,
+            (1..=31, None) => DiskIoConcurrency::Automatic,
             (31..=CURRENT_PREFERENCES_VERSION, Some(StoredDiskIoConcurrency::Automatic {})) => {
                 DiskIoConcurrency::Automatic
             }
@@ -741,6 +773,7 @@ pub fn decode_preferences(bytes: &[u8]) -> io::Result<UserPreferences> {
         panel_view_modes,
         thumbnails_enabled,
         thumbnails_network,
+        thumbnails_archives,
         thumbnail_size,
         shortcuts,
         panel_filters,
@@ -786,7 +819,10 @@ pub fn encode_preferences(preferences: UserPreferences) -> io::Result<Vec<u8>> {
         .iter()
         .any(|bookmark| bookmark.network.is_some());
     let disk_choices = preferences.disk_io_concurrency != DiskIoConcurrency::Automatic;
+    let archive_preview_choices = !preferences.thumbnails_archives;
+    // Newer schemas still include the required rule/history fields introduced in version 30.
     let rule_choices = disk_choices
+        || archive_preview_choices
         || !preferences.editor.rules.is_empty()
         || !preferences.panel_filter_history.is_empty();
     let verification_choices =
@@ -842,7 +878,9 @@ pub fn encode_preferences(preferences: UserPreferences) -> io::Result<Vec<u8>> {
     let store_previews =
         archive_choices || !preferences.thumbnails_enabled || preferences.thumbnails_network;
     let stored = StoredPreferences {
-        disk_io_concurrency: disk_choices.then_some(match preferences.disk_io_concurrency {
+        disk_io_concurrency: (disk_choices || archive_preview_choices).then_some(match preferences
+            .disk_io_concurrency
+        {
             DiskIoConcurrency::Automatic => StoredDiskIoConcurrency::Automatic {},
             DiskIoConcurrency::Manual(limit) => StoredDiskIoConcurrency::Manual { limit },
         }),
@@ -881,7 +919,9 @@ pub fn encode_preferences(preferences: UserPreferences) -> io::Result<Vec<u8>> {
         viewer: viewer_choices
             .then(|| viewers::StoredViewerPreferences::try_from(&preferences.viewer))
             .transpose()?,
-        version: if disk_choices {
+        version: if archive_preview_choices {
+            32
+        } else if disk_choices {
             31
         } else if rule_choices {
             30
@@ -935,6 +975,7 @@ pub fn encode_preferences(preferences: UserPreferences) -> io::Result<Vec<u8>> {
         previews: store_previews.then_some(StoredPreviews {
             enabled: preferences.thumbnails_enabled,
             network: preferences.thumbnails_network,
+            archives: archive_preview_choices.then_some(preferences.thumbnails_archives),
         }),
         disabled_viewer_plugins: Some(preferences.disabled_viewer_plugins),
         editor: Some(StoredEditor {

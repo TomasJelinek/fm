@@ -216,6 +216,9 @@ export component FileEntry inherits Rectangle {
                         x: 0px; y: 0px; width: parent.width; height: parent.height;
                         text: item.name; color: root.text-color;
                         font-size: Theme.font-size; font-weight: item.selected ? 600 : 400;
+                        // No-wrap still permits mandatory breaks in native names.
+                        // Limit the paragraph before centering it in a single row.
+                        wrap: no-wrap; max-lines: 1;
                         overflow: elide; vertical-alignment: center; horizontal-alignment: left;
                     }
                 }
@@ -235,15 +238,18 @@ export component FileEntry inherits Rectangle {
                 text: item.size; color: item.size-running ? Theme.pending-size : Theme.secondary-text;
                 font-weight: item.size-running ? 600 : 400; font-size: Theme.small-font;
                 horizontal-stretch: 0; min-width: 0px; overflow: elide;
+                wrap: no-wrap; max-lines: 1;
                 horizontal-alignment: right; vertical-alignment: center;
             }
         }
         if root.view-mode == 0 : Text {
             text: item.modified-date; color: Theme.secondary-text; font-size: Theme.small-font;
+            wrap: no-wrap; max-lines: 1;
             width: root.date-column-width; overflow: elide; vertical-alignment: center;
         }
         if root.view-mode == 0 : Text {
             text: item.modified-time; color: Theme.secondary-text; font-size: Theme.small-font;
+            wrap: no-wrap; max-lines: 1;
             width: root.time-column-width; overflow: elide; vertical-alignment: center;
         }
     }

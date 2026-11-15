@@ -9,12 +9,14 @@ component DetailField inherits Rectangle {
     in property <bool> primary;
     out property <length> natural-width: value.preferred-width + 16px;
     callback copy-field(string);
+    private property <string> copy-hint: "Click to copy this value."
+        + (field.label == "Name" ? "\nCtrl+click to copy the full path when a native path is available." : "");
     background: area.has-hover ? Theme.hover : transparent;
     border-width: 1px;
     border-color: focus.has-focus ? Theme.active-frame : transparent;
     accessible-role: button;
     accessible-label: field.label + ": " + field.value + ". Copy to clipboard";
-    accessible-description: field.explanation;
+    accessible-description: (field.explanation == "" ? "" : field.explanation + "\n") + root.copy-hint;
     accessible-action-default => { root.copy-field(field.identity); }
     forward-focus: focus;
     value := Text {
@@ -39,15 +41,20 @@ component DetailField inherits Rectangle {
         area := TouchArea {
             private property <string> pressed-id;
             private property <int> pressed-revision;
+            private property <bool> pressed-full-path;
             pointer-event(event) => {
-                if event.kind == PointerEventKind.down {
+                if event.kind == PointerEventKind.down && event.button == PointerEventButton.left {
                     self.pressed-id = field.identity;
                     self.pressed-revision = root.revision;
+                    self.pressed-full-path = event.modifiers.control && field.label == "Name";
+                } else if event.kind == PointerEventKind.cancel {
+                    self.pressed-id = "";
                 }
             }
             clicked => {
                 if self.pressed-id == field.identity && self.pressed-revision == root.revision {
-                    focus.focus(); root.copy-field(self.pressed-id);
+                    focus.focus();
+                    root.copy-field(self.pressed-full-path ? "path:" + self.pressed-id : self.pressed-id);
                 }
             }
         }
@@ -56,7 +63,7 @@ component DetailField inherits Rectangle {
         TipBody {
             text: field.label + ": " + field.value
                 + (field.explanation == "" ? "" : "\n" + field.explanation)
-                + "\nClick to copy this value.";
+                + "\n" + root.copy-hint;
         }
     }
 }

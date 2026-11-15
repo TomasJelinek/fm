@@ -150,6 +150,13 @@ shutting down Tokio. Success follows any late spare creation, actual native
 cleanup and normal owner exit. Keep the ticket through runtime cleanup and fatal
 handling; a UI destructor does not wait for this acknowledgment.
 
+The application also catches unwinding around the window attempt while keeping
+the runtime and retirement ticket outside that scope. It requests spare stop,
+awaits the owner and uses bounded runtime shutdown before resuming the original
+panic payload. This prevents retained UI service clones from leaving an idle
+image owner in Tokio's unbounded runtime destructor. A caught application panic
+never enters software-renderer startup retry.
+
 `OwnerFailed` is terminal but leaves cleanup unconfirmed. Preserve residual
 ownership, still run runtime cleanup and suppress software-renderer startup retry.
 A retry is allowed only after successful spare retirement and runtime cleanup.

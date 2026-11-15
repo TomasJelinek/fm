@@ -190,3 +190,51 @@ Wayland and Link remain unsupported. No dependency or hash algorithm was added.
 Protocol references: [Shell optimized moves](https://learn.microsoft.com/en-us/windows/win32/shell/datascenarios#handling-optimized-move-operations),
 [logical performed effect](https://learn.microsoft.com/en-us/windows/win32/shell/clipboard#cfstr_logicalperformeddropeffect),
 and [`IDataObject::SetData` ownership](https://learn.microsoft.com/en-us/windows/win32/api/objidl/nf-objidl-idataobject-setdata).
+
+## 2026-11-13: File tiles target the current folder
+
+The user confirmed that dragging `Pictures/www` into the opposite Screenshots
+pane was rejected specifically over image tiles. Both paths were ordinary owned
+directories. The internal UI hit-test resolved a PNG tile to a row, then rejected
+it because only directory rows could be destinations. The existing backend sibling
+directory policy already allowed this transfer; no backend containment rule was
+relaxed, and the user's folder was never moved or copied during verification.
+
+Flat native panels now treat an ordinary file row as the current pane root after
+the existing kind, virtual-identity, row-identity and navigation guards. Folder
+rows retain exact folder targets. Parent rows, links, special entries, stale rows
+and tree file/context occurrences retain their existing rejection rules. Preview
+and release use the same resolved destination; pane-root feedback outlines the
+panel with “into this panel”, without highlighting or naming the hovered file.
+
+The new real pointer-dispatch regression uses a directory source and 36 PNG rows,
+starting in Thumbnails and covering Detailed and Brief too. It reproduces the
+original NotAllowed feedback before correction, then verifies the exact pane-root
+preview, allowed Move feedback and final drop request. Empty thumbnail content
+and current native identity have separate checks. Earlier synthetic mode loops
+set window properties directly, which drag startup could reset from presenter
+preferences. They now change modes through the installed callbacks and assert
+that the mode survives startup/preparation; historical passes from those old
+loops alone did not establish genuine thumbnail-mode coverage.
+
+Final selected results: **66 passed, 0 failed, 0 ignored**:
+
+| Boundary | Passed |
+| --- | ---: |
+| Pointer integration, all-layout file/folder targeting, navigation/cancellation and geometry | 13 |
+| Drag interaction and accepted-drop ordering | 5 |
+| Presenter flat/tree authority and drag lifecycle | 24 |
+| Backend admission, device intent, stale previews and containment | 24 |
+
+Receipts and rendered feedback are under `_build/qa/file-tile-drop-20261113/`:
+`red-tests/`, `green-test-build.jsonl`, `green-tests/summary.json`,
+`backend-tests/summary.json`, `debug-build.jsonl` and `build-result.json`.
+The mode-2 allowed-feedback render was visually reviewed. The unchanged backend
+test executable was selected from its prior successful Debug receipt, with hash
+validation; no redundant backend compilation was needed.
+
+The actual Debug application/elevation build and a separate native startup/
+automatic-shutdown smoke passed with owned empty folders and in-memory settings.
+Existing user processes were left running. These pointer tests use software UI
+event dispatch, not a measured physical desktop gesture. No Release build or
+dependency change ran, and no Windows native qualification is claimed here.

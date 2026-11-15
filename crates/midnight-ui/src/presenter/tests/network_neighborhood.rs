@@ -39,6 +39,35 @@ fn network_pane() -> Presenter {
 }
 
 #[test]
+fn wsdd_uri_navigation_routes_to_the_network_provider_without_native_path_fallback() {
+    for available in [false, true] {
+        for pane in [PaneId::Left, PaneId::Right] {
+            // The provider validates the URI. Even unsupported WSD spellings
+            // must reach that boundary rather than become local folder paths.
+            for text in ["wsdd:///", "wsdd://untrusted-host/", "wsdd:///not-a-root"] {
+                let mut p = Presenter::new(test_root(), test_root());
+                p.apply(Event::NetworkAvailability(available));
+                let commands = RefCell::new(Vec::new());
+                assert!(p.navigate_text(pane, text, &|command| {
+                    commands.borrow_mut().push(command);
+                    true
+                }));
+                let commands = commands.borrow();
+                assert!(
+                    matches!(commands.as_slice(), [Command::NetworkNavigate {
+                        pane: actual_pane, action: NetworkAction::Parse(actual), ..
+                    }] if *actual_pane == pane && actual == text),
+                    "an entered WSD URI must be parsed by the network provider: {text}"
+                );
+                assert!(!p.panes[pane.index()].native_capabilities());
+                assert!(p.visible_directory(pane).is_none());
+                assert_eq!(p.panes[pane.index()].display_location_text(), text);
+            }
+        }
+    }
+}
+
+#[test]
 fn accepted_network_root_immediately_replaces_native_presentation_without_native_authority() {
     let root = test_root().join("native");
     let mut p = Presenter::new(root.clone(), test_root());

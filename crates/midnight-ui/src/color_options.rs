@@ -183,6 +183,7 @@ pub(crate) fn install(
     let state = presenter.clone();
     window.global::<ColorOptionsView>().on_select(move |index| {
         let Some(window) = weak.upgrade() else { return };
+        crate::tooltip::dismiss(window.window());
         let mut presenter = state.borrow_mut();
         sync_editor(&mut presenter);
         if let Ok(index) = usize::try_from(index)
@@ -196,6 +197,7 @@ pub(crate) fn install(
     let state = presenter.clone();
     window.global::<ColorOptionsView>().on_edit(move |draft| {
         let Some(window) = weak.upgrade() else { return };
+        crate::tooltip::dismiss(window.window());
         let mut presenter = state.borrow_mut();
         sync_editor(&mut presenter);
         if presenter.colors.validation.is_some() {
@@ -223,6 +225,9 @@ pub(crate) fn install(
         .global::<ColorOptionsView>()
         .on_action(move |action| {
             let Some(window) = weak.upgrade() else { return };
+            // A row-owned tooltip must retire before labels/rows are replaced.
+            // Slint instantiates popup children while borrowing its popup list.
+            crate::tooltip::dismiss(window.window());
             let mut presenter = state.borrow_mut();
             sync_editor(&mut presenter);
             if presenter.colors.validation.is_some() {

@@ -80,7 +80,7 @@ try {
             if ($LASTEXITCODE -ne 0) { throw "$package tests failed" }
         }
         & (Join-Path $pluginRoot 'scripts/build.ps1') -SdkConfig $SdkConfig -BuildRoot $pluginBuild `
-            -OutputDirectory (Join-Path $AppDirectory "viewers/$package")
+            -OutputDirectory (Join-Path $AppDirectory "viewers/$package") -Profile $Profile
         if ($LASTEXITCODE -ne 0) { throw "$package build failed" }
     }
     foreach ($viewer in @('image', 'pdf')) {
@@ -88,6 +88,9 @@ try {
             -AppDirectory $AppDirectory -Test:$Test -Offline:$Offline
         if ($LASTEXITCODE -ne 0) { throw "$viewer viewer build failed" }
     }
+    & (Join-Path $PSScriptRoot 'build-html-viewer.ps1') -Profile $Profile `
+        -AppDirectory $AppDirectory -Offline:$Offline
+    if ($LASTEXITCODE -ne 0) { throw 'HTML viewer build failed' }
 } finally {
     Pop-Location
     foreach ($variable in $savedEnvironment.Keys) {

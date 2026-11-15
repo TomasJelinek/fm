@@ -54,6 +54,15 @@ impl TestUi {
     }
 
     pub fn with_clock(clock: Option<Rc<Cell<Duration>>>) -> Self {
+        Self::initialize(clock, true)
+    }
+
+    /// Exercise the production initializer without preinstalling widget callbacks.
+    pub fn bare() -> Self {
+        Self::initialize(None, false)
+    }
+
+    fn initialize(clock: Option<Rc<Cell<Duration>>>, widget_callbacks: bool) -> Self {
         let native = MinimalSoftwareWindow::new(RepaintBufferType::ReusedBuffer);
         let platform: Box<dyn Platform> = if let Some(clock) = clock {
             Box::new(ClockPlatform(native.clone(), clock))
@@ -65,7 +74,9 @@ impl TestUi {
         // Bare widget tests represent a ready app; installing a real Presenter
         // replaces this with its actual asynchronous preference-load state.
         window.set_preferences_ready(true);
-        midnight_ui::install_file_keys(&window);
+        if widget_callbacks {
+            midnight_ui::install_file_keys(&window);
+        }
         window.show().unwrap();
         window
             .window()

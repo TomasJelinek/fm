@@ -400,28 +400,129 @@ fn native_navigation_failure_keeps_archive_readonly() {
     });
 }
 
-#[test]
-fn missing_plugin_preserves_normal_native_activation() {
+fn native_archive_fixture(name: &str, kind: EntryKind) -> (Presenter, PathBuf) {
     let mut p = Presenter::new(test_root(), test_root());
-    let path = p.panes[0].path.to_string_lossy().into_owned();
-    let nav = begin(&mut p, PaneId::Left, &path);
+    let directory = p.panes[0].path.to_string_lossy().into_owned();
+    let navigation = begin(&mut p, PaneId::Left, &directory);
+    let source = test_root().join(name);
     finish(
         &mut p,
         PaneId::Left,
-        nav,
-        vec![Entry::new(
-            EntryId(7),
-            test_root().join("sample.zip"),
-            EntryKind::File,
-        )],
+        navigation,
+        vec![Entry::new(EntryId(7), source.clone(), kind)],
     );
-    p.apply(Event::ArchiveAvailability(vec![]));
-    assert!(
-        p.open(PaneId::Left, p.panes[0].parent_offset(), &|c| matches!(
-            c,
-            Command::OpenEntry { .. }
-        ))
-    );
+    (p, source)
+}
+
+#[test]
+fn configured_archive_activation_never_falls_back_to_desktop_before_or_after_discovery() {
+    for discovered in [false, true] {
+        for (name, expected) in [
+            ("sample.zip", ArchiveFormat::Zip),
+            ("sample.7z", ArchiveFormat::SevenZip),
+            ("ovclash-0.2.2-linux-x86_64.tar.gz", ArchiveFormat::TarGzip),
+        ] {
+            let (mut p, source) = native_archive_fixture(name, EntryKind::File);
+            if discovered {
+                p.apply(Event::ArchiveAvailability(Vec::new()));
+            }
+            let entries = p.panes[0].entries.clone();
+            let directory = p.panes[0].path.clone();
+            assert!(
+                !p.can_browse_archive(&entries[0]),
+                "missing provider has no badge"
+            );
+            let commands = RefCell::new(Vec::new());
+            let send = |command| {
+                commands.borrow_mut().push(command);
+                true
+            };
+            assert!(p.open(PaneId::Left, p.panes[0].parent_offset(), &send));
+            let navigation = commands
+                .borrow()
+                .iter()
+                .find_map(|command| match command {
+                    Command::ArchiveNavigate {
+                        pane: PaneId::Left,
+                        navigation,
+                        action: ArchiveAction::Open { path, format },
+                        ..
+                    } if path == &source && *format == expected => Some(*navigation),
+                    _ => None,
+                })
+                .expect("an enabled association must ask the internal archive service");
+            assert!(
+                !commands
+                    .borrow()
+                    .iter()
+                    .any(|command| matches!(command, Command::OpenEntry { .. }))
+            );
+            p.apply_with_sender(
+                Event::ArchiveListed {
+                    pane: PaneId::Left,
+                    navigation,
+                    result: Err(FsError::from_io(
+                        "open archive",
+                        &source,
+                        io::Error::new(
+                            io::ErrorKind::Unsupported,
+                            "Compatible archive filesystem plugin is unavailable",
+                        ),
+                    )),
+                },
+                &send,
+            );
+            assert!(!p.panes[0].loading);
+            assert!(p.panes[0].archive.is_none());
+            assert!(p.panes[0].native_capabilities());
+            assert_eq!(p.panes[0].path, directory);
+            assert!(Arc::ptr_eq(&p.panes[0].entries, &entries));
+            assert!(p.panes[0].error.contains("plugin is unavailable"));
+            assert!(
+                !commands
+                    .borrow()
+                    .iter()
+                    .any(|command| matches!(command, Command::OpenEntry { .. })),
+                "provider failure cannot launch the desktop archive application"
+            );
+        }
+    }
+}
+
+#[test]
+fn disabled_unknown_and_symlink_associations_preserve_native_activation() {
+    for (name, kind, disabled) in [
+        ("disabled.zip", EntryKind::File, true),
+        ("unknown.bin", EntryKind::File, false),
+        ("link.zip", EntryKind::Symlink, false),
+    ] {
+        let (mut p, source) = native_archive_fixture(name, kind);
+        p.apply(Event::ArchiveAvailability(Vec::new()));
+        if disabled {
+            p.preferences
+                .values
+                .archive_association_overrides
+                .insert("zip".into(), false);
+        }
+        let commands = RefCell::new(Vec::new());
+        assert!(
+            p.open(PaneId::Left, p.panes[0].parent_offset(), &|command| {
+                commands.borrow_mut().push(command);
+                true
+            })
+        );
+        assert!(
+            commands.borrow().iter().any(
+                |command| matches!(command, Command::OpenEntry { path, .. } if path == &source)
+            )
+        );
+        assert!(
+            !commands
+                .borrow()
+                .iter()
+                .any(|command| matches!(command, Command::ArchiveNavigate { .. }))
+        );
+    }
 }
 
 #[test]
@@ -716,4 +817,90 @@ fn custom_compound_suffix_dispatches_the_chosen_decoder_with_the_original_native
         } if path == source)
         }
     ));
+}
+
+#[test]
+fn retained_tree_root_archive_activation_uses_original_authority_without_provider_fallback() {
+    let directory = test_root().join("archive tree activation");
+    let mut p = Presenter::new(directory.clone(), directory.clone());
+    let navigation = begin(&mut p, PaneId::Left, directory.to_str().unwrap());
+    let source = directory.join("ovclash-0.2.2-linux-x86_64.tar.gz");
+    finish(
+        &mut p,
+        PaneId::Left,
+        navigation,
+        vec![
+            Entry::new(EntryId(42), directory.join("folder"), EntryKind::Directory),
+            Entry::new(EntryId(11), source.clone(), EntryKind::File),
+        ],
+    );
+    let root = TreeRootSnapshot {
+        pane: PaneId::Left,
+        navigation,
+        entries: p.panes[0].entries.clone(),
+        index: p.panes[0].index.clone(),
+    };
+    let identity = p.panes[0].row_identity(&root.entries[0]);
+    p.disclose_tree(PaneId::Left, &identity, &|_| true);
+    let publication = super::tree::publication(root.clone(), 1, true, false);
+    let mut rows = publication.view.rows.to_vec();
+    rows[1].entry = Entry::new(
+        EntryId(11),
+        directory.join("folder/nested.tar.gz"),
+        EntryKind::File,
+    );
+    rows[1].disclosure = TreeDisclosure::None;
+    rows[1].navigable = false;
+    let mut file = root.entries[1].clone();
+    file.id = EntryId(77);
+    rows.push(TreeDisplayRow {
+        id: TreeRowId(77),
+        entry: file,
+        parent: None,
+        depth: 0,
+        disclosure: TreeDisclosure::None,
+        expanded: false,
+        selectable: true,
+        navigable: false,
+        context_only: false,
+        error: None,
+        error_details: None,
+        original_root_entry: Some(EntryId(11)),
+        prefix_end: 0,
+        search_match: false,
+    });
+    let view = Arc::new(
+        TreeProjection::new(
+            root,
+            publication.view.stamp,
+            publication.view.layout_revision,
+            rows,
+        )
+        .unwrap(),
+    );
+    let selection = Arc::new(TreeSelectionSnapshot::from_bits(view.clone(), vec![0]).unwrap());
+    let publication = TreePublication::new(view, SelectionRevision(0), selection).unwrap();
+    p.apply_with_sender(
+        Event::Tree(Box::new(TreeEvent::Published(publication))),
+        &|_| true,
+    );
+    p.apply(Event::ArchiveAvailability(Vec::new()));
+    assert!(!p.open(PaneId::Left, 2, &|_| panic!(
+        "a descendant path cannot substitute for retained root authority"
+    )));
+    let commands = RefCell::new(Vec::new());
+    assert!(p.open(PaneId::Left, 3, &|command| {
+        commands.borrow_mut().push(command);
+        true
+    }));
+    assert!(commands.borrow().iter().any(|command| matches!(command,
+        Command::ArchiveNavigate { action: ArchiveAction::Open { path, format: ArchiveFormat::TarGzip }, .. }
+            if path == &source
+    )));
+    assert!(
+        !commands
+            .borrow()
+            .iter()
+            .any(|command| matches!(command, Command::OpenEntry { .. }))
+    );
 }

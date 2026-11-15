@@ -1,6 +1,7 @@
 param(
     [Parameter(Mandatory=$true)][string]$SdkConfig,
     [string]$TargetDirectory,
+    [string]$OutputDirectory,
     [switch]$Release
 )
 $ErrorActionPreference = 'Stop'
@@ -8,7 +9,7 @@ $project = Split-Path $PSScriptRoot -Parent
 $repository = Split-Path (Split-Path $project -Parent) -Parent
 if (-not $TargetDirectory) { $TargetDirectory = Join-Path $repository '_build/html-viewer/provider-target' }
 $cefStage = Join-Path $TargetDirectory 'cef-sdk'
-$package = Join-Path $TargetDirectory 'package'
+$package = if ($OutputDirectory) { [IO.Path]::GetFullPath($OutputDirectory) } else { Join-Path $TargetDirectory 'package' }
 $configuration = if ($Release) { 'release' } else { 'debug' }
 New-Item -ItemType Directory -Force $package | Out-Null
 $required = @('libcef.dll','chrome_elf.dll','icudtl.dat','resources.pak','chrome_100_percent.pak',

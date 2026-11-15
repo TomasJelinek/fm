@@ -46,8 +46,9 @@ for name in basic source markdown; do
     if [[ "${MIDNIGHT_TEST_VIEWERS:-0}" == 1 ]]; then
         bash "$plugin_root/scripts/ci.sh" "$sdk_config" "$plugin_build"
     fi
-    bash "$plugin_root/scripts/build.sh" "$sdk_config" "$plugin_build" "$app_directory/viewers/midnight-viewer-$name"
+    bash "$plugin_root/scripts/build.sh" "$sdk_config" "$plugin_build" "$app_directory/viewers/midnight-viewer-$name" "$profile"
 done
 for viewer in image pdf; do
     bash "$project_root/scripts/build-image-viewer.sh" "$profile" "${MIDNIGHT_IMAGE_VIEWER_SDK_CONFIG:-}" "$app_directory" "$viewer"
 done
+bash "$project_root/scripts/build-html-viewer.sh" "$profile" "${MIDNIGHT_HTML_SDK_CONFIG:-}" "$app_directory"

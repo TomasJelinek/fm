@@ -176,8 +176,8 @@ fn duplicate_top_level_mode_and_limit_fields_are_rejected() {
 }
 
 #[test]
-fn disk_fields_cannot_cross_schema_boundaries_or_be_omitted_in_31() {
-    for version in [0, 30, 32] {
+fn disk_fields_cannot_cross_legacy_boundaries_or_omit_the_matching_extension() {
+    for version in [0, 30, 32, 33] {
         let mut document = manual_document();
         document["version"] = version.into();
         assert!(decode(&document).is_err());
@@ -198,6 +198,59 @@ fn disk_fields_cannot_cross_schema_boundaries_or_be_omitted_in_31() {
         .unwrap()
         .remove("disk_io_concurrency");
     assert!(decode(&document).is_err());
+}
+
+#[test]
+fn manual_disk_choices_and_disabled_archive_previews_roundtrip_together_in_32() {
+    for limit in [1, 7, 32] {
+        let mut expected = manual_preferences(limit);
+        expected.thumbnails_archives = false;
+        expected.copy_checksum_verification = false;
+        expected.font_family = "文档 é 🧪".into();
+        let bytes = encode_preferences(expected.clone()).unwrap();
+        let document: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(document["version"], 32);
+        assert_eq!(document["previews"]["archives"], false);
+        assert_eq!(
+            document["disk_io_concurrency"],
+            json!({"mode":"manual","limit":limit})
+        );
+        assert_eq!(document["editor"]["rules"], json!([]));
+        assert_eq!(document["panel_filter_history"], json!([]));
+        assert_eq!(decode_preferences(&bytes).unwrap(), expected);
+    }
+}
+
+#[test]
+fn schema32_disk_policy_remains_strict_for_invalid_and_duplicate_fields() {
+    let mut document = manual_document();
+    document["version"] = 32.into();
+    document["previews"]["archives"] = false.into();
+    assert!(decode(&document).is_ok());
+    for policy in [
+        json!(null),
+        json!({}),
+        json!({"mode":"manual","limit":0}),
+        json!({"mode":"manual","limit":33}),
+        json!({"mode":"automatic","limit":4}),
+    ] {
+        let mut invalid = document.clone();
+        invalid["disk_io_concurrency"] = policy;
+        assert!(decode(&invalid).is_err());
+    }
+    for (needle, replacement) in [
+        ("\"limit\":4", "\"limit\":4,\"limit\":7"),
+        (
+            "\"mode\":\"manual\"",
+            "\"mode\":\"manual\",\"mode\":\"automatic\"",
+        ),
+        ("\"archives\":false", "\"archives\":false,\"archives\":true"),
+    ] {
+        let encoded = serde_json::to_string(&document).unwrap();
+        assert!(encoded.contains(needle));
+        let duplicate = encoded.replace(needle, replacement);
+        assert!(decode_preferences(duplicate.as_bytes()).is_err());
+    }
 }
 
 #[test]

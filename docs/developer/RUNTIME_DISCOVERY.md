@@ -8,7 +8,7 @@ reads and filesystem checks run on workers. UI code receives results through its
 existing messages. Explicit-root host APIs remain available for integration tests.
 
 On Windows, a protected executable and parent directory take precedence. Adjacent
-optional packages may be absent; their absence never triggers fallback to another
+packages in a manually assembled installation may be absent; their absence never triggers fallback to another
 installation. Linux and other platform implementations retain executable-relative
 discovery and their existing loader support/limitations.
 
@@ -50,18 +50,24 @@ does not disable built-in text comparison.
 
 ## Deployment and build workflow
 
-`build.bat [debug|release]` builds the host and independent viewers, then calls
-`scripts/deploy-build.ps1`. It honors `CARGO_TARGET_DIR`, includes optional
-filesystem/thumbnail packages when their directories exist, and publishes a new
-private deployment. Direct Cargo builds require explicit deployment if their
+`build.bat [debug|release]` builds the host, filesystem providers, independent
+all six viewers, both thumbnailers and the archive worker, then calls
+`scripts/deploy-build.ps1`.
+It requires 64-bit PowerShell 7 and honors `CARGO_TARGET_DIR`; missing image/video
+helpers, filesystem/viewer modules, runtime libraries or corresponding source/notices
+fail before deployment. Linux `build.sh` includes the same module set in its native
+and Docker chains too. Independent modules remain separate public-SDK consumers;
+their inclusion in normal builds is mandatory.
+Direct Cargo builds require explicit deployment if their
 output is not trusted:
 
 ```powershell
 powershell -NoProfile -File scripts/deploy-private.ps1 -SourceDirectory _build/release -RegisterRuntime
 ```
 
-Add `-IncludeFilesystems` and/or `-IncludeThumbnailers` for installed optional
-packages, and `-CreateDesktopShortcut` if wanted. The helper creates a new runtime
+Add `-IncludeFilesystems` and `-IncludeThumbnailers` for a complete normal
+installation, and `-CreateDesktopShortcut` if wanted. The lower-level deployment
+tool retains selective package options for specialist fixtures. The helper creates a new runtime
 installation under the user profile, verifies copied bytes with SHA-256 readback,
 and then publishes the record by an exclusive temporary file and atomic replacement.
 It refuses unsafe pre-existing directories/records and never repairs their ACLs.

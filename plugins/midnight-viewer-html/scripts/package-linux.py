@@ -7,6 +7,7 @@ from pathlib import Path
 import re
 import shutil
 import sys
+import tomllib
 
 PROJECT = Path(__file__).resolve().parents[1]
 PIN = PROJECT / 'scripts/cef-linux-pinned.json'
@@ -95,7 +96,8 @@ def package(sdk, destination, launcher, metadata, pin, native):
     shutil.copy2(metadata, destination / 'dependency-metadata.json')
     (destination / 'web-viewer.json').write_text(json.dumps({
         'schema': 1, 'protocol': 1, 'id': 'midnight.viewer.html', 'name': 'Chromium HTML',
-        'version': '0.1.0', 'target': 'x86_64-unknown-linux-gnu',
+        'version': tomllib.loads((PROJECT / 'Cargo.toml').read_text())['package']['version'],
+        'target': 'x86_64-unknown-linux-gnu',
         'executable': 'midnight-viewer-html', 'extensions': ['html', 'htm', 'xhtml']}) + '\n')
     files = [{'path': p.relative_to(destination).as_posix(), 'bytes': p.stat().st_size,
               'sha256': digest(p)} for p in sorted(destination.rglob('*')) if p.is_file()]

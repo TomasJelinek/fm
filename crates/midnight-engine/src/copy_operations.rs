@@ -515,31 +515,34 @@ fn publish_progress_tick(
     outbox: &Outbox,
     published_discovery: &mut (OperationDiscovery, Option<std::path::PathBuf>),
     published_pass: &mut (u64, Arc<OperationThroughput>, Option<TransferWaitReason>),
-    pause_changed: bool,
+    _pause_changed: bool,
 ) {
-    let progress = sample_throughput(status, throughput).or_else(|| {
-        let progress = status.lock().unwrap_or_else(|error| error.into_inner());
-        (pause_changed
-            || progress.discovery != published_discovery.0
-            || progress.current_path != published_discovery.1
-            || progress.verification_pass_id != published_pass.0
-            || !Arc::ptr_eq(&progress.verification_throughput, &published_pass.1)
-            || progress.wait_reason != published_pass.2)
-            .then(|| progress.clone())
-    });
-    if let Some(progress) = progress {
-        let progress = Arc::new(progress);
-        let event = Event::Copy(CopyEvent::Progress(progress.clone()));
-        if outbox.sender.try_send(event).is_ok() {
-            // A full outbox does not acknowledge any undelivered progress marker.
-            *published_discovery = (progress.discovery.clone(), progress.current_path.clone());
-            *published_pass = (
-                progress.verification_pass_id,
-                progress.verification_throughput.clone(),
-                progress.wait_reason,
-            );
-            (outbox.wakeup)();
-        }
+    let sampled = sample_throughput(status, throughput);
+    if let Some(progress) = publish_progress_snapshot(outbox, status, sampled) {
+        // A full outbox does not acknowledge any undelivered progress marker.
+        *published_discovery = (progress.discovery.clone(), progress.current_path.clone());
+        *published_pass = (
+            progress.verification_pass_id,
+            progress.verification_throughput.clone(),
+            progress.wait_reason,
+        );
+    }
+}
+
+fn publish_progress_snapshot(
+    outbox: &Outbox,
+    status: &Status,
+    sampled: Option<CopyProgress>,
+) -> Option<Arc<CopyProgress>> {
+    // A worker can already have sampled this interval. The timer must still
+    // attempt to publish the current bytes, elapsed time and activity snapshot.
+    let progress = Arc::new(sampled.unwrap_or_else(|| snapshot(status)));
+    let event = Event::Copy(CopyEvent::Progress(progress.clone()));
+    if outbox.sender.try_send(event).is_ok() {
+        (outbox.wakeup)();
+        Some(progress)
+    } else {
+        None
     }
 }
 
@@ -846,3 +849,7 @@ mod resource_wait_publication_tests;
 #[cfg(test)]
 #[path = "copy_link_tests.rs"]
 mod link_tests;
+
+#[cfg(test)]
+#[path = "copy_progress_tick_tests.rs"]
+mod progress_tick_tests;

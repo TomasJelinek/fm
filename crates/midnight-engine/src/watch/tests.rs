@@ -2,6 +2,8 @@ use super::*;
 
 #[path = "lifetime_tests.rs"]
 mod lifetime_tests;
+#[path = "timing_tests.rs"]
+mod timing_tests;
 #[path = "tree_tests.rs"]
 mod tree_tests;
 

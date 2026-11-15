@@ -210,6 +210,7 @@ impl KeyboardState {
     }
 
     pub(super) fn reset_editor(&mut self) {
+        self.editor.replacement = None;
         self.editor_revision = self.editor_revision.saturating_add(1);
         self.editor_revision_text = self.editor_revision.to_string().into();
     }
@@ -229,6 +230,9 @@ impl Presenter {
             return;
         };
         if index < self.keyboard.snapshot.map.definitions().len() {
+            if self.keyboard.selected != index {
+                self.keyboard.reset_editor();
+            }
             self.keyboard.selected = index;
             self.keyboard.error.clear();
         }
@@ -283,7 +287,7 @@ impl Presenter {
         self.apply_shortcut_values(values, send);
     }
 
-    fn apply_shortcut_values(
+    pub(super) fn apply_shortcut_values(
         &mut self,
         values: UserPreferences,
         send: &dyn Fn(Command) -> bool,

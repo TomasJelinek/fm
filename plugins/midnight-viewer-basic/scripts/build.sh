@@ -1,9 +1,16 @@
 #!/usr/bin/env bash
 set -euo pipefail
-if [[ $# -lt 2 || $# -gt 3 ]]; then
-    echo 'Usage: build.sh SDK_CONFIG BUILD_ROOT [OUTPUT_PACKAGE_DIRECTORY]' >&2
+if [[ $# -lt 2 || $# -gt 4 ]]; then
+    echo 'Usage: build.sh SDK_CONFIG BUILD_ROOT [OUTPUT_PACKAGE_DIRECTORY] [debug|release]' >&2
     exit 2
 fi
+profile=${4:-debug}
+profile_options=()
+case "$profile" in
+    debug) ;;
+    release) profile_options+=(--release) ;;
+    *) echo 'Expected debug or release' >&2; exit 2 ;;
+esac
 plugin_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 sdk_config="$(realpath -- "$1")"
 build_root="$(realpath -m -- "$2")"
@@ -15,8 +22,8 @@ case "$native_target" in
 esac
 mkdir -p -- "$build_root" "$output"
 cargo --config "$sdk_config" build --manifest-path "$plugin_root/Cargo.toml" \
-    --target-dir "$build_root/target" --target "$native_target" --release --locked --offline
-cp -- "$build_root/target/$native_target/release/$library" "$output/$library"
+    --target-dir "$build_root/target" --target "$native_target" "${profile_options[@]}" --locked --offline
+cp -- "$build_root/target/$native_target/$profile/$library" "$output/$library"
 sed -e "s/^entry_library = .*/entry_library = \"$library\"/" \
     -e "s/^target = .*/target = \"$native_target\"/" "$plugin_root/plugin.toml" > "$output/plugin.toml"
 cp -- "$plugin_root/LICENSE" "$plugin_root/UNICODE-LICENSE.txt" \

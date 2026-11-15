@@ -36,7 +36,15 @@ permit version 2 or later. Do not describe the entire GVfs distribution as havin
 one uniform later license; follow its actual package's complete copyright and
 source notices. Source: https://gitlab.gnome.org/GNOME/gvfs/-/tree/1.54.4 .
 
-No GLib, GVfs, Samba, FUSE, or system backend binaries are bundled here. These
+Windows computer discovery through GVfs may also run the separately installed
+`wsdd` helper with discovery enabled and host announcements disabled. The inspected
+Ubuntu 24.04 package is `wsdd` **2:0.7.1-5**, containing upstream **0.7.1** Python
+code and MIT-licensed Debian packaging. Its package copyright and full MIT notice
+were inspected; it depends on system Python 3 and has no optional build features.
+Upstream: https://github.com/christgau/wsdd . The distribution provides its notices
+at `/usr/share/doc/wsdd/copyright`. This helper has no mandatory fees or royalties.
+
+No GLib, GVfs, Samba, FUSE, wsdd, or system backend binaries are bundled here. These
 runtime components are not Cargo dependencies. Their distribution's packages
 supply their corresponding notices and source obligations. Bundling any native
 runtime later requires a separate pinned dependency/feature and source-distribution

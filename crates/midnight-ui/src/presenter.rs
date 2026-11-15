@@ -1352,6 +1352,7 @@ impl Presenter {
         if text.starts_with("smb://")
             || text.starts_with("network://")
             || text.starts_with("dns-sd://")
+            || text.starts_with("wsdd://")
             || (self.network_available
                 && text.starts_with("\\\\")
                 && !Path::new(text).is_absolute())
@@ -1425,7 +1426,7 @@ impl Presenter {
             (
                 entry.kind,
                 entry.path.clone(),
-                self.browsable_archive_format(entry),
+                self.configured_archive_format(entry),
             )
         });
         match entry {

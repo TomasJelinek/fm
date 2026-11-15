@@ -1,7 +1,9 @@
 Midnight Explorer 0.2.0 - Linux x86-64 preview
 
 Extract the archive with tar, then run ./me in a graphical desktop session.
-Keep the viewers folder beside me. Native plugins require a private user-owned
+Keep the viewers, filesystems and thumbnailers folders beside me. The thumbnailers
+folder includes both image/video helpers and their required runtime and notices.
+Native plugins require a private user-owned
 or administrator-managed installation, with no group/other-writable package or
 replaceable parent directory. Native Linux filesystems are recommended; a shared
 Windows mount with permissive drvfs modes will be refused.
@@ -14,6 +16,11 @@ Ubuntu 24.04 / Mint 22 runtime packages:
     libvulkan1 xdg-utils xterm
 Use the graphics driver and Vulkan implementation supplied for your hardware.
 
+Local network discovery and mounted SMB share browsing additionally need:
+  sudo apt install gvfs-backends gvfs-fuse wsdd
+The wsdd helper discovers Windows computers. Allow time for discovery, then
+refresh Network Neighborhood. A known server can be entered as smb://server/.
+
 Example:
   ./me --left "$HOME" --right /tmp
 
@@ -25,8 +32,10 @@ preview has not been qualified on their native desktops. See SYSTEM_REQUIREMENTS
 
 Optional per-user desktop installation from the extracted folder:
   install -Dm755 me "$HOME/.local/bin/me"
-  mkdir -p "$HOME/.local/bin/viewers"
+  mkdir -p "$HOME/.local/bin/viewers" "$HOME/.local/bin/filesystems" "$HOME/.local/bin/thumbnailers"
   cp -R viewers/. "$HOME/.local/bin/viewers/"
+  cp -R filesystems/. "$HOME/.local/bin/filesystems/"
+  cp -R thumbnailers/. "$HOME/.local/bin/thumbnailers/"
   install -Dm644 io.github.TomasJelinek.MidnightExplorer.desktop \
     "$HOME/.local/share/applications/io.github.TomasJelinek.MidnightExplorer.desktop"
   install -Dm644 midnight-explorer.png \
@@ -36,7 +45,10 @@ Ensure "$HOME/.local/bin" is on PATH when using the desktop launcher.
 Settings: $XDG_CONFIG_HOME/midnight-explorer/preferences.json, normally
 $HOME/.config/midnight-explorer/preferences.json.
 See FEATURE_STATUS.md, KEYBOARD_SHORTCUTS.md and SECURITY.md for capabilities/limits.
-F3 opens text/hex, source or Markdown according to the installed viewer packages.
+The complete distribution includes all six viewers (text/hex, source, Markdown,
+image, PDF and Chromium HTML), native/network/archive filesystems and both
+image/video thumbnailers. Keep their complete runtimes, sources and notices.
+F3 selects the internal viewer for the captured file.
 Alt+F3 forces basic text; Ctrl+F searches; Space advances to the next captured
 panel file; Escape closes the viewer. Selection/copy is limited to the loaded page.
 F4 opens the external editor configured in Options > Editors. Options > Plugins

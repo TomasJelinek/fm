@@ -46,6 +46,9 @@ pub(crate) fn install(
             let sender = send.clone();
             window.global::<KeyboardEditorView>().$name(move |$($arg),*| {
                 let Some($w) = weak.upgrade() else { return Default::default(); };
+                // Any editor mutation can replace command delegates owning a
+                // live tooltip. Retire it before borrowing Presenter or models.
+                crate::tooltip::dismiss($w.window());
                 let result = {
                     let mut state = state.borrow_mut();
                     let $p = &mut *state;
@@ -107,8 +110,15 @@ pub(crate) fn install(
     bind!(on_clear, |_w, p, _send| {
         p.clear_editor_shortcut();
     });
-    bind!(on_assign, |_w, p, send, id, candidate| {
-        p.assign_editor_shortcut(id.as_str(), candidate.as_str(), send);
+    bind!(on_assign, |window, p, send, id, candidate| {
+        if window.get_options_open() {
+            p.assign_editor_shortcut(id.as_str(), candidate.as_str(), send);
+        }
+    });
+    bind!(on_decide_replacement, |window, p, send, token, replace| {
+        if window.get_options_open() {
+            p.decide_shortcut_replacement(token.as_str(), replace, send);
+        }
     });
     bind!(on_remove, |_w, p, send, id, key| {
         p.remove_editor_shortcut(id.as_str(), key.as_str(), send);
@@ -126,6 +136,10 @@ pub(crate) fn refresh(window: &MainWindow, presenter: &Presenter) {
     let view = window.global::<KeyboardEditorView>();
     let state = &presenter.keyboard;
     let action = &state.snapshot.map.definitions()[state.selected];
+    let (replacement_token, replacement_body) =
+        presenter.shortcut_replacement().unwrap_or(("", ""));
+    view.set_replacement_body(replacement_body.into());
+    view.set_replacement_token(replacement_token.into());
     let revision = format!(
         "{}:{}:{}",
         state.editor_revision_text, action.id, state.error

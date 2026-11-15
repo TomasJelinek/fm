@@ -9,9 +9,13 @@ use std::{
     time::{Duration, Instant},
 };
 use tokio::sync::mpsc;
+#[cfg(all(test, target_os = "linux"))]
+mod linux_tests;
 #[cfg(all(test, windows))]
 mod native_tests;
 mod policy;
+#[cfg(test)]
+mod position_tests;
 #[cfg(all(test, windows))]
 mod startup_native_tests;
 
@@ -90,11 +94,17 @@ impl State {
         self.initialized = true;
         if let Some(saved) = presenter.window_geometry() {
             let (displays, decoration) = displays(window);
-            let restored = policy::restore(saved, &displays, decoration);
+            let mut restored = policy::restore(saved, &displays, decoration);
             let bounds = restored.normal;
-            window
-                .window()
-                .set_position(slint::PhysicalPosition::new(bounds.x, bounds.y));
+            if !midnight_ui::restore_window_position(
+                window.window(),
+                slint::PhysicalPosition::new(bounds.x, bounds.y),
+            ) {
+                // An unavailable absolute origin (notably Wayland) must not erase
+                // coordinates retained from a session that could capture placement.
+                (restored.normal.x, restored.normal.y, restored.monitor) =
+                    placement(None, None, Some(saved));
+            }
             window
                 .window()
                 .set_size(slint::PhysicalSize::new(bounds.width, bounds.height));
@@ -186,10 +196,12 @@ fn capture(window: &MainWindow, previous: Option<&WindowGeometry>) -> Option<Win
                 return None;
             }
             // outer_position is unavailable on Wayland; its compositor owns placement.
-            let position = native.outer_position().ok();
+            let position = native.outer_position().ok().map(|point| (point.x, point.y));
+            let (x, y, monitor) =
+                placement(position, native.current_monitor().map(monitor), previous);
             let current = WindowRect {
-                x: position.map_or(0, |point| point.x),
-                y: position.map_or(0, |point| point.y),
+                x,
+                y,
                 width: size.width,
                 height: size.height,
             };
@@ -202,11 +214,29 @@ fn capture(window: &MainWindow, previous: Option<&WindowGeometry>) -> Option<Win
                 normal,
                 maximized,
                 fullscreen,
-                monitor: native.current_monitor().map(monitor),
+                monitor,
             };
             geometry.validate().ok().map(|()| geometry)
         })
         .flatten()
+}
+
+fn placement(
+    position: Option<(i32, i32)>,
+    monitor: Option<WindowMonitor>,
+    previous: Option<&WindowGeometry>,
+) -> (i32, i32, Option<WindowMonitor>) {
+    if let Some((x, y)) = position {
+        (x, y, monitor)
+    } else if let Some(previous) = previous {
+        (
+            previous.normal.x,
+            previous.normal.y,
+            previous.monitor.clone(),
+        )
+    } else {
+        (0, 0, None)
+    }
 }
 
 fn displays(window: &MainWindow) -> (Vec<policy::Display>, (u32, u32)) {
