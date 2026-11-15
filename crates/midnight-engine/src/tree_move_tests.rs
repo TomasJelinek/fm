@@ -101,6 +101,7 @@ async fn tree_move_root_feedback_waits_for_native_rename_and_skip_retains_later_
     let mut h = Harness::native();
     h.controller
         .enqueue_captured(CapturedTransferRequest {
+            start_policy: midnight_core::TransferStartPolicy::Immediate,
             verification: midnight_core::TransferVerification::default(),
             id: OperationId(1),
             destination: destination.clone(),

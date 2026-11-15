@@ -1,4 +1,4 @@
-//! Bounded, backend-measured activity retained with an operation's progress.
+//! Bounded backend activity; the owning progress field defines the measurement scope.
 use std::sync::Arc;
 
 /// Peak measured activity within one retained interval, never estimated remaining work.
@@ -6,18 +6,23 @@ use std::sync::Arc;
 /// series preserves its own observed peak, which need not occur simultaneously.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct ThroughputSample {
-    /// Monotonic start of this interval since the job's activity tracker started.
+    /// Monotonic interval start relative to the owning field's activity tracker.
+    /// Whole-job and current copied-file attempt trackers have separate origins.
     pub start_millis: u64,
     /// End of the latest actual observation included in this interval.
     pub elapsed_millis: u64,
     pub transfer_per_second: f64,
-    /// Destination readback and additional Move proof reads, separate from writes.
+    /// CopyProgress.throughput includes destination readback and Move proof reads.
+    /// CopyProgress.verification_throughput includes only the current copied-file
+    /// attempt's destination readback; it excludes Move proofs and source writes.
     pub verification_per_second: f64,
     /// Reported removed entries, including folders; Trash may report roots only.
     pub items_per_second: f64,
 }
 
-/// At most 240 intervals spanning the entire operation, shared between progress snapshots.
+/// At most 240 intervals for the scope selected by the owning progress field,
+/// shared between snapshots: the whole operation for CopyProgress.throughput,
+/// or the current copied-file attempt for CopyProgress.verification_throughput.
 /// History retains measured peaks as intervals are combined. Current rates remain
 /// the latest measured activity, and are zero while inactive or terminal.
 #[derive(Clone, Debug, Default, PartialEq)]

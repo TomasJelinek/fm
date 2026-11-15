@@ -88,6 +88,52 @@ fn transfer_enter_proceeds_and_explicit_cancel_and_escape_remain_available() {
 }
 
 #[test]
+fn transfer_wait_option_toggles_without_submitting_and_preserves_default_enter() {
+    let (window, child) = window();
+    let confirmed = Rc::new(RefCell::new(Vec::new()));
+    let cancelled = Rc::new(RefCell::new(0));
+    let sink = confirmed.clone();
+    window.on_confirm(move |value| sink.borrow_mut().push(value));
+    let sink = cancelled.clone();
+    window.on_request_dismiss(move || *sink.borrow_mut() += 1);
+    window.set_has_name(true);
+    window.set_initial_name("D:\\target 文档".into());
+    window.set_wait_visible(true);
+    window.set_option_visible(true);
+    window.set_option_label("Preserve exact modified time".into());
+    for title in ["Copy", "Move"] {
+        window.set_title_text(title.into());
+        window.set_confirm_text(title.into());
+        for metadata in [false, true] {
+            window.set_option_enabled(metadata);
+            window.set_wait_checked(false);
+            window.invoke_begin();
+            confirmed.borrow_mut().clear();
+            input::key(&child, Key::Tab);
+            if metadata {
+                input::key(&child, Key::Tab);
+            }
+            input::key(&child, Key::Space);
+            assert!(window.get_wait_checked());
+            assert!(confirmed.borrow().is_empty());
+            input::key(&child, Key::Return);
+            assert_eq!(
+                confirmed.borrow().as_slice(),
+                &[slint::SharedString::from("D:\\target 文档")]
+            );
+            confirmed.borrow_mut().clear();
+            input::key(&child, Key::Tab);
+            input::key(&child, Key::Return);
+            assert!(
+                confirmed.borrow().is_empty(),
+                "Enter on Cancel submitted {title}"
+            );
+        }
+    }
+    assert_eq!(*cancelled.borrow(), 4);
+}
+
+#[test]
 fn delete_default_does_not_remove_explicit_cancellation() {
     let (window, child) = window();
     let confirmed = Rc::new(RefCell::new(0));

@@ -11,6 +11,7 @@ export struct SpeedChartData {
 export component OperationSpeedChart inherits Rectangle {
     in property <SpeedChartData> chart;
     in property <bool> deletion;
+    in property <bool> verification-phase;
     in property <bool> overall-progress;
     in property <bool> determinate;
     in property <float> progress;
@@ -20,23 +21,24 @@ export component OperationSpeedChart inherits Rectangle {
         ? clamp(root.progress, 0, 1) : 1;
     private property <bool> compact: root.height < 75px;
     accessible-role: groupbox;
-    accessible-label: root.deletion ? "Deletion speed" : "Transfer speed";
+    accessible-label: root.deletion ? "Deletion speed" : root.verification-phase ? "Verification speed" : "Transfer speed";
     accessible-value: root.chart.description;
     min-width: 0px; min-height: 0px;
     VerticalLayout {
         spacing: root.compact ? 2px : 5px;
         HorizontalLayout {
             spacing: 8px; cross-axis-alignment: center;
-            Rectangle { width: 8px; height: 8px; background: Theme.active-frame; }
+            Rectangle { width: 8px; height: 8px; background: root.verification-phase ? Theme.pending-size : Theme.active-frame; }
             Text {
                 text: root.deletion ? "Deleted: " + (root.chart.speed == "" ? "0 items/s" : root.chart.speed)
+                    : root.verification-phase ? "Current file verification: " + (root.chart.speed == "" ? "0 B/s" : root.chart.speed)
                     : root.chart.native-move ? "Renamed: " + root.chart.speed
                     : "Write: " + (root.chart.speed == "" ? "0 B/s" : root.chart.speed);
                 color: Theme.strong-text; font-size: Theme.small-font; overflow: elide;
                 horizontal-stretch: 1;
             }
-            if !root.deletion && !root.chart.native-move : Rectangle { width: 10px; height: 2px; background: Theme.pending-size; }
-            if !root.deletion && !root.chart.native-move : Text {
+            if !root.deletion && !root.chart.native-move && !root.verification-phase : Rectangle { width: 10px; height: 2px; background: Theme.pending-size; }
+            if !root.deletion && !root.chart.native-move && !root.verification-phase : Text {
                 text: "Verify: " + (root.chart.verification-speed == "" ? "0 B/s" : root.chart.verification-speed);
                 color: Theme.strong-text; font-size: Theme.small-font; overflow: elide;
                 horizontal-stretch: 1;
@@ -46,13 +48,13 @@ export component OperationSpeedChart inherits Rectangle {
             vertical-stretch: 1; min-height: 14px; clip: true;
             background: Theme.pane-background; border-width: 1px; border-color: Theme.frame;
             if root.overall-progress : Rectangle {
-                accessible-role: progress-indicator; accessible-label: "Overall progress";
+                accessible-role: progress-indicator; accessible-label: root.verification-phase ? "Current file verification progress" : "Overall progress";
                 accessible-value: root.progress-label;
                 x: 1px; y: 1px; width: parent.width - 2px; height: parent.height - 2px;
                 Rectangle {
                     x: 0px; y: 0px;
                     width: parent.width * (root.determinate ? clamp(root.progress, 0, 1) : 0);
-                    height: parent.height; background: Theme.active-frame.with-alpha(0.16);
+                    height: parent.height; background: (root.verification-phase ? Theme.pending-size : Theme.active-frame).with-alpha(0.16);
                 }
             }
             for level in 3 : Rectangle {
@@ -66,15 +68,15 @@ export component OperationSpeedChart inherits Rectangle {
             if root.chart.has-samples : Path {
                 x: 1px; y: 2px; width: max(1px, (parent.width - 2px) * root.history-fraction); height: parent.height - 4px;
                 viewbox-width: 1000; viewbox-height: 100; fit: fill;
-                commands: root.chart.area; fill: Theme.active-frame.with-alpha(root.overall-progress ? 0.65 : 0.25);
+                commands: root.chart.area; fill: (root.verification-phase ? Theme.pending-size : Theme.active-frame).with-alpha(root.overall-progress ? 0.65 : 0.25);
             }
             if root.chart.has-samples : Path {
                 x: 1px; y: 2px; width: max(1px, (parent.width - 2px) * root.history-fraction); height: parent.height - 4px;
                 viewbox-width: 1000; viewbox-height: 100; fit: fill;
                 commands: root.chart.primary; fill: transparent;
-                stroke: Theme.active-frame; stroke-width: 1.5px;
+                stroke: root.verification-phase ? Theme.pending-size : Theme.active-frame; stroke-width: 1.5px;
             }
-            if root.chart.has-samples && !root.deletion && !root.chart.native-move : Path {
+            if root.chart.has-samples && !root.deletion && !root.chart.native-move && !root.verification-phase : Path {
                 x: 1px; y: 2px; width: max(1px, (parent.width - 2px) * root.history-fraction); height: parent.height - 4px;
                 viewbox-width: 1000; viewbox-height: 100; fit: fill;
                 commands: root.chart.verification; fill: transparent;
@@ -83,9 +85,9 @@ export component OperationSpeedChart inherits Rectangle {
             if root.chart.single-sample : Rectangle {
                 x: clamp((parent.width - 2px) * root.history-fraction * root.chart.point-x / 1000 - 2px, 2px, parent.width - 6px);
                 y: clamp(parent.height * root.chart.point-y / 100 - 2px, 2px, parent.height - 6px);
-                width: 4px; height: 4px; border-radius: 2px; background: Theme.active-frame;
+                width: 4px; height: 4px; border-radius: 2px; background: root.verification-phase ? Theme.pending-size : Theme.active-frame;
             }
-            if root.chart.single-sample && !root.deletion && !root.chart.native-move : Rectangle {
+            if root.chart.single-sample && !root.deletion && !root.chart.native-move && !root.verification-phase : Rectangle {
                 x: clamp((parent.width - 2px) * root.history-fraction * root.chart.point-x / 1000 - 2px, 2px, parent.width - 6px);
                 y: clamp(parent.height * root.chart.verification-y / 100 - 2px, 2px, parent.height - 6px);
                 width: 4px; height: 4px; border-radius: 2px;
@@ -97,6 +99,11 @@ export component OperationSpeedChart inherits Rectangle {
                 font-size: Theme.small-font;
             }
         }
+        if root.verification-phase : HorizontalLayout {
+            Text { text: "0%"; color: Theme.secondary-text; font-size: Theme.small-font; }
+            Text { text: root.progress-label; color: Theme.secondary-text; font-size: Theme.small-font; horizontal-alignment: center; horizontal-stretch: 1; overflow: elide; }
+            Text { text: "100%"; color: Theme.secondary-text; font-size: Theme.small-font; }
+        }
         if !root.compact : HorizontalLayout {
             Text { text: root.chart.history; color: Theme.secondary-text; font-size: Theme.small-font; horizontal-stretch: 1; }
             Text { text: root.chart.scale == "" ? "" : "Scale: " + root.chart.scale; color: Theme.secondary-text; font-size: Theme.small-font; }
@@ -105,6 +112,7 @@ export component OperationSpeedChart inherits Rectangle {
     Tooltip { TipBody {
         text: root.deletion
             ? "Reported deleted items per second, including folders. System Trash may report only top-level items. The graph covers the entire operation from time zero; older intervals retain peak speeds."
+            : root.verification-phase ? "Current-file readback only. The chart starts fresh for each verification attempt; pause and resume keep the same attempt. Readback progress fills the 0 to 100% range; speed samples span elapsed time within its filled part. Reading every planned byte does not establish a successful checksum or publication."
             : root.chart.native-move ? "Native renames per second. A whole renamed folder counts once; descendants are not enumerated and no content is copied. The graph retains the entire operation."
             : "Write: bytes written per second. Verify: destination readback and additional Move validation reads under the job's selected policy. The graph covers the entire operation from time zero; older intervals retain peak speeds. Current labels show the latest measured interval, not a completion percentage.";
     } }

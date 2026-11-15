@@ -12,7 +12,19 @@ pub(super) fn install(
         let Some(window) = weak.upgrade() else {
             return;
         };
-        if window.get_copy_draft_preserve_time() {
+        if window.get_copy_draft_wait() {
+            state.borrow_mut().confirm_copy_dialog_options(
+                token.as_str(),
+                destination.as_str(),
+                if window.get_copy_draft_preserve_time() {
+                    TransferMetadataPolicy::RequireModifiedTime
+                } else {
+                    TransferMetadataPolicy::ContentOnly
+                },
+                TransferStartPolicy::WaitForEarlier,
+                send.as_ref(),
+            );
+        } else if window.get_copy_draft_preserve_time() {
             state.borrow_mut().confirm_copy_dialog_metadata(
                 token.as_str(),
                 destination.as_str(),
@@ -58,21 +70,21 @@ fn refresh_draft(window: &MainWindow, presenter: &Presenter) {
     window.set_copy_draft_move(moving);
     window.set_copy_draft_metadata_enabled(draft.metadata_available());
     window.set_copy_draft_preserve_time(false);
-    let verification = if presenter.transfer_verification() == TransferVerification::FullSha256 {
-        "Verification: full SHA-256."
-    } else {
-        "Quick verification: size + first/middle/last 64 KiB; bytes between samples are not checked."
+    window.set_copy_draft_wait(false);
+    let policy = match (moving, presenter.transfer_verification()) {
+        (false, TransferVerification::FullSha256) => "Verification: full SHA-256.",
+        (false, TransferVerification::SizeAndSamples) => {
+            "Quick verification: size + first/middle/last 64 KiB; bytes between samples are not checked."
+        }
+        (true, TransferVerification::FullSha256) => {
+            "Same-volume items are renamed without reading file contents.\nIf copying is needed: full SHA-256 verification before each source is removed."
+        }
+        (true, TransferVerification::SizeAndSamples) => {
+            "Same-volume items are renamed without reading file contents.\nIf copying is needed: size + first/middle/last 64 KiB verification before each source is removed; bytes between samples are not checked."
+        }
     };
-    let policy = if moving {
-        format!(
-            "Same-volume items are renamed. Other files are copied and verified before each source is removed.\n{verification}\n\n"
-        )
-    } else {
-        format!("{verification}\n\n")
-    };
-    window.set_copy_draft_body(
-        format!("{}{}\n\nFrom\n{}", policy, draft.summary, draft.source).into(),
-    );
+    window.set_copy_draft_policy(policy.into());
+    window.set_copy_draft_body(format!("{}\n\nFrom\n{}", draft.summary, draft.source).into());
     window.set_copy_draft_destination(destination.as_ref().into());
     window.set_copy_draft_selection_end(destination.len().min(i32::MAX as usize) as i32);
     window.set_copy_draft_token(draft.token.as_str().into());

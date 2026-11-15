@@ -11,6 +11,10 @@ use std::{
 pub(crate) const CADENCE: Duration = Duration::from_millis(250);
 const MAX_SAMPLES: usize = 240;
 
+#[path = "verification_pass.rs"]
+mod verification_pass;
+pub(crate) use verification_pass::PassIds;
+
 #[derive(Clone, Copy, Default, PartialEq)]
 pub(crate) struct Counters {
     pub transfer: u64,
@@ -248,6 +252,7 @@ pub(crate) fn stop(snapshot: &mut Arc<OperationThroughput>) {
 pub(crate) struct Tracker {
     started: Instant,
     sampler: Sampler,
+    verification: verification_pass::PassSampler,
 }
 
 impl Default for Tracker {
@@ -255,6 +260,7 @@ impl Default for Tracker {
         Self {
             started: Instant::now(),
             sampler: Sampler::default(),
+            verification: verification_pass::PassSampler::default(),
         }
     }
 }
@@ -264,8 +270,15 @@ impl Tracker {
         progress.throughput = self.sampler.observe(
             self.started.elapsed(),
             copy_counters(progress),
-            progress.state == CopyOperationState::Running && !progress.paused,
+            progress.state == CopyOperationState::Running
+                && !progress.paused
+                && progress.wait_reason.is_none(),
         );
+        self.verification(progress);
+    }
+
+    pub(crate) fn verification(&mut self, progress: &mut CopyProgress) {
+        self.verification.observe(self.started.elapsed(), progress);
     }
 
     pub(crate) fn deletion(&mut self, progress: &mut OperationProgress) {

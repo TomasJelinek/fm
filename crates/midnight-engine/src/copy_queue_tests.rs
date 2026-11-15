@@ -451,6 +451,7 @@ fn legacy_native_input_conversions_keep_reject_link_policy() {
     let entries = [Entry::new(EntryId(1), source, EntryKind::Symlink)];
     let selected = selected_request(1, &entries, &root);
     let clipboard = ClipboardMoveRequest {
+        start_policy: midnight_core::TransferStartPolicy::Immediate,
         id: OperationId(1),
         clipboard: Arc::new(paths.clipboard.clone()),
         destination: root,

@@ -9,6 +9,9 @@ import { FluentScrollMetrics } from "fluent-scroll-metrics.slint";
 export component OperationDialog inherits Rectangle {
     in property <string> title;
     in property <string> body;
+    in property <string> policy;
+    in property <bool> wait-visible;
+    in-out property <bool> wait-checked;
     in property <string> initial-name;
     in property <string> input-label;
     in property <int> selection-end;
@@ -46,9 +49,14 @@ export component OperationDialog inherits Rectangle {
         root.reveal-middle(option-scroll.y + option.y, option.height);
         option.focus();
     }
+    function focus-wait() {
+        root.reveal-middle(wait-scroll.y + wait-option.y, wait-option.height);
+        wait-option.focus();
+    }
     function reveal-focused() {
         if name.has-focus { root.reveal-middle(name.y, name.height); }
         else if option.has-focus { root.reveal-middle(option-scroll.y + option.y, option.height); }
+        else if wait-option.has-focus { root.reveal-middle(wait-scroll.y + wait-option.y, wait-option.height); }
     }
     function focus-primary() {
         // A Fluent button's zero-width focus point sits at its left edge.
@@ -64,12 +72,19 @@ export component OperationDialog inherits Rectangle {
         + (root.has-name ? max(Theme.control-height, name.preferred-height) + 12px : 0px)
         + (root.has-name && root.input-label != "" ? Theme.font-size * 1.5 + 12px : 0px)
         + (root.option-visible ? max(Theme.control-height, option.preferred-height) + 24px : 0px)
+        + (root.wait-visible ? max(Theme.control-height, wait-option.preferred-height) + 12px : 0px)
+        + (root.policy != "" ? policy-measure.preferred-height + 12px : 0px)
         + max(32px, confirm-button.preferred-height) + 36px, 220px, 640px);
     summary-measure := Text {
         visible: false; accessible-role: none;
         width: max(1px, root.width - 48px);
         text: (root.warning != "" ? root.warning + "\n\n" : "") + root.body;
         font-size: Theme.font-size; wrap: word-wrap;
+    }
+    policy-measure := Text {
+        visible: false; accessible-role: none;
+        width: max(1px, root.width - 48px);
+        text: root.policy; font-size: Theme.font-size; wrap: word-wrap;
     }
     background: Theme.surface; border-color: Theme.active-frame; border-width: 1px; border-radius: 6px;
     public function begin() {
@@ -86,7 +101,7 @@ export component OperationDialog inherits Rectangle {
             if event.text == Key.Escape { root.cancel(); return accept; }
             // Enter confirms from the input, option or primary action. Keep
             // focused Cancel and the header close button's own key handlers.
-            if (event.text == Key.Return && (primary-focus.has-focus || name.has-focus || option.has-focus || confirm-button.has-focus))
+            if (event.text == Key.Return && (primary-focus.has-focus || name.has-focus || option.has-focus || wait-option.has-focus || confirm-button.has-focus))
                 || (event.text == Key.Space && primary-focus.has-focus) {
                 if confirm-button.enabled { root.confirm(name.text); }
                 return accept;
@@ -95,6 +110,13 @@ export component OperationDialog inherits Rectangle {
                 if event.modifiers.shift || event.text == Key.Backtab {
                     if name.has-focus { if confirm-button.enabled { root.focus-primary(); } else { cancel-button.focus(); } }
                     else if cancel-button.has-focus {
+                        if root.wait-visible { root.focus-wait(); }
+                        else if root.option-visible && root.option-enabled { root.focus-option(); }
+                        else if root.has-name { root.focus-name(); }
+                        else if confirm-button.enabled { root.focus-primary(); }
+                        else { cancel-button.focus(); }
+                    }
+                    else if wait-option.has-focus {
                         if root.option-visible && root.option-enabled { root.focus-option(); }
                         else if root.has-name { root.focus-name(); }
                         else if confirm-button.enabled { root.focus-primary(); }
@@ -109,12 +131,18 @@ export component OperationDialog inherits Rectangle {
                 } else {
                     if name.has-focus {
                         if root.option-visible && root.option-enabled { root.focus-option(); }
+                        else if root.wait-visible { root.focus-wait(); }
                         else { cancel-button.focus(); }
                     }
-                    else if option.has-focus { cancel-button.focus(); }
+                    else if option.has-focus {
+                        if root.wait-visible { root.focus-wait(); }
+                        else { cancel-button.focus(); }
+                    }
+                    else if wait-option.has-focus { cancel-button.focus(); }
                     else if cancel-button.has-focus && confirm-button.enabled { root.focus-primary(); }
                     else if root.has-name { root.focus-name(); }
                     else if root.option-visible && root.option-enabled { root.focus-option(); }
+                    else if root.wait-visible { root.focus-wait(); }
                     else { cancel-button.focus(); }
                 }
                 return accept;
@@ -179,6 +207,25 @@ export component OperationDialog inherits Rectangle {
                                 changed has-focus => { if self.has-focus { root.reveal-middle(option-scroll.y + self.y, self.height); } }
                             }
                         }
+                    }
+                    wait-scroll := ScrollView {
+                        visible: root.wait-visible; min-width: 0px;
+                        height: root.wait-visible ? max(Theme.control-height, wait-option.preferred-height) + FluentScrollMetrics.overlay-size : 0px;
+                        horizontal-scrollbar-policy: as-needed; vertical-scrollbar-policy: always-off;
+                        HorizontalLayout {
+                            wait-option := HintedCheckBox {
+                                text: "Wait for other operations to finish";
+                                hint: "Wait only for Copy/Move operations already unfinished when you confirm. Later operations and Delete are not included.";
+                                enabled: root.wait-visible;
+                                checked <=> root.wait-checked;
+                                font-size: Theme.font-size;
+                                changed has-focus => { if self.has-focus { root.reveal-middle(wait-scroll.y + self.y, self.height); } }
+                            }
+                        }
+                    }
+                    if root.policy != "" : Text {
+                        text: root.policy; color: Theme.secondary-text;
+                        font-size: Theme.font-size; wrap: word-wrap;
                     }
                 }
             }

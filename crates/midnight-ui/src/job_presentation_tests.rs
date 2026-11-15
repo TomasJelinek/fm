@@ -1,4 +1,5 @@
 use super::*;
+use midnight_core::{TransferRemainingWork, TransferWaitReason};
 use std::{io, path::PathBuf, sync::Arc};
 
 fn progress(id: u64) -> CopyProgress {
@@ -230,7 +231,9 @@ fn progress_distinguishes_root_completion_from_file_write_and_verification() {
         files: 4,
         ..Default::default()
     };
+    value.phase = CopyOperationPhase::Copying;
     value.current_file_size = Some(1_000);
+    value.verification_pass_id = 1;
     value.current_file_copied = 500;
     let row = copy(&p, &value);
     assert_eq!(row.progress, 0.25);
@@ -239,8 +242,11 @@ fn progress_distinguishes_root_completion_from_file_write_and_verification() {
     assert_eq!(row.progress_label, "25% complete");
     value.current_file_copied = 1_000;
     value.phase = CopyOperationPhase::Verifying;
+    value.current_file_verified = 250;
     let row = copy(&p, &value);
-    assert_eq!(row.file_progress, 1.0);
+    assert_eq!(row.file_progress, 0.25);
+    assert!(row.verification_view);
+    assert_eq!(row.file_progress_label, "Verifying: 250 / 1000 bytes");
     assert_eq!(row.progress, 0.25, "a written file is not yet committed");
     assert!(row.state.contains("Verifying"));
     value.current_file_size = None;
@@ -406,5 +412,527 @@ fn benchmark_warm_job_history_projection() {
                 );
             }
         }
+    }
+}
+
+#[test]
+fn queued_and_preparing_jobs_do_not_claim_active_discovery_or_calculation() {
+    let p = Presenter::new("left".into(), "right".into());
+    let mut value = CopyProgress::queued(OperationId(21), "target".into(), 1, TransferIntent::Copy);
+    let queued = copy(&p, &value);
+    assert_eq!(queued.progress_label, "Queued");
+    assert_eq!(queued.activity_label, "Queued");
+    assert!(queued.waiting && !queued.discovering);
+    assert!(queued.eta.is_empty());
+    value.state = CopyOperationState::Preparing;
+    let preparing = copy(&p, &value);
+    assert_eq!(preparing.progress_label, "Preparing");
+    assert!(!preparing.discovering);
+    assert_eq!(preparing.activity_label, "Preparing...");
+    value.discovery.state = DiscoveryState::Scanning;
+    let scanning = copy(&p, &value);
+    assert!(scanning.discovering && !scanning.waiting);
+    assert_eq!(scanning.activity_label, "Discovering items...");
+}
+
+#[test]
+fn explicit_control_states_override_stale_scanning_in_presenter_rows() {
+    let mut p = Presenter::new("left".into(), "right".into());
+    let mut value = CopyProgress::queued(OperationId(22), "target".into(), 1, TransferIntent::Copy);
+    value.discovery.state = DiscoveryState::Scanning;
+    value.discovery.files = 27;
+    for (state, paused, pause_requested, status) in [
+        (
+            CopyOperationState::CancelRequested,
+            true,
+            true,
+            "Cancelling...",
+        ),
+        (
+            CopyOperationState::WaitingForDecision,
+            true,
+            true,
+            "Waiting for your decision",
+        ),
+        (CopyOperationState::Running, true, true, "Paused"),
+        (CopyOperationState::Preparing, false, true, "Pausing..."),
+        (CopyOperationState::Queued, false, false, "Queued"),
+    ] {
+        value.state = state;
+        value.paused = paused;
+        value.pause_requested = pause_requested;
+        p.copies.progress = vec![Arc::new(value.clone())];
+        let row = rows(&p).pop().expect("one captured transfer row");
+        assert_eq!(row.activity_label, status, "activity for {state:?}");
+        assert_eq!(row.progress_label, status, "headline for {state:?}");
+        assert!(!row.discovering, "stale scanning masked {state:?}");
+        assert!(
+            row.eta.is_empty(),
+            "inactive work acquired an ETA for {state:?}"
+        );
+    }
+    value.state = CopyOperationState::Preparing;
+    value.paused = false;
+    value.pause_requested = false;
+    p.copies.progress = vec![Arc::new(value)];
+    let row = rows(&p).pop().unwrap();
+    assert!(row.discovering);
+    assert_eq!(row.activity_label, "Discovering items...");
+    assert!(row.progress_label.starts_with("Discovering:"));
+}
+
+#[test]
+fn typed_transfer_waits_override_stale_scanning_and_phase() {
+    let p = Presenter::new("left".into(), "right".into());
+    for intent in [TransferIntent::Copy, TransferIntent::Move] {
+        for state in [
+            CopyOperationState::Queued,
+            CopyOperationState::Preparing,
+            CopyOperationState::Running,
+        ] {
+            for (reason, label) in [
+                (
+                    TransferWaitReason::EarlierTransfers,
+                    "Queued — waiting for earlier transfers",
+                ),
+                (
+                    TransferWaitReason::Resources,
+                    "Waiting for available capacity",
+                ),
+            ] {
+                let mut value = CopyProgress::queued(OperationId(23), "target".into(), 1, intent);
+                value.state = state;
+                value.phase = CopyOperationPhase::Verifying;
+                value.discovery.state = DiscoveryState::Scanning;
+                value.discovery.files = 27;
+                value.wait_reason = Some(reason);
+                value.message = "Copying: this message is not an activity discriminator".into();
+                let row = copy(&p, &value);
+                assert_eq!(row.state, label);
+                assert_eq!(row.activity_label, label);
+                assert_eq!(row.progress_label, label);
+                assert!(row.waiting && !row.discovering);
+                assert!(row.eta.is_empty());
+            }
+        }
+    }
+}
+
+#[test]
+fn control_states_and_pause_override_typed_waits_before_discovery() {
+    let p = Presenter::new("left".into(), "right".into());
+    for (state, paused, pause_requested, label) in [
+        (
+            CopyOperationState::CancelRequested,
+            true,
+            true,
+            "Cancelling...",
+        ),
+        (
+            CopyOperationState::WaitingForDecision,
+            true,
+            true,
+            "Waiting for your decision",
+        ),
+        (CopyOperationState::Running, true, true, "Paused"),
+        (CopyOperationState::Preparing, false, true, "Pausing..."),
+        (CopyOperationState::Queued, true, true, "Paused"),
+    ] {
+        for reason in [
+            TransferWaitReason::EarlierTransfers,
+            TransferWaitReason::Resources,
+        ] {
+            let mut value =
+                CopyProgress::queued(OperationId(24), "target".into(), 1, TransferIntent::Copy);
+            value.state = state;
+            value.paused = paused;
+            value.pause_requested = pause_requested;
+            value.wait_reason = Some(reason);
+            value.discovery.state = DiscoveryState::Scanning;
+            let row = copy(&p, &value);
+            assert_eq!(row.activity_label, label);
+            assert_eq!(row.progress_label, label);
+            assert!(!row.waiting && !row.discovering);
+            assert!(row.eta.is_empty());
+        }
+    }
+}
+
+#[test]
+fn typed_wait_suppresses_eta_with_known_work_and_never_comes_from_message_text() {
+    let p = Presenter::new("left".into(), "right".into());
+    let mut value = CopyProgress::queued(OperationId(25), "target".into(), 1, TransferIntent::Copy);
+    value.state = CopyOperationState::Running;
+    value.phase = CopyOperationPhase::Copying;
+    value.discovery = OperationDiscovery {
+        state: DiscoveryState::Complete,
+        files: 1,
+        bytes: Some(1000),
+        ..Default::default()
+    };
+    value.current_file_size = Some(1000);
+    value.current_file_copied = 500;
+    value.remaining_work = Some(TransferRemainingWork {
+        write_bytes: 500,
+        verification_bytes: 1000,
+    });
+    value.throughput = Arc::new(OperationThroughput {
+        transfer_per_second: 100.0,
+        ..Default::default()
+    });
+    value.wait_reason = Some(TransferWaitReason::Resources);
+    let waiting = copy(&p, &value);
+    assert!(waiting.waiting && !waiting.discovering);
+    assert!(waiting.determinate && waiting.file_determinate);
+    assert_eq!(waiting.progress, 0.5);
+    assert_eq!(waiting.file_progress, 0.5);
+    assert_eq!(waiting.progress_label, "Waiting for available capacity");
+    assert!(waiting.eta.is_empty());
+
+    value.wait_reason = None;
+    value.message = "Waiting for available capacity".into();
+    let active = copy(&p, &value);
+    assert!(!active.waiting);
+    assert_eq!(active.state, "Copying");
+    assert_eq!(active.eta, "About 15 s");
+
+    value.wait_reason = Some(TransferWaitReason::EarlierTransfers);
+    value.state = CopyOperationState::Completed;
+    value.paused = true;
+    let completed = copy(&p, &value);
+    assert_eq!(completed.state, "Completed");
+    assert_eq!(completed.progress_label, "100% complete");
+    assert!(completed.activity_label.is_empty());
+    assert!(!completed.waiting && !completed.discovering);
+    assert!(completed.eta.is_empty());
+}
+
+fn readback_history() -> Arc<OperationThroughput> {
+    Arc::new(OperationThroughput {
+        samples: vec![ThroughputSample {
+            elapsed_millis: 250,
+            verification_per_second: 1024.0,
+            ..Default::default()
+        }]
+        .into(),
+        verification_per_second: 1024.0,
+        ..Default::default()
+    })
+}
+
+#[test]
+fn verification_selects_only_producer_pass_history_and_restores_overall_history_elsewhere() {
+    let p = Presenter::new("left".into(), "right".into());
+    let mut value = progress(26);
+    value.current_file_size = Some(1000);
+    value.current_file_copied = 1000;
+    value.current_file_verified = 250;
+    value.verification_pass_id = 1;
+    value.verification_throughput = readback_history();
+    value.throughput = Arc::new(OperationThroughput {
+        samples: vec![ThroughputSample {
+            elapsed_millis: 5000,
+            transfer_per_second: 1_048_576.0,
+            verification_per_second: 2_097_152.0,
+            ..Default::default()
+        }]
+        .into(),
+        transfer_per_second: 1_048_576.0,
+        verification_per_second: 2_097_152.0,
+        ..Default::default()
+    });
+    let verifying = copy(&p, &value);
+    assert!(verifying.verification_view);
+    assert_eq!(verifying.file_progress, 0.25);
+    assert_eq!(verifying.speed_chart.speed, "1.0 KiB/s");
+    assert_eq!(verifying.speed_chart.scale, "1.1 KiB/s");
+    assert_eq!(verifying.speed_chart.history, "Elapsed 250 ms");
+    assert!(verifying.speed_chart.verification.is_empty());
+    assert_eq!(verifying.speed_chart.primary, "M 0.00 9.09 L 1000.00 9.09");
+
+    value.wait_reason = Some(TransferWaitReason::Resources);
+    let waiting = copy(&p, &value);
+    assert!(waiting.waiting && !waiting.discovering);
+    assert_eq!(waiting.file_progress, 0.25);
+    assert_eq!(waiting.file_progress_label, "Verifying: 250 / 1000 bytes");
+    assert_eq!(waiting.speed_chart, verifying.speed_chart);
+    value.wait_reason = None;
+    value.phase = CopyOperationPhase::ValidatingAfterMove;
+    value.validation_bytes = 9000;
+    let validation = copy(&p, &value);
+    assert!(!validation.verification_view && !validation.file_determinate);
+    assert_eq!(validation.speed_chart.speed, "1.0 MiB/s");
+    assert_eq!(validation.speed_chart.verification_speed, "2.0 MiB/s");
+    assert_eq!(validation.speed_chart.history, "Elapsed 5 s");
+}
+
+#[test]
+fn verification_requires_a_nonzero_pass_and_current_file_without_whole_history_fallback() {
+    let p = Presenter::new("left".into(), "right".into());
+    for (pass_id, size, eligible) in [
+        (0, None, false),
+        (0, Some(1000), false),
+        (1, None, false),
+        (1, Some(0), true),
+        (1, Some(1000), true),
+    ] {
+        let mut value = progress(27);
+        value.intent = TransferIntent::Move;
+        value.native_entries_moved = 1;
+        value.current_file_size = size;
+        value.current_file_verified = 250;
+        value.verification_pass_id = pass_id;
+        value.verification_throughput = Arc::default();
+        value.throughput = Arc::new(OperationThroughput {
+            samples: vec![ThroughputSample {
+                elapsed_millis: 250,
+                items_per_second: 10.0,
+                ..Default::default()
+            }]
+            .into(),
+            items_per_second: 10.0,
+            ..Default::default()
+        });
+        let row = copy(&p, &value);
+        assert_eq!(
+            row.verification_view, eligible,
+            "pass {pass_id}, size {size:?}"
+        );
+        assert!(!row.speed_chart.native_move);
+        assert!(!row.speed_chart.has_samples);
+        if eligible {
+            assert_eq!(row.speed_chart.speed, "0 B/s");
+            assert!(row.speed_chart.description.starts_with("Verify:"));
+        } else {
+            assert!(!row.file_determinate);
+            assert_eq!(row.file_progress, 0.0);
+            assert!(row.speed_chart.description.is_empty());
+            assert!(row.speed_chart.primary.is_empty());
+        }
+        if pass_id == 0 {
+            value.phase = CopyOperationPhase::CapturingSources;
+            value.current_file_size = None;
+            let renamed = copy(&p, &value);
+            assert!(!renamed.verification_view && !renamed.file_determinate);
+            assert!(renamed.speed_chart.native_move);
+            assert_eq!(renamed.speed_chart.speed, "10.0 items/s");
+        }
+    }
+}
+
+#[test]
+fn new_verification_pass_clears_trace_but_retains_resumed_checkpoint_bytes() {
+    let mut p = Presenter::new("left".into(), "right".into());
+    let mut value = progress(28);
+    value.current_file_size = Some(1000);
+    value.current_file_copied = 1000;
+    value.current_file_verified = 250;
+    value.verification_pass_id = 41;
+    value.verification_throughput = readback_history();
+    p.copies.progress = vec![Arc::new(value.clone())];
+    let initial = rows(&p).pop().unwrap();
+    let repeated = rows(&p).pop().unwrap();
+    assert_eq!(initial.file_progress, 0.25);
+    assert_eq!(repeated.speed_chart, initial.speed_chart);
+
+    value.current_file_verified = 500;
+    value.verification_throughput = Arc::new(OperationThroughput {
+        samples: vec![
+            ThroughputSample {
+                elapsed_millis: 250,
+                verification_per_second: 1024.0,
+                ..Default::default()
+            },
+            ThroughputSample {
+                start_millis: 250,
+                elapsed_millis: 500,
+                verification_per_second: 2048.0,
+                ..Default::default()
+            },
+        ]
+        .into(),
+        verification_per_second: 2048.0,
+        ..Default::default()
+    });
+    p.copies.progress = vec![Arc::new(value.clone())];
+    let running = rows(&p).pop().unwrap();
+    assert_eq!(running.file_progress, 0.5);
+    assert_eq!(running.speed_chart.primary.matches(" L ").count(), 2);
+    assert_eq!(running.speed_chart.speed, "2.0 KiB/s");
+
+    let active_history = value.verification_throughput.clone();
+    value.paused = true;
+    value.pause_requested = true;
+    value.verification_throughput = Arc::new(OperationThroughput {
+        samples: active_history.samples.clone(),
+        ..Default::default()
+    });
+    p.copies.progress = vec![Arc::new(value.clone())];
+    let paused = rows(&p).pop().unwrap();
+    assert_eq!(paused.activity_label, "Paused");
+    assert_eq!(paused.file_progress, 0.5);
+    assert_eq!(paused.speed_chart.primary, running.speed_chart.primary);
+    assert_eq!(paused.speed_chart.speed, "0 B/s");
+
+    value.paused = false;
+    value.pause_requested = false;
+    value.verification_throughput = active_history;
+    p.copies.progress = vec![Arc::new(value.clone())];
+    let resumed = rows(&p).pop().unwrap();
+    assert_eq!(resumed.speed_chart, running.speed_chart);
+
+    value.verification_pass_id = 42;
+    value.verification_throughput = Arc::default();
+    p.copies.progress = vec![Arc::new(value.clone())];
+    let retried = rows(&p).pop().unwrap();
+    assert!(retried.verification_view && retried.file_determinate);
+    assert_eq!(retried.file_progress, 0.5);
+    assert_eq!(retried.file_progress_label, "Verifying: 500 / 1000 bytes");
+    assert!(!retried.speed_chart.has_samples);
+    assert!(retried.speed_chart.primary.is_empty());
+    assert_eq!(retried.speed_chart.history, "Elapsed 0 ms");
+
+    value.phase = CopyOperationPhase::Copying;
+    value.verification_pass_id = 43;
+    value.current_file_size = Some(2000);
+    value.current_file_copied = 100;
+    value.current_file_verified = 0;
+    p.copies.progress = vec![Arc::new(value)];
+    let next_file = rows(&p).pop().unwrap();
+    assert!(!next_file.verification_view);
+    assert_eq!(next_file.file_progress, 0.05);
+    assert_eq!(
+        next_file.file_progress_label,
+        "Current file written: 100 / 2000 bytes"
+    );
+}
+
+#[test]
+fn terminal_verification_rows_keep_overall_history_after_the_attempt_is_cleared() {
+    let p = Presenter::new("left".into(), "right".into());
+    let mut value = progress(29);
+    value.phase = CopyOperationPhase::Copying;
+    value.throughput = Arc::new(OperationThroughput {
+        samples: vec![ThroughputSample {
+            elapsed_millis: 1000,
+            transfer_per_second: 1_048_576.0,
+            verification_per_second: 2048.0,
+            ..Default::default()
+        }]
+        .into(),
+        ..Default::default()
+    });
+    let original = copy(&p, &value).speed_chart;
+    value.phase = CopyOperationPhase::Verifying;
+    value.current_file_size = None;
+    value.verification_pass_id = 0;
+    value.verification_throughput = readback_history();
+    for state in [
+        CopyOperationState::Completed,
+        CopyOperationState::CompletedWithErrors,
+        CopyOperationState::Cancelled,
+        CopyOperationState::Failed,
+    ] {
+        value.state = state;
+        let terminal = copy(&p, &value);
+        assert!(!terminal.verification_view && !terminal.file_determinate);
+        assert_eq!(terminal.speed_chart, original);
+        assert_eq!(terminal.speed_chart.speed, "0 B/s");
+        assert_eq!(terminal.speed_chart.verification_speed, "0 B/s");
+        assert_eq!(terminal.speed_chart.scale, "1.1 MiB/s");
+        assert!(!terminal.speed_chart.primary.is_empty());
+        assert_eq!(terminal.speed_chart.history, "Elapsed 1 s");
+    }
+
+    value.current_file_size = Some(1000);
+    value.current_file_verified = 750;
+    value.verification_pass_id = 9;
+    let failed = copy(&p, &value);
+    assert!(!failed.verification_view);
+    assert_eq!(failed.speed_chart, original);
+    assert!(failed.file_determinate);
+    assert_eq!(failed.file_progress, 0.75);
+    assert_eq!(failed.file_progress_label, "Verifying: 750 / 1000 bytes");
+}
+
+#[test]
+fn accepted_local_copy_cancel_clears_pause_wait_without_retiring_or_rewriting_progress() {
+    for (paused, pause_requested) in [(true, true), (false, true), (true, false)] {
+        let mut p = Presenter::new("left".into(), "right".into());
+        let mut value = progress(32);
+        value.current_file_size = Some(1000);
+        value.current_file_copied = 1000;
+        value.current_file_verified = 750;
+        value.copied_bytes = 1000;
+        value.verified_bytes = 750;
+        value.validation_bytes = 4000;
+        value.verification_pass_id = 9;
+        value.verification_throughput = readback_history();
+        value.throughput = readback_history();
+        value.paused = paused;
+        value.pause_requested = pause_requested;
+        value.wait_reason = Some(TransferWaitReason::Resources);
+        let original = Arc::new(value);
+        p.copies.progress = vec![original.clone()];
+        p.cancel_copy("copy-job:32", &|_| false);
+        assert!(
+            Arc::ptr_eq(&p.copies.progress[0], &original),
+            "refused cancellation must not normalize the live snapshot"
+        );
+        let commands = std::cell::RefCell::new(Vec::new());
+        p.cancel_copy("copy-job:32", &|command| {
+            commands.borrow_mut().push(command);
+            true
+        });
+        assert!(matches!(
+            commands.borrow().as_slice(),
+            [Command::CancelCopy(OperationId(32))]
+        ));
+        let cancelling = p.copies.progress[0].clone();
+        assert_eq!(cancelling.state, CopyOperationState::CancelRequested);
+        assert!(!cancelling.paused && !cancelling.pause_requested);
+        assert!(cancelling.wait_reason.is_none());
+        assert_eq!(cancelling.current_file_copied, original.current_file_copied);
+        assert_eq!(
+            cancelling.current_file_verified,
+            original.current_file_verified
+        );
+        assert_eq!(cancelling.copied_bytes, original.copied_bytes);
+        assert_eq!(cancelling.verified_bytes, original.verified_bytes);
+        assert_eq!(cancelling.validation_bytes, original.validation_bytes);
+        assert_eq!(
+            cancelling.verification_pass_id,
+            original.verification_pass_id
+        );
+        assert!(Arc::ptr_eq(&cancelling.throughput, &original.throughput));
+        assert!(Arc::ptr_eq(
+            &cancelling.verification_throughput,
+            &original.verification_throughput
+        ));
+        assert!(
+            p.has_live_operations(),
+            "accepted cancel is still awaiting actual teardown"
+        );
+        p.apply(Event::Copy(CopyEvent::Progress(original.clone())));
+        assert!(
+            Arc::ptr_eq(&p.copies.progress[0], &cancelling),
+            "late nonterminal progress cannot restore stale pause state"
+        );
+        let row = rows(&p).pop().unwrap();
+        assert_eq!(row.state, "Cancelling");
+        assert_eq!(row.activity_label, "Cancelling...");
+        assert!(!row.paused && !row.pause_requested && !row.waiting);
+        assert_eq!(row.file_progress, 0.75);
+        let mut terminal = (*original).clone();
+        terminal.state = CopyOperationState::Cancelled;
+        terminal.paused = false;
+        terminal.pause_requested = false;
+        terminal.wait_reason = None;
+        terminal.current_file_size = None;
+        terminal.verification_pass_id = 0;
+        terminal.verification_throughput = Arc::default();
+        p.apply(Event::Copy(CopyEvent::Progress(Arc::new(terminal))));
+        assert!(!p.has_live_operations());
+        assert_eq!(p.copies.progress[0].state, CopyOperationState::Cancelled);
     }
 }

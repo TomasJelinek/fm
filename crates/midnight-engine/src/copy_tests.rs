@@ -84,6 +84,7 @@ fn fixture() -> tempfile::TempDir {
 }
 fn request(id: u64, sources: &[PathBuf], destination: &Path) -> CopyRequest {
     CopyRequest {
+        start_policy: midnight_core::TransferStartPolicy::Immediate,
         verification: midnight_core::TransferVerification::default(),
         id: OperationId(id),
         clipboard: FileClipboard {
@@ -226,6 +227,7 @@ async fn recursive_multisource_copy_verifies_bytes_and_preserves_sources() {
 fn selected_request(id: u64, entries: &[Entry], destination: &Path) -> SelectedCopyRequest {
     let view = Arc::new(DirectoryIndex::from_entries(entries));
     SelectedCopyRequest {
+        start_policy: midnight_core::TransferStartPolicy::Immediate,
         verification: midnight_core::TransferVerification::default(),
         id: OperationId(id),
         files: SelectedFiles {
@@ -484,8 +486,26 @@ async fn queued_cancellation_finishes_while_another_mutation_still_holds_the_gat
     h.controller
         .enqueue(request(1, std::slice::from_ref(&source), &destination))
         .await;
+    let waiting = tokio::time::timeout(Duration::from_secs(4), async {
+        loop {
+            if let CopyEvent::Progress(progress) = h.next().await {
+                assert!(!progress.state.is_terminal(), "{progress:?}");
+                if progress.wait_reason == Some(TransferWaitReason::Resources) {
+                    break progress;
+                }
+            }
+        }
+    })
+    .await
+    .expect("held mutation capacity must be reported as a resource wait");
+    assert_eq!(waiting.state, CopyOperationState::Queued);
+    assert_eq!(waiting.discovery.state, DiscoveryState::NotStarted);
+    assert_eq!(waiting.verification_pass_id, 0);
+    assert!(waiting.verification_throughput.samples.is_empty());
     h.controller.cancel(OperationId(1));
-    assert_eq!(h.terminal(1).await.state, CopyOperationState::Cancelled);
+    let cancelled = h.terminal(1).await;
+    assert_eq!(cancelled.state, CopyOperationState::Cancelled);
+    assert_eq!(cancelled.wait_reason, None);
     assert_eq!(h.mutation.available_permits(), 0);
     assert_eq!(h.io.available_permits(), 1);
     assert_eq!(fs::read_dir(destination).unwrap().count(), 0);

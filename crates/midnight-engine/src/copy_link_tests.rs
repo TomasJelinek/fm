@@ -904,6 +904,7 @@ impl Fixture {
 
     fn legacy(&self, id: u64) -> CopyRequest {
         CopyRequest {
+            start_policy: midnight_core::TransferStartPolicy::Immediate,
             id: OperationId(id),
             clipboard: FileClipboard {
                 paths: self

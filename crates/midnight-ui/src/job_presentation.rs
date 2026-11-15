@@ -1,6 +1,8 @@
 //! Bounded job snapshots and selection; paths and counters are never read from the filesystem here.
 use crate::*;
 
+#[path = "job_file_progress.rs"]
+mod file_meter;
 #[path = "job_progress_meter.rs"]
 mod meter;
 
@@ -204,6 +206,10 @@ fn mutation(p: &Presenter, progress: &OperationProgress) -> OperationRow {
         file_determinate: false,
         file_progress: 0.0,
         file_progress_label: SharedString::default(),
+        file_progress_title: SharedString::default(),
+        verification_view: false,
+        waiting: false,
+        activity_label: SharedString::default(),
         determinate: meter.determinate,
         progress: meter.fraction,
         icon: p.desktop.image(&IconKey::action(icon)),
@@ -219,34 +225,41 @@ fn mutation(p: &Presenter, progress: &OperationProgress) -> OperationRow {
 
 fn copy(p: &Presenter, progress: &CopyProgress) -> OperationRow {
     let meter = meter::copy(progress, &p.number_locale);
+    let file = file_meter::copy(progress, &p.number_locale);
+    let verification_view = file.verifying && !progress.state.is_terminal();
     use CopyOperationState as S;
     let moving = progress.intent == TransferIntent::Move;
     let title = if moving { "Move" } else { "Copy" };
-    let state = match progress.state {
-        S::Queued => "Queued",
-        S::Preparing => "Preparing",
-        S::Running => match progress.phase {
-            CopyOperationPhase::Planning => "Reading folders",
-            CopyOperationPhase::Copying => "Copying",
-            CopyOperationPhase::Syncing => "Saving",
-            CopyOperationPhase::Verifying => {
-                if progress.verification == TransferVerification::FullSha256 {
-                    "Verifying SHA-256"
-                } else {
-                    "Verifying size and samples"
+    let waiting = meter::copy_waiting_label(progress);
+    let state = if let Some(label) = waiting {
+        label
+    } else {
+        match progress.state {
+            S::Queued => "Queued",
+            S::Preparing => "Preparing",
+            S::Running => match progress.phase {
+                CopyOperationPhase::Planning => "Reading folders",
+                CopyOperationPhase::Copying => "Copying",
+                CopyOperationPhase::Syncing => "Saving",
+                CopyOperationPhase::Verifying => {
+                    if progress.verification == TransferVerification::FullSha256 {
+                        "Verifying SHA-256"
+                    } else {
+                        "Verifying size and samples"
+                    }
                 }
-            }
-            CopyOperationPhase::Publishing => "Finishing",
-            CopyOperationPhase::ValidatingBeforeMove => "Checking before Move",
-            CopyOperationPhase::CapturingSources => "Preparing source removal",
-            CopyOperationPhase::ValidatingAfterMove => "Checking before source removal",
-        },
-        S::WaitingForDecision => "Needs a decision",
-        S::CancelRequested => "Cancelling",
-        S::Cancelled => "Cancelled",
-        S::Completed => "Completed",
-        S::CompletedWithErrors => "Completed with errors",
-        S::Failed => "Failed",
+                CopyOperationPhase::Publishing => "Finishing",
+                CopyOperationPhase::ValidatingBeforeMove => "Checking before Move",
+                CopyOperationPhase::CapturingSources => "Preparing source removal",
+                CopyOperationPhase::ValidatingAfterMove => "Checking before source removal",
+            },
+            S::WaitingForDecision => "Needs a decision",
+            S::CancelRequested => "Cancelling",
+            S::Cancelled => "Cancelled",
+            S::Completed => "Completed",
+            S::CompletedWithErrors => "Completed with errors",
+            S::Failed => "Failed",
+        }
     };
     let mut summary = format!(
         "{} files · {} skipped · {} errors",
@@ -362,32 +375,64 @@ fn copy(p: &Presenter, progress: &CopyProgress) -> OperationRow {
         determinate: meter.determinate,
         progress: meter.fraction,
         progress_label: meter.label,
-        file_determinate: progress.current_file_size.is_some(),
-        file_progress: progress.current_file_size.map_or(0.0, |size| {
-            if size == 0 {
-                1.0
-            } else {
-                (progress.current_file_copied as f64 / size as f64).min(1.0) as f32
-            }
-        }),
-        file_progress_label: progress.current_file_size.map_or_else(
-            SharedString::default,
-            |size| {
-                format!(
-                    "Current file written: {} / {} bytes",
-                    p.number_locale.format_u64(progress.current_file_copied),
-                    p.number_locale.format_u64(size)
-                )
-                .into()
-            },
-        ),
+        file_determinate: file.determinate,
+        file_progress: file.fraction,
+        file_progress_label: file.label,
+        file_progress_title: file.title,
+        verification_view,
+        waiting: waiting.is_some(),
+        activity_label: copy_activity(progress, meter.discovering).into(),
         icon: p
             .desktop
             .image(&IconKey::action(copy_artwork(progress.intent))),
         kind: 0,
-        speed_chart: p
-            .job_charts
-            .get(progress.id, false, &progress.throughput, &p.number_locale),
+        speed_chart: if !progress.state.is_terminal()
+            && progress.phase == CopyOperationPhase::Verifying
+        {
+            if verification_view {
+                p.job_charts.get_verification(
+                    progress.id,
+                    progress.verification_pass_id,
+                    &progress.verification_throughput,
+                    &p.number_locale,
+                )
+            } else {
+                // A phase alone does not identify a copied-file readback attempt.
+                // Never substitute compressed whole-operation history here.
+                Default::default()
+            }
+        } else {
+            p.job_charts
+                .get(progress.id, false, &progress.throughput, &p.number_locale)
+        },
+    }
+}
+
+fn copy_activity(progress: &CopyProgress, discovering: bool) -> &'static str {
+    use CopyOperationState as S;
+    if let Some(label) = meter::copy_status_label(progress) {
+        return label;
+    }
+    if progress.state.is_terminal() {
+        return "";
+    }
+    if discovering && matches!(progress.state, S::Preparing | S::Running) {
+        return "Discovering items...";
+    }
+    match progress.state {
+        CopyOperationState::Preparing => "Preparing...",
+        CopyOperationState::Running => match progress.phase {
+            CopyOperationPhase::Planning => "Preparing...",
+            CopyOperationPhase::Copying => "Copying...",
+            CopyOperationPhase::Syncing => "Saving...",
+            CopyOperationPhase::Verifying => "Verifying current file...",
+            CopyOperationPhase::Publishing => "Finishing...",
+            CopyOperationPhase::ValidatingBeforeMove | CopyOperationPhase::ValidatingAfterMove => {
+                "Checking Move..."
+            }
+            CopyOperationPhase::CapturingSources => "Preparing source removal...",
+        },
+        _ => "",
     }
 }
 

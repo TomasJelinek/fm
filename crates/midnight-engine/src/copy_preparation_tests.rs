@@ -262,6 +262,7 @@ impl TransferDirectory for Directory {
 fn setup() -> (Preparation, Status, Arc<Counts>) {
     let root = std::env::current_dir().unwrap();
     let input = CopyInput::from(CopyRequest {
+        start_policy: midnight_core::TransferStartPolicy::Immediate,
         verification: midnight_core::TransferVerification::default(),
         id: OperationId(1),
         clipboard: FileClipboard {
@@ -435,6 +436,7 @@ impl CapturedTransferSources for CapturedPaths {
 fn captured_setup() -> (Preparation, Status, Arc<Counts>) {
     let root = std::env::current_dir().unwrap();
     let input = CopyInput::from(CapturedTransferRequest {
+        start_policy: midnight_core::TransferStartPolicy::Immediate,
         verification: midnight_core::TransferVerification::default(),
         id: OperationId(1),
         sources: Arc::new(CapturedPaths(vec![root.join("first"), root.join("second")])),
@@ -504,6 +506,7 @@ impl CapturedTransferSources for CapturedMovePaths {
 fn captured_move_retry_retains_original_mutation_pin_after_later_open_fails() {
     let root = std::env::current_dir().unwrap();
     let input = CopyInput::from(CapturedTransferRequest {
+        start_policy: midnight_core::TransferStartPolicy::Immediate,
         verification: midnight_core::TransferVerification::default(),
         id: OperationId(1),
         destination: root.join("destination"),
@@ -582,6 +585,7 @@ fn failed_captured_move_preparation_drops_native_authorities_before_provider_lea
     *counts.provider.lock().unwrap() = Some(Arc::downgrade(&provider));
     counts.fail_second.store(true, Ordering::SeqCst);
     let input = CopyInput::from(CapturedTransferRequest {
+        start_policy: midnight_core::TransferStartPolicy::Immediate,
         verification: midnight_core::TransferVerification::default(),
         id: OperationId(1),
         destination: root.join("destination"),

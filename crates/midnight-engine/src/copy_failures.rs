@@ -142,6 +142,16 @@ impl Job {
                 Step::Done
             }
             CopyChoice::Retry if failure.can_retry => {
+                if matches!(self.failure_context, Context::Entry)
+                    && self
+                        .current
+                        .as_ref()
+                        .is_some_and(|work| work.copy.is_some())
+                    && let Err(error) = self.start_verification_pass()
+                {
+                    self.record(error);
+                    return Step::Done;
+                }
                 let result = match self.failure_context {
                     Context::Entry => self
                         .current

@@ -313,7 +313,9 @@ impl Controller {
             progress.pause_requested = false;
             progress.paused = false;
             progress.state = CopyOperationState::CancelRequested;
+            progress.wait_reason = None;
             crate::operation_throughput::stop(&mut progress.throughput);
+            crate::operation_throughput::stop(&mut progress.verification_throughput);
             if self
                 .outbox
                 .sender
@@ -372,6 +374,73 @@ async fn acquire(budget: &Arc<Semaphore>, cancel: &Cancellation) -> Option<Owned
     }
 }
 
+async fn acquire_resources(
+    budget: &Arc<Semaphore>,
+    cancel: &Cancellation,
+    status: &Status,
+    outbox: &Outbox,
+    tracker: Option<&Mutex<Tracker>>,
+) -> Option<OwnedSemaphorePermit> {
+    if cancel.is_cancelled() {
+        return None;
+    }
+    match budget.clone().try_acquire_owned() {
+        Ok(permit) => return Some(permit),
+        Err(tokio::sync::TryAcquireError::Closed) => return None,
+        Err(tokio::sync::TryAcquireError::NoPermits) => {}
+    }
+    set_resource_wait(status, tracker, Some(TransferWaitReason::Resources));
+    let permit = if tracker.is_some() {
+        // run_input owns this job's heartbeat and successfully delivered markers.
+        // A second publisher can lose a full-outbox clear or double the cadence.
+        acquire(budget, cancel).await
+    } else {
+        // Mutation admission precedes run_input, so it needs its own bounded retry.
+        publish_wait_snapshot(outbox, status);
+        let pending = acquire(budget, cancel);
+        tokio::pin!(pending);
+        let mut timer = tokio::time::interval_at(tokio::time::Instant::now() + CADENCE, CADENCE);
+        timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            tokio::select! {
+                permit = &mut pending => break permit,
+                _ = timer.tick() => publish_wait_snapshot(outbox, status),
+            }
+        }
+    };
+    set_resource_wait(status, tracker, None);
+    if tracker.is_none() {
+        publish_wait_snapshot(outbox, status);
+    }
+    permit
+}
+
+fn publish_wait_snapshot(outbox: &Outbox, status: &Status) {
+    // A full result queue must not prevent cancelled native ownership retiring.
+    if outbox
+        .sender
+        .try_send(Event::Copy(CopyEvent::Progress(Arc::new(snapshot(status)))))
+        .is_ok()
+    {
+        (outbox.wakeup)();
+    }
+}
+
+fn set_resource_wait(
+    status: &Status,
+    tracker: Option<&Mutex<Tracker>>,
+    reason: Option<TransferWaitReason>,
+) {
+    let mut progress = status.lock().unwrap_or_else(|e| e.into_inner());
+    progress.wait_reason = reason;
+    if let Some(tracker) = tracker {
+        tracker
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .copy(&mut progress);
+    }
+}
+
 async fn run_job(
     request: Request,
     service: &Option<Arc<dyn TransferService>>,
@@ -380,7 +449,9 @@ async fn run_job(
     io_budget: &Arc<Semaphore>,
 ) -> CopyProgress {
     let mut input = request;
-    let Some(mutation) = acquire(mutation_gate, &input.cancel).await else {
+    let Some(mutation) =
+        acquire_resources(mutation_gate, &input.cancel, &input.status, outbox, None).await
+    else {
         let progress = cancelled(&input.status);
         let _ = input.retire().await;
         return progress;
@@ -397,10 +468,18 @@ async fn run_input(
 ) -> CopyProgress {
     let status = request.status.clone();
     let cancel = request.cancel.clone();
-    let throughput = Mutex::new(Tracker::default());
+    let throughput = Arc::new(Mutex::new(Tracker::default()));
     let mut published_discovery = {
         let progress = status.lock().unwrap_or_else(|error| error.into_inner());
         (progress.discovery.clone(), progress.current_path.clone())
+    };
+    let mut published_pass = {
+        let progress = status.lock().unwrap_or_else(|error| error.into_inner());
+        (
+            progress.verification_pass_id,
+            progress.verification_throughput.clone(),
+            progress.wait_reason,
+        )
     };
     let pending = execute_input(request, service, outbox, io_budget, &throughput);
     tokio::pin!(pending);
@@ -417,26 +496,49 @@ async fn run_input(
             },
             _ = timer.tick() => {
                 let changed = refresh_pause(&status, &cancel);
-                let progress = sample_throughput(&status, &throughput)
-                    .or_else(|| {
-                        let progress = status.lock().unwrap_or_else(|error| error.into_inner());
-                        (changed
-                            || progress.discovery != published_discovery.0
-                            || progress.current_path != published_discovery.1)
-                            .then(|| progress.clone())
-                    });
-                if let Some(progress) = progress {
-                    let progress = Arc::new(progress);
-                    let event = Event::Copy(CopyEvent::Progress(progress.clone()));
-                    if outbox.sender.try_send(event).is_ok() {
-                        // A full outbox must not acknowledge a discovery snapshot:
-                        // retry the latest counts/path at the next bounded tick.
-                        published_discovery =
-                            (progress.discovery.clone(), progress.current_path.clone());
-                        (outbox.wakeup)();
-                    }
-                }
+                publish_progress_tick(
+                    &status,
+                    &throughput,
+                    outbox,
+                    &mut published_discovery,
+                    &mut published_pass,
+                    changed,
+                );
             },
+        }
+    }
+}
+
+fn publish_progress_tick(
+    status: &Status,
+    throughput: &Mutex<Tracker>,
+    outbox: &Outbox,
+    published_discovery: &mut (OperationDiscovery, Option<std::path::PathBuf>),
+    published_pass: &mut (u64, Arc<OperationThroughput>, Option<TransferWaitReason>),
+    pause_changed: bool,
+) {
+    let progress = sample_throughput(status, throughput).or_else(|| {
+        let progress = status.lock().unwrap_or_else(|error| error.into_inner());
+        (pause_changed
+            || progress.discovery != published_discovery.0
+            || progress.current_path != published_discovery.1
+            || progress.verification_pass_id != published_pass.0
+            || !Arc::ptr_eq(&progress.verification_throughput, &published_pass.1)
+            || progress.wait_reason != published_pass.2)
+            .then(|| progress.clone())
+    });
+    if let Some(progress) = progress {
+        let progress = Arc::new(progress);
+        let event = Event::Copy(CopyEvent::Progress(progress.clone()));
+        if outbox.sender.try_send(event).is_ok() {
+            // A full outbox does not acknowledge any undelivered progress marker.
+            *published_discovery = (progress.discovery.clone(), progress.current_path.clone());
+            *published_pass = (
+                progress.verification_pass_id,
+                progress.verification_throughput.clone(),
+                progress.wait_reason,
+            );
+            (outbox.wakeup)();
         }
     }
 }
@@ -444,11 +546,14 @@ async fn run_input(
 fn sample_throughput(status: &Status, throughput: &Mutex<Tracker>) -> Option<CopyProgress> {
     let mut progress = status.lock().unwrap_or_else(|e| e.into_inner());
     let previous = progress.throughput.clone();
+    let previous_verification = progress.verification_throughput.clone();
     throughput
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .copy(&mut progress);
-    (!Arc::ptr_eq(&previous, &progress.throughput)).then(|| progress.clone())
+    (!Arc::ptr_eq(&previous, &progress.throughput)
+        || !Arc::ptr_eq(&previous_verification, &progress.verification_throughput))
+    .then(|| progress.clone())
 }
 
 async fn execute_input(
@@ -456,7 +561,7 @@ async fn execute_input(
     service: &Option<Arc<dyn TransferService>>,
     outbox: &Outbox,
     io_budget: &Arc<Semaphore>,
-    throughput: &Mutex<Tracker>,
+    throughput: &Arc<Mutex<Tracker>>,
 ) -> CopyProgress {
     let (scope, lease) = request.into_parts();
     let Scope { payload, resources } = scope;
@@ -516,7 +621,9 @@ async fn execute_input(
         let permit = if job.holds_io_permit() {
             None
         } else {
-            let Some(permit) = acquire(io_budget, &cancel).await else {
+            let Some(permit) =
+                acquire_resources(io_budget, &cancel, &status, outbox, Some(throughput)).await
+            else {
                 break;
             };
             Some(permit)
@@ -573,7 +680,14 @@ async fn execute_input(
     let permit = if job.holds_io_permit() {
         None
     } else {
-        io_budget.clone().acquire_owned().await.ok()
+        acquire_resources(
+            io_budget,
+            &Cancellation::default(),
+            &status,
+            outbox,
+            Some(throughput),
+        )
+        .await
     };
     match tokio::task::spawn_blocking(move || {
         job.begin_io_step(permit);
@@ -627,6 +741,9 @@ async fn publish(outbox: &Outbox, mut progress: CopyProgress) {
     if progress.state.is_terminal() {
         progress.pause_requested = false;
         progress.paused = false;
+        progress.wait_reason = None;
+        progress.verification_pass_id = 0;
+        progress.verification_throughput = Arc::default();
     }
     outbox
         .send(Event::Copy(CopyEvent::Progress(Arc::new(progress))))
@@ -645,6 +762,7 @@ fn rejected_progress(mut progress: CopyProgress, error: FsError) -> CopyProgress
 fn cancelled(status: &Status) -> CopyProgress {
     let mut progress = snapshot(status);
     progress.state = CopyOperationState::Cancelled;
+    progress.wait_reason = None;
     progress.message = "Copy cancelled; source data was retained.".into();
     progress
 }
@@ -720,6 +838,10 @@ fn initial(request: &CopyInput) -> CopyProgress {
 #[cfg(test)]
 #[path = "copy_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "copy_resource_wait_publication_tests.rs"]
+mod resource_wait_publication_tests;
 
 #[cfg(test)]
 #[path = "copy_link_tests.rs"]

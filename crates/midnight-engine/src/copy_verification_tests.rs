@@ -56,6 +56,7 @@ async fn queued_path_selected_and_captured_copy_preserve_verification_choice() {
                     harness
                         .controller
                         .enqueue_captured(CapturedTransferRequest {
+                            start_policy: midnight_core::TransferStartPolicy::Immediate,
                             verification: mode,
                             id: OperationId(1),
                             sources: Arc::new(CapturedPath(source.clone())),
@@ -101,6 +102,7 @@ async fn shared_clipboard_cross_volume_move_uses_captured_sample_policy_before_r
     harness
         .controller
         .enqueue_clipboard_move(ClipboardMoveRequest {
+            start_policy: midnight_core::TransferStartPolicy::Immediate,
             verification: TransferVerification::SizeAndSamples,
             id: OperationId(1),
             clipboard: Arc::new(FileClipboard {

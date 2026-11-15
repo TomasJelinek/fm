@@ -77,15 +77,23 @@ export component JobProgressWindow inherits DialogWindow {
                             font-size: root.compact ? Theme.font-size : Theme.font-size * 1.25;
                             overflow: elide;
                         }
+                        if root.job.verification-view && root.job.determinate : ProgressIndicator {
+                            accessible-label: "Overall progress";
+                            accessible-value: root.job.progress-label;
+                            progress: root.job.progress; height: 4px;
+                        }
                         if root.job.active && !root.job.determinate : ProgressIndicator {
-                            accessible-label: "Discovering operation items";
-                            indeterminate: !root.job.paused; progress: 0; height: 4px;
+                            accessible-label: root.job.activity-label != "" ? root.job.activity-label : "Discovering operation items";
+                            indeterminate: !root.job.paused && !root.job.waiting; progress: 0; height: 4px;
                         }
                         if root.job.kind == 0 || root.job.kind == 1 : OperationSpeedChart {
                             chart: root.job.speed-chart; deletion: root.job.kind == 1;
-                            overall-progress: true; determinate: root.job.determinate;
-                            progress: root.job.progress; progress-label: root.job.progress-label;
-                            waiting-label: root.job.discovering ? "Discovering items..."
+                            overall-progress: true; verification-phase: root.job.verification-view;
+                            determinate: root.job.verification-view ? root.job.file-determinate : root.job.determinate;
+                            progress: root.job.verification-view ? root.job.file-progress : root.job.progress;
+                            progress-label: root.job.verification-view ? root.job.file-progress-label : root.job.progress-label;
+                            waiting-label: root.job.activity-label != "" ? root.job.activity-label
+                                : root.job.discovering ? "Discovering items..."
                                 : root.job.paused ? "Paused" : "Waiting for activity";
                             height: max(130px, Theme.font-size * 7.5);
                         }
@@ -93,20 +101,23 @@ export component JobProgressWindow inherits DialogWindow {
                             text: root.job.current-path; color: Theme.text; font-size: Theme.font-size;
                             wrap: char-wrap; min-width: 0px;
                         }
-                        if root.job.file-determinate : VerticalLayout {
+                        if root.job.file-progress-label != "" : VerticalLayout {
                             spacing: 4px;
                             Text {
                                 text: root.job.file-progress-label; color: Theme.secondary-text;
                                 font-size: Theme.small-font; wrap: word-wrap;
                             }
-                            ProgressIndicator {
-                                accessible-label: "Current file written";
+                            if root.job.file-determinate : ProgressIndicator {
+                                accessible-label: root.job.file-progress-title != "" ? root.job.file-progress-title : "Current file written";
+                                accessible-value: root.job.file-progress-label;
                                 progress: root.job.file-progress; height: 8px;
                             }
                         }
                         if root.job.active : Text {
-                            text: "Time remaining: " + (root.job.paused ? "Paused"
-                                : root.job.eta != "" ? root.job.eta : "Calculating...");
+                            text: root.job.eta == "" && root.job.activity-label != ""
+                                ? root.job.activity-label
+                                : "Time remaining: " + (root.job.paused ? "Paused"
+                                    : root.job.eta != "" ? root.job.eta : "Calculating...");
                             color: Theme.text; font-size: Theme.font-size; wrap: word-wrap;
                         }
                         if root.job.remaining != "" : Text {

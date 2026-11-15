@@ -250,3 +250,87 @@ fn question_preserves_pause_and_leaves_other_operations_interactive() {
     );
     h.children(2);
 }
+
+#[test]
+fn accepted_copy_cancel_updates_paused_header_and_keeps_it_cancelling_through_cleanup() {
+    use i_slint_core::items::AccessibleRole;
+    let h = Harness::new();
+    for (id, paused, pause_requested, prior_header) in [
+        (1, true, true, "Paused"),
+        (2, false, true, "Pausing..."),
+        (3, true, false, "Resuming..."),
+    ] {
+        h.start(id);
+        let mut snapshot = CopyProgress::queued(
+            OperationId(id),
+            "destination".into(),
+            1,
+            TransferIntent::Copy,
+        );
+        snapshot.state = CopyOperationState::Running;
+        snapshot.phase = CopyOperationPhase::Verifying;
+        snapshot.current_file_size = Some(1000);
+        snapshot.current_file_copied = 1000;
+        snapshot.current_file_verified = 750;
+        snapshot.verification_pass_id = 9;
+        snapshot.paused = paused;
+        snapshot.pause_requested = pause_requested;
+        snapshot.wait_reason = Some(TransferWaitReason::Resources);
+        snapshot.verification_throughput = Arc::new(OperationThroughput {
+            samples: vec![ThroughputSample {
+                elapsed_millis: 250,
+                verification_per_second: 1024.0,
+                ..Default::default()
+            }]
+            .into(),
+            verification_per_second: 1024.0,
+            ..Default::default()
+        });
+        h.apply(Event::Copy(CopyEvent::Progress(Arc::new(snapshot.clone()))));
+        let progress = h.children(1).remove(0);
+        assert!(modeless::accessible_item(&progress, AccessibleRole::Text, prior_header).is_some());
+        let before = h
+            .main
+            .get_operations()
+            .iter()
+            .find(|row| row.identity == format!("copy-job:{id}"))
+            .unwrap();
+        h.commands.borrow_mut().clear();
+        h.refuse.set(true);
+        h.main.invoke_cancel_job(format!("copy-job:{id}").into());
+        h.children(1);
+        assert!(h.commands.borrow().is_empty());
+        assert!(
+            modeless::accessible_item(&progress, AccessibleRole::Text, prior_header).is_some(),
+            "refused cancel must leave the header unchanged"
+        );
+        h.refuse.set(false);
+        h.main.invoke_cancel_job(format!("copy-job:{id}").into());
+        h.children(1);
+        assert!(
+            matches!(h.commands.borrow().as_slice(), [Command::CancelCopy(actual)] if actual.0 == id)
+        );
+        assert!(
+            modeless::accessible_item(&progress, AccessibleRole::Text, "Cancelling").is_some(),
+            "header kept stale pause flags after accepted cancel"
+        );
+        h.apply(Event::Copy(CopyEvent::Progress(Arc::new(snapshot))));
+        h.children(1);
+        assert!(
+            modeless::accessible_item(&progress, AccessibleRole::Text, "Cancelling").is_some(),
+            "late nonterminal progress restored a stale header"
+        );
+        let after = h
+            .main
+            .get_operations()
+            .iter()
+            .find(|row| row.identity == format!("copy-job:{id}"))
+            .unwrap();
+        assert!(after.active && !after.paused && !after.pause_requested);
+        assert_eq!(after.file_progress, before.file_progress);
+        assert_eq!(after.file_progress_label, before.file_progress_label);
+        assert_eq!(after.speed_chart, before.speed_chart);
+        h.complete(id);
+        h.children(0);
+    }
+}

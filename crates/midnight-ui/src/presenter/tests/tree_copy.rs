@@ -567,3 +567,49 @@ fn archive_tree_move_is_refused_without_reinterpreting_its_native_display_path()
     assert!(p.copies.tree_pending.is_none());
     assert_eq!(p.desktop.notice.as_ref().unwrap().0, "Move unavailable");
 }
+
+#[test]
+fn captured_tree_start_policy_survives_refusal_without_recapturing_sources() {
+    for intent in [TransferIntent::Copy, TransferIntent::Move] {
+        for start_policy in [
+            TransferStartPolicy::Immediate,
+            TransferStartPolicy::WaitForEarlier,
+        ] {
+            let mut p = loaded();
+            let request = request_intent(&mut p, intent);
+            captured(&mut p, request, Arc::default());
+            let draft = p.copies.draft.as_ref().unwrap();
+            let token = draft.token.clone();
+            let destination = draft.destination.clone();
+            let crate::presenter::copy_dialog::CopyDraftInput::Tree(capture) = &draft.input else {
+                panic!("captured tree");
+            };
+            let sources = Arc::downgrade(&capture.sources);
+            p.confirm_copy_dialog_options(
+                &token,
+                &destination.to_string_lossy(),
+                TransferMetadataPolicy::ContentOnly,
+                start_policy,
+                &|_| false,
+            );
+            assert_eq!(p.copies.draft.as_ref().unwrap().token, token);
+            p.confirm_copy_dialog_options(
+                &token,
+                &destination.to_string_lossy(),
+                TransferMetadataPolicy::ContentOnly,
+                start_policy,
+                &|command| {
+                    let Command::EnqueueCapturedTransfer(leaf) = command else {
+                        panic!("captured tree command");
+                    };
+                    assert_eq!(leaf.start_policy, start_policy);
+                    assert!(Arc::ptr_eq(&leaf.sources, &sources.upgrade().unwrap()));
+                    assert_eq!(leaf.sources.intent(), intent);
+                    assert_eq!(leaf.destination, destination);
+                    true
+                },
+            );
+            assert!(p.copies.draft.is_none());
+        }
+    }
+}

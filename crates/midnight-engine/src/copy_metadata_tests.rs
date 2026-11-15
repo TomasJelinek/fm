@@ -18,6 +18,7 @@ async fn metadata_wrapper_cannot_downgrade_move_clipboard_to_ordinary_copy() {
         .controller
         .enqueue_metadata(MetadataTransferRequest {
             input: MetadataTransferInput::Clipboard(ClipboardMoveRequest {
+                start_policy: midnight_core::TransferStartPolicy::Immediate,
                 verification: midnight_core::TransferVerification::default(),
                 id: OperationId(1),
                 clipboard: Arc::new(FileClipboard {

@@ -66,9 +66,10 @@ pub struct TreeTransferCapture {
     pub sources: Arc<dyn CapturedTransferSources>,
 }
 
-/// Confirmation uses normal FIFO admission; an open draft holds no queue slot.
+/// Confirmation admits the transfer; an open draft holds no queue slot.
 #[derive(Clone, Debug)]
 pub struct CapturedTransferRequest {
+    pub start_policy: TransferStartPolicy,
     pub verification: TransferVerification,
     pub id: OperationId,
     pub sources: Arc<dyn CapturedTransferSources>,

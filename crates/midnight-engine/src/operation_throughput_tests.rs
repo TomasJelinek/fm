@@ -9,6 +9,35 @@ fn counts(transfer: u64, verification: u64, items: u64) -> Counters {
 }
 
 #[test]
+fn resource_wait_stops_current_rates_without_losing_returned_work_or_history() {
+    let mut tracker = Tracker::default();
+    tracker
+        .sampler
+        .observe(Duration::ZERO, counts(0, 0, 0), true);
+    tracker
+        .sampler
+        .observe(Duration::from_millis(250), counts(1000, 0, 0), true);
+    tracker.started = Instant::now() - Duration::from_millis(500);
+    let mut progress = CopyProgress::queued(
+        midnight_core::OperationId(1),
+        Default::default(),
+        1,
+        midnight_core::TransferIntent::Copy,
+    );
+    progress.state = CopyOperationState::Running;
+    progress.wait_reason = Some(midnight_core::TransferWaitReason::Resources);
+    // A boundary must retain work returned since the previous sample, then stop labels.
+    progress.copied_bytes = 1500;
+    tracker.copy(&mut progress);
+    assert_eq!(progress.throughput.transfer_per_second, 0.0);
+    assert_eq!(progress.throughput.verification_per_second, 0.0);
+    assert_eq!(progress.copied_bytes, 1500);
+    assert_eq!(progress.throughput.samples[0].transfer_per_second, 4000.0);
+    assert!(progress.throughput.samples.len() >= 2);
+    assert!(progress.throughput.samples[1].transfer_per_second > 0.0);
+}
+
+#[test]
 fn measures_distinct_counters_and_stalled_intervals() {
     let mut sampler = Sampler::default();
     sampler.observe(Duration::ZERO, counts(0, 0, 0), true);

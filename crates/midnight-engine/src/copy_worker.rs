@@ -72,6 +72,8 @@ impl EntryWork {
 pub(super) struct Job {
     status: Status,
     progress: CopyProgress,
+    tracker: Arc<Mutex<Tracker>>,
+    pass_ids: crate::operation_throughput::PassIds,
     cancel: Cancellation,
     destination: Arc<dyn TransferDirectory>,
     roots: VecDeque<Box<dyn TransferSource>>,
@@ -308,6 +310,7 @@ impl Job {
                 .map(|source| source.entry().item.path.clone())
                 .collect();
             move_job::check_bounds(&CopyRequest {
+                start_policy: TransferStartPolicy::Immediate,
                 verification: snapshot(&status).verification,
                 id: snapshot(&status).id,
                 clipboard: FileClipboard {
@@ -431,6 +434,8 @@ impl Job {
         ));
         Self {
             progress,
+            tracker: Arc::new(Mutex::new(Tracker::default())),
+            pass_ids: crate::operation_throughput::PassIds::default(),
             status,
             cancel,
             destination,
@@ -458,6 +463,21 @@ impl Job {
             drop_retention: None,
             link_retirement,
         }
+    }
+
+    pub(super) fn attach_tracker(&mut self, tracker: Arc<Mutex<Tracker>>) {
+        self.tracker = tracker;
+    }
+
+    fn start_verification_pass(&mut self) -> Result<(), FsError> {
+        self.progress.verification_pass_id = self.pass_ids.next().map_err(|message| {
+            error(
+                &self.progress.destination_directory,
+                io::ErrorKind::InvalidData,
+                message,
+            )
+        })?;
+        Ok(())
     }
 
     pub(super) fn accept_decision(&mut self, decision: CopyDecision) -> bool {
@@ -554,12 +574,18 @@ impl Job {
         self.progress.remaining_work = self.work_budget.remaining(&self.progress, proof_credit);
         let mut status = self.status.lock().unwrap_or_else(|e| e.into_inner());
         self.progress.throughput = status.throughput.clone();
+        self.progress.wait_reason = status.wait_reason;
         self.progress.pause_requested = self.cancel.pause_requested();
         self.progress.paused = self.cancel.is_paused();
         if self.cancel.is_cancelled() {
             self.progress.state = CopyOperationState::CancelRequested;
             crate::operation_throughput::stop(&mut self.progress.throughput);
         }
+        // Actor ticks and worker boundaries share one sampler and one lock order.
+        self.tracker
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .verification(&mut self.progress);
         *status = self.progress.clone();
     }
     pub(super) fn take_completed_root(&mut self) -> Option<CompletedCopySource> {
@@ -931,6 +957,8 @@ impl Job {
                         })?
                         .revalidate(&self.cancel)?;
                 }
+                // Reserve before taking a source or creating a cleanup-bearing stage.
+                self.start_verification_pass()?;
                 let stage = if let Some(move_work) = self.move_work.as_mut() {
                     let mut stage =
                         if let Some(stage) = move_work.stages.remove(&source.entry().identity) {
@@ -1283,6 +1311,9 @@ impl Job {
                 (file, link)
             });
         self.progress.current_path = None;
+        // The current copied-file owner is gone; later metadata/Move cleanup
+        // must not keep sampling that completed attempt as a live file.
+        self.store_progress();
         if let Some(metadata) = self.metadata.as_mut() {
             for failure in metadata.cleanup() {
                 self.record_cleanup_error(failure);

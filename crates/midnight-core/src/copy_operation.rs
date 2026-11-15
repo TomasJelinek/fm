@@ -2,8 +2,27 @@
 use crate::{FileClipboard, FsError, MutationItem, OperationId};
 use std::{ffi::OsString, path::PathBuf, sync::Arc};
 
+/// Optional dependency waiting, separate from execution capacity and namespace safety.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum TransferStartPolicy {
+    /// No explicit earlier-transfer dependency; normal resource waits still apply.
+    #[default]
+    Immediate,
+    /// Wait for transfers reserved earlier to finish.
+    WaitForEarlier,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TransferWaitReason {
+    /// An explicit opt-in dependency on earlier transfers.
+    EarlierTransfers,
+    /// Actual execution-capacity or namespace waits.
+    Resources,
+}
+
 #[derive(Clone, Debug)]
 pub struct CopyRequest {
+    pub start_policy: TransferStartPolicy,
     pub verification: crate::TransferVerification,
     pub id: OperationId,
     pub clipboard: FileClipboard,
@@ -13,6 +32,7 @@ pub struct CopyRequest {
 /// A confirmation retains shared raw clipboard paths; expansion/cloning stays on a worker.
 #[derive(Clone, Debug)]
 pub struct ClipboardMoveRequest {
+    pub start_policy: TransferStartPolicy,
     pub verification: crate::TransferVerification,
     pub id: OperationId,
     pub clipboard: Arc<FileClipboard>,
@@ -22,6 +42,7 @@ pub struct ClipboardMoveRequest {
 /// F5 captures the shared selection and projection without expanding them on the UI thread.
 #[derive(Clone, Debug)]
 pub struct SelectedCopyRequest {
+    pub start_policy: TransferStartPolicy,
     pub verification: crate::TransferVerification,
     pub id: OperationId,
     pub files: crate::SelectedFiles,
@@ -31,6 +52,7 @@ pub struct SelectedCopyRequest {
 /// F5 captures virtual identities without interpreting displayed archive paths.
 #[derive(Clone, Debug)]
 pub struct ArchiveCopyRequest {
+    pub start_policy: TransferStartPolicy,
     pub verification: crate::TransferVerification,
     pub id: OperationId,
     pub location: crate::ArchiveLocation,
@@ -110,6 +132,7 @@ pub struct CopyProgress {
     /// Native rename does not read content regardless of this choice.
     pub verification: crate::TransferVerification,
     pub state: CopyOperationState,
+    pub wait_reason: Option<TransferWaitReason>,
     /// A request is acknowledged only at a safe backend checkpoint.
     pub pause_requested: bool,
     pub paused: bool,
@@ -129,6 +152,9 @@ pub struct CopyProgress {
     pub current_file_size: Option<u64>,
     pub current_file_copied: u64,
     pub current_file_verified: u64,
+    /// Zero means no current copied-file attempt. Each new attempt or retry gets a
+    /// monotonically increasing nonzero ID within this job; pause preserves it.
+    pub verification_pass_id: u64,
     /// Successful file publications; discovery is an independent metadata snapshot.
     pub files_completed: u64,
     pub directories_created: u64,
@@ -144,6 +170,9 @@ pub struct CopyProgress {
     pub validation_bytes: u64,
     /// Shared backend samples of writes and independent verification reads.
     pub throughput: Arc<crate::OperationThroughput>,
+    /// Current copied-file attempt's destination-readback samples, excluding Move
+    /// proof passes. The overall series remains in `throughput`.
+    pub verification_throughput: Arc<crate::OperationThroughput>,
     /// Internal transient staging count; not a retained-data or completion count.
     pub source_names_staged: u64,
     /// Actual source unlink or accepted normal Windows delete disposition.
@@ -185,6 +214,7 @@ impl CopyProgress {
             intent,
             verification: crate::TransferVerification::default(),
             state: CopyOperationState::Queued,
+            wait_reason: None,
             pause_requested: false,
             paused: false,
             phase: CopyOperationPhase::Planning,
@@ -197,6 +227,7 @@ impl CopyProgress {
             current_file_size: None,
             current_file_copied: 0,
             current_file_verified: 0,
+            verification_pass_id: 0,
             files_completed: 0,
             directories_created: 0,
             native_entries_moved: 0,
@@ -206,6 +237,7 @@ impl CopyProgress {
             verified_bytes: 0,
             validation_bytes: 0,
             throughput: Arc::default(),
+            verification_throughput: Arc::default(),
             source_names_staged: 0,
             source_files_removed: 0,
             source_delete_pending: 0,
@@ -303,4 +335,31 @@ pub enum CopyEvent {
         id: OperationId,
         source: CompletedCopySource,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn queued_defaults_do_not_claim_a_dependency_wait_or_verification_pass() {
+        assert_eq!(
+            TransferStartPolicy::default(),
+            TransferStartPolicy::Immediate
+        );
+        for intent in [TransferIntent::Copy, TransferIntent::Move] {
+            let progress = CopyProgress::queued(OperationId(1), PathBuf::new(), 2, intent);
+            assert_eq!(progress.state, CopyOperationState::Queued);
+            assert_eq!(progress.wait_reason, None);
+            assert_eq!(progress.verification_pass_id, 0);
+            assert!(progress.verification_throughput.samples.is_empty());
+            assert_eq!(progress.verification_throughput.transfer_per_second, 0.0);
+            assert_eq!(
+                progress.verification_throughput.verification_per_second,
+                0.0
+            );
+            assert_eq!(progress.verification_throughput.items_per_second, 0.0);
+            assert!(progress.throughput.samples.is_empty());
+        }
+    }
 }

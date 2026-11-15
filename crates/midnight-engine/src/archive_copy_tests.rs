@@ -60,6 +60,7 @@ fn input(mount: Arc<MemoryMount>, destination: &Path) -> ArchiveCopyRequest {
         .map(Entry::from_archive)
         .collect();
     ArchiveCopyRequest {
+        start_policy: midnight_core::TransferStartPolicy::Immediate,
         verification: midnight_core::TransferVerification::default(),
         id: OperationId(1),
         location: ArchiveLocation {

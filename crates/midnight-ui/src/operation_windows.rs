@@ -171,6 +171,9 @@ fn open(ctx: &Rc<Context>, main: &MainWindow, key: Key) -> Result<Record, Platfo
     window.set_kind(-1);
     window.set_confirm_enabled(true);
     window.set_option_visible(false);
+    window.set_policy("".into());
+    window.set_wait_visible(false);
+    window.set_wait_checked(false);
     window.set_option_enabled(true);
     window.set_option_checked(false);
     window.set_dangerous(false);
@@ -280,6 +283,7 @@ fn confirm(ctx: &Rc<Context>, session: DialogSession, value: SharedString) {
                 token,
                 value.as_str(),
                 main.global::<OperationPresentation>().get_option_checked(),
+                main.global::<OperationPresentation>().get_wait_checked(),
                 ctx.send.as_ref(),
             ),
         };

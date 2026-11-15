@@ -33,6 +33,7 @@ impl Presenter {
             requested_roots,
             move |id| {
                 Command::EnqueueCopy(CopyRequest {
+                    start_policy: TransferStartPolicy::Immediate,
                     verification,
                     id,
                     clipboard,
@@ -199,7 +200,12 @@ impl Presenter {
             .iter_mut()
             .find(|progress| progress.id == id && !progress.state.is_terminal())
         {
-            Arc::make_mut(progress).state = CopyOperationState::CancelRequested;
+            let progress = Arc::make_mut(progress);
+            progress.state = CopyOperationState::CancelRequested;
+            // Cancellation owns presentation until the terminal cleanup event.
+            progress.paused = false;
+            progress.pause_requested = false;
+            progress.wait_reason = None;
         }
     }
 

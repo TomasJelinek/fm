@@ -9,6 +9,9 @@ export component OperationWindow inherits DialogWindow {
     title: root.title-text;
     in property <int> kind: -1;
     in property <string> body;
+    in property <string> policy;
+    in property <bool> wait-visible;
+    in-out property <bool> wait-checked;
     in property <string> initial-name;
     in property <string> input-label;
     in property <int> selection-end;
@@ -44,6 +47,8 @@ export component OperationWindow inherits DialogWindow {
         x: 0px; y: 0px; width: root.width; height: root.height;
         preferred-width: 0px; preferred-height: 0px;
         title: root.title; body: root.body; initial-name: root.initial-name;
+        policy: root.policy; wait-visible: root.wait-visible;
+        wait-checked <=> root.wait-checked;
         input-label: root.input-label; selection-end: root.selection-end;
         has-name: root.has-name; dangerous: root.dangerous;
         confirm-text: root.confirm-text; confirm-enabled: root.confirm-enabled;

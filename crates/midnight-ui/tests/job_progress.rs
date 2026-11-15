@@ -4,6 +4,7 @@ mod modeless;
 #[path = "support/progress_form.rs"]
 mod ui;
 use i_slint_core::{
+    accessibility::AccessibleStringProperty,
     item_tree::{ItemRc, ParentItemTraversalMode},
     items::{AccessibleRole, Flickable, Path},
 };
@@ -45,6 +46,93 @@ fn progress_meter_is_visible_even_with_unknown_totals_and_current_file_has_its_o
     ui::popup_item(&test.window, "Deletion speed", AccessibleRole::Groupbox);
     ui::key(&test.window, Key::Escape);
     assert!(!ui::has_popup(&test.window));
+}
+
+#[test]
+fn verification_reuses_the_file_counter_and_shows_a_fresh_percentage_axis() {
+    let mut test = ui::TestUi::new();
+    let mut row = job("copy-job:22", "Copy");
+    row.active = true;
+    row.determinate = true;
+    row.progress = 0.6;
+    row.progress_label = "60% complete".into();
+    row.verification_view = true;
+    row.file_determinate = true;
+    row.file_progress = 0.25;
+    row.file_progress_title = "Current file verification".into();
+    row.file_progress_label = "Verifying samples: 49152 / 196608 bytes".into();
+    row.activity_label = "Verifying current file...".into();
+    row.speed_chart = SpeedChartData {
+        area: "M 0 100 L 0 80 L 1000 40 L 1000 100 Z".into(),
+        primary: "M 0 80 L 1000 40".into(),
+        speed: "128 KiB/s".into(),
+        has_samples: true,
+        ..Default::default()
+    };
+    test.window.set_job(row);
+    for (density, font) in [(0, 13), (1, 32)] {
+        test.window
+            .invoke_apply_preferences(3, density, "".into(), font, font);
+        for (width, height) in [(1000, 700), (480, 360), (320, 200)] {
+            test.resize(width, height);
+            let chart =
+                ui::popup_item(&test.window, "Verification speed", AccessibleRole::Groupbox);
+            assert_eq!(check_history_width(&chart), 1, "readback has one curve");
+            let overall = ui::popup_item(
+                &test.window,
+                "Overall progress",
+                AccessibleRole::ProgressIndicator,
+            );
+            assert_eq!(
+                overall
+                    .accessible_string_property(AccessibleStringProperty::Value)
+                    .unwrap(),
+                "60% complete"
+            );
+            let file = ui::popup_item(
+                &test.window,
+                "Current file verification",
+                AccessibleRole::ProgressIndicator,
+            );
+            assert_eq!(
+                file.accessible_string_property(AccessibleStringProperty::Value)
+                    .unwrap(),
+                "Verifying samples: 49152 / 196608 bytes"
+            );
+            for endpoint in ["0%", "100%"] {
+                ui::popup_item(&test.window, endpoint, AccessibleRole::Text);
+            }
+            let close = ui::popup_item(&test.window, "Cancel operation", AccessibleRole::Button);
+            let rect = close.geometry();
+            let location = close.map_to_native_window(rect.origin);
+            assert!(location.x >= 0.0 && location.y >= 0.0);
+            assert!(location.x + rect.size.width <= width as f32 + 1.0);
+            assert!(location.y + rect.size.height <= height as f32 + 1.0);
+            test.snapshot(&format!("verify-phase-{density}-{font}-{width}x{height}"));
+        }
+    }
+}
+
+#[test]
+fn waiting_status_replaces_an_empty_eta_without_claiming_calculation() {
+    let mut test = ui::TestUi::new();
+    let mut row = job("copy-job:23", "Move");
+    row.active = true;
+    row.waiting = true;
+    row.progress_label = "Queued".into();
+    row.activity_label = "Queued — waiting for earlier transfers".into();
+    test.window.set_job(row);
+    test.draw();
+    ui::popup_item(
+        &test.window,
+        "Queued — waiting for earlier transfers",
+        AccessibleRole::Text,
+    );
+    ui::popup_item(
+        &test.window,
+        "Queued — waiting for earlier transfers",
+        AccessibleRole::ProgressIndicator,
+    );
 }
 
 #[test]

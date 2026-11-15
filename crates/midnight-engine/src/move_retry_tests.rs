@@ -166,6 +166,7 @@ fn prepared_with_read_control(
     fs::write(&future, b"untouched future bytes").unwrap();
     fs::create_dir(&destination).unwrap();
     let request = CopyRequest {
+        start_policy: midnight_core::TransferStartPolicy::Immediate,
         verification: midnight_core::TransferVerification::default(),
         id: OperationId(1),
         clipboard: FileClipboard {

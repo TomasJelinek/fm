@@ -351,6 +351,7 @@ async fn shared_clipboard_move_uses_native_rename_without_content_verification()
     harness
         .controller
         .enqueue_clipboard_move(ClipboardMoveRequest {
+            start_policy: midnight_core::TransferStartPolicy::Immediate,
             verification: midnight_core::TransferVerification::default(),
             id: OperationId(1),
             clipboard: clipboard.clone(),

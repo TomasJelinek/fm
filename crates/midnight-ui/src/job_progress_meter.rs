@@ -15,7 +15,56 @@ pub(super) struct Meter {
     pub discovering: bool,
 }
 
+pub(super) fn copy_waiting_label(p: &CopyProgress) -> Option<&'static str> {
+    if p.state.is_terminal()
+        || matches!(
+            p.state,
+            CopyOperationState::CancelRequested | CopyOperationState::WaitingForDecision
+        )
+        || p.paused
+        || p.pause_requested
+    {
+        return None;
+    }
+    match p.wait_reason.as_ref() {
+        Some(midnight_core::TransferWaitReason::EarlierTransfers) => {
+            Some("Queued — waiting for earlier transfers")
+        }
+        Some(midnight_core::TransferWaitReason::Resources) => {
+            Some("Waiting for available capacity")
+        }
+        None if p.state == CopyOperationState::Queued => Some("Queued"),
+        None => None,
+    }
+}
+
+pub(super) fn copy_status_label(p: &CopyProgress) -> Option<&'static str> {
+    match p.state {
+        CopyOperationState::CancelRequested => return Some("Cancelling..."),
+        CopyOperationState::WaitingForDecision => return Some("Waiting for your decision"),
+        state if state.is_terminal() => return None,
+        _ => {}
+    }
+    if p.paused {
+        return Some("Paused");
+    }
+    if p.pause_requested {
+        return Some("Pausing...");
+    }
+    copy_waiting_label(p)
+}
+
 pub(super) fn copy(p: &CopyProgress, locale: &NumberLocale) -> Meter {
+    let status = copy_status_label(p);
+    if status.is_none()
+        && p.state == CopyOperationState::Preparing
+        && p.discovery.state == DiscoveryState::NotStarted
+    {
+        return Meter {
+            label: "Preparing".into(),
+            ..Default::default()
+        };
+    }
     let total = p.discovery.entries();
     let recursive = p.discovery.scope == DiscoveryScope::Recursive;
     let completed = if recursive {
@@ -44,7 +93,26 @@ pub(super) fn copy(p: &CopyProgress, locale: &NumberLocale) -> Meter {
         p.state.is_terminal(),
         locale,
     );
-    if known && !p.pause_requested && !p.paused && p.state == CopyOperationState::Running {
+    if let Some(label) = status {
+        meter.discovering = false;
+        meter.label = label.into();
+    } else if meter.discovering
+        && (p.discovery.state != DiscoveryState::Scanning
+            || p.paused
+            || p.pause_requested
+            || !matches!(
+                p.state,
+                CopyOperationState::Preparing | CopyOperationState::Running
+            ))
+    {
+        meter.discovering = false;
+        meter.label = format!(
+            "{} items completed",
+            locale.format_u64(completed.unwrap_or(0))
+        )
+        .into();
+    }
+    if known && status.is_none() && p.state == CopyOperationState::Running {
         let seconds = if bytes.is_some_and(|total| total > 0) {
             // The backend budgets selected sample ranges and outstanding Move proof
             // passes. Rates measure the same writes/readback categories, including

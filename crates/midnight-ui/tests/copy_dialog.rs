@@ -189,19 +189,29 @@ fn copy_confirmation_shows_the_complete_source_above_the_destination() {
 
 #[test]
 fn f5_destination_editor_consumes_enter_and_escape_without_using_the_clipboard() {
-    destination_editor(Key::F5, false, false);
+    destination_editor(Key::F5, false, false, true, false);
 }
 #[test]
 fn f6_move_confirmation_consumes_enter_escape_and_busy_queue_without_using_clipboard() {
-    destination_editor(Key::F6, true, false);
+    destination_editor(Key::F6, true, false, true, false);
 }
 #[test]
 fn exact_modified_time_copy_requires_explicit_option_and_survives_queue_refusal() {
-    destination_editor(Key::F5, false, true);
+    destination_editor(Key::F5, false, true, true, true);
 }
 #[test]
 fn exact_modified_time_move_requires_explicit_option_and_survives_queue_refusal() {
-    destination_editor(Key::F6, true, true);
+    destination_editor(Key::F6, true, true, true, true);
+}
+
+#[test]
+fn quick_copy_policy_is_bound_to_the_committed_verification_setting() {
+    destination_editor(Key::F5, false, false, false, true);
+}
+
+#[test]
+fn quick_move_policy_is_conditional_on_copying_being_needed() {
+    destination_editor(Key::F6, true, false, false, true);
 }
 
 #[test]
@@ -329,6 +339,13 @@ fn archive_dialog_disables_required_modified_time_and_keeps_ordinary_copy() {
             .unwrap(),
         "false"
     );
+    let wait = accessible_item(
+        &child,
+        AccessibleRole::Checkbox,
+        "Wait for other operations to finish",
+    )
+    .unwrap();
+    input::click(&child, &wait);
     let editor = accessible_item(&child, AccessibleRole::TextInput, "Destination folder").unwrap();
     input::click(&child, &editor);
     input::key(&child, Key::Return);
@@ -337,12 +354,19 @@ fn archive_dialog_disables_required_modified_time_and_keeps_ordinary_copy() {
     let [Command::EnqueueArchiveCopy(request)] = commands.as_slice() else {
         panic!("disabled metadata must leave ordinary archive copy available");
     };
+    assert_eq!(request.start_policy, TransferStartPolicy::WaitForEarlier);
     assert_eq!(request.fallback, Some(EntryId(2)));
     assert_eq!(request.location.mount_id(), Some(42));
     ui.window.hide().unwrap();
 }
 
-fn destination_editor(shortcut: Key, moving: bool, preserve: bool) {
+fn destination_editor(
+    shortcut: Key,
+    moving: bool,
+    preserve: bool,
+    checksums: bool,
+    wait_for_earlier: bool,
+) {
     let (mut ui, windows) = multi_window_ui();
     let base = std::env::temp_dir().join("copy dialog 文档");
     let state = Rc::new(RefCell::new(Presenter::new(
@@ -364,9 +388,25 @@ fn destination_editor(shortcut: Key, moving: bool, preserve: bool) {
             true
         }),
     );
+    if !checksums {
+        let mut preferences = UserPreferences {
+            copy_checksum_verification: false,
+            ..Default::default()
+        };
+        preferences.tabs[0].paths = vec![base.clone()];
+        preferences.tabs[1].paths = vec![base.join("target")];
+        state.borrow_mut().apply_with_sender(
+            Event::PreferencesLoaded(Ok(Box::new(preferences))),
+            &|command| {
+                commands.borrow_mut().push(command);
+                true
+            },
+        );
+    }
     let navigation = commands
         .borrow()
         .iter()
+        .rev()
         .find_map(|command| match command {
             Command::Navigate {
                 pane: PaneId::Left,
@@ -396,28 +436,50 @@ fn destination_editor(shortcut: Key, moving: bool, preserve: bool) {
     ui.draw();
     assert!(!ui.window.get_copy_draft_token().is_empty());
     assert_eq!(ui.window.get_copy_draft_move(), moving);
+    let policy = ui.window.get_copy_draft_policy();
+    assert!(!ui.window.get_copy_draft_body().contains("Verification:"));
     if moving {
-        assert!(
-            ui.window
-                .get_copy_draft_body()
-                .starts_with("Same-volume items are renamed.")
-        );
-        assert!(
-            ui.window
-                .get_copy_draft_body()
-                .contains("verified before each source is removed")
-        );
-        assert!(
-            ui.window
-                .get_copy_draft_body()
-                .contains("Verification: full SHA-256.")
-        );
+        assert!(policy.starts_with("Same-volume items are renamed without reading file contents."));
+        assert!(policy.contains("If copying is needed:"));
+        assert!(policy.contains("before each source is removed"));
+    } else {
+        assert!(!policy.contains("Same-volume"));
+        assert!(!policy.contains("If copying is needed:"));
+    }
+    if checksums {
+        assert!(policy.contains("full SHA-256"));
+        assert!(!policy.contains("between samples"));
+    } else {
+        assert!(policy.contains("first/middle/last 64 KiB"));
+        assert!(policy.contains("bytes between samples are not checked"));
+        assert!(!policy.contains("SHA-256"));
     }
     assert!(commands.borrow().is_empty());
     let child = draft_child(&windows);
     if moving {
         modeless::draw(&child, 320, 200, "move-dialog-small");
     }
+    let wait = accessible_item(
+        &child,
+        AccessibleRole::Checkbox,
+        "Wait for other operations to finish",
+    )
+    .expect("Copy and Move both expose the wait option");
+    assert_eq!(
+        wait.accessible_string_property(AccessibleStringProperty::Checked)
+            .unwrap(),
+        "false"
+    );
+    input::key(&child, Key::Tab);
+    input::key(&child, Key::Tab);
+    input::key(&child, Key::Space);
+    assert_eq!(
+        wait.accessible_string_property(AccessibleStringProperty::Checked)
+            .unwrap(),
+        "true",
+        "keyboard toggling wait must not submit the captured transfer"
+    );
+    assert!(commands.borrow().is_empty());
     input::key(&child, Key::Escape);
     ui.draw();
     assert!(ui.window.get_copy_draft_token().is_empty());
@@ -435,6 +497,18 @@ fn destination_editor(shortcut: Key, moving: bool, preserve: bool) {
     ui::key(&ui.window, shortcut);
     ui.draw();
     let child = draft_child(&windows);
+    let wait = accessible_item(
+        &child,
+        AccessibleRole::Checkbox,
+        "Wait for other operations to finish",
+    )
+    .unwrap();
+    assert_eq!(
+        wait.accessible_string_property(AccessibleStringProperty::Checked)
+            .unwrap(),
+        "false",
+        "a new draft must not reuse the previous wait choice"
+    );
     let option = accessible_item(
         &child,
         i_slint_core::items::AccessibleRole::Checkbox,
@@ -450,6 +524,12 @@ fn destination_editor(shortcut: Key, moving: bool, preserve: bool) {
         "false",
         "every new draft must start unchecked",
     );
+    if wait_for_earlier {
+        input::click(&child, &wait);
+        let editor =
+            accessible_item(&child, AccessibleRole::TextInput, "Destination folder").unwrap();
+        input::click(&child, &editor);
+    }
     if preserve {
         input::click(&child, &option);
         // Restore path focus without activating the form or changing the option.
@@ -470,11 +550,11 @@ fn destination_editor(shortcut: Key, moving: bool, preserve: bool) {
         );
     }
     let destination = base.join("another target");
-    // Both directions include the optional checkbox and stay within the modal form.
+    // Both directions include both checkboxes and stay within the modal form.
     let inner = i_slint_core::window::WindowInner::from_pub(child.window());
     let editor = inner.focus_item.borrow().upgrade().unwrap();
     for reverse in [false, true] {
-        for _ in 0..4 {
+        for _ in 0..5 {
             if reverse {
                 input::chord(&child, &[Key::Shift], Key::Tab);
             } else {
@@ -506,6 +586,12 @@ fn destination_editor(shortcut: Key, moving: bool, preserve: bool) {
     assert!(!ui.window.get_copy_draft_token().is_empty());
     assert!(commands.borrow().is_empty());
     assert!(child.window().is_visible());
+    assert_eq!(
+        wait.accessible_string_property(AccessibleStringProperty::Checked)
+            .unwrap(),
+        if wait_for_earlier { "true" } else { "false" },
+        "rejected admission must preserve the chosen wait policy"
+    );
     let error = ui.window.get_copy_draft_error();
     assert!(!error.is_empty());
     assert!(
@@ -532,6 +618,11 @@ fn destination_editor(shortcut: Key, moving: bool, preserve: bool) {
     ui.draw();
     let queued = commands.borrow();
     assert_eq!(queued.len(), 1);
+    let expected_start = if wait_for_earlier {
+        TransferStartPolicy::WaitForEarlier
+    } else {
+        TransferStartPolicy::Immediate
+    };
     let command = if preserve {
         let Command::EnqueueTransferWithMetadata(request) = &queued[0] else {
             panic!("An explicitly checked option must enqueue a required-metadata transfer");
@@ -551,6 +642,7 @@ fn destination_editor(shortcut: Key, moving: bool, preserve: bool) {
         let MetadataTransferInput::Selected(request) = &request.input else {
             panic!("The captured selection must remain shared");
         };
+        assert_eq!(request.start_policy, expected_start);
         assert_eq!(request.destination, destination);
         assert_eq!(
             request.files.fallback.as_ref(),
@@ -567,6 +659,7 @@ fn destination_editor(shortcut: Key, moving: bool, preserve: bool) {
         _ => panic!("The unchecked default must enqueue the existing content-only request"),
     };
     if let Some(request) = request {
+        assert_eq!(request.start_policy, expected_start);
         assert_eq!(request.destination, destination);
         assert_eq!(
             request.files.fallback.as_ref(),
@@ -823,6 +916,16 @@ fn compact_transfer_controls(shortcut: Key, moving: bool) {
     assert!(test.window.get_embedded_modal_open());
     assert!(!test.window.get_dialog_input_blocked());
     let fixed = compact_fixed_controls(&test, action);
+    modeless::bitmap::snapshot(
+        &test.pixels,
+        test.width,
+        test.height,
+        if moving {
+            "compact-move-initial-touch-font32"
+        } else {
+            "compact-copy-initial-touch-font32"
+        },
+    );
     let editor = compact_item(&test, AccessibleRole::TextInput, "Destination folder");
     let option = compact_item(
         &test,
@@ -970,7 +1073,7 @@ fn compact_transfer_controls(shortcut: Key, moving: bool) {
     edited.insert(caret, 'X');
     compact_assert_edit(&input, &edited, caret + 1);
     compact_fixed_controls(&test, action);
-    for _ in 0..3 {
+    for _ in 0..4 {
         input::key(&test.native, Key::Tab);
         compact_settle(&mut test);
     }
@@ -1005,5 +1108,97 @@ fn compact_transfer_controls(shortcut: Key, moving: bool) {
     };
     assert_eq!(request.destination, std::path::PathBuf::from(edited));
     assert_eq!(request.files.fallback.as_ref(), Some(&source));
+    test.window.hide().unwrap();
+}
+
+#[test]
+fn legacy_confirmation_preserves_wait_choice_after_refusal_and_freezes_nested_leaf_policy() {
+    let (mut test, windows) = multi_window_ui();
+    let base = std::env::temp_dir().join("legacy transfer wait 文档");
+    let state = Rc::new(RefCell::new(Presenter::new(
+        base.clone(),
+        base.join("target"),
+    )));
+    let commands = Rc::new(RefCell::new(Vec::new()));
+    let accepting = Rc::new(Cell::new(true));
+    install(
+        &test.window,
+        state.clone(),
+        Rc::new({
+            let commands = commands.clone();
+            let accepting = accepting.clone();
+            move |command| {
+                if !accepting.get() {
+                    return false;
+                }
+                commands.borrow_mut().push(command);
+                true
+            }
+        }),
+    );
+    let navigation = commands
+        .borrow()
+        .iter()
+        .find_map(|command| match command {
+            Command::Navigate {
+                pane: PaneId::Left,
+                navigation,
+                ..
+            } => Some(*navigation),
+            _ => None,
+        })
+        .unwrap();
+    let entries: Arc<[Entry]> = vec![Entry::new(
+        EntryId(1),
+        base.join("raw 文档.txt"),
+        EntryKind::File,
+    )]
+    .into();
+    state.borrow_mut().apply(Event::ListingFinished {
+        pane: PaneId::Left,
+        navigation,
+        index: Arc::new(DirectoryIndex::from_entries(&entries)),
+        entries,
+    });
+    refresh(&test.window, &state.borrow());
+    test.window.invoke_focus_files();
+    ui::key(&test.window, Key::End);
+    commands.borrow_mut().clear();
+    ui::key(&test.window, Key::F6);
+    test.draw();
+    draft_child(&windows);
+    let token = test.window.get_copy_draft_token();
+    let destination = test.window.get_copy_draft_destination();
+    assert!(!token.is_empty());
+    assert!(!test.window.get_copy_draft_wait());
+    test.window.set_copy_draft_wait(true);
+    test.window.set_copy_draft_preserve_time(true);
+    accepting.set(false);
+    test.window
+        .invoke_confirm_copy_draft(token.clone(), destination.clone());
+    test.draw();
+    assert_eq!(test.window.get_copy_draft_token(), token);
+    assert!(test.window.get_copy_draft_wait());
+    assert!(test.window.get_copy_draft_preserve_time());
+    assert!(commands.borrow().is_empty());
+    dismiss_native_notice(&windows);
+    accepting.set(true);
+    test.window
+        .invoke_confirm_copy_draft(token, destination.clone());
+    test.draw();
+    let sent = commands.borrow();
+    let [Command::EnqueueTransferWithMetadata(request)] = sent.as_slice() else {
+        panic!("one admitted compatibility-route transfer: {sent:?}");
+    };
+    assert_eq!(request.intent, TransferIntent::Move);
+    let MetadataTransferInput::Selected(leaf) = &request.input else {
+        panic!("selected leaf");
+    };
+    assert_eq!(leaf.start_policy, TransferStartPolicy::WaitForEarlier);
+    assert_eq!(leaf.destination.to_string_lossy(), destination.as_str());
+    assert_eq!(
+        leaf.files.fallback.as_ref(),
+        Some(&base.join("raw 文档.txt"))
+    );
     test.window.hide().unwrap();
 }

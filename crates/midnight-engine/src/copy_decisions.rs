@@ -7,7 +7,7 @@ pub(super) struct DecisionWaiter<'a> {
     pub waiting: &'a AtomicU64,
     pub decisions: &'a mut mpsc::Receiver<CopyDecision>,
     pub outbox: &'a Outbox,
-    pub throughput: &'a Mutex<Tracker>,
+    pub throughput: &'a Arc<Mutex<Tracker>>,
 }
 
 impl DecisionWaiter<'_> {
@@ -65,7 +65,9 @@ pub(super) async fn prepare_job(
     waiter: &mut DecisionWaiter<'_>,
 ) -> Result<Owned<worker::Job>, Box<CopyProgress>> {
     let mut preparation = ownership::map(input, |(input, service)| {
-        preparation::Preparation::new(input, service)
+        let mut preparation = preparation::Preparation::new(input, service);
+        preparation.attach_tracker(waiter.throughput.clone());
+        preparation
     });
     let mut version = 0u64;
     loop {
@@ -82,7 +84,15 @@ pub(super) async fn prepare_job(
             drop_preparation(preparation).await;
             return Err(Box::new(cancelled(waiter.status)));
         }
-        let Some(permit) = acquire(io_budget, waiter.cancel).await else {
+        let Some(permit) = acquire_resources(
+            io_budget,
+            waiter.cancel,
+            waiter.status,
+            waiter.outbox,
+            Some(waiter.throughput),
+        )
+        .await
+        else {
             drop_preparation(preparation).await;
             return Err(Box::new(cancelled(waiter.status)));
         };

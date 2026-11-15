@@ -440,52 +440,60 @@ fn required_metadata_refuses_known_folders_and_over_budget_without_downgrading()
 
 #[test]
 fn clipboard_required_metadata_retains_original_raw_payload_and_intent() {
-    let (mut p, root) = loaded();
-    let target = root.join("target");
-    p.start_copy(
-        FileClipboard {
-            paths: vec![root.join("source 文档")],
-            intent: FileClipboardIntent::Move,
-        },
-        target.clone(),
-        &|_| panic!("confirmation first"),
-    );
-    let draft = p.copies.draft.as_ref().unwrap();
-    assert!(draft.metadata_available());
-    let crate::presenter::copy_dialog::CopyDraftInput::Clipboard(files) = &draft.input else {
-        panic!("clipboard capture");
-    };
-    let owner = Arc::downgrade(files);
-    let token = draft.token.clone();
-    p.confirm_copy_dialog_metadata(
-        &token,
-        &target.to_string_lossy(),
-        TransferMetadataPolicy::RequireModifiedTime,
-        &|_| false,
-    );
-    assert_eq!(owner.strong_count(), 1);
-    p.confirm_copy_dialog_metadata(
-        &token,
-        &target.to_string_lossy(),
-        TransferMetadataPolicy::RequireModifiedTime,
-        &|command| {
-            let Command::EnqueueTransferWithMetadata(request) = command else {
-                panic!("metadata command");
-            };
-            assert_eq!(request.intent, TransferIntent::Move);
-            assert_eq!(
-                request.metadata,
-                TransferMetadataPolicy::RequireModifiedTime
-            );
-            let MetadataTransferInput::Clipboard(request) = request.input else {
-                panic!("clipboard metadata");
-            };
-            assert!(Arc::ptr_eq(&request.clipboard, &owner.upgrade().unwrap()));
-            assert_eq!(request.destination, target);
-            true
-        },
-    );
-    assert!(p.copies.draft.is_none());
+    for start_policy in [
+        TransferStartPolicy::Immediate,
+        TransferStartPolicy::WaitForEarlier,
+    ] {
+        let (mut p, root) = loaded();
+        let target = root.join("target");
+        p.start_copy(
+            FileClipboard {
+                paths: vec![root.join("source 文档")],
+                intent: FileClipboardIntent::Move,
+            },
+            target.clone(),
+            &|_| panic!("confirmation first"),
+        );
+        let draft = p.copies.draft.as_ref().unwrap();
+        assert!(draft.metadata_available());
+        let crate::presenter::copy_dialog::CopyDraftInput::Clipboard(files) = &draft.input else {
+            panic!("clipboard capture");
+        };
+        let owner = Arc::downgrade(files);
+        let token = draft.token.clone();
+        p.confirm_copy_dialog_options(
+            &token,
+            &target.to_string_lossy(),
+            TransferMetadataPolicy::RequireModifiedTime,
+            start_policy,
+            &|_| false,
+        );
+        assert_eq!(owner.strong_count(), 1);
+        p.confirm_copy_dialog_options(
+            &token,
+            &target.to_string_lossy(),
+            TransferMetadataPolicy::RequireModifiedTime,
+            start_policy,
+            &|command| {
+                let Command::EnqueueTransferWithMetadata(request) = command else {
+                    panic!("metadata command");
+                };
+                assert_eq!(request.intent, TransferIntent::Move);
+                assert_eq!(
+                    request.metadata,
+                    TransferMetadataPolicy::RequireModifiedTime
+                );
+                let MetadataTransferInput::Clipboard(request) = request.input else {
+                    panic!("clipboard metadata");
+                };
+                assert_eq!(request.start_policy, start_policy);
+                assert!(Arc::ptr_eq(&request.clipboard, &owner.upgrade().unwrap()));
+                assert_eq!(request.destination, target);
+                true
+            },
+        );
+        assert!(p.copies.draft.is_none());
+    }
 }
 
 #[test]
@@ -495,6 +503,7 @@ fn archive_required_metadata_refuses_forged_option_without_native_access() {
     let draft = p.copies.draft.as_mut().unwrap();
     draft.input =
         crate::presenter::copy_dialog::CopyDraftInput::Archive(Box::new(ArchiveCopyRequest {
+            start_policy: TransferStartPolicy::Immediate,
             verification: midnight_core::TransferVerification::default(),
             id: OperationId(0),
             location: ArchiveLocation::unavailable(ArchiveAddress {
@@ -522,4 +531,102 @@ fn archive_required_metadata_refuses_forged_option_without_native_access() {
     assert!(p.copies.draft.is_some());
     assert!(!p.copies.draft.as_ref().unwrap().error.is_empty());
     assert!(!p.has_live_operations());
+}
+
+#[test]
+fn selected_draft_freezes_chosen_start_policy_after_rejected_admission() {
+    for moving in [false, true] {
+        for metadata in [
+            TransferMetadataPolicy::ContentOnly,
+            TransferMetadataPolicy::RequireModifiedTime,
+        ] {
+            for start_policy in [
+                TransferStartPolicy::Immediate,
+                TransferStartPolicy::WaitForEarlier,
+            ] {
+                let (mut p, root) = loaded();
+                if moving {
+                    p.request_move_dialog(PaneId::Left, &|_| true);
+                } else {
+                    p.request_copy_dialog(PaneId::Left, &|_| true);
+                }
+                let draft = p.copies.draft.as_ref().unwrap();
+                let token = draft.token.clone();
+                let destination = draft.destination.clone();
+                let crate::presenter::copy_dialog::CopyDraftInput::Native(capture) = &draft.input
+                else {
+                    panic!("native capture");
+                };
+                let selection = capture.selection.clone();
+                p.confirm_copy_dialog_options(
+                    &token,
+                    &destination.to_string_lossy(),
+                    metadata,
+                    start_policy,
+                    &|_| false,
+                );
+                assert_eq!(p.copies.draft.as_ref().unwrap().token, token);
+                assert!(!p.has_live_operations());
+                p.panes[1].path = root.join("later target");
+                let sent = RefCell::new(Vec::new());
+                let send = |command| {
+                    sent.borrow_mut().push(command);
+                    true
+                };
+                p.confirm_copy_dialog_options(
+                    &token,
+                    &destination.to_string_lossy(),
+                    metadata,
+                    start_policy,
+                    &send,
+                );
+                p.confirm_copy_dialog_options(
+                    &token,
+                    &destination.to_string_lossy(),
+                    metadata,
+                    start_policy,
+                    &send,
+                );
+                let sent = sent.borrow();
+                let [command] = sent.as_slice() else {
+                    panic!("one captured command");
+                };
+                let leaf = match command {
+                    Command::EnqueueSelectedCopy(leaf) if !moving => leaf,
+                    Command::EnqueueSelectedMove(leaf) if moving => leaf,
+                    Command::EnqueueTransferWithMetadata(wrapper) => {
+                        assert_eq!(wrapper.metadata, metadata);
+                        let MetadataTransferInput::Selected(leaf) = &wrapper.input else {
+                            panic!("selected metadata leaf");
+                        };
+                        leaf
+                    }
+                    _ => panic!("unexpected transfer route"),
+                };
+                assert_eq!(leaf.start_policy, start_policy);
+                assert_eq!(leaf.destination, destination);
+                assert!(Arc::ptr_eq(&leaf.files.selection, &selection));
+            }
+        }
+    }
+}
+
+#[test]
+fn clipboard_copy_without_a_dialog_always_submits_immediately() {
+    let (mut p, root) = loaded();
+    p.start_copy(
+        FileClipboard {
+            paths: vec![root.join("raw 文档")],
+            intent: FileClipboardIntent::Copy,
+        },
+        root.join("target"),
+        &|command| {
+            let Command::EnqueueCopy(leaf) = command else {
+                panic!("direct clipboard copy");
+            };
+            assert_eq!(leaf.start_policy, TransferStartPolicy::Immediate);
+            true
+        },
+    );
+    assert!(p.copies.draft.is_none());
 }

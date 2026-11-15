@@ -603,6 +603,7 @@ impl Controller {
             .remove(&token);
         if let Some(accepted) = accepted {
             let request = CopyRequest {
+                start_policy: midnight_core::TransferStartPolicy::Immediate,
                 verification: accepted.verification.unwrap_or(verification),
                 id,
                 clipboard: accepted.files,

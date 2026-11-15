@@ -2,6 +2,10 @@
 use super::*;
 use std::path::PathBuf;
 
+#[cfg(test)]
+#[path = "copy_start_policy_tests.rs"]
+mod start_policy_tests;
+
 #[derive(Clone)]
 enum Sources {
     Paths(FileClipboard),
@@ -19,6 +23,7 @@ impl From<CapturedTransferRequest> for CopyInput {
             intent: request.sources.intent(),
             metadata: request.metadata,
             verification: request.verification,
+            start_policy: request.start_policy,
             links: CopyLinkPolicy::Reject,
             _retention: None,
             sources: Sources::Captured(request.sources),
@@ -33,6 +38,7 @@ impl From<ArchiveCopyRequest> for CopyInput {
             intent: TransferIntent::Copy,
             metadata: TransferMetadataPolicy::ContentOnly,
             verification: request.verification,
+            start_policy: request.start_policy,
             links: CopyLinkPolicy::Reject,
             _retention: None,
             sources: Sources::Archive(Box::new(request)),
@@ -60,6 +66,7 @@ pub(super) struct CopyInput {
     pub(super) intent: TransferIntent,
     pub(super) metadata: TransferMetadataPolicy,
     pub(super) verification: TransferVerification,
+    pub(super) start_policy: TransferStartPolicy,
     // Frozen at admission with the source capture and reused on every Retry.
     pub(super) links: CopyLinkPolicy,
     sources: Sources,
@@ -76,6 +83,7 @@ impl From<CopyRequest> for CopyInput {
             intent: TransferIntent::Copy,
             metadata: TransferMetadataPolicy::ContentOnly,
             verification: request.verification,
+            start_policy: request.start_policy,
             links: CopyLinkPolicy::Reject,
             _retention: None,
             sources: Sources::Paths(request.clipboard),
@@ -91,6 +99,7 @@ impl From<SelectedCopyRequest> for CopyInput {
             intent: TransferIntent::Copy,
             metadata: TransferMetadataPolicy::ContentOnly,
             verification: request.verification,
+            start_policy: request.start_policy,
             links: CopyLinkPolicy::Reject,
             _retention: None,
             sources: Sources::Selection(request.files),
@@ -125,6 +134,7 @@ impl CopyInput {
             intent: TransferIntent::Move,
             metadata: TransferMetadataPolicy::ContentOnly,
             verification: request.verification,
+            start_policy: request.start_policy,
             links: CopyLinkPolicy::Reject,
             _retention: None,
             sources: Sources::SharedPaths(request.clipboard),
@@ -282,6 +292,7 @@ impl CopyInput {
         clipboard.validate()?;
         let request = CopyRequest {
             verification: self.verification,
+            start_policy: self.start_policy,
             id: self.id,
             clipboard,
             destination: self.destination,

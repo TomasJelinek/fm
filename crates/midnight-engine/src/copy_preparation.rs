@@ -11,6 +11,7 @@ pub(super) struct Preparation {
     service: RetainedService,
     input: CopyInput,
     finished: bool,
+    tracker: Option<Arc<Mutex<Tracker>>>,
 }
 
 impl Preparation {
@@ -19,7 +20,12 @@ impl Preparation {
             service: RetainedService::new(service),
             input,
             finished: false,
+            tracker: None,
         }
+    }
+
+    pub(super) fn attach_tracker(&mut self, tracker: Arc<Mutex<Tracker>>) {
+        self.tracker = Some(tracker);
     }
 
     pub(super) fn attempt(
@@ -99,6 +105,9 @@ impl Preparation {
                 sources,
             } => worker::Job::prepare_archive(destination, sources, &self.service, cancel, status),
         }?;
+        if let Some(tracker) = &self.tracker {
+            job.attach_tracker(tracker.clone());
+        }
         job.set_verification(self.input.verification);
         job.prepare_discovery();
         if let Some(retention) = &self.input._retention {

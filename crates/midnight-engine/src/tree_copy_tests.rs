@@ -51,6 +51,7 @@ impl CapturedTransferSources for Paths {
 }
 fn captured(paths: Vec<PathBuf>, destination: PathBuf) -> CapturedTransferRequest {
     CapturedTransferRequest {
+        start_policy: midnight_core::TransferStartPolicy::Immediate,
         verification: midnight_core::TransferVerification::default(),
         id: OperationId(1),
         sources: Arc::new(Paths(paths, TransferIntent::Copy)),
@@ -180,6 +181,7 @@ fn tracked(
     let observed = Arc::new(Mutex::new(None));
     (
         CapturedTransferRequest {
+            start_policy: midnight_core::TransferStartPolicy::Immediate,
             verification: midnight_core::TransferVerification::default(),
             id: OperationId(id),
             destination,
@@ -308,6 +310,7 @@ async fn captured_send_failure_finishes_source_retirement_before_capacity_and_te
     let started = Arc::new(Notify::new());
     let (release, released) = std::sync::mpsc::channel();
     let request = CapturedTransferRequest {
+        start_policy: midnight_core::TransferStartPolicy::Immediate,
         verification: midnight_core::TransferVerification::default(),
         id: OperationId(1),
         destination: std::env::current_dir().unwrap(),
@@ -416,6 +419,7 @@ async fn captured_prepared_authority_and_count_mismatch_reject_before_destinatio
     ] {
         h.controller
             .enqueue_captured(CapturedTransferRequest {
+                start_policy: midnight_core::TransferStartPolicy::Immediate,
                 verification: midnight_core::TransferVerification::default(),
                 id: OperationId(id),
                 destination: destination.clone(),
@@ -715,6 +719,7 @@ async fn captured_browsed_directory_link_preserves_original_occurrence_and_relea
     h.controller
         .enqueue_options(CopyOptionsRequest {
             input: CopyOptionsInput::Captured(CapturedTransferRequest {
+                start_policy: midnight_core::TransferStartPolicy::Immediate,
                 id: OperationId(1),
                 destination: fixture.destination.clone(),
                 sources: capture.sources,
@@ -795,6 +800,7 @@ async fn captured_preserve_preflights_every_provider_before_preparing_native_roo
     h.controller
         .enqueue_options(CopyOptionsRequest {
             input: CopyOptionsInput::Captured(CapturedTransferRequest {
+                start_policy: midnight_core::TransferStartPolicy::Immediate,
                 id: OperationId(1),
                 destination: fixture.destination.clone(),
                 sources: capture.sources,
@@ -839,6 +845,7 @@ async fn captured_preserve_rejects_forged_move_and_required_time_before_preparat
         h.controller
             .enqueue_options(CopyOptionsRequest {
                 input: CopyOptionsInput::Captured(CapturedTransferRequest {
+                    start_policy: midnight_core::TransferStartPolicy::Immediate,
                     id: OperationId(1),
                     destination: fixture.destination.clone(),
                     sources: Arc::new(Paths(vec![fixture.source.clone()], intent)),

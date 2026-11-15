@@ -74,9 +74,11 @@ impl CopyDraftInput {
         intent: TransferIntent,
         metadata: TransferMetadataPolicy,
         verification: TransferVerification,
+        start_policy: TransferStartPolicy,
     ) -> Command {
         match self {
             Self::Tree(capture) => Command::EnqueueCapturedTransfer(CapturedTransferRequest {
+                start_policy,
                 verification,
                 id,
                 sources: capture.sources,
@@ -85,6 +87,7 @@ impl CopyDraftInput {
             }),
             Self::Native(files) => {
                 let request = SelectedCopyRequest {
+                    start_policy,
                     verification,
                     id,
                     files,
@@ -103,6 +106,7 @@ impl CopyDraftInput {
                 }
             }
             Self::Archive(mut request) => {
+                request.start_policy = start_policy;
                 request.verification = verification;
                 request.id = id;
                 request.destination = destination;
@@ -110,6 +114,7 @@ impl CopyDraftInput {
             }
             Self::Clipboard(clipboard) => {
                 let request = ClipboardMoveRequest {
+                    start_policy,
                     verification,
                     id,
                     clipboard,
@@ -231,6 +236,23 @@ impl Presenter {
         metadata: TransferMetadataPolicy,
         send: &dyn Fn(Command) -> bool,
     ) {
+        self.confirm_copy_dialog_options(
+            token,
+            destination,
+            metadata,
+            TransferStartPolicy::Immediate,
+            send,
+        );
+    }
+
+    pub(crate) fn confirm_copy_dialog_options(
+        &mut self,
+        token: &str,
+        destination: &str,
+        metadata: TransferMetadataPolicy,
+        start_policy: TransferStartPolicy,
+        send: &dyn Fn(Command) -> bool,
+    ) {
         let Some(draft) = self
             .copies
             .draft
@@ -279,7 +301,7 @@ impl Presenter {
             destination,
             roots,
             intent,
-            move |id| input.command(id, target, intent, metadata, verification),
+            move |id| input.command(id, target, intent, metadata, verification, start_policy),
             send,
         ) {
             self.retire_copy_draft();
@@ -318,6 +340,7 @@ impl Presenter {
         let destination = self.panes[pane.other().index()].display_path().to_owned();
         let source = archive.location.display_text();
         let input = CopyDraftInput::Archive(Box::new(ArchiveCopyRequest {
+            start_policy: TransferStartPolicy::Immediate,
             verification: midnight_core::TransferVerification::default(),
             id: OperationId(0), // Assigned only after the user submits the captured draft.
             location: archive.location.clone(),

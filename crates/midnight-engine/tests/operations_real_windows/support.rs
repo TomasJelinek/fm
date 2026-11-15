@@ -173,6 +173,7 @@ impl Harness {
         moving: bool,
     ) {
         let request = CopyRequest {
+            start_policy: midnight_core::TransferStartPolicy::Immediate,
             verification,
             id: OperationId(id),
             clipboard: FileClipboard {

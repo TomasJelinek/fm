@@ -10,6 +10,9 @@ export global OperationPresentation {
     in-out property <string> title-text;
     in-out property <int> kind: -1;
     in-out property <string> body;
+    in-out property <string> policy;
+    in-out property <bool> wait-visible;
+    in-out property <bool> wait-checked;
     in-out property <string> initial-name;
     in-out property <string> input-label;
     in-out property <int> selection-end;
@@ -70,6 +73,9 @@ export component EmbeddedOperation inherits Rectangle {
                 preferred-width: 0px; preferred-height: 0px;
                 title: OperationPresentation.title-text;
                 body: OperationPresentation.body;
+                policy: OperationPresentation.policy;
+                wait-visible: OperationPresentation.wait-visible;
+                wait-checked <=> OperationPresentation.wait-checked;
                 initial-name: OperationPresentation.initial-name;
                 input-label: OperationPresentation.input-label;
                 selection-end: OperationPresentation.selection-end;

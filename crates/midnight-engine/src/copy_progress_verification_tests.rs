@@ -15,6 +15,9 @@ struct Gates {
     entering: Notify,
     stages: AtomicUsize,
     cleaned: AtomicUsize,
+    fail_read_once: AtomicBool,
+    read_failed: AtomicBool,
+    read_offsets: Mutex<Vec<(usize, u64, usize)>>,
 }
 impl Gates {
     fn new() -> Arc<Self> {
@@ -27,6 +30,9 @@ impl Gates {
             entering: Notify::new(),
             stages: AtomicUsize::new(0),
             cleaned: AtomicUsize::new(0),
+            fail_read_once: AtomicBool::new(false),
+            read_failed: AtomicBool::new(false),
+            read_offsets: Mutex::default(),
         })
     }
     fn wait(&self, gate: usize) -> io::Result<()> {
@@ -158,10 +164,34 @@ impl Read for Stage {
         if self.reads < 2 {
             // Deliberately retain the real stage and the caller's I/O permit
             // across cancellation until this native-call fixture returns.
-            self.gates.wait(self.index * 2 + self.reads)?;
+            let gate = if self.index == 0
+                && self.reads == 1
+                && self.gates.read_failed.load(Ordering::Acquire)
+            {
+                2
+            } else {
+                self.index * 2 + self.reads
+            };
+            self.gates.wait(gate)?;
+        }
+        if self.index == 0
+            && self.reads == 1
+            && self.gates.fail_read_once.swap(false, Ordering::AcqRel)
+        {
+            self.gates.read_failed.store(true, Ordering::Release);
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "one recoverable destination read failure",
+            ));
         }
         let maximum = bytes.len().min(READ_BLOCK);
+        let offset = self.inner.stream_position()?;
         let count = self.inner.read(&mut bytes[..maximum])?;
+        self.gates
+            .read_offsets
+            .lock()
+            .unwrap()
+            .push((self.index, offset, count));
         self.reads += 1;
         Ok(count)
     }
@@ -206,15 +236,18 @@ struct Observed {
     copied: u64,
 }
 impl Observed {
+    fn record(&mut self, progress: &CopyProgress) {
+        assert_eq!(progress.id, OperationId(1));
+        assert!(progress.verified_bytes >= self.verified, "{progress:?}");
+        assert!(progress.copied_bytes >= self.copied, "{progress:?}");
+        self.verified = progress.verified_bytes;
+        self.copied = progress.copied_bytes;
+    }
     async fn next(&mut self, harness: &mut Harness) -> Arc<CopyProgress> {
         loop {
             match harness.next().await {
                 CopyEvent::Progress(progress) => {
-                    assert_eq!(progress.id, OperationId(1));
-                    assert!(progress.verified_bytes >= self.verified, "{progress:?}");
-                    assert!(progress.copied_bytes >= self.copied, "{progress:?}");
-                    self.verified = progress.verified_bytes;
-                    self.copied = progress.copied_bytes;
+                    self.record(&progress);
                     return progress;
                 }
                 CopyEvent::RootCompleted { id, .. } => assert_eq!(id, OperationId(1)),
@@ -251,6 +284,85 @@ impl Observed {
             }
         }
     }
+    async fn failure(&mut self, harness: &mut Harness) -> Arc<CopyFailure> {
+        tokio::time::timeout(Duration::from_secs(4), async {
+            loop {
+                match harness.next().await {
+                    CopyEvent::Progress(progress) => {
+                        self.record(&progress);
+                        assert!(!progress.state.is_terminal(), "{progress:?}");
+                    }
+                    CopyEvent::Failure(failure) => return failure,
+                    event => panic!("unexpected event before readback failure: {event:?}"),
+                }
+            }
+        })
+        .await
+        .expect("missing recoverable readback decision")
+    }
+    async fn resumed_pass(
+        &mut self,
+        harness: &mut Harness,
+        path: &Path,
+        previous: u64,
+    ) -> Arc<CopyProgress> {
+        tokio::time::timeout(Duration::from_secs(4), async {
+            loop {
+                let progress = self.next(harness).await;
+                assert!(!progress.state.is_terminal(), "{progress:?}");
+                if progress.verification_pass_id > previous
+                    && progress.phase == CopyOperationPhase::Verifying
+                    && progress.current_path.as_deref() == Some(path)
+                {
+                    return progress;
+                }
+            }
+        })
+        .await
+        .expect("Retry never published a fresh verification pass")
+    }
+}
+
+fn assert_verification_series(progress: &CopyProgress) {
+    let series = &progress.verification_throughput;
+    assert_eq!(series.transfer_per_second, 0.0);
+    assert_eq!(series.items_per_second, 0.0);
+    assert!(series.verification_per_second.is_finite() && series.verification_per_second >= 0.0);
+    assert!(
+        series
+            .samples
+            .iter()
+            .all(|sample| sample.transfer_per_second == 0.0
+                && sample.items_per_second == 0.0
+                && sample.verification_per_second.is_finite()
+                && sample.verification_per_second >= 0.0)
+    );
+}
+
+fn assert_no_verification_pass(progress: &CopyProgress) {
+    assert_eq!(progress.verification_pass_id, 0);
+    assert!(progress.verification_throughput.samples.is_empty());
+    assert_eq!(
+        progress.verification_throughput.verification_per_second,
+        0.0
+    );
+    assert_verification_series(progress);
+}
+
+fn assert_quiet_verification_pass(progress: &CopyProgress) {
+    assert!(progress.verification_pass_id > 0);
+    assert_eq!(
+        progress.verification_throughput.verification_per_second,
+        0.0
+    );
+    assert!(
+        progress
+            .verification_throughput
+            .samples
+            .iter()
+            .all(|sample| sample.verification_per_second == 0.0)
+    );
+    assert_verification_series(progress);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -288,6 +400,8 @@ async fn two_files(policy: TransferVerification) {
     assert_eq!(partial.copied_bytes, first_bytes.len() as u64);
     assert_eq!(partial.verified_bytes, READ_BLOCK as u64);
     assert_eq!(partial.files_completed, 0);
+    let first_pass = partial.verification_pass_id;
+    assert!(first_pass > 0);
     // A second actual timer event while the same read is blocked must preserve
     // write/readback counts; the witness is not a final-only status assertion.
     let held = observed
@@ -295,6 +409,14 @@ async fn two_files(policy: TransferVerification) {
         .await;
     assert_eq!(held.copied_bytes, partial.copied_bytes);
     assert_eq!(held.verified_bytes, partial.verified_bytes);
+    assert_eq!(held.verification_pass_id, first_pass);
+    assert_verification_series(&held);
+    assert!(
+        held.verification_throughput
+            .samples
+            .iter()
+            .any(|sample| sample.verification_per_second > 0.0)
+    );
     gates.release(1);
 
     let reset = observed.verifying(&mut harness, &second, 0).await;
@@ -307,6 +429,13 @@ async fn two_files(policy: TransferVerification) {
     assert_eq!(reset.copied_bytes, total_copied);
     assert_eq!(reset.verified_bytes, first_readback);
     assert_eq!(reset.files_completed, 1);
+    assert!(reset.verification_pass_id > first_pass);
+    let second_pass = reset.verification_pass_id;
+    assert_quiet_verification_pass(&reset);
+    assert!(!Arc::ptr_eq(
+        &reset.verification_throughput,
+        &held.verification_throughput
+    ));
     gates.release(2);
 
     let partial = observed
@@ -316,6 +445,7 @@ async fn two_files(policy: TransferVerification) {
     assert_partial(&partial, policy, second_bytes.len() as u64);
     assert_eq!(partial.copied_bytes, total_copied);
     assert_eq!(partial.verified_bytes, first_readback + READ_BLOCK as u64);
+    assert_eq!(partial.verification_pass_id, second_pass);
     gates.release(3);
     let done = observed.terminal(&mut harness).await;
     harness.close().await;
@@ -336,6 +466,7 @@ async fn two_files(policy: TransferVerification) {
     assert_eq!(done.current_file_size, None);
     assert_eq!(done.current_file_copied, 0);
     assert_eq!(done.current_file_verified, 0);
+    assert_no_verification_pass(&done);
     assert_eq!(gates.stages.load(Ordering::SeqCst), 2);
     assert_eq!(fs::read(destination.join("first")).unwrap(), first_bytes);
     assert_eq!(fs::read(destination.join("second")).unwrap(), second_bytes);
@@ -348,6 +479,8 @@ fn assert_partial(progress: &CopyProgress, policy: TransferVerification, size: u
     assert_eq!(progress.current_file_copied, size);
     assert!(progress.current_file_verified > 0);
     assert!(progress.current_file_verified < policy.readback_bytes(size));
+    assert!(progress.verification_pass_id > 0);
+    assert_verification_series(progress);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -366,7 +499,7 @@ async fn cancelling_blocked_verification_retains_native_capacity_until_read_retu
         .enqueue(request(1, std::slice::from_ref(&source), &destination))
         .await;
     let mut observed = Observed::default();
-    observed
+    let partial = observed
         .verifying(&mut harness, &source, READ_BLOCK as u64)
         .await;
     gates.wait_entered(1).await;
@@ -389,6 +522,9 @@ async fn cancelling_blocked_verification_retains_native_capacity_until_read_retu
     .expect("missing cancellation acknowledgement while read is held");
     assert_eq!(cancelled.current_file_verified, READ_BLOCK as u64);
     assert_eq!(cancelled.copied_bytes, bytes.len() as u64);
+    assert!(partial.verification_pass_id > 0);
+    assert_eq!(cancelled.verification_pass_id, partial.verification_pass_id);
+    assert_verification_series(&cancelled);
     assert_eq!(gates.cleaned.load(Ordering::SeqCst), 0);
     assert_eq!(
         (
@@ -412,8 +548,105 @@ async fn cancelling_blocked_verification_retains_native_capacity_until_read_retu
     assert_eq!(done.verified_bytes, 2 * READ_BLOCK as u64);
     assert_eq!(done.current_file_size, None);
     assert_eq!(done.current_file_verified, 0);
+    assert_no_verification_pass(&done);
     assert_eq!(returned_capacity, (1, 1));
     assert!(gates.cleaned.load(Ordering::SeqCst) > 0);
     assert_eq!(fs::read_dir(&destination).unwrap().count(), 0);
     assert_eq!(fs::read(&source).unwrap(), bytes);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn readback_retry_starts_a_fresh_pass_without_replaying_the_verified_prefix() {
+    let temp = fixture();
+    let source = temp.path().join("retry source");
+    let destination = temp.path().join("destination");
+    let bytes = vec![57; 600_003];
+    fs::write(&source, &bytes).unwrap();
+    fs::create_dir(&destination).unwrap();
+    let gates = Gates::new();
+    gates.fail_read_once.store(true, Ordering::Release);
+    let _release = ReleaseGates(gates.clone());
+    let mut harness = Harness::new(Some(Arc::new(Service(gates.clone()))));
+    harness
+        .controller
+        .enqueue(request(1, std::slice::from_ref(&source), &destination))
+        .await;
+    let mut observed = Observed::default();
+    let original = observed
+        .verifying(&mut harness, &source, READ_BLOCK as u64)
+        .await;
+    gates.wait_entered(1).await;
+    let held = observed
+        .verifying(&mut harness, &source, READ_BLOCK as u64)
+        .await;
+    assert!(original.verification_pass_id > 0);
+    assert_eq!(held.verification_pass_id, original.verification_pass_id);
+    assert_verification_series(&held);
+    assert!(
+        held.verification_throughput
+            .samples
+            .iter()
+            .any(|sample| sample.verification_per_second > 0.0)
+    );
+    gates.release(1);
+    let failure = observed.failure(&mut harness).await;
+    assert_eq!(failure.id, OperationId(1));
+    assert!(failure.version > 0 && failure.can_retry);
+    assert_eq!(failure.stage, CopyErrorStage::Verifying);
+    assert_eq!(failure.error.kind, io::ErrorKind::TimedOut);
+    assert_eq!(failure.source.as_deref(), Some(source.as_path()));
+    assert_eq!(gates.stages.load(Ordering::SeqCst), 1);
+    assert_eq!(*gates.read_offsets.lock().unwrap(), [(0, 0, READ_BLOCK)]);
+    harness
+        .controller
+        .decide(CopyDecision {
+            id: failure.id,
+            version: failure.version,
+            choice: CopyChoice::Retry,
+        })
+        .await;
+    let resumed = observed
+        .resumed_pass(&mut harness, &source, original.verification_pass_id)
+        .await;
+    gates.wait_entered(2).await;
+    assert_eq!(resumed.state, CopyOperationState::Running);
+    assert_eq!(resumed.current_file_verified, READ_BLOCK as u64);
+    assert_eq!(resumed.verified_bytes, READ_BLOCK as u64);
+    assert_eq!(resumed.copied_bytes, bytes.len() as u64);
+    assert_eq!(resumed.current_file_copied, bytes.len() as u64);
+    assert_quiet_verification_pass(&resumed);
+    assert!(!Arc::ptr_eq(
+        &resumed.verification_throughput,
+        &held.verification_throughput
+    ));
+    assert_eq!(*gates.read_offsets.lock().unwrap(), [(0, 0, READ_BLOCK)]);
+    assert_eq!(gates.stages.load(Ordering::SeqCst), 1);
+    gates.release(2);
+    let done = observed.terminal(&mut harness).await;
+    harness.close().await;
+    assert_eq!(done.state, CopyOperationState::Completed, "{done:?}");
+    assert_eq!(done.verification, TransferVerification::FullSha256);
+    assert_eq!(done.files_completed, 1);
+    assert_eq!(done.failed, 0);
+    assert_eq!(done.copied_bytes, bytes.len() as u64);
+    assert_eq!(done.verified_bytes, bytes.len() as u64);
+    assert_eq!(done.completed_bytes, bytes.len() as u64);
+    assert_eq!(gates.stages.load(Ordering::SeqCst), 1);
+    assert!(gates.read_failed.load(Ordering::Acquire));
+    assert_no_verification_pass(&done);
+    let reads = gates.read_offsets.lock().unwrap();
+    assert_eq!(reads[0], (0, 0, READ_BLOCK));
+    assert_eq!(reads[1], (0, READ_BLOCK as u64, READ_BLOCK));
+    let mut expected_offset = 0;
+    for &(stage, offset, count) in reads.iter() {
+        assert_eq!(stage, 0);
+        assert_eq!(
+            offset, expected_offset,
+            "verified prefix was replayed or skipped"
+        );
+        expected_offset += count as u64;
+    }
+    assert_eq!(expected_offset, bytes.len() as u64);
+    assert_eq!(fs::read(destination.join("retry source")).unwrap(), bytes);
+    assert_eq!(fs::read(source).unwrap(), bytes);
 }
