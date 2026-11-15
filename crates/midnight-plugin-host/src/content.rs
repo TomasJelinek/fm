@@ -16,6 +16,14 @@ static REVISIONS: AtomicU64 = AtomicU64::new(1);
 /// Implementations enforce no-follow containment against held objects. Never part of a plugin ABI.
 pub trait ContentResources: Send + Sync + std::fmt::Debug {
     fn capture(&self, segments: &[String]) -> Result<CapturedFile, Error>;
+
+    /// Consume this reference on a backend worker. Known implementations release
+    /// only their reference when shared, and acknowledge actual child teardown
+    /// when last. An error or unwind must retain every unconfirmed owner.
+    fn release_on_worker(self: Arc<Self>) -> Result<(), Error> {
+        std::mem::forget(self);
+        Err(Error("Content resource teardown is unconfirmed".into()))
+    }
 }
 
 /// Host-owned content provider. Plugins receive the ordinary bounded reader ABI,
@@ -26,6 +34,22 @@ pub trait ContentSource: Send + Sync + std::fmt::Debug {
     fn version(&self) -> Vec<u8>;
     fn validate(&self) -> Result<(), Error>;
     fn read_at(&self, offset: u64, length: u32) -> Result<Vec<u8>, Error>;
+
+    /// Cached observation of an already unconfirmed cleanup/callback outcome.
+    /// This query performs no I/O, capture, release or ownership probe. False is
+    /// not retirement qualification; unknown release implementations still fail.
+    fn cleanup_unconfirmed(&self) -> bool {
+        false
+    }
+
+    /// Consume this reference on a backend worker. A known shared reference may
+    /// return immediately; a last owner must confirm native cleanup before Ok.
+    /// Errors/unwinds retain unconfirmed native and accounting tails. Unknown
+    /// implementations deliberately retain this reference rather than call Drop.
+    fn release_on_worker(self: Arc<Self>) -> Result<(), Error> {
+        std::mem::forget(self);
+        Err(Error("Content source teardown is unconfirmed".into()))
+    }
 
     /// Read against the original captured metadata, validating before and after the read.
     /// A trusted adapter may override this only when its underlying read operation provides
@@ -68,6 +92,29 @@ pub(crate) enum Reader {
 }
 
 impl CapturedFile {
+    /// Observe only the backing source's cached cleanup status, without opening
+    /// content or inspecting unrelated resource/cache ownership.
+    pub fn cleanup_unconfirmed(&self) -> bool {
+        self.source
+            .as_ref()
+            .is_some_and(|source| source.cleanup_unconfirmed())
+    }
+
+    /// Explicit backend release of this capture's content, then resource authority.
+    /// Plain native path/snapshot fields are metadata; they need no close protocol.
+    pub fn release_on_worker(self) -> Result<(), Error> {
+        let mut pending = PendingContent(Some(self));
+        let file = pending.0.as_mut().expect("captured content remains owned");
+        if let Some(source) = file.source.take() {
+            source.release_on_worker()?;
+        }
+        if let Some(resources) = file.resources.take() {
+            resources.release_on_worker()?;
+        }
+        drop(pending.0.take());
+        Ok(())
+    }
+
     pub fn with_resources(mut self, resources: Arc<dyn ContentResources>) -> Self {
         self.resources = Some(resources);
         self
@@ -200,6 +247,16 @@ impl CapturedFile {
         })
     }
 }
+// This owner never invokes a remaining native/resource destructor on an error or
+// unwind. The child's consuming release contract owns any reference already taken.
+struct PendingContent<T>(Option<T>);
+impl<T> Drop for PendingContent<T> {
+    fn drop(&mut self) {
+        if let Some(value) = self.0.take() {
+            std::mem::forget(value);
+        }
+    }
+}
 impl Reader {
     pub(crate) fn read_at(&mut self, offset: u64, length: u32) -> Result<Vec<u8>, Error> {
         if let Self::Provider {
@@ -283,6 +340,10 @@ fn validate_source(
 #[cfg(test)]
 #[path = "checked_read_tests.rs"]
 mod checked_read_tests;
+
+#[cfg(test)]
+#[path = "content_retirement_tests.rs"]
+mod content_retirement_tests;
 
 #[cfg(test)]
 mod provider_tests {

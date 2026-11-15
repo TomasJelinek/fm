@@ -1,6 +1,38 @@
 use crate::{Cancel, NativeProvider, discovery::invalid, paths};
 use midnight_filesystem_plugin_api::{ErrorCode, Failure, Kind, Node, Request, Response, abi};
-use std::path::Path;
+use std::{
+    ops::{Deref, DerefMut},
+    path::Path,
+};
+
+/// Local construction/teardown ownership; never run remaining Drop on failure.
+pub(crate) struct PendingRelease<T>(Option<T>);
+impl<T> PendingRelease<T> {
+    pub(crate) fn new(value: T) -> Self {
+        Self(Some(value))
+    }
+    pub(crate) fn into_inner(mut self) -> T {
+        self.0.take().expect("native content release remains armed")
+    }
+}
+impl<T> Deref for PendingRelease<T> {
+    type Target = T;
+    fn deref(&self) -> &T {
+        self.0.as_ref().expect("native content remains owned")
+    }
+}
+impl<T> DerefMut for PendingRelease<T> {
+    fn deref_mut(&mut self) -> &mut T {
+        self.0.as_mut().expect("native content remains owned")
+    }
+}
+impl<T> Drop for PendingRelease<T> {
+    fn drop(&mut self) {
+        if let Some(value) = self.0.take() {
+            std::mem::forget(value);
+        }
+    }
+}
 
 #[derive(Debug)]
 pub(crate) struct Lease {
@@ -13,6 +45,13 @@ impl Lease {
             provider: provider.clone(),
             close: Some(close),
         }
+    }
+
+    pub(crate) fn release_on_worker(self) -> Result<(), Failure> {
+        let mut pending = PendingRelease::new(self);
+        pending.close()?;
+        drop(pending.into_inner());
+        Ok(())
     }
 
     /// Acknowledge cleanup before releasing retained owners. Failure keeps this
@@ -57,6 +96,15 @@ impl NativeProvider {
         &self,
         request: Request,
         cancelled: Cancel<'_>,
+    ) -> Result<Response, Failure> {
+        self.exchange_status(request, cancelled, &mut false)
+    }
+
+    pub(crate) fn exchange_status(
+        &self,
+        request: Request,
+        cancelled: Cancel<'_>,
+        unconfirmed: &mut bool,
     ) -> Result<Response, Failure> {
         check_cancel(cancelled)?;
         let response = self.transport.call(&request, cancelled)?;
@@ -105,7 +153,10 @@ impl NativeProvider {
                 _ => None,
             };
             if let Some(close) = close {
-                drop(Lease::new(self, close));
+                if let Err(error) = Lease::new(self, close).release_on_worker() {
+                    *unconfirmed = true;
+                    return Err(error);
+                }
             }
             return Err(invalid("Filesystem returned an unexpected response"));
         }
@@ -117,10 +168,19 @@ impl NativeProvider {
         path: &Path,
         cancelled: Cancel<'_>,
     ) -> Result<(Lease, u64, Node), Failure> {
+        self.resolve_status(path, cancelled, &mut false)
+    }
+
+    pub(crate) fn resolve_status(
+        &self,
+        path: &Path,
+        cancelled: Cancel<'_>,
+        unconfirmed: &mut bool,
+    ) -> Result<(Lease, u64, Node), Failure> {
         self.require(abi::CAP_NATIVE_ADDRESS)?;
         let address = paths::encode(path)?;
         let Response::Resolved { mount, node } =
-            self.exchange(Request::Resolve { address }, cancelled)?
+            self.exchange_status(Request::Resolve { address }, cancelled, unconfirmed)?
         else {
             return Err(invalid("Missing resolved filesystem node"));
         };
@@ -128,8 +188,17 @@ impl NativeProvider {
             return Err(invalid("Invalid filesystem mount"));
         }
         let lease = Lease::new(self, Request::CloseMount { mount });
-        check_cancel(cancelled)?;
-        validate_node(&node)?;
+        if let Err(error) = check_cancel(cancelled).and_then(|()| validate_node(&node)) {
+            return match lease.release_on_worker() {
+                Ok(()) => Err(error),
+                Err(cleanup) => {
+                    *unconfirmed = true;
+                    Err(invalid(format!(
+                        "{error}; native mount teardown unconfirmed: {cleanup}"
+                    )))
+                }
+            };
+        }
         Ok((lease, mount, node))
     }
 

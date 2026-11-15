@@ -23,6 +23,19 @@ pub struct InstalledProvider {
     size_directories: OnceLock<Arc<dyn DirectoryService>>,
 }
 
+/// Audited application composition: the shared provider/library owner is pinned
+/// for the process lifetime. Per-capture readers still require explicit release.
+/// Arbitrary or from_installation providers cannot mint this host-only token.
+#[derive(Clone, Debug)]
+pub struct SharedInstalledProvider {
+    service: Arc<InstalledProvider>,
+}
+impl SharedInstalledProvider {
+    pub fn service(&self) -> Arc<InstalledProvider> {
+        self.service.clone()
+    }
+}
+
 impl std::fmt::Debug for InstalledProvider {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("InstalledProvider")
@@ -32,6 +45,14 @@ impl std::fmt::Debug for InstalledProvider {
 }
 
 impl InstalledProvider {
+    /// Mint composition authority only for the existing process-pinned singleton.
+    /// Construction remains lazy and performs no discovery or native I/O.
+    pub fn shared_composition(home: Option<PathBuf>) -> SharedInstalledProvider {
+        SharedInstalledProvider {
+            service: Self::shared(home),
+        }
+    }
+
     /// Install the explicit host-native directory-size identity resolver once.
     /// This never substitutes for the installed provider's listing/stat service.
     pub fn set_size_directory_service(&self, service: Arc<dyn DirectoryService>) -> bool {
@@ -134,6 +155,10 @@ mod capture_tests;
 #[cfg(test)]
 #[path = "installed_size_tests.rs"]
 mod size_tests;
+
+#[cfg(test)]
+#[path = "installed_retirement_tests.rs"]
+mod retirement_tests;
 
 impl DirectoryService for InstalledProvider {
     fn resolve_size_directory(

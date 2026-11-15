@@ -255,6 +255,8 @@ fn snapshot_checked_reads_forward_original_expected_metadata() {
         revision: vec![1],
         name: "archive.7z".into(),
         initial: Mutex::new(None),
+        release_failure: Mutex::new(None),
+        released: false,
     };
     for (expected_length, expected_version) in [(11, &[1][..]), (12, &[2][..])] {
         assert!(

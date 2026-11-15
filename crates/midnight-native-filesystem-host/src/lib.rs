@@ -20,7 +20,7 @@ pub use revision::matches_find_entry;
 mod services;
 mod volumes;
 pub use discovery::{Catalog, Package, PackageKind};
-pub use installed::InstalledProvider;
+pub use installed::{InstalledProvider, SharedInstalledProvider};
 #[cfg(windows)]
 #[path = "paths_windows.rs"]
 mod paths;
