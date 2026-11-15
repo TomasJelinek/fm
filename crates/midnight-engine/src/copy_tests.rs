@@ -24,6 +24,10 @@ mod moves;
 mod native_moves;
 #[path = "copy_pause_tests.rs"]
 mod pause;
+#[path = "copy_progress_discovery_tests.rs"]
+mod progress_discovery;
+#[path = "copy_progress_verification_tests.rs"]
+mod progress_verification;
 #[path = "copy_queue_tests.rs"]
 mod queue;
 #[path = "copy_replacement_tests.rs"]

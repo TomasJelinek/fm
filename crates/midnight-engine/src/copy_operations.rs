@@ -398,6 +398,10 @@ async fn run_input(
     let status = request.status.clone();
     let cancel = request.cancel.clone();
     let throughput = Mutex::new(Tracker::default());
+    let mut published_discovery = {
+        let progress = status.lock().unwrap_or_else(|error| error.into_inner());
+        (progress.discovery.clone(), progress.current_path.clone())
+    };
     let pending = execute_input(request, service, outbox, io_budget, &throughput);
     tokio::pin!(pending);
     let mut timer = tokio::time::interval(CADENCE);
@@ -414,11 +418,23 @@ async fn run_input(
             _ = timer.tick() => {
                 let changed = refresh_pause(&status, &cancel);
                 let progress = sample_throughput(&status, &throughput)
-                    .or_else(|| changed.then(|| snapshot(&status)));
-                if let Some(progress) = progress
-                    && outbox.sender.try_send(Event::Copy(CopyEvent::Progress(Arc::new(progress)))).is_ok()
-                {
-                    (outbox.wakeup)();
+                    .or_else(|| {
+                        let progress = status.lock().unwrap_or_else(|error| error.into_inner());
+                        (changed
+                            || progress.discovery != published_discovery.0
+                            || progress.current_path != published_discovery.1)
+                            .then(|| progress.clone())
+                    });
+                if let Some(progress) = progress {
+                    let progress = Arc::new(progress);
+                    let event = Event::Copy(CopyEvent::Progress(progress.clone()));
+                    if outbox.sender.try_send(event).is_ok() {
+                        // A full outbox must not acknowledge a discovery snapshot:
+                        // retry the latest counts/path at the next bounded tick.
+                        published_discovery =
+                            (progress.discovery.clone(), progress.current_path.clone());
+                        (outbox.wakeup)();
+                    }
                 }
             },
         }
