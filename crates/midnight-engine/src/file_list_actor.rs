@@ -303,23 +303,8 @@ fn run(
         return Err(error("No file destination was captured."));
     };
     let service = service.ok_or_else(|| error("Native file output is unavailable."))?;
-    // Generation does not hold the write gate. Waiting for existing operations
-    // remains bounded and cancellation releases this worker within one poll.
-    let _guard = loop {
-        super::file_list_records::check(&job.cancel)?;
-        match mutation
-            .clone()
-            .try_acquire_many_owned(crate::transfer_leases::NAMESPACE_WEIGHT)
-        {
-            Ok(permit) => break permit,
-            Err(tokio::sync::TryAcquireError::Closed) => {
-                return Err(error("File output is shutting down."));
-            }
-            Err(tokio::sync::TryAcquireError::NoPermits) => {
-                std::thread::park_timeout(std::time::Duration::from_millis(20))
-            }
-        }
-    };
+    // Generation does not hold the write gate; only the save waits for it.
+    let _guard = acquire_output_gate(mutation, &job.cancel)?;
     match save_file_list(
         file_list_worker::transfer(source.clone()),
         path,
@@ -343,6 +328,34 @@ fn run(
             warning: receipt.warning,
         }),
     }
+}
+
+/// Queue once for the shared mutation gate, like Delete/Rename. A nonqueuing
+/// `try_acquire` succeeds only when nobody is queued (released permits go to
+/// waiters first), so polling it could wait until a refilled Copy queue drained.
+/// Cancellation is a polled flag and is checked while queued.
+fn acquire_output_gate(
+    mutation: &Arc<Semaphore>,
+    cancel: &Cancellation,
+) -> Result<OwnedSemaphorePermit, FsError> {
+    let runtime = tokio::runtime::Handle::try_current()
+        .map_err(|_| error("File output needs the engine runtime."))?;
+    // This blocking worker owns no runtime thread, so it may block on the handle.
+    runtime.block_on(async {
+        let acquire = mutation
+            .clone()
+            .acquire_many_owned(crate::transfer_leases::NAMESPACE_WEIGHT);
+        tokio::pin!(acquire);
+        loop {
+            super::file_list_records::check(cancel)?;
+            tokio::select! {
+                permit = &mut acquire => {
+                    return permit.map_err(|_| error("File output is shutting down."));
+                }
+                () = tokio::time::sleep(std::time::Duration::from_millis(25)) => {}
+            }
+        }
+    })
 }
 
 #[cfg(test)]

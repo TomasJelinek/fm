@@ -381,7 +381,10 @@ async fn recursive_case_and_times_are_postorder() {
 
 #[tokio::test]
 async fn cancelled_metadata_worker_releases_full_output_queue() {
-    let h = Harness::new(&[("SOURCE", false)]);
+    // A Unicode expansion collides even on case-insensitive NTFS, so the worker
+    // must deliver a conflict prompt through the (full) bounded output queue.
+    let h = Harness::new(&[("straße", false)]);
+    fs::write(h.directory.path().join("STRASSE"), b"existing").unwrap();
     let cancel = Cancellation::default();
     let status = Arc::new(Mutex::new(worker::initial(&h.request)));
     let mut job = worker::prepare(
@@ -392,16 +395,21 @@ async fn cancelled_metadata_worker_releases_full_output_queue() {
         Arc::new(Semaphore::new(MAX_METADATA_TARGETS)),
     )
     .unwrap();
-    job.metadata.as_mut().unwrap().update(
+    let edit = job.metadata.as_mut().unwrap();
+    edit.update(
         1,
         MetadataPatch {
-            modified: TimeEdit::Now,
+            case: Some(CaseChange {
+                mode: CaseMode::Upper,
+                scope: CaseScope::Whole,
+            }),
             ..Default::default()
         },
         &job.targets,
         &cancel,
     );
-    let (sender, receiver) = mpsc::channel(1);
+    let conflicts = edit.conflict_state.clone();
+    let (sender, mut receiver) = mpsc::channel(1);
     sender
         .try_send(Event::Operation(OperationEvent::Progress(Arc::new(
             job.progress(),
@@ -413,19 +421,100 @@ async fn cancelled_metadata_worker_releases_full_output_queue() {
             wakeup: Arc::new(|| {}),
         })
     });
-    tokio::time::sleep(Duration::from_millis(40)).await;
+    // The worker registers its decision immediately before the bounded send.
+    let asked = tokio::time::timeout(Duration::from_secs(5), async {
+        while !conflicts.is_pending() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await;
     cancel.cancel();
-    let completed = tokio::time::timeout(Duration::from_millis(300), &mut work).await;
+    let completed = tokio::time::timeout(Duration::from_secs(5), &mut work).await;
     let released = completed.is_ok();
     // Even the RED path must not leak a blocked native worker into runtime shutdown.
-    drop(receiver);
     if !released {
+        drop(receiver);
         work.await.unwrap();
+        panic!("cancel must release the native worker despite output backpressure");
     }
     assert!(
-        released,
-        "cancel must release the native worker despite output backpressure"
+        asked.is_ok(),
+        "the conflict must reach the full output queue"
     );
+    assert_eq!(completed.unwrap().unwrap().state, OperationState::Cancelled);
+    assert!(matches!(
+        receiver.try_recv(),
+        Ok(Event::Operation(OperationEvent::Progress(_)))
+    ));
+    assert!(
+        receiver.try_recv().is_err(),
+        "no prompt bypassed the full queue"
+    );
+    assert_eq!(
+        fs::read(h.directory.path().join("STRASSE")).unwrap(),
+        b"existing"
+    );
+}
+
+#[test]
+fn confirmed_recursive_children_read_each_native_snapshot_once() {
+    use std::sync::atomic::AtomicUsize;
+    struct Child {
+        item: MutationItem,
+        reads: Arc<AtomicUsize>,
+    }
+    impl PreparedMutation for Child {
+        fn item(&self) -> &MutationItem {
+            &self.item
+        }
+        fn metadata_snapshot(&self, _: &Cancellation) -> Result<MetadataSnapshot, FsError> {
+            self.reads.fetch_add(1, Ordering::SeqCst);
+            Ok(MetadataSnapshot::default())
+        }
+        fn rename(
+            &self,
+            _: &std::ffi::OsStr,
+            _: &Cancellation,
+        ) -> Result<std::path::PathBuf, FsError> {
+            panic!("preparation never renames")
+        }
+        fn delete(
+            &self,
+            _: DeleteMode,
+            _: &Cancellation,
+            _: &mut dyn FnMut(&std::path::Path),
+        ) -> Result<(), FsError> {
+            panic!("preparation never deletes")
+        }
+    }
+    let reads = Arc::new(AtomicUsize::new(0));
+    let children: Vec<Arc<dyn PreparedMutation>> = (0..3)
+        .map(|index| {
+            Arc::new(Child {
+                item: MutationItem {
+                    path: std::env::temp_dir().join(format!("child-{index}")),
+                    kind: EntryKind::File,
+                    metadata: Default::default(),
+                },
+                reads: reads.clone(),
+            }) as Arc<dyn PreparedMutation>
+        })
+        .collect();
+    let patch = MetadataPatch {
+        modified: TimeEdit::Set(UNIX_EPOCH + Duration::from_secs(1)),
+        ..Default::default()
+    };
+    let edit = metadata::Edit::prepare_confirmed(
+        OperationId(1),
+        2,
+        patch.clone(),
+        &children,
+        &Cancellation::default(),
+    )
+    .unwrap();
+    assert_eq!(reads.load(Ordering::SeqCst), children.len());
+    assert_eq!(edit.preview.revision, 2);
+    assert_eq!(edit.preview.patch, patch);
 }
 
 #[test]

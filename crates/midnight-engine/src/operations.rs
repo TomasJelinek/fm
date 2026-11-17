@@ -333,6 +333,9 @@ impl Controller {
     }
     pub(crate) fn shutdown(&self) {
         self.cancel.cancel();
+        // The actor has no idle timer: wake it to dispose queued work and exit. A
+        // full queue already holds messages that wake it.
+        let _ = self.sender.try_send(Message::Wake);
     }
 }
 impl Drop for Controller {
@@ -380,17 +383,25 @@ async fn run(
 ) {
     let budget = Arc::new(Semaphore::new(2));
     let metadata_budget = Arc::new(Semaphore::new(MAX_METADATA_TARGETS));
-    let mut preparing = JoinSet::new();
-    let mut running = JoinSet::<Running>::new();
-    let mut disposing = JoinSet::new();
+    let mut preparing = Tracked::<Preparation>::default();
+    let mut running = Tracked::<Running>::default();
+    let mut disposing = Tracked::<OperationProgress>::default();
     let mut prepared = HashMap::<OperationId, WorkerOwned<worker::Job>>::new();
     let mut drafts = HashMap::<OperationId, (u64, MetadataPatch)>::new();
     let mut conflict_states = HashMap::<OperationId, Arc<metadata::ConflictState>>::new();
     let mut queued = VecDeque::<WorkerOwned<worker::Job>>::new();
+    // Cancellation and pause requests are polled flags, so registered jobs are
+    // rescanned periodically. An idle actor (no registered job) has no timer;
+    // admission, `cancel` and `shutdown` send it a message instead.
     let mut timer = tokio::time::interval(Duration::from_millis(50));
+    timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let mut rename_states: HashMap<OperationId, Arc<rename::ConflictState>> = HashMap::new();
     let mut accepting = true;
     loop {
+        let idle = registry
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .is_empty();
         tokio::select! {
             message = receiver.recv(), if accepting => match message {
                 Some(Message::Prepare(request, job_cancel, status)) => {
@@ -398,7 +409,7 @@ async fn run(
                     let (input, lease) = request.into_parts();
                     let request = lease.own((input, services.mutation.clone(), services.locale.clone()));
                     let metadata_budget = metadata_budget.clone();
-                    preparing.spawn(async move {
+                    preparing.spawn(status.clone(), async move {
                         let original = status.clone();
                         let permit = budget.acquire_owned().await.expect("operation semaphore stays open");
                         let result = tokio::task::spawn_blocking(move || {
@@ -411,7 +422,7 @@ async fn run(
                 Some(Message::Confirm(id, name, predecessors)) => {
                     if let Some(mut job) = prepared.remove(&id) {
                         if let Err(error) = job.confirm(name) {
-                            disposing.spawn(job.failure(error));
+                            disposing.spawn(job.status.clone(), job.failure(error));
                         } else {
                             if !matches!(job.progress().kind, MutationKind::CreateDirectory | MutationKind::CreateFile) {
                                 job.predecessors = predecessors;
@@ -442,7 +453,7 @@ async fn run(
                             && edit.preview.unsupported == 0));
                     if valid && let Some(mut job) = prepared.remove(&id) {
                         if conflicts == MetadataConflictPolicy::Cancel && job.metadata.as_ref().is_some_and(|edit| edit.preview.conflicts > 0) {
-                            disposing.spawn(job.cancelled());
+                            disposing.spawn(job.status.clone(), job.cancelled());
                             continue;
                         }
                         job.metadata.as_mut().expect("validated metadata job").conflicts = conflicts;
@@ -462,7 +473,13 @@ async fn run(
                 None => { accepting = false; cancel.cancel(); }
             },
             Some(result) = preparing.join_next(), if !preparing.is_empty() => {
-                let Ok((status, result)) = result else { continue; };
+                let (status, result) = match result {
+                    Ok(prepared) => prepared,
+                    Err(progress) => {
+                        finish(&registry, &outbox, progress).await;
+                        continue;
+                    }
+                };
                 match result {
                     Ok(Ok(job)) if !job.cancel.is_cancelled() => {
                         let id = job.progress().id;
@@ -483,7 +500,7 @@ async fn run(
                         }
                         prepared.insert(job.progress().id, job);
                     }
-                    Ok(Ok(job)) => { disposing.spawn(job.cancelled()); }
+                    Ok(Ok(job)) => { disposing.spawn(job.status.clone(), job.cancelled()); }
                     Ok(Err(error)) => {
                         let progress = worker::failed_status(&status, error);
                         finish(&registry, &outbox, progress).await;
@@ -495,20 +512,21 @@ async fn run(
                 }
             },
             Some(result) = running.join_next(), if !running.is_empty() => {
-                if let Ok((status, result, metadata_result)) = result {
-                    let progress = result.unwrap_or_else(|error| worker::panicked(&status, error.to_string()));
-                    if let Some(result) = metadata_result {
-                        outbox.send(Event::Operation(OperationEvent::MetadataResult(result))).await;
+                let progress = match result {
+                    Ok((status, result, metadata_result)) => {
+                        if let Some(result) = metadata_result {
+                            outbox.send(Event::Operation(OperationEvent::MetadataResult(result))).await;
+                        }
+                        result.unwrap_or_else(|error| worker::panicked(&status, error.to_string()))
                     }
-                    finish(&registry, &outbox, progress).await;
-                }
+                    Err(progress) => progress,
+                };
+                finish(&registry, &outbox, progress).await;
             },
             Some(result) = disposing.join_next(), if !disposing.is_empty() => {
-                if let Ok(progress) = result {
-                    finish(&registry, &outbox, progress).await;
-                }
+                finish(&registry, &outbox, result.unwrap_or_else(|progress| progress)).await;
             },
-            _ = timer.tick() => {}
+            _ = timer.tick(), if !idle => {}
         }
         let cancelled: Vec<_> = prepared
             .iter()
@@ -518,13 +536,13 @@ async fn run(
         for id in cancelled {
             drafts.remove(&id);
             if let Some(job) = prepared.remove(&id) {
-                disposing.spawn(job.cancelled());
+                disposing.spawn(job.status.clone(), job.cancelled());
             }
         }
         let mut remaining = VecDeque::new();
         while let Some(job) = queued.pop_front() {
             if job.cancel.is_cancelled() {
-                disposing.spawn(job.cancelled());
+                disposing.spawn(job.status.clone(), job.cancelled());
             } else {
                 remaining.push_back(job);
             }
@@ -581,7 +599,7 @@ async fn run(
             let status = job.status.clone();
             let output = outbox.clone();
             let gate = mutation_gate.clone();
-            running.spawn(async move {
+            running.spawn(status.clone(), async move {
                 let job = match acquire_mutation(job, gate).await {
                     Ok(job) => job,
                     Err(progress) => return (status, Ok(*progress), None),
@@ -705,8 +723,41 @@ type Preparation = (
     Result<Result<WorkerOwned<worker::Job>, FsError>, tokio::task::JoinError>,
 );
 
+/// Actor tasks keyed by their job. A task that panics or is aborted still yields
+/// that job's terminal failure, so its registry entry cannot occupy one of the
+/// `MAX_JOBS` slots (and block actor exit) forever.
+struct Tracked<T> {
+    tasks: JoinSet<T>,
+    jobs: HashMap<tokio::task::Id, Status>,
+}
+impl<T> Default for Tracked<T> {
+    fn default() -> Self {
+        Self {
+            tasks: JoinSet::new(),
+            jobs: HashMap::new(),
+        }
+    }
+}
+impl<T: Send + 'static> Tracked<T> {
+    fn spawn(&mut self, status: Status, task: impl Future<Output = T> + Send + 'static) {
+        let id = self.tasks.spawn(task).id();
+        self.jobs.insert(id, status);
+    }
+    fn is_empty(&self) -> bool {
+        self.tasks.is_empty()
+    }
+    async fn join_next(&mut self) -> Option<Result<T, OperationProgress>> {
+        let (id, result) = match self.tasks.join_next_with_id().await? {
+            Ok((id, output)) => (id, Ok(output)),
+            Err(error) => (error.id(), Err(error)),
+        };
+        let status = self.jobs.remove(&id).expect("every tracked task has a job");
+        Some(result.map_err(|error| worker::panicked(&status, error.to_string())))
+    }
+}
+
 fn spawn_preview(
-    tasks: &mut JoinSet<Preparation>,
+    tasks: &mut Tracked<Preparation>,
     job: WorkerOwned<worker::Job>,
     revision: u64,
     patch: MetadataPatch,
@@ -717,7 +768,7 @@ fn spawn_preview(
     let status = job.status.clone();
     let (job, lease) = job.into_parts();
     let context = lease.own((job, locale));
-    tasks.spawn(async move {
+    tasks.spawn(status.clone(), async move {
         let permit = budget
             .acquire_owned()
             .await

@@ -179,3 +179,66 @@ async fn stale_generation_and_confirmation_are_rejected() {
     );
     while tasks.join_next().await.is_some() {}
 }
+
+#[tokio::test]
+async fn waiting_file_save_keeps_its_fifo_place_at_the_mutation_gate() {
+    use crate::transfer_leases::NAMESPACE_WEIGHT;
+    let gate = Arc::new(Semaphore::new(NAMESPACE_WEIGHT as usize));
+    let held = gate.clone().try_acquire_owned().unwrap();
+    let cancel = Cancellation::default();
+    let save = tokio::task::spawn_blocking({
+        let gate = gate.clone();
+        let cancel = cancel.clone();
+        move || acquire_output_gate(&gate, &cancel)
+    });
+    // A queued acquisition absorbs the free permits while it waits for the rest;
+    // a nonqueuing try_acquire loop never would.
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while gate.available_permits() != 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("the save must queue at the gate");
+    let later = tokio::spawn(gate.clone().acquire_many_owned(NAMESPACE_WEIGHT));
+    tokio::task::yield_now().await; // The later waiter queues behind the save.
+    drop(held);
+    let permit = tokio::time::timeout(Duration::from_secs(5), save)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert_eq!(permit.num_permits(), NAMESPACE_WEIGHT as usize);
+    assert!(!later.is_finished(), "a later mutation overtook the save");
+    drop(permit);
+    drop(
+        tokio::time::timeout(Duration::from_secs(5), later)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap(),
+    );
+}
+
+#[tokio::test]
+async fn cancelled_file_save_leaves_the_mutation_gate_queue() {
+    let gate = Arc::new(Semaphore::new(0));
+    let cancel = Cancellation::default();
+    let save = tokio::task::spawn_blocking({
+        let gate = gate.clone();
+        let cancel = cancel.clone();
+        move || acquire_output_gate(&gate, &cancel).map(drop)
+    });
+    cancel.cancel();
+    let error = tokio::time::timeout(Duration::from_secs(5), save)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap_err();
+    assert!(error.message.contains("cancelled"), "{error:?}");
+    gate.add_permits(1);
+    assert!(
+        gate.try_acquire().is_ok(),
+        "no abandoned waiter keeps permits"
+    );
+}

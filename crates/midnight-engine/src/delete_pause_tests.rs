@@ -20,7 +20,13 @@ async fn confirmed_delete_waits_for_exact_resume_before_calling_native_service()
     paused(&mut h).await;
     assert!(h.calls.deleted.lock().unwrap().is_empty());
     h.controller.set_paused(OperationId(999), false).await;
-    tokio::time::sleep(Duration::from_millis(40)).await;
+    {
+        // A resume for another ID leaves this job's pause in force; while it holds,
+        // the worker cannot reach the native service (no timing window to wait out).
+        let registry = h.controller.registry.lock().unwrap();
+        let cancel = &registry[&h.request.id].cancel;
+        assert!(cancel.pause_requested() && cancel.is_paused());
+    }
     assert!(h.calls.deleted.lock().unwrap().is_empty());
     h.controller.set_paused(h.request.id, false).await;
     let done = h.finished().await;

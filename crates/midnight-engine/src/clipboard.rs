@@ -168,23 +168,7 @@ impl Controller {
         let outbox = self.outbox.clone();
         tasks.spawn_blocking(self.scope.blocking(move || {
             let mut session: Option<Box<dyn ClipboardSession>> = None;
-            while !cancel.is_cancelled() {
-                // X11 owners and Windows clipboard windows must serve native messages
-                // without waiting for another application command.
-                if session
-                    .as_mut()
-                    .is_some_and(|s| s.service_pending().is_err())
-                {
-                    session = None;
-                }
-                let request = match worker.receiver.try_recv() {
-                    Ok(request) => request,
-                    Err(mpsc::error::TryRecvError::Empty) => {
-                        std::thread::park_timeout(Duration::from_millis(10));
-                        continue;
-                    }
-                    Err(mpsc::error::TryRecvError::Disconnected) => break,
-                };
+            while let Some(request) = next_request(&mut worker.receiver, &mut session, &cancel) {
                 let event = match prepare(&request.action, &cancel) {
                     Err(error) => request.failure(error),
                     Ok(action) => {
@@ -231,12 +215,20 @@ impl Controller {
             self.sender = Some(self.start_worker(tasks));
         }
         if let Err(failed) = self.sender.as_ref().unwrap().try_send(request) {
+            // The single native worker lease is consumed: a stopped worker cannot
+            // be restarted, so say so instead of inviting endless retries.
+            let busy = match &failed {
+                mpsc::error::TrySendError::Full(_) => error(
+                    io::ErrorKind::WouldBlock,
+                    "Clipboard queue is busy; try again.",
+                ),
+                mpsc::error::TrySendError::Closed(_) => error(
+                    io::ErrorKind::BrokenPipe,
+                    "The clipboard service has stopped; restart the application to use the clipboard.",
+                ),
+            };
             let request = failed.into_inner();
             let id = request.id;
-            let busy = error(
-                io::ErrorKind::WouldBlock,
-                "Clipboard queue is busy; try again.",
-            );
             // EngineRun retains raw dispatch ownership while this private, serial intake waits.
             // Once adopted, cleanup survives cancellation of this acknowledgement or its runtime.
             let lease = self.rejected.reserve().await;
@@ -338,6 +330,36 @@ impl Drop for Controller {
         self.cancel.cancel();
     }
 }
+/// The next queued request, or None when the controller closed the queue or was
+/// cancelled. Without a native session nothing needs pumping, so the worker blocks
+/// on the queue (Controller drop cancels, then closes it). An open session keeps
+/// X11 owners and Windows clipboard windows serviced between application commands.
+fn next_request(
+    receiver: &mut mpsc::Receiver<Request>,
+    session: &mut Option<Box<dyn ClipboardSession>>,
+    cancel: &Cancellation,
+) -> Option<Request> {
+    loop {
+        if cancel.is_cancelled() {
+            return None;
+        }
+        let Some(open) = session.as_mut() else {
+            return receiver.blocking_recv();
+        };
+        if open.service_pending().is_err() {
+            *session = None;
+            continue;
+        }
+        match receiver.try_recv() {
+            Ok(request) => return Some(request),
+            Err(mpsc::error::TryRecvError::Empty) => {
+                std::thread::park_timeout(Duration::from_millis(10));
+            }
+            Err(mpsc::error::TryRecvError::Disconnected) => return None,
+        }
+    }
+}
+
 fn send_event(
     outbox: &Outbox,
     mut event: Event,
@@ -737,6 +759,80 @@ mod tests {
             self.0.fetch_add(1, Ordering::Relaxed);
             Ok(())
         }
+    }
+
+    #[tokio::test]
+    async fn stopped_native_worker_is_reported_as_stopped_not_busy() {
+        let (native, native_receiver) = mpsc::channel(1);
+        drop(native_receiver); // The single native worker has exited.
+        let (sender, mut events) = mpsc::channel(1);
+        let mut controller = Controller::testing(
+            None,
+            Outbox {
+                sender,
+                wakeup: Arc::new(|| {}),
+            },
+        );
+        controller.sender = Some(native);
+        let mut tasks = JoinSet::new();
+        controller
+            .copy(DesktopRequestId(1), "text".into(), &mut tasks)
+            .await;
+        assert!(matches!(
+            events.recv().await,
+            Some(Event::DesktopActionFinished {
+                request: DesktopRequestId(1),
+                result: Err(error),
+            }) if error.kind == io::ErrorKind::BrokenPipe
+        ));
+        controller.shutdown();
+    }
+
+    #[test]
+    fn worker_without_a_native_session_blocks_until_a_request_or_close() {
+        let (sender, mut receiver) = mpsc::channel(1);
+        let mut session = None;
+        let cancel = Cancellation::default();
+        let requester = std::thread::spawn(move || {
+            sender
+                .blocking_send(Request {
+                    id: DesktopRequestId(1),
+                    action: Action::ReadText,
+                })
+                .unwrap_or_else(|_| panic!("worker queue closed"));
+        });
+        // No session needs pumping: the worker waits on the queue itself.
+        let request = next_request(&mut receiver, &mut session, &cancel).expect("request");
+        assert_eq!(request.id, DesktopRequestId(1));
+        requester.join().unwrap();
+        assert!(
+            next_request(&mut receiver, &mut session, &cancel).is_none(),
+            "a closed queue (Controller drop) ends the worker"
+        );
+    }
+
+    #[test]
+    fn open_native_session_is_pumped_until_cancelled() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let (_sender, mut receiver) = mpsc::channel::<Request>(1);
+        let mut session: Option<Box<dyn ClipboardSession>> = Some(Box::new(Pump(calls.clone())));
+        let cancel = Cancellation::default();
+        let observed = calls.clone();
+        let canceller = cancel.clone();
+        let watcher = std::thread::spawn(move || {
+            let deadline = std::time::Instant::now() + Duration::from_secs(5);
+            while observed.load(Ordering::Relaxed) < 2 && std::time::Instant::now() < deadline {
+                std::thread::yield_now();
+            }
+            canceller.cancel();
+        });
+        assert!(next_request(&mut receiver, &mut session, &cancel).is_none());
+        watcher.join().unwrap();
+        assert!(
+            calls.load(Ordering::Relaxed) >= 2,
+            "owner messages kept flowing"
+        );
+        assert!(session.is_some());
     }
     #[test]
     fn result_backpressure_keeps_serving_native_clipboard_requests() {

@@ -268,6 +268,42 @@ impl Drop for Harness {
     }
 }
 
+#[tokio::test(start_paused = true)]
+async fn idle_actor_exits_on_shutdown_without_a_polling_timer() {
+    let mut h = Harness::new(MutationKind::Rename);
+    tokio::task::yield_now().await; // The actor reaches its idle wait.
+    // Paused time advances only to fire a timer: an idle actor must need none.
+    let started = tokio::time::Instant::now();
+    h.controller.shutdown();
+    let exited = tokio::time::timeout(Duration::from_secs(5), h.tasks.join_next()).await;
+    assert!(matches!(exited, Ok(Some(Ok(())))), "{exited:?}");
+    assert_eq!(tokio::time::Instant::now(), started);
+}
+
+#[tokio::test]
+async fn failed_actor_task_still_reports_its_registered_job() {
+    let h = Harness::new(MutationKind::Rename);
+    let status = Arc::new(Mutex::new(worker::initial(&h.request)));
+    let mut tasks = Tracked::<()>::default();
+    tasks.spawn(status.clone(), async {
+        panic!("injected actor task failure")
+    });
+    tasks.spawn(status, async {});
+    let (mut completed, mut failed) = (0, Vec::new());
+    while let Some(result) = tasks.join_next().await {
+        match result {
+            Ok(()) => completed += 1,
+            Err(progress) => failed.push(progress),
+        }
+    }
+    assert_eq!(completed, 1);
+    assert_eq!(failed.len(), 1, "a panicked task must not vanish");
+    assert_eq!(failed[0].id, h.request.id);
+    assert_eq!(failed[0].state, OperationState::Failed);
+    assert!(failed[0].message.contains("injected actor task failure"));
+    assert!(tasks.is_empty() && tasks.jobs.is_empty());
+}
+
 #[tokio::test]
 async fn cancelled_job_retains_its_budget_until_backend_cleanup_finishes() {
     let mut h = Harness::new(MutationKind::Rename);
@@ -357,14 +393,16 @@ async fn cancelled_confirmation_delivery_can_be_retried_without_losing_the_reque
     h.preview().await;
     let sender = h.controller.sender.clone();
     let capacity: Vec<_> = sender.reserve_many(64).await.unwrap().collect();
-    assert!(
-        tokio::time::timeout(
-            Duration::from_millis(20),
-            h.controller.confirm(h.request.id, None)
-        )
-        .await
-        .is_err()
-    );
+    {
+        let delivery = h.controller.confirm(h.request.id, None);
+        tokio::pin!(delivery);
+        // One poll reaches the full queue; dropping the pending delivery cancels it.
+        tokio::select! {
+            biased;
+            () = &mut delivery => panic!("a full queue cannot accept the confirmation"),
+            () = std::future::ready(()) => {}
+        }
+    }
     drop(capacity);
     h.controller.confirm(h.request.id, None).await;
     assert_eq!(h.finished().await.state, OperationState::Completed);
