@@ -1,6 +1,6 @@
 use super::*;
 use std::{
-    cell::RefCell,
+    cell::{Cell, RefCell},
     io::{Cursor, Read, Seek, SeekFrom},
     rc::Rc,
 };
@@ -121,6 +121,54 @@ fn seeks_are_checked_against_the_immutable_source_length() {
     }
     assert_eq!(window.stream_position().unwrap(), 1000);
     assert!(requests.borrow().iter().all(|(offset, _)| *offset == 1000));
+}
+
+/// Fails one read after scribbling over the caller's buffer and moving the source.
+struct Flaky {
+    data: Cursor<Vec<u8>>,
+    fail: Rc<Cell<bool>>,
+}
+impl Read for Flaky {
+    fn read(&mut self, output: &mut [u8]) -> io::Result<usize> {
+        if self.fail.replace(false) {
+            output.fill(0xee);
+            self.data.seek(SeekFrom::Current(output.len() as i64 / 2))?;
+            return Err(io::Error::other("fixture read failure"));
+        }
+        self.data.read(output)
+    }
+}
+impl Seek for Flaky {
+    fn seek(&mut self, from: SeekFrom) -> io::Result<u64> {
+        self.data.seek(from)
+    }
+}
+
+#[test]
+fn a_failed_refill_never_serves_overwritten_or_misplaced_bytes() {
+    let data: Vec<u8> = (0..1 << 20).map(|i| (i * 7 + i / 251) as u8).collect();
+    let fail = Rc::new(Cell::new(false));
+    let flaky = Flaky {
+        data: Cursor::new(data.clone()),
+        fail: fail.clone(),
+    };
+    let mut window = Window::new(Box::new(flaky), data.len() as u64);
+    let mut bytes = [0; 64];
+    window.read_exact(&mut bytes).unwrap();
+    // A refill elsewhere fails after writing into the buffer and moving the source.
+    window.seek(SeekFrom::Start(600_000)).unwrap();
+    fail.set(true);
+    assert!(window.read(&mut bytes).is_err());
+    // The first window's bytes were overwritten, so they are fetched again.
+    window.seek(SeekFrom::Start(100)).unwrap();
+    window.read_exact(&mut bytes).unwrap();
+    assert_eq!(bytes, data[100..164]);
+    // After a failure the source position is unknown, so the retry seeks again.
+    window.seek(SeekFrom::Start(600_000)).unwrap();
+    fail.set(true);
+    assert!(window.read(&mut bytes).is_err());
+    window.read_exact(&mut bytes).unwrap();
+    assert_eq!(bytes, data[600_000..600_064]);
 }
 
 #[test]

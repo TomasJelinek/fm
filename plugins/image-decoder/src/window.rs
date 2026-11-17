@@ -19,7 +19,8 @@ pub(crate) struct Window<R> {
     start: u64,
     filled: usize,
     position: u64,
-    inner_position: u64,
+    /// Where the inner reader currently is, when known.
+    inner_position: Option<u64>,
     /// End and size of the previous inner read; they classify the next one.
     last_end: Option<u64>,
     window: usize,
@@ -34,7 +35,7 @@ impl<R: Read + Seek> Window<R> {
             start: position,
             filled: 0,
             position,
-            inner_position: position,
+            inner_position: Some(position),
             last_end: None,
             window: MAX_WINDOW,
         })
@@ -57,12 +58,18 @@ impl<R: Read + Seek> Window<R> {
     }
 
     fn inner_read(&mut self, size: usize, direct: Option<&mut [u8]>) -> io::Result<usize> {
-        if self.inner_position != self.position {
-            self.inner_position = self.inner.seek(SeekFrom::Start(self.position))?;
+        // Until a seek and read succeed, the inner position is unknown: a failed or
+        // interrupted call forces the next one to seek again.
+        let known = self.inner_position.take();
+        if known != Some(self.position) {
+            self.inner.seek(SeekFrom::Start(self.position))?;
         }
         let count = match direct {
             Some(output) => self.inner.read(output)?,
             None => {
+                // The refill overwrites the buffer from its start; forget the old range
+                // first, so a read that fails part-way cannot serve mixed bytes later.
+                self.filled = 0;
                 if self.buffer.len() < size {
                     self.buffer.resize(size, 0);
                 }
@@ -76,7 +83,7 @@ impl<R: Read + Seek> Window<R> {
             .position
             .checked_add(count as u64)
             .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidData))?;
-        self.inner_position = end;
+        self.inner_position = Some(end);
         self.last_end = Some(end);
         self.window = size;
         Ok(count)
@@ -144,9 +151,9 @@ impl<R: Read + Seek> Seek for Window<R> {
             return Ok(target);
         }
         // Elsewhere the source itself validates the position, as before.
-        let position = match (from, target) {
-            (SeekFrom::End(delta), _) => self.inner.seek(SeekFrom::End(delta))?,
-            (_, Some(target)) => self.inner.seek(SeekFrom::Start(target))?,
+        let inner = match (from, target) {
+            (SeekFrom::End(delta), _) => SeekFrom::End(delta),
+            (_, Some(target)) => SeekFrom::Start(target),
             (_, None) => {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
@@ -154,8 +161,11 @@ impl<R: Read + Seek> Seek for Window<R> {
                 ));
             }
         };
+        // A failed seek leaves the inner position unknown.
+        self.inner_position = None;
+        let position = self.inner.seek(inner)?;
         self.position = position;
-        self.inner_position = position;
+        self.inner_position = Some(position);
         Ok(position)
     }
 
@@ -247,5 +257,52 @@ mod tests {
         assert_eq!(bytes.len(), 10);
         assert_eq!(window.seek(SeekFrom::Current(-5)).unwrap(), 995);
         assert_eq!(broker.requests.len(), 2, "{:?}", broker.requests);
+    }
+
+    /// Fails one read after scribbling over the caller's buffer and moving the source.
+    struct Flaky {
+        data: Cursor<Vec<u8>>,
+        fail: bool,
+    }
+    impl Read for Flaky {
+        fn read(&mut self, output: &mut [u8]) -> io::Result<usize> {
+            if std::mem::take(&mut self.fail) {
+                output.fill(0xee);
+                self.data.seek(SeekFrom::Current(output.len() as i64 / 2))?;
+                return Err(io::Error::other("fixture read failure"));
+            }
+            self.data.read(output)
+        }
+    }
+    impl Seek for Flaky {
+        fn seek(&mut self, from: SeekFrom) -> io::Result<u64> {
+            self.data.seek(from)
+        }
+    }
+
+    #[test]
+    fn a_failed_refill_never_serves_overwritten_or_misplaced_bytes() {
+        let (_, data) = source(1 << 20);
+        let mut flaky = Flaky {
+            data: Cursor::new(data.clone()),
+            fail: false,
+        };
+        let mut window = Window::new(&mut flaky).unwrap();
+        let mut bytes = [0; 64];
+        window.read_exact(&mut bytes).unwrap();
+        // A refill elsewhere fails after writing into the buffer and moving the source.
+        window.seek(SeekFrom::Start(600_000)).unwrap();
+        window.inner.fail = true;
+        assert!(window.read(&mut bytes).is_err());
+        // The first window's bytes were overwritten, so they are fetched again.
+        window.seek(SeekFrom::Start(100)).unwrap();
+        window.read_exact(&mut bytes).unwrap();
+        assert_eq!(bytes, data[100..164]);
+        // After a failure the source position is unknown, so the retry seeks again.
+        window.seek(SeekFrom::Start(600_000)).unwrap();
+        window.inner.fail = true;
+        assert!(window.read(&mut bytes).is_err());
+        window.read_exact(&mut bytes).unwrap();
+        assert_eq!(bytes, data[600_000..600_064]);
     }
 }

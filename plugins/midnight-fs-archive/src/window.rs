@@ -62,13 +62,18 @@ impl Window {
     }
 
     fn inner_read(&mut self, size: usize, direct: Option<&mut [u8]>) -> io::Result<usize> {
-        if self.inner_position != Some(self.position) {
+        // Until a seek and read succeed, the inner position is unknown: a failed or
+        // interrupted call forces the next one to seek again.
+        let known = self.inner_position.take();
+        if known != Some(self.position) {
             self.inner.seek(SeekFrom::Start(self.position))?;
-            self.inner_position = Some(self.position);
         }
         let count = match direct {
             Some(output) => self.inner.read(output)?,
             None => {
+                // The refill overwrites the buffer from its start; forget the old range
+                // first, so a read that fails part-way cannot serve mixed bytes later.
+                self.filled = 0;
                 if self.buffer.len() < size {
                     self.buffer.resize(size, 0);
                 }
