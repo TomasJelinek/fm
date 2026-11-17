@@ -28,9 +28,8 @@ fn source_overlapping_seek_chain_keeps_known_lines_when_first_column_is_unknown(
             .unwrap()
             .first()
             .expect("known lines survive even when column prefix is outside overlap")
-            .0
-            .text(),
-        "3"
+            .line,
+        3
     );
 }
 
@@ -193,21 +192,13 @@ fn source_scroll_first_frame_keeps_exact_overlap_line_numbers_without_locate() {
     );
     worker.prepare_gutter().unwrap();
     let labels = worker.text.gutter.as_ref().unwrap();
-    assert_eq!(labels.first().unwrap().0.text(), "6");
+    assert_eq!(labels.first().unwrap().line, 6);
     assert!(labels.len() >= 40);
     assert!(worker.set_page(source_page(&source, starts[2], starts[42]), &output));
     worker.prepare_gutter().unwrap();
     assert_eq!(
-        worker
-            .text
-            .gutter
-            .as_ref()
-            .unwrap()
-            .first()
-            .unwrap()
-            .0
-            .text(),
-        "3"
+        worker.text.gutter.as_ref().unwrap().first().unwrap().line,
+        3
     );
 }
 

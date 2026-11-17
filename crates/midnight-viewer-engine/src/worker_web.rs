@@ -5,6 +5,8 @@ use midnight_core::viewer_web as api;
 #[path = "worker_web_tests.rs"]
 mod tests;
 
+const WEB_BATCH: usize = 32;
+
 fn accepts_input(
     frames: &crate::interaction::Frames,
     first: u64,
@@ -187,8 +189,11 @@ impl Worker {
     }
 
     pub(super) fn poll_web(&mut self, output: &Mailbox) {
+        self.web_backlog = false;
         let Some(web) = self.web.as_ref() else { return };
-        let events = web.session.drain(32);
+        let events = web.session.drain(WEB_BATCH);
+        // A full batch can leave events queued; the browser wakes only for newer output.
+        self.web_backlog = events.len() >= WEB_BATCH;
         for event in events {
             match event.kind {
                 api::EventKind::Frame(frame) => {

@@ -189,16 +189,12 @@ fn file_cycle_invalidates_pending_html_and_preserves_the_next_startup_error() {
     let (_directory, opening) = prepare_html(&mut worker);
     worker.select_opening(opening, &output).unwrap();
     let (token, _, _) = selection(&output);
-    worker.files = vec![
-        (PathBuf::from("first.html"), Some(Err("first".into()))),
-        (
-            PathBuf::from("second.txt"),
-            Some(Err("retained failure".into())),
-        ),
-    ];
+    captured_order(&mut worker, &["first.html", "second.txt"]);
     worker.input(ViewerInput::NextFile, &output);
     assert_eq!(worker.current, 1);
     assert!(worker.pending_layout.is_none());
+    assert!(output.take_open_result().is_none());
+    serve_capture(&mut worker, &output, Err("retained failure".into()));
     assert_eq!(
         output.take_open_result(),
         Some(Err("retained failure".into()))
@@ -210,7 +206,7 @@ fn file_cycle_invalidates_pending_html_and_preserves_the_next_startup_error() {
 fn capture_wait_retries_do_not_publish_or_replace_layout_tokens() {
     let (mut worker, _) = worker();
     worker.layout = crate::layout_handshake::Handshake::new(true);
-    worker.files = vec![(PathBuf::from("pending.html"), None)];
+    captured_order(&mut worker, &["pending.html"]);
     let output = Mailbox::with_layout();
     for _ in 0..3 {
         worker.open(&output);
@@ -263,10 +259,8 @@ fn supported_native_mode_change_invalidates_an_unacknowledged_opening() {
         mode: viewer::MODE_TEXT,
         detect_binary: false,
     };
-    worker.files = vec![(
-        opening.file.path().to_owned(),
-        Some(Err("retained failure".into())),
-    )];
+    worker.files = Arc::from([opening.file.path().to_owned()]);
+    worker.captured = Some((0, Err("retained failure".into())));
     worker.select_opening(opening, &output).unwrap();
     let (token, _, _) = selection(&output);
     worker.input(ViewerInput::Mode(viewer::MODE_BINARY), &output);

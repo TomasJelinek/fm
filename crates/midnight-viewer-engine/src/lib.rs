@@ -7,6 +7,7 @@ mod capture_find;
 #[cfg(test)]
 mod capture_find_tests;
 mod capture_generated;
+mod capture_prefetch;
 mod capture_tree;
 mod catalog_startup;
 mod content_resources;
@@ -108,6 +109,7 @@ type Catalogs = (
 
 pub struct WindowSession {
     sender: SyncSender<worker::Message>,
+    wakes: Arc<input_queue::Wakes>,
     positions: input_queue::PositionQueue,
     closed: Arc<AtomicBool>,
     pub mailbox: Arc<Mailbox>,
@@ -119,6 +121,24 @@ struct WindowPermit(Arc<AtomicUsize>);
 impl Drop for WindowPermit {
     fn drop(&mut self) {
         self.0.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+/// Owns an admitted window until its backend worker starts. If the runtime drops the
+/// worker job without running it, the slot is released and the opening fails.
+struct WindowStart {
+    _permit: WindowPermit,
+    output: Arc<Mailbox>,
+    started: bool,
+}
+
+impl Drop for WindowStart {
+    fn drop(&mut self) {
+        if !self.started {
+            let message = "Viewer backend is unavailable.".to_owned();
+            self.output.finish_open(Err(message.clone()));
+            self.output.put(ViewerOutput::Status(message));
+        }
     }
 }
 
@@ -137,7 +157,7 @@ impl WindowSession {
         }
         let changed = self.preferences.change(change)?;
         if changed {
-            let _ = self.sender.try_send(worker::Message::Ready);
+            self.wakes.wake();
         }
         Ok(changed)
     }
@@ -146,7 +166,7 @@ impl WindowSession {
     pub fn restore_preferences(&self, value: Arc<ViewerPreferences>) -> Result<bool, String> {
         let changed = self.preferences.restore(value)?;
         if changed {
-            let _ = self.sender.try_send(worker::Message::Ready);
+            self.wakes.wake();
         }
         Ok(changed)
     }
@@ -250,39 +270,52 @@ impl Service {
         }
         // Revoke a prior spare before asynchronously obtaining the replacement catalog.
         self.image_startup.configure(None, Arc::from([]));
-        let Some(mut policy) = policy else {
+        let Some(policy) = policy else {
             return;
         };
         let service = self.clone();
         self.handle.spawn_blocking(move || {
-            let Ok((runtime, images, web)) = service.catalogs() else {
-                return;
-            };
-            let mut identities = std::collections::HashMap::new();
-            for id in runtime
-                .catalog()
-                .iter()
-                .map(|provider| &provider.id)
-                .chain(images.iter().map(|provider| &provider.id))
-                .chain(web.iter().map(|provider| &provider.id))
-            {
-                *identities.entry(id.as_str()).or_insert(0usize) += 1;
-            }
-            let eligible = images
-                .iter()
-                .filter(|provider| identities.get(provider.id.as_str()) == Some(&1))
-                .cloned()
-                .collect::<Vec<_>>()
-                .into();
-            let current = service
-                .image_policy
-                .lock()
-                .unwrap_or_else(|error| error.into_inner());
-            if current.as_ref() == Some(&policy) {
-                policy.catalog_revision = service.image_catalog_revision.load(Ordering::Acquire);
-                service.image_startup.configure(Some(policy), eligible);
-            }
+            let catalogs = service.catalogs();
+            service.configure_image_spare(policy, catalogs);
         });
+    }
+
+    fn configure_image_spare(
+        &self,
+        mut policy: image_startup::Policy,
+        catalogs: Result<Catalogs, String>,
+    ) {
+        let mut current = self
+            .image_policy
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let Ok((runtime, images, web)) = catalogs else {
+            // A later call with the same policy must retry a transient discovery failure.
+            if current.as_ref() == Some(&policy) {
+                *current = None;
+            }
+            return;
+        };
+        let mut identities = std::collections::HashMap::new();
+        for id in runtime
+            .catalog()
+            .iter()
+            .map(|provider| &provider.id)
+            .chain(images.iter().map(|provider| &provider.id))
+            .chain(web.iter().map(|provider| &provider.id))
+        {
+            *identities.entry(id.as_str()).or_insert(0usize) += 1;
+        }
+        let eligible = images
+            .iter()
+            .filter(|provider| identities.get(provider.id.as_str()) == Some(&1))
+            .cloned()
+            .collect::<Vec<_>>()
+            .into();
+        if current.as_ref() == Some(&policy) {
+            policy.catalog_revision = self.image_catalog_revision.load(Ordering::Acquire);
+            self.image_startup.configure(Some(policy), eligible);
+        }
     }
 
     pub fn open(
@@ -330,19 +363,26 @@ impl Service {
             self.retire(launch);
             return Err("Close a viewer before opening another (maximum four windows).".into());
         }
+        let mut start = WindowStart {
+            _permit: WindowPermit(self.windows.clone()),
+            output: Arc::new(if negotiate_layout {
+                Mailbox::with_layout()
+            } else {
+                Mailbox::default()
+            }),
+            started: false,
+        };
         let (sender, receiver) = mpsc::sync_channel(64);
-        let wakes = sender.clone();
-        let mailbox = Arc::new(if negotiate_layout {
-            Mailbox::with_layout()
-        } else {
-            Mailbox::default()
-        });
+        let wakes = Arc::new(input_queue::Wakes::new(sender.clone()));
+        let backend_wakes = wakes.clone();
+        let mailbox = start.output.clone();
         let closed = Arc::new(AtomicBool::new(false));
         let service = self.clone();
         let output = mailbox.clone();
         let stop = closed.clone();
         self.handle.spawn_blocking(move || {
-            let _permit = WindowPermit(service.windows.clone());
+            start.started = true;
+            let _start = start;
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 if service.fonts.get().is_none()
                     && let Some(names) =
@@ -358,7 +398,7 @@ impl Service {
                         web,
                         capture: service.capture.clone(),
                         image_startup: service.image_startup.clone(),
-                        wake: Arc::new(move || wakes.try_send(worker::Message::Ready).is_ok()),
+                        wakes: backend_wakes,
                         preferences: worker_preferences,
                         raster_budget: service.raster_budget.clone(),
                         negotiate_layout,
@@ -379,6 +419,7 @@ impl Service {
         });
         Ok(WindowSession {
             sender,
+            wakes,
             positions: Default::default(),
             closed,
             mailbox,

@@ -148,7 +148,7 @@ impl Worker {
         };
         if let Err(error) = result {
             self.frames.invalidate();
-            if let Some(image) = self.image.take() {
+            if let Some(mut image) = self.image.take() {
                 output.put(ViewerOutput::ImageUnavailable {
                     generation: self.positions.generation,
                     surface: image.scene.surface,

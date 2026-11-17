@@ -1,4 +1,5 @@
 //! Archive members are content leases; native paths are never reconstructed.
+use crate::capture::{CaptureEntry, ORDER_BUDGET, Order};
 use midnight_core::{ArchiveMount, Cancellation, EntryKind, ViewerLaunch};
 use midnight_plugin_host::{CapturedFile, ContentResources, ContentSource, Error};
 use std::{
@@ -6,10 +7,20 @@ use std::{
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
-        mpsc,
     },
-    time::Duration,
 };
+
+/// Charged per member in addition to its label and name copies: the descriptor, label
+/// header, allocations and slack for the per-entry slot.
+const ARCHIVE_ENTRY: usize = 128;
+
+/// The retained order of one member; its content lease is created only when opened.
+struct Descriptor {
+    entry: u64,
+    parent: u64,
+    length: Option<u64>,
+    name: String,
+}
 
 #[derive(Debug)]
 struct Member {
@@ -119,13 +130,9 @@ impl ContentSource for Member {
             .map_err(|e| Error(e.to_string()))
     }
 }
-pub(crate) fn prepare(
-    launch: &ViewerLaunch,
-    closed: &Arc<AtomicBool>,
-) -> Result<super::capture::Order, String> {
+pub(crate) fn prepare(launch: &ViewerLaunch, closed: &Arc<AtomicBool>) -> Result<Order, String> {
     let archive = launch.archive.as_ref().ok_or("Missing archive focus")?;
     let mut nodes = Vec::new();
-    let mut bytes = 0usize;
     for entry in launch.entries.iter() {
         if closed.load(Ordering::Acquire) {
             return Err("Viewer closed".into());
@@ -137,65 +144,60 @@ pub(crate) fn prepare(
         if !node.readable || node.id.mount != archive.mount.id() {
             continue;
         }
-        bytes = bytes
-            .saturating_add(node.display_name.len().saturating_mul(8))
-            .saturating_add(512);
-        if bytes > 8 * 1024 * 1024 {
-            return Err("The captured file order exceeds the 8 MiB viewer budget.".into());
-        }
         nodes.push((*row, node));
     }
     nodes.sort_unstable_by_key(|(row, _)| *row);
-    let current = nodes
+    let focus = nodes
         .iter()
         .position(|(_, node)| node.id == archive.focused)
         .ok_or("Archive member is unavailable")?;
-    let mut files = Vec::with_capacity(nodes.len());
-    let mut sources = Vec::with_capacity(nodes.len());
-    for (_, node) in nodes {
-        let source = Arc::new(Member {
-            mount: archive.mount.clone(),
+    let range = crate::capture::window(nodes.len(), focus, ORDER_BUDGET, |index| {
+        nodes[index]
+            .1
+            .display_name
+            .len()
+            .saturating_mul(2)
+            .saturating_add(ARCHIVE_ENTRY)
+    });
+    let members: Arc<[Descriptor]> = nodes[range.clone()]
+        .iter()
+        .map(|(_, node)| Descriptor {
             entry: node.id.entry,
             parent: node.parent,
-            length: node.size.ok_or("Archive member size unavailable")?,
+            length: node.size,
             name: node.display_name.clone(),
-            version: archive.source_version.clone(),
-            closed: closed.clone(),
-        });
-        // This value is a format-selection label only, never opened as a native path.
-        files.push((PathBuf::from(&node.display_name), None));
-        sources.push(source);
-    }
-    files[current].1 = Some(capture_member(sources[current].clone()).map_err(|e| e.to_string()));
-    let (sender, ready) = mpsc::sync_channel(16);
-    let closed = closed.clone();
-    tokio::runtime::Handle::try_current()
-        .map_err(|e| e.to_string())?
-        .spawn_blocking(move || {
-            for step in 1..sources.len() {
-                if closed.load(Ordering::Acquire) {
-                    return;
-                }
-                let index = (current + step) % sources.len();
-                let result = capture_member(sources[index].clone()).map_err(|e| e.to_string());
-                let mut event = (index, result);
-                loop {
-                    if closed.load(Ordering::Acquire) {
-                        return;
-                    }
-                    match sender.try_send(event) {
-                        Ok(()) => break,
-                        Err(mpsc::TrySendError::Full(value)) => event = value,
-                        Err(mpsc::TrySendError::Disconnected(_)) => return,
-                    }
-                    std::thread::park_timeout(Duration::from_millis(8));
-                }
-            }
-        });
-    Ok(super::capture::Order {
+        })
+        .collect();
+    // These values are format-selection labels only, never opened as native paths.
+    let files: Arc<[PathBuf]> = members
+        .iter()
+        .map(|member| PathBuf::from(&member.name))
+        .collect();
+    let current = focus - range.start;
+    let (mount, version, lease) = (
+        archive.mount.clone(),
+        archive.source_version.clone(),
+        closed.clone(),
+    );
+    let entry: CaptureEntry = Arc::new(move |index, _| {
+        let member = members.get(index).ok_or("Archive member is unavailable")?;
+        capture_member(Arc::new(Member {
+            mount: mount.clone(),
+            entry: member.entry,
+            parent: member.parent,
+            length: member.length.ok_or("Archive member size unavailable")?,
+            name: member.name.clone(),
+            version: version.clone(),
+            closed: lease.clone(),
+        }))
+        .map_err(|error| error.to_string())
+    });
+    let focused = entry(current, closed);
+    Ok(Order {
+        capture: (files.len() > 1).then_some(entry),
         files,
         current,
-        ready,
+        focused,
     })
 }
 
@@ -207,9 +209,11 @@ mod resource_tests;
 mod tests {
     use super::*;
     use midnight_core::*;
+    use std::sync::atomic::AtomicUsize;
     #[derive(Debug, Default)]
     struct Mount {
         changed: AtomicBool,
+        validations: AtomicUsize,
     }
     impl ArchiveMount for Mount {
         fn id(&self) -> u64 {
@@ -219,6 +223,7 @@ mod tests {
             unreachable!()
         }
         fn validate(&self) -> Result<(), FsError> {
+            self.validations.fetch_add(1, Ordering::Relaxed);
             if self.changed.load(Ordering::Acquire) {
                 Err(FsError::from_io(
                     "archive",
@@ -241,25 +246,9 @@ mod tests {
             Ok(bytes[offset as usize..offset as usize + length as usize].to_vec())
         }
     }
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn viewer_reads_duplicate_named_members_by_id_and_retains_the_mount_lease() {
-        let mount = Arc::new(Mount::default());
-        let entries: Arc<[Entry]> = (2..=3)
-            .map(|entry| {
-                Entry::from_archive(ArchiveNode {
-                    modified: None,
-                    id: VirtualEntryId { mount: 8, entry },
-                    parent: 1,
-                    raw_name: b"same.txt".as_slice().into(),
-                    display_name: "same.txt".into(),
-                    kind: EntryKind::File,
-                    size: Some(5),
-                    readable: true,
-                })
-            })
-            .collect::<Vec<_>>()
-            .into();
-        let launch = ViewerLaunch {
+    fn launch(mount: &Arc<Mount>, members: Vec<ArchiveNode>, focused: u64) -> ViewerLaunch {
+        let entries: Arc<[Entry]> = members.into_iter().map(Entry::from_archive).collect();
+        ViewerLaunch {
             find: None,
             associations: Default::default(),
             tree: None,
@@ -268,30 +257,90 @@ mod tests {
             archive: Some(ArchiveViewer {
                 mount: mount.clone(),
                 source_version: vec![1, 2, 3],
-                focused: VirtualEntryId { mount: 8, entry: 2 },
+                focused: VirtualEntryId {
+                    mount: 8,
+                    entry: focused,
+                },
             }),
             view: Arc::new(DirectoryIndex::from_entries(&entries)),
             entries,
             focused: PathBuf::new(),
             basic: true,
             disabled_plugins: Arc::from([]),
-        };
+        }
+    }
+
+    fn member(entry: u64, display_name: String, size: Option<u64>) -> ArchiveNode {
+        ArchiveNode {
+            modified: None,
+            id: VirtualEntryId { mount: 8, entry },
+            parent: 1,
+            raw_name: b"same.txt".as_slice().into(),
+            display_name,
+            kind: EntryKind::File,
+            size,
+            readable: true,
+        }
+    }
+
+    #[test]
+    fn viewer_reads_duplicate_named_members_by_id_and_retains_the_mount_lease() {
+        let mount = Arc::new(Mount::default());
+        let members = (2..=3)
+            .map(|entry| member(entry, "same.txt".into(), Some(5)))
+            .collect();
+        let launch = launch(&mount, members, 2);
         let closed = Arc::new(AtomicBool::new(false));
         let order = prepare(&launch, &closed).unwrap();
         drop(launch);
-        let first = order.files[order.current]
-            .1
-            .as_ref()
-            .unwrap()
-            .as_ref()
-            .unwrap();
+        let first = order.focused.as_ref().unwrap();
         assert!(first.path().as_os_str().is_empty());
         assert_eq!(first.read_at(0, 5).unwrap(), b"first");
-        let (_, other) = order.ready.recv_timeout(Duration::from_secs(2)).unwrap();
-        assert_eq!(other.unwrap().read_at(0, 5).unwrap(), b"other");
+        let other = order.capture.as_ref().unwrap()(1, &closed).unwrap();
+        assert_eq!(other.read_at(0, 5).unwrap(), b"other");
         mount.changed.store(true, Ordering::Release);
         assert!(first.read_at(0, 5).is_err());
         closed.store(true, Ordering::Release);
+    }
+
+    #[test]
+    fn large_archive_folders_keep_a_window_and_lease_members_only_when_opened() {
+        let mount = Arc::new(Mount::default());
+        let count = 3_000u64;
+        // 2,000-byte captions: the complete order needs about 12 MiB of descriptors.
+        let caption = |entry: u64| format!("{entry:0>2000}");
+        let members = (2..count + 2)
+            .map(|entry| {
+                let size = (entry != 1_501).then_some(5);
+                member(entry, caption(entry), size)
+            })
+            .collect();
+        let launch = launch(&mount, members, 1_500);
+        let closed = Arc::new(AtomicBool::new(false));
+        let order = prepare(&launch, &closed).unwrap();
+        let length = order.files.len();
+        assert!(length > 1_000 && length < count as usize, "{length}");
+        let first = 1_500 - order.current as u64;
+        for (index, label) in order.files.iter().enumerate() {
+            assert_eq!(label, &PathBuf::from(caption(first + index as u64)));
+        }
+        let middle = length / 2;
+        assert!(
+            order.current.abs_diff(middle) <= 1,
+            "{} of {length}",
+            order.current
+        );
+        assert!(order.focused.is_ok());
+        let leases = mount.validations.load(Ordering::Relaxed);
+        assert!(leases <= 2, "only the focused member is leased: {leases}");
+        let capture = order.capture.as_ref().unwrap();
+        assert_eq!(
+            capture(order.current + 1, &closed).unwrap_err(),
+            "Archive member size unavailable",
+            "an unusable sibling fails when opened, not the whole launch"
+        );
+        assert!(capture(order.current - 1, &closed).is_ok());
+        assert!(capture(length, &closed).is_err());
     }
 }
 
@@ -315,8 +364,8 @@ mod tree_tests {
             Ok(vec![entry as u8])
         }
     }
-    #[tokio::test]
-    async fn archive_tree_retains_member_identity_and_skips_unrelated_unreadable_files() {
+    #[test]
+    fn archive_tree_retains_member_identity_and_skips_unrelated_unreadable_files() {
         let entries: Arc<[Entry]> = (2..=4)
             .map(|entry| {
                 Entry::from_archive(ArchiveNode {
@@ -401,12 +450,11 @@ mod tree_tests {
         let order = crate::capture::prepare_with(&launch, &closed, capture.clone()).unwrap();
         assert_eq!(order.files.len(), 2);
         assert_eq!(order.current, 1);
-        let first = order.files[1].1.as_ref().unwrap().as_ref().unwrap();
+        let first = order.focused.as_ref().unwrap();
         assert_eq!(first.read_at(0, 1).unwrap(), [2]);
         assert!(first.path().as_os_str().is_empty());
-        let (next, other) = order.ready.recv_timeout(Duration::from_secs(2)).unwrap();
-        assert_eq!(next, 0);
-        assert_eq!(other.unwrap().read_at(0, 1).unwrap(), [3]);
+        let other = order.capture.as_ref().unwrap()(0, &closed).unwrap();
+        assert_eq!(other.read_at(0, 1).unwrap(), [3]);
         launch.tree.as_mut().unwrap().focused = TreeRowId(20);
         launch.archive.as_mut().unwrap().focused.entry = 4;
         assert!(crate::capture::prepare_with(&launch, &closed, capture).is_err());

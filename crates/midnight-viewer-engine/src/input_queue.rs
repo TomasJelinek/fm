@@ -1,6 +1,11 @@
 //! Replace still-pending absolute scrollbar positions without crossing input barriers.
+//! Backend wakes are coalesced so they cannot crowd user input out of the bounded channel.
 use midnight_core::{ViewerInput, ViewerRasterInput};
-use std::sync::{Arc, Mutex, Weak};
+use std::sync::{
+    Arc, Mutex, Weak,
+    atomic::{AtomicBool, Ordering},
+    mpsc::SyncSender,
+};
 
 pub(crate) enum Message {
     Input(ViewerInput),
@@ -15,6 +20,40 @@ impl Message {
             Self::Position(position) => position.take(),
             Self::Ready => None,
         }
+    }
+}
+
+/// Backend wakes share the bounded user-input channel. At most one `Ready` is queued at a
+/// time: the worker polls every source after receiving it, so later wakes are redundant.
+pub(crate) struct Wakes {
+    sender: SyncSender<Message>,
+    pending: AtomicBool,
+}
+
+impl Wakes {
+    pub fn new(sender: SyncSender<Message>) -> Self {
+        Self {
+            sender,
+            pending: AtomicBool::new(false),
+        }
+    }
+
+    /// Nonblocking. Returns whether a wake is queued for the worker.
+    pub fn wake(&self) -> bool {
+        if self.pending.swap(true, Ordering::AcqRel) {
+            return true;
+        }
+        let queued = self.sender.try_send(Message::Ready).is_ok();
+        if !queued {
+            // A full queue is drained, and every source polled, before the worker blocks.
+            self.pending.store(false, Ordering::Release);
+        }
+        queued
+    }
+
+    /// The worker received `Ready` and polls every source after this call.
+    pub fn received(&self) {
+        self.pending.store(false, Ordering::Release);
     }
 }
 
@@ -141,6 +180,38 @@ mod tests {
             panic!("expected seek")
         };
         value
+    }
+
+    #[test]
+    fn backend_wake_bursts_queue_one_ready_and_leave_room_for_user_input() {
+        let (sender, receiver) = mpsc::sync_channel(2);
+        let wakes = Wakes::new(sender.clone());
+        for _ in 0..10_000 {
+            assert!(wakes.wake());
+        }
+        assert!(
+            sender
+                .try_send(Message::Input(ViewerInput::NextFile))
+                .is_ok(),
+            "browser frames must not fill the shared input queue"
+        );
+        let queued: Vec<_> = receiver.try_iter().collect();
+        assert!(matches!(
+            queued.as_slice(),
+            [Message::Ready, Message::Input(ViewerInput::NextFile)]
+        ));
+        wakes.received();
+        assert!(
+            wakes.wake(),
+            "a wake after the worker's poll is queued again"
+        );
+        assert!(matches!(receiver.try_recv(), Ok(Message::Ready)));
+        wakes.received();
+        sender.try_send(Message::Ready).unwrap();
+        sender.try_send(Message::Ready).unwrap();
+        assert!(!wakes.wake(), "a full queue reports the dropped wake");
+        receiver.try_iter().for_each(drop);
+        assert!(wakes.wake(), "a rejected wake does not stay pending");
     }
 
     #[test]

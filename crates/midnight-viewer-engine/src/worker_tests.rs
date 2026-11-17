@@ -6,6 +6,9 @@ mod file_navigation;
 #[path = "worker_layout_tests.rs"]
 mod layout_opening;
 
+#[path = "worker_loop_tests.rs"]
+mod event_loop;
+
 #[path = "worker_position_tests.rs"]
 mod position;
 
@@ -21,7 +24,8 @@ fn opening_acknowledges_a_missing_plugin_as_failure_instead_of_window_success() 
     let path = directory.path().join("generated.txt");
     std::fs::write(&path, b"generated list\n").unwrap();
     let captured = midnight_plugin_host::CapturedFile::capture(&path).unwrap();
-    worker.files = vec![(path, Some(Ok(captured)))];
+    worker.files = Arc::from([path]);
+    worker.captured = Some((0, Ok(captured)));
     worker.basic = true;
     assert!(output.take_open_result().is_none());
     worker.open(&output);
@@ -108,8 +112,13 @@ fn worker() -> (Worker, Mailbox) {
         image_ids: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         image: None,
         closing_image: None,
-        files: vec![],
+        files: Arc::from([]),
         current: 0,
+        captured: None,
+        prefetch: None,
+        capture_request: None,
+        orphan_failure: None,
+        web_backlog: false,
         basic: false,
         associations: Arc::default(),
         disabled_plugins: Arc::from([]),
@@ -165,6 +174,33 @@ fn worker() -> (Worker, Mailbox) {
         frames: Default::default(),
     };
     (worker, Mailbox::default())
+}
+
+/// Production toggles wrapping through the accepted preference snapshot.
+fn prefer_wrap(worker: &mut Worker, output: &Mailbox, wrap: bool) {
+    worker
+        .preference_state
+        .change(&ViewerPreferenceChange::Wrap(wrap))
+        .unwrap();
+    worker.sync_preferences(output);
+}
+
+/// Navigation order whose identities are served explicitly, as the capture actor would.
+fn captured_order(worker: &mut Worker, names: &[&str]) {
+    worker.files = names.iter().map(PathBuf::from).collect();
+    worker.prefetch = Some(crate::capture_prefetch::Prefetch::manual());
+}
+
+/// Serve the worker's pending identity request and continue opening as its loop does.
+/// Returns the requested position.
+fn serve_capture(worker: &mut Worker, output: &Mailbox, result: crate::capture::Captured) -> usize {
+    let prefetch = worker.prefetch.as_ref().expect("manual identity source");
+    let index = prefetch.wanted().expect("the worker requested an identity");
+    prefetch.serve(result);
+    worker.poll_capture();
+    assert!(worker.pending_open && worker.capture_ready());
+    worker.open(output);
+    index
 }
 
 #[test]
@@ -876,7 +912,7 @@ fn wrapping_and_resize_preserve_page_anchor_selection_and_visible_text() {
         .unwrap()[0]
         .y0 as f32;
     let original_height = worker.shaped.as_ref().unwrap().height();
-    worker.input(ViewerInput::Wrap(true), &output);
+    prefer_wrap(&mut worker, &output, true);
     let shaped = worker.shaped.as_ref().unwrap();
     assert!(shaped.height() > original_height);
     assert!(shaped.width() <= 241.0);
@@ -923,7 +959,7 @@ fn source_wraps_but_binary_keeps_fixed_columns_and_printable_bytes() {
     let (mut worker, output) = worker();
     worker.mode = viewer::MODE_SOURCE;
     worker.set_page(text_page("long source identifier ".repeat(30)), &output);
-    worker.input(ViewerInput::Wrap(true), &output);
+    prefer_wrap(&mut worker, &output, true);
     assert!(worker.shaped.as_ref().unwrap().line_count() > 1);
     worker.binary = true;
     worker.mode = viewer::MODE_BINARY;
@@ -942,10 +978,9 @@ fn source_wraps_but_binary_keeps_fixed_columns_and_printable_bytes() {
         ),
         &output,
     );
-    worker.input(ViewerInput::Wrap(false), &output);
     assert!(
         worker.wrap,
-        "fixed-column mode must not change the remembered text setting"
+        "fixed-column mode keeps the remembered text setting"
     );
     let page = worker.shaped.as_ref().unwrap();
     assert!(page.width() > 240.0);
