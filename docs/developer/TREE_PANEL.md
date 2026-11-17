@@ -550,11 +550,7 @@ Failed listings retain known rows and report a diagnostic.
 Navigation or terminal session failure invalidates that generation immediately;
 the backend releases native/provider resources after any outstanding call returns.
 Late callbacks, sweep receipts and fatal errors cannot cancel a newer navigation.
-Watch diagnostics do not turn into Commit retries. When an adopted session fails
-(`Unavailable` for the displayed root), the presenter stops sending its
-observations, reports the failure and re-reads the folder flat, which retires the
-tree and starts a fresh selection context; a full command queue retains that
-re-read for retry. The mutation gate remains held
+Watch diagnostics do not turn into Commit retries. The mutation gate remains held
 through each maintenance list/apply step, while explicit expansion can proceed
 when maintenance is waiting for a transfer.
 
@@ -563,6 +559,15 @@ The earlier [verification record](../verification/2026-11-10-tree-watch.md) reta
 its dated scope; [ACTIVE_WORK](../ACTIVE_WORK.md#current-checkpoint) records current
 qualification. This does not add archive watches, generic watch providers or the
 remaining tree operation consumers.
+
+When the adopted session of the displayed root fails (`Unavailable`), the
+presenter stops sending that session's Commit, viewport, branch and size requests,
+reports the failure and leaves tree mode. A native panel reads its folder again
+flat; like other automatic re-reads, this waits while a drag from that panel is in
+progress. A directory comparison that waits for or runs against the failed tree is
+cancelled, so it cannot hold the re-read back. An archive panel lists its current
+archive folder again. Either request retires the tree and starts a fresh selection
+context; when the command queue is full, the request is kept and retried.
 
 ## Delete from expanded native panels
 

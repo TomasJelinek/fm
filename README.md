@@ -794,10 +794,13 @@ Visible directories are watched on the backend. Changes are batched after
 150 ms of quiet, with a 500 ms cap during continuous activity. A 15-second
 metadata check catches missing native/network notifications. Automatic refresh
 (change notifications and finished file operations) preserves the viewport,
-selection, command editing, an open Panel Filter window and the computed sizes of
-folders that are still listed; explicit Refresh recomputes sizes. It waits while
-a drag from that panel or a directory comparison is in progress. When the focused
-item disappears, the cursor moves to its nearest remaining neighbor.
+selection, command editing, an open Panel Filter dialog and the computed sizes of
+folders that are still listed; folders it adds show as not calculated. Explicit
+Refresh discards computed sizes unless a size scan continues across it. A flat
+panel's automatic re-read waits while a drag from that panel or a directory
+comparison is in progress; maintenance of expanded branches waits for a running
+comparison. When the focused item disappears, the cursor moves to its nearest
+remaining neighbor.
 Folder sizing uses a bounded fair batch and a shared I/O budget: up to four reads
 only for proven local SSD, one stream for HDD/network/unknown storage. Detection
 errors remain conservative. Other navigation work has independent capacity.
