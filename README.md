@@ -55,6 +55,11 @@ There is no source-recovery mode or journal. See the
 Link/provider moves, link copying and full metadata preservation remain pending;
 required modified-time preservation currently accepts regular files only.
 See [the transfer capabilities and implementation limits](docs/developer/TRANSFERS.md).
+On Linux, Copy and cross-volume Move write only to filesystems with anonymous
+`O_TMPFILE` files (ext4, XFS, Btrfs, tmpfs): FAT/exFAT/NTFS media and NFS/SMB,
+sshfs or GVfs shares are refused as destinations. Rename and permanent Delete
+still work on vfat, exfat, ntfs3 and CIFS mounts. See
+[system requirements](docs/SYSTEM_REQUIREMENTS.md).
 
 Copy/Move pauses for supported Retry/Skip/Cancel decisions on I/O errors, including
 an unavailable destination or a full disk. Retry preserves the verification policy captured when the job started;
@@ -347,10 +352,12 @@ enabled when qualifying filesystem operations and desktop integration. See
 [Fedora's C++ setup](https://developer.fedoraproject.org/tech/languages/c/cpp_installation.html)
 and the [Zypper manual](https://manpages.opensuse.org/Tumbleweed/zypper/zypper.8.en.html).
 
-For command-line execution, install a currently recognized terminal: `xterm`,
-Konsole, GNOME Terminal or Xfce Terminal. For example, `sudo dnf install xterm`
-or `sudo zypper install xterm`. An arbitrary desktop's default terminal is not
-automatically supported by the current launcher.
+For command-line execution, the launcher uses the first installed recognized
+terminal: the Debian/Ubuntu `x-terminal-emulator` alternative (your configured
+default), then the current desktop's Konsole, GNOME Terminal or Xfce Terminal, the
+other two of those, and `xterm` last. Fedora Workstation's default Ptyxis and GNOME
+Console are not recognized yet; install a listed terminal, for example
+`sudo dnf install gnome-terminal` or `sudo zypper install xterm`.
 
 To install Rust manually, use the [official rustup instructions](https://rust-lang.org/tools/install/),
 then open a new terminal or load rustup's environment with `. "$HOME/.cargo/env"`.

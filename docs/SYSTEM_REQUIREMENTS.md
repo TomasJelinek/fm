@@ -156,7 +156,15 @@ Linux security-sensitive local operations use `openat2` (kernel **5.6+**) and
 handle-relative APIs. Verified destination publication additionally requires
 filesystem support for `O_TMPFILE` and `linkat`; no-overwrite rename requires the
 corresponding native rename capability. A sufficiently new kernel alone does not
-guarantee those features on every mounted filesystem. Unsupported operations fail
+guarantee those features on every mounted filesystem. Local ext4, XFS, Btrfs and
+tmpfs provide them. FAT/exFAT/NTFS removable media, NFS/SMB shares, sshfs and GVfs
+FUSE mounts (including shares opened from Network Neighborhood) cannot create
+`O_TMPFILE` files, so Linux Copy and cross-volume Move into them fail with an
+explicit unsupported-filesystem error; copying from them works. Rename and
+permanent Delete need only no-replace rename there (vfat, exfat, ntfs3 and CIFS
+provide it; FUSE mounts only when their daemon does), and their private staging
+directory keeps the mount-provided permissions. Trash is limited to the home
+filesystem. Unsupported operations fail
 explicitly rather than silently weakening identity checks or checksum verification.
 Newer optional metadata syscalls have guarded fallbacks; they do not raise the
 general minimum kernel to the newest syscall's introduction version.

@@ -143,7 +143,11 @@ and waits responsively for terminal job events before exiting.
 The Windows Shell recycle API remains path-based inside its native call; a
 concurrent namespace substitution there cannot be excluded. Linux private staging
 narrows pathname races but is not a boundary against the same UID, root or previously
-opened descendant handles. See [Windows guarantees](crates/midnight-platform-windows/MUTATION_SAFETY.md)
+opened descendant handles. Where a filesystem takes its permissions from mount options
+(vfat, exfat, NTFS, CIFS without Unix extensions, FUSE), the owned staging directory
+keeps the mount-provided permissions and excludes other users only as far as the mount
+does; a staging directory refused after creation is removed again.
+See [Windows guarantees](crates/midnight-platform-windows/MUTATION_SAFETY.md)
 and the Linux mutation module's safety comments. No claim of universal race freedom
 is made. Tests mutate fresh, owned fixtures only; they never empty a user's Trash.
 
@@ -165,7 +169,11 @@ is made. Tests mutate fresh, owned fixtures only; they never empty a user's Tras
   and refresh never
   activate files. Native metadata/launch and helper reaping stay on bounded
   backend workers, separate from navigation. Missing/special files fail with
-  context; native symlinks are classified only after explicit activation.
+  context; native symlinks are resolved for activation only after explicit
+  activation. Linux listings label a link to a directory as a directory link
+  from one target type lookup that opens nothing, does not mount an automount
+  target and uses cached network attributes; automounts or unresponsive servers
+  along the link's path can still delay that listing.
   Windows passes raw UTF-16 to `ShellExecuteExW(open)` with no command parameters;
   Linux passes ordinary documents and desktop launchers as literal raw paths to
   a fixed system desktop opener, without inherited standard streams. Files with
@@ -391,10 +399,20 @@ commit. Structured outcomes preserve actual publication, recovery paths and know
 identities even on errors. No recovery object is automatically deleted on Drop.
 
 Linux uses anonymous O_TMPFILE staging and descriptor-based no-replace publication;
-filesystems without that capability return Unsupported. New copy directories are
-private (0700). Creation rejects destination parents owned by an untrusted UID,
-or shared-writable parents lacking sticky protection. mkdir/open is not an atomic
-operation; same-UID/root interference remains outside this isolation boundary.
+filesystems without that capability return Unsupported, so Linux Copy and cross-volume
+Move cannot write to FAT/exFAT/NTFS media, NFS/SMB, sshfs or GVfs FUSE shares. New
+copied files are owner-only (0600) and new copy directories private (0700); source
+permissions are not copied, while recoverable replacement keeps the replaced file's
+mode, ACL and extended attributes. Where a filesystem cannot store modes, a new
+directory keeps the mount-provided permissions. Creation requires a protected parent:
+owned by the user or root, and either sticky or not writable by other users. Group
+write is accepted only for the user's private group: the effective group, named
+after the user in `/etc/group`, with no other member and no other `/etc/passwd`
+account using it as its primary group. Shared-group or world-writable parents
+without sticky protection are refused. A selected mount point may be a Copy root;
+Copy never enters another mount below a selected folder and reports such mount
+points as unsupported. mkdir/open is not an atomic operation; same-UID/root
+interference remains outside this isolation boundary.
 Windows uses exclusive staging and a retained handle for no-replace rename.
 ContentOnly verification does not promise preservation of ACLs, alternate streams,
 xattrs, sparse allocation, timestamps or links. Windows file sync does not promise
@@ -422,7 +440,8 @@ parents are protected before copying the batch. Windows requests DELETE upfront
 only for Move and rejects incompatible sharing; recovery/copy-fallback qualification
 also rejects unsafe parent DACLs. Metadata-only native rename preparation does not
 require content-read or directory-list rights. Linux
-requires owned/trusted-sticky source parents and effective mutation permissions.
+requires protected source parents (the Copy parent rule above) and effective
+mutation permissions.
 Shared inherited directories can be unsupported even on a supported filesystem;
 the failure suggests Copy and retains every source rather than weakening rights.
 
@@ -457,11 +476,13 @@ temporary staging and live-validated directory-relative unlink for owned,
 single-link regular files on qualified local ext filesystems with protected
 parents. A read lease is retained from preflight through final content validation
 and removal. Existing writers/mappings or observed lease breaks, revisions or
-binding changes refuse removal. A bounded dedicated thread blocks only its own
-SIGIO and owns thread-directed lease notifications; no process-wide handler is
-installed. The kernel can forcibly break a lease after its timeout, so arbitrary
-descheduling between the final check and unlink across that timeout is not an
-atomicity guarantee. See [the native race evidence](docs/verification/2026-11-08-ordinary-move.md).
+binding changes refuse removal. A dedicated thread blocks only its own SIGIO, owns
+the thread-directed lease notifications and releases a breaking lease at once, so
+a program opening the source for writing is not stalled for the kernel's
+lease-break timeout; that Move then refuses source removal. No process-wide handler
+is installed. A writer opening the source between the final check and the unlink
+is not detected: removal is live validation, not an atomic compare-and-unlink.
+See [the native race evidence](docs/verification/2026-11-08-ordinary-move.md).
 Unsupported Linux locations fail before publication without fallback. No platform promises an
 immutable snapshot or batch rollback. Windows ADS sharing/oplocks apply per stream;
 late qualification refuses unseen streams but does not claim whole-file CAS or
@@ -563,8 +584,8 @@ and apparent compression ratios are not evidence; reported sizes remain logical.
 
 Directory links and junctions retain a separate entry kind. Native Windows link
 icons use system overlays on cached generic types, without sending untrusted
-link paths to the Shell or opening targets. Linux does not infer a directory
-target by an implicit stat/network probe for icon presentation. Recursive sizing
+link paths to the Shell or opening targets. Linux icons reuse the listing's
+directory-link label (above) and open no target. Recursive sizing
 continues to accept only ordinary directories; a folder-looking icon must never
 turn a link into a traversable directory.
 
