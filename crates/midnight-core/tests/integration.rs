@@ -25,6 +25,7 @@ mod file_drag_drop;
 mod find;
 mod icon_keys;
 mod linked_cancellation;
+mod listing_performance;
 mod locale_sorting;
 mod network_bookmark_identity;
 mod panel_selected_navigation;
