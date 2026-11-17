@@ -72,15 +72,10 @@ impl ArchiveMount for GuardedMount {
         let mut reference = Retained::new(self);
         if reference.get().cleanup_unconfirmed() {
             // The tainted session stays quarantined, yet only its host can end the
-            // worker and return the archive process permit. The last wrapper hands
-            // its reference over; a shared wrapper reference stays retained.
-            match Arc::try_unwrap(reference.take()) {
-                Ok(mut mount) => {
-                    if let Some(owner) = mount.0.take() {
-                        release_tainted(owner);
-                    }
-                }
-                Err(shared) => std::mem::forget(shared),
+            // worker and return the archive process permit. A shared reference gives
+            // up its count; the releaser of the last one reaches the host.
+            if let Some(owner) = last_owner(reference.take()) {
+                release_tainted(owner);
             }
             return Err(nested::unconfirmed());
         }
@@ -90,6 +85,22 @@ impl ArchiveMount for GuardedMount {
         match mount.0.take() {
             Some(owner) => release_native(owner),
             None => Err(nested::unconfirmed()),
+        }
+    }
+    fn release_quarantined(self: Arc<Self>) {
+        let Some(owner) = last_owner(self) else {
+            return;
+        };
+        // Armed before the status query, whose unwind then retains the owner. An
+        // untainted last owner stays retained: this context cannot certify teardown.
+        let mut owner = Retained::new(owner);
+        if owner
+            .get()
+            .source
+            .as_ref()
+            .is_some_and(|source| source.cleanup_unconfirmed())
+        {
+            release_tainted(owner.take());
         }
     }
     fn id(&self) -> u64 {
@@ -220,6 +231,20 @@ impl Retirement {
         let mount = mounts.adopt(source).unwrap();
         (mount, retirement.domain, mounts.retained.clone())
     }
+    /// A host session fake with the filesystem host's tainted-release semantics,
+    /// holding one of `active`'s archive process permits until its worker stops.
+    pub(crate) fn tainted_host_for_test(
+        active: &Arc<Semaphore>,
+    ) -> (Arc<dyn ArchiveMount>, tests::HostProbe) {
+        tests::TaintedHost::start(active)
+    }
+}
+
+/// Consume one wrapper reference without destroying anything. Atomic `Arc::into_inner`
+/// hands the last owner to exactly one of any concurrent releasers; every other call
+/// only gives up its count, so a later owner can still be the last one.
+fn last_owner(reference: Arc<GuardedMount>) -> Option<WorkerOwned<Native>> {
+    Arc::into_inner(reference).and_then(|mut mount| mount.0.take())
 }
 
 /// Give a tainted session's host reference its final release. The host stops the

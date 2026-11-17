@@ -121,11 +121,22 @@ pub(crate) fn unconfirmed() -> FsError {
 pub(crate) fn release_archive(mount: Arc<dyn ArchiveMount>) -> Result<(), FsError> {
     let context = current().unwrap_or_default();
     if context.is_quarantined() {
-        std::mem::forget(mount);
+        release_quarantined(mount, &context);
         return Err(unconfirmed());
     }
+    let mut mount = Some(mount);
     let mut result = Ok(());
-    let returned = context.with(|| checked_step(|| result = mount.release_on_worker()));
+    let returned = context.with(|| {
+        checked_step(|| {
+            if let Some(mount) = mount.take() {
+                result = mount.release_on_worker();
+            }
+        })
+    });
+    // Another holder of this context quarantined it before the release could run.
+    if let Some(mount) = mount {
+        release_quarantined(mount, &context);
+    }
     if !returned && result.is_ok() {
         result = Err(unconfirmed());
     }
@@ -133,6 +144,16 @@ pub(crate) fn release_archive(mount: Arc<dyn ArchiveMount>) -> Result<(), FsErro
         context.record(error.clone());
     }
     result
+}
+
+/// Gives up only this reference: its last owner, if tainted, still asks the host to
+/// end the worker (`ArchiveMount::release_quarantined`). Everything else stays
+/// retained, also when that call unwinds.
+fn release_quarantined(mount: Arc<dyn ArchiveMount>, context: &Context) {
+    if let Err(payload) = catch_unwind(AssertUnwindSafe(|| mount.release_quarantined())) {
+        std::mem::forget(payload);
+        context.record(unconfirmed());
+    }
 }
 
 pub(crate) fn provider_error() -> crate::providers::ProviderError {

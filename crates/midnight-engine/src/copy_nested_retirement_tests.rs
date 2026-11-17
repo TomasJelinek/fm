@@ -501,6 +501,57 @@ fn archive_release_refusal_is_visible_and_never_publishes_finished() {
     fixture.quarantined();
 }
 
+/// Two members of one archive, each with its own reference to the tab's mount. The
+/// first source's tainted release quarantines the Copy, so the second one takes
+/// `release_archive`'s quarantined branch.
+struct ArchiveMembers {
+    _sources: Vec<Box<dyn TransferSource>>,
+}
+impl CheckedRetirement for ArchiveMembers {
+    fn retirement_is_checked(&self) -> bool {
+        true
+    }
+}
+
+#[test]
+fn quarantined_copy_gives_up_shared_tainted_archive_so_its_last_owner_stops_the_worker() {
+    let active = Arc::new(Semaphore::new(2));
+    for tab_closes_first in [false, true] {
+        let (host, probe) = crate::archives::Retirement::tainted_host_for_test(&active);
+        let (tab, _archive_domain, _) = crate::archives::Retirement::copy_mount_for_test(host);
+        let (fixture, resources) = Fixture::resources();
+        let members = ArchiveMembers {
+            _sources: (0..2)
+                .map(|_| archive_source::retirement_source_for_test(tab.clone()))
+                .collect(),
+        };
+        probe.taint();
+        let tab = if tab_closes_first {
+            // Not the last reference: an ordinary drop only gives up its count.
+            drop(tab);
+            None
+        } else {
+            Some(tab)
+        };
+        assert_eq!(Scope::new(members, resources).drain(), Err(Quarantined));
+        fixture.quarantined();
+        if let Some(tab) = tab {
+            assert_eq!(
+                probe.releases(),
+                0,
+                "the Copy ended the session the tab still uses"
+            );
+            assert!(!probe.stopped());
+            assert_eq!(active.available_permits(), 1);
+            assert!(tab.release_on_worker().is_err());
+        }
+        assert_eq!(probe.releases(), 1, "tab closes first: {tab_closes_first}");
+        assert!(probe.stopped(), "the last owner kept the archive worker");
+        assert_eq!(active.available_permits(), 2);
+        assert!(!probe.dropped(), "the tainted source stays quarantined");
+    }
+}
+
 #[test]
 fn ordinary_operation_error_does_not_turn_confirmed_retirement_into_quarantine() {
     let (fixture, resources) = Fixture::resources();

@@ -283,6 +283,21 @@ still occupy their token until final destruction. Saturation reports busy and
 accepted content is never evicted.
 Only exact raw/proxy identity reuses a guard, not matching plugin IDs or names.
 
+A release never destroys a session whose cleanup is unconfirmed (tainted, for example
+by a failed source close). Releasing a shared reference of its guard, also from a Copy
+whose retirement is already quarantined (`ArchiveMount::release_quarantined`), only
+gives up that reference. Exactly one releaser of the last reference (atomic
+`Arc::into_inner`) hands the guard's single host reference to the host's tainted
+release, which ends the worker and returns its process permit
+([filesystem API](FILESYSTEM_API.md)); the source, the retention token and the cleanup
+slot stay quarantined until exit. A last reference released from a quarantined Copy
+whose session is not tainted stays retained with its worker. An ordinary drop of the
+last reference outside a Copy, such as a closed tab, retires the guard on the archive
+cleanup worker like any other session, which also ends the worker. Limitation: a
+tree's captured archive location, its target and navigation wrappers and provider
+member content still keep their guard reference when they fail a tainted release, so
+a guard they share has no last owner and its worker stays until exit.
+
 Each archive-size pane reserves one guard for its pending lane before it accepts a
 root. Closing marks/cancels the lane; ordinary worker draining remains unchanged.
 If a native worker unwinds with queued roots, final lane destruction still retires
