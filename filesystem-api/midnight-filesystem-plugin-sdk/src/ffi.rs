@@ -233,6 +233,7 @@ unsafe extern "C" fn call<F: Filesystem>(id: u64, input: *const Call, out: *mut 
         if !paired {
             return INVALID;
         }
+        runtime::bound_diagnostics(&mut response);
         let bytes = match permit.encode(&response) {
             Ok(bytes) => bytes,
             Err(status) => return status,

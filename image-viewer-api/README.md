@@ -1,4 +1,4 @@
-# Restricted raster API and SDK 0.2.0
+# Restricted raster API 0.2.0 and SDK 0.3.0
 
 This independent public workspace exposes a filename-free, bounded protocol and
 worker runtime. Providers use the released SDK registry package, never private
@@ -7,7 +7,12 @@ host crates. The SDK enters the native worker sandbox before invoking a parser.
 Version 0.2.0 adds `DocumentMetadata`, `Message::PageViewport`, `Document` and
 `serve_document`. Existing MIV1 image messages are byte-compatible. Image packages
 continue declaring manifest protocol 1; paginated packages declare protocol 2.
-An immutable 0.1.0 release must never be replaced with different package contents.
+`midnight-image-viewer-sdk` 0.3.0 keeps the 0.2.0 interface and only depends on
+`midnight-worker-sdk` 0.2.0 instead of 0.1.0, which adds the explicit `MWS2`
+startup policy and keeps the legacy `MWS1` handshake. The image and PDF viewer
+plugins pin SDK 0.3.0.
+Released packages are immutable: a change ships as a new version, never as
+different contents for an existing one.
 
 Document metadata contains 1–4,096 ordered page dimensions. Each dimension uses
 the existing validated logical-size contract. PDF providers conventionally use

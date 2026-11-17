@@ -3,7 +3,9 @@ use crate::*;
 
 pub fn encode_request(value: &Request, maximum: usize) -> Result<Vec<u8>, WireError> {
     validate::request(value)?;
-    let mut out = Writer::new(maximum)?;
+    Writer::frame(maximum, |out| write_request(out, value))
+}
+fn write_request(out: &mut Writer, value: &Request) -> Result<(), WireError> {
     match value {
         Request::Resolve { address }
         | Request::StorageKind { address }
@@ -72,12 +74,14 @@ pub fn encode_request(value: &Request, maximum: usize) -> Result<Vec<u8>, WireEr
         Request::Volumes => {}
         Request::ResolveText { text } => out.text(text)?,
     }
-    Ok(out.bytes)
+    Ok(())
 }
 
 pub fn encode_response(value: &Response, maximum: usize) -> Result<Vec<u8>, WireError> {
     validate::response(value)?;
-    let mut out = Writer::new(maximum)?;
+    Writer::frame(maximum, |out| write_response(out, value))
+}
+fn write_response(out: &mut Writer, value: &Response) -> Result<(), WireError> {
     match value {
         Response::RenamePrepared(value) => {
             out.u16(15)?;
@@ -213,35 +217,58 @@ pub fn encode_response(value: &Response, maximum: usize) -> Result<Vec<u8>, Wire
             }
         }
     }
-    Ok(out.bytes)
+    Ok(())
 }
 
+/// Writes one bounded frame in two passes over the same immutable value: the first
+/// only measures it, the second fills one allocation of exactly that size. A page
+/// has thousands of fields, and SDK reply budgets charge the buffer's capacity, so
+/// this avoids both per-field reallocation and retained spare capacity.
 struct Writer {
-    bytes: Vec<u8>,
+    /// `None` while measuring.
+    bytes: Option<Vec<u8>>,
+    length: usize,
     maximum: usize,
 }
 impl Writer {
-    fn new(maximum: usize) -> Result<Self, WireError> {
+    fn frame(
+        maximum: usize,
+        write: impl Fn(&mut Self) -> Result<(), WireError>,
+    ) -> Result<Vec<u8>, WireError> {
+        let mut measure = Self {
+            bytes: None,
+            length: 0,
+            maximum,
+        };
+        measure.put(PREFIX)?;
+        write(&mut measure)?;
+        let mut bytes = Vec::new();
+        bytes
+            .try_reserve_exact(measure.length)
+            .map_err(|_| WireError::Limit)?;
         let mut out = Self {
-            bytes: vec![],
+            bytes: Some(bytes),
+            length: 0,
             maximum,
         };
         out.put(PREFIX)?;
-        Ok(out)
+        write(&mut out)?;
+        let bytes = out.bytes.unwrap_or_default();
+        debug_assert_eq!(bytes.len(), measure.length);
+        Ok(bytes)
     }
     fn put(&mut self, bytes: &[u8]) -> Result<(), WireError> {
         let size = self
-            .bytes
-            .len()
+            .length
             .checked_add(bytes.len())
             .ok_or(WireError::Limit)?;
         if size > self.maximum {
             return Err(WireError::Limit);
         }
-        self.bytes
-            .try_reserve_exact(bytes.len())
-            .map_err(|_| WireError::Limit)?;
-        self.bytes.extend_from_slice(bytes);
+        self.length = size;
+        if let Some(out) = &mut self.bytes {
+            out.extend_from_slice(bytes);
+        }
         Ok(())
     }
     fn u8(&mut self, value: u8) -> Result<(), WireError> {
