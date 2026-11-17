@@ -75,7 +75,7 @@ deadline termination. Cross-compilation alone does not qualify a platform.
 
 ## Thumbnail protocol and backend
 
-The separate `midnight-thumbnail-api` 0.1.0 and `midnight-thumbnail-sdk` 0.2.1 crates
+The separate `midnight-thumbnail-api` 0.1.0 and `midnight-thumbnail-sdk` 0.2.0 crates
 define `MTH1` framed messages and a broker `Read + Seek` adapter. Helpers receive
 request ID, source byte length, requested dimensions and sample index, never a
 pathname, credentials or URL. Offset/length reads use a backend source lease

@@ -183,11 +183,24 @@ Permission-denied native folders offer an explicit authorized listing retry usin
 Windows UAC or Linux polkit (`pkexec` and a desktop authorization agent). The build
 helpers also build `midnight-elevated-listing` alongside the host. Because the helper
 runs as Administrator or root, it is used only from beside an installed `me` that
-standard users cannot change: on Windows, a folder on a local fixed drive created by an
-administrator, for example below `C:\Program Files`; on Linux, a root-owned directory
-such as `/opt/midnight-explorer` (see [the system-wide installation](#linux-desktop-launcher)).
-Build output, the per-user Windows private runtime and other user-writable
+standard users cannot change. On Windows, that is a folder on a local fixed drive whose
+permissions only administrators can change, such as a folder below `C:\Program Files`;
+on Linux, a root-owned directory such as `/opt/midnight-explorer` (see
+[the system-wide installation](#linux-desktop-launcher)). Build output, the per-user
+Windows private runtime, anything inside a user profile and other user-writable
 locations refuse authorization with an explanation; browsing is otherwise unaffected.
+So does a folder created directly under a drive root such as `C:\`, even by an
+administrator, because it inherits Modify permission for all authenticated users from
+the root. On Windows, install a release build from a PowerShell started with
+**Run as administrator** in the checkout, then start Midnight Explorer from that folder:
+
+```powershell
+$target = Join-Path $env:ProgramFiles 'Midnight Explorer'
+New-Item -ItemType Directory -Force -Path $target | Out-Null
+Copy-Item -LiteralPath _build\release\me.exe, _build\release\midnight-elevated-listing.exe -Destination $target
+Copy-Item -Recurse -Force -LiteralPath _build\release\viewers, _build\release\filesystems, _build\release\thumbnailers -Destination $target
+```
+
 This one-shot helper lists the requested directory only, loads no plugins and
 does not elevate ordinary file operations, change ACLs or store passwords. See
 [the authorization boundary](SECURITY.md#directory-authorization-helper).
