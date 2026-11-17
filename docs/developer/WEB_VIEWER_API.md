@@ -61,9 +61,14 @@ the captured main document, embedded data and remote resources; relative local
 assets are unavailable. Enabling JavaScript requires online mode and the UI warns
 that scripts can read/transmit the main document. Each transition revokes resource
 IDs, clears pending presentation, and recreates the Chromium browser/context and
-origin. Permissions reset on a different file. File URLs, external protocols,
-downloads, popups, file pickers, device permissions and extension loading are
-denied. There is no renderer-facing application RPC or remote debugging port.
+origin. Permissions reset on a different file. The provider serves the captured
+document at `https://mewv-<generation>.invalid/mewv-document/`; offline relative
+assets and relative navigation to other captured files in scope resolve below it,
+while references that climb above it (`../`) or are root-relative are denied rather
+than substituted. `State.url` always reports that main document URL and
+`State.editable` is always false. Cookies are disabled entirely. File URLs,
+external protocols, downloads, popups, file pickers, device permissions and
+extension loading are denied. There is no renderer-facing application RPC or remote debugging port.
 Browser request policy is not represented as an OS-level network firewall.
 
 Windows runs the matching official CEF bootstrap with the same-basename client
@@ -82,8 +87,9 @@ Tree-wide cancellation uses `cgroup.kill`. These limits supplement Chromium's
 sandbox. Failure to establish containment is an error, never an unsandboxed
 fallback. Native Linux rendering and containment were qualified on Ubuntu 24.04
 under WSLg XWayland; see the [Linux report](../verification/2026-11-10-html-linux.md).
-Physical IME, native Chromium Wayland and other display/system policies still need
-their own qualification. Windows measurements do not establish Linux frame pacing.
+IME composition/commit pass CEF's required invalid replacement range (a synthetic
+commit is covered by the opt-in native fixture); physical IME input, native Chromium
+Wayland and other display/system policies still need their own qualification. Windows measurements do not establish Linux frame pacing.
 
 Viewer controls reuse Escape, Ctrl+F, Find next/previous and zoom. Pointer, keyboard
 and IME input target the displayed content generation. Space, Backspace and
