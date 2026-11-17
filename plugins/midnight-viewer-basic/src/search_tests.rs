@@ -1,34 +1,94 @@
 use super::{
-    decode::{Encoding, page},
-    search::Matcher,
+    casefold::FOLD,
+    decode::Encoding,
+    search::{Matcher, Want, fold},
 };
 use midnight_plugin_sdk::api::viewer::SourceRange;
 
-#[test]
-fn matches_across_pages_with_u64_source_offsets() {
-    let base = 1 << 35;
-    let mut m = Matcher::new("foobar", true);
-    assert!(
-        m.feed(
-            &page(b"xxfoo", Encoding::Utf8, base, false, 100, 10),
-            || false
+fn range(offset: u64, length: u64) -> SourceRange {
+    SourceRange { offset, length }
+}
+
+/// First and last match of a whole complete text.
+fn first_and_last(
+    matcher: &mut Matcher,
+    bytes: &[u8],
+    encoding: Encoding,
+    offset: u64,
+) -> (Option<SourceRange>, Option<SourceRange>) {
+    let first = matcher
+        .scan(bytes, encoding, offset, true, Want::FirstFrom(0), || false)
+        .unwrap()
+        .found;
+    matcher.reset();
+    let last = matcher
+        .scan(
+            bytes,
+            encoding,
+            offset,
+            true,
+            Want::LastUntil(u64::MAX),
+            || false,
         )
         .unwrap()
-        .is_empty()
-    );
-    let result = m
-        .feed(
-            &page(b"bar!", Encoding::Utf8, base + 5, true, 100, 10),
+        .found;
+    (first, last)
+}
+
+#[test]
+fn matches_across_reads_with_u64_source_offsets() {
+    let base = 1 << 35;
+    let mut m = Matcher::new("foobar", true);
+    let scan = m
+        .scan(
+            b"xxfoo",
+            Encoding::Utf8,
+            base,
+            false,
+            Want::FirstFrom(0),
             || false,
         )
         .unwrap();
-    assert_eq!(
-        result,
-        vec![SourceRange {
-            offset: base + 2,
-            length: 6
-        }]
-    );
+    assert_eq!((scan.found, scan.consumed), (None, 5));
+    let scan = m
+        .scan(
+            b"bar!",
+            Encoding::Utf8,
+            base + 5,
+            true,
+            Want::FirstFrom(0),
+            || false,
+        )
+        .unwrap();
+    assert_eq!(scan.found, Some(range(base + 2, 6)));
+}
+
+#[test]
+fn reset_forgets_a_partial_match_before_an_unrelated_window() {
+    let mut m = Matcher::new("foobar", true);
+    let scan = m
+        .scan(
+            b"xxfoo",
+            Encoding::Utf8,
+            0,
+            false,
+            Want::LastUntil(5),
+            || false,
+        )
+        .unwrap();
+    assert_eq!(scan.found, None);
+    m.reset();
+    let scan = m
+        .scan(
+            b"bar",
+            Encoding::Utf8,
+            100,
+            true,
+            Want::LastUntil(103),
+            || false,
+        )
+        .unwrap();
+    assert_eq!(scan.found, None);
 }
 
 #[test]
@@ -40,75 +100,86 @@ fn full_unicode_case_folding_keeps_original_source_ranges() {
         ("ﬃ", "FFI", 3),
         ("ČESKÝ", "český", 7),
     ] {
-        let p = page(text.as_bytes(), Encoding::Utf8, 100, true, 100, 10);
+        let only = Some(range(100, length));
         assert_eq!(
-            Matcher::new(query, false).feed(&p, || false).unwrap(),
-            vec![SourceRange {
-                offset: 100,
-                length
-            }]
+            first_and_last(
+                &mut Matcher::new(query, false),
+                text.as_bytes(),
+                Encoding::Utf8,
+                100
+            ),
+            (only.clone(), only),
+            "{text}"
         );
     }
 }
 
 #[test]
+fn ascii_fast_path_matches_the_case_folding_table() {
+    for c in (0..=127u8).map(char::from) {
+        let table = FOLD
+            .binary_search_by_key(&c, |entry| entry.0)
+            .map_or_else(|_| vec![c], |index| FOLD[index].1.chars().collect());
+        assert_eq!(fold(c, false).collect::<Vec<_>>(), table, "{c:?}");
+        assert_eq!(fold(c, true).collect::<Vec<_>>(), vec![c]);
+    }
+}
+
+#[test]
 fn case_sensitive_and_overlapping_matches_are_correct() {
-    let p = page(b"aAaAA", Encoding::Utf8, 0, true, 100, 10);
+    let text = b"aAaAA";
     assert_eq!(
-        Matcher::new("AA", true).feed(&p, || false).unwrap(),
-        vec![SourceRange {
-            offset: 3,
-            length: 2
-        }]
+        first_and_last(&mut Matcher::new("AA", true), text, Encoding::Utf8, 0),
+        (Some(range(3, 2)), Some(range(3, 2)))
     );
+    let mut m = Matcher::new("aaa", false);
     assert_eq!(
-        Matcher::new("aaa", false).feed(&p, || false).unwrap(),
-        vec![
-            SourceRange {
-                offset: 0,
-                length: 3
-            },
-            SourceRange {
-                offset: 1,
-                length: 3
-            },
-            SourceRange {
-                offset: 2,
-                length: 3
-            }
-        ]
+        first_and_last(&mut m, text, Encoding::Utf8, 0),
+        (Some(range(0, 3)), Some(range(2, 3)))
     );
+    m.reset();
+    let scan = m
+        .scan(text, Encoding::Utf8, 0, true, Want::FirstFrom(1), || false)
+        .unwrap();
+    assert_eq!(scan.found, Some(range(1, 3)));
+    m.reset();
+    let scan = m
+        .scan(text, Encoding::Utf8, 0, true, Want::LastUntil(4), || false)
+        .unwrap();
+    assert_eq!(scan.found, Some(range(1, 3)));
 }
 
 #[test]
 fn utf16_search_and_visible_escape_match_exact_source_bytes() {
-    let p = page(
-        &[65, 0, 61, 216, 0, 222, 13, 0, 10, 0],
-        Encoding::Utf16Le,
-        2,
-        true,
-        100,
-        10,
+    assert_eq!(
+        first_and_last(
+            &mut Matcher::new("😀\n", true),
+            &[65, 0, 61, 216, 0, 222, 13, 0, 10, 0],
+            Encoding::Utf16Le,
+            2
+        ),
+        (Some(range(4, 8)), Some(range(4, 8)))
     );
     assert_eq!(
-        Matcher::new("😀\n", true).feed(&p, || false).unwrap(),
-        vec![SourceRange {
-            offset: 4,
-            length: 8
-        }]
-    );
-    let p = page(b"\xff", Encoding::Utf8, 0, true, 100, 10);
-    assert_eq!(
-        Matcher::new("\\xFF", true).feed(&p, || false).unwrap(),
-        vec![SourceRange {
-            offset: 0,
-            length: 1
-        }]
+        first_and_last(&mut Matcher::new("\\xFF", true), b"\xff", Encoding::Utf8, 0),
+        (Some(range(0, 1)), Some(range(0, 1)))
     );
 }
 
 #[test]
-fn cancellation_stops_cpu_search_before_a_match_is_reported() {
-    let p = page(&vec![b'x'; 8000], Encoding::Utf8, 0, true, 9000, 10);
-    assert!(Matcher::new("x", true).feed(&p, || true).is_err());
+fn cancellation_is_polled_at_bounded_intervals() {
+    let bytes = vec![b'x'; 20_000];
+    let mut polls = 0;
+    let scan = Matcher::new("y", true)
+        .scan(&bytes, Encoding::Utf8, 0, true, Want::FirstFrom(0), || {
+            polls += 1;
+            false
+        })
+        .unwrap();
+    assert_eq!((scan.found, scan.consumed, polls), (None, 20_000, 5));
+    assert!(
+        Matcher::new("x", true)
+            .scan(&bytes, Encoding::Utf8, 0, true, Want::FirstFrom(0), || true)
+            .is_err()
+    );
 }

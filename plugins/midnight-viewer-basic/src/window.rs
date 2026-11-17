@@ -1,10 +1,18 @@
 use midnight_plugin_sdk::api::{
     messages::Viewport,
-    viewer::{Anchor, SourceRange, TextPage},
+    viewer::{Anchor, SourceRange, Span, TextPage},
 };
 
 // Only decoder-supplied boundaries are eligible: never interpolate UTF-16 or escapes.
-pub fn select(mut page: TextPage, bom: u64, anchor: u64, viewport: &Viewport) -> TextPage {
+// A backward page starts no earlier than `limit`: the read's alignment margin before
+// it only resynchronizes the decoder and may hold escapes of a split scalar.
+pub fn select(
+    mut page: TextPage,
+    bom: u64,
+    anchor: u64,
+    limit: u64,
+    viewport: &Viewport,
+) -> TextPage {
     let last = page.anchors.len() - 1;
     let floor = |offset: u64| {
         page.anchors
@@ -12,7 +20,7 @@ pub fn select(mut page: TextPage, bom: u64, anchor: u64, viewport: &Viewport) ->
             .saturating_sub(1)
     };
     let (mut start, mut end) = if viewport.backwards {
-        (0, floor(anchor))
+        (floor(limit), floor(anchor))
     } else {
         (floor(anchor), last)
     };
@@ -57,13 +65,27 @@ pub fn select(mut page: TextPage, bom: u64, anchor: u64, viewport: &Viewport) ->
     let final_anchor = page.anchors[end].clone();
     let starts_line = first.source_offset == bom
         || (first.text_offset > 0 && page.text[..first.text_offset as usize].ends_with('\n'));
+    let (from, to) = (first.text_offset, final_anchor.text_offset);
     page.has_after |= end < last;
     page.has_before = first.source_offset > bom;
-    page.text = page.text[first.text_offset as usize..final_anchor.text_offset as usize].into();
+    page.text = page.text[from as usize..to as usize].into();
+    // Spans cover whole units, so clipping them at unit boundaries keeps them exact.
+    page.spans = page
+        .spans
+        .iter()
+        .filter_map(|span| {
+            let (start, end) = (span.start.max(from), span.end.min(to));
+            (start < end).then(|| Span {
+                start: start - from,
+                end: end - from,
+                ..span.clone()
+            })
+        })
+        .collect();
     page.anchors = page.anchors[start..=end]
         .iter()
         .map(|a| Anchor {
-            text_offset: a.text_offset - first.text_offset,
+            text_offset: a.text_offset - from,
             source_offset: a.source_offset,
         })
         .collect();

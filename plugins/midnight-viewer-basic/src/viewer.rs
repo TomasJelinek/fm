@@ -1,19 +1,28 @@
 use crate::{
     decode::{self, Encoding},
     io,
-    search::Matcher,
+    search::{Matcher, Want},
 };
 use midnight_plugin_sdk::{
     Context, Output, Request, Viewer,
     api::{abi, messages, viewer},
 };
 use std::{
-    collections::{BTreeSet, HashMap},
+    collections::HashMap,
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     },
 };
+
+/// Bytes per search read: the protocol maximum. Search never encodes pages, so the
+/// viewport unit cap does not apply and each byte is requested about once.
+const SEARCH_READ_BYTES: usize = viewer::MAX_PAGE_BYTES;
+/// Backward search window; aligned to UTF-16 it stays one protocol read.
+const BACKWARD_WINDOW: u64 = SEARCH_READ_BYTES as u64 - 2;
+// A window must exceed its overlap (4-byte resynchronization plus the span of a
+// 4096-byte query whose characters fold to at most three characters each).
+const _: () = assert!(BACKWARD_WINDOW > 4 * 3 * 4096 + 4);
 
 pub struct BasicViewer {
     sessions: Mutex<HashMap<u64, Arc<Session>>>,
@@ -23,7 +32,6 @@ pub(crate) struct Session {
     generation: u64,
     alive: AtomicBool,
     encoding: Mutex<Option<(Encoding, u64)>>,
-    checkpoints: Mutex<BTreeSet<u64>>,
 }
 impl Session {
     pub fn live(&self, context: &Context) -> bool {
@@ -42,21 +50,6 @@ impl Session {
     }
     fn encoding(&self) -> Option<(Encoding, u64)> {
         *self.encoding.lock().unwrap()
-    }
-    fn record(&self, page: &viewer::TextPage) {
-        let mut checkpoints = self.checkpoints.lock().unwrap();
-        checkpoints.insert(page.source.offset);
-        for a in &page.anchors {
-            if a.text_offset > 0 && page.text.as_bytes()[a.text_offset as usize - 1] == b'\n' {
-                checkpoints.insert(a.source_offset);
-            }
-        }
-        while checkpoints.len() > 1024 {
-            let remove: Vec<_> = checkpoints.iter().copied().skip(1).step_by(2).collect();
-            for offset in remove {
-                checkpoints.remove(&offset);
-            }
-        }
     }
 }
 impl Viewer for BasicViewer {
@@ -92,7 +85,6 @@ impl Viewer for BasicViewer {
                 generation: context.generation(),
                 alive: AtomicBool::new(true),
                 encoding: Mutex::new(None),
-                checkpoints: Mutex::new(BTreeSet::new()),
             });
             {
                 let mut sessions = self.sessions.lock().unwrap();
@@ -177,29 +169,20 @@ impl Viewer for BasicViewer {
                 Err(_) => fail(&context, abi::INVALID, "Invalid viewport request"),
             },
             abi::REQUEST_SEARCH => match request.decode::<messages::Search>() {
-                Ok(query) => {
-                    let mut offset = if query.backwards {
-                        bom
-                    } else {
-                        query.source_anchor.saturating_sub(4).max(bom)
-                    };
-                    if encoding != Encoding::Utf8 {
-                        offset -= (offset - bom) % 2;
-                    }
-                    let state = SearchState {
-                        matcher: Matcher::new(&query.query, query.case_sensitive),
-                        query,
-                        session,
-                        encoding,
-                        offset,
-                        last: None,
-                    };
-                    search_next(context, state);
-                }
+                Ok(query) => start_search(context, session, encoding, bom, query),
                 Err(_) => fail(&context, abi::INVALID, "Invalid search request"),
             },
             _ => fail(&context, abi::UNSUPPORTED, "Unsupported request"),
         }
+    }
+}
+
+/// Moves `offset` down to a UTF-16 code unit boundary relative to the BOM.
+fn align(offset: u64, encoding: Encoding, bom: u64) -> u64 {
+    if encoding == Encoding::Utf8 {
+        offset
+    } else {
+        offset - (offset - bom) % 2
     }
 }
 
@@ -225,18 +208,20 @@ fn viewport_page(
     } else {
         (viewport.max_bytes as usize).min(decode::READ_BYTES - 16)
     };
-    let mut offset = if viewport.backwards {
-        anchor.saturating_sub(count as u64)
+    // A backward page starts no earlier than `limit`; text reads begin four bytes
+    // before it so the decoder resynchronizes on a real scalar boundary first.
+    let limit = if viewport.backwards {
+        anchor.saturating_sub(count as u64).max(bom)
     } else {
         anchor
     };
-    offset = offset.max(bom);
+    let mut offset = limit;
     if !binary {
         offset = offset.saturating_sub(4).max(bom);
     }
-    if encoding != Encoding::Utf8 {
-        offset -= (offset - bom) % 2;
-    }
+    offset = align(offset, encoding, bom);
+    // A read from the BOM needs no resynchronization, so its margin is content.
+    let limit = if offset == bom { bom } else { limit };
     let read_bytes = if viewport.backwards {
         (anchor - offset) as usize
     } else {
@@ -262,19 +247,13 @@ fn viewport_page(
                 send_finish(&context, Output::binary(&page, bytes.into_boxed_slice()));
                 return;
             }
-            let mut page = decode::page(
-                &bytes,
-                encoding,
-                offset,
-                eof,
-                viewer::MAX_PAGE_BYTES,
-                usize::MAX,
-            );
+            let mut page = decode::page(&bytes, encoding, offset, eof);
             page.revision = session.open.revision;
-            let page = crate::window::select(page, bom, anchor, &viewport);
+            let page = crate::window::select(page, bom, anchor, limit, &viewport);
+            // A backward page ending at the start of content is legitimately empty.
             if page.source.length == 0
                 && !bytes.is_empty()
-                && !(viewport.backwards && anchor == bom)
+                && !(viewport.backwards && page.source.offset == bom)
                 && session.open.length.is_none_or(|len| anchor < len)
             {
                 fail(
@@ -287,7 +266,6 @@ fn viewport_page(
             if !session.live(&context) {
                 return;
             }
-            session.record(&page);
             send_finish(&context, Output::text(&page));
         }),
     );
@@ -298,21 +276,63 @@ struct SearchState {
     query: messages::Search,
     session: Arc<Session>,
     encoding: Encoding,
+    bom: u64,
+    /// The next read of a linear scan, or the end of the next backward window.
     offset: u64,
     last: Option<viewer::SourceRange>,
 }
-fn search_next(context: Context, mut state: SearchState) {
+
+fn start_search(
+    context: Context,
+    session: Arc<Session>,
+    encoding: Encoding,
+    bom: u64,
+    query: messages::Search,
+) {
+    let mut state = SearchState {
+        matcher: Matcher::new(&query.query, query.case_sensitive),
+        session,
+        encoding,
+        bom,
+        offset: bom,
+        last: None,
+        query,
+    };
+    if !state.query.backwards {
+        // Start four bytes early so the decoder resynchronizes before the anchor.
+        let offset = state.query.source_anchor.saturating_sub(4).max(bom);
+        state.offset = align(offset, encoding, bom);
+        scan_linear(context, state);
+    } else if let Some(length) = state.session.open.length {
+        state.offset = state.query.source_anchor.min(length).max(bom);
+        scan_backward(context, state);
+    } else {
+        // Without a known length the content end cannot be found backwards.
+        scan_linear(context, state);
+    }
+}
+
+fn cancelled(context: &Context, session: &Session) -> bool {
+    context.is_cancelled() || !session.alive.load(Ordering::Acquire)
+}
+
+/// Scans forward from `state.offset`: forward searches stop at the first match at or
+/// after the anchor, backward searches without a known length keep the last match
+/// ending at or before it.
+fn scan_linear(context: Context, mut state: SearchState) {
     if !state.session.live(&context) {
         return;
     }
-    if state.query.backwards && state.offset >= state.query.source_anchor {
+    let anchor = state.query.source_anchor;
+    let backwards = state.query.backwards;
+    if backwards && state.offset >= anchor {
         finish_search(&context, state);
         return;
     }
-    let count = if state.query.backwards {
-        (state.query.source_anchor - state.offset).min(decode::READ_BYTES as u64) as usize
+    let count = if backwards {
+        (anchor - state.offset).min(SEARCH_READ_BYTES as u64) as usize
     } else {
-        decode::READ_BYTES
+        SEARCH_READ_BYTES
     };
     io::read(
         context,
@@ -320,38 +340,30 @@ fn search_next(context: Context, mut state: SearchState) {
         state.offset,
         count,
         Box::new(move |context, bytes, eof| {
-            let boundary = eof
-                || (state.query.backwards
-                    && state.offset + bytes.len() as u64 >= state.query.source_anchor);
-            let page = decode::page(
-                &bytes,
-                state.encoding,
-                state.offset,
-                eof,
-                viewer::MAX_PAGE_BYTES,
-                usize::MAX,
-            );
-            let Ok(matches) = state.matcher.feed(&page, || {
-                context.is_cancelled() || !state.session.alive.load(Ordering::Acquire)
-            }) else {
+            let want = if backwards {
+                Want::LastUntil(anchor)
+            } else {
+                Want::FirstFrom(anchor)
+            };
+            let session = state.session.clone();
+            let Ok(scan) =
+                state
+                    .matcher
+                    .scan(&bytes, state.encoding, state.offset, eof, want, || {
+                        cancelled(&context, &session)
+                    })
+            else {
                 return;
             };
-            if state.query.backwards {
-                if let Some(found) = matches
-                    .into_iter()
-                    .rfind(|m| m.offset + m.length <= state.query.source_anchor)
-                {
-                    state.last = Some(found);
+            if scan.found.is_some() {
+                state.last = scan.found;
+                if !backwards {
+                    finish_search(&context, state);
+                    return;
                 }
-            } else if let Some(found) = matches
-                .into_iter()
-                .find(|m| m.offset >= state.query.source_anchor)
-            {
-                state.last = Some(found);
-                finish_search(&context, state);
-                return;
             }
-            if page.source.length == 0 {
+            let boundary = eof || (backwards && state.offset + bytes.len() as u64 >= anchor);
+            if scan.consumed == 0 {
                 if boundary {
                     finish_search(&context, state);
                 } else {
@@ -359,13 +371,76 @@ fn search_next(context: Context, mut state: SearchState) {
                 }
                 return;
             }
-            state.session.record(&page);
-            state.offset = page.source.end().unwrap();
-            if boundary && page.source.length == bytes.len() as u64 {
+            state.offset += scan.consumed as u64;
+            if boundary && scan.consumed == bytes.len() {
                 finish_search(&context, state);
             } else {
-                search_next(context, state);
+                scan_linear(context, state);
             }
+        }),
+    );
+}
+
+/// Scans fixed windows backwards from the anchor and stops at the first window
+/// that proves its last match is the nearest one, so repeated backward searches
+/// cost about one window instead of the whole preceding content.
+fn scan_backward(context: Context, mut state: SearchState) {
+    if !state.session.live(&context) {
+        return;
+    }
+    let end = state.offset;
+    let start = align(
+        end.saturating_sub(BACKWARD_WINDOW).max(state.bom),
+        state.encoding,
+        state.bom,
+    );
+    if start == end {
+        finish_search(&context, state);
+        return;
+    }
+    io::read(
+        context,
+        state.session.clone(),
+        start,
+        (end - start) as usize,
+        Box::new(move |context, bytes, eof| {
+            let session = state.session.clone();
+            state.matcher.reset();
+            let Ok(scan) = state.matcher.scan(
+                &bytes,
+                state.encoding,
+                start,
+                eof,
+                Want::LastUntil(end),
+                || cancelled(&context, &session),
+            ) else {
+                return;
+            };
+            // Decoding resynchronizes on a real boundary within four bytes of the
+            // window start, so every match ending at or after `proven` was decoded
+            // exactly like a scan from the BOM; earlier matches may be incomplete.
+            let proven = start.saturating_add(state.matcher.span_bound() + 4);
+            let complete = scan.found.as_ref().is_some_and(|found| {
+                found
+                    .end()
+                    .is_ok_and(|found_end| start == state.bom || found_end >= proven)
+            });
+            if complete || start == state.bom {
+                state.last = scan.found;
+                finish_search(&context, state);
+                return;
+            }
+            if proven >= end {
+                fail(
+                    &context,
+                    abi::INVALID,
+                    "Search window cannot hold the query",
+                );
+                return;
+            }
+            // No match ends in [proven, end]; continue with matches ending earlier.
+            state.offset = proven;
+            scan_backward(context, state);
         }),
     );
 }
