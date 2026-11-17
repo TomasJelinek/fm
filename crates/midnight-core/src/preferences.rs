@@ -14,6 +14,33 @@ pub struct TabId(pub u64);
 
 pub const MAX_TABS_PER_PANE: usize = 32;
 
+/// Largest legacy bookmark list merged by `deduplicate_bookmarks`; allows
+/// hand-edited duplicates while keeping its pairwise comparisons small.
+const MAX_MERGED_BOOKMARK_RECORDS: usize = 4 * MAX_BOOKMARKS;
+
+/// Per-record validity and unique identities, slots and locations. Callers bound
+/// the list first: the location check compares every pair.
+fn validate_bookmarks(bookmarks: &[Bookmark]) -> Result<(), &'static str> {
+    let mut ids = HashSet::new();
+    let mut slots = HashSet::new();
+    for (position, bookmark) in bookmarks.iter().enumerate() {
+        bookmark.validate()?;
+        if !ids.insert(bookmark.id) {
+            return Err("Bookmark identities must be unique.");
+        }
+        if bookmark.slot.is_some_and(|slot| !slots.insert(slot)) {
+            return Err("Bookmark hot path slots must be unique.");
+        }
+        if bookmarks[..position]
+            .iter()
+            .any(|old| old.same_location(bookmark))
+        {
+            return Err("Bookmark paths must be unique.");
+        }
+    }
+    Ok(())
+}
+
 /// Native return locations and typed provider addresses survive restart. Provider
 /// members are never encoded as native paths; runtime IDs and rows are not saved.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -354,7 +381,13 @@ impl UserPreferences {
     /// Merge legacy duplicate native paths in saved order without filesystem IO.
     /// Keep the first raw path, identity and name, recovering a later slot only
     /// when the retained entry has none. Path equality never folds case or text.
+    /// Saved files never held more than `MAX_BOOKMARKS` records. A larger (damaged
+    /// or hand-edited) list beyond a small duplicate allowance is left unchanged for
+    /// `validate` to reject, instead of being merged with pairwise comparisons.
     pub fn deduplicate_bookmarks(&mut self) -> bool {
+        if self.bookmarks.len() > MAX_MERGED_BOOKMARK_RECORDS {
+            return false;
+        }
         let mut unique: Vec<Bookmark> = Vec::with_capacity(self.bookmarks.len());
         let mut changed = false;
         for bookmark in self.bookmarks.drain(..) {
@@ -466,29 +499,10 @@ impl UserPreferences {
             message = Some(error);
         }
         if self.bookmarks.len() > MAX_BOOKMARKS {
+            // Report the bound before the pairwise location checks below.
             message = Some("At most 64 bookmarks can be saved.");
-        }
-        let mut ids = HashSet::new();
-        let mut slots = HashSet::new();
-        let mut locations: Vec<&Bookmark> = Vec::new();
-        for bookmark in &self.bookmarks {
-            if let Err(error) = bookmark.validate() {
-                message = Some(error);
-                break;
-            }
-            if !ids.insert(bookmark.id) {
-                message = Some("Bookmark identities must be unique.");
-                break;
-            }
-            if bookmark.slot.is_some_and(|slot| !slots.insert(slot)) {
-                message = Some("Bookmark hot path slots must be unique.");
-                break;
-            }
-            if locations.iter().any(|old| old.same_location(bookmark)) {
-                message = Some("Bookmark paths must be unique.");
-                break;
-            }
-            locations.push(bookmark);
+        } else if let Err(error) = validate_bookmarks(&self.bookmarks) {
+            message = Some(error);
         }
         match message {
             Some(message) => Err(FsError::from_io(
