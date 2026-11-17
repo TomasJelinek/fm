@@ -6,9 +6,12 @@ use crate::{
 use midnight_core::Command;
 use tokio::sync::mpsc;
 
-#[expect(
-    clippy::large_enum_variant,
-    reason = "Store plain commands inline in the bounded FIFO to avoid a box allocation per send."
+#[cfg_attr(
+    windows,
+    expect(
+        clippy::large_enum_variant,
+        reason = "Store plain commands inline in the bounded FIFO to avoid a box allocation per send."
+    )
 )]
 pub(crate) enum Message {
     Plain(PlainCommand),
