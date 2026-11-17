@@ -163,11 +163,9 @@ mod tests {
     fn repeated_formats_are_bounded_for_one_hundred_thousand_entries() {
         let mut samples = MetadataColumnSamples::default();
         let entry = entry();
-        let started = std::time::Instant::now();
         for _ in 0..100_000 {
             samples.observe(&entry);
         }
-        eprintln!("100000 metadata samples: {:?}", started.elapsed());
         assert_eq!(samples.dates.len(), 1);
         assert_eq!(samples.times.len(), 1);
         assert!(samples.retained_bytes() < 1024);

@@ -211,6 +211,8 @@ pub struct SelectionSnapshot {
 
 impl SelectionSnapshot {
     /// Build on a backend worker, validating the bitset resource/identity shape.
+    /// Every indexed row must have a unique native path, so a native selection never
+    /// covers archive or Network Neighborhood rows; archives select by provider ID.
     pub fn from_bits(basis: Arc<DirectoryIndex>, bits: Vec<u64>) -> Result<Self, &'static str> {
         let count = basis.by_id.len();
         if basis.by_path.len() != count {

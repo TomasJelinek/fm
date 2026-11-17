@@ -160,6 +160,12 @@ impl FileListTemplate {
         Ok(result)
     }
 
+    /// Whether any field uses `:max`. Without one, `render` accepts empty widths
+    /// and the measurement pass can be skipped; `render` validates every value itself.
+    pub fn needs_measurement(&self) -> bool {
+        self.max_count > 0
+    }
+
     /// Measure `:max` fields in a first pass over the exact captured row set.
     /// The vector belongs to this template and must start empty or have its size.
     pub fn measure(&self, record: &FileListRecord, widths: &mut Vec<usize>) -> Result<(), String> {

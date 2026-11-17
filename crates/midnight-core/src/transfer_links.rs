@@ -315,8 +315,6 @@ pub trait StagedTransferLink: Send {
     fn cleanup(&mut self) -> Result<(), TransferLinkCleanupError>;
 }
 
-// Contract tests were authored before the candidate implementation. Execution is
-// intentionally deferred to the Build owner; no result is claimed here.
 #[cfg(test)]
 mod tests {
     use super::*;

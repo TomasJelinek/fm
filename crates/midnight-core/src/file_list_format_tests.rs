@@ -73,6 +73,22 @@ fn max_width_is_measured_per_occurrence_across_all_rows_without_truncation() {
     );
     assert!(template.render(&long, &[]).is_err());
     assert!(template.render(&long, &[1, 1, 1]).is_err());
+    assert!(template.needs_measurement());
+}
+
+#[test]
+fn templates_without_max_fields_render_without_a_measurement_pass() {
+    let template = FileListTemplate::parse("$(FileName:4)$(FileSize)$$max$(CRLF)").unwrap();
+    assert!(!template.needs_measurement());
+    assert_eq!(
+        template.render(&record("文档.txt"), &[]).unwrap(),
+        "文档.t12345$max\r\n"
+    );
+    assert!(
+        FileListTemplate::parse("$(FileName)$(Path:MAX)")
+            .unwrap()
+            .needs_measurement()
+    );
 }
 
 #[test]
