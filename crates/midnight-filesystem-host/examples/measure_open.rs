@@ -35,7 +35,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let source_read = start.elapsed();
             let cancel = Cancellation::default();
             let start = Instant::now();
-            let mount = Mount::open(package, format, &path, &cancel)?;
+            let mount = Mount::open_captured(
+                package,
+                format,
+                &path,
+                CapturedFile::capture(&path)?,
+                &cancel,
+            )?;
             let opened = start.elapsed();
             let start = Instant::now();
             let entries = mount.list(1, &cancel)?;
@@ -68,8 +74,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     bytes.len()
                 );
             }
-            drop(mount);
-            std::thread::sleep(std::time::Duration::from_millis(30));
+            // Confirmed teardown returns the mount permit before the next iteration.
+            mount.release_on_worker()?;
         }
     }
     Ok(())

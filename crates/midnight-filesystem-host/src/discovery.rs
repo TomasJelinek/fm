@@ -114,6 +114,8 @@ impl Catalog {
                 false
             }
         });
+        // The default worker for a format must not depend on file-system enumeration order.
+        result.packages.sort_by(|a, b| a.id.cmp(&b.id));
         Ok(result)
     }
     pub fn choose(&self, path: &Path) -> Option<(&Package, Format)> {
@@ -218,7 +220,7 @@ fn package(path: &Path) -> io::Result<Option<Package>> {
         })
         .collect::<io::Result<Vec<_>>>()?;
     let executable = path.join(m.entry_executable);
-    check(&executable)?;
+    validate_package(path, &executable)?;
     CapturedFile::capture(&executable).map_err(io::Error::other)?;
     Ok(Some(Package {
         id: m.id,
@@ -230,6 +232,16 @@ fn package(path: &Path) -> io::Result<Option<Package>> {
         executable,
         formats,
     }))
+}
+
+/// Trust the worker's package directory, entry executable and every other package object
+/// (including dependent libraries the OS loader may resolve before worker containment).
+/// Discovery checks this once; each mount repeats it before launching the executable.
+pub(crate) fn validate_package(directory: &Path, executable: &Path) -> io::Result<()> {
+    let check = |path: &Path| validate_plugin_path(path).map_err(io::Error::other);
+    check(directory)?;
+    check(executable)?;
+    midnight_plugin_host::validate_plugin_package(directory).map_err(io::Error::other)
 }
 
 #[cfg(test)]
