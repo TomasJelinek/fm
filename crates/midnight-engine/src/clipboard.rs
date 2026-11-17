@@ -1,20 +1,88 @@
-//! One bounded backend worker retains native ownership and pumps requests while idle.
+//! One bounded backend worker retains native ownership and services it while idle.
 use crate::{
     Outbox, file_targets,
     retirement::{RetirementLease, RetirementWaiter},
     task_lifetime::TaskLifetime,
 };
 use midnight_core::{
-    Cancellation, ClipboardService, ClipboardSession, DesktopActionResult, DesktopRequestId, Event,
-    FileClipboard, FileClipboardIntent, FsError, SelectedFiles,
+    Cancellation, ClipboardService, ClipboardSession, ClipboardWaker, DesktopActionResult,
+    DesktopRequestId, Event, FileClipboard, FileClipboardIntent, FsError, SelectedFiles,
 };
 use std::{
     io,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, Mutex, PoisonError},
     time::Duration,
 };
 use tokio::{sync::mpsc, task::JoinSet};
+
+/// Pump interval of an open session without a waker. Such a session (X11 today) must keep
+/// serving other applications' selection and paste requests between commands.
+const PUMP_INTERVAL: Duration = Duration::from_millis(10);
+/// Longest idle wait of a session with a waker. A queued request, Controller drop and the
+/// session's own owner events (on Windows, WM_DESTROYCLIPBOARD) end the wait, so its expiry
+/// is never needed for correctness. It only bounds the effect of a lost wakeup (a platform
+/// defect) to the engine's actor shutdown bound of five seconds, at a cost of 0.2 idle
+/// wakeups per second instead of up to 100 for the `PUMP_INTERVAL` pump.
+const IDLE_WAIT: Duration = Duration::from_secs(5);
+
+/// The open session's waker, shared by the native worker, which installs it, and the
+/// controller, which calls it after queueing a request and when it is dropped.
+#[derive(Default)]
+struct Wake(Mutex<Option<ClipboardWaker>>);
+impl Wake {
+    fn install(&self, waker: Option<ClipboardWaker>) {
+        *self.0.lock().unwrap_or_else(PoisonError::into_inner) = waker;
+    }
+    fn wake(&self) {
+        // Called outside the lock: the worker may replace the waker meanwhile, and a waker
+        // stays safe to call after its session was closed.
+        let waker = self
+            .0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
+        if let Some(waker) = waker {
+            waker();
+        }
+    }
+}
+
+/// The worker's native session. It never leaves the worker thread; only its waker is
+/// shared with the controller.
+struct Native {
+    session: Option<Box<dyn ClipboardSession>>,
+    wake: Arc<Wake>,
+    /// The open session has a waker, so its idle waits need no short timer.
+    wakes: bool,
+}
+impl Native {
+    fn new(wake: Arc<Wake>) -> Self {
+        Self {
+            session: None,
+            wake,
+            wakes: false,
+        }
+    }
+    fn open(&mut self, session: Box<dyn ClipboardSession>) {
+        let waker = session.waker();
+        self.wakes = waker.is_some();
+        // Installed before the worker next checks its inbox (see `next_request`).
+        self.wake.install(waker);
+        self.session = Some(session);
+    }
+    fn close(&mut self) {
+        self.wake.install(None);
+        self.wakes = false;
+        self.session = None;
+    }
+}
+impl Drop for Native {
+    fn drop(&mut self) {
+        // The session drops here, on the worker thread; the controller keeps no waker.
+        self.close();
+    }
+}
 
 enum Action {
     Text(String),
@@ -70,6 +138,7 @@ struct Rejected {
 }
 pub(crate) struct Controller {
     sender: Option<mpsc::Sender<Request>>,
+    wake: Arc<Wake>,
     service: Option<Arc<dyn ClipboardService>>,
     cancel: Cancellation,
     outbox: Outbox,
@@ -134,6 +203,7 @@ impl Controller {
     ) -> Self {
         Self {
             sender: None,
+            wake: Arc::default(),
             service,
             cancel: Cancellation::default(),
             outbox,
@@ -166,13 +236,14 @@ impl Controller {
             });
         let cancel = self.cancel.clone();
         let outbox = self.outbox.clone();
+        let wake = self.wake.clone();
         tasks.spawn_blocking(self.scope.blocking(move || {
-            let mut session: Option<Box<dyn ClipboardSession>> = None;
-            while let Some(request) = next_request(&mut worker.receiver, &mut session, &cancel) {
+            let mut native = Native::new(wake);
+            while let Some(request) = next_request(&mut worker.receiver, &mut native, &cancel) {
                 let event = match prepare(&request.action, &cancel) {
                     Err(error) => request.failure(error),
                     Ok(action) => {
-                        let opened = if session.is_none() {
+                        let opened = if native.session.is_none() {
                             worker
                                 .service
                                 .as_ref()
@@ -183,7 +254,7 @@ impl Controller {
                                     )
                                 })
                                 .and_then(|service| service.open())
-                                .map(|opened| session = Some(opened))
+                                .map(|opened| native.open(opened))
                         } else {
                             Ok(())
                         };
@@ -193,15 +264,17 @@ impl Controller {
                             // window can close during that call, after preparation.
                             Ok(()) => match check_cancellation(&request.action, &cancel) {
                                 Err(error) => request.failure(error),
-                                Ok(()) => {
-                                    execute(request.id, action, session.as_mut().unwrap().as_mut())
-                                }
+                                Ok(()) => execute(
+                                    request.id,
+                                    action,
+                                    native.session.as_mut().unwrap().as_mut(),
+                                ),
                             },
                         }
                     }
                 };
                 drop(request);
-                if !send_event(&outbox, event, &cancel, &mut session) {
+                if !send_event(&outbox, event, &cancel, &mut native) {
                     break;
                 }
             }
@@ -214,7 +287,12 @@ impl Controller {
         if self.sender.is_none() {
             self.sender = Some(self.start_worker(tasks));
         }
-        if let Err(failed) = self.sender.as_ref().unwrap().try_send(request) {
+        let queued = self.sender.as_ref().unwrap().try_send(request);
+        if queued.is_ok() {
+            // Ends an idle native wait; `next_request` explains why no wake is lost.
+            self.wake.wake();
+        }
+        if let Err(failed) = queued {
             // The single native worker lease is consumed: a stopped worker cannot
             // be restarted, so say so instead of inviting endless retries.
             let busy = match &failed {
@@ -326,36 +404,59 @@ impl Controller {
 }
 impl Drop for Controller {
     fn drop(&mut self) {
-        // A started blocking pump cannot be aborted by dropping its JoinSet.
+        // A started blocking worker cannot be aborted by dropping its JoinSet: cancel it,
+        // close its inbox, then end an idle native wait so that it observes both.
         self.cancel.cancel();
+        self.sender = None;
+        self.wake.wake();
     }
 }
 /// The next queued request, or None when the controller closed the queue or was
-/// cancelled. Without a native session nothing needs pumping, so the worker blocks
-/// on the queue (Controller drop cancels, then closes it). An open session keeps
-/// X11 owners and Windows clipboard windows serviced between application commands.
+/// cancelled. Without a native session nothing needs servicing, so the worker blocks
+/// on the queue (Controller drop cancels, then closes it). An open session is serviced
+/// between application commands while it owns clipboard content that other applications
+/// may request; once idle and no longer owning, it is closed and the worker blocks on the
+/// queue again. A session with a waker then waits for its own owner events, the
+/// controller's wake (a queued request or Controller drop) or `IDLE_WAIT`; one without a
+/// waker (X11 owners today) is pumped every `PUMP_INTERVAL`.
+///
+/// No wake is lost: `Native::open` installs the waker before this function next checks
+/// the queue, and the controller wakes after each queued request. A request queued
+/// before the installation is found by that check; one queued after the check reported
+/// an empty queue is followed by a wake that ends the next `wait_pending` even if it
+/// fired before the wait started (a `ClipboardSession::wait_pending` contract).
 fn next_request(
     receiver: &mut mpsc::Receiver<Request>,
-    session: &mut Option<Box<dyn ClipboardSession>>,
+    native: &mut Native,
     cancel: &Cancellation,
 ) -> Option<Request> {
     loop {
         if cancel.is_cancelled() {
             return None;
         }
-        let Some(open) = session.as_mut() else {
+        let Some(open) = native.session.as_mut() else {
             return receiver.blocking_recv();
         };
         if open.service_pending().is_err() {
-            *session = None;
+            native.close();
             continue;
         }
         match receiver.try_recv() {
             Ok(request) => return Some(request),
-            Err(mpsc::error::TryRecvError::Empty) => {
-                std::thread::park_timeout(Duration::from_millis(10));
-            }
             Err(mpsc::error::TryRecvError::Disconnected) => return None,
+            Err(mpsc::error::TryRecvError::Empty) => {}
+        }
+        if !open.owns_clipboard() {
+            native.close();
+            continue;
+        }
+        let timeout = if native.wakes {
+            IDLE_WAIT
+        } else {
+            PUMP_INTERVAL
+        };
+        if open.wait_pending(timeout).is_err() {
+            native.close();
         }
     }
 }
@@ -364,7 +465,7 @@ fn send_event(
     outbox: &Outbox,
     mut event: Event,
     cancel: &Cancellation,
-    session: &mut Option<Box<dyn ClipboardSession>>,
+    native: &mut Native,
 ) -> bool {
     while !cancel.is_cancelled() {
         match outbox.sender.try_send(event) {
@@ -376,13 +477,15 @@ fn send_event(
             Err(mpsc::error::TrySendError::Full(pending)) => event = pending,
         }
         // A busy UI result queue must not prevent other applications reading our clipboard.
-        if session
+        if native
+            .session
             .as_mut()
             .is_some_and(|s| s.service_pending().is_err())
         {
-            *session = None;
+            native.close();
         }
-        std::thread::park_timeout(Duration::from_millis(10));
+        // The UI result queue has no wakeup for its free space: poll it.
+        std::thread::park_timeout(PUMP_INTERVAL);
     }
     false
 }
@@ -644,6 +747,9 @@ mod generated_tests;
 #[cfg(test)]
 #[path = "clipboard_paste_capture_tests.rs"]
 mod paste_capture_tests;
+#[cfg(test)]
+#[path = "clipboard_wake_tests.rs"]
+mod wake_tests;
 
 #[cfg(test)]
 mod tests {
@@ -791,7 +897,7 @@ mod tests {
     #[test]
     fn worker_without_a_native_session_blocks_until_a_request_or_close() {
         let (sender, mut receiver) = mpsc::channel(1);
-        let mut session = None;
+        let mut native = Native::new(Arc::default());
         let cancel = Cancellation::default();
         let requester = std::thread::spawn(move || {
             sender
@@ -802,11 +908,11 @@ mod tests {
                 .unwrap_or_else(|_| panic!("worker queue closed"));
         });
         // No session needs pumping: the worker waits on the queue itself.
-        let request = next_request(&mut receiver, &mut session, &cancel).expect("request");
+        let request = next_request(&mut receiver, &mut native, &cancel).expect("request");
         assert_eq!(request.id, DesktopRequestId(1));
         requester.join().unwrap();
         assert!(
-            next_request(&mut receiver, &mut session, &cancel).is_none(),
+            next_request(&mut receiver, &mut native, &cancel).is_none(),
             "a closed queue (Controller drop) ends the worker"
         );
     }
@@ -815,7 +921,8 @@ mod tests {
     fn open_native_session_is_pumped_until_cancelled() {
         let calls = Arc::new(AtomicUsize::new(0));
         let (_sender, mut receiver) = mpsc::channel::<Request>(1);
-        let mut session: Option<Box<dyn ClipboardSession>> = Some(Box::new(Pump(calls.clone())));
+        let mut native = Native::new(Arc::default());
+        native.open(Box::new(Pump(calls.clone())));
         let cancel = Cancellation::default();
         let observed = calls.clone();
         let canceller = cancel.clone();
@@ -826,13 +933,13 @@ mod tests {
             }
             canceller.cancel();
         });
-        assert!(next_request(&mut receiver, &mut session, &cancel).is_none());
+        assert!(next_request(&mut receiver, &mut native, &cancel).is_none());
         watcher.join().unwrap();
         assert!(
             calls.load(Ordering::Relaxed) >= 2,
             "owner messages kept flowing"
         );
-        assert!(session.is_some());
+        assert!(native.session.is_some());
     }
     #[test]
     fn result_backpressure_keeps_serving_native_clipboard_requests() {
@@ -858,7 +965,8 @@ mod tests {
                 "output backpressure must not starve the native owner"
             );
         });
-        let mut session: Option<Box<dyn ClipboardSession>> = Some(Box::new(Pump(calls)));
+        let mut native = Native::new(Arc::default());
+        native.open(Box::new(Pump(calls)));
         assert!(send_event(
             &Outbox {
                 sender,
@@ -869,7 +977,7 @@ mod tests {
                 result: Ok(DesktopActionResult::ClipboardCopied),
             },
             &Cancellation::default(),
-            &mut session
+            &mut native
         ));
         consumer.join().unwrap();
     }

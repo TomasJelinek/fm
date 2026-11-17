@@ -1,0 +1,560 @@
+//! Idle wakeups of the native clipboard worker (review finding E6-4).
+use super::*;
+use std::{
+    sync::{
+        Condvar, MutexGuard,
+        atomic::{AtomicUsize, Ordering},
+    },
+    time::Instant,
+};
+
+/// Elapses only when an expected step of the worker does not happen.
+const FAILURE_WAIT: Duration = Duration::from_secs(10);
+
+/// What the fake native owner observed, and what the test lets it do.
+#[derive(Default)]
+struct State {
+    /// The session offers a waker (as on Windows) or not (as X11 today).
+    wakes: bool,
+    owns: bool,
+    fail_waits: bool,
+    /// The sticky wake: set by the waker, consumed by the next wait.
+    woken: bool,
+    /// Waits the test lets end as elapsed timeouts; only then does virtual time pass.
+    expire: usize,
+    /// Hold the next wait after the worker found its inbox empty, before it waits.
+    hold: bool,
+    held: bool,
+    waiting: bool,
+    timeouts: Vec<Duration>,
+    ended_by_wake: usize,
+    ended_by_expiry: usize,
+    /// A wait outlived its failure-only deadline.
+    stuck: bool,
+    services: usize,
+    opened: usize,
+    closed: usize,
+    copied: Vec<String>,
+}
+
+#[derive(Default)]
+struct Shared {
+    state: Mutex<State>,
+    changed: Condvar,
+}
+impl Shared {
+    fn new(setup: impl FnOnce(&mut State)) -> Arc<Self> {
+        let shared = Arc::new(Self::default());
+        shared.update(setup);
+        shared
+    }
+    fn lock(&self) -> MutexGuard<'_, State> {
+        self.state.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+    fn update<R>(&self, change: impl FnOnce(&mut State) -> R) -> R {
+        let result = change(&mut self.lock());
+        self.changed.notify_all();
+        result
+    }
+    /// One bounded wait for a change; marks the owner stuck once `deadline` has passed.
+    fn wait<'a>(
+        &self,
+        mut state: MutexGuard<'a, State>,
+        deadline: Instant,
+    ) -> MutexGuard<'a, State> {
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            state.stuck = true;
+            return state;
+        }
+        let (state, _) = self
+            .changed
+            .wait_timeout(state, left)
+            .unwrap_or_else(PoisonError::into_inner);
+        state
+    }
+    /// Block until `done` holds, failing after `FAILURE_WAIT`; returns that state.
+    fn until(&self, what: &str, done: impl Fn(&State) -> bool) -> MutexGuard<'_, State> {
+        let deadline = Instant::now() + FAILURE_WAIT;
+        let mut state = self.lock();
+        while !done(&state) {
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                drop(state);
+                panic!("timed out waiting until {what}");
+            }
+            let (next, _) = self
+                .changed
+                .wait_timeout(state, left)
+                .unwrap_or_else(PoisonError::into_inner);
+            state = next;
+        }
+        state
+    }
+}
+
+struct Owner(Arc<Shared>);
+impl ClipboardService for Owner {
+    fn open(&self) -> Result<Box<dyn ClipboardSession>, FsError> {
+        self.0.update(|state| state.opened += 1);
+        Ok(Box::new(Session(self.0.clone())))
+    }
+}
+/// A native owner whose waits end only through its waker or a test-granted expiry.
+struct Session(Arc<Shared>);
+impl ClipboardSession for Session {
+    fn copy_text(&mut self, text: &str) -> Result<(), FsError> {
+        self.0.update(|state| state.copied.push(text.into()));
+        Ok(())
+    }
+    fn service_pending(&mut self) -> Result<(), FsError> {
+        self.0.update(|state| state.services += 1);
+        Ok(())
+    }
+    fn owns_clipboard(&self) -> bool {
+        self.0.lock().owns
+    }
+    fn wait_pending(&mut self, timeout: Duration) -> Result<(), FsError> {
+        let shared = &self.0;
+        let deadline = Instant::now() + 2 * FAILURE_WAIT;
+        let mut state = shared.lock();
+        state.timeouts.push(timeout);
+        if state.hold {
+            state.held = true;
+            shared.changed.notify_all();
+            while state.hold && !state.stuck {
+                state = shared.wait(state, deadline);
+            }
+            state.held = false;
+        }
+        state.waiting = true;
+        shared.changed.notify_all();
+        while !state.stuck {
+            if std::mem::take(&mut state.woken) {
+                state.ended_by_wake += 1;
+                break;
+            }
+            if state.expire > 0 {
+                state.expire -= 1;
+                state.ended_by_expiry += 1;
+                break;
+            }
+            state = shared.wait(state, deadline);
+        }
+        state.waiting = false;
+        // A stuck wait fails, so that a broken worker closes this session instead of spinning.
+        let failed = state.fail_waits || state.stuck;
+        drop(state);
+        shared.changed.notify_all();
+        if failed {
+            Err(error(io::ErrorKind::Other, "The native wait failed."))
+        } else {
+            Ok(())
+        }
+    }
+    fn waker(&self) -> Option<ClipboardWaker> {
+        let shared = self.0.clone();
+        let wakes = self.0.lock().wakes;
+        wakes.then(|| Arc::new(move || shared.update(|state| state.woken = true)) as ClipboardWaker)
+    }
+}
+impl Drop for Session {
+    fn drop(&mut self) {
+        self.0.update(|state| state.closed += 1);
+    }
+}
+
+/// A controller with the fake owner, driven from a plain test thread. Fields drop in
+/// order: the controller stops and wakes the worker before the runtime, last, waits for
+/// its blocking task (also when a failed assertion unwinds).
+struct Harness {
+    controller: Option<Controller>,
+    tasks: JoinSet<()>,
+    events: mpsc::Receiver<Event>,
+    runtime: tokio::runtime::Runtime,
+}
+impl Harness {
+    fn new(shared: &Arc<Shared>) -> Self {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let (sender, events) = mpsc::channel(4);
+        let controller = Controller::testing(
+            Some(Arc::new(Owner(shared.clone()))),
+            Outbox {
+                sender,
+                wakeup: Arc::new(|| {}),
+            },
+        );
+        Self {
+            runtime,
+            controller: Some(controller),
+            tasks: JoinSet::new(),
+            events,
+        }
+    }
+    fn copy(&mut self, id: u64, text: &str) {
+        let Self {
+            runtime,
+            controller,
+            tasks,
+            ..
+        } = self;
+        let controller = controller.as_mut().expect("running controller");
+        runtime.block_on(controller.copy(DesktopRequestId(id), text.into(), tasks));
+    }
+    fn copied(&mut self, id: u64) {
+        let Self {
+            runtime, events, ..
+        } = self;
+        let event =
+            runtime.block_on(async { tokio::time::timeout(FAILURE_WAIT, events.recv()).await });
+        assert!(
+            matches!(
+                &event,
+                Ok(Some(Event::DesktopActionFinished {
+                    request,
+                    result: Ok(DesktopActionResult::ClipboardCopied),
+                })) if *request == DesktopRequestId(id)
+            ),
+            "request {id} was not served promptly: {event:?}"
+        );
+    }
+    fn wake_installed(&self) -> bool {
+        let controller = self.controller.as_ref().expect("running controller");
+        controller.wake.0.lock().unwrap().is_some()
+    }
+    fn shutdown(mut self) {
+        self.controller
+            .take()
+            .expect("running controller")
+            .shutdown();
+        let Self { runtime, tasks, .. } = &mut self;
+        let finished = runtime.block_on(async {
+            tokio::time::timeout(FAILURE_WAIT, async {
+                while tasks.join_next().await.is_some() {}
+            })
+            .await
+        });
+        assert!(finished.is_ok(), "the native worker did not stop");
+    }
+}
+
+#[test]
+fn idle_session_with_a_waker_wakes_only_when_its_safety_timeout_expires() {
+    let shared = Shared::new(|state| {
+        state.wakes = true;
+        state.owns = true;
+    });
+    let mut harness = Harness::new(&shared);
+    harness.copy(1, "one");
+    harness.copied(1);
+    assert!(harness.wake_installed());
+    {
+        let state = shared.until("the idle worker waits", |state| state.waiting);
+        // One service pass after the request, then one wait with the long timeout.
+        assert_eq!(state.timeouts, [IDLE_WAIT]);
+        assert_eq!(state.services, 1);
+    }
+    // One virtual minute passes; each wakeup is an expired safety timeout (a 10 ms pump
+    // wakes up to 6,000 times in that minute).
+    assert!(IDLE_WAIT >= Duration::from_secs(1));
+    let expiries = (60 / IDLE_WAIT.as_secs()) as usize;
+    shared.update(|state| state.expire = expiries);
+    {
+        let state = shared.until("a virtual minute passed", |state| {
+            state.ended_by_expiry == expiries && state.waiting
+        });
+        assert_eq!(state.timeouts, vec![IDLE_WAIT; expiries + 1]);
+        assert_eq!(state.services, expiries + 1, "no wakeup between the waits");
+        assert_eq!(state.ended_by_wake, 0);
+    }
+    harness.shutdown();
+    let state = shared.until("the session closed", |state| state.closed == 1);
+    assert_eq!(
+        state.ended_by_wake, 1,
+        "Controller drop wakes the idle worker"
+    );
+    assert!(!state.stuck);
+}
+
+#[test]
+fn queued_requests_end_an_idle_wait_through_the_waker() {
+    let shared = Shared::new(|state| {
+        state.wakes = true;
+        state.owns = true;
+    });
+    let mut harness = Harness::new(&shared);
+    harness.copy(1, "one");
+    harness.copied(1);
+    drop(shared.until("the idle worker waits", |state| state.waiting));
+    // Queued while the worker waits: served without its timeout expiring.
+    harness.copy(2, "two");
+    harness.copied(2);
+    {
+        let state = shared.until("the worker waits again", |state| {
+            state.waiting && state.timeouts.len() == 2
+        });
+        assert_eq!((state.ended_by_wake, state.ended_by_expiry), (1, 0));
+    }
+    // Queued after the worker found its inbox empty but before it waits (the lost-wakeup
+    // window): the earlier wake must end the wait that follows.
+    shared.update(|state| {
+        state.hold = true;
+        state.expire = 1;
+    });
+    drop(shared.until(
+        "the worker is between its inbox check and its wait",
+        |state| state.held,
+    ));
+    harness.copy(3, "three");
+    shared.update(|state| state.hold = false);
+    harness.copied(3);
+    let state = shared.until("the worker waits again", |state| {
+        state.waiting && state.timeouts.len() == 4
+    });
+    assert_eq!((state.ended_by_wake, state.ended_by_expiry), (2, 1));
+    assert_eq!(state.copied, ["one", "two", "three"]);
+    assert!(!state.stuck);
+    drop(state);
+    harness.shutdown();
+}
+
+#[test]
+fn session_that_stops_owning_is_closed_and_the_worker_waits_on_its_inbox() {
+    let shared = Shared::new(|state| {
+        state.wakes = true;
+        state.owns = true;
+    });
+    let mut harness = Harness::new(&shared);
+    harness.copy(1, "one");
+    harness.copied(1);
+    drop(shared.until("the idle worker waits", |state| state.waiting));
+    // The platform's ownership-loss event (Windows: WM_DESTROYCLIPBOARD) ends the wait.
+    shared.update(|state| {
+        state.owns = false;
+        state.woken = true;
+    });
+    {
+        let state = shared.until("the session closed", |state| state.closed == 1);
+        assert_eq!(state.timeouts.len(), 1, "a closed session is not waited on");
+    }
+    assert!(
+        !harness.wake_installed(),
+        "the controller keeps no waker of a closed session"
+    );
+    // The worker blocks on its inbox; the next request opens a new session.
+    shared.update(|state| state.owns = true);
+    harness.copy(2, "two");
+    harness.copied(2);
+    let state = shared.until("the new session waits", |state| {
+        state.waiting && state.timeouts.len() == 2
+    });
+    assert_eq!((state.opened, state.closed), (2, 1));
+    assert_eq!(state.copied, ["one", "two"]);
+    assert!(!state.stuck);
+    drop(state);
+    harness.shutdown();
+}
+
+/// Cancels the worker and lets its current wait expire, also when the driver panics.
+struct Release(Arc<Shared>, Cancellation);
+impl Drop for Release {
+    fn drop(&mut self) {
+        self.1.cancel();
+        self.0.update(|state| state.expire += 1);
+    }
+}
+
+#[test]
+fn session_without_a_waker_keeps_the_ten_millisecond_pump() {
+    let shared = Shared::new(|state| {
+        state.owns = true;
+        state.expire = 3;
+    });
+    let (_sender, mut receiver) = mpsc::channel::<Request>(1);
+    let cancel = Cancellation::default();
+    let mut native = Native::new(Arc::default());
+    native.open(Box::new(Session(shared.clone())));
+    assert!(!native.wakes);
+    let driver = {
+        let (shared, cancel) = (shared.clone(), cancel.clone());
+        std::thread::spawn(move || {
+            let _release = Release(shared.clone(), cancel);
+            let state = shared.until("three pumped waits and a fourth", |state| {
+                state.ended_by_expiry == 3 && state.waiting
+            });
+            (state.timeouts.clone(), state.services)
+        })
+    };
+    assert!(next_request(&mut receiver, &mut native, &cancel).is_none());
+    let (timeouts, services) = driver.join().unwrap();
+    assert_eq!(timeouts, vec![PUMP_INTERVAL; 4]);
+    assert_eq!(services, 4, "every pump interval services owner events");
+    assert!(
+        native.session.is_some(),
+        "an owning session without a waker stays open"
+    );
+}
+
+#[test]
+fn failing_wait_closes_the_session_and_the_worker_waits_on_its_inbox() {
+    let shared = Shared::new(|state| {
+        state.wakes = true;
+        state.owns = true;
+        state.fail_waits = true;
+        state.expire = 1;
+    });
+    let (sender, mut receiver) = mpsc::channel(1);
+    let mut native = Native::new(Arc::default());
+    native.open(Box::new(Session(shared.clone())));
+    let requester = {
+        let shared = shared.clone();
+        std::thread::spawn(move || {
+            drop(shared.until("the failed session closed", |state| state.closed == 1));
+            sender
+                .blocking_send(Request {
+                    id: DesktopRequestId(5),
+                    action: Action::ReadText,
+                })
+                .is_ok()
+        })
+    };
+    let request = next_request(&mut receiver, &mut native, &Cancellation::default());
+    assert!(requester.join().unwrap());
+    assert_eq!(request.map(|request| request.id), Some(DesktopRequestId(5)));
+    assert!(native.session.is_none());
+    assert!(!native.wakes);
+    assert_eq!(shared.lock().timeouts, [IDLE_WAIT]);
+}
+
+/// Counts worker loop iterations (one `service_pending` per iteration with an open
+/// session) and native waits of the real platform session.
+struct Counted {
+    inner: Box<dyn ClipboardSession>,
+    iterations: Arc<AtomicUsize>,
+    waits: Arc<AtomicUsize>,
+    text: Arc<Mutex<Option<String>>>,
+}
+impl ClipboardSession for Counted {
+    fn copy_text(&mut self, text: &str) -> Result<(), FsError> {
+        self.inner.copy_text(text)
+    }
+    fn read_text(&mut self) -> Result<String, FsError> {
+        let text = self.inner.read_text()?;
+        *self.text.lock().unwrap() = Some(text.clone());
+        Ok(text)
+    }
+    fn copy_files(&mut self, files: &FileClipboard) -> Result<(), FsError> {
+        self.inner.copy_files(files)
+    }
+    fn read_files(&mut self) -> Result<FileClipboard, FsError> {
+        self.inner.read_files()
+    }
+    fn service_pending(&mut self) -> Result<(), FsError> {
+        self.iterations.fetch_add(1, Ordering::Relaxed);
+        self.inner.service_pending()
+    }
+    fn owns_clipboard(&self) -> bool {
+        self.inner.owns_clipboard()
+    }
+    fn wait_pending(&mut self, timeout: Duration) -> Result<(), FsError> {
+        self.waits.fetch_add(1, Ordering::Relaxed);
+        self.inner.wait_pending(timeout)
+    }
+    fn waker(&self) -> Option<ClipboardWaker> {
+        self.inner.waker()
+    }
+}
+struct CountedService {
+    inner: Arc<dyn ClipboardService>,
+    iterations: Arc<AtomicUsize>,
+    waits: Arc<AtomicUsize>,
+    text: Arc<Mutex<Option<String>>>,
+}
+impl ClipboardService for CountedService {
+    fn open(&self) -> Result<Box<dyn ClipboardSession>, FsError> {
+        Ok(Box::new(Counted {
+            inner: self.inner.open()?,
+            iterations: self.iterations.clone(),
+            waits: self.waits.clone(),
+            text: self.text.clone(),
+        }))
+    }
+}
+
+/// Before/after measurement for review finding E6-4: worker loop iterations and native
+/// waits over two idle seconds after a read (no ownership taken) and after a file copy
+/// (owned clipboard). Run serially: `cargo test -p midnight-engine --lib -- --ignored
+/// --nocapture clipboard::wake_tests::measure_idle_wakeups_of_the_real_windows_session`.
+#[cfg(windows)]
+#[test]
+#[ignore = "manual measurement: opens the real Windows clipboard and temporarily replaces its contents"]
+fn measure_idle_wakeups_of_the_real_windows_session() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let iterations = Arc::new(AtomicUsize::new(0));
+    let waits = Arc::new(AtomicUsize::new(0));
+    let text = Arc::new(Mutex::new(None));
+    let (sender, mut events) = mpsc::channel(4);
+    let mut controller = Controller::testing(
+        Some(Arc::new(CountedService {
+            inner: Arc::new(midnight_platform::NativeClipboard),
+            iterations: iterations.clone(),
+            waits: waits.clone(),
+            text: text.clone(),
+        })),
+        Outbox {
+            sender,
+            wakeup: Arc::new(|| {}),
+        },
+    );
+    let mut tasks = JoinSet::new();
+    let window = Duration::from_secs(2);
+    let mut idle = |label: &str| {
+        let event = runtime
+            .block_on(async { tokio::time::timeout(Duration::from_secs(5), events.recv()).await })
+            .expect("clipboard event");
+        let (loops, waited) = (
+            iterations.load(Ordering::Relaxed),
+            waits.load(Ordering::Relaxed),
+        );
+        // A measurement window, not synchronization: count what the idle worker does.
+        std::thread::sleep(window);
+        eprintln!(
+            "{label}: {} worker loop iterations, {} native waits in {window:?} ({event:?})",
+            iterations.load(Ordering::Relaxed) - loops,
+            waits.load(Ordering::Relaxed) - waited,
+        );
+    };
+    runtime.block_on(controller.read_text(DesktopRequestId(1), &mut tasks));
+    idle("after a read (no ownership)");
+    let path = std::env::temp_dir().join("midnight idle wakeup 文档.txt");
+    let view = Arc::new(midnight_core::DirectoryIndex::from_entries(&[
+        midnight_core::Entry::new(
+            midnight_core::EntryId(1),
+            path.clone(),
+            midnight_core::EntryKind::File,
+        ),
+    ]));
+    let files = SelectedFiles {
+        selection: Arc::default(),
+        view,
+        fallback: Some(path),
+    };
+    runtime.block_on(controller.copy_files(DesktopRequestId(2), files, &mut tasks));
+    idle("after a file copy (owned clipboard)");
+    // Leave the user's previous Unicode text on the clipboard again.
+    if let Some(previous) = text.lock().unwrap().take() {
+        runtime.block_on(controller.copy(DesktopRequestId(3), previous, &mut tasks));
+        let restored = runtime
+            .block_on(async { tokio::time::timeout(Duration::from_secs(5), events.recv()).await })
+            .expect("restored clipboard text");
+        eprintln!("restored previous text: {restored:?}");
+    }
+    controller.shutdown();
+    runtime.block_on(async { while tasks.join_next().await.is_some() {} });
+}

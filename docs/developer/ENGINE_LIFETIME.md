@@ -143,22 +143,32 @@ pre-start cancellation or a native panic cannot expose unguarded shared captures
 The clipboard similarly guards its private sixteen-entry inbox, including a native
 worker cancelled before first invocation. Open ClipboardSession objects stay on
 one native thread through create/pump/Drop. Controller Drop cancels even a pump
-waiting on a full result queue. Rejected clipboard requests retire through one
-serialized acknowledgement; cancelling that await never cancels resource cleanup.
-A worker that has stopped is reported as stopped, not as a busy queue.
+waiting on a full result queue and wakes an idle session wait. Rejected clipboard
+requests retire through one serialized acknowledgement; cancelling that await never
+cancels resource cleanup. A worker that has stopped is reported as stopped, not as a
+busy queue.
 
 The operations and checksum actors do not poll while idle. The operations actor
 rescans its polled cancel/pause flags every 50 ms only while jobs are registered;
 admission, cancellation and shutdown send it a message. The checksum actor and its
 backend wake from shutdown through a notification, and the backend queues for the
-serial checksum worker. The clipboard worker blocks on its inbox only until a
-clipboard command opens a native X11/Windows owner session; that session stays
-open and is pumped every 10 ms between requests until it fails or the engine stops
-(an event-driven pump needs a platform session API). Other engine timers still wake
-while idle: the drag/drop preparation worker (25 ms), the drag hover forwarder
-(25 ms) and the native drag actor (10 ms). A task of the operations actor that
-panics or is aborted fails its own job, so the registry entry cannot hold one of
-the 32 slots (and actor exit) indefinitely.
+serial checksum worker. The clipboard worker blocks on its inbox while no native
+owner session is open, and closes an idle session that no longer owns clipboard
+content (`ClipboardSession::owns_clipboard`). A Windows session owns the clipboard
+only from a file publication until another owner empties it (WM_DESTROYCLIPBOARD);
+meanwhile the worker waits in `wait_pending` (`MsgWaitForMultipleObjectsEx` on the
+session's event and its owner thread's messages). A queued request or Controller
+drop ends that wait through the session's waker; its five-second safety timeout is
+not needed for correctness. Measured on Windows over two idle seconds after a
+clipboard command: 120 worker wakeups before, none after. Linux sessions still use
+the trait defaults (owning, no waker), so an open X11 session stays open and is
+pumped every 10 ms. Follow-up: `poll()` on the X11 connection plus an eventfd for
+`wait_pending`/`waker`, and `SelectionClear` of every owned selection for
+`owns_clipboard`. Other engine timers still wake while idle: the drag/drop
+preparation worker (25 ms), the drag hover forwarder (25 ms) and the native drag
+actor (10 ms). A task of the operations actor that panics or is aborted fails its
+own job, so the registry entry cannot hold one of the 32 slots (and actor exit)
+indefinitely.
 
 ## Image viewer spare shutdown
 
