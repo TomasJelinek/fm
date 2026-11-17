@@ -49,11 +49,13 @@ impl NetworkProvider {
         let Response::Resolved { mount, node } = self.client.exchange(request, cancelled)? else {
             return Err(invalid("Missing resolved network node"));
         };
-        let lease = Lease::new(&self.client, Request::CloseMount { mount });
-        check_cancel(cancelled)?;
+        // A zero mount owns nothing. Arming a lease for it would send a cleanup the
+        // provider must reject, and any failed cleanup poisons the whole instance.
         if mount == 0 {
             return Err(invalid("Invalid network mount"));
         }
+        let lease = Lease::new(&self.client, Request::CloseMount { mount });
+        check_cancel(cancelled)?;
         validate_node(&node)?;
         Ok((lease, mount, node))
     }

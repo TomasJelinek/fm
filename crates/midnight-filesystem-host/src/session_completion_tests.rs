@@ -89,10 +89,7 @@ fn verify_completion(
 ) {
     let temporary = tempfile::tempdir().unwrap();
     let cancel = Cancellation::default();
-    let supervision = Arc::new(Supervision {
-        stop: AtomicBool::new(false),
-        deadline: Mutex::new(None),
-    });
+    let supervision = Arc::new(Supervision::new(None));
     let source = Arc::new(CompletionSource {
         supervision: supervision.clone(),
         validations: AtomicUsize::new(0),

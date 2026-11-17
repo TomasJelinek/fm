@@ -4,6 +4,7 @@ use crate::{
     callbacks::{Bridge, Service, ServiceKind},
     content::Reader,
     loaded::{self, Loaded},
+    replies::PendingReply,
     session::{self, Command, Shared, lock},
 };
 use std::{
@@ -12,8 +13,18 @@ use std::{
         atomic::Ordering,
         mpsc::{self, Receiver, SyncSender},
     },
+    thread::JoinHandle,
     time::Duration,
 };
+
+/// Every producer notifies the dispatcher. This fallback only lets a raw-ABI plugin
+/// that publishes output without `notify_ready` make progress.
+const IDLE_POLL: Duration = Duration::from_millis(250);
+/// A QUEUE_FULL service reply and NOT_QUIESCENT shutdown have no completion signal.
+const RETRY_POLL: Duration = Duration::from_millis(10);
+const COMMAND_BATCH: usize = 8;
+const REPLY_BATCH: usize = 32;
+const EVENT_BATCH: usize = 32;
 
 struct Reply {
     id: u64,
@@ -65,25 +76,20 @@ pub(crate) fn run(
         }
     }
     if workers.len() != 3 {
-        bridge.stop.store(true, Ordering::Release);
-        for worker in workers {
-            let _ = worker.join();
-        }
+        stop(&bridge, reply_rx, workers);
         return;
     }
+    let api = &loaded.api;
     let mut instance = 0;
     // SAFETY: host callbacks remain registered until joined workers and destroyed instance.
-    let status = unsafe { loaded.api.create.unwrap()(&host, loaded::slice(&[]), &mut instance) };
+    let status = unsafe { api.create.unwrap()(&host, loaded::slice(&[]), &mut instance) };
     if status != abi::OK || instance == 0 {
         shared.fatal(1, format!("Plugin create failed ({status})"));
-        bridge.stop.store(true, Ordering::Release);
-        for worker in workers {
-            let _ = worker.join();
-        }
+        stop(&bridge, reply_rx, workers);
         return;
     }
     let mut shutting_down = false;
-    let mut pending_reply: Option<crate::replies::PendingReply> = None;
+    let mut pending_reply: Option<PendingReply> = None;
     loop {
         shared.dispatcher.reset();
         let closing = shared.closing.load(Ordering::Acquire);
@@ -91,144 +97,207 @@ pub(crate) fn run(
             shared.discard_output(); // Large model cleanup remains on backend before quota release.
             // SAFETY: dispatcher serializes every instance entry and pins the loaded library.
             unsafe {
-                loaded.api.begin_shutdown.unwrap()(instance);
+                api.begin_shutdown.unwrap()(instance);
             }
             shutting_down = true;
         }
-        let cancelled: Vec<_> = lock(&shared.state)
-            .requests
-            .iter()
-            .filter(|(_, cancelled)| **cancelled)
-            .map(|(id, _)| *id)
-            .collect();
-        for id in cancelled {
-            unsafe {
-                loaded.api.cancel.unwrap()(instance, id);
-            }
+        if !shutting_down {
+            // begin_shutdown itself cancels every outstanding request.
+            deliver_cancels(api, instance, &shared);
         }
-        if shared.room() {
-            for _ in 0..8 {
-                let Ok(command) = commands.try_recv() else {
-                    break;
-                };
-                if shared.cancelled(command.id) {
-                    shared.push(
-                        HostEvent {
-                            request_id: command.id,
-                            generation: shared.generation,
-                            kind: EventKind::Cancelled,
-                        },
-                        0,
-                    );
-                    continue;
-                }
-                let request = abi::Request {
-                    id: command.id,
-                    session: 1,
-                    generation: shared.generation,
-                    kind: command.kind,
-                    flags: 0,
-                    payload: loaded::slice(&command.payload),
-                    content: loaded::empty(),
-                };
-                // SAFETY: request data are borrowed only until submit returns.
-                let status = unsafe { loaded.api.submit.unwrap()(instance, &request) };
-                if status != abi::OK {
-                    if command.kind == abi::REQUEST_LOCATE {
-                        shared.push(
-                            HostEvent {
-                                request_id: command.id,
-                                generation: shared.generation,
-                                kind: EventKind::Failed(messages::Failure {
-                                    code: status,
-                                    message: format!(
-                                        "Plugin rejected optional location request ({status})"
-                                    ),
-                                }),
-                            },
-                            8192,
-                        );
-                    } else {
-                        shared.failure(command.id, format!("Plugin rejected request ({status})"));
-                    }
-                }
-            }
-        }
-        for _ in 0..32 {
-            if let Some(pending) = pending_reply.take() {
-                // SAFETY: pending owns the initial content lease until accepted or rejected.
-                if !pending.deliver(&bridge, |request| unsafe {
-                    loaded.api.submit.unwrap()(instance, request)
-                }) {
-                    pending_reply = Some(pending);
-                    break;
-                }
-            }
-            let Ok(mut reply) = reply_rx.try_recv() else {
-                break;
-            };
-            let buffer = match bridge.allocate(std::mem::take(&mut reply.bytes)) {
-                Ok(buffer) => buffer,
-                Err(status) => {
-                    reply.reply.status = status;
-                    reply.reply.bytes = 0;
-                    reply.reply.eof = false;
-                    loaded::empty()
-                }
-            };
-            if let Ok(payload) = codec::encode(&reply.reply) {
-                pending_reply = Some(crate::replies::PendingReply {
-                    id: reply.id,
-                    payload,
-                    buffer,
-                });
-            } else {
-                bridge.release(buffer.id);
-                bridge.services.fetch_sub(1, Ordering::Release);
-                shared.fatal(1, "Host read service produced an invalid reply".into());
-            }
-        }
-        for _ in 0..32 {
-            if !shared.room() {
-                break;
-            }
-            // SAFETY: table of integer/pointer values has valid zeroed representation.
-            let mut event: abi::Event = unsafe { std::mem::zeroed() };
-            let mut written = 0;
-            // SAFETY: exactly one aligned writable Event and count are exclusively borrowed.
-            let status =
-                unsafe { loaded.api.drain.unwrap()(instance, 1, &mut event, &mut written) };
-            if written > 1 {
-                shared.fatal(1, "Plugin drain exceeded supplied event capacity".into());
-                break;
-            }
-            if written == 1 {
-                receive_event(&loaded, instance, &shared, event);
-            }
-            if status != abi::OK {
-                shared.fatal(1, format!("Plugin drain failed ({status})"));
-                break;
-            }
-            if written == 0 {
-                break;
-            }
-        }
+        let mut busy = submit_commands(api, instance, &shared, &commands);
+        busy |= deliver_replies(api, instance, &bridge, &reply_rx, &mut pending_reply);
+        busy |= drain_events(api, instance, &shared);
         if shutting_down && bridge.empty() {
             // SDK v1 reports quiescence using NOT_QUIESCENT until destroy can succeed.
             // No forced unload: uncooperative native code keeps its bounded session permit.
-            let status = unsafe { loaded.api.destroy.unwrap()(instance) };
+            let status = unsafe { api.destroy.unwrap()(instance) };
             if status == abi::OK {
                 break;
             }
         }
-        // Every command, plugin-ready callback, read reply and completed work
-        // wakes this owner. Timeout is only a shutdown/backpressure fallback.
-        std::thread::park_timeout(Duration::from_millis(10));
+        if !busy {
+            // A notification that arrived after `reset` has already unparked this thread.
+            std::thread::park_timeout(if shutting_down || pending_reply.is_some() {
+                RETRY_POLL
+            } else {
+                IDLE_POLL
+            });
+        }
     }
-    bridge.stop.store(true, Ordering::Release);
+    stop(&bridge, reply_rx, workers);
+}
+
+/// Close worker admission and join. Dropping the reply receiver releases a service
+/// worker blocked on a full reply queue; jobs and services already accepted drain.
+fn stop(bridge: &Bridge, replies: Receiver<Reply>, workers: Vec<JoinHandle<()>>) {
+    bridge.close();
+    drop(replies);
     for worker in workers {
         let _ = worker.join();
     }
+}
+
+/// Deliver native cancellation once per submitted request. A request whose command is
+/// still queued is converted to Cancelled by `submit_commands` and never reaches the plugin.
+fn deliver_cancels(api: &abi::PluginApi, instance: u64, shared: &Shared) {
+    let cancelled: Vec<_> = lock(&shared.state)
+        .requests
+        .iter_mut()
+        .filter(|(_, request)| request.cancelled && request.submitted && !request.cancel_delivered)
+        .map(|(id, request)| {
+            request.cancel_delivered = true;
+            *id
+        })
+        .collect();
+    for id in cancelled {
+        // SAFETY: dispatcher serializes every instance entry and pins the loaded library.
+        unsafe {
+            api.cancel.unwrap()(instance, id);
+        }
+    }
+}
+
+/// Returns whether the batch limit left commands that may still be queued.
+fn submit_commands(
+    api: &abi::PluginApi,
+    instance: u64,
+    shared: &Shared,
+    commands: &Receiver<Command>,
+) -> bool {
+    // Without room, the consumer's drain notifies the dispatcher again.
+    if !shared.room() {
+        return false;
+    }
+    for _ in 0..COMMAND_BATCH {
+        let Ok(command) = commands.try_recv() else {
+            return false;
+        };
+        if shared.cancelled(command.id) {
+            shared.push(
+                HostEvent {
+                    request_id: command.id,
+                    generation: shared.generation,
+                    kind: EventKind::Cancelled,
+                },
+                0,
+            );
+            continue;
+        }
+        let request = abi::Request {
+            id: command.id,
+            session: 1,
+            generation: shared.generation,
+            kind: command.kind,
+            flags: 0,
+            payload: loaded::slice(&command.payload),
+            content: loaded::empty(),
+        };
+        // SAFETY: request data are borrowed only until submit returns.
+        let status = unsafe { api.submit.unwrap()(instance, &request) };
+        if status == abi::OK {
+            // A cancellation racing this submission is delivered by the next iteration.
+            if let Some(request) = lock(&shared.state).requests.get_mut(&command.id) {
+                request.submitted = true;
+            }
+        } else if command.kind == abi::REQUEST_LOCATE {
+            shared.push(
+                HostEvent {
+                    request_id: command.id,
+                    generation: shared.generation,
+                    kind: EventKind::Failed(messages::Failure {
+                        code: status,
+                        message: format!("Plugin rejected optional location request ({status})"),
+                    }),
+                },
+                8192,
+            );
+        } else {
+            shared.failure(command.id, format!("Plugin rejected request ({status})"));
+        }
+    }
+    true
+}
+
+/// Returns whether the batch limit left an undelivered reply. A QUEUE_FULL reply is
+/// retained with its lease and admission and retried on the short fallback.
+fn deliver_replies(
+    api: &abi::PluginApi,
+    instance: u64,
+    bridge: &Bridge,
+    replies: &Receiver<Reply>,
+    pending_reply: &mut Option<PendingReply>,
+) -> bool {
+    for _ in 0..REPLY_BATCH {
+        if let Some(pending) = pending_reply.take() {
+            // SAFETY: pending owns the initial content lease until accepted or rejected.
+            if !pending.deliver(bridge, |request| unsafe {
+                api.submit.unwrap()(instance, request)
+            }) {
+                *pending_reply = Some(pending);
+                return false;
+            }
+        }
+        let Ok(mut reply) = replies.try_recv() else {
+            return false;
+        };
+        let buffer = match bridge.allocate(std::mem::take(&mut reply.bytes)) {
+            Ok(buffer) => buffer,
+            Err(status) => {
+                reply.reply.status = status;
+                reply.reply.bytes = 0;
+                reply.reply.eof = false;
+                loaded::empty()
+            }
+        };
+        if let Ok(payload) = codec::encode(&reply.reply) {
+            *pending_reply = Some(PendingReply {
+                id: reply.id,
+                payload,
+                buffer,
+            });
+        } else {
+            bridge.release(buffer.id);
+            bridge.services.fetch_sub(1, Ordering::Release);
+            bridge
+                .shared
+                .fatal(1, "Host read service produced an invalid reply".into());
+        }
+    }
+    true
+}
+
+/// Returns whether the batch limit stopped draining while events may remain.
+fn drain_events(api: &abi::PluginApi, instance: u64, shared: &Shared) -> bool {
+    for _ in 0..EVENT_BATCH {
+        // Without room, the consumer's drain notifies the dispatcher again.
+        if !shared.room() {
+            return false;
+        }
+        // SAFETY: table of integer/pointer values has valid zeroed representation.
+        let mut event: abi::Event = unsafe { std::mem::zeroed() };
+        let mut written = 0;
+        // SAFETY: exactly one aligned writable Event and count are exclusively borrowed.
+        let status = unsafe { api.drain.unwrap()(instance, 1, &mut event, &mut written) };
+        if written > 1 {
+            // Only one slot was supplied; release what it names, then fail closed.
+            // Unreleased plugin buffers would otherwise keep destroy NOT_QUIESCENT.
+            release_event_buffers(api, instance, &event);
+            shared.fatal(1, "Plugin drain exceeded supplied event capacity".into());
+            return false;
+        }
+        if written == 1 {
+            receive_event(api, instance, shared, event);
+        }
+        if status != abi::OK {
+            shared.fatal(1, format!("Plugin drain failed ({status})"));
+            return false;
+        }
+        if written == 0 {
+            return false;
+        }
+    }
+    true
 }
 
 fn services(
@@ -239,10 +308,8 @@ fn services(
     send: SyncSender<Reply>,
 ) {
     let mut reader = Some(reader);
-    while !bridge.stop.load(Ordering::Acquire) {
-        let Ok(service) = receive.recv_timeout(Duration::from_millis(10)) else {
-            continue;
-        };
+    // Blocks until a service arrives; `Bridge::close` ends the loop after draining.
+    while let Ok(service) = receive.recv() {
         let mut reply = messages::ReadReply {
             revision: file.revision(),
             offset: 0,
@@ -297,17 +364,21 @@ fn services(
     }
 }
 
-fn receive_event(loaded: &Loaded, instance: u64, shared: &Shared, event: abi::Event) {
-    let result = decode_event(event);
+fn release_event_buffers(api: &abi::PluginApi, instance: u64, event: &abi::Event) {
     // SAFETY: release exactly the two plugin-owned buffer IDs on backend, even on invalid/stale data.
     unsafe {
         if event.payload.id != 0 {
-            loaded.api.release_buffer.unwrap()(instance, event.payload.id);
+            api.release_buffer.unwrap()(instance, event.payload.id);
         }
         if event.content.id != 0 && event.content.id != event.payload.id {
-            loaded.api.release_buffer.unwrap()(instance, event.content.id);
+            api.release_buffer.unwrap()(instance, event.content.id);
         }
     }
+}
+
+fn receive_event(api: &abi::PluginApi, instance: u64, shared: &Shared, event: abi::Event) {
+    let result = decode_event(event);
+    release_event_buffers(api, instance, &event);
     if event.session != 1 || event.generation != shared.generation {
         return;
     }
@@ -438,6 +509,159 @@ fn valid_revision(kind: &EventKind, shared: &Shared) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{
+        Mutex,
+        atomic::{AtomicU32, AtomicUsize},
+    };
+
+    fn table() -> abi::PluginApi {
+        // SAFETY: integer/pointer/optional-function table has an all-zero valid value.
+        unsafe { std::mem::zeroed() }
+    }
+
+    #[test]
+    fn native_cancel_is_delivered_once_and_never_for_an_unsubmitted_command() {
+        static CANCELS: Mutex<Vec<(u64, u64)>> = Mutex::new(Vec::new());
+        static SUBMITS: AtomicUsize = AtomicUsize::new(0);
+        unsafe extern "C" fn cancel(instance: u64, id: u64) -> abi::Status {
+            CANCELS.lock().unwrap().push((instance, id));
+            abi::OK
+        }
+        unsafe extern "C" fn submit(_: u64, _: *const abi::Request) -> abi::Status {
+            SUBMITS.fetch_add(1, Ordering::Relaxed);
+            abi::OK
+        }
+        let mut api = table();
+        api.cancel = Some(cancel);
+        api.submit = Some(submit);
+        let shared = crate::session::tests::shared();
+        for (id, cancelled, submitted) in [(2, true, true), (3, true, false), (4, false, true)] {
+            lock(&shared.state).requests.insert(
+                id,
+                session::RequestState {
+                    cancelled,
+                    submitted,
+                    cancel_delivered: false,
+                },
+            );
+        }
+        for _ in 0..3 {
+            deliver_cancels(&api, 9, &shared);
+        }
+        assert_eq!(*CANCELS.lock().unwrap(), [(9, 2)]);
+        // The queued command for request 3 is answered without reaching the plugin.
+        let (send, commands) = mpsc::sync_channel(1);
+        send.send(Command {
+            id: 3,
+            kind: abi::REQUEST_VIEWPORT,
+            payload: Vec::new(),
+        })
+        .unwrap();
+        assert!(!submit_commands(&api, 9, &shared, &commands));
+        assert_eq!(SUBMITS.load(Ordering::Relaxed), 0);
+        assert!(!lock(&shared.state).requests.contains_key(&3));
+        assert!(matches!(
+            lock(&shared.state).events.back(),
+            Some((
+                HostEvent {
+                    request_id: 3,
+                    kind: EventKind::Cancelled,
+                    ..
+                },
+                _
+            ))
+        ));
+        deliver_cancels(&api, 9, &shared);
+        assert_eq!(CANCELS.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn over_reported_drain_releases_the_supplied_slot_and_fails_closed() {
+        static RELEASED: Mutex<Vec<u64>> = Mutex::new(Vec::new());
+        static CAPACITY: AtomicU32 = AtomicU32::new(0);
+        unsafe extern "C" fn drain(
+            _: u64,
+            capacity: u32,
+            events: *mut abi::Event,
+            written: *mut u32,
+        ) -> abi::Status {
+            CAPACITY.store(capacity, Ordering::Relaxed);
+            // SAFETY: the host supplies one writable event and a writable count.
+            unsafe {
+                (*events).payload.id = 7;
+                (*events).content.id = 8;
+                *written = 2;
+            }
+            abi::OK
+        }
+        unsafe extern "C" fn release(_: u64, id: u64) -> abi::Status {
+            RELEASED.lock().unwrap().push(id);
+            abi::OK
+        }
+        let mut api = table();
+        api.drain = Some(drain);
+        api.release_buffer = Some(release);
+        let shared = crate::session::tests::shared();
+        assert!(!drain_events(&api, 9, &shared));
+        assert_eq!(CAPACITY.load(Ordering::Relaxed), 1);
+        assert_eq!(*RELEASED.lock().unwrap(), [7, 8]);
+        assert!(shared.closing.load(Ordering::Acquire));
+        assert!(lock(&shared.state).fatal.is_some());
+    }
+
+    #[test]
+    fn batch_limits_report_pending_work_instead_of_waiting_for_the_idle_fallback() {
+        static PENDING_EVENTS: AtomicUsize = AtomicUsize::new(EVENT_BATCH + 1);
+        unsafe extern "C" fn drain(
+            _: u64,
+            _: u32,
+            events: *mut abi::Event,
+            written: *mut u32,
+        ) -> abi::Status {
+            let available = PENDING_EVENTS
+                .try_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_sub(1))
+                .is_ok();
+            // SAFETY: the host supplies one writable event and a writable count.
+            unsafe {
+                (*events).kind = abi::EVENT_QUIESCENT;
+                *written = u32::from(available);
+            }
+            abi::OK
+        }
+        unsafe extern "C" fn submit(_: u64, _: *const abi::Request) -> abi::Status {
+            abi::OK
+        }
+        let mut api = table();
+        api.drain = Some(drain);
+        api.submit = Some(submit);
+        let shared = crate::session::tests::shared();
+        assert!(
+            drain_events(&api, 9, &shared),
+            "a full batch may leave events"
+        );
+        assert!(!drain_events(&api, 9, &shared));
+        let (send, commands) = mpsc::sync_channel(COMMAND_BATCH + 1);
+        for id in 10..=10 + COMMAND_BATCH as u64 {
+            lock(&shared.state)
+                .requests
+                .insert(id, session::RequestState::default());
+            send.try_send(Command {
+                id,
+                kind: abi::REQUEST_VIEWPORT,
+                payload: Vec::new(),
+            })
+            .unwrap();
+        }
+        assert!(submit_commands(&api, 9, &shared, &commands));
+        assert!(!submit_commands(&api, 9, &shared, &commands));
+        assert!(
+            lock(&shared.state)
+                .requests
+                .values()
+                .all(|request| request.submitted)
+        );
+    }
+
     #[test]
     fn optional_position_is_validated_against_captured_source_and_mode() {
         let mut shared = crate::session::tests::shared();

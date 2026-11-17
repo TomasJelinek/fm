@@ -5,6 +5,8 @@ use std::io::{Seek, SeekFrom};
 #[derive(Debug, Default)]
 struct Source {
     cancelled: AtomicBool,
+    /// A request token cancelled at the same points as `cancelled`.
+    token: Cancellation,
     validations: AtomicUsize,
     cancel_on_validation: AtomicUsize,
     change_on_validation: AtomicUsize,
@@ -25,6 +27,7 @@ impl ContentSource for Source {
         let count = self.validations.fetch_add(1, Ordering::SeqCst) + 1;
         if count == self.cancel_on_validation.load(Ordering::SeqCst) {
             self.cancelled.store(true, Ordering::Release);
+            self.token.cancel();
         }
         if count == self.stop_on_validation.load(Ordering::SeqCst) {
             self.supervision
@@ -42,6 +45,7 @@ impl ContentSource for Source {
     }
     fn read_at(&self, _: u64, length: u32) -> Result<Vec<u8>, Error> {
         self.cancelled.store(true, Ordering::Release);
+        self.token.cancel();
         Ok(vec![7; length as usize])
     }
 }
@@ -113,10 +117,7 @@ impl Fixture {
                 output,
                 request: 0,
             }),
-            supervision: Arc::new(Supervision {
-                stop: AtomicBool::new(false),
-                deadline: Mutex::new(None),
-            }),
+            supervision: Arc::new(Supervision::new(None)),
             protocol,
             staging: Arc::new(Mutex::new(Some(
                 crate::staging::Staging::open(&temp.path().join("spool")).unwrap(),
@@ -216,6 +217,88 @@ fn cooperative_checkpoints_cancel_then_list_and_read_on_the_same_mount() {
         fixture.mount.list(1, &Cancellation::default()).unwrap();
         assert_eq!(fixture.read().unwrap(), b"data");
     }
+}
+
+#[test]
+fn cancelling_a_listing_discards_its_page_and_keeps_the_shared_mount() {
+    let page = |request| Message::Entries {
+        request,
+        entries: vec![],
+        more: false,
+    };
+    for protocol in [Protocol::V1, Protocol::V2, Protocol::V3] {
+        let fixture = Fixture::new(protocol, vec![page(1), page(2)]);
+        // The request token is cancelled while the page exchange is in flight.
+        fixture
+            .source
+            .cancel_on_validation
+            .store(1, Ordering::SeqCst);
+        let token = fixture.source.token.clone();
+        assert_eq!(
+            fixture.mount.list(1, &token).unwrap_err().kind,
+            io::ErrorKind::Interrupted
+        );
+        assert!(
+            !fixture.mount.supervision.stopped(),
+            "{protocol:?}: cancelled listing ended the shared worker"
+        );
+        // Cancellation before a page sends nothing; the next listing reads page two.
+        assert!(fixture.mount.list(1, &token).is_err());
+        assert!(
+            fixture
+                .mount
+                .list(1, &Cancellation::default())
+                .unwrap()
+                .is_empty()
+        );
+    }
+}
+
+#[test]
+fn protocol_three_hard_read_cancellation_is_cooperative_and_keeps_the_mount() {
+    let mut replies = vec![begin(1), source_read(), append(1, 1), cancelled(1)];
+    replies.extend(followup(2));
+    let fixture = Fixture::new(Protocol::V3, replies);
+    let token = fixture.source.token.clone();
+    assert_eq!(
+        fixture.mount.read(2, 0, 4, &token).unwrap_err().kind,
+        io::ErrorKind::Interrupted
+    );
+    assert!(
+        !fixture.mount.supervision.stopped(),
+        "cancelled read killed shared mount"
+    );
+    assert!(fixture.sent().iter().any(|message| matches!(
+        message,
+        Message::Failed {
+            request: 1,
+            code: api::ErrorCode::Cancelled,
+            ..
+        }
+    )));
+    fixture.source.cancelled.store(false, Ordering::Release);
+    fixture.mount.list(1, &Cancellation::default()).unwrap();
+    assert_eq!(fixture.read().unwrap(), b"data");
+}
+
+#[test]
+fn legacy_hard_read_cancellation_still_ends_the_worker() {
+    let fixture = Fixture::new(
+        Protocol::V2,
+        vec![
+            begin(1),
+            source_read(),
+            append(1, 1),
+            seal(1, 1),
+            ready(1, 1),
+        ],
+    );
+    let token = fixture.source.token.clone();
+    assert_eq!(
+        fixture.mount.read(2, 0, 4, &token).unwrap_err().kind,
+        io::ErrorKind::Interrupted
+    );
+    assert!(fixture.mount.supervision.stopped());
 }
 
 #[test]

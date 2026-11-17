@@ -104,15 +104,24 @@ fn resolve_at_with_digest(
     let executable = installation_path(executable)?;
     plain_path(&executable)?;
     regular_file(&fs::symlink_metadata(&executable)?)?;
-    let direct_error = match trusted_executable(&executable) {
-        Ok(()) => return Ok(executable),
-        Err(error) => error,
+    // The process reports the spelling used at launch. Letter case, 8.3, SUBST and
+    // mapped-drive aliases name the same file, so trust is decided for the handle's
+    // native final spelling (both spellings are reparse-checked by `open`). Every
+    // later package path then derives from this canonical directory.
+    let (executable, launch, direct_error) = match launch_path::open(&executable) {
+        Ok(launch) => match trusted_executable(&launch.executable) {
+            Ok(()) => return Ok(launch.executable),
+            Err(error) => (launch.executable.clone(), Some(launch), error),
+        },
+        // Fallbacks keep their previous entered-spelling behavior.
+        Err(error) => (executable, None, error),
     };
     match verification {
         RuntimeVerification::Disabled => {
-            resolve_by_pointer(executable, registration_root, direct_error)
+            resolve_by_pointer(executable, launch, registration_root, direct_error)
         }
         RuntimeVerification::Sha256 => {
+            drop(launch);
             resolve_by_sha256(executable, registration_root, direct_error, &mut digest)
         }
     }
@@ -161,6 +170,7 @@ fn resolve_by_sha256(
 
 fn resolve_by_pointer(
     executable: PathBuf,
+    launch: Option<launch_path::LaunchFile>,
     registration_root: Option<&Path>,
     direct_error: Error,
 ) -> Result<PathBuf, Error> {
@@ -178,7 +188,10 @@ fn resolve_by_pointer(
         ));
     }
     // This retained metadata-only handle supplies the native final path and both hints.
-    let launch = launch_path::open(&executable)?;
+    let launch = match launch {
+        Some(launch) => launch,
+        None => launch_path::open(&executable)?,
+    };
     let pointer_path = launchers.join(format!("{}.toml", launch_path_key(&launch.utf16)));
     if !exists_without_following(&pointer_path)? {
         return missing_launcher_pointer(executable, direct_error);

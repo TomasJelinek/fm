@@ -24,22 +24,35 @@ impl Loaded {
         })
     }
     pub fn acquire(info: &PluginInfo) -> Result<Arc<Self>, Error> {
-        let mut libraries =
-            crate::session::lock(LIBRARIES.get_or_init(|| Mutex::new(HashMap::new())));
-        if let Some(library) = libraries.get(&info.entry_library) {
-            if library.id != info.id || library.version != info.version {
-                return Err(Error(
-                    "Plugin metadata changed after loading; restart required".into(),
-                ));
-            }
-            return Ok(library.clone());
+        let libraries = LIBRARIES.get_or_init(|| Mutex::new(HashMap::new()));
+        if let Some(library) = Self::registered(&crate::session::lock(libraries), info)? {
+            return Ok(library);
         }
-        if libraries.len() >= 256 {
+        // Trust validation, native loading and the entry call run without the registry
+        // lock, so `is_loaded` and first loads of other plugins never wait behind them.
+        // A racing duplicate open of the same module is reference counted by the OS
+        // loader; the loser is dropped while the registered library stays pinned.
+        let opened = Arc::new(Self::open(info)?);
+        let mut registry = crate::session::lock(libraries);
+        if let Some(library) = Self::registered(&registry, info)? {
+            return Ok(library);
+        }
+        if registry.len() >= 256 {
             return Err(Error("Loaded library limit reached".into()));
         }
-        let library = Arc::new(Self::open(info)?);
-        libraries.insert(info.entry_library.clone(), library.clone());
-        Ok(library)
+        registry.insert(info.entry_library.clone(), opened.clone());
+        Ok(opened)
+    }
+    fn registered(
+        registry: &HashMap<PathBuf, Arc<Loaded>>,
+        info: &PluginInfo,
+    ) -> Result<Option<Arc<Self>>, Error> {
+        match registry.get(&info.entry_library) {
+            Some(library) if library.id != info.id || library.version != info.version => Err(
+                Error("Plugin metadata changed after loading; restart required".into()),
+            ),
+            library => Ok(library.cloned()),
+        }
     }
     pub fn open(info: &PluginInfo) -> Result<Self, Error> {
         crate::trust::check(&info.entry_library)?;

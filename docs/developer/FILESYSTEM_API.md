@@ -78,12 +78,16 @@ captured source revision, format and member identity, revalidates the source on
 cache hits, and never uses a display name or transient mount ID as the persistent
 key. See the [archive thumbnail contract](../superpowers/specs/2026-11-05-panel-views-thumbnails-design.md#archive-content-integration-10-november-2026).
 
-The host validates the installation, ancestors, package, manifest and executable
-using the native plugin ownership/ACL policy. Redirections and unsafe writable
+The host validates the installation, ancestors, package directory, manifest,
+executable and every other package object (for example a dependent library the
+OS loader could resolve before worker containment) using the native plugin
+ownership/ACL policy, at discovery and again before each mount launches the
+worker. Redirections, nonregular objects and unsafe writable package objects or
 ancestors are refused. Installing an executable grants it code trust; containment
 limits the untrusted documents it parses. A broadly writable build directory may
 be unsuitable as a trusted installation. Do not loosen source-tree permissions to
-make discovery accept it.
+make discovery accept it. When several trusted workers advertise one format, the
+default is the package with the lowest ID, independent of directory order.
 
 No package means no archive browsing capability. Native archive files retain
 normal OS activation when the catalog has no providers. With providers installed,
@@ -217,10 +221,16 @@ one tab does not invalidate a viewer still reading that captured member.
 diagnostic bytes. Report unsupported/encrypted codecs explicitly; never retry
 through an external utility or a host path. The host ends the mount on a failed exchange, except the explicitly negotiated
 protocol-3 cooperative cancellation acknowledgement described below. Protocol violations, truncated frames and unexpected replies
-also fail closed. Ordinary cancellation remains host process termination; only
-the separate protocol-3 cooperative read can preserve the mount. Deadlines apply to blocking pipe reads
-as well as decoding; timeout/cancellation can therefore surface as a closed-pipe
-or interrupted operation diagnostic.
+also fail closed. Cancelling one request does not end a mount that other tabs,
+viewers and jobs share when a bounded or cooperative path exists: a listing stops
+between pages and discards an in-flight page, and protocol-3 member reads cancel
+cooperatively through both the ordinary and the preview read entry points. A
+protocol-1/2 read cannot be interrupted, so cancelling it during its exchange still
+terminates the worker; callers that must keep the mount use the cooperative
+preview read, which drains such a read and discards its result. Mount teardown,
+protocol violations and the idle watchdog always terminate the worker. Deadlines
+apply to blocking pipe reads as well as decoding; timeout/cancellation can
+therefore surface as a closed-pipe or interrupted operation diagnostic.
 
 Current application limits are at most two live archive mounts, 512 MiB process
 memory and a 20-second idle-progress watchdog. Protocol 2 adds no aggregate CPU
@@ -229,6 +239,11 @@ byte I/O and monotonic decoded work renew the watchdog. Protocol 1 retains its
 legacy limits. Shared tab/viewer leases count as the same mount. Source reads may
 revisit captured ranges and are bounded to 256 KiB. Host listing validation
 also limits a directory to 100,000 nodes and 8 MiB aggregate raw/display names.
+The idle supervisor waits without polling; it observes a hard request
+cancellation every 10 ms only while such an exchange is active. When
+`release_on_worker` consumes the last host reference of a session whose cleanup is
+already unconfirmed, the host still terminates its worker and returns the mount
+permit; the unconfirmed source stays quarantined.
 
 The current parser imposes no artificial compressed-source, member, aggregate disk
 or expansion-ratio byte ceiling. It retains 100,000-node and 8 MiB name limits,
@@ -238,7 +253,14 @@ indexes without whole-source buffering; selected members stream directly to disk
 Solid 7z verifies the full required block and stores only the selected member.
 Compressed TAR verifies one complete scratch stream and reuses checked ranges.
 Disk errors abort staging; final spool cleanup runs on backend workers after any
-outstanding native I/O returns. The host retains at most 16 cached member leases.
+outstanding native I/O returns. Each mount keeps decoded members for repeated reads
+in least-recently-used order: at most 16 members within 512 MiB of spool storage,
+always including the newest member, so sequential reads of one larger member still
+hit its single staged copy. Spools are anonymous files in a per-user private
+directory: below the user's temporary directory on Windows; on Linux
+`$XDG_CACHE_HOME` (or `~/.cache`) `/midnight-explorer/archive-spool`, falling back
+to `$XDG_RUNTIME_DIR` when that location cannot hold anonymous files. A fixed name
+in the shared `/tmp` is never used.
 
 Protocol-2 nodes also carry optional typed UTC seconds/nanoseconds or timezone-free
 local civil timestamps. ZIP DOS times never acquire an invented UTC offset.

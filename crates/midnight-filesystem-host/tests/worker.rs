@@ -39,9 +39,19 @@ fn captured_archive_source_rejects_mutation() {
     assert!(captured.read_at(0, 5).is_err());
 }
 
+fn open(
+    package: &midnight_filesystem_host::Package,
+    format: midnight_filesystem_api::Format,
+    source: &Path,
+    cancel: &Cancellation,
+) -> Result<std::sync::Arc<Mount>, midnight_core::FsError> {
+    let captured = midnight_plugin_host::CapturedFile::capture(source).unwrap();
+    Mount::open_captured(package, format, source, captured, cancel)
+}
+
 #[test]
 #[ignore = "requires ARCHIVE_WORKER executable built by the independent plugin"]
-fn real_sandboxed_worker_lists_reads_and_rejects_cancellation() {
+fn real_sandboxed_worker_lists_reads_and_refuses_a_cancelled_open() {
     let root = tempfile::tempdir_in(
         std::env::var_os("ARCHIVE_TEST_INSTALL_ROOT").expect("private installation root"),
     )
@@ -58,12 +68,10 @@ fn real_sandboxed_worker_lists_reads_and_rejects_cancellation() {
     let cancelled = Cancellation::default();
     cancelled.cancel();
     assert_eq!(
-        Mount::open(package, format, &source, &cancelled)
-            .unwrap_err()
-            .kind,
+        open(package, format, &source, &cancelled).unwrap_err().kind,
         std::io::ErrorKind::Interrupted
     );
-    let mount = Mount::open(package, format, &source, &cancel).unwrap();
+    let mount = open(package, format, &source, &cancel).unwrap();
     let entries = mount.list(1, &cancel).unwrap();
     assert_eq!(entries.len(), 1);
     assert_eq!(
@@ -80,7 +88,7 @@ fn real_sandboxed_worker_lists_reads_and_rejects_cancellation() {
             .persistent_member_identity(entries[0].id.entry, b"stale")
             .is_err()
     );
-    let reopened = Mount::open(package, format, &source, &cancel).unwrap();
+    let reopened = open(package, format, &source, &cancel).unwrap();
     assert_ne!(mount.id(), reopened.id());
     assert_eq!(
         reopened
@@ -90,8 +98,8 @@ fn real_sandboxed_worker_lists_reads_and_rejects_cancellation() {
         identity
     );
     assert!(reopened.persistent_member_identity(0, &revision).is_err());
-    drop(reopened);
-    drop(mount);
+    reopened.release_on_worker().unwrap();
+    mount.release_on_worker().unwrap();
     install(root.path(), Path::new(&worker), "duplicate");
     assert!(Catalog::discover(root.path()).unwrap().packages.is_empty());
 }

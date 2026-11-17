@@ -14,7 +14,8 @@ use std::{
 
 const WAIT: Duration = Duration::from_secs(5);
 const GATE_WAIT: Duration = Duration::from_secs(30);
-const QUIET: Duration = Duration::from_millis(120);
+/// Condition-poll interval for negative assertions; never a fixed quiet period.
+const POLL: Duration = Duration::from_millis(1);
 const PREPARED: u64 = 400;
 type Ticket = usize;
 
@@ -243,6 +244,15 @@ impl Native {
     fn cancelled_seen(&self, ticket: Ticket) -> Option<bool> {
         lock(&self.state).plans[ticket].native_cancelled
     }
+    /// (entered, completed, held): a held call or release cannot return until the
+    /// test opens its closed gate.
+    fn progress(&self, ticket: Ticket) -> (bool, bool, bool) {
+        let state = lock(&self.state);
+        let plan = &state.plans[ticket];
+        let held = (plan.entered && !plan.returned && !plan.gates.call)
+            || (plan.releasing && !plan.released && !plan.gates.release);
+        (plan.entered, plan.completed, held)
+    }
     fn fault(&self, message: &str) {
         lock(&self.state).faults.push(message.to_owned());
         self.changed.notify_all();
@@ -397,6 +407,7 @@ struct Worker {
     cancel: Arc<AtomicBool>,
     result: mpsc::Receiver<Result<Response, Failure>>,
     expected: Response,
+    thread: thread::ThreadId,
     join: Option<JoinHandle<()>>,
 }
 struct Harness {
@@ -457,6 +468,7 @@ impl Harness {
             cancel,
             result,
             expected: response,
+            thread: join.thread().id(),
             join: Some(join),
         });
         assert!(
@@ -548,18 +560,52 @@ impl Harness {
             "Ticket {ticket} did not attempt Instance::call"
         );
     }
+    /// Deterministically prove a worker did not and cannot yet enter native code: it has
+    /// already finished, or it is parked on the latest admission state, which only a
+    /// release (none is pending in the caller's step) can change.
     fn blocked(&self, ticket: Ticket, reason: &str) {
-        assert!(
-            !self.native.wait(ticket, |p| p.entered, QUIET),
-            "{reason}; ticket {ticket} reached native code: {:?}",
-            self.native.snapshot()
-        );
+        let deadline = Instant::now() + WAIT;
+        loop {
+            let (entered, completed, _) = self.native.progress(ticket);
+            assert!(
+                !entered,
+                "{reason}; ticket {ticket} reached native code: {:?}",
+                self.native.snapshot()
+            );
+            if completed || self.parked(ticket) {
+                return;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "{reason}; ticket {ticket} neither waited in admission nor finished"
+            );
+            thread::sleep(POLL);
+        }
     }
+    /// Deterministically prove a worker cannot return yet: it is held at a closed
+    /// fixture gate or parked on the latest admission state.
     fn pending(&self, ticket: Ticket, reason: &str) {
-        assert!(
-            !self.native.wait(ticket, |p| p.completed, QUIET),
-            "{reason}; ticket {ticket} returned before real release"
-        );
+        let deadline = Instant::now() + WAIT;
+        loop {
+            let (_, completed, held) = self.native.progress(ticket);
+            assert!(
+                !completed,
+                "{reason}; ticket {ticket} returned before real release"
+            );
+            if held || self.parked(ticket) {
+                return;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "{reason}; ticket {ticket} is neither held nor waiting in admission"
+            );
+            thread::sleep(POLL);
+        }
+    }
+    fn parked(&self, ticket: Ticket) -> bool {
+        self.instance
+            .admission
+            .parked_on_current_state(self.workers[ticket].thread)
     }
     fn cancel(&self, ticket: Ticket) {
         self.workers[ticket].cancel.store(true, Ordering::Release);

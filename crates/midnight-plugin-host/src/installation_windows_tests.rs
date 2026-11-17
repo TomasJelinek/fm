@@ -126,6 +126,71 @@ fn trusted_portable_installation_precedes_registration_and_needs_no_plugin_direc
     );
 }
 
+fn case_alias(path: &Path) -> PathBuf {
+    let directory = path.parent().unwrap();
+    let mut alias = directory
+        .parent()
+        .unwrap()
+        .join(directory.file_name().unwrap().to_ascii_uppercase());
+    alias.push(path.file_name().unwrap().to_ascii_lowercase());
+    alias
+}
+
+/// The volume's 8.3 spelling, when short names are enabled for it.
+fn short_alias(path: &Path) -> Option<PathBuf> {
+    use windows_sys::Win32::Storage::FileSystem::GetShortPathNameW;
+    let wide: Vec<_> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+    let mut buffer = vec![0_u16; 32 * 1024];
+    // SAFETY: terminated input and a writable output of the stated capacity.
+    let length =
+        unsafe { GetShortPathNameW(wide.as_ptr(), buffer.as_mut_ptr(), buffer.len() as u32) }
+            as usize;
+    if length == 0 || length >= buffer.len() {
+        return None;
+    }
+    buffer.truncate(length);
+    let short = PathBuf::from(OsString::from_wide(&buffer));
+    (short.file_name() != path.file_name()).then_some(short)
+}
+
+#[test]
+fn trusted_portable_installation_resolves_native_launch_path_aliases() {
+    let fixture = Fixture::new();
+    let directory = fixture._root.path().join("Private Runtime Directory");
+    std::fs::create_dir(&directory).unwrap();
+    let target = directory.join("Midnight Explorer.exe");
+    std::fs::write(&target, b"abc").unwrap();
+    // Adjacent plugins make every unregistered fallback fail: only trust may resolve.
+    std::fs::create_dir(directory.join("viewers")).unwrap();
+    let expected = target.canonicalize().unwrap();
+    let mut aliases = vec![case_alias(&target)];
+    match short_alias(&target) {
+        Some(short) => aliases.push(short),
+        None => eprintln!("8.3 names are disabled on this volume; short alias skipped"),
+    }
+    for alias in aliases {
+        assert_ne!(installation_path(&alias).unwrap(), expected, "not an alias");
+        for verification in [RuntimeVerification::Disabled, RuntimeVerification::Sha256] {
+            let resolved = resolve_at_with_digest(
+                &alias,
+                Some(&fixture.registrations),
+                verification,
+                |_, _| Err(Error("trusted portable resolution must not hash".into())),
+            );
+            assert_eq!(resolved.unwrap(), expected, "{alias:?} {verification:?}");
+        }
+    }
+    // Normalization must not launder a link: the entered spelling is checked first.
+    let redirect = fixture._root.path().join("redirect");
+    junction(&redirect, &directory);
+    let result = resolve_without_digest(
+        &redirect.join("Midnight Explorer.exe"),
+        Some(&fixture.registrations),
+    );
+    std::fs::remove_dir(&redirect).unwrap();
+    assert!(result.unwrap_err().0.contains("reparse point"));
+}
+
 #[test]
 fn changed_source_does_not_select_an_older_registered_build() {
     let fixture = Fixture::new();
@@ -273,26 +338,7 @@ fn registration_preserves_unicode_and_unpaired_utf16_path_units() {
     assert_eq!(fixture.resolve().unwrap(), target.canonicalize().unwrap());
 }
 
-fn junction(path: &Path, target: &Path) {
-    let script = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../midnight-platform/tests/create-junction.ps1");
-    let powershell = PathBuf::from(std::env::var_os("SystemRoot").unwrap())
-        .join("System32/WindowsPowerShell/v1.0/powershell.exe");
-    let output = std::process::Command::new(powershell)
-        .args(["-NoProfile", "-NonInteractive", "-File"])
-        .arg(script)
-        .arg("-JunctionPath")
-        .arg(path)
-        .arg("-TargetPath")
-        .arg(target)
-        .output()
-        .unwrap();
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-}
+use crate::tests_windows::junction;
 
 #[test]
 fn registered_target_ancestor_reparse_is_rejected_before_canonicalization() {

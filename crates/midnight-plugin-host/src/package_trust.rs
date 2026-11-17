@@ -10,7 +10,7 @@ pub(crate) fn check(directory: &Path) -> Result<(), Error> {
         for entry in std::fs::read_dir(directory)? {
             count += 1;
             if count > 4096 {
-                return Err(Error("Viewer package entry limit exceeded".into()));
+                return Err(Error("Plugin package entry limit exceeded".into()));
             }
             let entry = entry?;
             let path = entry.path();
@@ -21,7 +21,7 @@ pub(crate) fn check(directory: &Path) -> Result<(), Error> {
             if kind.is_dir() {
                 pending.push(path);
             } else if !kind.is_file() {
-                return Err(Error("Viewer package contains a nonregular object".into()));
+                return Err(Error("Plugin package contains a nonregular object".into()));
             }
         }
     }

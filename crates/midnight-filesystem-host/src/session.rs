@@ -7,7 +7,7 @@ use std::{
     io,
     path::{Path, PathBuf},
     sync::{
-        Arc, Mutex,
+        Arc, Condvar, Mutex, MutexGuard,
         atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
     },
     time::{Duration, Instant},
@@ -16,26 +16,107 @@ use std::{
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 static ACTIVE: AtomicUsize = AtomicUsize::new(0);
 const DEADLINE: Duration = Duration::from_secs(20);
+/// A hard request token has no wake signal; the supervisor observes it this often
+/// while such an exchange is active. Idle mounts and token-free exchanges never poll.
+const CANCEL_POLL: Duration = Duration::from_millis(10);
 
 #[path = "session_close.rs"]
 mod close;
 
+/// The idle-progress watchdog of the one active exchange. A token is hard request
+/// cancellation that terminates the worker; bounded and cooperative exchanges carry
+/// none, so only the deadline (or mount teardown) can end them.
+struct Watch {
+    deadline: Instant,
+    cancel: Option<Cancellation>,
+}
+impl Watch {
+    /// Time left before expiry, or None once idle progress or hard cancellation ended it.
+    fn remaining(&self, now: Instant) -> Option<Duration> {
+        if self.cancel.as_ref().is_some_and(Cancellation::is_cancelled) {
+            return None;
+        }
+        self.deadline
+            .checked_duration_since(now)
+            .filter(|remaining| !remaining.is_zero())
+    }
+}
 struct Supervision {
     stop: AtomicBool,
-    deadline: Mutex<Option<(Instant, Cancellation)>>,
+    watch: Mutex<Option<Watch>>,
+    changed: Condvar,
 }
 impl Supervision {
-    fn expired_at(&self, now: Instant) -> bool {
-        self.deadline
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .as_ref()
-            .is_some_and(|(deadline, cancel)| now >= *deadline || cancel.is_cancelled())
+    fn new(watch: Option<Watch>) -> Self {
+        Self {
+            stop: AtomicBool::new(false),
+            watch: Mutex::new(watch),
+            changed: Condvar::new(),
+        }
     }
-
-    fn progress_at(&self, now: Instant, cancel: &Cancellation) {
-        *self.deadline.lock().unwrap_or_else(|e| e.into_inner()) =
-            Some((now + DEADLINE, cancel.clone()));
+    fn lock(&self) -> MutexGuard<'_, Option<Watch>> {
+        self.watch.lock().unwrap_or_else(|e| e.into_inner())
+    }
+    fn stopped(&self) -> bool {
+        self.stop.load(Ordering::Acquire)
+    }
+    /// Mount teardown or a failed exchange: wake the supervisor to end the worker.
+    fn request_stop(&self) {
+        self.stop.store(true, Ordering::Release);
+        // Notify under the lock: a supervisor between its check and wait cannot miss it.
+        let _watch = self.lock();
+        self.changed.notify_all();
+    }
+    /// Arm the watchdog for one exchange; this wakes an idle supervisor.
+    fn begin(&self, now: Instant, cancel: Option<&Cancellation>) {
+        self.progress_at(now, cancel);
+        self.changed.notify_all();
+    }
+    fn finish(&self) {
+        *self.lock() = None;
+    }
+    #[cfg(test)]
+    fn expired_at(&self, now: Instant) -> bool {
+        self.lock()
+            .as_ref()
+            .is_some_and(|watch| watch.remaining(now).is_none())
+    }
+    /// Renewal only extends the deadline; a waiting supervisor rechecks when it wakes.
+    fn progress_at(&self, now: Instant, cancel: Option<&Cancellation>) {
+        *self.lock() = Some(Watch {
+            deadline: now + DEADLINE,
+            cancel: cancel.cloned(),
+        });
+    }
+    /// Supervisor only: block until teardown, deadline expiry or hard cancellation.
+    fn wait_for_stop_or_expiry(&self) {
+        let mut watch = self.lock();
+        loop {
+            if self.stopped() {
+                return;
+            }
+            let timeout = match watch.as_ref() {
+                None => None,
+                Some(active) => {
+                    let Some(remaining) = active.remaining(Instant::now()) else {
+                        return;
+                    };
+                    Some(match active.cancel {
+                        Some(_) => remaining.min(CANCEL_POLL),
+                        None => remaining,
+                    })
+                }
+            };
+            watch = match timeout {
+                None => self.changed.wait(watch).unwrap_or_else(|e| e.into_inner()),
+                Some(timeout) => {
+                    self.changed
+                        .wait_timeout(watch, timeout)
+                        .unwrap_or_else(|e| e.into_inner())
+                        .0
+                }
+            };
+        }
     }
 }
 struct Channel {
@@ -77,6 +158,10 @@ impl Mount {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .is_some()
+    }
+    #[cfg(test)]
+    pub(crate) fn supervisor_closed_within(&self, timeout: Duration) -> bool {
+        self.close.closed_within(timeout)
     }
     /// Open a native archive locator using content captured by its filesystem provider.
     /// The locator is retained for navigation/errors, never opened by this route.
@@ -140,20 +225,6 @@ impl Mount {
             components: Vec::new(),
         }
     }
-    pub fn open(
-        package: &Package,
-        format: Format,
-        path: &Path,
-        cancel: &Cancellation,
-    ) -> Result<Arc<Self>, FsError> {
-        let fail = |error: io::Error| FsError::from_io("open archive", path, error);
-        if cancel.is_cancelled() {
-            return Err(fail(io::ErrorKind::Interrupted.into()));
-        }
-        let source = CapturedFile::capture(path).map_err(|e| fail(io::Error::other(e)))?;
-        Self::open_captured(package, format, path, source, cancel)
-    }
-
     fn start(
         package: &Package,
         format: Format,
@@ -164,13 +235,13 @@ impl Mount {
         let fail = |error: io::Error| FsError::from_io("open archive", path, error);
         let receipt = Arc::new(close::CloseReceipt::new());
         receipt.observe_cleanup(source.cleanup_unconfirmed());
+        // Discovery validated the package at startup; its files may change before a
+        // mount launches code. Static imports resolve from the package before the
+        // worker enters containment, so every package object is rechecked here.
+        crate::discovery::validate_package(&package.directory, &package.executable)
+            .map_err(fail)?;
         let staging = Arc::new(Mutex::new(if package.protocol.supports_staging() {
-            Some(
-                crate::staging::Staging::open(
-                    &std::env::temp_dir().join("MidnightExplorer-archive-spool"),
-                )
-                .map_err(fail)?,
-            )
+            Some(crate::staging::Staging::open_private().map_err(fail)?)
         } else {
             None
         }));
@@ -193,10 +264,11 @@ impl Mount {
             )
         };
         let worker = spawned.map_err(fail)?;
-        let state = Arc::new(Supervision {
-            stop: AtomicBool::new(false),
-            deadline: Mutex::new(Some((Instant::now() + DEADLINE, cancel.clone()))),
-        });
+        // Startup readiness is bounded and hard-cancellable: this caller owns the mount.
+        let state = Arc::new(Supervision::new(Some(Watch {
+            deadline: Instant::now() + DEADLINE,
+            cancel: Some(cancel.clone()),
+        })));
         let supervised = state.clone();
         let supervisor_receipt = receipt.clone();
         // The startup owner remains recoverable if creating the existing supervisor
@@ -221,7 +293,7 @@ impl Mount {
                 }
             })
         {
-            state.stop.store(true, Ordering::Release);
+            state.request_stop();
             let retained = owner.lock().unwrap_or_else(|e| e.into_inner()).take();
             if let Some(retained) = retained {
                 // start() already runs on a backend worker; do not need another thread
@@ -267,7 +339,7 @@ impl Mount {
                     midnight_worker_sdk::read_ready(&mut channel.output).map_err(fail)?;
                 }
             }
-            match mount.exchange(cancel, |request| Message::Open {
+            match mount.exchange_read(Some(cancel), None, |request| Message::Open {
                 request,
                 format,
                 length: mount.source().length(),
@@ -290,21 +362,19 @@ impl Mount {
         }
     }
 
-    fn exchange(
-        &self,
-        cancel: &Cancellation,
-        message: impl FnOnce(u64) -> Message,
-    ) -> Result<Message, FsError> {
-        self.exchange_read(cancel, None, message)
-    }
+    /// One serialized request. `cancel` is hard cancellation: cancelling it during the
+    /// exchange terminates the worker, so it is only used where this caller owns the
+    /// whole mount or the protocol has no cheaper bounded alternative. `cooperative`
+    /// requests protocol-3 member-read cancellation that preserves the mount.
     fn exchange_read(
         &self,
-        cancel: &Cancellation,
+        cancel: Option<&Cancellation>,
         cooperative: Option<&dyn Fn() -> bool>,
         message: impl FnOnce(u64) -> Message,
     ) -> Result<Message, FsError> {
         let fail = |error: io::Error| FsError::from_io("archive", &self.container, error);
         let interrupted = || fail(io::ErrorKind::Interrupted.into());
+        let hard_cancelled = || cancel.is_some_and(Cancellation::is_cancelled);
         if cooperative.is_some_and(|cancelled| cancelled()) {
             return Err(interrupted());
         }
@@ -316,12 +386,8 @@ impl Mount {
         let mut cancel_sent = false;
         self.ensure_active(cancel).map_err(fail)?;
         self.validate()
-            .inspect_err(|_| self.supervision.stop.store(true, Ordering::Release))?;
-        *self
-            .supervision
-            .deadline
-            .lock()
-            .unwrap_or_else(|e| e.into_inner()) = Some((Instant::now() + DEADLINE, cancel.clone()));
+            .inspect_err(|_| self.supervision.request_stop())?;
+        self.supervision.begin(Instant::now(), cancel);
         let result = (|| {
             channel.request = channel
                 .request
@@ -367,7 +433,7 @@ impl Mount {
                 if reply.request() != request {
                     return Err(fail(io::ErrorKind::InvalidData.into()));
                 }
-                if self.supervision.stop.load(Ordering::Acquire) || cancel.is_cancelled() {
+                if self.supervision.stopped() || hard_cancelled() {
                     return Err(fail(io::ErrorKind::Interrupted.into()));
                 }
                 if cancel_sent {
@@ -500,26 +566,57 @@ impl Mount {
             self.ensure_active(cancel).map_err(fail)?;
             Ok(reply)
         });
-        *self
-            .supervision
-            .deadline
-            .lock()
-            .unwrap_or_else(|e| e.into_inner()) = None;
+        self.supervision.finish();
         if result.is_err() && !canceled_safely {
-            self.supervision.stop.store(true, Ordering::Release);
+            self.supervision.request_stop();
         }
         result
     }
-    fn ensure_active(&self, cancel: &Cancellation) -> io::Result<()> {
-        if self.supervision.stop.load(Ordering::Acquire) || cancel.is_cancelled() {
+    fn ensure_active(&self, cancel: Option<&Cancellation>) -> io::Result<()> {
+        if self.supervision.stopped() || cancel.is_some_and(Cancellation::is_cancelled) {
             Err(io::ErrorKind::Interrupted.into())
         } else {
             Ok(())
         }
     }
-    fn progress(&self, cancel: &Cancellation) {
+    fn progress(&self, cancel: Option<&Cancellation>) {
         // Only completed byte I/O or monotonic decoded work renews the idle watchdog.
         self.supervision.progress_at(Instant::now(), cancel);
+    }
+    /// Protocol-3 member read with cooperative cancellation; earlier protocols drain an
+    /// admitted read under no hard token and then suppress its cancelled result.
+    fn read_preserving_mount(
+        &self,
+        entry: u64,
+        offset: u64,
+        length: u32,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<Vec<u8>, FsError> {
+        let interrupted = || {
+            FsError::from_io(
+                "archive preview",
+                &self.container,
+                io::ErrorKind::Interrupted.into(),
+            )
+        };
+        if cancelled() {
+            return Err(interrupted());
+        }
+        let cooperative = (self.protocol == Protocol::V3).then_some(cancelled);
+        match self.exchange_read(None, cooperative, |request| Message::Read {
+            request,
+            entry,
+            offset,
+            length,
+        })? {
+            Message::Content { .. } if cancelled() => Err(interrupted()),
+            Message::Content { bytes, .. } if bytes.len() <= length as usize => Ok(bytes),
+            _ => Err(FsError::from_io(
+                "archive read",
+                &self.container,
+                io::ErrorKind::InvalidData.into(),
+            )),
+        }
     }
 }
 impl ArchiveMount for Mount {
@@ -587,18 +684,33 @@ impl ArchiveMount for Mount {
             )
         })
     }
+    /// Each page is one bounded exchange. Cancellation ends the listing between pages
+    /// and discards an in-flight page, rather than terminating a worker that other tabs,
+    /// viewers and jobs share. The idle-progress watchdog still ends a stuck worker.
     fn list(&self, directory: u64, cancel: &Cancellation) -> Result<Vec<ArchiveNode>, FsError> {
+        let interrupted = || {
+            FsError::from_io(
+                "archive list",
+                &self.container,
+                io::ErrorKind::Interrupted.into(),
+            )
+        };
         let mut result = Vec::new();
         let mut after = 0;
         let mut names = 0usize;
         loop {
-            let Message::Entries { entries, more, .. } =
-                self.exchange(cancel, |request| Message::List {
-                    request,
-                    directory,
-                    after,
-                })?
-            else {
+            if cancel.is_cancelled() {
+                return Err(interrupted());
+            }
+            let page = self.exchange_read(None, None, |request| Message::List {
+                request,
+                directory,
+                after,
+            })?;
+            if cancel.is_cancelled() {
+                return Err(interrupted());
+            }
+            let Message::Entries { entries, more, .. } = page else {
                 return Err(FsError::from_io(
                     "archive list",
                     &self.container,
@@ -684,39 +796,11 @@ impl ArchiveMount for Mount {
         length: u32,
         cancelled: &dyn Fn() -> bool,
     ) -> Result<Vec<u8>, FsError> {
-        let interrupted = || {
-            FsError::from_io(
-                "archive preview",
-                &self.container,
-                io::ErrorKind::Interrupted.into(),
-            )
-        };
-        if cancelled() {
-            return Err(interrupted());
-        }
-        let independent = Cancellation::default();
-        if self.protocol != Protocol::V3 {
-            let bytes = self.read(entry, offset, length, &independent)?;
-            return if cancelled() {
-                Err(interrupted())
-            } else {
-                Ok(bytes)
-            };
-        }
-        match self.exchange_read(&independent, Some(cancelled), |request| Message::Read {
-            request,
-            entry,
-            offset,
-            length,
-        })? {
-            Message::Content { bytes, .. } if bytes.len() <= length as usize => Ok(bytes),
-            _ => Err(FsError::from_io(
-                "archive read",
-                &self.container,
-                io::ErrorKind::InvalidData.into(),
-            )),
-        }
+        self.read_preserving_mount(entry, offset, length, cancelled)
     }
+    /// Protocol 3 cancels a member read cooperatively and keeps the shared mount.
+    /// Earlier protocols cannot interrupt a staged read, so cancelling one still ends
+    /// the worker; callers that must preserve a shared mount use `read_cooperative`.
     fn read(
         &self,
         entry: u64,
@@ -724,7 +808,10 @@ impl ArchiveMount for Mount {
         length: u32,
         cancel: &Cancellation,
     ) -> Result<Vec<u8>, FsError> {
-        match self.exchange(cancel, |request| Message::Read {
+        if self.protocol == Protocol::V3 {
+            return self.read_preserving_mount(entry, offset, length, &|| cancel.is_cancelled());
+        }
+        match self.exchange_read(Some(cancel), None, |request| Message::Read {
             request,
             entry,
             offset,
@@ -742,7 +829,7 @@ impl ArchiveMount for Mount {
 impl Drop for Mount {
     fn drop(&mut self) {
         // Process wait and permit release stay on the supervisor, never a UI destructor.
-        self.supervision.stop.store(true, Ordering::Release);
+        self.supervision.request_stop();
     }
 }
 

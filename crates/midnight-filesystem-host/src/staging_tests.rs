@@ -59,6 +59,22 @@ fn seal(staging: &mut Staging, request: u64, entry: u64) -> u64 {
     stage
 }
 #[test]
+fn an_unusable_spool_root_yields_to_the_next_private_candidate() {
+    let temp = tempfile::tempdir().unwrap();
+    // A file where a directory is required can never become a private root.
+    let occupied = temp.path().join("occupied");
+    std::fs::write(&occupied, b"not a directory").unwrap();
+    let private = temp.path().join("private");
+    let mut staging = Staging::open_first([occupied.clone(), private.clone()]).unwrap();
+    assert!(private.is_dir());
+    let op = read(1, 2);
+    staging.nested(&op, &begin(1, 2)).unwrap();
+    let error = Staging::open_first([occupied.clone()]).err().unwrap();
+    assert!(error.to_string().contains("occupied"), "{error}");
+    assert!(Staging::open_first(Vec::new()).is_err());
+}
+
+#[test]
 fn member_is_unreadable_until_sealed_and_terminal_validates_identity_and_range() {
     let (_temp, mut staging) = staging();
     let op = read(1, 2);
@@ -225,6 +241,103 @@ fn cache_eviction_preserves_an_active_lease_without_accumulating_stage_ids() {
     assert!(staging.sealed.is_empty());
     assert_eq!(staging.cache.len(), CACHE_ENTRIES);
     assert_eq!(first.read(0, 4).unwrap(), b"test");
+}
+
+#[test]
+fn member_cache_is_bounded_by_bytes_and_always_keeps_the_newest_member() {
+    let (_temp, mut staging) = staging();
+    staging.cache_budget = 8;
+    let cached_ids =
+        |staging: &Staging| -> Vec<u64> { staging.cache.iter().map(|(entry, _)| *entry).collect() };
+    let mut leases = Vec::new();
+    for entry in 2..=4 {
+        let stage = seal(&mut staging, entry, entry);
+        leases.push(
+            staging
+                .terminal(&read(entry, entry), &ready(entry, entry, stage))
+                .unwrap()
+                .unwrap(),
+        );
+    }
+    // Three 4-byte members exceed 8 bytes: the least recently used one leaves.
+    assert_eq!(cached_ids(&staging), [3, 4]);
+    assert_eq!(staging.cache_bytes, 8);
+    // Reading member 3 makes member 4 the eviction candidate.
+    assert_eq!(staging.cached(3).unwrap().read(0, 4).unwrap(), b"test");
+    let stage = seal(&mut staging, 5, 5);
+    staging
+        .terminal(&read(5, 5), &ready(5, 5, stage))
+        .unwrap()
+        .unwrap();
+    assert_eq!(cached_ids(&staging), [3, 5]);
+    // A member larger than the whole budget still stays as the only entry.
+    staging.cache_budget = 2;
+    let stage = seal(&mut staging, 6, 6);
+    staging
+        .terminal(&read(6, 6), &ready(6, 6, stage))
+        .unwrap()
+        .unwrap();
+    assert_eq!(cached_ids(&staging), [6]);
+    assert_eq!(staging.cache_bytes, 4);
+    // Recaching the same member replaces its accounting instead of adding to it.
+    let lease = staging.cached(6).unwrap();
+    staging.cache_member(6, lease);
+    assert_eq!(staging.cache_bytes, 4);
+    // Evicted entries never invalidate a read that still holds its lease.
+    assert_eq!(leases[0].read(0, 4).unwrap(), b"test");
+}
+
+#[test]
+fn scratch_ranges_add_no_member_bytes_to_the_cache_budget() {
+    let (_temp, mut staging) = staging();
+    let open = Message::Open {
+        request: 1,
+        format: midnight_filesystem_api::Format::TarGzip,
+        length: 10,
+    };
+    staging
+        .nested(
+            &open,
+            &Message::StageBegin {
+                request: 1,
+                purpose: StagePurpose::Scratch,
+                expected_length: None,
+                max_length: u64::MAX,
+            },
+        )
+        .unwrap();
+    staging.nested(&open, &append(1, 1)).unwrap();
+    staging
+        .nested(
+            &open,
+            &Message::StageSeal {
+                request: 1,
+                stage: 1,
+                length: 4,
+            },
+        )
+        .unwrap();
+    staging
+        .terminal(
+            &open,
+            &Message::Opened {
+                request: 1,
+                root: 1,
+            },
+        )
+        .unwrap();
+    for entry in 2..=20 {
+        let reply = Message::ContentReady {
+            request: entry,
+            entry,
+            stage: 1,
+            offset: 0,
+            length: 4,
+        };
+        staging.terminal(&read(entry, entry), &reply).unwrap();
+    }
+    assert_eq!(staging.cache.len(), CACHE_ENTRIES);
+    assert_eq!(staging.cache_bytes, 0);
 }
 
 #[test]

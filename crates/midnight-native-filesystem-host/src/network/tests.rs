@@ -145,6 +145,25 @@ fn activation_preserves_opaque_addresses_and_rejects_native_uri_confusion() {
 }
 
 #[test]
+fn zero_network_mount_is_rejected_without_arming_a_failing_cleanup() {
+    let (provider, fake) = fixture(vec![Response::Resolved {
+        mount: 0,
+        node: node(1),
+    }]);
+    let error = provider
+        .list_inner(&address(), &|| false, &mut |_| true)
+        .unwrap_err();
+    assert!(error.message.contains("network mount"), "{error:?}");
+    let calls = fake.calls.lock().unwrap();
+    assert!(
+        !calls
+            .iter()
+            .any(|call| matches!(call, Request::CloseMount { .. })),
+        "{calls:?}"
+    );
+}
+
+#[test]
 fn foreign_addresses_and_cancelled_requests_do_not_reach_plugin() {
     let (provider, fake) = fixture(vec![]);
     let mut foreign = address();

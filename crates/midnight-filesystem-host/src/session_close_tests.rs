@@ -281,10 +281,7 @@ impl Fixture {
             )
             .unwrap();
         let staging = Arc::new(Mutex::new(Some(staging)));
-        let supervision = Arc::new(Supervision {
-            stop: AtomicBool::new(false),
-            deadline: Mutex::new(None),
-        });
+        let supervision = Arc::new(Supervision::new(None));
         let receipt = Arc::new(CloseReceipt::new());
         let accounting = Arc::new(AtomicUsize::new(0));
         let owned = Supervisor::new(
@@ -365,7 +362,7 @@ impl Fixture {
 impl Drop for Fixture {
     fn drop(&mut self) {
         self.gates.release_all();
-        self.supervision.stop.store(true, Ordering::Release);
+        self.supervision.request_stop();
         drop(self.mount.take());
         if let Some(worker) = self.supervisor.take()
             && let Err(payload) = worker.join()
@@ -496,7 +493,7 @@ fn cancelled_session_does_not_shortcut_an_incomplete_supervisor_wait() {
     fixture.gates.source.release();
     let cancel = Cancellation::default();
     cancel.cancel();
-    *fixture.supervision.deadline.lock().unwrap() = Some((Instant::now() + DEADLINE, cancel));
+    fixture.supervision.begin(Instant::now(), Some(&cancel));
     fixture.gates.wait.wait_entered();
     let (done, worker) = fixture.release();
     assert!(fixture.pending());
@@ -743,6 +740,36 @@ fn shared_release_observes_already_tainted_backing_without_probing_or_stopping_s
     assert_eq!(fixture.observed.waits.load(Ordering::SeqCst), 0);
     assert_eq!(fixture.observed.source_releases.load(Ordering::SeqCst), 0);
     drop(other_tab);
+}
+
+#[test]
+fn last_tainted_release_lets_the_supervisor_reclaim_process_staging_and_permit() {
+    let mut fixture = Fixture::new(Failure::None, false);
+    fixture
+        .observed
+        .source_tainted
+        .store(true, Ordering::Release);
+    let (done, worker) = fixture.release();
+    let error = done
+        .recv_timeout(Duration::from_secs(10))
+        .unwrap()
+        .unwrap_err();
+    assert!(error.message.contains("unconfirmed cleanup"), "{error}");
+    worker.join().unwrap();
+    // The idle supervisor is woken: the worker process, staging and the global permit
+    // are reclaimed, while the tainted source and Mount stay quarantined.
+    assert!(
+        fixture.receipt.closed_within(Duration::from_secs(10)),
+        "last tainted reference left its supervisor running"
+    );
+    fixture.finish_supervisor();
+    assert!(fixture.supervision.stopped());
+    assert_eq!(fixture.observed.waits.load(Ordering::SeqCst), 1);
+    assert!(fixture.observed.process_dropped.load(Ordering::Acquire));
+    assert!(fixture.staging.lock().unwrap().is_none());
+    assert_eq!(fixture.accounting.load(Ordering::SeqCst), 0);
+    assert_eq!(fixture.observed.source_releases.load(Ordering::SeqCst), 0);
+    assert!(!fixture.observed.source_dropped.load(Ordering::Acquire));
 }
 
 #[test]
