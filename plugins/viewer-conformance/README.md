@@ -34,9 +34,10 @@ On Linux:
 bash plugins/viewer-conformance/tests/test-linux.sh _build/release/libmidnight_viewer_conformance.so BUNDLE/include _build/conformance/linux
 ```
 
-The repository CI workflow does not run these native tests yet. Run them manually
-with the commands above on both Windows and Linux whenever the public API/SDK or
-the plugin ABI changes, and record the result with the change.
+The `viewer-conformance` CI job builds this fixture against the SDK bundle that the
+same run's `public-sdk` job packages and runs these native tests on Windows (MSVC
+developer shell) and Linux. Run them manually with the commands above to check a
+local API/SDK or plugin ABI change before pushing.
 
 For an exported project, set `CARGO_TARGET_DIR` and temporary/cache directories
 below its common `_build` directory. The tests exercise the actual loaded native

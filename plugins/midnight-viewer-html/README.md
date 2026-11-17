@@ -38,10 +38,16 @@ immutable public API offline registry bundle generated from `web-viewer-api`:
 ./plugins/midnight-viewer-html/scripts/build-windows.ps1 -SdkConfig <absolute-registry-config>
 ```
 
-Defaults derive from the checkout root; `-CefDistribution` selects the extracted
-SDK, `-TargetDirectory` selects output beneath `_build`, and `-Release` selects an
-optimized build. The helper flattens the verified SDK layout required by
-`cef-dll-sys`, builds the Rust DLL, and creates `_build/html-viewer/provider-target/package`.
+Defaults derive from the checkout root; `-TargetDirectory` selects output beneath
+`_build`, and `-Release` selects an optimized build. The normal build
+(`scripts/build-html-viewer.ps1`) passes `-CefSdk` with the flattened SDK that
+`scripts/prepare-html-cef.py` verified: Cargo compiles against it in place and the
+package copies its runtime files from it, checking them against its `.verified.json`
+receipt. With `-CefDistribution` (default: the extracted distribution beneath
+`_build/html-viewer/cef`) the helper flattens the layout required by `cef-dll-sys`
+once into `<target>\cef-sdk` and records a `.staged.json` receipt, which the package
+checks the same way. The helper builds the Rust DLL and creates
+`_build/html-viewer/provider-target/package`.
 Copy the whole resulting package beneath the application-private
 `viewers/midnight-viewer-html/` directory. Do not register it from an opened folder.
 Retain `CREDITS.html`, `LICENSE.txt`, `THIRD_PARTY.md`, `notices/` and
