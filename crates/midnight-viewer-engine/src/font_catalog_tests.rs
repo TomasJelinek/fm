@@ -1,6 +1,6 @@
 use super::*;
 use midnight_core::{DirectoryIndex, Entry, EntryId, EntryKind};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 #[test]
 fn installed_font_catalog_arrives_without_content_and_is_shared_between_windows() {
@@ -44,17 +44,17 @@ fn installed_font_catalog_arrives_without_content_and_is_shared_between_windows(
     let first = service
         .open(launch.clone(), appearance.clone(), geometry)
         .unwrap();
-    let deadline = Instant::now() + Duration::from_secs(10);
-    let catalog = loop {
-        if let Some(names) = first.font_families() {
-            break names;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "backend did not publish the font catalog"
-        );
-        std::thread::sleep(Duration::from_millis(5));
-    };
+    // The worker publishes the catalog before its first output; wait for that wake.
+    let (notify, notified) = std::sync::mpsc::sync_channel(1);
+    first
+        .mailbox
+        .notify_on_ready(Arc::new(move || notify.try_send(()).is_ok()));
+    notified
+        .recv_timeout(Duration::from_secs(10))
+        .expect("backend did not start");
+    let catalog = first
+        .font_families()
+        .expect("backend published the font catalog before any output");
     assert!(!catalog.is_empty());
     let second = service.open(launch, appearance, geometry).unwrap();
     assert!(Arc::ptr_eq(&catalog, &second.font_families().unwrap()));

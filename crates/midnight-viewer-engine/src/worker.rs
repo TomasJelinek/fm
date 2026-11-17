@@ -10,11 +10,34 @@ use std::{
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
-        mpsc::Receiver,
+        mpsc::{Receiver, RecvTimeoutError},
     },
     time::Duration,
 };
 
+/// Plugin-host numbers each session's Open request 1 and reports session-level failures,
+/// such as queue overflow and host registration, with the same ID.
+const OPEN_REQUEST_ID: u64 = 1;
+/// Bounded retry for work without a wake signal: previous sessions finishing their
+/// teardown and paints waiting for shared raster budget.
+const RETRY: Duration = Duration::from_millis(12);
+/// In-progress status of the one active search; cleared whenever that search ends.
+const SEARCHING: &str = "Searching…";
+/// Status while an opening waits only for its file identity.
+const PREPARING: &str = "Preparing file identity…";
+
+/// Text rows intersecting the viewport. Ctrl+A selects what the window shows, never rows
+/// of the loaded page that lie outside it (including retained guard rows).
+fn visible_rows(page: &TextPage, origin: f32, geometry: ViewerGeometry) -> (usize, usize) {
+    let first = page.line_at_y(origin).map_or(0, |(range, _)| range.start);
+    let last = page
+        .line_at_y(origin + geometry.height as f32 - 0.01)
+        .map_or(page.text().len(), |(range, _)| range.end);
+    (first, last)
+}
+
+#[path = "worker_loop.rs"]
+mod event_loop;
 #[path = "worker_image.rs"]
 mod image;
 #[path = "worker_layout.rs"]
@@ -49,8 +72,18 @@ struct Worker {
     image_ids: Arc<std::sync::atomic::AtomicU64>,
     image: Option<crate::image_view::ImageView>,
     closing_image: Option<crate::image_worker::ImageWorker>,
-    files: Vec<(PathBuf, Option<crate::capture::Captured>)>,
+    /// Native paths or provider labels of the bounded navigation order.
+    files: Arc<[PathBuf]>,
     current: usize,
+    /// Identity of `files[current]`, retained for mode changes of the same file.
+    captured: Option<(usize, crate::capture::Captured)>,
+    /// Captures other files on demand; absent for single-source launches.
+    prefetch: Option<crate::capture_prefetch::Prefetch>,
+    capture_request: Option<(u64, usize)>,
+    /// A drained failure the worker did not show, which may have ended the session.
+    orphan_failure: Option<event_loop::Orphan>,
+    /// Browser events beyond one drained batch remain queued without another wake.
+    web_backlog: bool,
     basic: bool,
     associations: Arc<ViewerAssociations>,
     disabled_plugins: Arc<[String]>,
@@ -102,7 +135,7 @@ pub(crate) struct Services {
     pub images: Arc<[midnight_image_viewer_host::Provider]>,
     pub web: Arc<[midnight_web_viewer_host::Provider]>,
     pub capture: crate::NativeCapture,
-    pub wake: Arc<dyn Fn() -> bool + Send + Sync>,
+    pub wakes: Arc<crate::input_queue::Wakes>,
     pub preferences: Arc<crate::preferences::Preferences>,
     pub negotiate_layout: bool,
 }
@@ -125,12 +158,27 @@ pub(crate) fn run(
         images,
         web,
         capture,
-        wake,
+        wakes,
         preferences: preference_state,
         negotiate_layout,
     } = services;
-    output.put(ViewerOutput::Status("Preparing file identities…".into()));
-    let prepared = crate::capture::prepare_with(&launch, closed, capture)?;
+    output.put(ViewerOutput::Status(PREPARING.into()));
+    let order = crate::capture::prepare_with(&launch, closed, capture)?;
+    let backend = wakes.clone();
+    let wake: Arc<dyn Fn() -> bool + Send + Sync> = Arc::new(move || backend.wake());
+    let prefetch = order
+        .capture
+        .map(|capture| {
+            crate::capture_prefetch::Prefetch::spawn(
+                order.files.len(),
+                order.current,
+                order.focused.as_ref().ok().cloned(),
+                capture,
+                closed.clone(),
+                wake.clone(),
+            )
+        })
+        .transpose()?;
     let (preference_revision, preferences) = preference_state.snapshot();
     let mut disabled_plugins = launch.disabled_plugins.to_vec();
     // Ambiguous identities are disabled on both transports before any code loads.
@@ -163,8 +211,13 @@ pub(crate) fn run(
         image_ids: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         image: None,
         closing_image: None,
-        files: prepared.files,
-        current: prepared.current,
+        files: order.files,
+        current: order.current,
+        captured: Some((order.current, order.focused)),
+        prefetch,
+        capture_request: None,
+        orphan_failure: None,
+        web_backlog: false,
         basic: launch.basic,
         associations: launch.associations.clone(),
         disabled_plugins: disabled_plugins.into(),
@@ -210,72 +263,33 @@ pub(crate) fn run(
     };
     drop(launch);
     worker.open(output);
-    let mut capture_finished = false;
     while !closed.load(Ordering::Acquire) {
-        match receiver.recv_timeout(Duration::from_millis(12)) {
-            Ok(_) if closed.load(Ordering::Acquire) => break,
-            Ok(message) => match message.into_input() {
-                Some(ViewerInput::Close) => break,
-                Some(input) => worker.input(input, output),
-                None => {}
+        // Sessions, the image actor, the browser, file captures and settings changes wake
+        // this worker. Only work without such a signal is retried after a bounded delay.
+        let first = match worker.retry_delay() {
+            Some(delay) => match receiver.recv_timeout(delay) {
+                Ok(message) => Some(message),
+                Err(RecvTimeoutError::Timeout) => None,
+                Err(RecvTimeoutError::Disconnected) => break,
             },
-            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
-            Err(_) => {}
-        }
+            // The worker's own wake handle keeps a sender alive; Close ends the session.
+            None => match receiver.recv() {
+                Ok(message) => Some(message),
+                Err(_) => break,
+            },
+        };
         // A bounded batch combines wheel/resize events into a single raster frame.
-        for input in receiver.try_iter().take(63) {
-            if closed.load(Ordering::Acquire) || worker.layout.closed() {
-                break;
-            }
-            if let Some(input) = input.into_input() {
-                worker.input(input, output);
-            }
-        }
+        let batch: Vec<_> = first
+            .into_iter()
+            .chain(receiver.try_iter().take(63))
+            .collect();
+        worker.input_batch(batch, closed, &wakes, output);
         if closed.load(Ordering::Acquire) || worker.layout.closed() {
             break;
         }
         worker.sync_preferences(output);
-        for _ in 0..16 {
-            if capture_finished {
-                break;
-            }
-            match prepared.ready.try_recv() {
-                Ok((index, captured)) => worker.files[index].1 = Some(captured),
-                Err(std::sync::mpsc::TryRecvError::Empty) => break,
-                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                    capture_finished = true;
-                    for (_, file) in &mut worker.files {
-                        if file.is_none() {
-                            *file = Some(Err("File identity preparation stopped.".into()));
-                        }
-                    }
-                    break;
-                }
-            }
-        }
-        if worker.pending_open
-            && worker.files[worker.current].1.is_some()
-            && worker.closing.as_ref().is_none_or(Session::is_closed)
-            && worker
-                .closing_web
-                .as_ref()
-                .is_none_or(midnight_web_viewer_host::Session::finished)
-            && worker
-                .closing_image
-                .as_ref()
-                .is_none_or(crate::image_worker::ImageWorker::finished)
-        {
-            worker.closing = None;
-            worker.open(output);
-        }
-        if let Some(session) = &worker.session {
-            let events = session.drain(32);
-            for event in events {
-                if event.generation == worker.generation {
-                    worker.event(event.request_id, event.kind, output);
-                }
-            }
-        }
+        worker.resume_open(output);
+        worker.drain_session(output);
         worker.poll_image(output);
         worker.poll_web(output);
         if worker.dirty {
@@ -404,6 +418,9 @@ impl Worker {
         self.continuation = None;
         self.queued_scroll = [0.0; 2];
         self.frames.invalidate();
+        self.orphan_failure = None;
+        // The identity is captured while any previous session finishes closing.
+        self.request_capture();
         if let Some(web) = self.web.take() {
             web.session.close();
             self.closing_web = Some(web.session);
@@ -418,7 +435,7 @@ impl Worker {
             return;
         }
         self.closing_web = None;
-        if let Some(image) = self.image.take() {
+        if let Some(mut image) = self.image.take() {
             image.worker.cancel();
             self.closing_image = Some(image.worker);
         }
@@ -446,9 +463,9 @@ impl Worker {
             return;
         }
         self.closing = None;
-        if self.files[self.current].1.is_none() {
+        if !self.capture_ready() {
             self.pending_open = true;
-            self.status("Preparing file identity…".into(), output);
+            self.status(PREPARING.into(), output);
             return;
         }
         self.pending_open = false;
@@ -466,7 +483,8 @@ impl Worker {
         self.search_request = None;
         self.search_cursor = Default::default();
         self.found = None;
-        let (path, captured) = self.files[self.current].clone();
+        let path = self.files[self.current].clone();
+        let captured = self.captured.as_ref().map(|(_, captured)| captured.clone());
         self.caption = format!("{} — Midnight Explorer", path.display());
         let result = (|| {
             let file = captured.ok_or("File identity is not ready")??;
@@ -588,6 +606,15 @@ impl Worker {
                 _ => return,
             }
         }
+        // A window-level choice also applies to text files shown after HTML or images.
+        if let ViewerInput::RetainedRaster(enabled) = input {
+            self.raster.enabled = enabled;
+            if self.web.is_none() && self.image.is_none() {
+                self.reset_raster_context();
+                self.dirty = true;
+            }
+            return;
+        }
         if self.web.is_some() && self.web_input(&input, output) {
             return;
         }
@@ -595,11 +622,6 @@ impl Worker {
             return;
         }
         match input {
-            ViewerInput::RetainedRaster(enabled) => {
-                self.raster.enabled = enabled;
-                self.reset_raster_context();
-                self.dirty = true;
-            }
             ViewerInput::Raster { surface, input } => self.raster_input(surface, input, output),
             ViewerInput::RasterRebase { transition, origin } => {
                 self.raster_rebase_input(transition, origin, output)
@@ -778,11 +800,6 @@ impl Worker {
                 self.selected_mode = Some(mode);
                 self.open(output);
             }
-            ViewerInput::Wrap(wrap) if self.wrap_available() && self.wrap != wrap => {
-                self.position_context(output);
-                self.wrap = wrap;
-                self.reflow(output);
-            }
             ViewerInput::Search {
                 query,
                 backwards,
@@ -806,7 +823,7 @@ impl Worker {
                 }) {
                     Ok(id) => {
                         self.search_request = Some(id);
-                        self.status("Searching…".into(), output);
+                        self.status(SEARCHING.into(), output);
                     }
                     Err(error) => self.error(error.to_string(), output),
                 }
@@ -838,7 +855,8 @@ impl Worker {
             }
             ViewerInput::SelectPage { frame } if self.frames.accepts(frame) => {
                 if let Some(page) = &self.shaped {
-                    self.selection = Some((0, page.text().len()));
+                    // Same rows as the retained path: what the window shows of the page.
+                    self.selection = Some(visible_rows(page, self.origin[1], self.geometry));
                     self.cancel_raster_rebase();
                     if self.raster.enabled {
                         self.capture_raster_selection();
@@ -873,6 +891,8 @@ impl Worker {
                 self.text.locate_request = None;
                 // Older plugins reject the optional request. This is not a
                 // document failure and must not overwrite the usable viewport.
+                // A session-fatal failure with this ID is remembered by
+                // `session_events` and reported if the session ends.
                 self.text.unavailable = failure.code != midnight_plugin_host::api::abi::QUEUE_FULL;
                 self.dirty = true;
             }
@@ -893,11 +913,7 @@ impl Worker {
                 self.status(format!("Match at byte {}", found.source.offset), output);
                 self.request_page(found.source.offset, false, output);
             }
-            EventKind::Failed(failure)
-                if id == 1
-                    || self.search_request == Some(id)
-                    || self.viewport_request == Some(id) =>
-            {
+            EventKind::Failed(failure) if self.reports_failure(id) => {
                 if self.viewport_request == Some(id) {
                     self.abort_raster_rebase(&failure.message, output);
                     self.abort_raster_refill(&failure.message, output);
@@ -986,11 +1002,13 @@ impl Worker {
                 }
                 if self.search_request == Some(id) {
                     self.search_request = None;
-                    if self.status == "Searching…" {
+                    if self.status == SEARCHING {
                         self.status("No further match.".into(), output);
                     }
                 }
             }
+            // Includes events of requests no longer tracked. `session_events` remembers a
+            // failure among them that may have ended the session.
             _ => {}
         }
     }
@@ -1229,7 +1247,7 @@ impl Worker {
             if self.mode == viewer::MODE_SOURCE && self.preferences.line_numbers {
                 text::paint_gutter(
                     &mut self.renderer,
-                    &self.text,
+                    &mut self.text,
                     &self.appearance,
                     self.geometry,
                     self.origin,

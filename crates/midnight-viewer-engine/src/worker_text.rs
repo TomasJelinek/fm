@@ -8,13 +8,20 @@ pub(super) struct Coordinate {
     pub column: Option<u64>,
 }
 
+/// One logical line start of the current page. Its number is shaped only when painted.
+pub(super) struct GutterLine {
+    pub y: f32,
+    pub line: u64,
+    pub label: Option<TextPage>,
+}
+
 #[derive(Default)]
 pub(super) struct Presentation {
     pub coordinate: Option<Coordinate>,
     pub locate_request: Option<(u64, u64)>,
     pub located_start: Option<u64>,
     pub unavailable: bool,
-    pub gutter: Option<Vec<(TextPage, f32)>>,
+    pub gutter: Option<Vec<GutterLine>>,
 }
 
 impl Presentation {
@@ -278,6 +285,7 @@ impl Worker {
         }
     }
 
+    /// Position every logical line start of the page. Shaping waits for painting.
     pub(super) fn prepare_gutter(&mut self) -> Result<(), String> {
         if self.mode != viewer::MODE_SOURCE
             || !self.preferences.line_numbers
@@ -288,33 +296,28 @@ impl Worker {
         let (Some(page), Some(shaped)) = (&self.page, &self.shaped) else {
             return Ok(());
         };
-        let options = TextOptions {
-            family: "monospace",
-            size: self.appearance.font_size,
-            scale: self.geometry.scale,
-            foreground: self.appearance.foreground,
-            ..TextOptions::default()
-        };
-        let mut labels = Vec::new();
+        let mut lines = Vec::new();
         for (index, line) in self.text.line_starts(page) {
             let y = shaped
                 .caret_geometry(index)
                 .map_err(|error| error.to_string())?
                 .y0 as f32;
-            let label = self
-                .renderer
-                .layout_with_options(&line.to_string(), &options, &[])
-                .map_err(|error| error.to_string())?;
-            labels.push((label, y));
+            lines.push(GutterLine {
+                y,
+                line,
+                label: None,
+            });
         }
-        self.text.gutter = Some(labels);
+        self.text.gutter = Some(lines);
         Ok(())
     }
 }
 
+/// Paint the gutter band of `raster`, shaping and caching only the numbers of rows that
+/// can intersect it.
 pub(super) fn paint_gutter(
     renderer: &mut TextRenderer,
-    text: &Presentation,
+    text: &mut Presentation,
     appearance: &ViewerAppearance,
     geometry: ViewerGeometry,
     origin: [f32; 2],
@@ -335,16 +338,42 @@ pub(super) fn paint_gutter(
             pixel.copy_from_slice(&color);
         }
     }
-    if let Some(labels) = &text.gutter {
-        for (label, y) in labels {
-            if *y + label.height() < origin[1] || *y > origin[1] + raster.height as f32 {
-                continue;
-            }
-            let x = (margin - label.width() - 8.0 * geometry.scale).max(0.0);
-            renderer
-                .paint_over(label, raster, [-x, origin[1] - *y])
-                .map_err(|error| error.to_string())?;
+    let Some(lines) = &mut text.gutter else {
+        return Ok(());
+    };
+    let options = TextOptions {
+        family: "monospace",
+        size: appearance.font_size,
+        scale: geometry.scale,
+        foreground: appearance.foreground,
+        ..TextOptions::default()
+    };
+    let bottom = origin[1] + raster.height as f32;
+    // A number is one row tall. Line starts are ordered by y, so rows that end above the
+    // band are skipped with a two-row allowance and painting stops below the band.
+    let reach = appearance.font_size * geometry.scale * 2.0;
+    let first = lines.partition_point(|line| line.y + reach < origin[1]);
+    for line in &mut lines[first..] {
+        if line.y > bottom {
+            break;
         }
+        if line.label.is_none() {
+            line.label = Some(
+                renderer
+                    .layout_with_options(&line.line.to_string(), &options, &[])
+                    .map_err(|error| error.to_string())?,
+            );
+        }
+        let Some(label) = &line.label else {
+            continue;
+        };
+        if line.y + label.height() < origin[1] {
+            continue;
+        }
+        let x = (margin - label.width() - 8.0 * geometry.scale).max(0.0);
+        renderer
+            .paint_over(label, raster, [-x, origin[1] - line.y])
+            .map_err(|error| error.to_string())?;
     }
     Ok(())
 }

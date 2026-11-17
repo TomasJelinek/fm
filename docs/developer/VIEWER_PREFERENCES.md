@@ -92,6 +92,10 @@ and validates the small configuration update independently of rendering and file
 I/O. The window invokes the application's preference listener immediately after
 acceptance, so an immediate Escape does not depend on another rendered frame to
 save that change. Programmatic restoration does not invoke this listener.
+Wrapping changes only through `ViewerPreferenceChange::Wrap`, so the displayed
+state cannot diverge from the saved choice; the backend ignores the older
+`ViewerInput::Wrap` window input. Accepted changes wake the viewer's backend
+worker, which reflows the displayed page without rereading the file.
 
 The presenter merges each patch into the latest application settings, preserving
 unrelated changes from other viewer windows. During the initial settings read,

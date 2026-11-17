@@ -31,7 +31,6 @@ pub(crate) fn normalize(
     let mut entries = Vec::new();
     let mut seen = HashSet::new();
     let mut occurrences = HashSet::new();
-    let mut bytes = 0usize;
     let mut focused = false;
     for (position, row) in view.rows.iter().enumerate() {
         if !occurrences.insert(row.id) || view.index.row_positions.get(&row.id) != Some(&position) {
@@ -86,25 +85,8 @@ pub(crate) fn normalize(
             }
             _ => return Err("The tree file belongs to another content provider.".into()),
         }
-        bytes = bytes
-            .saturating_add(
-                entry
-                    .path
-                    .as_os_str()
-                    .as_encoded_bytes()
-                    .len()
-                    .saturating_mul(8),
-            )
-            .saturating_add(entry.virtual_node.as_ref().map_or(0, |node| {
-                node.raw_name
-                    .len()
-                    .saturating_add(node.display_name.len())
-                    .saturating_mul(8)
-            }))
-            .saturating_add(512);
-        if bytes > 8 * 1024 * 1024 {
-            return Err("The captured file order exceeds the 8 MiB viewer budget.".into());
-        }
+        // The projection's row and byte limits bound these copies. The flat and archive
+        // preparation then retains only a budgeted navigation window around the focus.
         entries.push(entry.clone());
     }
     if !focused {

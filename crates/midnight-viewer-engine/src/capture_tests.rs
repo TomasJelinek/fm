@@ -58,8 +58,8 @@ fn launch(root: &Path) -> ViewerLaunch {
     }
 }
 
-#[tokio::test]
-async fn injected_capture_owns_focused_and_next_visible_content_without_native_files() {
+#[test]
+fn injected_capture_owns_focused_and_next_visible_content_without_native_files() {
     let root = tempfile::tempdir().unwrap();
     let launch = launch(root.path());
     let calls = Arc::new(Mutex::new(Vec::<PathBuf>::new()));
@@ -73,16 +73,17 @@ async fn injected_capture_owns_focused_and_next_visible_content_without_native_f
     let order = capture::prepare_with(&launch, &closed, source).unwrap();
     assert_eq!(order.current, 1);
     assert_eq!(order.files.len(), 2);
-    let focused = order.files[order.current]
-        .1
-        .as_ref()
-        .unwrap()
-        .as_ref()
-        .unwrap();
-    assert_eq!(focused.read_at(0, 8).unwrap(), b"provider");
-    let (next, file) = order.ready.recv_timeout(Duration::from_secs(2)).unwrap();
-    assert_eq!(next, 0);
-    assert_eq!(file.unwrap().read_at(0, 8).unwrap(), b"provider");
+    assert_eq!(
+        order.focused.as_ref().unwrap().read_at(0, 8).unwrap(),
+        b"provider"
+    );
+    assert_eq!(
+        *calls.lock().unwrap(),
+        [root.path().join("first.txt")],
+        "preparation captures only the focused file"
+    );
+    let next = order.capture.as_ref().unwrap()(0, &closed).unwrap();
+    assert_eq!(next.read_at(0, 8).unwrap(), b"provider");
     assert_eq!(
         *calls.lock().unwrap(),
         [
@@ -92,36 +93,77 @@ async fn injected_capture_owns_focused_and_next_visible_content_without_native_f
     );
 }
 
-#[tokio::test]
-async fn unavailable_injected_provider_never_falls_back_to_a_readable_native_file() {
+#[test]
+fn unavailable_injected_provider_never_falls_back_to_a_readable_native_file() {
     let root = tempfile::tempdir().unwrap();
     let launch = launch(root.path());
     std::fs::write(&launch.focused, b"native bytes must not be opened").unwrap();
     let source: NativeCapture = Arc::new(|_, _| Err("Provider removed".into()));
     let closed = Arc::new(AtomicBool::new(false));
     let order = capture::prepare_with(&launch, &closed, source).unwrap();
+    assert_eq!(order.focused.as_ref().unwrap_err(), "Provider removed");
     assert_eq!(
-        order.files[order.current]
-            .1
-            .as_ref()
-            .unwrap()
-            .as_ref()
-            .unwrap_err(),
-        "Provider removed"
-    );
-    assert_eq!(
-        order
-            .ready
-            .recv_timeout(Duration::from_secs(2))
-            .unwrap()
-            .1
-            .unwrap_err(),
+        order.capture.as_ref().unwrap()(0, &closed).unwrap_err(),
         "Provider removed"
     );
 }
 
-#[tokio::test]
-async fn close_during_focused_capture_discards_result_and_prevents_prefetch() {
+#[test]
+fn enormous_native_panel_opens_a_window_around_the_focus_and_captures_only_it() {
+    let root = tempfile::tempdir().unwrap();
+    // About 12 MiB of path descriptors: more than one window's 8 MiB budget.
+    let directory = root.path().join("d".repeat(3_950));
+    let entries: Arc<[Entry]> = (0..3_000)
+        .map(|id| {
+            Entry::new(
+                EntryId(id),
+                directory.join(format!("{id:05}.txt")),
+                EntryKind::File,
+            )
+        })
+        .collect();
+    let mut view = DirectoryIndex::from_entries(&[]);
+    view.by_id = entries
+        .iter()
+        .enumerate()
+        .map(|(row, entry)| (entry.id, row))
+        .collect();
+    let view = Arc::new(view);
+    for focus in [1_500usize, 10] {
+        let mut launch = launch(root.path());
+        launch.focused = entries[focus].path.clone();
+        launch.entries = entries.clone();
+        launch.view = view.clone();
+        let calls = Arc::new(Mutex::new(Vec::<PathBuf>::new()));
+        let record = calls.clone();
+        let source: NativeCapture = Arc::new(move |path, _| {
+            record.lock().unwrap().push(path.into());
+            CapturedFile::from_source(Arc::new(Memory)).map_err(|error| error.to_string())
+        });
+        let order = capture::prepare_with(&launch, &Arc::default(), source).unwrap();
+        let length = order.files.len();
+        assert!(length > 1_000 && length < entries.len(), "{length}");
+        let first = focus - order.current;
+        for (index, path) in order.files.iter().enumerate() {
+            assert_eq!(path, &entries[first + index].path);
+        }
+        if focus == 10 {
+            assert_eq!(first, 0, "a window at the start grows after the focus");
+        } else {
+            assert!(order.current.abs_diff(length / 2) <= 1, "centered window");
+        }
+        assert!(order.focused.is_ok());
+        assert!(order.capture.is_some());
+        assert_eq!(
+            *calls.lock().unwrap(),
+            [entries[focus].path.clone()],
+            "only the focused file is captured before viewing"
+        );
+    }
+}
+
+#[test]
+fn close_during_focused_capture_discards_result_and_prevents_prefetch() {
     let root = tempfile::tempdir().unwrap();
     let launch = launch(root.path());
     let calls = Arc::new(Mutex::new(0));
@@ -136,8 +178,8 @@ async fn close_during_focused_capture_discards_result_and_prevents_prefetch() {
     assert_eq!(*calls.lock().unwrap(), 1);
 }
 
-#[tokio::test]
-async fn a_virtual_entry_cannot_enter_the_native_capture_route() {
+#[test]
+fn a_virtual_entry_cannot_enter_the_native_capture_route() {
     let root = tempfile::tempdir().unwrap();
     let mut launch = launch(root.path());
     let mut entries = launch.entries.to_vec();
@@ -168,9 +210,8 @@ fn viewer_service_dispatches_injected_capture_on_a_backend_thread() {
     let focused = launch.focused.clone();
     let (sender, receiver) = std::sync::mpsc::channel();
     let source: NativeCapture = Arc::new(move |path, _| {
-        sender
-            .send((path.to_path_buf(), std::thread::current().id()))
-            .unwrap();
+        // The neighbor prefetch may still run after this test stops listening.
+        let _ = sender.send((path.to_path_buf(), std::thread::current().id()));
         Err("Injected provider unavailable".into())
     });
     let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -206,7 +247,110 @@ fn viewer_service_dispatches_injected_capture_on_a_backend_thread() {
     assert_eq!(path, focused);
     assert_ne!(thread, std::thread::current().id());
     session.close();
+    // The service owns the image-spare backend task; release it before runtime shutdown.
+    drop(service);
     runtime.shutdown_timeout(Duration::from_secs(2));
+}
+
+/// Wait for a status through the mailbox's wake; the deadline elapses only on failure.
+fn wait_status(
+    session: &crate::WindowSession,
+    notified: &std::sync::mpsc::Receiver<()>,
+    needle: &str,
+) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    loop {
+        for output in session.mailbox.take() {
+            if let midnight_core::ViewerOutput::Status(status) = output
+                && status.contains(needle)
+            {
+                return;
+            }
+        }
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        assert!(
+            notified.recv_timeout(remaining).is_ok(),
+            "missing status {needle:?}"
+        );
+    }
+}
+
+#[test]
+fn backspace_after_opening_captures_only_neighbors_of_a_large_folder() {
+    let root = tempfile::tempdir().unwrap();
+    let entries: Arc<[Entry]> = (0..5_000)
+        .map(|id| {
+            Entry::new(
+                EntryId(id),
+                root.path().join(format!("file-{id:04}.txt")),
+                EntryKind::File,
+            )
+        })
+        .collect();
+    let mut launch = launch(root.path());
+    launch.focused = entries[2_500].path.clone();
+    launch.view = Arc::new(DirectoryIndex::from_entries(&entries));
+    launch.entries = entries;
+    let calls = Arc::new(Mutex::new(Vec::<PathBuf>::new()));
+    let record = calls.clone();
+    let source: NativeCapture = Arc::new(move |path, _| {
+        record.lock().unwrap().push(path.to_path_buf());
+        let name = path.file_name().unwrap().to_string_lossy();
+        Err(format!("identity of {name}"))
+    });
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1)
+        .enable_all()
+        .build()
+        .unwrap();
+    let service = crate::Service::with_native_capture(runtime.handle().clone(), source);
+    *service.runtime.lock().unwrap() = Some(Arc::new(
+        midnight_plugin_host::Runtime::discover(root.path()).unwrap(),
+    ));
+    *service.images.lock().unwrap() = Some(Arc::from([]));
+    *service.web.lock().unwrap() = Some(Arc::from([]));
+    let session = service
+        .open(
+            launch,
+            midnight_core::ViewerAppearance {
+                family: "monospace".into(),
+                font_size: 14.0,
+                foreground: [255; 4],
+                background: [0, 0, 0, 255],
+                selection: [80, 100, 180, 255],
+                accent: [150, 180, 240, 255],
+            },
+            midnight_core::ViewerGeometry {
+                width: 320,
+                height: 200,
+                scale: 1.0,
+            },
+        )
+        .unwrap();
+    let (notify, notified) = std::sync::mpsc::sync_channel(1);
+    session
+        .mailbox
+        .notify_on_ready(Arc::new(move || notify.try_send(()).is_ok()));
+    wait_status(&session, &notified, "identity of file-2500.txt");
+    assert!(session.send(midnight_core::ViewerInput::PreviousFile));
+    wait_status(&session, &notified, "identity of file-2499.txt");
+    let calls = calls.lock().unwrap().clone();
+    assert!(
+        calls.len() <= 8,
+        "{} captures for one Backspace",
+        calls.len()
+    );
+    assert!(
+        calls
+            .iter()
+            .all(|path| (2_498..=2_501)
+                .any(|id| *path == root.path().join(format!("file-{id:04}.txt")))),
+        "only the opened file and its neighbors: {calls:?}"
+    );
+    session.close();
+    // The service owns the image-spare backend task; release it before runtime shutdown.
+    drop(service);
+    runtime.shutdown_timeout(Duration::from_secs(5));
 }
 
 fn tree_launch(root: &Path) -> ViewerLaunch {
@@ -276,8 +420,8 @@ fn tree_launch(root: &Path) -> ViewerLaunch {
     launch
 }
 
-#[tokio::test]
-async fn tree_capture_uses_visible_alias_order_and_injected_native_provider() {
+#[test]
+fn tree_capture_uses_visible_alias_order_and_injected_native_provider() {
     let root = tempfile::tempdir().unwrap();
     let launch = tree_launch(root.path());
     let calls = Arc::new(Mutex::new(Vec::new()));
@@ -286,16 +430,15 @@ async fn tree_capture_uses_visible_alias_order_and_injected_native_provider() {
         record.lock().unwrap().push(path.to_path_buf());
         CapturedFile::from_source(Arc::new(Memory)).map_err(|e| e.to_string())
     });
-    let order = capture::prepare_with(&launch, &Arc::new(AtomicBool::new(false)), source).unwrap();
+    let closed = Arc::new(AtomicBool::new(false));
+    let order = capture::prepare_with(&launch, &closed, source).unwrap();
     assert_eq!(
-        order.files.iter().map(|f| &f.0).collect::<Vec<_>>(),
+        order.files.iter().collect::<Vec<_>>(),
         [&launch.entries[1].path, &launch.entries[0].path]
     );
     assert_eq!(order.current, 1);
-    assert_eq!(
-        order.ready.recv_timeout(Duration::from_secs(2)).unwrap().0,
-        0
-    );
+    assert_eq!(*calls.lock().unwrap(), [launch.entries[0].path.clone()]);
+    assert!(order.capture.as_ref().unwrap()(0, &closed).is_ok());
     assert_eq!(
         *calls.lock().unwrap(),
         [
@@ -305,8 +448,8 @@ async fn tree_capture_uses_visible_alias_order_and_injected_native_provider() {
     );
 }
 
-#[tokio::test]
-async fn tree_capture_rejects_foreign_roots_and_malformed_focus_before_native_capture() {
+#[test]
+fn tree_capture_rejects_foreign_roots_and_malformed_focus_before_native_capture() {
     let root = tempfile::tempdir().unwrap();
     let original = tree_launch(root.path());
     let reject: NativeCapture = Arc::new(|_, _| panic!("invalid tree must not capture"));

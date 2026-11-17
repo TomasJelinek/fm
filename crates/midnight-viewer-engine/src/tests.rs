@@ -43,39 +43,69 @@ fn launch(root: &Path, names: &[&str], basic: bool) -> ViewerLaunch {
     }
 }
 
-#[track_caller]
-fn frame(session: &WindowSession, predicate: impl Fn(&ViewerFrame) -> bool) -> ViewerFrame {
-    let deadline = Instant::now() + Duration::from_secs(45);
-    let mut messages = Vec::new();
-    while Instant::now() < deadline {
+/// Deliver outputs until `accept` returns a value, waking on the mailbox's own signal.
+/// The deadline elapses only when the expected output never arrives.
+fn await_output<T>(
+    session: &WindowSession,
+    timeout: Duration,
+    mut accept: impl FnMut(ViewerOutput) -> Option<T>,
+) -> Option<T> {
+    let deadline = Instant::now() + timeout;
+    let (notify, notified) = std::sync::mpsc::sync_channel(1);
+    session
+        .mailbox
+        .notify_on_ready(Arc::new(move || notify.try_send(()).is_ok()));
+    loop {
         for output in session.mailbox.take() {
-            match output {
-                ViewerOutput::Frame(frame) if predicate(&frame) => return *frame,
-                ViewerOutput::Status(status) => messages.push(status),
-                ViewerOutput::ImageUnavailable { message, .. } => {
-                    panic!("Image/document unavailable: {message}");
-                }
-                _ => {}
+            if let Some(value) = accept(output) {
+                return Some(value);
             }
         }
-        std::thread::sleep(Duration::from_millis(5));
+        notified
+            .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+            .ok()?;
     }
-    panic!("No expected frame: {messages:?}")
 }
 
-fn status(session: &WindowSession, needle: &str) {
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while Instant::now() < deadline {
-        for output in session.mailbox.take() {
-            if let ViewerOutput::Status(message) = output
-                && message.to_lowercase().contains(needle)
-            {
-                return;
-            }
+#[track_caller]
+fn frame(session: &WindowSession, predicate: impl Fn(&ViewerFrame) -> bool) -> ViewerFrame {
+    let mut messages = Vec::new();
+    await_output(session, Duration::from_secs(45), |output| match output {
+        ViewerOutput::Frame(frame) if predicate(&frame) => Some(*frame),
+        ViewerOutput::Status(status) => {
+            messages.push(status);
+            None
         }
-        std::thread::sleep(Duration::from_millis(5));
-    }
-    panic!("Missing status containing {needle:?}");
+        ViewerOutput::ImageUnavailable { message, .. } => {
+            panic!("Image/document unavailable: {message}");
+        }
+        _ => None,
+    })
+    .unwrap_or_else(|| panic!("No expected frame: {messages:?}"))
+}
+
+#[track_caller]
+fn status(session: &WindowSession, needles: &[&str]) {
+    await_output(session, Duration::from_secs(10), |output| match output {
+        ViewerOutput::Status(message) => {
+            let message = message.to_lowercase();
+            needles
+                .iter()
+                .any(|needle| message.contains(needle))
+                .then_some(())
+        }
+        _ => None,
+    })
+    .unwrap_or_else(|| panic!("Missing status containing {needles:?}"));
+}
+
+#[track_caller]
+fn copied(session: &WindowSession) -> String {
+    await_output(session, Duration::from_secs(5), |output| match output {
+        ViewerOutput::CopyText(text) => Some(text),
+        _ => None,
+    })
+    .expect("copied text")
 }
 
 #[test]
@@ -93,8 +123,8 @@ fn slow_ui_mailbox_retains_only_latest_frame_status_and_copy() {
     assert!(matches!(mailbox.take().as_slice(), [ViewerOutput::Closed]));
 }
 
-#[tokio::test]
-async fn capture_uses_visible_order_and_skips_directories_and_filtered_files() {
+#[test]
+fn capture_uses_visible_order_and_skips_directories_and_filtered_files() {
     let root = tempfile::tempdir().unwrap();
     for name in ["one", "two", "filtered"] {
         std::fs::write(root.path().join(name), name).unwrap();
@@ -109,10 +139,9 @@ async fn capture_uses_visible_order_and_skips_directories_and_filtered_files() {
     let order = crate::capture::prepare(&launch, &closed).unwrap();
     assert_eq!(order.current, 1);
     assert_eq!(order.files.len(), 2);
-    assert_eq!(order.files[0].0.file_name().unwrap(), "two");
-    let (index, identity) = order.ready.recv_timeout(Duration::from_secs(2)).unwrap();
-    assert_eq!(index, 0);
-    assert!(identity.is_ok());
+    assert_eq!(order.files[0].file_name().unwrap(), "two");
+    assert!(order.focused.is_ok());
+    assert!(order.capture.as_ref().unwrap()(0, &closed).is_ok());
     closed.store(true, Ordering::Release);
     assert!(crate::capture::prepare(&launch, &closed).is_err());
     let mut entries = launch.entries.to_vec();
@@ -123,33 +152,67 @@ async fn capture_uses_visible_order_and_skips_directories_and_filtered_files() {
 }
 
 #[test]
-fn enormous_panel_capture_is_rejected_before_native_identity_work() {
-    let entries: Arc<[Entry]> = (0..20_000)
-        .map(|id| {
-            Entry::new(
-                EntryId(id),
-                format!("{}-{id}", "x".repeat(128)).into(),
-                EntryKind::File,
-            )
-        })
-        .collect();
-    let launch = ViewerLaunch {
-        find: None,
-        associations: Default::default(),
-        tree: None,
-        generated: None,
-        preferences: Arc::new(Default::default()),
-        archive: None,
-        focused: entries[0].path.clone(),
-        view: Arc::new(DirectoryIndex::from_entries(&entries)),
-        entries,
-        basic: false,
-        disabled_plugins: Arc::from([]),
-    };
-    let error = crate::capture::prepare(&launch, &Arc::new(AtomicBool::new(false)))
-        .err()
+fn window_slot_and_opening_fail_cleanly_when_the_runtime_drops_the_worker() {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1)
+        .enable_all()
+        .build()
         .unwrap();
-    assert!(error.contains("8 MiB"));
+    let service = Service::with_native_capture(
+        runtime.handle().clone(),
+        Arc::new(|_, _| panic!("a dropped worker captures nothing")),
+    );
+    runtime.shutdown_background();
+    let root = tempfile::tempdir().unwrap();
+    let session = service
+        .open(
+            launch(root.path(), &["file.txt"], false),
+            appearance(),
+            ViewerGeometry {
+                width: 200,
+                height: 100,
+                scale: 1.0,
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        service.windows.load(Ordering::Acquire),
+        0,
+        "the admitted window slot is returned"
+    );
+    assert_eq!(
+        session.mailbox.take_open_result(),
+        Some(Err("Viewer backend is unavailable.".into()))
+    );
+}
+
+#[test]
+fn transient_catalog_failure_lets_the_same_image_policy_configure_again() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap();
+    let service = Service::new(runtime.handle().clone());
+    let policy = crate::image_startup::Policy {
+        disabled: Arc::from([]),
+        associations: Arc::default(),
+        catalog_revision: 0,
+    };
+    *service.image_policy.lock().unwrap() = Some(policy.clone());
+    service.configure_image_spare(policy.clone(), Err("discovery failed".into()));
+    assert!(
+        service.image_policy.lock().unwrap().is_none(),
+        "a later identical request must not return early"
+    );
+    let newer = crate::image_startup::Policy {
+        disabled: Arc::from(["midnight.viewer.image".to_owned()]),
+        ..policy.clone()
+    };
+    *service.image_policy.lock().unwrap() = Some(newer.clone());
+    service.configure_image_spare(policy, Err("late failure".into()));
+    assert!(
+        service.image_policy.lock().unwrap().as_ref() == Some(&newer),
+        "a stale failure keeps a newer policy"
+    );
 }
 
 #[test]
@@ -230,18 +293,7 @@ fn real_plugins_render_search_copy_cycle_modes_and_reject_changed_files() {
     assert!(session.send(ViewerInput::Copy {
         frame: initial.revision
     }));
-    let deadline = Instant::now() + Duration::from_secs(5);
-    let mut copied = false;
-    while Instant::now() < deadline && !copied {
-        for event in session.mailbox.take() {
-            if let ViewerOutput::CopyText(text) = event {
-                assert!(text.starts_with("FIRST Žluťoučký"));
-                copied = true;
-            }
-        }
-        std::thread::sleep(Duration::from_millis(5));
-    }
-    assert!(copied);
+    assert!(copied(&session).starts_with("FIRST Žluťoučký"));
     let mut renderer = midnight_viewer_render::TextRenderer::default();
     let shaped = renderer
         .layout_with_options(
@@ -294,7 +346,8 @@ fn real_plugins_render_search_copy_cycle_modes_and_reject_changed_files() {
         backwards: false,
         case_sensitive: false,
     });
-    std::thread::sleep(Duration::from_millis(30));
+    // The search was submitted; NextFile then cancels it if it is still running.
+    status(&session, &["searching", "no further match"]);
     let cancelling = Instant::now();
     session.send(ViewerInput::NextFile);
     let source = frame(&session, |f| f.caption.contains("second.rs"));
@@ -344,7 +397,16 @@ fn real_plugins_render_search_copy_cycle_modes_and_reject_changed_files() {
     });
     std::fs::write(files.path().join("first.txt"), "REPLACED").unwrap();
     session.send(ViewerInput::NextFile);
-    status(&session, "changed");
+    // Navigation captures the current identity, not one prefetched before the change.
+    frame(&session, |f| {
+        f.caption.contains("first.txt") && f.accessible_text.starts_with("REPLACED")
+    });
+    // The displayed document keeps its captured identity: a later change is rejected.
+    std::fs::write(files.path().join("first.txt"), "CHANGED WHILE DISPLAYED").unwrap();
+    session.send(ViewerInput::Mode(
+        midnight_plugin_host::api::viewer::MODE_BINARY,
+    ));
+    status(&session, &["changed"]);
     let closing = Instant::now();
     session.close();
     while service.windows.load(Ordering::Acquire) != 0 && closing.elapsed() < Duration::from_secs(5)
@@ -460,6 +522,6 @@ fn real_plugins_render_search_copy_cycle_modes_and_reject_changed_files() {
             },
         )
         .unwrap();
-    status(&unavailable, "no compatible viewer");
+    status(&unavailable, &["no compatible viewer"]);
     unavailable.close();
 }

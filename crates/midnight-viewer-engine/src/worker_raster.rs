@@ -237,13 +237,7 @@ impl Worker {
                 self.raster.rebase_ack = None;
                 if let Some(page) = &self.shaped {
                     // Added guard rows are not part of the page the user can see.
-                    let first = page
-                        .line_at_y(self.origin[1])
-                        .map_or(0, |(range, _)| range.start);
-                    let last = page
-                        .line_at_y(self.origin[1] + self.geometry.height as f32 - 0.01)
-                        .map_or(page.text().len(), |(range, _)| range.end);
-                    self.selection = Some((first, last));
+                    self.selection = Some(visible_rows(page, self.origin[1], self.geometry));
                     self.capture_raster_selection();
                     self.raster.invalidate();
                     self.dirty = true;
@@ -555,7 +549,7 @@ impl Worker {
                 };
                 text::paint_gutter(
                     &mut self.renderer,
-                    &self.text,
+                    &mut self.text,
                     &self.appearance,
                     self.geometry,
                     local_raster,

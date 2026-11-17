@@ -6,7 +6,6 @@ use std::{
     sync::{
         Arc,
         atomic::{AtomicBool, AtomicU64, Ordering},
-        mpsc,
     },
 };
 
@@ -54,12 +53,11 @@ pub(crate) fn prepare(
     }))
     .map_err(|error| error.to_string())?;
     // There is one already captured file and no producer or native path to open.
-    let (sender, ready) = mpsc::channel();
-    drop(sender);
     Ok(super::capture::Order {
-        files: vec![(PathBuf::from(name), Some(Ok(content)))],
+        files: Arc::from([PathBuf::from(name)]),
         current: 0,
-        ready,
+        focused: Ok(content),
+        capture: None,
     })
 }
 

@@ -86,32 +86,27 @@ fn launch(source: Arc<dyn GeneratedTextSource>) -> ViewerLaunch {
 fn generated_diagnostic_uses_its_own_title_without_opening_a_native_path() {
     let mut launch = launch(Source::new(b"Reason: Access denied\n", 64, Fault::None));
     launch.focused = PathBuf::from("Size warnings - 資料.txt");
-    let mut order = crate::capture::prepare_with(
+    let order = crate::capture::prepare_with(
         &launch,
         &Arc::new(AtomicBool::new(false)),
         Arc::new(|_, _| panic!("diagnostic title is not a native path")),
     )
     .unwrap();
-    let (name, content) = order.files.remove(0);
-    assert_eq!(name, launch.focused);
-    let content = content.unwrap().unwrap();
+    assert_eq!(*order.files, [launch.focused.clone()]);
+    let content = order.focused.unwrap();
     assert_eq!(content.display_name(), "Size warnings - 資料.txt");
     assert!(content.path().as_os_str().is_empty());
 }
 
 fn captured(source: Arc<Source>, closed: &Arc<AtomicBool>) -> CapturedFile {
-    let mut order = prepare(&launch(source), closed).unwrap();
+    let order = prepare(&launch(source), closed).unwrap();
     assert_eq!(order.current, 0);
-    assert_eq!(order.files.len(), 1);
     assert_eq!(
-        order.files[0].0,
-        PathBuf::from("never-open-this-generated-label.txt")
+        *order.files,
+        [PathBuf::from("never-open-this-generated-label.txt")]
     );
-    assert!(matches!(
-        order.ready.try_recv(),
-        Err(std::sync::mpsc::TryRecvError::Disconnected)
-    ));
-    order.files.remove(0).1.unwrap().unwrap()
+    assert!(order.capture.is_none(), "no other entry can be captured");
+    order.focused.unwrap()
 }
 
 #[test]
@@ -148,14 +143,7 @@ fn generated_capture_dispatch_never_calls_the_native_opener() {
     )
     .unwrap();
     assert_eq!(
-        order.files[0]
-            .1
-            .as_ref()
-            .unwrap()
-            .as_ref()
-            .unwrap()
-            .read_at(0, 9)
-            .unwrap(),
+        order.focused.as_ref().unwrap().read_at(0, 9).unwrap(),
         b"file.txt\n"
     );
 }

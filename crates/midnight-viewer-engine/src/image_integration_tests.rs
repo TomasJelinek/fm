@@ -9,13 +9,15 @@ pub(super) fn settle_generated_fixture(path: &Path) {
         .unwrap()
         .stable_version();
     // On managed desktops the file scanner may update extended attributes several
-    // seconds after creation. This delay belongs only to generated test fixtures.
+    // seconds after creation. This delay belongs only to generated test fixtures; the
+    // qualification run executes its fixture tests in parallel, so their windows overlap.
+    // Sampling every 100 ms keeps the 2 s quiet window exact without hundreds of opens.
     while started.elapsed() < Duration::from_secs(8) || quiet.elapsed() < Duration::from_secs(2) {
         assert!(
             started.elapsed() < Duration::from_secs(30),
             "generated image fixture did not settle"
         );
-        std::thread::sleep(Duration::from_millis(20));
+        std::thread::sleep(Duration::from_millis(100));
         let current = midnight_plugin_host::CapturedFile::capture(path)
             .unwrap()
             .stable_version();
@@ -229,6 +231,6 @@ fn image_worker_routes_fits_zooms_pans_cycles_and_preserves_basic_override() {
             geometry,
         )
         .unwrap();
-    status(&ambiguous, "no compatible viewer");
+    status(&ambiguous, &["no compatible viewer"]);
     ambiguous.close();
 }

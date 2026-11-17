@@ -1,21 +1,71 @@
-//! Prepare file identities independently of the first viewport and its parser.
+//! Navigation order and the focused file identity, prepared independently of its parser.
+//!
+//! Only paths or labels are retained for Space/Backspace navigation. Other entries are
+//! captured on demand by [`crate::capture_prefetch`] when a file is about to be opened.
 use midnight_core::{EntryKind, ViewerLaunch};
 use midnight_plugin_host::CapturedFile;
 use std::{
+    ops::Range,
     path::PathBuf,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
-        mpsc::{self, Receiver},
     },
-    time::Duration,
 };
 
 pub(crate) type Captured = Result<CapturedFile, String>;
+
+/// Captures one entry of an [`Order`] on a backend worker. The flag is the window's shared
+/// close signal and is observed for the whole capture.
+pub(crate) type CaptureEntry = Arc<dyn Fn(usize, &Arc<AtomicBool>) -> Captured + Send + Sync>;
+
+/// Retained navigation descriptors per viewer window. A folder whose order exceeds it keeps
+/// a contiguous window of entries around the focused file instead of refusing to open.
+pub(crate) const ORDER_BUDGET: usize = 8 * 1024 * 1024;
+/// Charged per native entry in addition to its encoded path bytes: the retained `PathBuf`
+/// header, its allocation and slack for the per-entry slot.
+const NATIVE_ENTRY: usize = 64;
+
 pub(crate) struct Order {
-    pub files: Vec<(PathBuf, Option<Captured>)>,
+    /// Native paths or provider labels in visible row order.
+    pub files: Arc<[PathBuf]>,
     pub current: usize,
-    pub ready: Receiver<(usize, Captured)>,
+    /// The focused entry, captured before any viewer route is chosen.
+    pub focused: Captured,
+    /// Captures any other entry on demand; absent when the order has a single entry.
+    pub capture: Option<CaptureEntry>,
+}
+
+/// The contiguous entries around `focus` whose total cost fits `budget`, grown alternately
+/// after and before it. The focused entry is always retained, whatever its own cost.
+pub(crate) fn window(
+    len: usize,
+    focus: usize,
+    budget: usize,
+    cost: impl Fn(usize) -> usize,
+) -> Range<usize> {
+    debug_assert!(focus < len);
+    let mut range = focus..focus + 1;
+    let mut used = cost(focus);
+    let mut admit = |index: usize| match used.checked_add(cost(index)) {
+        Some(total) if total <= budget => {
+            used = total;
+            true
+        }
+        _ => false,
+    };
+    let (mut after, mut before) = (true, true);
+    while after || before {
+        after = after && range.end < len && admit(range.end);
+        if after {
+            range.end += 1;
+        }
+        before = before && range.start > 0 && admit(range.start - 1);
+        if before {
+            range.start -= 1;
+        }
+    }
+    range
 }
 
 pub(crate) fn native() -> crate::NativeCapture {
@@ -53,8 +103,7 @@ pub(crate) fn prepare_with(
     if launch.archive.is_some() {
         return crate::capture_archive::prepare(launch, closed);
     }
-    let mut ordered = Vec::new();
-    let mut bytes = 0usize;
+    let mut rows = Vec::new();
     for entry in launch.entries.iter() {
         if closed.load(Ordering::Acquire) {
             return Err("Viewer closed".into());
@@ -68,68 +117,60 @@ pub(crate) fn prepare_with(
         let path = entry
             .native_path()
             .ok_or("The captured native view contains a non-native file.")?;
-        // Includes work descriptors, UTF-16/native path copies and captured identities.
-        bytes = bytes
-            .saturating_add(
-                entry
-                    .path
-                    .as_os_str()
-                    .as_encoded_bytes()
-                    .len()
-                    .saturating_mul(8),
-            )
-            .saturating_add(512);
-        if bytes > 8 * 1024 * 1024 {
-            return Err("The captured file order exceeds the 8 MiB viewer budget.".into());
-        }
-        ordered.push((*row, path));
+        rows.push((*row, path));
     }
-    ordered.sort_unstable_by_key(|entry| entry.0);
-    let mut files: Vec<_> = ordered
-        .into_iter()
-        .map(|(_, path)| (path.to_path_buf(), None))
-        .collect();
-    let current = files
+    rows.sort_unstable_by_key(|(row, _)| *row);
+    let focus = rows
         .iter()
-        .position(|(path, _)| *path == launch.focused)
+        .position(|(_, path)| launch.focused.as_path() == *path)
         .ok_or("The focused regular file is no longer in the captured view.")?;
-    files[current].1 = Some(capture(&files[current].0, closed));
+    let range = window(rows.len(), focus, ORDER_BUDGET, |index| {
+        rows[index].1.as_os_str().len().saturating_add(NATIVE_ENTRY)
+    });
+    let files: Arc<[PathBuf]> = rows[range.clone()]
+        .iter()
+        .map(|(_, path)| path.to_path_buf())
+        .collect();
+    let current = focus - range.start;
+    let focused = capture(&files[current], closed);
     if closed.load(Ordering::Acquire) {
         return Err("Viewer closed".into());
     }
-    let paths: Vec<_> = (1..files.len())
-        .map(|step| {
-            let index = (current + step) % files.len();
-            (index, files[index].0.clone())
-        })
-        .collect();
-    let (sender, ready) = mpsc::sync_channel(16);
-    let closed = closed.clone();
-    tokio::runtime::Handle::try_current()
-        .map_err(|e| e.to_string())?
-        .spawn_blocking(move || {
-            for (index, path) in paths {
-                if closed.load(Ordering::Acquire) {
-                    break;
-                }
-                let result = capture(&path, &closed);
-                let mut event = (index, result);
-                loop {
-                    if closed.load(Ordering::Acquire) {
-                        return;
-                    }
-                    match sender.try_send(event) {
-                        Ok(()) => break,
-                        Err(mpsc::TrySendError::Full(value)) => event = value,
-                        Err(mpsc::TrySendError::Disconnected(_)) => return,
-                    }
-                    std::thread::park_timeout(Duration::from_millis(8));
-                }
-            }
-        });
+    let paths = files.clone();
+    let entry: CaptureEntry = Arc::new(move |index, closed| {
+        let path = paths
+            .get(index)
+            .ok_or("The requested file is outside the captured order.")?;
+        capture(path, closed)
+    });
     Ok(Order {
+        capture: (files.len() > 1).then_some(entry),
         files,
         current,
-        ready,
+        focused,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::window;
+
+    #[test]
+    fn window_grows_alternately_around_the_focus_until_the_budget() {
+        assert_eq!(window(10, 5, 5, |_| 1), 3..8);
+        assert_eq!(window(10, 0, 4, |_| 1), 0..4, "a side at its bound yields");
+        assert_eq!(window(10, 9, 3, |_| 1), 7..10);
+        assert_eq!(window(4, 2, 100, |_| 1), 0..4, "everything fits");
+        assert_eq!(window(3, 1, 0, |_| 7), 1..2, "the focus is always retained");
+        // An oversized neighbor stops only its own side; the order stays contiguous.
+        assert_eq!(
+            window(6, 2, 4, |index| if index == 3 { 9 } else { 1 }),
+            0..3
+        );
+        assert_eq!(
+            window(3, 1, usize::MAX, |_| usize::MAX),
+            1..2,
+            "no overflow"
+        );
+    }
 }
