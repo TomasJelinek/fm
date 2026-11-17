@@ -205,7 +205,7 @@ fn handoff(cancel_during_drag: bool) {
     let _ole = Ole::new().unwrap();
     let source_window = Window::new(120);
     let target_window = Window::new(340);
-    let fixture = tempfile::tempdir().unwrap();
+    let fixture = crate::test_fixtures::build_temp("fixture-");
     let source_path = fixture.path().join("drag-文档.txt");
     std::fs::write(&source_path, b"owned drag fixture").unwrap();
     let destination = fixture.path().join("destination");

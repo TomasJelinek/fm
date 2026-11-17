@@ -251,40 +251,13 @@ fn recursive_delete_removes_a_junction_without_touching_its_target() {
     assert_eq!(fs::read(target.join("sentinel")).unwrap(), b"keep me");
 }
 
+#[path = "../src/test_fixtures.rs"]
+mod test_fixtures;
+
+/// A native junction (FSCTL_SET_REPARSE_POINT) instead of a PowerShell cold start.
 fn create_junction(junction: &Path, target: &Path) {
-    use std::{
-        ffi::OsString,
-        os::windows::{
-            ffi::{OsStrExt, OsStringExt},
-            process::CommandExt,
-        },
-        process::Command,
-    };
-    // PowerShell's junction creator does not normalize an extended target prefix.
-    let units: Vec<u16> = target.as_os_str().encode_wide().collect();
-    let prefix: Vec<u16> = "\\\\?\\".encode_utf16().collect();
-    let target = if units.starts_with(&prefix) {
-        OsString::from_wide(&units[4..])
-    } else {
-        target.as_os_str().to_owned()
-    };
-    let script = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../midnight-platform/tests/create-junction.ps1");
-    let output = Command::new("powershell.exe")
-        .args(["-NoLogo", "-NoProfile", "-NonInteractive", "-File"])
-        .arg(script)
-        .arg("-JunctionPath")
-        .arg(junction)
-        .arg("-TargetPath")
-        .arg(target)
-        .creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW)
-        .output()
-        .unwrap();
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
+    fs::create_dir(junction).unwrap();
+    test_fixtures::create_junction(junction, target).unwrap();
 }
 
 #[test]

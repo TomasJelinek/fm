@@ -15,7 +15,7 @@ fn bytes(value: &OsStr) -> Vec<u8> {
 fn custom_powershell_receives_native_environment_without_evaluating_filename_source() {
     let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let helper = probe::helper(&workspace, "powershell-env-probe.exe");
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::test_fixtures::build_temp("fixture-");
     let cwd = temp.path().join("cwd 文档 & $x");
     fs::create_dir(&cwd).unwrap();
     let output = temp.path().join("environment.bin");

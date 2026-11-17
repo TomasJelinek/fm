@@ -155,7 +155,7 @@ mod tests {
 
     #[test]
     fn cloud_registrations_merge_same_directory_but_keep_distinct_accounts() {
-        let temporary = tempfile::tempdir().unwrap();
+        let temporary = crate::test_fixtures::build_temp("fixture-");
         let personal = temporary.path().join("Cloud 文档");
         let business = temporary.path().join("Business");
         std::fs::create_dir(&personal).unwrap();

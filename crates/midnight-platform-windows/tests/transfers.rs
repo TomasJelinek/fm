@@ -87,7 +87,7 @@ fn publication_race_preserves_existing_file_and_can_retry_another_name() {
     assert_eq!(fs::read(temp.path().join("other")).unwrap(), b"original");
 }
 #[test]
-fn cancellation_cleans_owned_stage_and_preserves_source() {
+fn dropping_a_ready_copy_cleans_its_owned_stage_and_preserves_source() {
     let temp = fixture();
     let source = temp.path().join("source");
     let target = temp.path().join("target");

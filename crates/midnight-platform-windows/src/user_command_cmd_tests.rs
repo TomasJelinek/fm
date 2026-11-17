@@ -15,7 +15,7 @@ fn request(cwd: &Path, script: String) -> TerminalRequest {
 fn custom_cmd_companions_round_trip_native_argv_and_raw_environment() {
     let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let helper = probe::helper(&workspace, "cmd-env-probe.exe");
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::test_fixtures::build_temp("fixture-");
     let cwd = temp.path().join("cwd 文档 & %PATH% !bang! ^ (round)");
     fs::create_dir(&cwd).unwrap();
     let mut raw = OsString::from("raw 文档 %PATH% !ME_OTHER_PATH! & ^ ");
@@ -87,7 +87,7 @@ fn custom_cmd_companions_round_trip_native_argv_and_raw_environment() {
 fn custom_cmd_builtins_use_raw_values_instead_of_native_argv_companions() {
     let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let helper = probe::helper(&workspace, "cmd-builtins-probe.exe");
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::test_fixtures::build_temp("fixture-");
     let cwd = temp.path().join("start");
     let next = temp.path().join("目录 & %PATH% !bang! ^ (round)");
     fs::create_dir(&cwd).unwrap();
@@ -131,7 +131,7 @@ fn custom_cmd_builtins_use_raw_values_instead_of_native_argv_companions() {
 
 #[test]
 fn custom_cmd_refuses_native_size_limits_and_cancelled_launch_without_output() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::test_fixtures::build_temp("fixture-");
     let cwd = temp.path();
     for (script, value) in [
         ("echo first\necho ignored".to_owned(), "short".into()),
@@ -185,7 +185,7 @@ fn verbatim(path: &Path) -> std::path::PathBuf {
 fn custom_cmd_verbatim_dos_cwd_keeps_the_captured_directory() {
     let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let helper = probe::helper(&workspace, "cmd-verbatim-cwd-probe.exe");
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::test_fixtures::build_temp("fixture-");
     let cwd = temp.path().join("verbatim 文档 & %PATH% !bang!");
     fs::create_dir(&cwd).unwrap();
     let output = temp.path().join("verbatim.bin");
@@ -207,7 +207,7 @@ fn custom_cmd_verbatim_dos_cwd_keeps_the_captured_directory() {
 
 #[test]
 fn custom_cmd_refuses_semantically_changed_dos_cwd_and_device_namespaces() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::test_fixtures::build_temp("fixture-");
     fs::create_dir(temp.path().join("different")).unwrap();
     for name in ["different.", "different "] {
         let cwd = verbatim(&temp.path().join(name));
@@ -231,28 +231,14 @@ fn custom_cmd_refuses_semantically_changed_dos_cwd_and_device_namespaces() {
 
 #[test]
 fn custom_cmd_verbatim_root_and_junction_cwd_preserve_directory_authority() {
-    use std::{os::windows::process::CommandExt, process::Command};
-    use windows_sys::Win32::System::Threading::CREATE_NO_WINDOW;
     let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let helper = probe::helper(&workspace, "cmd-root-alias-probe.exe");
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::test_fixtures::build_temp("fixture-");
     let target = temp.path().join("target 文档");
     let alias = temp.path().join("alias %PATH% !bang!");
     fs::create_dir(&target).unwrap();
-    let output = Command::new(crate::desktop::powershell_path().unwrap())
-        .args(["-NoLogo", "-NoProfile", "-NonInteractive", "-File"])
-        .arg(
-            Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("../midnight-platform/tests/create-junction.ps1"),
-        )
-        .arg("-JunctionPath")
-        .arg(&alias)
-        .arg("-TargetPath")
-        .arg(&target)
-        .creation_flags(CREATE_NO_WINDOW)
-        .output()
-        .unwrap();
-    assert!(output.status.success(), "junction fixture: {output:?}");
+    fs::create_dir(&alias).unwrap();
+    crate::test_fixtures::create_junction(&alias, &target).unwrap();
     let root = temp.path().ancestors().last().unwrap();
     for (index, cwd) in [root, alias.as_path()].into_iter().enumerate() {
         let output = temp.path().join(format!("cwd-{index}.bin"));
@@ -282,7 +268,7 @@ fn custom_cmd_verbatim_root_and_junction_cwd_preserve_directory_authority() {
 fn custom_cmd_long_cwd_never_truncates_or_falls_back_after_native_refusal() {
     let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let helper = probe::helper(&workspace, "cmd-long-cwd-probe.exe");
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::test_fixtures::build_temp("fixture-");
     let mut cwd = temp.path().to_owned();
     while cwd.as_os_str().encode_wide().count() < 330 {
         cwd.push("long directory 文档 with spaces");

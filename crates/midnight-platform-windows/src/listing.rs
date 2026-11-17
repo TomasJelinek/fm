@@ -21,37 +21,17 @@ mod tests {
     use super::*;
     use crate::WindowsFileSystem;
     use midnight_core::{Cancellation, DirectoryService};
-    use std::{fs, os::windows::process::CommandExt, path::Path, process::Command};
+    use std::fs;
 
     #[test]
     fn cached_junction_type_is_a_directory_link_even_after_the_target_disappears() {
-        let temp = tempfile::Builder::new()
-            .prefix("midnight-link-&-文档-")
-            .tempdir()
-            .unwrap();
+        let temp = crate::test_fixtures::build_temp("midnight-link-&-文档-");
         let target = temp.path().join("target_🦀");
         let link = temp.path().join("junction_e\u{301}");
         fs::create_dir(&target).unwrap();
         fs::write(temp.path().join("plain.txt"), b"unchanged").unwrap();
-        let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .unwrap()
-            .join("midnight-platform/tests/create-junction.ps1");
-        let output = Command::new(crate::desktop::powershell_path().unwrap())
-            .args(["-NoLogo", "-NoProfile", "-NonInteractive", "-File"])
-            .arg(fixture)
-            .arg("-JunctionPath")
-            .arg(&link)
-            .arg("-TargetPath")
-            .arg(&target)
-            .creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW)
-            .output()
-            .unwrap();
-        assert!(
-            output.status.success(),
-            "junction fixture: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
+        fs::create_dir(&link).unwrap();
+        crate::test_fixtures::create_junction(&link, &target).unwrap();
         let cached = fs::read_dir(temp.path())
             .unwrap()
             .map(Result::unwrap)

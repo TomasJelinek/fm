@@ -1,4 +1,6 @@
-//! Opt-in, read-only qualification against an OS compatibility junction.
+//! One opt-in, read-only qualification against an OS compatibility junction, plus
+//! fixture tests that create native junctions and temporarily deny listing under
+//! `_build/qa`.
 use super::*;
 use std::{
     ffi::OsString,
@@ -100,19 +102,8 @@ fn denied_junction_alias_keeps_target_acl_authority_and_never_launches() {
     let alias = temp.path().join("alias_e\u{301}");
     fs::create_dir(&target).unwrap();
     fs::write(target.join("preserved.txt"), b"unchanged").unwrap();
-    let script = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../midnight-platform/tests/create-junction.ps1");
-    let output = Command::new(crate::desktop::powershell_path().unwrap())
-        .args(["-NoLogo", "-NoProfile", "-NonInteractive", "-File"])
-        .arg(script)
-        .arg("-JunctionPath")
-        .arg(&alias)
-        .arg("-TargetPath")
-        .arg(&target)
-        .creation_flags(CREATE_NO_WINDOW)
-        .output()
-        .unwrap();
-    assert!(output.status.success(), "junction fixture: {output:?}");
+    fs::create_dir(&alias).unwrap();
+    crate::test_fixtures::create_junction(&alias, &target).unwrap();
     let denied_alias = DeniedListing::new(&alias);
     assert_eq!(
         fs::read_dir(&alias).unwrap_err().kind(),

@@ -1,11 +1,13 @@
 #![cfg(windows)]
+#[path = "../src/test_fixtures.rs"]
+mod test_fixtures;
 use midnight_core::{Cancellation, DirectoryService};
 use midnight_platform_windows::WindowsFileSystem;
 use std::{fs, time::Instant};
 
 #[test]
-fn enumeration_includes_native_metadata_without_opening_files() {
-    let directory = tempfile::tempdir().unwrap();
+fn listing_metadata_matches_native_entry_metadata() {
+    let directory = test_fixtures::build_temp("fixture-");
     let path = directory.path().join("文档.bin");
     fs::write(&path, b"contents").unwrap();
     let filesystem = WindowsFileSystem::new(None);
@@ -20,7 +22,7 @@ fn enumeration_includes_native_metadata_without_opening_files() {
 #[test]
 #[ignore = "local listing performance measurement"]
 fn measure_listing_with_metadata() {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = test_fixtures::build_temp("fixture-");
     for index in 0..4000 {
         fs::write(
             directory.path().join(format!("file-{index:05}.txt")),

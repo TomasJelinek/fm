@@ -155,7 +155,7 @@ fn outgoing_data_accepts_bounded_performed_and_logical_feedback() {
 #[test]
 fn unoptimized_move_feedback_never_deletes_and_missing_feedback_stays_unknown() {
     let _ole = Ole::new().unwrap();
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::test_fixtures::build_temp("fixture-");
     let path = root.path().join("retained.txt");
     fs::write(&path, b"source retained").unwrap();
     let (data, receipt) = data::make_offer(&FileClipboard {

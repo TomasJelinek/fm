@@ -348,7 +348,7 @@ mod tests {
 
     #[test]
     fn child_gets_own_hidden_console_when_parent_standard_streams_are_redirected() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = crate::test_fixtures::build_temp("fixture-");
         let cwd = directory.path().join("console_文档_👩🏽‍💻_e\u{301}");
         fs::create_dir_all(&cwd).unwrap();
         let log = directory.path().join("redirected-parent.log");
@@ -357,7 +357,7 @@ mod tests {
 
     #[test]
     fn long_native_cwd_is_not_truncated_or_replaced_when_startup_is_unsupported() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = crate::test_fixtures::build_temp("fixture-");
         let component = "console_文档_👩🏽‍💻_e\u{301}_".repeat(4);
         let cwd = directory
             .path()

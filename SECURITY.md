@@ -315,8 +315,9 @@ is made. Tests mutate fresh, owned fixtures only; they never empty a user's Tras
   operation. PNG encoding/writing runs in a backend worker and uses exclusive
   creation; an existing file or symlink is never overwritten.
 - Tests and development scripts follow the same literal-argument policy. The
-  Windows junction fixture uses a fixed trusted PowerShell script via `-File`;
-  temporary paths are parameter data, never `cmd /C` command text.
+  Windows platform tests create junctions natively (`FSCTL_SET_REPARSE_POINT`, no
+  shell); other Windows junction fixtures use a fixed trusted PowerShell script via
+  `-File`. Temporary paths are parameter data, never `cmd /C` command text.
 
 The directory model still uses memory proportional to the number of entries.
 Worker/front-queue bounds are not a promise that arbitrarily large directories

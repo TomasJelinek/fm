@@ -1,4 +1,6 @@
 #![cfg(windows)]
+#[path = "../src/test_fixtures.rs"]
+mod test_fixtures;
 use midnight_core::*;
 use midnight_platform_windows::WindowsFileSystem;
 use std::{
@@ -17,7 +19,7 @@ fn bytes(value: &OsStr) -> Vec<u8> {
 fn actual_program_receives_native_argv_and_cwd_without_shell_execution_or_truncation() {
     let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let executable = probe::helper(&workspace, "program-probe.exe");
-    let temp = tempfile::tempdir().unwrap();
+    let temp = test_fixtures::build_temp("fixture-");
     let directory = temp.path().join("cwd 文档 & $x; '");
     fs::create_dir(&directory).unwrap();
     let output = temp.path().join("argv.bin");
@@ -56,7 +58,7 @@ fn actual_program_receives_native_argv_and_cwd_without_shell_execution_or_trunca
 
 #[test]
 fn cancelled_missing_and_batch_programs_never_launch_a_fallback() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = test_fixtures::build_temp("fixture-");
     for name in ["missing.exe", "script.cmd", "script.bat"] {
         let executable = temp.path().join(name);
         if name != "missing.exe" {
@@ -97,7 +99,7 @@ fn malformed_executable_returns_a_native_error_and_restores_thread_error_mode() 
         process::{Command, Stdio},
         time::{Duration, Instant},
     };
-    let temp = tempfile::tempdir().unwrap();
+    let temp = test_fixtures::build_temp("fixture-");
     let report = temp.path().join("bad-image-result");
     let mut child = Command::new(std::env::current_exe().unwrap())
         .args([

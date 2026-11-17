@@ -61,7 +61,7 @@ mod tests {
 
     #[test]
     fn native_metadata_reports_the_os_attribute_and_keeps_logical_size_and_contents() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = crate::test_fixtures::build_temp("fixture-");
         let path = directory.path().join("文档 e\u{301} 👩🏽‍💻.zip");
         let bytes = b"PK\x03\x04ordinary fixture";
         fs::write(&path, bytes).unwrap();

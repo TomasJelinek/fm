@@ -1,15 +1,17 @@
 # Windows filesystem mutations
 
 The Windows provider runs blocking filesystem and Shell calls on engine workers.
-Tests create fresh fixtures below `_build/tmp`. No test enumerates or empties the
-user's Recycle Bin. The three explicitly ignored Shell tests require a separate
-native run outside the filesystem sandbox; the successful recycle test restores
-only the exact `IShellItem` returned by its own operation.
+Mutation tests create fresh fixtures below `_build/tmp` (pause and discovery tests
+use `_build/qa`). Junctions and non-surrogate reparse points are created natively
+with `FSCTL_SET_REPARSE_POINT` (`src/test_fixtures.rs`), without a shell. No test
+enumerates or empties the user's Recycle Bin. The three explicitly ignored Shell
+tests require a separate native run outside the filesystem sandbox; the successful
+recycle test restores only the exact `IShellItem` returned by its own operation.
 
-The junction fixture verifies that its target is readable before recycling, remains
-intact while the junction is absent, and is still accessible after restoring only
-that junction. PowerShell's fixture creator requires ordinary target spelling;
-passing an extended prefix creates an invalid junction on the tested host.
+The ignored Recycle Bin junction fixture verifies that its target is readable before
+recycling, remains intact while the junction is absent, and is still accessible after
+restoring only that junction. It still uses the PowerShell fixture creator, which
+requires ordinary target spelling; an extended prefix creates an invalid junction.
 
 ## Identity and paths
 

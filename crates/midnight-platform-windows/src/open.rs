@@ -369,7 +369,7 @@ mod tests {
 
     #[test]
     fn actual_directory_is_internal_and_regular_file_launches_once_with_exact_path() {
-        let temp = tempfile::tempdir().unwrap();
+        let temp = crate::test_fixtures::build_temp("fixture-");
         assert!(matches!(
             open_with(temp.path(), |_| panic!("directory must stay internal")),
             Ok(OpenEntryResult::Directory)
@@ -390,7 +390,7 @@ mod tests {
 
     #[test]
     fn launch_failures_keep_native_path_and_context() {
-        let temp = tempfile::tempdir().unwrap();
+        let temp = crate::test_fixtures::build_temp("fixture-");
         let file = temp.path().join("unknown-extension");
         fs::write(&file, b"data").unwrap();
         let result = open_with(&file, |_| {
@@ -407,7 +407,7 @@ mod tests {
 
     #[test]
     fn actual_unicode_file_beyond_max_path_is_classified_without_truncation() {
-        let temp = tempfile::tempdir().unwrap();
+        let temp = crate::test_fixtures::build_temp("fixture-");
         let component = "dlouhá_文档_🦀_".repeat(5);
         let mut parent = temp.path().to_owned();
         // The repository-local test directory can be shorter than a user's TEMP.
@@ -430,37 +430,12 @@ mod tests {
 
     #[test]
     fn explicit_directory_junction_navigates_internally() {
-        use std::{os::windows::process::CommandExt, process::Command};
-        let temp = tempfile::tempdir().unwrap();
+        let temp = crate::test_fixtures::build_temp("open-junction-");
         let target = temp.path().join("target_文档");
         fs::create_dir(&target).unwrap();
         let link = temp.path().join("link_🦀");
-        let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .unwrap()
-            .join("midnight-platform/tests/create-junction.ps1");
-        let output = Command::new(crate::desktop::powershell_path().unwrap())
-            .args([
-                "-NoLogo",
-                "-NoProfile",
-                "-NonInteractive",
-                "-WindowStyle",
-                "Hidden",
-                "-File",
-            ])
-            .arg(fixture)
-            .arg("-JunctionPath")
-            .arg(&link)
-            .arg("-TargetPath")
-            .arg(&target)
-            .creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW)
-            .output()
-            .unwrap();
-        assert!(
-            output.status.success(),
-            "junction fixture failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
+        fs::create_dir(&link).unwrap();
+        crate::test_fixtures::create_junction(&link, &target).unwrap();
         assert!(matches!(
             open_with(&link, |_| panic!("directory must stay internal")),
             Ok(OpenEntryResult::Directory)
@@ -469,7 +444,7 @@ mod tests {
 
     #[test]
     fn dos_device_alias_cannot_launch_an_association() {
-        let temp = tempfile::tempdir().unwrap();
+        let temp = crate::test_fixtures::build_temp("fixture-");
         assert!(
             open_with(&temp.path().join("NUL"), |_| panic!(
                 "must not launch a device"

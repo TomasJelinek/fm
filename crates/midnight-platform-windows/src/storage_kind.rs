@@ -386,7 +386,7 @@ mod tests {
 
     #[test]
     fn native_temporary_volume_hint_does_not_write_directory_contents() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = crate::test_fixtures::build_temp("fixture-");
         let _ = detect(directory.path());
         assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 0);
     }
