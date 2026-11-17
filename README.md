@@ -793,10 +793,16 @@ Paths and file identities are kept separately from their displayed text. A faile
 navigation preserves the last usable directory and reports the failed operation.
 Each pane remembers its last visited directory for each volume during this run.
 Visible directories are watched on the backend. Changes are batched after
-150 ms of quiet, with a 500 ms cap during continuous activity. A 15-second
-metadata check catches missing native/network notifications. Automatic refresh
-preserves the viewport, selection and command editing; it invalidates earlier
-recursive folder-size estimates.
+150 ms of quiet, with a 500 ms cap during continuous activity. A 15-second check
+re-lists each watched directory (in tree mode every eligible loaded branch) to
+catch missing native/network notifications. It compares the same enumeration
+metadata the listing shows and reads metadata separately only for entries whose
+enumeration lacks it; an entry whose metadata cannot be read stays unknown, as in
+the listing, instead of causing a refresh on every check. Notifications that
+arrive while an automatic refresh of the same directory is being accepted are
+checked against the new listing at once. Automatic refresh preserves the
+viewport, selection and command editing; it invalidates earlier recursive
+folder-size estimates.
 Folder sizing uses a bounded fair batch and a shared I/O budget: up to the Disk
 operations limit (four by default) of parallel reads only for proven local SSD,
 one stream for HDD/network/unknown storage. Detection errors remain conservative;

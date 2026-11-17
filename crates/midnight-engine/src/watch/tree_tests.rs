@@ -88,6 +88,45 @@ async fn same_navigation_success_then_exact_commit_quiets_watch() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn persistently_unreadable_entry_metadata_quiets_after_acknowledgement() {
+    let files = Arc::new(Files::default());
+    let path = std::env::current_dir()
+        .unwrap()
+        .join("_build/watch-tree-unreadable")
+        .to_str()
+        .unwrap()
+        .to_owned();
+    files.put(&path, 7);
+    files
+        .directories
+        .lock()
+        .unwrap()
+        .get_mut(Path::new(&path))
+        .unwrap()[0]
+        .metadata = EntryMetadata::default();
+    // The tree listing keeps the enumerated row with unknown metadata; every
+    // later stat keeps failing in exactly the same way.
+    files.metadata_failed.store(true, Ordering::SeqCst);
+    let (_session, scope) = scope(&files, &path);
+    let (controller, mut tasks, mut events) =
+        controller(files.clone(), None, Duration::from_millis(30));
+    let handle = controller.handle();
+    handle.set_tree_scope(scope.clone());
+    let stamp = tree_changed(&mut events).await;
+    let ticket = handle.begin_refresh(stamp, TreeRequestId(1)).unwrap();
+    handle.finish_refresh(ticket, true, stamp.revision);
+    handle.set_tree_scope(scope);
+    while events.try_recv().is_ok() {}
+    let probes = files.probes.load(Ordering::SeqCst);
+    files.wait_probes(probes + 3).await;
+    assert!(
+        events.try_recv().is_err(),
+        "an unreadable but unchanged entry must not request maintenance every poll"
+    );
+    stop(&controller, &mut tasks).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn file_only_poll_between_sweep_and_commit_survives() {
     let files = Arc::new(Files::default());
     let path = std::env::current_dir()
@@ -505,7 +544,9 @@ async fn failed_probe_retries_after_a_successful_listing_ack_without_losing_hist
         .to_owned();
     files.put(&path, 7);
     let (_session, scope) = scope(&files, &path);
-    files.metadata_failed.store(true, Ordering::SeqCst);
+    // The directory itself becomes unreadable. (An unreadable entry inside a
+    // readable directory is not a probe failure; the listing keeps that row.)
+    files.listing_failed.store(true, Ordering::SeqCst);
     let (controller, mut tasks, mut events) =
         controller(files.clone(), None, Duration::from_millis(80));
     let handle = controller.handle();
@@ -515,7 +556,7 @@ async fn failed_probe_retries_after_a_successful_listing_ack_without_losing_hist
     handle.finish_refresh(ticket, true, stamp.revision);
     handle.set_tree_scope(scope.clone());
     assert_eq!(tree_changed(&mut events).await.session, stamp.session);
-    files.metadata_failed.store(false, Ordering::SeqCst);
+    files.listing_failed.store(false, Ordering::SeqCst);
     let probes = files.probes.load(Ordering::SeqCst);
     files.wait_probes(probes + 1).await;
     // Drain the recovery interval before acknowledging the now-readable listing.
