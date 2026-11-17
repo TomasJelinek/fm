@@ -1,11 +1,13 @@
 #![cfg(windows)]
+#[path = "../src/test_fixtures.rs"]
+mod test_fixtures;
 use midnight_core::*;
 use midnight_platform_windows::WindowsFileSystem;
 use std::{fs, io::Read};
 
 #[test]
 fn native_find_streams_roots_and_children_and_rejects_changed_results() {
-    let temporary = tempfile::tempdir().unwrap();
+    let temporary = test_fixtures::build_temp("fixture-");
     let root = temporary.path();
     let path = root.join("Find 文档 🦀.txt");
     fs::write(&path, "\u{feff}first\nčeský obsah").unwrap();
@@ -50,6 +52,41 @@ fn native_find_streams_roots_and_children_and_rejects_changed_results() {
 }
 
 #[test]
+fn native_find_keeps_enumerating_a_directory_that_changes_during_the_search() {
+    let temporary = test_fixtures::build_temp("find-changing-");
+    let root = temporary.path();
+    let names: Vec<_> = (0..8).map(|index| format!("entry-{index}.txt")).collect();
+    for name in &names {
+        fs::write(root.join(name), b"x").unwrap();
+    }
+    fs::create_dir(root.join("nested")).unwrap();
+    fs::write(root.join("nested").join("inner.txt"), b"x").unwrap();
+    let service = WindowsFileSystem::new(None);
+    let cancel = Cancellation::default();
+    let mut directory = service.open_find_source(root, &cancel).unwrap();
+    let captured = directory.entry().clone();
+    let entry_path = |child: FindChild| match child {
+        FindChild::Entry(source) => source.entry().path.clone(),
+        _ => panic!("ordinary fixture entries are found"),
+    };
+    let mut seen = vec![entry_path(directory.next_child(&cancel).unwrap().unwrap())];
+    // Another process adds an entry: the directory's write time, change time and size
+    // change, which must not abandon the rest of the directory or its subtrees.
+    fs::write(root.join("added-during-search.txt"), b"new").unwrap();
+    while let Some(child) = directory.next_child(&cancel).unwrap() {
+        seen.push(entry_path(child));
+    }
+    for name in &names {
+        assert!(seen.contains(&root.join(name)), "{name} was skipped");
+    }
+    assert!(seen.contains(&root.join("nested")));
+    // The directory is still the same Find result.
+    directory.revalidate(&cancel).unwrap();
+    let reopened = service.open_find_source(root, &cancel).unwrap();
+    assert!(reopened.entry().matches_capture(&captured));
+}
+
+#[test]
 fn native_find_rejects_cancelled_or_special_namespace_roots() {
     let service = WindowsFileSystem::new(None);
     let cancel = Cancellation::default();
@@ -68,7 +105,7 @@ fn native_find_rejects_cancelled_or_special_namespace_roots() {
 
 #[test]
 fn native_find_rejects_same_size_edits_even_when_last_write_time_is_restored() {
-    let temporary = tempfile::tempdir().unwrap();
+    let temporary = test_fixtures::build_temp("fixture-");
     let path = temporary.path().join("restored-time.txt");
     fs::write(&path, b"AAAA").unwrap();
     let service = WindowsFileSystem::new(None);
@@ -98,7 +135,7 @@ fn native_find_content_can_read_an_idle_log_without_denying_its_writer() {
     use windows_sys::Win32::Storage::FileSystem::{
         FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
     };
-    let temporary = tempfile::tempdir().unwrap();
+    let temporary = test_fixtures::build_temp("fixture-");
     let path = temporary.path().join("open-log.txt");
     fs::write(&path, b"original needle\n").unwrap();
     let mut writer = fs::OpenOptions::new()
@@ -125,7 +162,7 @@ fn native_find_content_can_read_an_idle_log_without_denying_its_writer() {
 
 #[test]
 fn native_find_metadata_uses_existing_backend_locale_date_and_time() {
-    let temporary = tempfile::tempdir().unwrap();
+    let temporary = test_fixtures::build_temp("fixture-");
     let path = temporary.path().join("localized.txt");
     fs::write(&path, b"date metadata").unwrap();
     let service = WindowsFileSystem::new(None);

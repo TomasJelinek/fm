@@ -182,10 +182,11 @@ impl FindSource for Source {
                     Err(error) => FindChild::Failed(error),
                 }));
             }
-            // The directory's path binding and revision are revalidated once per native
+            // The directory's path binding (its identity) is revalidated once per native
             // batch and once at its end, not once per child: every child of a batch is
             // opened relative to the retained handle, and every result is revalidated
-            // by path again before publication.
+            // by path again before publication. Entries created, removed or renamed
+            // inside the directory meanwhile do not abort its enumeration.
             self.revalidate(cancel)?;
             if self.cursor.ended() {
                 return Ok(None);
@@ -297,21 +298,31 @@ fn snapshot(file: &File, path: &Path) -> Result<(FindEntry, Native), FsError> {
     let directory = native.directory();
     let identity =
         native::identity(file).map_err(|error| FsError::from_io("find identity", path, error))?;
-    let entry = FindEntry {
-        path: path.to_owned(),
-        kind: native.kind(),
-        identity: TransferIdentity {
-            device: identity.volume,
-            object: identity.id,
-        },
-        revision: FindRevision([
+    let kind = native.kind();
+    // A directory's size, times and attributes change with every entry created, removed
+    // or renamed inside it. Enumeration uses the pinned handle and result navigation
+    // needs only its identity, so a directory revision carries no content state: such
+    // changes must not abort the rest of the directory (as on Linux).
+    let revision = if kind == EntryKind::Directory {
+        FindRevision([0; 6])
+    } else {
+        FindRevision([
             metadata.file_size(),
             metadata.last_write_time(),
             metadata.creation_time(),
             u64::from(attributes & !VOLATILE_ATTRIBUTES),
             basic.ChangeTime as u64,
             0,
-        ]),
+        ])
+    };
+    let entry = FindEntry {
+        path: path.to_owned(),
+        kind,
+        identity: TransferIdentity {
+            device: identity.volume,
+            object: identity.id,
+        },
+        revision,
         metadata: EntryMetadata {
             size: (!directory).then_some(metadata.file_size()),
             modified: metadata.modified().ok(),
