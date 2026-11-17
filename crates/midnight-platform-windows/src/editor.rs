@@ -1,4 +1,8 @@
 //! Native Windows editor launch; no PATH lookup, shell expansion, or batch files.
+//!
+//! `std::process::Command` lets the editor inherit every inheritable handle, so it is spawned
+//! through `midnight_worker_platform::spawn_command`: the spawn waits for a worker or browser
+//! creation that briefly holds inheritable pipe ends, and the lock covers only the spawn.
 use crate::WindowsFileSystem;
 use midnight_core::{EditorCommand, EditorPreferences, EditorService, FsError, TerminalProcess};
 use std::{
@@ -24,8 +28,7 @@ impl EditorService for WindowsFileSystem {
         editor: &EditorPreferences,
     ) -> Result<Box<dyn TerminalProcess>, FsError> {
         let mut command = prepare(self, file, editor)?;
-        command
-            .spawn()
+        midnight_worker_platform::spawn_command(&mut command)
             .map(|child| Box::new(child) as Box<dyn TerminalProcess>)
             .map_err(|cause| error(file, cause))
     }
@@ -121,6 +124,10 @@ fn error(path: &Path, cause: io::Error) -> FsError {
     FsError::from_io("external editor", path, cause)
 }
 
+/// Covers the editor and the Custom Command program launch, which share this launch policy.
+#[cfg(test)]
+#[path = "launch_lock_tests.rs"]
+mod launch_lock_tests;
 #[cfg(test)]
 #[path = "editor_tests.rs"]
 mod tests;
