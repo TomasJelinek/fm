@@ -36,9 +36,9 @@ fn exercise_external_changes(pane: PaneId) {
             .as_ref()
             .is_some_and(|selection| selection.len() == 1)
     });
-    // Startup maintenance hints arrive before this point; the external changes
-    // below must route at least one more hint of their own.
-    let hints_before_changes = h.watch_hints[pane.index()];
+    // Routed hints are informational: the debounced hint of the fence's own
+    // registration can arrive at any point, and hints legitimately coalesce. The
+    // per-directory native evidence plus the UI row is what each change must show.
     for (parent, name) in [
         (&fixture.root, "new-root-文档"),
         (&branch, "new-child-žluťoučký"),
@@ -49,7 +49,8 @@ fn exercise_external_changes(pane: PaneId) {
         fs::create_dir(&directory).unwrap();
         if let Err(panic) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             h.until(|h| {
-                watch.native_evidence_since(mark) && h.rows().iter().any(|row| row.name == name)
+                watch.native_evidence_for(mark, parent)
+                    && h.rows().iter().any(|row| row.name == name)
             });
         })) {
             let current_hints = h.watch_hints[pane.index()];
@@ -58,8 +59,8 @@ fn exercise_external_changes(pane: PaneId) {
                 .as_ref()
                 .is_some_and(|view| view.rows.iter().any(|row| row.entry.display_name == name));
             eprintln!(
-                "tree watch creation predicates: pane={pane:?}, target={name:?}, (callbacks, registrations) before={mark:?} (fresh native evidence required={}), hints={current_hints}>{hints} (informational, coalescing allowed), ui_row_required={ui_row}, observed_projection_row={projection_row}, live(root,branch)={:?}, {}",
-                watch.native_evidence_since(mark),
+                "tree watch creation predicates: pane={pane:?}, target={name:?}, parent={parent:?}, mark={mark:?}, native_evidence_for_parent_required={}, hints={current_hints}>{hints} (informational, coalescing allowed), ui_row_required={ui_row}, observed_projection_row={projection_row}, live(root,branch)={:?}, {}",
+                watch.native_evidence_for(mark, parent),
                 (watch.live_covers(&fixture.root), watch.live_covers(&branch)),
                 watch.describe(),
             );
@@ -80,11 +81,6 @@ fn exercise_external_changes(pane: PaneId) {
                 .any(|row| row.name == "small" && row.selected)
         );
     }
-    assert!(
-        h.watch_hints[pane.index()] > hints_before_changes,
-        "the external changes must route a native tree watch hint: {}",
-        watch.describe()
-    );
     assert!(h.ui.window.get_left_error().is_empty());
     assert!(h.ui.window.get_right_error().is_empty());
 }

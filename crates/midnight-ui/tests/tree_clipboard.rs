@@ -197,6 +197,7 @@ fn exercise(pane: PaneId, intent: FileClipboardIntent) {
     });
     h.until(|_| {
         watch.live_covers(&fixture.root.join("folder"))
+            && watch.live_covers(&fixture.root.join("destination"))
             && watch.live_covers(&fixture.root.join("destination/existing"))
     });
     let destination_session = h.views[destination.index()].as_ref().unwrap().stamp.session;
@@ -337,17 +338,42 @@ fn exercise(pane: PaneId, intent: FileClipboardIntent) {
     });
 
     // Own-write notifications may be consumed by terminal maintenance. Later
-    // external writes prove both retained native tree watches still reconcile.
+    // external writes prove both retained native tree watches still reconcile:
+    // each parent needs evidence from a live subscription covering it, so one
+    // pane's callback cannot stand in for the other's, nor can the engine's poll.
+    let (source_parent, destination_parent) = (
+        fixture.root.join("folder"),
+        fixture.root.join("destination"),
+    );
     let mark = watch.mark();
-    fs::create_dir(fixture.root.join("folder/after-clipboard")).unwrap();
-    fs::create_dir(fixture.root.join("destination/after-clipboard")).unwrap();
-    h.until(|h| {
-        watch.native_evidence_since(mark)
-            && h.rows().iter().any(|row| row.name == "after-clipboard")
-            && rows(h, destination)
-                .iter()
-                .any(|row| row.name == "after-clipboard")
-    });
+    fs::create_dir(source_parent.join("after-clipboard")).unwrap();
+    fs::create_dir(destination_parent.join("after-clipboard")).unwrap();
+    if let Err(panic) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        h.until(|h| {
+            watch.native_evidence_for(mark, &source_parent)
+                && watch.native_evidence_for(mark, &destination_parent)
+                && h.rows().iter().any(|row| row.name == "after-clipboard")
+                && rows(h, destination)
+                    .iter()
+                    .any(|row| row.name == "after-clipboard")
+        });
+    })) {
+        eprintln!(
+            "tree clipboard watch predicates: mark={mark:?}, native evidence (source, destination)={:?}, rows (source, destination)={:?}, {}",
+            (
+                watch.native_evidence_for(mark, &source_parent),
+                watch.native_evidence_for(mark, &destination_parent)
+            ),
+            (
+                h.rows().iter().any(|row| row.name == "after-clipboard"),
+                rows(&h, destination)
+                    .iter()
+                    .any(|row| row.name == "after-clipboard")
+            ),
+            watch.describe(),
+        );
+        std::panic::resume_unwind(panic);
+    }
     assert_eq!(h.view.as_ref().unwrap().stamp.session, source_session);
     assert_eq!(
         h.views[destination.index()].as_ref().unwrap().stamp.session,

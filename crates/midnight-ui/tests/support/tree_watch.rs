@@ -1,50 +1,92 @@
 //! Observe actual native subscriptions without replacing delivery or debounce policy.
 //!
-//! Besides counting native callbacks, the observer tracks which subscription batches
-//! are still alive and when the last batch was registered. The engine drops a tree's
-//! batch before registering its replacement and covers that gap with a logical rescan
-//! (`tree.dirty()`), so a change made inside the gap legitimately produces no native
-//! callback. Tests therefore fence on a live batch and accept either a fresh callback
-//! or a re-registration as the native evidence for a change.
+//! Native evidence is attributed to the directory it concerns, the way the engine
+//! routes it: bit `i` of a batch callback names `paths[i]` (errors and overflow set
+//! every active bit), and a flat `watch_directory` subscription names its one path.
+//! A callback counts only while its subscription is live; a subscription being torn
+//! down is no evidence.
+//!
+//! The engine drops a tree's batch before registering its replacement and covers that
+//! gap with a logical rescan (`tree.dirty()`), so a change made inside the gap
+//! legitimately produces no callback. Registering a batch that contains a directory is
+//! therefore also evidence for that directory.
+//!
+//! Evidence for a directory can never come from another pane's subscription, from a
+//! subscription that does not contain the directory, or from the engine's periodic
+//! poll (which needs no subscription). A broken watch therefore fails its wait even
+//! when that poll later reconciles the row.
 #![allow(dead_code)] // Each test module uses its own subset of these observations.
 use midnight_core::*;
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
-    sync::{
-        Arc, Mutex,
-        atomic::{AtomicUsize, Ordering},
-    },
+    sync::{Arc, Mutex, MutexGuard},
     time::Instant,
 };
 
+type Observe = Arc<dyn Fn(u32) + Send + Sync>;
+
 #[derive(Default)]
-struct Batches {
-    next: u64,
-    live: HashMap<u64, Vec<PathBuf>>,
-    registered: usize,
+struct State {
+    /// Orders evidence after a [`Mark`].
+    sequence: u64,
+    next_batch: u64,
+    live: HashMap<u64, Batch>,
+    callbacks: usize,
+    registrations: usize,
     last_registration: Option<Instant>,
+    /// Sequence number of the latest native evidence for each watched directory.
+    evidence: HashMap<PathBuf, u64>,
 }
+
+struct Batch {
+    paths: Arc<[PathBuf]>,
+    /// The native registration has returned. Before that, a callback can already
+    /// arrive from setup, but the subscription does not yet count as a fence.
+    armed: bool,
+}
+
+/// A point in the observation sequence, taken before an external change.
+#[derive(Clone, Copy, Debug)]
+pub struct Mark(u64);
 
 pub struct ObservedWatch {
     native: Arc<dyn WatchService>,
-    callbacks: Arc<AtomicUsize>,
-    batches: Arc<Mutex<Batches>>,
+    state: Arc<Mutex<State>>,
 }
 
-/// Keeps the native subscription and removes its batch from the live set on drop.
+/// Keeps the native subscription and removes its batch from the live set on drop,
+/// before the native teardown, so callbacks during teardown are no evidence.
 struct ObservedSubscription {
-    _native: Box<dyn WatchSubscription>,
     batch: u64,
-    batches: Arc<Mutex<Batches>>,
+    state: Arc<Mutex<State>>,
+    _native: Box<dyn WatchSubscription>,
 }
 
 impl WatchSubscription for ObservedSubscription {}
 
 impl Drop for ObservedSubscription {
     fn drop(&mut self) {
-        let mut batches = self.batches.lock().unwrap_or_else(|e| e.into_inner());
-        batches.live.remove(&self.batch);
+        lock(&self.state).live.remove(&self.batch);
+    }
+}
+
+fn lock(state: &Mutex<State>) -> MutexGuard<'_, State> {
+    state.lock().unwrap_or_else(|error| error.into_inner())
+}
+
+fn record_callback(state: &Mutex<State>, batch: u64, mask: u32) {
+    let mut state = lock(state);
+    state.callbacks += 1;
+    let Some(paths) = state.live.get(&batch).map(|batch| batch.paths.clone()) else {
+        return;
+    };
+    state.sequence += 1;
+    let sequence = state.sequence;
+    for (index, path) in paths.iter().enumerate().take(32) {
+        if mask & (1 << index) != 0 {
+            state.evidence.insert(path.clone(), sequence);
+        }
     }
 }
 
@@ -54,14 +96,15 @@ impl WatchService for ObservedWatch {
         path: &Path,
         changed: Arc<dyn Fn() + Send + Sync>,
     ) -> Result<Box<dyn WatchSubscription>, FsError> {
-        let count = self.callbacks.clone();
-        self.native.watch_directory(
-            path,
-            Arc::new(move || {
-                count.fetch_add(1, Ordering::SeqCst);
-                changed();
-            }),
-        )
+        self.register(&[path.to_path_buf()], |observe| {
+            self.native.watch_directory(
+                path,
+                Arc::new(move || {
+                    observe(1);
+                    changed();
+                }),
+            )
+        })
     }
 
     fn watch_directories(
@@ -69,26 +112,15 @@ impl WatchService for ObservedWatch {
         paths: &[PathBuf],
         changed: Arc<dyn Fn(u32) + Send + Sync>,
     ) -> Result<Box<dyn WatchSubscription>, FsError> {
-        let count = self.callbacks.clone();
-        let subscription = self.native.watch_directories(
-            paths,
-            Arc::new(move |bits| {
-                count.fetch_add(1, Ordering::SeqCst);
-                changed(bits);
-            }),
-        )?;
-        let mut batches = self.batches.lock().unwrap_or_else(|e| e.into_inner());
-        let batch = batches.next;
-        batches.next += 1;
-        batches.live.insert(batch, paths.to_vec());
-        batches.registered += 1;
-        batches.last_registration = Some(Instant::now());
-        drop(batches);
-        Ok(Box::new(ObservedSubscription {
-            _native: subscription,
-            batch,
-            batches: self.batches.clone(),
-        }))
+        self.register(paths, |observe| {
+            self.native.watch_directories(
+                paths,
+                Arc::new(move |mask| {
+                    observe(mask);
+                    changed(mask);
+                }),
+            )
+        })
     }
 }
 
@@ -96,53 +128,120 @@ impl ObservedWatch {
     pub fn new(native: Arc<dyn WatchService>) -> Self {
         Self {
             native,
-            callbacks: Arc::new(AtomicUsize::new(0)),
-            batches: Arc::default(),
+            state: Arc::default(),
         }
     }
 
-    pub fn callbacks(&self) -> usize {
-        self.callbacks.load(Ordering::SeqCst)
+    /// Register one native subscription; `subscribe` must report each callback mask
+    /// to the given observer before delivering it to the engine.
+    fn register(
+        &self,
+        paths: &[PathBuf],
+        subscribe: impl FnOnce(Observe) -> Result<Box<dyn WatchSubscription>, FsError>,
+    ) -> Result<Box<dyn WatchSubscription>, FsError> {
+        let paths: Arc<[PathBuf]> = paths.into();
+        let batch = {
+            let mut state = self.lock();
+            let batch = state.next_batch;
+            state.next_batch += 1;
+            state.live.insert(
+                batch,
+                Batch {
+                    paths: paths.clone(),
+                    armed: false,
+                },
+            );
+            batch
+        };
+        let observed = self.state.clone();
+        let result = subscribe(Arc::new(move |mask| {
+            record_callback(&observed, batch, mask);
+        }));
+        let mut state = self.lock();
+        let native = match result {
+            Ok(native) => native,
+            Err(error) => {
+                state.live.remove(&batch);
+                return Err(error);
+            }
+        };
+        state.registrations += 1;
+        state.last_registration = Some(Instant::now());
+        state.sequence += 1;
+        let sequence = state.sequence;
+        if let Some(batch) = state.live.get_mut(&batch) {
+            batch.armed = true;
+        }
+        for path in paths.iter() {
+            state.evidence.insert(path.clone(), sequence);
+        }
+        drop(state);
+        Ok(Box::new(ObservedSubscription {
+            batch,
+            state: self.state.clone(),
+            _native: native,
+        }))
     }
 
-    /// Number of batches registered so far (each re-registration counts).
-    pub fn registrations(&self) -> usize {
-        self.lock().registered
+    /// Snapshot for [`Self::native_evidence_for`], taken before an external change.
+    pub fn mark(&self) -> Mark {
+        Mark(self.lock().sequence)
     }
 
-    /// Snapshot for [`Self::native_evidence_since`], taken before an external change.
-    pub fn mark(&self) -> (usize, usize) {
-        (self.callbacks(), self.registrations())
+    /// After `mark`, a live subscription reported a change of `directory` (its bit,
+    /// or every bit for an error or overflow), or a subscription containing
+    /// `directory` was registered (the engine rescans the drop-to-register gap).
+    pub fn native_evidence_for(&self, mark: Mark, directory: &Path) -> bool {
+        self.lock()
+            .evidence
+            .get(directory)
+            .is_some_and(|sequence| *sequence > mark.0)
     }
 
-    /// A native callback arrived after `mark`, or a batch was registered after it:
-    /// a change inside the drop-to-register gap is covered by the engine's rescan of
-    /// the new registration instead of a callback.
-    pub fn native_evidence_since(&self, mark: (usize, usize)) -> bool {
-        self.callbacks() > mark.0 || self.registrations() > mark.1
-    }
-
-    /// Whether a currently live native subscription covers `path`.
+    /// Whether a registered, still live native subscription covers `path`.
     pub fn live_covers(&self, path: &Path) -> bool {
         self.lock()
             .live
             .values()
-            .any(|paths| paths.iter().any(|p| p == path))
+            .any(|batch| batch.armed && batch.paths.iter().any(|p| p == path))
+    }
+
+    /// Run a harness wait; if it fails, print these observations before unwinding.
+    pub fn diagnosed<T>(&self, wait: impl FnOnce() -> T) -> T {
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(wait)) {
+            Ok(value) => value,
+            Err(panic) => {
+                eprintln!("native watch observations: {}", self.describe());
+                std::panic::resume_unwind(panic)
+            }
+        }
     }
 
     /// Short description for failure messages.
     pub fn describe(&self) -> String {
-        let batches = self.lock();
+        let state = self.lock();
+        let mut live = state
+            .live
+            .iter()
+            .map(|(id, batch)| (*id, batch.armed, batch.paths.to_vec()))
+            .collect::<Vec<_>>();
+        live.sort_by_key(|(id, ..)| *id);
+        let mut evidence = state
+            .evidence
+            .iter()
+            .map(|(path, sequence)| (*sequence, path.clone()))
+            .collect::<Vec<_>>();
+        evidence.sort();
         format!(
-            "callbacks={}, registrations={}, live_batches={:?}, last_registration_age={:?}",
-            self.callbacks(),
-            batches.registered,
-            batches.live.values().collect::<Vec<_>>(),
-            batches.last_registration.map(|at| at.elapsed())
+            "sequence={}, callbacks={}, registrations={}, last_registration_age={:?}, live_batches(id, armed, paths)={live:?}, latest_evidence(sequence, directory)={evidence:?}",
+            state.sequence,
+            state.callbacks,
+            state.registrations,
+            state.last_registration.map(|at| at.elapsed()),
         )
     }
 
-    fn lock(&self) -> std::sync::MutexGuard<'_, Batches> {
-        self.batches.lock().unwrap_or_else(|e| e.into_inner())
+    fn lock(&self) -> MutexGuard<'_, State> {
+        lock(&self.state)
     }
 }
