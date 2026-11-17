@@ -18,6 +18,41 @@ code or a green subset into complete qualification.
 designed app features, test each deeply and polish all UI. Copy/Move convergence
 comes first; role work still requires scoped acceptance and exclusive ownership.
 
+### CI and concurrent-copy investigation — 17 November 2026
+
+Investigation input: `codex/ci-concurrent-copy-diagnostics-20261117`, following
+published main `226848f`. Four modified files cover the host-only known-Closing /
+epoch-reservation correction (`copy_namespace.rs` and tests), plus two bounded
+UI integration diagnostic helpers. Architect/Root source reviews accepted it;
+Perf accepted with a global-epoch-churn progress caveat. Local Linux and Windows
+runtime qualification passed; new remote CI and refreshed EXE receipts remain
+outstanding. Windows quality status is recorded below.
+
+Linux regression proof: both tests-only cases reached intended **RED** assertions
+(exit **101**). Corrected namespace **42/0**, four unchanged native-overlap cases
+**4/0**, and complete Engine lib **1370 passed / 0 failed / 9 ignored**, **19.99 s**,
+are GREEN. Strict Engine all-targets Clippy and format exited **0**, uid1000 on
+the existing native WSL checkout; source guard passed and all owned children exited.
+These fix the two source-proven host races; the original CI result did not
+distinguish them. Prior Linux main Test **1366/1/9**, synthetic WouldBlock publishing
+`second.bin`, remains RED history.
+
+Windows local runtime: namespace **42/0**, four unchanged native-overlap cases
+**4/0**, complete Engine lib **1378 passed / 0 failed / 8 ignored** (1,386 total),
+**29.57 s**. The normal non-admin run exited all owned PIDs and passed its source
+guard; compilation had zero warnings. Windows strict Engine all-targets Clippy passed with zero errors/warnings;
+format exited **0**, before/after source guards passed, and all owned processes
+exited with none remaining. The earlier 4-CPU/4-thread diagnostic subset **12 passes / 3.32 s**
+remains **UNREPRODUCED**, not independent fix proof.
+
+CI runs `43996256276` and `44005451404` remain RED history. Run `44009395488`
+has **all 18 package jobs GREEN** and Windows full Test **PASSED**, with Optimized
+release build underway; its Linux main Test failure above remains. The correction's
+new remote-CI result and refreshed EXE are **PENDING** at this checkpoint.
+The last qualified EXE below predates this host fix; subsequent host-only warm /
+private deployment and CI outcomes require their own actual receipts. Earlier
+results below retain their own source/environment and do not qualify this fix.
+
 The qualification preparation used feature branch `codex/copy-move-progress-20261113` at merge commit
 `a93557d4fc650c6dd8d83ad4ddd66003841a3e5a`, incorporating `origin/main` `ccf7310`.
 All 250 WIP files were restored: 237 byte-identical and 13 intentional
