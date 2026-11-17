@@ -115,7 +115,9 @@ if sys.argv[1] == 'build':
         commands = self.calls("cargo")
         self.assertEqual([command[0] for command in commands], ["--config", "test", "build"])
         self.assertTrue(all("--offline" in command and "--locked" in command for command in commands))
-        self.assertTrue(all("--release" in command for command in commands[1:]))
+        # Parser tests keep debug assertions and overflow checks; only the package is optimized.
+        self.assertNotIn("--release", commands[1])
+        self.assertIn("--release", commands[2])
         self.assertEqual((destination / "filesystems/midnight.fs.archive/midnight-fs-archive").read_bytes(), b"release")
 
     def test_image_viewer_cache_is_reused_but_stale_sdk_is_rejected_before_cargo(self):
@@ -168,6 +170,60 @@ if sys.argv[1] == 'build':
         result = self.run_wrapper("debug", str(self.config))
         self.assertEqual(result.returncode, 45, result.stdout + result.stderr)
         self.assertEqual(len(self.calls("notices")), 1)
+
+
+@unittest.skipUnless(sys.platform.startswith("linux"), "Linux Cargo fixture executable")
+class ArchiveNoticeTests(unittest.TestCase):
+    """Regenerated archive notices never retain a dependency that is no longer shipped."""
+
+    def setUp(self):
+        temporary = ROOT / "_build/tmp"
+        temporary.mkdir(parents=True, exist_ok=True)
+        self.temporary = tempfile.TemporaryDirectory(prefix="archive notices ", dir=temporary)
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+        self.bin = self.root / "bin"
+        self.bin.mkdir()
+        cargo = self.bin / "cargo"
+        cargo.write_text(f"#!{sys.executable}\nimport os, sys\n"
+                         "sys.stdout.write(open(os.environ['ARCHIVE_TEST_METADATA']).read())\n")
+        cargo.chmod(0o755)
+        self.metadata = self.root / "metadata.json"
+        self.environment = dict(os.environ, PATH=str(self.bin) + os.pathsep + os.environ["PATH"],
+                                ARCHIVE_TEST_METADATA=str(self.metadata))
+        self.output = self.root / "_build/package/licenses"
+
+    def dependency(self, name):
+        source = self.root / "registry" / f"{name}-1.0.0"
+        source.mkdir(parents=True, exist_ok=True)
+        (source / "LICENSE-MIT").write_text(f"{name} terms\n")
+        (source / "Cargo.toml").write_text("[package]\n")
+        return {"name": name, "version": "1.0.0", "license": "MIT",
+                "source": "registry+https://github.com/rust-lang/crates.io-index",
+                "manifest_path": str(source / "Cargo.toml")}
+
+    def generate(self, *names):
+        self.metadata.write_text(json.dumps({"packages": [self.dependency(name) for name in names]}))
+        return subprocess.run([sys.executable, "-B", str(ROOT / "plugins/midnight-fs-archive/scripts/notices.py"),
+                               "--config", str(self.metadata), "--output", str(self.output)],
+                              env=self.environment, text=True, capture_output=True, timeout=20)
+
+    def test_regeneration_removes_notices_of_dropped_dependencies(self):
+        self.assertEqual(self.generate("kept", "dropped").returncode, 0)
+        self.assertTrue((self.output / "dropped-1.0.0/LICENSE-MIT").is_file())
+        result = self.generate("kept")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(sorted(path.name for path in self.output.iterdir()), ["inventory.json", "kept-1.0.0"])
+        self.assertEqual([entry["name"] for entry in json.loads((self.output / "inventory.json").read_text())],
+                         ["kept"])
+
+    def test_directory_without_generated_inventory_is_never_replaced(self):
+        self.output.mkdir(parents=True)
+        (self.output / "user file").write_text("not generated\n")
+        result = self.generate("kept")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual((self.output / "user file").read_text(), "not generated\n")
+        self.assertFalse((self.output / "kept-1.0.0").exists())
 
 
 if __name__ == "__main__":

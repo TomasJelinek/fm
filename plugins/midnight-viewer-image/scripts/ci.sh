@@ -12,11 +12,14 @@ source "$plugin_root/../image-decoder/native/bootstrap-linux.sh" "$build_root/na
 source "$plugin_root/../image-decoder/native/build-linux.sh" "$build_root/native-dav1d" "$native_jobs" "${native_offline[@]}"
 # The native .pc prefix is absolute; an unrelated GUI sysroot must not rewrite it.
 unset PKG_CONFIG_SYSROOT_DIR
+# The package build selects the native --target; test and lint with the same
+# target so a Debug package build reuses the test dependency build.
+native_target="$(rustc -vV | sed -n 's/^host: //p')"
 for project in "$decoder_root" "$plugin_root"; do
     cargo fmt --manifest-path "$project/Cargo.toml" -- --check
     cargo --config "$sdk_config" test --manifest-path "$project/Cargo.toml" \
-        --target-dir "$build_root/target" --locked --offline --all-targets
+        --target-dir "$build_root/target" --target "$native_target" --locked --offline --all-targets
     cargo clippy --config "$sdk_config" --manifest-path "$project/Cargo.toml" \
-        --target-dir "$build_root/target" --locked --offline --all-targets -- -D warnings
+        --target-dir "$build_root/target" --target "$native_target" --locked --offline --all-targets -- -D warnings
 done
 bash "$plugin_root/scripts/build.sh" "$sdk_config" "$build_root"

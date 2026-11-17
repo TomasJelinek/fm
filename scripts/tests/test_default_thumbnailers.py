@@ -192,6 +192,63 @@ class ThumbnailerInputTests(unittest.TestCase):
             self.assertIn("FFMPEG", result.stderr)
             self.assertFalse((fixture / "destination").exists())
 
+    def test_rebuild_replaces_the_package_without_stale_files_or_truncating_mapped_libraries(self):
+        temporary = ROOT / "_build/tmp"
+        temporary.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=temporary) as directory:
+            fixture = Path(directory) / "_build/fixture"
+            (fixture / "scripts").mkdir(parents=True)
+            shutil.copyfile(ROOT / "scripts/build-thumbnailers.sh", fixture / "scripts/build-thumbnailers.sh")
+            native = fixture / "plugins/image-decoder/native"
+            native.mkdir(parents=True)
+            for name in ("bootstrap-linux.sh", "build-linux.sh"):
+                (native / name).write_text("return 0\n")
+            (fixture / "plugins/image-decoder/notices").mkdir()
+            (fixture / "plugins/image-decoder/notices/dav1d-LICENSE").write_text("dav1d terms\n")
+            notices = fixture / "notices"
+            for name in ("midnight-thumbnail-image", "midnight-thumbnail-video"):
+                (fixture / "plugins" / name).mkdir(parents=True)
+                (fixture / "plugins" / name / "thumbnailer.json").write_text("{}\n")
+                (notices / name).mkdir(parents=True)
+                (notices / name / "THIRD-PARTY.json").write_text("[]\n")
+            prefix = fixture / "ffmpeg"
+            (prefix / "lib").mkdir(parents=True)
+            (prefix / "share/midnight-ffmpeg").mkdir(parents=True)
+            (prefix / "share/midnight-ffmpeg/COPYING.LGPLv2.1").write_text("LGPL\n")
+            for name in ("libavcodec.so.63", "libavformat.so.63", "libavutil.so.61", "libswscale.so.10"):
+                (prefix / "lib" / name).write_bytes(b"new " + name.encode())
+            archive = fixture / "ffmpeg-9.0.2.tar.xz"
+            archive.write_bytes(b"source fixture")
+            (fixture / "registry.toml").write_text("# fixture\n")
+            tools = fixture / "bin"
+            tools.mkdir()
+            for name, body in (("sha256sum", "exit 0\n"),  # the pinned digest is checked elsewhere
+                               ("cargo", 'mkdir -p "$CARGO_TARGET_DIR/debug"\n'
+                                         'name=$(basename "$(dirname "$3")")\n'
+                                         'printf "new %s\\n" "$name" > "$CARGO_TARGET_DIR/debug/$name"\n')):
+                (tools / name).write_text("#!/bin/sh\nset -eu\n" + body)
+                (tools / name).chmod(0o755)
+            destination = fixture / "app/thumbnailers"
+            (destination / "notices/removed-provider").mkdir(parents=True)
+            (destination / "notices/removed-provider/LICENSE").write_text("stale notice\n")
+            (destination / "libavcodec.so.62").write_bytes(b"stale library")
+            (destination / "libavcodec.so.63").write_bytes(b"mapped library")
+            environment = dict(os.environ, PATH=str(tools) + os.pathsep + os.environ["PATH"])
+            with (destination / "libavcodec.so.63").open("rb") as mapped:
+                result = subprocess.run(
+                    ["bash", str(fixture / "scripts/build-thumbnailers.sh"), str(fixture / "registry.toml"),
+                     str(destination), str(fixture / "targets"), str(notices), str(prefix), str(archive),
+                     str(fixture), "debug"], env=environment, capture_output=True, text=True, timeout=20)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertEqual(mapped.read(), b"mapped library", "A running worker's library was rewritten")
+            self.assertFalse((destination / "libavcodec.so.62").exists())
+            self.assertFalse((destination / "notices/removed-provider").exists())
+            self.assertEqual((destination / "libavcodec.so.63").read_bytes(), b"new libavcodec.so.63")
+            self.assertEqual((destination / "midnight-thumbnail-video").read_text(), "new midnight-thumbnail-video\n")
+            self.assertTrue((destination / "notices/midnight-thumbnail-image/dav1d-LICENSE").is_file())
+            self.assertTrue((destination / "notices/ffmpeg-9.0.2/ffmpeg-9.0.2.tar.xz").is_file())
+            self.assertEqual(list((fixture / "app").glob(".thumbnailers-build.*")), [])
+
 
 if __name__ == "__main__":
     unittest.main()

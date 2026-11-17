@@ -22,11 +22,16 @@ profile_options=()
 case "$profile" in debug) ;; release) profile_options+=(--release) ;; *) echo 'Expected debug or release' >&2; exit 2 ;; esac
 cargo --config "$sdk_config" build --manifest-path "$plugin_root/Cargo.toml" \
     --target-dir "$build_root/target" --target "$native_target" "${profile_options[@]}" --locked --offline
-cp -- "$build_root/target/$native_target/$profile/midnight-viewer-pdf" "$output/midnight-viewer-pdf"
+# A running worker keeps its executable busy: rename a complete new inode into place.
+cp -- "$build_root/target/$native_target/$profile/midnight-viewer-pdf" "$output/.midnight-viewer-pdf.new"
+mv -f -- "$output/.midnight-viewer-pdf.new" "$output/midnight-viewer-pdf"
 sed -e "s/\"target\": \"[^\"]*\"/\"target\": \"$native_target\"/" \
     -e 's/"executable": "[^"]*"/"executable": "midnight-viewer-pdf"/' \
     "$plugin_root/image-viewer.json" > "$output/image-viewer.json"
 cp -- "$plugin_root/LICENSE" "$plugin_root/README.md" "$plugin_root/THIRD-PARTY.md" "$output/"
-mkdir -p -- "$output/notices"
+# Replace the generated notices so a removed dependency's notice cannot survive.
+[[ ! -L $output/notices ]] || { echo 'Package notices must not be a link' >&2; exit 2; }
+rm -rf -- "$output/notices"
+mkdir -- "$output/notices"
 cp -R -- "$plugin_root/notices/." "$output/notices/"
 echo "PDF viewer package: $output"

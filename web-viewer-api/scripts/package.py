@@ -67,8 +67,14 @@ def main():
         'replace-with = "web-viewer-releases"\n[source.web-viewer-releases]\n'
         f'local-registry = {json.dumps(str(registry))}\n', encoding="utf-8")
     environment = os.environ.copy()
-    environment.setdefault("CARGO_HOME", str(REPOSITORY / ".tools/cargo"))
-    environment.setdefault("RUSTUP_HOME", str(REPOSITORY / ".tools/rustup"))
+    # Standard rustup installations export neither home. Select the repository-
+    # local toolchain only when it exists; never redirect rustup to an empty
+    # checkout directory, which would download a second toolchain there.
+    local_home = REPOSITORY / ".tools/cargo"
+    local_cargo = local_home / "bin" / ("cargo.exe" if os.name == "nt" else "cargo")
+    if "CARGO_HOME" not in environment and local_cargo.is_file():
+        environment["CARGO_HOME"] = str(local_home)
+        environment.setdefault("RUSTUP_HOME", str(REPOSITORY / ".tools/rustup"))
     cargo = environment.get("CARGO", "cargo")
     target = REPOSITORY / "_build/html-viewer/api-target"
     artifacts = []

@@ -10,7 +10,7 @@ if (-not [IO.Path]::IsPathRooted($registry)) {
     $registry = Join-Path $base $registry
 }
 $registry = (Resolve-Path -LiteralPath $registry).Path.Replace('\', '/')
-$BuildRoot = [IO.Path]::GetFullPath($BuildRoot)
+$BuildRoot = [IO.Path]::GetFullPath($ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($BuildRoot))
 New-Item -ItemType Directory -Force $BuildRoot | Out-Null
 $generated = Join-Path $BuildRoot 'sdk.config.toml'
 $quoted = ConvertTo-Json -Compress $registry

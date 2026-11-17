@@ -20,18 +20,22 @@ if [[ $# -gt 4 ]]; then
         esac
     done
 fi
-if [[ $profile == release ]]; then options+=(--release); fi
+build_options=("${options[@]}")
+if [[ $profile == release ]]; then build_options+=(--release); fi
 plugin_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 case "$build_root" in /*/_build/*) ;; *) echo 'Build output must be under _build' >&2; exit 1;; esac
 export CARGO_TARGET_DIR="$build_root" CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0
 if [[ $run_tests == 1 ]]; then
+    # Parser tests keep debug assertions and overflow checks for every package profile.
     cargo test --manifest-path "$plugin_root/Cargo.toml" --locked --config "$sdk_config" "${options[@]}"
 fi
-cargo build --manifest-path "$plugin_root/Cargo.toml" --locked --config "$sdk_config" "${options[@]}"
+cargo build --manifest-path "$plugin_root/Cargo.toml" --locked --config "$sdk_config" "${build_options[@]}"
 if [[ -n "$package" ]]; then
     case "$package" in /*/_build/*) ;; *) echo 'Package staging must be under _build' >&2; exit 1;; esac
     mkdir -p -- "$package"
-    cp -- "$build_root/$profile/midnight-fs-archive" "$package/"
+    # A running worker keeps its executable busy: rename a complete new inode into place.
+    cp -- "$build_root/$profile/midnight-fs-archive" "$package/.midnight-fs-archive.new"
+    mv -f -- "$package/.midnight-fs-archive.new" "$package/midnight-fs-archive"
     cp -- "$plugin_root/THIRD-PARTY.md" "$package/"
     target=$(rustc -vV | sed -n 's/^host: //p')
     cat > "$package/plugin.toml" <<EOF

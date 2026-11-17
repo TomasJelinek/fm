@@ -23,9 +23,15 @@ esac
 cargo --config "$config" build --manifest-path "$plugin_root/Cargo.toml" \
     --target-dir "$build_root/target" --target "$native_target" "${profile_options[@]}" --locked --offline
 mkdir -p -- "$output"
-cp -- "$build_root/target/$native_target/$profile/$library" "$output/$library"
+# A running host may have the old library mapped: rename a complete new inode
+# into place instead of truncating the mapped one.
+cp -- "$build_root/target/$native_target/$profile/$library" "$output/.$library.new"
+mv -f -- "$output/.$library.new" "$output/$library"
 sed -e "s/^entry_library = .*/entry_library = \"$library\"/" \
     -e "s/^target = .*/target = \"$native_target\"/" "$plugin_root/plugin.toml" > "$output/plugin.toml"
 cp -- "$plugin_root/LICENSE" "$plugin_root/README.md" "$plugin_root/THIRD-PARTY.md" "$output/"
+# Replace the generated notices so a removed dependency's notice cannot survive.
+[[ ! -L $output/notices ]] || { echo 'Package notices must not be a link' >&2; exit 2; }
+rm -rf -- "$output/notices"
 cp -R -- "$plugin_root/notices" "$output/"
 echo "Viewer package: $output"

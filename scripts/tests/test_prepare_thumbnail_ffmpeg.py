@@ -190,6 +190,26 @@ class PrepareThumbnailFfmpeg(unittest.TestCase):
         self.assertEqual(json.loads(json.dumps(result)), {
             'prefix': str(prefix), 'source_archive': str(archive), 'libclang_path': str(clang)})
 
+    def test_automatic_libclang_prefers_the_newest_llvm_and_skips_linked_candidates(self):
+        module = self.module()
+        usr = self.root / 'usr'
+        for version in ('9', '18', '17'):
+            library = usr / 'lib' / f'llvm-{version}' / 'lib'
+            library.mkdir(parents=True)
+            (library / 'libclang.so.1').write_bytes(b'Compiler fixture')
+        environment = {'PATH': str(self.root / 'no-tools')}
+        self.assertEqual(module.find_libclang(environment, usr), usr / 'lib' / 'llvm-18' / 'lib')
+        # A distribution link (here the newest LLVM directory) is skipped, not fatal.
+        newest = usr / 'lib' / 'llvm-19'
+        try:
+            newest.symlink_to(usr / 'lib' / 'llvm-17', target_is_directory=True)
+        except OSError:
+            self.skipTest('symlink creation requires platform privilege')
+        self.assertEqual(module.find_libclang(environment, usr), usr / 'lib' / 'llvm-18' / 'lib')
+        # An explicit choice is never replaced by an automatic candidate.
+        with self.assertRaisesRegex(ValueError, 'link'):
+            module.find_libclang(dict(environment, LIBCLANG_PATH=str(newest / 'lib')), usr)
+
     def test_windows_prebuilt_requires_the_four_msvc_import_libraries(self):
         module = self.module()
         prefix = self.prefix(module, 'win32')

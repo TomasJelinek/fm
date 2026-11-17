@@ -140,6 +140,21 @@ source.rename(destination)
         self.assertIn(str(retained[0].parent), result.stderr)
 
 
+class LinuxHtmlManifest(unittest.TestCase):
+    def test_linux_package_keeps_the_project_manifest_identity(self):
+        # The Linux package once synthesized a stale "Chromium HTML" name and its own
+        # extension list; only the platform entry point may differ from Windows.
+        spec = importlib.util.spec_from_file_location(
+            "html_linux_packager", ROOT / "plugins/midnight-viewer-html/scripts/package-linux.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        project = json.loads((ROOT / "plugins/midnight-viewer-html/web-viewer.json").read_text())
+        manifest = module.linux_manifest()
+        self.assertEqual(manifest, dict(project, target="x86_64-unknown-linux-gnu",
+                                        executable="midnight-viewer-html"))
+        self.assertEqual(manifest["name"], "HTML viewer")
+
+
 class WebSdkEnvironment(unittest.TestCase):
     @unittest.skipUnless(shutil.which("pwsh"), "PowerShell delegation requires pwsh")
     def test_powershell_delegates_to_the_same_python_packager_and_preserves_toolchain_environment(self):
@@ -149,7 +164,8 @@ class WebSdkEnvironment(unittest.TestCase):
             root = Path(directory)
             tools = root / "bin"
             tools.mkdir()
-            python = tools / ("python-fixture.py" if os.name == "nt" else "python")
+            # The documented py launcher is preferred over python, which may be a Store alias.
+            python = tools / ("py-fixture.py" if os.name == "nt" else "py")
             report = root / "delegation.json"
             python.write_text(f"#!{sys.executable}\nimport json,os,sys\n"
                               "from pathlib import Path\n"
@@ -157,7 +173,7 @@ class WebSdkEnvironment(unittest.TestCase):
                               "'args':sys.argv[1:],'cargo':os.environ['CARGO'],\n"
                               "'cargo_home':os.environ['CARGO_HOME'],'rustup_home':os.environ['RUSTUP_HOME']}))\n")
             if os.name == "nt":
-                launcher = tools / "python.cmd"
+                launcher = tools / "py.cmd"
                 launcher.write_text(
                     f'@echo off\n"{sys.executable}" "{python}" %*\n', encoding="utf-8")
             else:
@@ -171,7 +187,8 @@ class WebSdkEnvironment(unittest.TestCase):
                                     env=environment, text=True, capture_output=True, timeout=20)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             actual = json.loads(report.read_text())
-            self.assertEqual(actual["args"], ["-B", str(ROOT / "web-viewer-api/scripts/package.py"), str(output)])
+            self.assertEqual(actual["args"], ["-3", "-B", str(ROOT / "web-viewer-api/scripts/package.py"),
+                                              str(output)])
             self.assertEqual(actual["cargo"], environment["CARGO"])
             self.assertEqual(actual["cargo_home"], environment["CARGO_HOME"])
             self.assertEqual(actual["rustup_home"], environment["RUSTUP_HOME"])
@@ -203,6 +220,17 @@ class WebSdkEnvironment(unittest.TestCase):
                 self.assertEqual(archive.extractfile(archive.getmembers()[0]).read(), b"\x00\xff\r\n")
 
     def test_existing_packager_preserves_supplied_cargo_and_toolchain_homes(self):
+        self.assert_packager_homes(supplied=True, local_toolchain=True)
+
+    def test_unset_homes_stay_unset_without_a_local_toolchain(self):
+        # A standard rustup installation exports neither home; redirecting them to
+        # an absent .tools tree would download a second toolchain into the checkout.
+        self.assert_packager_homes(supplied=False, local_toolchain=False)
+
+    def test_unset_homes_select_an_existing_local_toolchain(self):
+        self.assert_packager_homes(supplied=False, local_toolchain=True)
+
+    def assert_packager_homes(self, *, supplied, local_toolchain):
         temporary = ROOT / "_build/tmp"
         temporary.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(prefix="web SDK env ", dir=temporary) as directory:
@@ -232,13 +260,26 @@ with tarfile.open(target/(prefix+'.crate'),'w:gz') as archive:
                 cargo = launcher
             else:
                 cargo.chmod(0o755)
-            environment = dict(os.environ, CARGO=str(cargo), CARGO_HOME=str(root / "selected cargo"),
-                               RUSTUP_HOME=str(root / "selected rustup"), WEB_SDK_ENV_REPORT=str(report))
+            if local_toolchain:
+                local = root / ".tools/cargo/bin" / ("cargo.exe" if os.name == "nt" else "cargo")
+                local.parent.mkdir(parents=True)
+                local.write_bytes(b"local toolchain fixture")
+            environment = dict(os.environ, CARGO=str(cargo), WEB_SDK_ENV_REPORT=str(report))
+            for name in ("CARGO_HOME", "RUSTUP_HOME"):
+                environment.pop(name, None)
+            if supplied:
+                environment.update(CARGO_HOME=str(root / "selected cargo"),
+                                   RUSTUP_HOME=str(root / "selected rustup"))
+                expected = [environment["CARGO_HOME"], environment["RUSTUP_HOME"]]
+            elif local_toolchain:
+                expected = [str(root / ".tools/cargo"), str(root / ".tools/rustup")]
+            else:
+                expected = [None, None]
             result = subprocess.run([sys.executable, "-B", str(scripts / "package.py")],
                                     env=environment, text=True, capture_output=True, timeout=20)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             self.assertEqual([json.loads(line) for line in report.read_text().splitlines()],
-                             [[environment["CARGO_HOME"], environment["RUSTUP_HOME"]]] * 2)
+                             [expected] * 2)
 
 
 if __name__ == "__main__":

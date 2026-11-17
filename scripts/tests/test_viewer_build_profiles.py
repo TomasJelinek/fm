@@ -68,6 +68,9 @@ if 'build' in sys.argv:
                     (project / "notices/LICENSE").write_text("Third-party terms\n")
                     build = project.parents[1] / "_build/native"
                     package = project.parents[1] / "_build/package"
+                    # A notice of a dependency the rebuilt plugin no longer ships.
+                    (package / "notices/removed-crate-1.0.0").mkdir(parents=True)
+                    (package / "notices/removed-crate-1.0.0/LICENSE").write_text("Stale terms\n")
                     arguments = [str(self.config), str(build), str(package)]
                     if profile:
                         arguments.append(profile)
@@ -77,6 +80,7 @@ if 'build' in sys.argv:
                     self.assertEqual((package / f"libmidnight_viewer_{name}.so").read_bytes(),
                                      (profile or "debug").encode())
                     self.assertEqual((package / "notices/LICENSE").read_text(), "Third-party terms\n")
+                    self.assertFalse((package / "notices/removed-crate-1.0.0").exists())
 
     def wrapper(self):
         (self.root / "scripts").mkdir()

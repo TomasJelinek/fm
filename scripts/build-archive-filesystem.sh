@@ -16,7 +16,8 @@ app_directory=${3:-"$target_root/$profile"}
 if [[ -z "$sdk_config" ]]; then
     stamp=$(find api/tools/package worker-api thumbnail-api filesystem-api image-viewer-api -type f -print0 |
         sort -z | xargs -0 sha256sum | sha256sum | cut -d' ' -f1)
-    for cache in "$project_root/_build/thumbnailers" "$project_root/_build/image-viewer"; do
+    for cache in "$project_root/_build/thumbnailers" "$project_root/_build/image-viewer" \
+        "$project_root/_build/pdf-viewer"; do
         if [[ -f "$cache/linux-sdk-stamp" && -f "$cache/linux-sdk-config" ]] &&
             [[ $(cat "$cache/linux-sdk-stamp") == "$stamp" ]]; then
             candidate=$(cat "$cache/linux-sdk-config")

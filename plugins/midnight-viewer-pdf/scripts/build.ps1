@@ -7,9 +7,10 @@ param(
 $ErrorActionPreference = 'Stop'
 $pluginRoot = Split-Path -Parent $PSScriptRoot
 $SdkConfig = (Resolve-Path -LiteralPath $SdkConfig).Path
-$BuildRoot = [IO.Path]::GetFullPath($BuildRoot)
+# Relative arguments follow the PowerShell location, not the process directory.
+$BuildRoot = [IO.Path]::GetFullPath($ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($BuildRoot))
 if (-not $OutputDirectory) { $OutputDirectory = Join-Path $BuildRoot 'package/midnight-viewer-pdf' }
-$OutputDirectory = [IO.Path]::GetFullPath($OutputDirectory)
+$OutputDirectory = [IO.Path]::GetFullPath($ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($OutputDirectory))
 foreach ($path in @($BuildRoot, $OutputDirectory)) {
     if ($path -notmatch '[/\\]_build([/\\]|$)') { throw 'Generated output must be under _build' }
     for ($part = $path; $part; $part = Split-Path -Parent $part) {
@@ -36,7 +37,14 @@ $manifest.executable = $executable
 foreach ($name in @('LICENSE', 'README.md', 'THIRD-PARTY.md')) {
     Copy-Item -LiteralPath (Join-Path $pluginRoot $name) -Destination $OutputDirectory
 }
+# Replace the generated notices so a removed dependency's notice cannot survive.
 $notices = Join-Path $OutputDirectory 'notices'
-New-Item -ItemType Directory -Force $notices | Out-Null
+if (Test-Path -LiteralPath $notices) {
+    if ((Get-Item -LiteralPath $notices -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) {
+        throw 'Package notices must not be a link'
+    }
+    Remove-Item -LiteralPath $notices -Recurse -Force
+}
+New-Item -ItemType Directory -Path $notices | Out-Null
 Get-ChildItem -LiteralPath (Join-Path $pluginRoot 'notices') | Copy-Item -Destination $notices -Recurse -Force
 Write-Output "PDF viewer package: $OutputDirectory"

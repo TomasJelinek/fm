@@ -37,9 +37,7 @@ for name in basic source markdown; do
     plugin_root="$project_root/plugins/midnight-viewer-$name"
     plugin_build="$build_root/$native_target/$name"
     config="$sdk_config"
-    if [[ -f "$plugin_root/scripts/prepare-sdk.sh" ]]; then
-        config=$(bash "$plugin_root/scripts/prepare-sdk.sh" "$sdk_config" "$plugin_build")
-    elif [[ -f "$plugin_root/scripts/prepare-sdk.py" ]]; then
+    if [[ -f "$plugin_root/scripts/prepare-sdk.py" ]]; then
         config=$(python3 -B "$plugin_root/scripts/prepare-sdk.py" "$sdk_config" "$plugin_build")
     fi
     cargo --config "$config" fetch --manifest-path "$plugin_root/Cargo.toml" "${fetch_options[@]}"

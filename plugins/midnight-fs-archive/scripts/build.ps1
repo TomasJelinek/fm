@@ -9,9 +9,21 @@ param(
 $ErrorActionPreference = 'Stop'
 if ($env:MIDNIGHT_TEST_ARCHIVE_FILESYSTEM -eq '1') { $Test = $true }
 $pluginRoot = Split-Path -Parent $PSScriptRoot
-$buildDirectory = [IO.Path]::GetFullPath($BuildRoot)
+# Relative arguments follow the PowerShell location, not the process directory.
+$SdkConfig = (Resolve-Path -LiteralPath $SdkConfig).Path
+$buildDirectory = [IO.Path]::GetFullPath($ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($BuildRoot))
 if (($buildDirectory -split '[\\/]') -notcontains '_build') { throw 'BuildRoot must be under _build' }
 if ($buildDirectory.StartsWith($pluginRoot + [IO.Path]::DirectorySeparatorChar)) { throw 'BuildRoot must not modify plugin sources' }
+if ($OutputDirectory) {
+    $OutputDirectory = [IO.Path]::GetFullPath($ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($OutputDirectory))
+}
+# Python 3.12+ runs through the documented py launcher; python may be a Store alias.
+$python = 'python'
+$pythonArguments = @('-B')
+if (Get-Command py -CommandType Application -ErrorAction Ignore) {
+    $python = 'py'
+    $pythonArguments = @('-3', '-B')
+}
 New-Item -ItemType Directory -Force -Path $buildDirectory | Out-Null
 $savedTarget = $env:CARGO_TARGET_DIR
 $savedIncremental = $env:CARGO_INCREMENTAL
@@ -22,17 +34,19 @@ try {
     $env:CARGO_INCREMENTAL = '0'
     $env:CARGO_PROFILE_DEV_DEBUG = '0'
     $env:CARGO_PROFILE_TEST_DEBUG = '0'
-    $common = @('--manifest-path', (Join-Path $pluginRoot 'Cargo.toml'), '--locked', '--config', (Resolve-Path -LiteralPath $SdkConfig).Path)
+    $common = @('--manifest-path', (Join-Path $pluginRoot 'Cargo.toml'), '--locked', '--config', $SdkConfig)
     if ($Offline) { $common += '--offline' }
-    if ($Profile -eq 'release') { $common += '--release' }
+    $buildOptions = $common
+    if ($Profile -eq 'release') { $buildOptions += '--release' }
     if ($Test) {
+        # Parser tests keep debug assertions and overflow checks for every package profile.
         & cargo test @common
         if ($LASTEXITCODE -ne 0) { throw 'Archive plugin tests failed' }
     }
-    & cargo build @common
+    & cargo build @buildOptions
     if ($LASTEXITCODE -ne 0) { throw 'Archive plugin build failed' }
     if ($OutputDirectory) {
-        $package = [IO.Path]::GetFullPath($OutputDirectory)
+        $package = $OutputDirectory
         if (($package -split '[\\/]') -notcontains '_build') { throw 'Package staging must be under _build' }
         New-Item -ItemType Directory -Force -Path $package | Out-Null
         Copy-Item -LiteralPath (Join-Path $buildDirectory "$Profile/midnight-fs-archive.exe") -Destination $package
@@ -51,7 +65,7 @@ stable_entry_ids = true
 formats = ["zip", "tar", "gzip", "tar-gzip", "7z", "xz", "tar-xz", "bzip2", "tar-bzip2", "zstd", "tar-zstd"]
 "@
         [IO.File]::WriteAllText((Join-Path $package 'plugin.toml'), $manifest.Replace("`r`n", "`n"), [Text.UTF8Encoding]::new($false))
-        & python -B (Join-Path $PSScriptRoot 'notices.py') --config $SdkConfig --output (Join-Path $package 'licenses')
+        & $python @pythonArguments (Join-Path $PSScriptRoot 'notices.py') --config $SdkConfig --output (Join-Path $package 'licenses')
         if ($LASTEXITCODE -ne 0) { throw 'Archive distribution notices failed' }
     }
 } finally {

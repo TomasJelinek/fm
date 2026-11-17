@@ -6,13 +6,17 @@ param(
 $ErrorActionPreference = 'Stop'
 $pluginRoot = Split-Path -Parent $PSScriptRoot
 $SdkConfig = (Resolve-Path -LiteralPath $SdkConfig).Path
-$BuildRoot = [IO.Path]::GetFullPath($BuildRoot)
+$BuildRoot = [IO.Path]::GetFullPath($ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($BuildRoot))
 if ($BuildRoot -notmatch '[/\\]_build([/\\]|$)') { throw 'Generated output must be under _build' }
+# The package build selects the native --target; test and lint with the same
+# target so a Debug package build reuses the test dependency build.
+$nativeTarget = ((& rustc -vV | Select-String '^host: ').ToString() -replace '^host: ', '').Trim()
+if ($LASTEXITCODE -ne 0 -or -not $nativeTarget) { throw 'rustc target discovery failed' }
 & cargo fmt --manifest-path (Join-Path $pluginRoot 'Cargo.toml') -- --check
 if ($LASTEXITCODE -ne 0) { throw 'Formatting failed' }
 foreach ($operation in @('test', 'clippy')) {
     $arguments = @($operation, '--config', $SdkConfig, '--manifest-path', (Join-Path $pluginRoot 'Cargo.toml'),
-        '--target-dir', (Join-Path $BuildRoot 'target'), '--locked', '--offline', '--all-targets')
+        '--target-dir', (Join-Path $BuildRoot 'target'), '--target', $nativeTarget, '--locked', '--offline', '--all-targets')
     if ($operation -eq 'clippy') { $arguments += @('--', '-D', 'warnings') }
     & cargo @arguments
     if ($LASTEXITCODE -ne 0) { throw "$operation failed" }

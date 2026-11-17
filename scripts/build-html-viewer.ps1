@@ -16,6 +16,17 @@ $projectRoot = Split-Path -Parent $PSScriptRoot
 $buildRoot = Join-Path $projectRoot '_build/html-viewer'
 $staging = $null
 $cleanStaging = $true
+# Resolve caller paths against the PowerShell location before Push-Location;
+# [IO.Path]::GetFullPath would use the unrelated process working directory.
+if ($AppDirectory) { $AppDirectory = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($AppDirectory) }
+if ($SdkConfig) { $SdkConfig = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($SdkConfig) }
+# Python 3.12+ runs through the documented py launcher; python may be a Store alias.
+$python = 'python'
+$pythonArguments = @('-B')
+if (Get-Command py -CommandType Application -ErrorAction Ignore) {
+    $python = 'py'
+    $pythonArguments = @('-3', '-B')
+}
 Push-Location -LiteralPath $projectRoot
 try {
     $localCargo = Join-Path $projectRoot '.tools/cargo/bin'
@@ -25,7 +36,9 @@ try {
         $env:PATH = $localCargo + [IO.Path]::PathSeparator + $env:PATH
     }
     if (-not $AppDirectory) {
+        # Cargo resolves a relative CARGO_TARGET_DIR from the project root here too.
         $targetRoot = if ($env:CARGO_TARGET_DIR) { $env:CARGO_TARGET_DIR } else { '_build' }
+        if (-not [IO.Path]::IsPathRooted($targetRoot)) { $targetRoot = Join-Path $projectRoot $targetRoot }
         $AppDirectory = Join-Path $targetRoot $Profile
     }
     $AppDirectory = [IO.Path]::GetFullPath($AppDirectory)
@@ -68,9 +81,9 @@ try {
     }
     $SdkConfig = (Resolve-Path -LiteralPath $SdkConfig).Path
     $target = Join-Path $buildRoot 'provider-target/windows'
-    $nativeArguments = @('-B', (Join-Path $PSScriptRoot 'prepare-html-cef.py'), '--output', (Join-Path $target 'cef-sdk'))
+    $nativeArguments = $pythonArguments + @((Join-Path $PSScriptRoot 'prepare-html-cef.py'), '--output', (Join-Path $target 'cef-sdk'))
     if ($Offline) { $nativeArguments += '--offline' }
-    $nativeOutput = & python @nativeArguments
+    $nativeOutput = & $python @nativeArguments
     if ($LASTEXITCODE -ne 0) { throw 'Required CEF SDK preparation failed' }
     $native = ($nativeOutput -join "`n") | ConvertFrom-Json
     if ($native.cef_path -isnot [string] -or -not (Test-Path -LiteralPath $native.cef_path -PathType Container)) {

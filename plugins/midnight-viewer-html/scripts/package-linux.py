@@ -38,6 +38,15 @@ def validate_sdk(sdk, pin):
             raise ValueError(f'unexpected SDK entry: {relative}')
 
 
+def linux_manifest():
+    """The project manifest (identity, name, extensions) with the Linux entry point."""
+    manifest = json.loads((PROJECT / 'web-viewer.json').read_text(encoding='utf-8'))
+    version = tomllib.loads((PROJECT / 'Cargo.toml').read_text())['package']['version']
+    if manifest.get('version') != version:
+        raise ValueError('web-viewer.json version differs from Cargo.toml')
+    return dict(manifest, target='x86_64-unknown-linux-gnu', executable='midnight-viewer-html')
+
+
 def validate_native(manifest):
     for entry in manifest['files']:
         name = Path(entry['path'])
@@ -94,11 +103,7 @@ def package(sdk, destination, launcher, metadata, pin, native):
             output.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(notice, output)
     shutil.copy2(metadata, destination / 'dependency-metadata.json')
-    (destination / 'web-viewer.json').write_text(json.dumps({
-        'schema': 1, 'protocol': 1, 'id': 'midnight.viewer.html', 'name': 'Chromium HTML',
-        'version': tomllib.loads((PROJECT / 'Cargo.toml').read_text())['package']['version'],
-        'target': 'x86_64-unknown-linux-gnu',
-        'executable': 'midnight-viewer-html', 'extensions': ['html', 'htm', 'xhtml']}) + '\n')
+    (destination / 'web-viewer.json').write_text(json.dumps(linux_manifest()) + '\n')
     files = [{'path': p.relative_to(destination).as_posix(), 'bytes': p.stat().st_size,
               'sha256': digest(p)} for p in sorted(destination.rglob('*')) if p.is_file()]
     (destination / 'runtime-files.json').write_text(json.dumps({

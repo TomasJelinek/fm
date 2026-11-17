@@ -6,9 +6,10 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 $pluginRoot = Split-Path -Parent $PSScriptRoot
-$BuildRoot = [IO.Path]::GetFullPath($BuildRoot)
+# Relative arguments follow the PowerShell location, not the process directory.
+$BuildRoot = [IO.Path]::GetFullPath($ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($BuildRoot))
 if (-not $OutputDirectory) { $OutputDirectory = Join-Path $BuildRoot 'package/midnight-viewer-markdown' }
-$OutputDirectory = [IO.Path]::GetFullPath($OutputDirectory)
+$OutputDirectory = [IO.Path]::GetFullPath($ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($OutputDirectory))
 $config = & (Join-Path $PSScriptRoot 'prepare-sdk.ps1') -SdkConfig $SdkConfig -BuildRoot $BuildRoot
 $nativeTarget = ((& rustc -vV | Select-String '^host: ').ToString() -replace '^host: ', '').Trim()
 if ($LASTEXITCODE -ne 0) { throw 'Native target discovery failed' }
@@ -28,6 +29,14 @@ $manifest = $manifest -replace 'target = "[^"]+"', "target = `"$nativeTarget`""
 [IO.File]::WriteAllText((Join-Path $OutputDirectory 'plugin.toml'), $manifest)
 foreach ($notice in @('LICENSE', 'README.md', 'THIRD-PARTY.md')) {
     Copy-Item -LiteralPath (Join-Path $pluginRoot $notice) -Destination $OutputDirectory
+}
+# Replace the generated notices so a removed dependency's notice cannot survive.
+$notices = Join-Path $OutputDirectory 'notices'
+if (Test-Path -LiteralPath $notices) {
+    if ((Get-Item -LiteralPath $notices -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) {
+        throw 'Package notices must not be a link'
+    }
+    Remove-Item -LiteralPath $notices -Recurse -Force
 }
 Copy-Item -LiteralPath (Join-Path $pluginRoot 'notices') -Destination $OutputDirectory -Recurse -Force
 Write-Output "Viewer package: $OutputDirectory"

@@ -16,6 +16,9 @@ foreach ($entry in [Environment]::GetEnvironmentVariables('Process').GetEnumerat
     $savedEnvironment[$entry.Key] = $entry.Value
 }
 $projectRoot = Split-Path -Parent $PSScriptRoot
+# Resolve caller paths against the PowerShell location, not the process directory.
+if ($AppDirectory) { $AppDirectory = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($AppDirectory) }
+if ($WorkerSdkConfig) { $WorkerSdkConfig = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($WorkerSdkConfig) }
 $buildRoot = Join-Path $projectRoot "_build/$Viewer-viewer"
 $temporaryRoot = Join-Path $projectRoot '_build/tmp'
 New-Item -ItemType Directory -Force $buildRoot, $temporaryRoot | Out-Null
@@ -30,7 +33,9 @@ if (Test-Path -LiteralPath (Join-Path $localCargo 'cargo.exe')) {
 Push-Location -LiteralPath $projectRoot
 try {
     if (-not $AppDirectory) {
+        # Cargo resolves a relative CARGO_TARGET_DIR from the project root here too.
         $targetRoot = if ($env:CARGO_TARGET_DIR) { $env:CARGO_TARGET_DIR } else { '_build' }
+        if (-not [IO.Path]::IsPathRooted($targetRoot)) { $targetRoot = Join-Path $projectRoot $targetRoot }
         $AppDirectory = [IO.Path]::GetFullPath((Join-Path $targetRoot $Profile))
     }
     if (-not $WorkerSdkConfig) {
@@ -40,10 +45,19 @@ try {
         } | Sort-Object FullName | ForEach-Object {
             $_.FullName.Substring($projectRoot.Length) + ':' + (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash
         }) -join "`n"
-        $statePath = Join-Path $buildRoot 'sdk-state.json'
-        if (Test-Path -LiteralPath $statePath) {
-            $state = Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json
-            if ($state.stamp -eq $stamp -and (Test-Path -LiteralPath $state.config)) { $WorkerSdkConfig = $state.config }
+        # Image and PDF viewers, thumbnailers and the archive worker consume the same
+        # public worker SDK; reuse any current bundle instead of packaging it again.
+        $caches = @($buildRoot) + @('image-viewer', 'pdf-viewer', 'thumbnailers' | ForEach-Object {
+            Join-Path $projectRoot "_build/$_" } | Where-Object { $_ -ne $buildRoot })
+        foreach ($cache in $caches) {
+            $statePath = Join-Path $cache 'sdk-state.json'
+            if (Test-Path -LiteralPath $statePath) {
+                $state = Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json
+                if ($state.stamp -eq $stamp -and (Test-Path -LiteralPath $state.config -PathType Leaf)) {
+                    $WorkerSdkConfig = $state.config
+                    break
+                }
+            }
         }
         if (-not $WorkerSdkConfig) {
             foreach ($workspace in @('api', 'worker-api', 'thumbnail-api', 'filesystem-api', 'image-viewer-api')) {

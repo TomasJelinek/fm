@@ -24,11 +24,16 @@ fi
 if [[ -z "$sdk_config" ]]; then
     stamp=$(find api/tools/package worker-api thumbnail-api filesystem-api image-viewer-api -type f -print0 |
         sort -z | xargs -0 sha256sum | sha256sum | cut -d' ' -f1)
-    if [[ -f "$build_root/linux-sdk-stamp" && -f "$build_root/linux-sdk-config" ]] &&
-        [[ "$(cat "$build_root/linux-sdk-stamp")" == "$stamp" ]]; then
-        sdk_config=$(cat "$build_root/linux-sdk-config")
-        [[ -f "$sdk_config" ]] || sdk_config=''
-    fi
+    # Image and PDF viewers, thumbnailers and the archive worker consume the same
+    # public worker SDK; reuse any current bundle instead of packaging it again.
+    for cache in "$build_root" "$project_root/_build/image-viewer" "$project_root/_build/pdf-viewer" \
+        "$project_root/_build/thumbnailers"; do
+        if [[ -f "$cache/linux-sdk-stamp" && -f "$cache/linux-sdk-config" ]] &&
+            [[ "$(cat "$cache/linux-sdk-stamp")" == "$stamp" ]]; then
+            candidate=$(cat "$cache/linux-sdk-config")
+            if [[ -f "$candidate" ]]; then sdk_config=$candidate; break; fi
+        fi
+    done
     if [[ -z "$sdk_config" ]]; then
         for workspace in api worker-api thumbnail-api filesystem-api image-viewer-api; do
             cargo fetch --manifest-path "$workspace/Cargo.toml" "${fetch_options[@]}"
