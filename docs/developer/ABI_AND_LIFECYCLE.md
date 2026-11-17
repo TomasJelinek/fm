@@ -144,8 +144,15 @@ Entry methods for one instance are serialized by the backend dispatcher. Work
 callbacks and host callbacks run on backend workers, never the UI thread. Host
 callbacks must tolerate concurrent backend calls. Do not synchronously reenter
 the same instance's entry methods from a callback. `notify_ready` signals the
-dispatcher; it must not invoke `drain` inline. The current host uses bounded
-polling for dispatch. A C `Work.context` is an opaque cookie: the SDK uses an
+dispatcher; it must not invoke `drain` inline. The current host dispatches on
+notifications: request submission, cancellation, close, consumer drains, service
+replies, completed work and `notify_ready` all wake the dispatcher, and its work
+and service workers block until work arrives. Call `notify_ready` whenever output
+becomes ready; without it a raw-ABI plugin's output waits for a 250 ms fallback.
+Only a QUEUE_FULL service reply and NOT_QUIESCENT shutdown are retried every
+10 ms. Native `cancel` is called once per submitted request and not after
+`begin_shutdown`, which cancels every outstanding request itself. A C
+`Work.context` is an opaque cookie: the SDK uses an
 integer token and the host must not dereference it. `schedule_work` copies the
 `Work` descriptor during the call; it never retains the descriptor pointer.
 

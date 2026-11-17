@@ -24,10 +24,13 @@ discovery does not load or launch a plugin.
 
 Application services first call `installed_executable()` on a backend worker.
 Windows can resolve an explicitly registered private copy for an identical shared
-host build; trusted portable installations retain adjacent discovery. Other
-platforms retain the actual executable's location. The cached result does not
-authorize any package or bypass the checks below. See the
-[runtime discovery contract](../../docs/developer/RUNTIME_DISCOVERY.md).
+host build; trusted portable installations retain adjacent discovery. The trusted
+portable check uses the launch file's native final spelling, so letter-case, 8.3,
+SUBST and mapped-drive aliases of a protected installation are accepted (and the
+canonical path is returned), while reparse points in the entered spelling are
+still refused first. Other platforms retain the actual executable's location.
+The cached result does not authorize any package or bypass the checks below. See
+the [runtime discovery contract](../../docs/developer/RUNTIME_DISCOVERY.md).
 
 `choose` and `choose_enabled` route by the published modes/extensions. Extension
 matches prefer Document, then Source, then Text; a Text package with no extensions
