@@ -1,6 +1,7 @@
 //! Explicit persistent recovery; Drop only closes descriptors. Never recursively
 //! remove a stage or restore over a newly appearing winner.
 use crate::{
+    ownership,
     rename::{
         ITEM, Identity, Prepared, Revision, changed, limit, local_filesystem, trusted_parent,
     },
@@ -167,6 +168,60 @@ impl Plan {
             error,
         }
     }
+    /// This call created the stage and then refused it. Remove it while its name
+    /// still binds the directory we created; rmdir never removes contents.
+    fn refused(
+        self,
+        prepared: &Prepared,
+        parent_sync: &File,
+        error: Failure,
+        stage: Option<&File>,
+    ) -> CreateFailure {
+        let removed = (|| {
+            if let Some(file) = stage {
+                let visible = sys::pin(&prepared.parent, &self.name)?;
+                if Identity::of(&visible)? != Identity::of(file)? {
+                    return Err(changed(
+                        "The refused stage name binds another object; it was retained.",
+                    ));
+                }
+            }
+            sys::rmdir(&prepared.parent, &self.name)
+        })();
+        match removed {
+            Ok(()) => {
+                // The removal itself is the reported namespace fact; syncing it is best effort.
+                let _ = sys::sync(parent_sync);
+                CreateFailure::unchanged(error)
+            }
+            Err(removal) => self.failed(
+                prepared,
+                combine(error, "refused stage removal", removal),
+                stage,
+            ),
+        }
+    }
+}
+/// A kernel or file server refused the namespace request instead of performing
+/// it. Any other failure on an unqualified filesystem can hide a request that
+/// completed remotely.
+fn definite_refusal(error: &Failure) -> bool {
+    matches!(
+        error.os_code,
+        Some(
+            libc::EACCES
+                | libc::EPERM
+                | libc::EROFS
+                | libc::EINVAL
+                | libc::ENOSYS
+                | libc::EOPNOTSUPP
+                | libc::EXDEV
+                | libc::ENOSPC
+                | libc::EDQUOT
+                | libc::ENAMETOOLONG
+                | libc::EMLINK
+        )
+    )
 }
 fn unconfirmed_locator(mut error: Failure) -> Failure {
     error.message.insert_str(
@@ -187,6 +242,9 @@ pub(crate) struct Stage {
     plan: Plan,
     file: File,
     identity: Identity,
+    /// Permission bits accepted at creation: 0700, or the mount-provided mode of
+    /// a filesystem that cannot store POSIX modes. Any later change is refused.
+    mode: u32,
     parent_sync: File,
     stage_sync: File,
     captured: Option<File>,
@@ -221,49 +279,38 @@ impl Stage {
                     return Err(CreateFailure::unchanged(failure));
                 }
                 Err(failure) => {
-                    let file = sys::pin(&prepared.parent, &plan.name).ok();
+                    let file = sys::pin(&prepared.parent, &plan.name);
+                    if definite_refusal(&failure)
+                        && file
+                            .as_ref()
+                            .is_err_and(|observed| observed.code == ErrorCode::NotFound)
+                    {
+                        return Err(CreateFailure::unchanged(failure));
+                    }
                     return Err(plan.failed(prepared, combine(failure, "stage creation",
-                        Failure::new(ErrorCode::Io, "The failed request may have created this stage on an unqualified filesystem; its creation outcome is unconfirmed.")), file.as_ref()));
+                        Failure::new(ErrorCode::Io, "The failed request may have created this stage on an unqualified filesystem; its creation outcome is unconfirmed.")), file.ok().as_ref()));
                 }
             }
+            #[cfg(test)]
+            crate::rename_test_hooks::fire(
+                crate::rename_test_hooks::Boundary::AfterStageCreate,
+                &plan.path,
+            );
             let file = match sys::pin(&prepared.parent, &plan.name) {
                 Ok(file) => file,
-                Err(failure) => return Err(plan.failed(prepared, failure, None)),
+                Err(failure) => return Err(plan.refused(prepared, &parent_sync, failure, None)),
             };
-            let identity = match Identity::of(&file) {
-                Ok(value) => value,
-                Err(failure) => return Err(plan.failed(prepared, failure, Some(&file))),
+            let (identity, mode, stage_sync) = match Self::admit(prepared, &file) {
+                Ok(admitted) => admitted,
+                Err(failure) => {
+                    return Err(plan.refused(prepared, &parent_sync, failure, Some(&file)));
+                }
             };
-            let metadata = match file.metadata().map_err(Failure::from_io) {
-                Ok(value) => value,
-                Err(failure) => return Err(plan.failed(prepared, failure, Some(&file))),
-            };
-            if !metadata.is_dir()
-                || metadata.uid() != sys::effective_uid()
-                || metadata.mode() & 0o777 != 0o700
-                || identity.device != prepared.parent_identity.device
-            {
-                return Err(plan.failed(
-                    prepared,
-                    changed("New Rename stage is not an owner-only same-device directory."),
-                    Some(&file),
-                ));
-            }
-            let stage_sync = match sys::readable_directory(&file) {
-                Ok(file) => file,
-                Err(failure) => return Err(plan.failed(prepared, failure, Some(&file))),
-            };
-            if Identity::of(&stage_sync).ok() != Some(identity) {
-                return Err(plan.failed(
-                    prepared,
-                    changed("Stage sync descriptor changed identity."),
-                    Some(&file),
-                ));
-            }
             return Ok(Self {
                 plan,
                 file,
                 identity,
+                mode,
                 parent_sync,
                 stage_sync,
                 captured: None,
@@ -278,6 +325,43 @@ impl Stage {
             ErrorCode::ResourceLimit,
             "Rename stage collision limit reached.",
         )))
+    }
+    /// Admit a stage this call just created: an owned same-device directory that
+    /// only the caller can change. A restrictive umask or default ACL is corrected
+    /// to 0700. Filesystems whose permissions come from mount options (vfat, exfat,
+    /// NTFS, CIFS without POSIX extensions, many FUSE mounts) keep their mode,
+    /// which is accepted only while no other user may write to the stage.
+    fn admit(prepared: &Prepared, file: &File) -> Result<(Identity, u32, File), Failure> {
+        let identity = Identity::of(file)?;
+        let metadata = file.metadata().map_err(Failure::from_io)?;
+        if !metadata.is_dir()
+            || metadata.uid() != sys::effective_uid()
+            || identity.device != prepared.parent_identity.device
+        {
+            return Err(changed(
+                "New Rename stage is not an owned same-device directory.",
+            ));
+        }
+        let stage_sync = sys::readable_directory(file)?;
+        if Identity::of(&stage_sync)? != identity {
+            return Err(changed("Stage sync descriptor changed identity."));
+        }
+        let mut mode = metadata.mode() & 0o777;
+        if mode != 0o700 {
+            // The result is observed below; a refusal leaves the mount-provided mode.
+            let _ = sys::make_private(&stage_sync);
+            let current = stage_sync.metadata().map_err(Failure::from_io)?;
+            mode = current.mode() & 0o777;
+            if mode != 0o700
+                && !ownership::writable_only_by_caller(current.uid(), current.gid(), mode)
+            {
+                return Err(Failure::new(
+                    ErrorCode::Unsupported,
+                    "This filesystem would let other users change the Rename stage.",
+                ));
+            }
+        }
+        Ok((identity, mode, stage_sync))
     }
     pub(crate) fn file(&self) -> &File {
         &self.file
@@ -299,7 +383,7 @@ impl Stage {
         let metadata = self.file.metadata().map_err(Failure::from_io)?;
         if !metadata.is_dir()
             || metadata.uid() != sys::effective_uid()
-            || metadata.mode() & 0o777 != 0o700
+            || metadata.mode() & 0o777 != self.mode
         {
             return Err(changed("Rename stage protection changed."));
         }
@@ -479,7 +563,10 @@ impl Stage {
         match self.pin_item() {
             Ok(()) => return self.restore(prepared, error),
             Err(inspect) if inspect.code == ErrorCode::NotFound => {
-                if !local_filesystem(&prepared.parent) {
+                // A definite refusal leaving the source at its original name cannot
+                // complete later, even on remote storage.
+                let refused = definite_refusal(&error) && prepared.revalidate().is_ok();
+                if !local_filesystem(&prepared.parent) && !refused {
                     return self.required(
                         prepared,
                         RenameRecoveryRole::Source,

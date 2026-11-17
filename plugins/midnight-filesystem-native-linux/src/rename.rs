@@ -1,6 +1,6 @@
 //! Prepared same-parent Rename. Pins define authority; live namespace checks
 //! are not inode-CAS or isolation from the same UID/root and preopened descendants.
-use crate::{rename_recovery::Stage, rename_sys as sys, system};
+use crate::{ownership, rename_recovery::Stage, rename_sys as sys, system};
 use midnight_filesystem_plugin_api::*;
 use midnight_filesystem_plugin_sdk::{
     CallContext,
@@ -108,21 +108,25 @@ pub(crate) fn limit() -> Failure {
         "Exact Rename state and recovery receipt exceed the reserved resource budget.",
     )
 }
+/// The staged protocol needs a parent in which other users can neither replace
+/// nor remove names (see `ownership`).
 pub(crate) fn trusted_parent(parent: &File) -> Result<(), Failure> {
     let metadata = parent.metadata().map_err(Failure::from_io)?;
-    let uid = sys::effective_uid();
     if !metadata.is_dir()
-        || (metadata.uid() != uid && metadata.uid() != 0)
-        || (metadata.mode() & 0o022 != 0 && metadata.mode() & 0o1000 == 0)
+        || !ownership::protected_parent(metadata.uid(), metadata.gid(), metadata.mode())
     {
         return Err(Failure::new(
             ErrorCode::Unsupported,
-            "Rename recovery requires an owned or root-owned trusted sticky parent.",
+            "Rename requires a parent folder owned by you or root that other users cannot change.",
         ));
     }
     Ok(())
 }
 pub(crate) fn local_filesystem(parent: &File) -> bool {
+    #[cfg(test)]
+    if crate::rename_test_hooks::unqualified_filesystem() {
+        return false;
+    }
     system::filesystem(parent).is_ok_and(|value| {
         matches!(
             value.f_type as u64,
@@ -266,6 +270,8 @@ pub(crate) fn prepare(
         .map_err(|_| Failure::new(ErrorCode::Invalid, "NUL in source name."))?;
     let parent = system::open_path(parent_path, libc::O_PATH | libc::O_DIRECTORY, context)?;
     let parent_identity = Identity::of(&parent)?;
+    // Refuse before the user chooses a name; execution checks the parent again.
+    trusted_parent(&parent)?;
     let source = sys::pin(&parent, &name)?;
     let metadata = source.metadata().map_err(Failure::from_io)?;
     let identity = Identity::metadata(&metadata);
@@ -329,6 +335,14 @@ impl Prepared {
         }
         Ok(())
     }
+    /// A requested name that a case-insensitive or normalizing filesystem resolves
+    /// to the source's own entry: a single-link source, or a directory, which
+    /// cannot have another name. Another hard link of the source remains a
+    /// conflict. The staged no-replace publication stays authoritative.
+    fn alias_of_source(&self, target: &Target) -> bool {
+        target.identity == self.identity
+            && (target.object.kind == Kind::Directory || target.revision.links == 1)
+    }
     fn observe_conflict(
         &self,
         name: &CString,
@@ -388,7 +402,9 @@ impl Prepared {
             let replacement = match policy {
                 RenamePolicy::NoReplace => {
                     *retained = None;
-                    if Target::capture(&self.parent, &destination)?.is_some() {
+                    if let Some(target) = Target::capture(&self.parent, &destination)?
+                        && !self.alias_of_source(&target)
+                    {
                         return self.observe_conflict(&destination, &mut retained);
                     }
                     None

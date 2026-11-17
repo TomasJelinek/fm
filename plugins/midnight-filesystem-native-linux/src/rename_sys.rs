@@ -26,6 +26,18 @@ struct OpenHow {
     resolve: u64,
 }
 pub(crate) fn pin(parent: &File, name: &CStr) -> Result<File, Failure> {
+    let pinned = pin_exact(parent, name);
+    #[cfg(test)]
+    if pinned
+        .as_ref()
+        .is_err_and(|failure| failure.code == ErrorCode::NotFound)
+        && let Some(alias) = crate::rename_test_hooks::case_alias(parent, name)
+    {
+        return pin_exact(parent, &alias);
+    }
+    pinned
+}
+fn pin_exact(parent: &File, name: &CStr) -> Result<File, Failure> {
     let how = OpenHow {
         flags: (libc::O_PATH | libc::O_NOFOLLOW | libc::O_CLOEXEC) as u64,
         mode: 0,
@@ -179,8 +191,26 @@ pub(crate) fn readable_directory(pin: &File) -> Result<File, Failure> {
     })
 }
 pub(crate) fn mkdir(parent: &File, name: &CStr) -> Result<(), Failure> {
+    #[cfg(test)]
+    if let Some(errno) = crate::rename_test_hooks::take_mkdir_refusal() {
+        return Err(Failure::from_io(std::io::Error::from_raw_os_error(errno)));
+    }
     // SAFETY: valid retained parent, terminated component and explicit owner-only creation mode.
     if unsafe { libc::mkdirat(parent.as_raw_fd(), name.as_ptr(), 0o700) } != 0 {
+        return Err(error());
+    }
+    Ok(())
+}
+/// Make a stage this call created owner-only after a restrictive umask or
+/// default ACL. Filesystems whose permissions come from mount options keep
+/// their mode, either silently or with an error.
+pub(crate) fn make_private(directory: &File) -> Result<(), Failure> {
+    #[cfg(test)]
+    if crate::rename_test_hooks::private_mode_ignored() {
+        return Ok(());
+    }
+    // SAFETY: a retained readable descriptor of our own new directory; no pathname is resolved.
+    if unsafe { libc::fchmod(directory.as_raw_fd(), 0o700) } != 0 {
         return Err(error());
     }
     Ok(())
@@ -197,6 +227,10 @@ pub(crate) fn rename(
     } else {
         libc::RENAME_NOREPLACE
     };
+    #[cfg(test)]
+    if let Some(errno) = crate::rename_test_hooks::take_rename_refusal() {
+        return Err(Failure::from_io(std::io::Error::from_raw_os_error(errno)));
+    }
     // SAFETY: all descriptors and terminated component names remain borrowed through the call.
     if unsafe {
         libc::renameat2(
@@ -229,6 +263,10 @@ pub(crate) fn rmdir(parent: &File, name: &CStr) -> Result<(), Failure> {
 pub(crate) fn effective_uid() -> u32 {
     // SAFETY: geteuid has no arguments or ownership requirements.
     unsafe { libc::geteuid() }
+}
+pub(crate) fn effective_gid() -> u32 {
+    // SAFETY: getegid has no arguments or ownership requirements.
+    unsafe { libc::getegid() }
 }
 pub(crate) fn sync(file: &File) -> Result<(), Failure> {
     #[cfg(test)]
