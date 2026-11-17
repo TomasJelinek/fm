@@ -26,6 +26,9 @@ mod timestamps;
 
 const PANES: usize = 2;
 const MAX_WORKERS: usize = 2;
+/// Discovery diagnostics carried into an "unavailable" navigation error.
+const MAX_REPORTED_DIAGNOSTICS: usize = 4;
+const MAX_DIAGNOSTIC_CHARS: usize = 512;
 
 /// Backend capture authority. An expected revision must be validated before returning content.
 pub type ArchiveCapture = Arc<
@@ -81,9 +84,11 @@ struct Request {
     navigation: NavigationId,
     sort: SortSpec,
     cancel: Cancellation,
+    /// Controller shutdown only; the sole token forwarded into a shared mount.
+    teardown: Cancellation,
     _scope: TaskLifetime,
     // Last: native input and original service owners finish cleanup first.
-    permit: Option<OwnedSemaphorePermit>,
+    permit: Mutex<Option<OwnedSemaphorePermit>>,
 }
 pub(crate) struct Controller {
     capture: Option<ArchiveCapture>,
@@ -91,6 +96,9 @@ pub(crate) struct Controller {
     catalog: Arc<OnceLock<Catalog>>,
     budget: Arc<Semaphore>,
     cancellations: [Cancellation; PANES],
+    /// Wakes navigations waiting for a worker after a cancellation.
+    superseded: Arc<Notify>,
+    stop: Cancellation,
     outbox: Outbox,
     snapshots: Snapshots,
     ready: Arc<Notify>,
@@ -116,6 +124,8 @@ impl Controller {
             catalog: catalog.clone(),
             budget: Arc::new(Semaphore::new(MAX_WORKERS)),
             cancellations: std::array::from_fn(|_| Cancellation::default()),
+            superseded: Arc::new(Notify::new()),
+            stop: Cancellation::default(),
             outbox: outbox.clone(),
             snapshots,
             ready: ready.clone(),
@@ -125,15 +135,25 @@ impl Controller {
         };
         let native_scope = scope.clone();
         tasks.spawn(scope.future(async move {
-            let discovered = tokio::task::spawn_blocking(native_scope.blocking(|| {
+            let discovered = match tokio::task::spawn_blocking(native_scope.blocking(|| {
                 let executable =
                     midnight_plugin_host::installed_executable().map_err(std::io::Error::other)?;
                 Catalog::discover(executable.parent().unwrap_or(Path::new(".")))
             }))
             .await
-            .ok()
-            .and_then(Result::ok)
-            .unwrap_or_default();
+            {
+                Ok(Ok(catalog)) => catalog,
+                // Keep the cause: every later archive open reports it as unavailable.
+                Ok(Err(error)) => failed_discovery(format!(
+                    "Archive filesystem plugin discovery failed: {error}"
+                )),
+                Err(error) => failed_discovery(format!(
+                    "Archive filesystem plugin discovery stopped: {error}"
+                )),
+            };
+            for diagnostic in discovered.diagnostics.iter().take(MAX_REPORTED_DIAGNOSTICS) {
+                eprintln!("Archive filesystem discovery: {diagnostic}");
+            }
             let available = discovered.available_formats();
             let _ = catalog.set(discovered);
             ready.notify_waiters();
@@ -152,6 +172,7 @@ impl Controller {
     }
     pub(crate) fn cancel(&mut self, pane: PaneId) {
         self.cancellations[pane.index()].cancel();
+        self.superseded.notify_waiters();
         let mut snapshots = self.snapshots.lock().unwrap_or_else(|e| e.into_inner());
         // A failed native navigation can still display the previous virtual snapshot.
         snapshots[pane.index()].archive_navigation = None;
@@ -167,10 +188,11 @@ impl Controller {
         // EngineRun protects the incoming command while this single intake waits.
         let lease = self.retirement.intake.reserve().await;
         self.cancellations[pane.index()].cancel();
+        self.superseded.notify_waiters();
         let cancel = Cancellation::default();
         self.cancellations[pane.index()] = cancel.clone();
         let restore_native_on_failure = matches!(&action, ArchiveAction::Open { .. });
-        let mut request = lease.own(Request {
+        let request = lease.own(Request {
             action: Mutex::new(Some(action)),
             capture: self.capture.clone(),
             locale: self.locale.clone(),
@@ -180,37 +202,43 @@ impl Controller {
             navigation,
             sort,
             cancel,
+            teardown: self.stop.clone(),
             _scope: self.scope.clone(),
-            permit: None,
+            permit: Mutex::new(None),
         });
         {
             let mut states = self.snapshots.lock().unwrap_or_else(|e| e.into_inner());
             states[pane.index()].archive_navigation = Some(navigation);
             states[pane.index()].pending = None;
         }
-        let Ok(permit) = self.budget.clone().try_acquire_owned() else {
-            let failure = match request.retire().await {
-                Ok(()) => error("Archive navigation workers are busy"),
-                Err(failure) => error(format!("Archive input cleanup failed: {failure}")),
-            };
-            navigation::publish(
-                &self.snapshots,
-                &self.outbox,
-                pane,
-                navigation,
-                restore_native_on_failure,
-                Err(failure),
-            )
-            .await;
-            return;
-        };
-        request.permit = Some(permit);
         let request: Arc<WorkerOwned<Request>> = Arc::new(request);
         let ready = self.ready.clone();
         let outbox = self.outbox.clone();
         let mounts = self.mounts.clone();
         let scope = self.scope.clone();
+        let budget = self.budget.clone();
+        let superseded = self.superseded.clone();
         tasks.spawn(self.scope.future(async move {
+            // Superseded listings keep their worker until the native call returns.
+            // The newest navigation waits for one instead of being refused; each
+            // pane has at most one such waiter because a newer request cancels it.
+            let Some(permit) = admit(&budget, &request.cancel, &superseded).await else {
+                navigation::publish(
+                    &request.snapshots,
+                    &outbox,
+                    pane,
+                    navigation,
+                    restore_native_on_failure,
+                    Err(FsError::from_io(
+                        "archive navigation",
+                        Path::new(""),
+                        std::io::ErrorKind::Interrupted.into(),
+                    )),
+                )
+                .await;
+                return;
+            };
+            *request.permit.lock().unwrap_or_else(|e| e.into_inner()) = Some(permit);
             loop {
                 let notified = ready.notified();
                 if request.catalog.get().is_some() {
@@ -246,6 +274,8 @@ impl Controller {
             catalog: Arc::new(catalog),
             budget,
             cancellations: std::array::from_fn(|_| Cancellation::default()),
+            superseded: Arc::new(Notify::new()),
+            stop: Cancellation::default(),
             outbox,
             snapshots,
             ready: Arc::new(Notify::new()),
@@ -285,14 +315,63 @@ impl Drop for Controller {
         for cancel in &self.cancellations {
             cancel.cancel();
         }
+        self.stop.cancel();
+        self.superseded.notify_waiters();
     }
 }
+
+/// Wait for a navigation worker, or return None once this request is cancelled.
+async fn admit(
+    budget: &Arc<Semaphore>,
+    cancel: &Cancellation,
+    superseded: &Notify,
+) -> Option<OwnedSemaphorePermit> {
+    loop {
+        // Register before checking so a concurrent cancellation cannot be missed.
+        let changed = superseded.notified();
+        tokio::pin!(changed);
+        changed.as_mut().enable();
+        if cancel.is_cancelled() {
+            return None;
+        }
+        tokio::select! {
+            permit = budget.clone().acquire_owned() => return permit.ok(),
+            () = &mut changed => {}
+        }
+    }
+}
+
 fn error(message: impl Into<String>) -> FsError {
     FsError::from_io(
         "archive navigation",
         Path::new(""),
         std::io::Error::other(message.into()),
     )
+}
+
+fn failed_discovery(diagnostic: String) -> Catalog {
+    Catalog {
+        diagnostics: vec![diagnostic],
+        ..Catalog::default()
+    }
+}
+
+/// An unavailable-provider error that keeps the bounded discovery diagnostics
+/// explaining why no compatible package was loaded.
+fn unavailable(message: &str, catalog: Option<&Catalog>) -> String {
+    let mut text = message.to_owned();
+    let diagnostics = catalog.map_or(&[][..], |catalog| catalog.diagnostics.as_slice());
+    for diagnostic in diagnostics.iter().take(MAX_REPORTED_DIAGNOSTICS) {
+        text.push_str("\nPlugin discovery: ");
+        text.extend(diagnostic.chars().take(MAX_DIAGNOSTIC_CHARS));
+    }
+    if diagnostics.len() > MAX_REPORTED_DIAGNOSTICS {
+        text.push_str(&format!(
+            "\n{} more plugin discovery diagnostics",
+            diagnostics.len() - MAX_REPORTED_DIAGNOSTICS
+        ));
+    }
+    text
 }
 
 fn restore(
@@ -308,7 +387,10 @@ fn restore(
             None => c.choose_provider(&address.container, Some(&address.provider)),
         })
         .ok_or_else(|| {
-            error("Saved archive filesystem plugin is unavailable; the tab address is retained")
+            error(unavailable(
+                "Saved archive filesystem plugin is unavailable; the tab address is retained",
+                catalog,
+            ))
         })?;
     let source = capture_source(
         capture,

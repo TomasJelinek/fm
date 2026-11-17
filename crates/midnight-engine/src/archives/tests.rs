@@ -106,3 +106,157 @@ async fn unavailable_saved_archive_keeps_native_capabilities_disabled() {
     .await;
     assert_eq!(state.archive_navigation, Some(NavigationId(2)));
 }
+
+fn shared_mount(id: u64) -> Arc<crate::archive_shared::testing::SharedMount> {
+    let mount = crate::archive_shared::testing::SharedMount::new(id);
+    mount.insert(
+        1,
+        vec![ArchiveNode {
+            id: VirtualEntryId {
+                mount: id,
+                entry: 2,
+            },
+            parent: 1,
+            raw_name: Arc::from(b"folder".as_slice()),
+            display_name: "folder".into(),
+            kind: EntryKind::Directory,
+            size: None,
+            readable: false,
+            modified: None,
+        }],
+    );
+    Arc::new(mount)
+}
+
+/// A location whose mount is already shared with another tab, tree or viewer.
+fn shared_listing(mount: Arc<crate::archive_shared::testing::SharedMount>) -> ArchiveAction {
+    ArchiveAction::List(ArchiveLocation {
+        mount: Some(mount),
+        address: ArchiveAddress {
+            format: Some(ArchiveFormat::Zip),
+            provider: "test.shared".into(),
+            container: std::env::temp_dir().join("shared.zip"),
+            source_version: vec![1],
+            components: vec![],
+        },
+        directory: 1,
+        trail: vec![(1, "shared.zip".into())],
+    })
+}
+
+fn shared_controller(workers: usize) -> (Controller, tokio::sync::mpsc::Receiver<Event>) {
+    let (sender, events) = tokio::sync::mpsc::channel(4);
+    let controller = Controller::testing(
+        Outbox {
+            sender,
+            wakeup: Arc::new(|| {}),
+        },
+        crate::test_snapshots(Default::default()),
+        Arc::new(Semaphore::new(workers)),
+    );
+    (controller, events)
+}
+
+async fn listed(
+    events: &mut tokio::sync::mpsc::Receiver<Event>,
+) -> (NavigationId, Result<(), FsError>) {
+    match tokio::time::timeout(std::time::Duration::from_secs(5), events.recv())
+        .await
+        .unwrap()
+        .unwrap()
+    {
+        Event::ArchiveListed {
+            navigation, result, ..
+        } => (navigation, result.map(|_| ())),
+        _ => panic!("unexpected event"),
+    }
+}
+
+#[tokio::test]
+async fn superseded_listing_of_a_shared_archive_drains_without_terminating_it() {
+    let mount = shared_mount(43);
+    let (mut controller, mut events) = shared_controller(2);
+    let mut tasks = JoinSet::new();
+    let held = mount.hold_next();
+    controller
+        .navigate(
+            PaneId::Left,
+            NavigationId(1),
+            shared_listing(mount.clone()),
+            SortSpec::default(),
+            &mut tasks,
+        )
+        .await;
+    let held = tokio::task::spawn_blocking(move || {
+        held.wait_entered();
+        held
+    })
+    .await
+    .unwrap();
+    // Backspace before the listing returns: quick re-navigation cancels it.
+    controller.cancel(PaneId::Left);
+    held.release();
+    let (_, result) = listed(&mut events).await;
+    assert!(matches!(result, Err(error) if error.kind == std::io::ErrorKind::Interrupted));
+    tasks.join_next().await.unwrap().unwrap();
+    assert!(
+        !mount.terminated(),
+        "navigation cancellation reached the shared archive exchange"
+    );
+    assert!(mount.list(1, &Cancellation::default()).is_ok());
+}
+
+#[tokio::test]
+async fn newest_navigation_waits_for_a_worker_held_by_a_superseded_listing() {
+    let mount = shared_mount(44);
+    let (mut controller, mut events) = shared_controller(1);
+    let mut tasks = JoinSet::new();
+    let held = mount.hold_next();
+    controller
+        .navigate(
+            PaneId::Left,
+            NavigationId(1),
+            shared_listing(mount.clone()),
+            SortSpec::default(),
+            &mut tasks,
+        )
+        .await;
+    let held = tokio::task::spawn_blocking(move || {
+        held.wait_entered();
+        held
+    })
+    .await
+    .unwrap();
+    controller
+        .navigate(
+            PaneId::Left,
+            NavigationId(2),
+            shared_listing(mount.clone()),
+            SortSpec::default(),
+            &mut tasks,
+        )
+        .await;
+    tokio::task::yield_now().await;
+    assert!(
+        events.try_recv().is_err(),
+        "the newest navigation must wait for the busy worker, not be refused"
+    );
+    held.release();
+    let mut outcomes = std::collections::HashMap::new();
+    for _ in 0..2 {
+        let (navigation, result) = listed(&mut events).await;
+        outcomes.insert(navigation, result.is_ok());
+    }
+    assert_eq!(
+        outcomes[&NavigationId(1)],
+        false,
+        "superseded result is discarded"
+    );
+    assert_eq!(
+        outcomes[&NavigationId(2)],
+        true,
+        "newest navigation is listed"
+    );
+    while tasks.join_next().await.is_some() {}
+    assert!(!mount.terminated());
+}

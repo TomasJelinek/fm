@@ -1,7 +1,11 @@
 use super::*;
 use std::{
     fs::File,
-    sync::{Mutex, mpsc},
+    sync::{
+        Mutex,
+        atomic::{AtomicBool, Ordering},
+        mpsc,
+    },
     thread::{self, ThreadId},
     time::Duration,
 };
@@ -19,29 +23,37 @@ struct NativeMount {
     _file: File,
     _drop: DropReport,
     entered: Mutex<Option<mpsc::Sender<()>>>,
-    cancel_on_list: bool,
+    // Cancels the navigation's own request once the provider listing has returned,
+    // leaving a complete but stale listing. The provider never receives that token.
+    stale: bool,
+    request: Arc<Mutex<Option<Cancellation>>>,
+    listed: AtomicBool,
     release: Mutex<Option<mpsc::Receiver<()>>>,
 }
 impl ArchiveMount for NativeMount {
     fn id(&self) -> u64 {
         71
     }
-    fn list(&self, _: u64, cancel: &Cancellation) -> Result<Vec<ArchiveNode>, FsError> {
-        if self.cancel_on_list {
-            cancel.cancel();
-        }
+    fn list(&self, _: u64, _: &Cancellation) -> Result<Vec<ArchiveNode>, FsError> {
         if let Some(entered) = self.entered.lock().unwrap().take() {
             let _ = entered.send(());
         }
         if let Some(release) = self.release.lock().unwrap().take() {
             release.recv_timeout(Duration::from_secs(5)).unwrap();
         }
+        self.listed.store(true, Ordering::Release);
         Ok(Vec::new())
     }
     fn read(&self, _: u64, _: u64, _: u32, _: &Cancellation) -> Result<Vec<u8>, FsError> {
         panic!("navigation must not read member content")
     }
     fn validate(&self) -> Result<(), FsError> {
+        if self.stale
+            && self.listed.load(Ordering::Acquire)
+            && let Some(request) = self.request.lock().unwrap().as_ref()
+        {
+            request.cancel();
+        }
         Ok(())
     }
 }
@@ -54,12 +66,13 @@ struct Fixture {
     entered: mpsc::Receiver<()>,
     action: Option<ArchiveAction>,
     release: Option<mpsc::Sender<()>>,
+    request: Arc<Mutex<Option<Cancellation>>>,
 }
 impl Fixture {
-    fn new(cancel_on_list: bool) -> Self {
-        Self::build(cancel_on_list, false)
+    fn new(stale: bool) -> Self {
+        Self::build(stale, false)
     }
-    fn build(cancel_on_list: bool, gated: bool) -> Self {
+    fn build(stale: bool, gated: bool) -> Self {
         let root = tempfile::Builder::new()
             .prefix("archive-retirement-")
             .tempdir()
@@ -68,11 +81,14 @@ impl Fixture {
         let (report, dropped) = mpsc::channel();
         let (started, entered) = mpsc::channel();
         let (release, wait) = mpsc::channel();
+        let request = Arc::new(Mutex::new(None));
         let mount: Arc<dyn ArchiveMount> = Arc::new(NativeMount {
             _file: File::create(&path).unwrap(),
             _drop: DropReport(report),
             entered: Mutex::new(Some(started)),
-            cancel_on_list,
+            stale,
+            request: request.clone(),
+            listed: AtomicBool::new(false),
             release: Mutex::new(gated.then_some(wait)),
         });
         let action = ArchiveAction::List(ArchiveLocation {
@@ -104,6 +120,7 @@ impl Fixture {
             entered,
             action: Some(action),
             release: gated.then_some(release),
+            request,
         }
     }
     async fn navigate(&mut self) {
@@ -116,6 +133,9 @@ impl Fixture {
                 &mut self.tasks,
             )
             .await;
+        // The spawned listing has not been polled yet; expose its request token.
+        *self.request.lock().unwrap() =
+            Some(self.controller.cancellations[PaneId::Left.index()].clone());
     }
     fn assert_native_cleanup_off_caller(&self, boundary: &str) {
         let dropped = self.dropped.recv_timeout(Duration::from_secs(5)).unwrap();
@@ -136,21 +156,31 @@ async fn archive_retirement_unpolled_list_action_does_not_drop_native_mount_on_e
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn archive_retirement_busy_refusal_does_not_drop_input_mount_on_executor() {
+async fn archive_retirement_superseded_admission_wait_does_not_drop_input_mount_on_executor() {
     let mut fixture = Fixture::new(false);
     fixture.controller.budget = Arc::new(Semaphore::new(0));
     fixture.navigate().await;
+    // The spawned navigation waits for a worker instead of being refused.
+    tokio::task::yield_now().await;
+    assert!(fixture.events.try_recv().is_err());
+    fixture.controller.cancel(PaneId::Left);
     let event = tokio::time::timeout(Duration::from_secs(5), fixture.events.recv())
         .await
         .unwrap()
         .unwrap();
-    assert!(matches!(event, Event::ArchiveListed { result: Err(_), .. }));
+    assert!(matches!(
+        event,
+        Event::ArchiveListed { result: Err(ref error), .. }
+            if error.kind == std::io::ErrorKind::Interrupted
+    ));
     while fixture.tasks.join_next().await.is_some() {}
     assert!(
         fixture.entered.try_recv().is_err(),
-        "refused work reached provider"
+        "superseded waiting work reached provider"
     );
-    fixture.assert_native_cleanup_off_caller("busy refusal released native mount on executor");
+    fixture.assert_native_cleanup_off_caller(
+        "superseded admission wait released native mount on executor",
+    );
 }
 
 #[test]
