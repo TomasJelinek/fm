@@ -344,15 +344,6 @@ pub(crate) fn install(
     crate::shortcut_editor::install(window, presenter.clone(), send.clone());
     let weak = window.as_weak();
     let state = presenter.clone();
-    window.on_keyboard_select(move |index| {
-        let Some(window) = weak.upgrade() else {
-            return;
-        };
-        state.borrow_mut().select_shortcut(index);
-        refresh(&window, &state.borrow());
-    });
-    let weak = window.as_weak();
-    let state = presenter.clone();
     let sender = send.clone();
     window.on_keyboard_apply(move |action, text| {
         let Some(window) = weak.upgrade() else {

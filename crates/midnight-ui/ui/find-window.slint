@@ -153,6 +153,7 @@ export component FindWindow inherits ToolWindow {
                             current-index: root.roots.length > 0 ? root.selected-root : -1;
                             label: self.current-index >= 0 ? root.roots[self.current-index] : "";
                             accessible-name: "Search folders";
+                            hint: "Folders searched by this Find. Choose one to review or remove it.";
                             selected(index) => { root.selected-root = index; }
                         }
                         FindActionButton {

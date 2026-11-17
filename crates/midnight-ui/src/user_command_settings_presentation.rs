@@ -259,9 +259,6 @@ pub(crate) fn install(
     bind!(on_cancel, false, |p, _send| {
         p.cancel_user_command_setting();
     });
-    bind!(on_edit_started, false, |p, _send, token| {
-        p.mark_user_command_setting_dirty(token.as_str());
-    });
     bind!(on_draft_edited, false, |p, _send, token, form| {
         p.remember_user_command_form(token.as_str(), from_view(form));
     });

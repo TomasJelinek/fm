@@ -50,7 +50,13 @@ mod navigation_models;
 mod operation_detail;
 mod operation_presentation;
 mod operation_windows;
+#[cfg(test)]
+mod options_binding_tests;
 mod owned_commands;
+#[cfg(test)]
+mod test_harness;
+#[cfg(test)]
+mod tool_window_shutdown_tests;
 pub use owned_commands::{BeginOwned, OwnedCommandScope, with_owned_commands};
 mod panel_filter_windows;
 mod panel_models;
@@ -62,6 +68,8 @@ mod picker_window;
 mod unix_permissions;
 pub use picker_window::native_path_picker_owner;
 mod plugin_options;
+mod presentation_eq;
+use presentation_eq::SamePresentation;
 mod presenter;
 mod scroll_input;
 mod search_input;
@@ -97,6 +105,9 @@ use std::{
 };
 
 pub use midnight_ui_bindings::*;
+
+/// `FileRow.kind` marker that file-entry.slint announces as " · Folder link".
+const FOLDER_LINK_KIND: &str = "Folder link";
 
 struct Rows {
     presenter: Rc<RefCell<Presenter>>,
@@ -196,7 +207,6 @@ impl Model for Rows {
                 size: "".into(),
                 size_state: 0,
                 size_hint: "Parent folder".into(),
-                kind: "Parent folder".into(),
                 icon: state.desktop.image(&IconKey::action(ActionIcon::Parent)),
                 directory: true,
                 selected: false,
@@ -240,16 +250,12 @@ impl Model for Rows {
         let (modified_date, modified_time) = time_presentation::modified(metadata)
             .map(|value| (value.date, value.time))
             .unwrap_or_else(|| ("—".into(), "—".into()));
-        let kind = match entry.kind {
-            EntryKind::Directory => "Folder".into(),
-            EntryKind::DirectoryLink => "Folder link".into(),
-            EntryKind::Symlink => "Link".into(),
-            EntryKind::Other => "Other".into(),
-            EntryKind::File => entry
-                .path
-                .extension()
-                .map(|ext| ext.to_string_lossy().to_uppercase())
-                .unwrap_or_else(|| "File".into()),
+        // Slint reads `kind` only to announce folder links. Leave it empty
+        // otherwise: every visible row is rebuilt on scroll and refresh.
+        let kind = if entry.kind == EntryKind::DirectoryLink {
+            SharedString::from(FOLDER_LINK_KIND)
+        } else {
+            SharedString::default()
         };
         let filename_style = state.filename_style(self.pane, entry);
         Some(FileRow {
@@ -294,7 +300,7 @@ impl Model for Rows {
             },
             modified_date: modified_date.into(),
             modified_time: modified_time.into(),
-            kind: kind.into(),
+            kind,
             icon: state.thumbnail_image(self.pane, entry).unwrap_or_else(|| {
                 state
                     .desktop
@@ -327,14 +333,21 @@ impl Model for Rows {
 }
 
 fn format_size(bytes: u64, locale: &NumberLocale) -> String {
-    for (unit, divisor) in [
-        ("TiB", 1u64 << 40),
+    const UNITS: [(&str, u64); 4] = [
+        ("TiB", 1 << 40),
         ("GiB", 1 << 30),
         ("MiB", 1 << 20),
         ("KiB", 1 << 10),
-    ] {
+    ];
+    for (position, (unit, divisor)) in UNITS.into_iter().enumerate() {
         if bytes >= divisor {
             let tenths = (u128::from(bytes) * 10 + u128::from(divisor) / 2) / u128::from(divisor);
+            // Rounding can reach the next unit: 1,048,575 B is "1.0 MiB",
+            // never "1024.0 KiB".
+            let (unit, tenths) = match position.checked_sub(1).map(|larger| UNITS[larger]) {
+                Some((larger, _)) if tenths >= 10_240 => (larger, 10),
+                _ => (unit, tenths),
+            };
             return format!(
                 "{}{}{} {unit}",
                 locale.format_u64((tenths / 10) as u64),
@@ -405,7 +418,12 @@ fn refresh_properties(window: &MainWindow, presenter: &Presenter, reset_rows: bo
     shell_bridge::update(window, presenter);
     operation_presentation::refresh(window, presenter);
     window.invoke_refresh_operation_windows();
-    window.set_action_icons(action_icons::palette(presenter));
+    let action_icons = action_icons::palette(presenter);
+    if !window.get_action_icons().same_presentation(&action_icons) {
+        // Every toolbar, pane and dialog binds this palette; republishing an
+        // unchanged one (any absent icon compares unequal) repaints them all.
+        window.set_action_icons(action_icons);
+    }
     panel_models::refresh(window, presenter);
     let mut choices = navigation_models::ordered_choices(presenter);
     window.set_network_discovery_available(presenter.network_available);
@@ -523,9 +541,12 @@ fn refresh_properties(window: &MainWindow, presenter: &Presenter, reset_rows: bo
             })
         })
         .collect();
-    update_model(window.get_volume_icons(), volume_icons, |model| {
-        window.set_volume_icons(model)
-    });
+    update_model_by(
+        window.get_volume_icons(),
+        volume_icons,
+        slint::Image::same_presentation,
+        |model| window.set_volume_icons(model),
+    );
     if let Some(fonts) = window
         .get_font_choices()
         .as_any()
@@ -556,31 +577,6 @@ fn refresh_properties(window: &MainWindow, presenter: &Presenter, reset_rows: bo
         }
     }
     window.set_options_open(options.open);
-    window.set_editor_default_label(presenter.editor.default_label.as_str().into());
-    window.set_editor_executable(
-        presenter
-            .preferences
-            .values
-            .editor
-            .executable
-            .as_ref()
-            .map(|path| path.to_string_lossy().into_owned())
-            .unwrap_or_default()
-            .into(),
-    );
-    window.set_editor_arguments(
-        serde_json::to_string(&presenter.preferences.values.editor.arguments)
-            .unwrap_or_default()
-            .into(),
-    );
-    window.set_editor_revision(
-        format!(
-            "{}:{}",
-            presenter.preferences.revision.0, presenter.editor.revision
-        )
-        .into(),
-    );
-    window.set_editor_error(presenter.editor.error.as_str().into());
     let mode_index = |mode| match mode {
         PanelViewMode::Detailed => 0,
         PanelViewMode::Brief => 1,
@@ -857,14 +853,41 @@ fn update_model<T: Clone + PartialEq + 'static>(
     values: Vec<T>,
     set: impl FnOnce(ModelRc<T>),
 ) {
+    update_model_by(current, values, T::eq, set);
+}
+
+/// Replace a model only when a row differs under `same`. Rows holding Slint
+/// images use [`SamePresentation`]: an absent image never equals itself.
+fn update_model_by<T: Clone + 'static>(
+    current: ModelRc<T>,
+    values: Vec<T>,
+    same: impl Fn(&T, &T) -> bool,
+    set: impl FnOnce(ModelRc<T>),
+) {
     if current.row_count() != values.len()
         || values
             .iter()
             .enumerate()
-            .any(|(index, value)| current.row_data(index).as_ref() != Some(value))
+            .any(|(index, value)| !current.row_data(index).is_some_and(|old| same(&old, value)))
     {
         set(Rc::new(VecModel::from(values)).into());
     }
+}
+
+/// Close every tool window family owned by `window` before the application
+/// hides it to exit. A visible owned window would otherwise keep Slint's event
+/// loop running after the main window is gone. Each family retires its own
+/// records and ignores late callbacks; calling this again is harmless.
+pub fn close_tool_windows(window: &MainWindow) {
+    window.invoke_close_find_windows();
+    window.invoke_close_checksum_windows();
+    window.invoke_close_file_list_window();
+    window.invoke_close_operation_windows();
+    window.invoke_close_jobs_window();
+    window.invoke_close_decision_windows();
+    window.invoke_close_panel_filter_window();
+    window.invoke_close_hot_paths_window();
+    window.invoke_close_information_windows();
 }
 
 /// Register default application keys and cached hints on a standalone Slint window.
@@ -872,9 +895,9 @@ fn update_model<T: Clone + PartialEq + 'static>(
 /// [`install`] includes this initializer. UI-only hosts that attach individual
 /// callbacks can use it without a presenter or backend; native editors retain focus.
 pub fn install_file_keys(window: &MainWindow) {
+    dialog_focus::install_key_focus(window);
     metadata_presentation::install_permissions(window);
     filename_colors::install(window);
-    job_presentation::install(window);
     shortcut_bridge::install_default(window);
     tooltip::install(window).expect("install UI event observer after Slint initialization");
 }
@@ -929,7 +952,6 @@ pub fn install_with_owned(
     user_command_presentation::install(window, presenter.clone(), send.clone());
     user_command_settings_presentation::install(window, presenter.clone(), send.clone());
     editor_options_presentation::install(window, presenter.clone(), send.clone());
-    job_presentation::install(window);
     plugin_options::install(window, presenter.clone(), send.clone());
     archive_options::install(window, presenter.clone(), send.clone());
     color_options::install(window, presenter.clone(), send.clone());
@@ -1010,12 +1032,6 @@ pub fn install_with_owned(
             );
         }
     });
-    callback!(on_confirm_operation, |w, p, s, token, name| {
-        p.confirm_operation(token.as_str(), name.to_string(), s);
-        if p.operations.preview.is_none() {
-            w.invoke_focus_files();
-        }
-    });
     callback!(on_cancel_operation, |w, p, s, token| {
         if let Some(token) = token.strip_prefix("metadata-job:") {
             p.cancel_operation(token, s);
@@ -1061,9 +1077,6 @@ pub fn install_with_owned(
     callback!(on_decide_copy, |w, p, s, token, choice, name| {
         p.decide_copy(token.as_str(), choice, name.to_string(), s);
         let _ = w;
-    });
-    callback!(on_defer_copy, |_w, p, _s, token| {
-        p.defer_copy_decision(token.as_str());
     });
     {
         let weak = window.as_weak();
@@ -1486,6 +1499,8 @@ pub fn install_with_owned(
     callback!(on_thumbnail_size_changed, |_w, p, s, size| {
         p.change_thumbnail_size(size, s);
     });
+    // Legacy single-editor surface: nothing invokes these since the Editors page
+    // moved to EditorOptionsView. Remove with Presenter::change_editor/restore_editor.
     callback!(on_editor_apply, |w, p, s, executable, arguments| {
         p.change_editor(executable.as_str(), arguments.as_str(), s);
         let _ = w;
@@ -1624,15 +1639,7 @@ pub fn install_with_owned(
                     refresh(&window, &state.borrow());
                 } else {
                     state.borrow_mut().shutdown_drag_drop(sender.as_ref());
-                    window.invoke_close_find_windows();
-                    window.invoke_close_checksum_windows();
-                    window.invoke_close_file_list_window();
-                    window.invoke_close_operation_windows();
-                    window.invoke_close_jobs_window();
-                    window.invoke_close_decision_windows();
-                    window.invoke_close_panel_filter_window();
-                    window.invoke_close_hot_paths_window();
-                    window.invoke_close_information_windows();
+                    close_tool_windows(&window);
                     let _ = window.hide();
                 }
             }
@@ -1640,7 +1647,12 @@ pub fn install_with_owned(
     }
     {
         let weak = window.as_weak();
+        // The owner registry holds owners weakly. Keep the configured owner (its
+        // input gate and focus fallback) alive as long as this window, rather
+        // than relying on dialog adapters that happen to hold a clone.
+        let owner = owner.clone();
         window.window().on_close_requested(move || {
+            let _ = &owner;
             if let Some(window) = weak.upgrade() {
                 if window.get_embedded_modal_open() {
                     window.global::<PopupFocus>().invoke_update();

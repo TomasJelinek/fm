@@ -179,7 +179,7 @@ fn large_duplicate_group_rows_keep_identity_and_group_boundaries_after_sort() {
 }
 
 #[test]
-fn duplicate_phases_and_counts_are_visible_and_cancellation_retains_diagnostics() {
+fn duplicate_phases_and_localized_counts_are_visible_and_cancellation_retains_diagnostics() {
     let mut presenter = Presenter::new(std::env::temp_dir(), std::env::temp_dir());
     let id = presenter.create_find(PaneId::Left).unwrap();
     presenter.start_find(
@@ -191,20 +191,50 @@ fn duplicate_phases_and_counts_are_visible_and_cancellation_retains_diagnostics(
         &|_| true,
     );
     let session = presenter.finds.sessions.get_mut(&id).unwrap();
-    session.progress.duplicate_candidates = 120;
+    session.progress.duplicate_candidates = 1_200;
     session.progress.duplicate_groups = 8;
-    session.progress.duplicate_bytes = 4096;
+    session.progress.duplicate_bytes = 4_096;
+    let locale = NumberLocale {
+        decimal_separator: ",".into(),
+        group_separator: ".".into(),
+        grouping: vec![3],
+        repeat_last_group: true,
+    };
     for (phase, label) in [
         (FindPhase::Scanning, "Searching…"),
         (FindPhase::HashingDuplicates, "Hashing candidates…"),
         (FindPhase::ComparingDuplicates, "Comparing contents…"),
     ] {
         session.progress.phase = phase;
-        let caption = progress(session);
+        let caption = progress(session, &locale);
         assert!(caption.starts_with(label));
-        assert!(caption.contains("8 groups · 120 candidates"));
+        assert!(caption.contains("8 groups · 1.200 candidates"), "{caption}");
     }
     session.stopping = true;
-    assert!(progress(session).starts_with("Stopping…"));
-    assert!(details(session).contains("8 verified groups · 120 candidates · 4096 bytes"));
+    assert!(progress(session, &locale).starts_with("Stopping…"));
+    assert!(
+        details(session, &locale).contains("8 verified groups · 1.200 candidates · 4.096 bytes")
+    );
+    // A cancelled run keeps its diagnostics and names the limits in plain words.
+    let unreadable = std::env::temp_dir().join("unreadable\nReached limits: forged");
+    session.stopping = false;
+    session.running = false;
+    session.summary = Some(FindSummary {
+        completion: FindCompletion::Cancelled,
+        progress: session.progress.clone(),
+        reached_budgets: vec![FindBudget::TotalContent, FindBudget::DuplicateCandidates],
+        diagnostics: vec![FsError::from_io(
+            "read content",
+            &unreadable,
+            std::io::Error::other("Access denied"),
+        )],
+    });
+    assert!(progress(session, &locale).starts_with("Cancelled"));
+    let text = details(session, &locale);
+    assert!(
+        text.contains("Reached limits: total content read, duplicate candidates"),
+        "{text}"
+    );
+    assert!(text.contains("Access denied"), "{text}");
+    assert_eq!(text.matches("\nReached limits:").count(), 1, "{text}");
 }

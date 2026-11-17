@@ -1,8 +1,7 @@
 //! Embedded filter presentation; Presenter retains captured navigation and validation.
 use crate::{
-    MainWindow, PanelFilterPresentation, PanelFilterWindow, Presenter,
+    MainWindow, PanelFilterPresentation, Presenter,
     dialog_focus::{FocusReturn, restore_after_popup},
-    dialog_presentation::DialogThemeTarget,
 };
 use midnight_core::{Command, FilterMode, PanelFilter};
 use slint::{ComponentHandle, SharedString};
@@ -23,20 +22,6 @@ struct Context {
     help: RefCell<Option<help::Record>>,
     next_help: Cell<u64>,
     closing: Cell<bool>,
-}
-
-// Standalone wrappers remain useful to exercise the form at native-window sizes.
-impl DialogThemeTarget for PanelFilterWindow {
-    fn apply_theme(
-        &self,
-        scheme: i32,
-        density: i32,
-        family: SharedString,
-        desktop: i32,
-        touch: i32,
-    ) {
-        self.invoke_apply_preferences(scheme, density, family, desktop, touch);
-    }
 }
 
 pub(crate) fn install(
@@ -108,8 +93,12 @@ pub(crate) fn install(
         if let Some(main) = context.main.upgrade() {
             retire(&context, &main);
         }
-        if let Some(state) = context.state.upgrade() {
-            state.borrow_mut().cancel_panel_filter();
+        // Exit closes every tool window, possibly while a refresh or the host's
+        // shutdown timer holds the Presenter. The draft dies with it then.
+        if let Some(state) = context.state.upgrade()
+            && let Ok(mut presenter) = state.try_borrow_mut()
+        {
+            presenter.cancel_panel_filter();
         }
     });
 }

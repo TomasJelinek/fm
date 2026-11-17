@@ -33,7 +33,7 @@ export component CommandMenuBody inherits Rectangle {
         VerticalLayout {
             padding: root.height < 240px ? 6px : 12px;
             spacing: root.height < 240px ? 4px : 8px;
-            Text { text: root.title; color: Theme.strong-text; font-size: 17px; }
+            Text { text: root.title; color: Theme.strong-text; font-size: Theme.font-size * 1.4; }
             ScrollView {
                 min-width: 0px; min-height: 0px; vertical-stretch: 1;
                 VerticalLayout {

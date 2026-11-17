@@ -1,18 +1,22 @@
 import { Slider, SpinBox } from "std-widgets.slint";
 import { Theme } from "theme.slint";
 
+// Sliders and spin boxes assign their own value on input, which detaches a
+// one-way binding for good. Every control below therefore restores the shared
+// colour explicitly when it changes elsewhere (plane, swatches, other channels).
 component Channel inherits HorizontalLayout {
     in property <string> label;
     in property <int> value;
     callback edited(int);
+    changed value => { slider.value = root.value; spin.value = root.value; }
     spacing: 8px; cross-axis-alignment: center;
     Text { text: root.label; width: max(18px, Theme.font-size); color: Theme.text; font-size: Theme.font-size; }
-    Slider {
+    slider := Slider {
         accessible-label: root.label + " color channel";
         minimum: 0; maximum: 255; step: 1; value: root.value;
         changed(value) => { root.edited(round(value)); }
     }
-    SpinBox {
+    spin := SpinBox {
         accessible-label: root.label + " value";
         minimum: 0; maximum: 255; value: root.value;
         horizontal-stretch: 0;
@@ -27,6 +31,8 @@ export component ColorPickerControls inherits VerticalLayout {
     private property <float> saturation;
     private property <float> brightness;
     out property <color> current: Colors.hsv(root.hue, root.saturation, root.brightness);
+    changed saturation => { saturation-slider.value = root.saturation * 100; }
+    changed brightness => { brightness-slider.value = root.brightness * 100; }
     spacing: 8px;
     alignment: start;
     public function set-color(value: color) {
@@ -65,13 +71,12 @@ export component ColorPickerControls inherits VerticalLayout {
         background: @linear-gradient(90deg, #ff0000 0%, #ffff00 16.67%, #00ff00 33.33%, #00ffff 50%, #0000ff 66.67%, #ff00ff 83.33%, #ff0000 100%);
     }
     Slider {
-        accessible-label: "Color hue"; minimum: 0; maximum: 359; step: 1; value: root.hue;
-        changed(value) => { root.hue = value; }
+        accessible-label: "Color hue"; minimum: 0; maximum: 359; step: 1; value <=> root.hue;
     }
     HorizontalLayout {
         spacing: 8px;
         Text { text: "Saturation"; width: max(82px, Theme.small-font * 5.5); color: Theme.text; font-size: Theme.small-font; }
-        Slider {
+        saturation-slider := Slider {
             accessible-label: "Color saturation"; minimum: 0; maximum: 100; step: 1; value: root.saturation * 100;
             changed(value) => { root.saturation = value / 100; }
         }
@@ -79,7 +84,7 @@ export component ColorPickerControls inherits VerticalLayout {
     HorizontalLayout {
         spacing: 8px;
         Text { text: "Brightness"; width: max(82px, Theme.small-font * 5.5); color: Theme.text; font-size: Theme.small-font; }
-        Slider {
+        brightness-slider := Slider {
             accessible-label: "Color brightness"; minimum: 0; maximum: 100; step: 1; value: root.brightness * 100;
             changed(value) => { root.brightness = value / 100; }
         }

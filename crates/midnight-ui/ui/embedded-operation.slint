@@ -28,14 +28,12 @@ export global OperationPresentation {
     in-out property <string> option-label;
     in-out property <string> option-hint;
     in-out property <int> begin-revision;
-    in-out property <int> focus-revision;
     callback confirm(string, string);
     callback request-dismiss(string);
     public function begin() {
         self.active = true;
         self.begin-revision += 1;
     }
-    public function focus-input() { self.focus-revision += 1; }
 }
 
 // One persistent form keeps its edited text and caret through host refreshes.
@@ -62,13 +60,9 @@ export component EmbeddedOperation inherits Rectangle {
                 private property <bool> current: self.occurrence == OperationPresentation.token
                     && OperationPresentation.active;
                 private property <int> begin-revision: OperationPresentation.begin-revision;
-                private property <int> focus-revision: OperationPresentation.focus-revision;
                 init => { self.occurrence = OperationPresentation.token; frame.reset(); self.begin(); }
                 changed begin-revision => {
                     if self.current { frame.reset(); self.begin(); }
-                }
-                changed focus-revision => {
-                    if self.current { self.focus-input(); }
                 }
                 preferred-width: 0px; preferred-height: 0px;
                 title: OperationPresentation.title-text;

@@ -13,6 +13,13 @@ pub(crate) fn append_path(text: &mut String, path: &Path) {
     }
 }
 
+/// [`append_path`] as an owned value, for paths embedded in formatted text.
+pub(crate) fn path_text(path: &Path) -> String {
+    let mut text = String::new();
+    append_path(&mut text, path);
+    text
+}
+
 /// Compact presentation only: retain the original diagnostic separately and never decode escapes.
 pub(crate) fn folder_reason(message: &str, path: &Path) -> String {
     let (reason, _, _) = folder_context(message, path);

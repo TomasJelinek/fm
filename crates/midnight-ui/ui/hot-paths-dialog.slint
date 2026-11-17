@@ -21,10 +21,12 @@ export component HotPathsDialog inherits Rectangle {
     callback dismiss();
     callback move-dialog(length, length);
     changed model => { root.revision += 1; }
-    changed width => { if root.width < 400px { bookmark-close.focus(); } }
-    changed height => { if root.height < 350px { bookmark-close.focus(); } }
+    // Entering the compact layout can clip the focused control; move focus once
+    // when the layout changes, never on every resize step inside it.
+    private property <bool> compact: root.width < 400px || root.height < 350px;
+    changed compact => { if root.compact { bookmark-close.focus(); } }
     public function begin() {
-        if root.width < 400px || root.height < 350px { bookmark-close.focus(); }
+        if root.compact { bookmark-close.focus(); }
         else { slot-picker.focus(); }
     }
     pure function slot-label(slot: int) -> string {
@@ -118,8 +120,9 @@ export component HotPathsDialog inherits Rectangle {
                             accessible-label: "Hot Path shortcut";
                             min-height: Theme.control-height;
                             model: ["No numbered shortcut", root.slot-label(1), root.slot-label(2), root.slot-label(3), root.slot-label(4), root.slot-label(5), root.slot-label(6), root.slot-label(7), root.slot-label(8), root.slot-label(9), root.slot-label(10)];
-                            current-index: root.draft-slot;
-                            selected(value) => { root.draft-slot = self.current-index; }
+                            // Selecting a path changes the draft from outside; native
+                            // selection would detach a one-way binding.
+                            current-index <=> root.draft-slot;
                             hint: "Number for the selected path. Occupied numbers are exchanged; every saved folder is kept. Configure keys in Options → Keyboard.";
                         }
                         HintedActionButton {

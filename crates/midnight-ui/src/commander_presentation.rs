@@ -129,53 +129,14 @@ pub(super) fn refresh(window: &MainWindow, presenter: &Presenter) {
         unmatched_directories: state.options.unmatched_directories,
     });
     let state = &presenter.filter_dialog;
-    let history = presenter
-        .preferences
-        .values
-        .panel_filter_history
-        .iter()
-        .map(|filter| PanelFilterHistoryItem {
-            label: format!(
-                "{}{}: {}",
-                match filter.mode {
-                    FilterMode::Masks => "Masks",
-                    FilterMode::Regex => "Regex",
-                    FilterMode::Expression => "Expression",
-                },
-                if filter.case_sensitive {
-                    " (case sensitive)"
-                } else {
-                    ""
-                },
-                filter.expression
-            )
-            .into(),
-            mode: match filter.mode {
-                FilterMode::Masks => 0,
-                FilterMode::Regex => 1,
-                FilterMode::Expression => 2,
-            },
-            expression: filter.expression.as_str().into(),
-            case_sensitive: filter.case_sensitive,
-        })
-        .collect::<Vec<_>>();
-    let mut labels = vec![SharedString::from(if history.is_empty() {
-        "No filter history yet"
-    } else {
-        "Choose a recent filter…"
-    })];
-    labels.extend(history.iter().map(|item| item.label.clone()));
+    let (history, history_labels) = filter_history(window, presenter);
     window.set_panel_filter_view(PanelFilterView {
-        history: slint::ModelRc::new(slint::VecModel::from(history)),
-        history_labels: slint::ModelRc::new(slint::VecModel::from(labels)),
+        history,
+        history_labels,
         open: state.open,
         pane: state.pane.index() as i32,
         enabled: state.draft.enabled,
-        mode: match state.draft.mode {
-            FilterMode::Masks => 0,
-            FilterMode::Regex => 1,
-            FilterMode::Expression => 2,
-        },
+        mode: mode_index(state.draft.mode),
         expression: state.draft.expression.as_str().into(),
         case_sensitive: state.draft.case_sensitive,
         busy: state.busy,
@@ -199,4 +160,107 @@ pub(super) fn refresh(window: &MainWindow, presenter: &Presenter) {
     };
     window.set_left_filter_label(label(0));
     window.set_right_filter_label(label(1));
+}
+
+fn mode_index(mode: FilterMode) -> i32 {
+    match mode {
+        FilterMode::Masks => 0,
+        FilterMode::Regex => 1,
+        FilterMode::Expression => 2,
+    }
+}
+
+type HistoryModels = (
+    slint::ModelRc<PanelFilterHistoryItem>,
+    slint::ModelRc<SharedString>,
+);
+
+/// Reuse the published history models while the history is unchanged. This
+/// runs on every refresh (up to 100 entries of 4 KiB); new models would also
+/// reset the open filter form's history chooser, since models compare by identity.
+fn filter_history(window: &MainWindow, presenter: &Presenter) -> HistoryModels {
+    let source = &presenter.preferences.values.panel_filter_history;
+    let previous = window.get_panel_filter_view();
+    let unchanged = previous.history_labels.row_count() == source.len() + 1
+        && previous.history.row_count() == source.len()
+        && source.iter().enumerate().all(|(index, filter)| {
+            previous.history.row_data(index).is_some_and(|row| {
+                row.mode == mode_index(filter.mode)
+                    && row.case_sensitive == filter.case_sensitive
+                    && row.expression.as_str() == filter.expression
+            })
+        });
+    if unchanged {
+        return (previous.history, previous.history_labels);
+    }
+    let history = source
+        .iter()
+        .map(|filter| PanelFilterHistoryItem {
+            label: format!(
+                "{}{}: {}",
+                match filter.mode {
+                    FilterMode::Masks => "Masks",
+                    FilterMode::Regex => "Regex",
+                    FilterMode::Expression => "Expression",
+                },
+                if filter.case_sensitive {
+                    " (case sensitive)"
+                } else {
+                    ""
+                },
+                filter.expression
+            )
+            .into(),
+            mode: mode_index(filter.mode),
+            expression: filter.expression.as_str().into(),
+            case_sensitive: filter.case_sensitive,
+        })
+        .collect::<Vec<_>>();
+    let mut labels = vec![SharedString::from(if history.is_empty() {
+        "No filter history yet"
+    } else {
+        "Choose a recent filter…"
+    })];
+    labels.extend(history.iter().map(|item| item.label.clone()));
+    (
+        slint::ModelRc::new(slint::VecModel::from(history)),
+        slint::ModelRc::new(slint::VecModel::from(labels)),
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn refresh_keeps_filter_history_models_until_the_history_changes() {
+        let filter = |expression: &str| PanelFilter {
+            enabled: true,
+            mode: FilterMode::Masks,
+            expression: expression.into(),
+            case_sensitive: false,
+        };
+        let mut h = crate::test_harness::Harness::new(UserPreferences {
+            panel_filter_history: vec![filter("*.rs"), filter("*.md")],
+            ..Default::default()
+        });
+        let before = h.window.get_panel_filter_view();
+        assert_eq!(before.history_labels.row_count(), 3);
+        h.refresh();
+        let after = h.window.get_panel_filter_view();
+        assert!(
+            before.history == after.history && before.history_labels == after.history_labels,
+            "an unchanged history keeps its models (they compare by identity)"
+        );
+        let mut values = h.presenter.borrow().preferences.values.clone();
+        values.panel_filter_history[1] = filter("*.toml");
+        h.presenter.borrow_mut().preferences.values = values;
+        h.refresh();
+        let changed = h.window.get_panel_filter_view();
+        assert!(changed.history != after.history);
+        assert_eq!(
+            changed.history.row_data(1).unwrap().expression.as_str(),
+            "*.toml"
+        );
+    }
 }

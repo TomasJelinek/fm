@@ -103,7 +103,7 @@ pub(crate) fn install(
     });
     main.on_close_operation_windows(move || {
         context.closing.set(true);
-        close_record(context.windows.borrow_mut().record.take(), false);
+        close_record(context.windows.borrow_mut().record.take());
         // Copy drafts are local, provider-bearing captures: their existing cancel
         // route transfers ownership to backend reclamation instead of dropping here.
         if let Some(state) = context.state.upgrade()
@@ -133,7 +133,7 @@ fn synchronize(ctx: &Rc<Context>, main: &MainWindow, p: &Presenter) {
             None
         }
     };
-    close_record(old, false);
+    close_record(old);
     if ctx.closing.get() || p.operations.closing {
         return;
     }
@@ -315,7 +315,7 @@ fn confirm(ctx: &Rc<Context>, session: DialogSession, value: SharedString) {
         }
     };
     if accepted {
-        remove(ctx, session, true);
+        remove(ctx, session);
     }
     if let Ok(p) = state.try_borrow() {
         crate::refresh(&main, &p);
@@ -360,7 +360,7 @@ fn dismiss(ctx: &Rc<Context>, session: DialogSession) {
         }
     };
     if accepted {
-        remove(ctx, session, true);
+        remove(ctx, session);
     } else {
         wait_to_cancel(ctx, &record);
     }
@@ -388,7 +388,7 @@ fn wait_to_cancel(ctx: &Rc<Context>, record: &Record) {
         );
     }
 }
-fn remove(ctx: &Context, session: DialogSession, explicit: bool) {
+fn remove(ctx: &Context, session: DialogSession) {
     let record = {
         let mut windows = ctx.windows.borrow_mut();
         if windows
@@ -401,9 +401,9 @@ fn remove(ctx: &Context, session: DialogSession, explicit: bool) {
             None
         }
     };
-    close_record(record, explicit);
+    close_record(record);
 }
-fn close_record(record: Option<Rc<Record>>, _explicit: bool) {
+fn close_record(record: Option<Rc<Record>>) {
     if let Some(record) = record {
         record.retry.stop();
         if let Some(main) = record.main.upgrade() {

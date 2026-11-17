@@ -32,7 +32,7 @@ export component PanelViewControls inherits Rectangle {
             width: Theme.tool-width; height: Theme.control-height;
             context: root.context; press-context: root.press-context; press-cancelled: root.press-cancelled;
             icon: FallbackIcons.filter;
-            border-color: root.filter-label != "" ? Theme.active-frame : transparent;
+            rest-border: root.filter-label != "" ? Theme.active-frame : transparent;
             accessible-label: root.pane-id == 0 ? "Left panel filter" : "Right panel filter";
             accessible-checkable: true; accessible-checked: root.filter-label != "";
             hint: ShortcutHints.hint(root.filter-label == "" ? "Filter files"

@@ -133,16 +133,17 @@ impl DialogOwner {
     }
 }
 
+/// Runs for every input event (`dialog_input_blocked`); avoid allocating. The
+/// access closures only upgrade a component handle and never touch `OWNERS`.
 fn find_owner(window: &slint::Window) -> Option<Rc<OwnerState>> {
-    let candidates = OWNERS.with(|owners| {
+    OWNERS.with(|owners| {
         let mut owners = owners.borrow_mut();
         owners.retain(|owner| owner.strong_count() > 0);
-        owners.iter().filter_map(Weak::upgrade).collect::<Vec<_>>()
-    });
-    candidates.into_iter().find(|owner| {
-        let mut matched = false;
-        (owner.access)(&mut |candidate| matched = std::ptr::eq(window, candidate));
-        matched
+        owners.iter().filter_map(Weak::upgrade).find(|owner| {
+            let mut matched = false;
+            (owner.access)(&mut |candidate| matched = std::ptr::eq(window, candidate));
+            matched
+        })
     })
 }
 

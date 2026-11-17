@@ -3,7 +3,8 @@ use crate::*;
 
 /// Metadata changes must preserve delegates holding a pointer gesture. Replace
 /// the model only when a target identity, its position, or the count changes.
-pub(super) fn update<T: Clone + PartialEq + 'static>(
+/// Rows compare with absent icons equal, so a missing icon is not a change.
+pub(super) fn update<T: Clone + SamePresentation + 'static>(
     current: ModelRc<T>,
     values: Vec<T>,
     key: impl Fn(&T) -> slint::SharedString,
@@ -19,7 +20,10 @@ pub(super) fn update<T: Clone + PartialEq + 'static>(
         });
     if same_targets && let Some(model) = current.as_any().downcast_ref::<VecModel<T>>() {
         for (index, value) in values.into_iter().enumerate() {
-            if model.row_data(index).as_ref() != Some(&value) {
+            if !model
+                .row_data(index)
+                .is_some_and(|old| old.same_presentation(&value))
+            {
                 model.set_row_data(index, value);
             }
         }

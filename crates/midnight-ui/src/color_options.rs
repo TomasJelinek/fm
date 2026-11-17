@@ -102,14 +102,19 @@ fn sync_editor(presenter: &mut Presenter) {
 
 pub(crate) fn refresh(window: &MainWindow, presenter: &Presenter) {
     let editor = &presenter.colors.editor;
-    let saved: Vec<_> = presenter
-        .preferences
-        .values
-        .filename_colors
-        .iter()
-        .map(from_rule)
-        .collect();
-    let drafts = if editor.dirty { &editor.drafts } else { &saved };
+    let saved: Vec<_>;
+    let drafts = if editor.dirty {
+        &editor.drafts
+    } else {
+        saved = presenter
+            .preferences
+            .values
+            .filename_colors
+            .iter()
+            .map(from_rule)
+            .collect();
+        &saved
+    };
     let view = window.global::<ColorOptionsView>();
     let labels: Vec<slint::SharedString> = drafts
         .iter()

@@ -5,10 +5,14 @@ use crate::{
         CloseDisposition, DialogHost, DialogModality, DialogOwner, DialogSession, DialogSessions,
     },
     dialog_presentation::{self, DialogThemeTarget},
+    tool_window_failure::Failures,
 };
 use midnight_core::Command;
 use slint::{ComponentHandle, PlatformError, SharedString};
-use std::{cell::RefCell, rc::Rc};
+use std::{
+    cell::{Cell, RefCell},
+    rc::Rc,
+};
 
 #[path = "information_notices.rs"]
 mod notices;
@@ -24,7 +28,6 @@ struct Record<C> {
     window: C,
     host: DialogHost,
     session: DialogSession,
-    generation: Option<i32>,
     theme: ThemeRevision,
 }
 
@@ -38,19 +41,13 @@ struct InformationWindows {
 }
 
 trait InformationWindow: ComponentHandle + DialogThemeTarget + Sized + 'static {
-    const MODALITY: DialogModality = DialogModality::Modeless;
     fn create() -> Result<Self, PlatformError>;
     fn slot(windows: &mut InformationWindows) -> &mut Option<Record<Self>>;
     fn install_tooltips(&self) -> Result<(), PlatformError>;
     fn on_dismiss(&self, callback: impl Fn() + 'static);
     fn on_native_dismiss(&self);
-    fn bind_actions(&self, _main: &MainWindow, _windows: &Windows, _session: DialogSession) {}
     fn initialize(&self, main: &MainWindow);
     fn refresh(&self, _main: &MainWindow) {}
-    fn closed(&self, _main: &MainWindow) {}
-    fn generation(_main: &MainWindow) -> Option<i32> {
-        None
-    }
 }
 
 macro_rules! information_window {
@@ -80,7 +77,8 @@ information_window!(
         self.refresh(main);
     },
     fn refresh(&self, main: &MainWindow) {
-        self.set_topic(main.get_help_topic());
+        // Keyboard help is the only topic the main window opens (filter help
+        // is part of the Panel Filter form).
         self.set_shortcuts(main.global::<ShortcutHints>().invoke_help());
     }
 );
@@ -96,7 +94,7 @@ information_window!(
 pub(crate) fn install(
     main: &MainWindow,
     state: Rc<RefCell<Presenter>>,
-    _send: Rc<dyn Fn(Command) -> bool>,
+    send: Rc<dyn Fn(Command) -> bool>,
 ) {
     let owner = DialogOwner::new(main);
     let windows = Rc::new(RefCell::new(InformationWindows {
@@ -107,16 +105,29 @@ pub(crate) fn install(
         notice: notices::install(main),
         closing: false,
     }));
+    // Creation failures become a retained notice, like other tool windows. A
+    // status line would be replaced by the next refresh. Reporting is deferred:
+    // the opening callback may run while the Presenter is borrowed.
+    let closing = Rc::new(Cell::new(false));
+    let failures = Failures::new(
+        main,
+        &state,
+        &send,
+        &closing,
+        "Help and About",
+        |_, _: u8, _| true,
+    );
     macro_rules! open_callback {
         ($callback:ident, $component:ty) => {{
             let weak = main.as_weak();
             let windows = windows.clone();
             let state = state.clone();
+            let failures = failures.clone();
             main.$callback(move || {
-                if let Some(main) = weak.upgrade() {
-                    if let Err(error) = open::<$component>(&main, &windows, &state.borrow()) {
-                        main.set_desktop_status(format!("Unable to open dialog: {error}").into());
-                    }
+                if let Some(main) = weak.upgrade()
+                    && let Err(error) = open::<$component>(&main, &windows, &state.borrow())
+                {
+                    failures.record(0, format!("Unable to open the window: {error}"));
                 }
             });
         }};
@@ -143,6 +154,7 @@ pub(crate) fn install(
     }
     let weak = main.as_weak();
     main.on_close_information_windows(move || {
+        closing.set(true);
         let mut windows = windows.borrow_mut();
         windows.closing = true;
         if let Some(main) = weak.upgrade() {
@@ -185,14 +197,16 @@ fn open<C: InformationWindow>(
     windows: &Windows,
     presenter: &Presenter,
 ) -> Result<(), PlatformError> {
-    let generation = C::generation(main);
     let (owner, session) = {
         let mut windows = windows.borrow_mut();
         if windows.closing {
             return Ok(());
         }
+        // A host can retire without this adapter (its readiness timer closes a
+        // dialog whose owner went away). Replace such a record; reusing it
+        // would fail to show and block this window for the rest of the session.
         if let Some(record) = C::slot(&mut windows)
-            && record.generation == generation
+            && record.host.is_current(record.session)
         {
             record.host.show(record.window.window())?;
             record.host.activate(record.window.window());
@@ -202,18 +216,12 @@ fn open<C: InformationWindow>(
         let session = windows.sessions.allocate()?;
         (windows.owner.clone(), session)
     };
-    let (window, host) = DialogHost::create(session, owner, C::MODALITY, C::create)?;
+    let (window, host) = DialogHost::create(session, owner, DialogModality::Modeless, C::create)?;
     window.install_tooltips()?;
     dialog_presentation::apply(&window, presenter);
     window.initialize(main);
-    window.bind_actions(main, windows, session);
     let weak = Rc::downgrade(windows);
-    let main_weak = main.as_weak();
-    let dismissed = window.as_weak();
     window.on_dismiss(move || {
-        if let (Some(main), Some(window)) = (main_weak.upgrade(), dismissed.upgrade()) {
-            window.closed(&main);
-        }
         if let Some(windows) = weak.upgrade() {
             dismiss::<C>(&windows, session);
         }
@@ -231,7 +239,6 @@ fn open<C: InformationWindow>(
         window,
         host,
         session,
-        generation,
         theme: theme_revision(presenter),
     });
     Ok(())

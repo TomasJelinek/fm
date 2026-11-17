@@ -41,7 +41,6 @@ export component CompactPicker inherits Rectangle {
     in property <string> press-context: root.context;
     in property <bool> press-cancelled;
     in property <int> current-index: -1;
-    in property <string> shortcut-key;
     in property <int> shortcut-index: -1;
     in property <string> label;
     in property <string> hint;
@@ -284,7 +283,7 @@ export component CompactPicker inherits Rectangle {
             clicked => { if !root.press-cancelled && self.pressed-context == root.context { focus.focus(); root.open(); } }
         }
     }
-    Tooltip { TipBody { text: root.hint; } }
+    if root.hint != "": Tooltip { TipBody { text: root.hint; } }
     popup := PopupWindow {
         private property <length> below: max(1px, TooltipPlacement.surface-height - root.absolute-position.y - root.height - 8px);
         private property <length> above: max(1px, root.absolute-position.y - 8px);
@@ -308,12 +307,6 @@ export component CompactPicker inherits Rectangle {
                 let shortcut = root.shortcut-event(event);
                 if shortcut == 1 { root.commit(root.shortcut-index); return accept; }
                 if shortcut == 2 { return accept; }
-                if root.shortcut-key != "" && event.text == root.shortcut-key
-                    && !event.modifiers.control && !event.modifiers.alt
-                    && !event.modifiers.shift && !event.modifiers.meta {
-                    root.commit(root.shortcut-index);
-                    return accept;
-                }
                 if event.text == Key.DownArrow {
                     root.pending-index = min(root.item-count - 1, root.pending-index + 1);
                     return accept;
@@ -346,6 +339,13 @@ export component CompactPicker inherits Rectangle {
                     // installed-font catalog. The host keeps the committed index.
                     content-y: -min(max(0px, root.item-count * Theme.control-height - self.visible-height),
                         max(0, root.pending-index - 5) * Theme.control-height);
+                    // Wheel and scrollbar input assign content-y, which detaches the
+                    // binding above; keyboard browsing must still reveal its row.
+                    private property <int> browsed-index: root.pending-index;
+                    changed browsed-index => {
+                        self.content-y = -min(max(0px, root.item-count * Theme.control-height - self.visible-height),
+                            max(0, self.browsed-index - 5) * Theme.control-height);
+                    }
                     for value[index] in root.item-count : Rectangle {
                         height: Theme.control-height;
                         background: index == root.pending-index || row-area.has-hover

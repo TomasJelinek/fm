@@ -22,15 +22,14 @@ export component MainMenuBody inherits Rectangle {
     in property <bool> can-target-cursor;
     in property <bool> can-target-selection;
     in property <bool> network-available;
-    in property <int> generation;
     private property <int> category;
     private property <[string]> categories: ["All actions", "Files", "Selection", "Panels and navigation", "Tools", "Application"];
     callback action(string);
     callback dismissed();
     callback moved(length, length);
     function reset() { root.category = 0; choices.content-y = 0px; category-picker.focus(); }
+    // The host shows a new popup instance each time; it starts reset.
     init => { root.reset(); }
-    changed generation => { root.reset(); }
     pure function enabled-action(action: string) -> bool {
         return ActionAvailability.enabled(action, root.native-filesystem, root.can-target-cursor,
             root.can-target-selection, root.network-available, root.can-measure-folders);

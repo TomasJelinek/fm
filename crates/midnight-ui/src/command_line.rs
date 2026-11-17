@@ -117,6 +117,14 @@ mod tests {
             replace_command_selection("hi", -2, 90, "x"),
             ("x".into(), 1)
         );
+        // A reversed selection over CJK, a combining accent and an emoji ZWJ
+        // sequence keeps every byte of the surrounding text.
+        let text = "echo 文档 Cafe\u{301} 👩🏽‍💻 tail";
+        let end = 5 + "文档 Cafe\u{301} 👩🏽‍💻".len();
+        assert_eq!(
+            replace_command_selection(text, end as i32, 5, "'Žlutý'"),
+            ("echo 'Žlutý' tail".into(), 14)
+        );
     }
 
     #[test]

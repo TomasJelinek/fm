@@ -64,7 +64,7 @@ pub(super) fn volume_tooltip(
         format!(
             "{}\n{}\n{}",
             volume.label,
-            volume.root.display(),
+            crate::error_presentation::path_text(&volume.root),
             tooltip(details, locale)
         )
     }

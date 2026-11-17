@@ -20,7 +20,7 @@ export component AboutDialog inherits Rectangle {
         VerticalLayout {
             padding: 8px; spacing: 6px;
             DialogHeader {
-                title: "Midnight Explorer"; text-size: 18px; compact: true;
+                title: "Midnight Explorer"; text-size: Theme.font-size * 1.5; compact: true;
                 native-icon: root.application-icon;
                 close-label: "Close dialog"; close => { root.close(); }
                 dragged(dx, dy) => { root.move-dialog(dx, dy); }

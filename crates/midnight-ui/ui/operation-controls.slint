@@ -16,7 +16,6 @@ export component OperationDialog inherits Rectangle {
     in property <string> input-label;
     in property <int> selection-end;
     in property <bool> has-name;
-    out property <length> input-height: root.has-name ? name.height : 0px;
     in property <bool> dangerous;
     in property <string> confirm-text;
     in property <bool> confirm-enabled: true;
@@ -92,9 +91,6 @@ export component OperationDialog inherits Rectangle {
         name.text = root.initial-name;
         if root.has-name { root.focus-name(); name.set-selection-offsets(0, root.selection-end); }
         else { root.focus-primary(); }
-    }
-    public function focus-input() {
-        if root.has-name { root.focus-name(); } else { root.focus-primary(); }
     }
     scope := FocusScope {
         capture-key-pressed(event) => {

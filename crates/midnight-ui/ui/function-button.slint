@@ -114,5 +114,5 @@ export component FunctionButton inherits Rectangle {
             }
         }
     }
-    Tooltip { TipBody { text: root.hint; } }
+    if root.hint != "": Tooltip { TipBody { text: root.hint; } }
 }

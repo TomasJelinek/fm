@@ -8,6 +8,19 @@ use std::path::PathBuf;
 #[path = "thumbnail_image_cache.rs"]
 mod cache;
 
+/// Targets per thumbnail request. The thumbnail host (midnight-thumbnail-host
+/// `service.rs`) rejects larger requests; keep both limits equal.
+pub(crate) const MAX_THUMBNAIL_TARGETS: usize = 256;
+
+/// Split the request budget between the panes' visible candidates. Each pane is
+/// guaranteed half; a pane that needs less leaves the rest to the other, so a
+/// single large thumbnail grid can use the whole budget.
+fn split_quota(budget: usize, wanted: [usize; 2]) -> [usize; 2] {
+    let fair = budget / 2;
+    let left = wanted[0].min(fair.max(budget.saturating_sub(wanted[1])));
+    [left, wanted[1].min(budget - left)]
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ThumbnailTarget {
     pub identity: String,
@@ -24,7 +37,10 @@ pub(crate) struct ThumbnailState {
     images: HashMap<String, Vec<Option<Image>>>,
     coverage: HashMap<String, [u32; 6]>,
     archive_network_policy: HashMap<String, bool>,
+    /// Last use per identity and the same ticks in order: eviction walks the
+    /// oldest entries instead of sorting every retained key per upload.
     used: HashMap<String, u64>,
+    order: std::collections::BTreeMap<u64, String>,
     bytes: usize,
     tick: u64,
     pulse: usize,
@@ -80,7 +96,7 @@ impl Presenter {
         // Explicitly configured command artwork uses the same isolated decoder
         // and disk cache, independently of the panel-thumbnail display option.
         let mut targets = self.command_icon_targets();
-        let panel_quota = (256 - targets.len()) / 2;
+        let mut candidates: [Vec<ThumbnailTarget>; 2] = Default::default();
         for side in [PaneId::Left, PaneId::Right] {
             let slot = side.index();
             // Classification can arrive after the listing. Unknown must not start a read
@@ -93,7 +109,10 @@ impl Presenter {
                 .thumbnail_archive_location()
                 .map(|location| std::sync::Arc::new(location.address.clone()));
             let (first, end) = ranges[slot];
-            for row in first..end.min(first.saturating_add(panel_quota)) {
+            // Viewport ranges are bounded by visible cells; the request budget is
+            // applied below, after both panes' actual candidates are known.
+            let targets = &mut candidates[slot];
+            for row in first..end {
                 let Some(index) = row.checked_sub(pane.parent_offset()) else {
                     continue;
                 };
@@ -123,6 +142,12 @@ impl Presenter {
                 });
             }
         }
+        let budget = MAX_THUMBNAIL_TARGETS.saturating_sub(targets.len());
+        let quotas = split_quota(budget, [candidates[0].len(), candidates[1].len()]);
+        for (pane, quota) in candidates.into_iter().zip(quotas) {
+            // Rows arrive in viewport order: the top of each grid comes first.
+            targets.extend(pane.into_iter().take(quota));
+        }
         for target in &targets {
             if let ThumbnailContent::Archive {
                 network_allowed, ..
@@ -143,6 +168,9 @@ impl Presenter {
         self.thumbnails.trim();
         targets
     }
+    /// Test helper: a 96-pixel request. The thumbnail host uses
+    /// [`Self::receive_thumbnail_at_resolution`].
+    #[doc(hidden)]
     pub fn receive_thumbnail(
         &mut self,
         identity: &str,
@@ -384,6 +412,49 @@ mod tests {
             confirmed_ssd: false,
             edge: 72,
         }
+    }
+    #[test]
+    fn request_budget_is_shared_only_by_panes_with_candidates() {
+        assert_eq!(split_quota(256, [187, 0]), [187, 0]);
+        assert_eq!(split_quota(256, [0, 187]), [0, 187]);
+        assert_eq!(split_quota(256, [187, 187]), [128, 128]);
+        assert_eq!(split_quota(256, [50, 300]), [50, 206]);
+        assert_eq!(split_quota(256, [300, 50]), [206, 50]);
+        assert_eq!(split_quota(255, [300, 300]), [127, 128]);
+        assert_eq!(split_quota(0, [10, 10]), [0, 0]);
+    }
+    #[test]
+    fn one_large_thumbnail_grid_uses_the_whole_request_budget() {
+        let root = std::env::current_dir().unwrap();
+        let mut p = Presenter::new(root.clone(), root.clone());
+        p.preferences.values.thumbnails_network = true;
+        p.preferences.values.panel_view_modes =
+            [PanelViewMode::Thumbnails, PanelViewMode::Detailed];
+        let entries: std::sync::Arc<[Entry]> = (0..300)
+            .map(|id| {
+                Entry::new(
+                    midnight_core::EntryId(id),
+                    root.join(format!("{id}.png")),
+                    EntryKind::File,
+                )
+            })
+            .collect();
+        p.panes[0].index =
+            std::sync::Arc::new(midnight_core::DirectoryIndex::from_entries(&entries));
+        p.panes[0].entries = entries;
+        let offset = p.panes[0].parent_offset();
+        let targets = p.thumbnail_targets([(offset, offset + 200), (0, 40)], ["", ""]);
+        assert_eq!(
+            targets.len(),
+            200,
+            "a Detailed right pane must not reserve half of the request"
+        );
+        let targets = p.thumbnail_targets([(offset, offset + 300), (0, 40)], ["", ""]);
+        assert_eq!(targets.len(), MAX_THUMBNAIL_TARGETS);
+        assert!(
+            targets[0].identity.ends_with(":entry:0"),
+            "the top of the grid keeps priority"
+        );
     }
     #[test]
     fn stale_offscreen_and_oversized_pixels_never_enter_presentation() {

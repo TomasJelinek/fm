@@ -275,5 +275,11 @@ mod tests {
         ] {
             assert!(patch(&draft, None).is_err());
         }
+        // The timestamp field limit is exactly 256 bytes: one more is refused
+        // as too long, while 256 bytes reaches parsing (and fails there).
+        let too_long = timestamp(1, &"x".repeat(257), None).unwrap_err();
+        assert_eq!(too_long, "Timestamp is too long.");
+        let at_limit = timestamp(1, &"x".repeat(256), None).unwrap_err();
+        assert_ne!(at_limit, too_long, "256 bytes is within the limit");
     }
 }

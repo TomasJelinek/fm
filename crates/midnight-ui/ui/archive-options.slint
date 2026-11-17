@@ -13,8 +13,11 @@ export global ArchiveOptionsView {
     in property <[ArchiveAssociationRow]> rows;
     in property <[string]> formats;
     in property <[string]> custom-extensions;
+    // Rust also changes the format and filter ("Show built-in checkbox", format
+    // changes), so their controls bind two-way: native input would otherwise
+    // detach a one-way binding and keep displaying a stale value.
     in-out property <int> format-index;
-    in property <string> filter;
+    in-out property <string> filter;
     in-out property <string> draft;
     in property <string> error;
     in property <string> conflict-extension;
@@ -40,7 +43,7 @@ export component ArchiveOptions inherits VerticalLayout {
     HintedComboBox {
         accessible-label: "Archive format";
         model: ArchiveOptionsView.formats;
-        current-index: ArchiveOptionsView.format-index;
+        current-index <=> ArchiveOptionsView.format-index;
         hint: "Choose the decoder family whose built-in and custom extensions you want to change.";
         selected(value) => { ArchiveOptionsView.choose-format(self.current-index); }
     }
@@ -49,7 +52,7 @@ export component ArchiveOptions inherits VerticalLayout {
         font-size: Theme.font-size; wrap: word-wrap;
     }
     HintedLineEdit {
-        text: ArchiveOptionsView.filter; accessible-label: "Search archive associations";
+        text <=> ArchiveOptionsView.filter; accessible-label: "Search archive associations";
         placeholder-text: "Filter built-in extensions";
         hint: "Filter this format's built-in file types by extension or description. Matching ignores letter case.";
         edited => { ArchiveOptionsView.search(self.text); }
@@ -95,7 +98,7 @@ export component ArchiveOptions inherits VerticalLayout {
             x: 0px; y: 0px;
             icon: @image-url("icons/add.svg"); accessible-label: "Add custom archive extension";
             width: Theme.control-height + 4px; height: Theme.control-height + 4px;
-            border-color: Theme.frame;
+            rest-border: Theme.frame;
             enabled: ArchiveOptionsView.ready;
             hint: "Add an extension for this archive format.";
             clicked => { root.adding = true; }

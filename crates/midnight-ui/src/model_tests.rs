@@ -8,6 +8,20 @@ use std::{path::PathBuf, sync::Arc};
 mod unix;
 
 #[test]
+fn readable_sizes_round_into_the_next_unit_instead_of_1024() {
+    let locale = NumberLocale::default();
+    assert_eq!(format_size(1_023, &locale), "1023 B");
+    assert_eq!(format_size(1_024, &locale), "1.0 KiB");
+    assert_eq!(format_size(1_048_524, &locale), "1023.9 KiB");
+    for bytes in [1_048_525, 1_048_575, 1_048_576] {
+        assert_eq!(format_size(bytes, &locale), "1.0 MiB", "{bytes} B");
+    }
+    assert_eq!(format_size((1 << 30) - 1, &locale), "1.0 GiB");
+    assert_eq!(format_size((1 << 40) - 1, &locale), "1.0 TiB");
+    assert_eq!(format_size(u64::MAX, &locale), "16777216.0 TiB");
+}
+
+#[test]
 fn locale_snapshot_reaches_rows_details_and_copied_values_without_splitting_spaces() {
     let root = PathBuf::from(std::path::MAIN_SEPARATOR_STR);
     let presenter = Rc::new(RefCell::new(Presenter::new(root.clone(), root.clone())));
@@ -318,20 +332,26 @@ fn pointer_identity_distinguishes_parent_full_width_ids_and_refresh_generations(
     let path = PathBuf::from(std::path::MAIN_SEPARATOR_STR).join("home");
     let presenter = Rc::new(RefCell::new(Presenter::new(path.clone(), path.clone())));
     let model = Rows::new(presenter.clone(), PaneId::Left);
-    presenter.borrow_mut().panes[0].entries = vec![
-        Entry::new(EntryId(0), path.join("zero"), EntryKind::File),
-        Entry::new(EntryId(u64::MAX), path.join("last"), EntryKind::File),
-    ]
-    .into();
+    // Pairs that collide under a u32 truncation (0 / 1 << 32) or an f64
+    // conversion (u64::MAX / u64::MAX - 1) of the raw id.
+    let ids = [0, 1 << 32, u64::MAX, u64::MAX - 1];
+    presenter.borrow_mut().panes[0].entries = ids
+        .iter()
+        .map(|&id| Entry::new(EntryId(id), path.join(id.to_string()), EntryKind::File))
+        .collect::<Vec<_>>()
+        .into();
     let parent = model.row_data(0).unwrap().identity;
     let first = model.row_data(1).unwrap().identity;
-    let last = model.row_data(2).unwrap().identity;
     assert_ne!(
         parent, first,
         "EntryId zero is a real entry, not the parent sentinel"
     );
-    assert_ne!(
-        first, last,
+    let identities: std::collections::HashSet<_> = (1..=ids.len())
+        .map(|row| model.row_data(row).unwrap().identity)
+        .collect();
+    assert_eq!(
+        identities.len(),
+        ids.len(),
         "Slint float/int conversion must never truncate the raw id"
     );
     presenter.borrow_mut().panes[0].generation += 1;
@@ -372,23 +392,6 @@ fn pointer_identity_changes_when_refresh_commits_recycled_entry_ids() {
         model.row_data(1).unwrap().identity,
         during_refresh,
         "a replacement must not inherit a press made on committed rows during refresh"
-    );
-}
-
-#[test]
-fn command_selection_replacement_preserves_utf8_bytes_and_trailing_text() {
-    let text = "echo 文档 Cafe\u{301} 👩🏽‍💻 tail";
-    let selected = "文档 Cafe\u{301} 👩🏽‍💻";
-    let end = 5 + selected.len();
-    let (updated, offset) = replace_command_selection(text, end as i32, 5, "'Žlutý'");
-    assert_eq!(updated, "echo 'Žlutý' tail");
-    assert_eq!(offset, 14);
-    let (updated, offset) = replace_command_selection("文档 tail", 1, 5, "'x'");
-    assert_eq!(updated, "'x'档 tail");
-    assert_eq!(offset, 3);
-    assert_eq!(
-        replace_command_selection("hi", -2, 90, "'x'"),
-        ("'x'".into(), 3)
     );
 }
 
@@ -468,7 +471,7 @@ fn lazy_rows_read_current_shared_state_and_only_the_requested_pane() {
 }
 
 #[test]
-fn final_snapshot_rows_show_identity_selection_after_reordering() {
+fn final_snapshot_rows_show_identity_selection_and_cursor() {
     let presenter = Rc::new(RefCell::new(Presenter::new("left".into(), "right".into())));
     let model = Rows::new(presenter.clone(), PaneId::Left);
     presenter
@@ -497,7 +500,12 @@ fn final_snapshot_rows_show_identity_selection_after_reordering() {
     assert_eq!(model.row_data(0).unwrap().size.as_str(), "<DIR>");
     let row = model.row_data(1).unwrap();
     assert!(row.cursor && row.selected);
-    assert_eq!(row.kind.as_str(), "MD");
+    assert_eq!(row.name.as_str(), "readme.md");
+    assert_eq!(
+        row.kind.as_str(),
+        "",
+        "only folder links carry an announced kind; rows never format extensions"
+    );
 }
 
 #[test]

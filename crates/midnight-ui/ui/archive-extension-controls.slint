@@ -17,7 +17,9 @@ export component ArchiveExtensionChip inherits Rectangle {
     remove-button := HintedActionButton {
         x: 2px; y: 2px; width: max(32px, Theme.control-height); height: max(32px, Theme.control-height);
         fallback-icon: FallbackIcons.close; removal-icon: true; compact: true; enabled: root.enabled;
-        background: transparent; border-color: transparent;
+        // Keep ActionButton's keyboard focus ring; only the resting frame is hidden.
+        background: transparent;
+        border-color: self.has-focus && self.enabled ? Theme.active-frame : transparent;
         accessible-label: "Remove ." + root.extension;
         hint: "Remove ." + root.extension + " from this archive format. OK saves the change.";
         clicked => { root.remove(); }

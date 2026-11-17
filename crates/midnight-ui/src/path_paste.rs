@@ -116,6 +116,9 @@ fn schedule(
             return;
         };
         controller.borrow_mut().scheduled = false;
+        // A tick that is still waiting changes nothing. The clipboard reply's
+        // own event batch already refreshes; avoid a full refresh every 25 ms.
+        let mut changed = false;
         for pane in [PaneId::Left, PaneId::Right] {
             let Some(pending) = controller.borrow_mut().pending[pane.index()].take() else {
                 continue;
@@ -131,6 +134,7 @@ fn schedule(
                 || !p.path_paste_pending(pane, pending.id)
             {
                 p.cancel_path_paste(pane);
+                changed = true;
                 continue;
             }
             let result = p.take_path_paste(pane, pending.id);
@@ -142,13 +146,17 @@ fn schedule(
                         pending.input.insert(&window, &text);
                     }
                     state.borrow_mut().retire_pasted_text(text);
+                    changed = true;
                 }
-                Some(Err(error)) => state
-                    .borrow_mut()
-                    .path_paste_failure(crate::error_presentation::describe(&error)),
+                Some(Err(error)) => {
+                    state
+                        .borrow_mut()
+                        .path_paste_failure(crate::error_presentation::describe(&error));
+                    changed = true;
+                }
             }
         }
-        if let Ok(presenter) = state.try_borrow() {
+        if changed && let Ok(presenter) = state.try_borrow() {
             crate::refresh(&window, &presenter);
         }
         let again = controller.borrow().pending.iter().any(Option::is_some);

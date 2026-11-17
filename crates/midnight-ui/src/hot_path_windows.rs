@@ -1,8 +1,7 @@
 //! Embedded Hot Paths manager; Add retains the location captured at first opening.
 use crate::{
-    HotPathsPresentation, HotPathsWindow, MainWindow, Presenter,
+    HotPathsPresentation, MainWindow, Presenter,
     dialog_focus::{FocusReturn, restore_after_popup},
-    dialog_presentation::DialogThemeTarget,
 };
 use midnight_core::{Bookmark, BookmarkId, Command, PaneId};
 use slint::{ComponentHandle, SharedString};
@@ -25,19 +24,6 @@ struct Context {
     next: Cell<u64>,
     record: RefCell<Option<Record>>,
     closing: Cell<bool>,
-}
-
-impl DialogThemeTarget for HotPathsWindow {
-    fn apply_theme(
-        &self,
-        scheme: i32,
-        density: i32,
-        family: SharedString,
-        desktop: i32,
-        touch: i32,
-    ) {
-        self.invoke_apply_preferences(scheme, density, family, desktop, touch);
-    }
 }
 
 pub(crate) fn install(

@@ -27,6 +27,14 @@ struct Gesture {
     pointer: (f32, f32),
     mode: SelectionMode,
     moved: bool,
+    /// The ranges of the last applied preview. The 30 ms autoscroll tick and
+    /// pointer moves inside one cell keep them; an unchanged preview does not
+    /// re-notify every visible row.
+    previewed: Option<SelectionRanges>,
+}
+
+fn same_ranges(left: &SelectionRanges, right: &SelectionRanges) -> bool {
+    left.len() == right.len() && left.spans() == right.spans()
 }
 struct Bridge {
     window: slint::Weak<MainWindow>,
@@ -257,10 +265,16 @@ impl Bridge {
             crate::refresh(window, &self.presenter.borrow());
             return true;
         }
+        let changed = !gesture
+            .previewed
+            .as_ref()
+            .is_some_and(|previewed| same_ranges(previewed, &ranges));
+        // Both calls return early for an unchanged preview. The flush also
+        // retries a summary request that a full command queue refused.
         if !self.presenter.borrow_mut().preview_rectangle(
             gesture.pane,
             &gesture.capture,
-            ranges,
+            ranges.clone(),
             gesture.mode,
         ) {
             self.clear(window, gesture.pane);
@@ -269,6 +283,9 @@ impl Bridge {
         self.presenter
             .borrow_mut()
             .flush_rectangle_summary(gesture.pane, self.send.as_ref());
+        if changed {
+            gesture.previewed = Some(ranges);
+        }
         let x1 = gesture.anchor.0.clamp(0.0, current.grid.width);
         let x2 = pointer.0.clamp(0.0, current.grid.width);
         let y1 = (gesture.anchor.1 + offset).clamp(0.0, current.height);
@@ -281,7 +298,11 @@ impl Bridge {
         global.set_width((x1 - x2).abs());
         global.set_height((y1 - y2).abs());
         global.set_active(true);
-        repaint(window, &self.presenter, pane);
+        if changed {
+            repaint(window, &self.presenter, pane);
+        }
+        // The few status rows are compared before they are replaced; keep them
+        // current even when the previewed ranges did not change.
         let details = crate::panel_models::details_rows(&self.presenter.borrow(), pane);
         crate::panel_models::refresh_details(window, details, pane);
         true
@@ -333,6 +354,7 @@ impl Bridge {
                 anchor: point,
                 pointer: (x, y),
                 moved: false,
+                previewed: None,
                 mode: if shift {
                     SelectionMode::Add
                 } else if control {
@@ -385,4 +407,150 @@ pub(crate) fn install(
     window
         .global::<SelectionRectangle>()
         .on_cancel(move || weak.upgrade().is_some_and(|window| bridge.cancel(&window)));
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{SelectionRectangle, test_harness::Harness};
+    use i_slint_core::model::{ModelChangeListener, ModelChangeListenerBox};
+    use midnight_core::*;
+    use slint::{ComponentHandle, Model};
+    use std::{cell::Cell, pin::Pin, sync::Arc};
+
+    #[derive(Default)]
+    struct Notifications(Cell<usize>);
+    impl Notifications {
+        fn count(&self) {
+            self.0.set(self.0.get() + 1);
+        }
+    }
+    impl ModelChangeListener for Notifications {
+        fn row_changed(self: Pin<&Self>, _: usize) {
+            self.count();
+        }
+        fn row_added(self: Pin<&Self>, _: usize, _: usize) {
+            self.count();
+        }
+        fn row_removed(self: Pin<&Self>, _: usize, _: usize) {
+            self.count();
+        }
+        fn reset(self: Pin<&Self>) {
+            self.count();
+        }
+    }
+
+    /// The left pane lists `count` files and its empty selection is acknowledged.
+    fn listed(count: u64) -> Harness {
+        let mut h = Harness::new(UserPreferences::default());
+        let navigation = h
+            .sent
+            .borrow()
+            .iter()
+            .rev()
+            .find_map(|command| match command {
+                Command::Navigate {
+                    pane: PaneId::Left,
+                    navigation,
+                    ..
+                } => Some(*navigation),
+                _ => None,
+            })
+            .expect("startup navigation");
+        let root = h.presenter.borrow().panes[0].display_path().to_path_buf();
+        let entries: Arc<[Entry]> = (0..count)
+            .map(|row| {
+                Entry::new(
+                    EntryId(100 + row),
+                    root.join(format!("{row}.txt")),
+                    EntryKind::File,
+                )
+            })
+            .collect::<Vec<_>>()
+            .into();
+        let sent = h.sent.clone();
+        h.presenter.borrow_mut().apply_with_sender(
+            Event::ListingFinished {
+                pane: PaneId::Left,
+                navigation,
+                index: Arc::new(DirectoryIndex::from_entries(&entries)),
+                entries,
+            },
+            &|command| {
+                sent.borrow_mut().push(command);
+                true
+            },
+        );
+        let request = h
+            .sent
+            .borrow()
+            .iter()
+            .rev()
+            .find_map(|command| match command {
+                Command::Selection(request) if request.pane == PaneId::Left => {
+                    Some(request.clone())
+                }
+                _ => None,
+            })
+            .expect("listing requests a backend selection");
+        let index = request.view.clone().expect("complete listing");
+        let bits = vec![0; index.by_id.len().div_ceil(64)];
+        h.presenter.borrow_mut().apply(Event::SelectionChanged {
+            pane: PaneId::Left,
+            navigation: request.navigation,
+            revision: request.revision,
+            selection: Arc::new(SelectionSnapshot::from_bits(index, bits).unwrap()),
+            deferred: Default::default(),
+        });
+        h.sent.borrow_mut().clear();
+        h.refresh();
+        h
+    }
+
+    fn summaries(h: &Harness) -> usize {
+        h.sent
+            .borrow()
+            .iter()
+            .filter(|command| matches!(command, Command::SummarizeRectangle(_)))
+            .count()
+    }
+
+    #[test]
+    fn a_band_held_inside_one_cell_notifies_no_rows_but_retries_a_refused_summary() {
+        let h = listed(5);
+        let w = &h.window;
+        let left = w.get_left_list_left();
+        let top = w.get_left_list_top();
+        let row = w.get_left_view_row_height();
+        // Empty space below the five rows starts the gesture.
+        let start = (left + 20.0, top + w.get_left_list_height() - 35.0);
+        h.pointer(1, start.0, start.1);
+        h.pointer(0, start.0, start.1);
+        assert_eq!(w.global::<SelectionRectangle>().get_pane(), 0);
+
+        let rows = w.get_left_rows();
+        let probe = ModelChangeListenerBox::new(Notifications::default());
+        rows.model_tracker()
+            .attach_peer(probe.as_ref().model_peer());
+        // The band needs a width to touch any cell.
+        h.refuse.set(true);
+        h.pointer(1, left + 60.0, top + 2.5 * row);
+        assert!(w.global::<SelectionRectangle>().get_active());
+        assert!(probe.0.get() > 0, "a new preview repaints the visible rows");
+        assert_eq!(summaries(&h), 0, "the full queue refused the summary");
+
+        probe.0.set(0);
+        h.refuse.set(false);
+        h.pointer(1, left + 61.0, top + 2.5 * row + 1.0);
+        assert_eq!(probe.0.get(), 0, "the unchanged preview repaints no row");
+        assert_eq!(summaries(&h), 1, "the refused summary is retried");
+        h.pointer(1, left + 62.0, top + 2.5 * row + 2.0);
+        assert_eq!(summaries(&h), 1, "a submitted summary is not repeated");
+
+        h.pointer(1, left + 60.0, top + 1.5 * row);
+        assert!(probe.0.get() > 0, "crossing into another row repaints");
+        assert_eq!(summaries(&h), 2, "the new preview has its own summary");
+        drop(probe);
+        h.pointer(2, left + 60.0, top + 1.5 * row);
+        assert_eq!(w.global::<SelectionRectangle>().get_pane(), -1);
+    }
 }
