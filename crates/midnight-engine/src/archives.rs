@@ -26,6 +26,12 @@ mod timestamps;
 
 const PANES: usize = 2;
 const MAX_WORKERS: usize = 2;
+/// Accepted navigations alive at once, each holding one share and one retirement
+/// slot: one per worker and the newest navigation of each pane waiting for a
+/// worker. A superseded input keeps its share until the cleanup worker destroys
+/// it, so the intake waits for that instead of spending cleanup slots that belong
+/// to other engine owners.
+const MAX_REQUESTS: usize = MAX_WORKERS + PANES;
 /// Discovery diagnostics carried into an "unavailable" navigation error.
 const MAX_REPORTED_DIAGNOSTICS: usize = 4;
 const MAX_DIAGNOSTIC_CHARS: usize = 512;
@@ -87,12 +93,16 @@ struct Request {
     _scope: TaskLifetime,
     // Last: native input and original service owners finish cleanup first.
     permit: Mutex<Option<OwnedSemaphorePermit>>,
+    /// One of the MAX_REQUESTS shares, returned after everything above.
+    _share: OwnedSemaphorePermit,
 }
 pub(crate) struct Controller {
     capture: Option<ArchiveCapture>,
     locale: Option<Arc<dyn LocaleService>>,
     catalog: Arc<OnceLock<Catalog>>,
     budget: Arc<Semaphore>,
+    /// MAX_REQUESTS navigation shares; see [`Controller::admission`].
+    requests: Arc<Semaphore>,
     cancellations: [Cancellation; PANES],
     /// Wakes navigations waiting for a worker after a cancellation.
     superseded: Arc<Notify>,
@@ -120,6 +130,7 @@ impl Controller {
             locale,
             catalog: catalog.clone(),
             budget: Arc::new(Semaphore::new(MAX_WORKERS)),
+            requests: Arc::new(Semaphore::new(MAX_REQUESTS)),
             cancellations: std::array::from_fn(|_| Cancellation::default()),
             superseded: Arc::new(Notify::new()),
             outbox: outbox.clone(),
@@ -166,6 +177,20 @@ impl Controller {
         let lease = self.retirement.intake.reserve().await;
         lease.own((action, self.scope.clone())).retire().await
     }
+    /// One of the MAX_REQUESTS navigation shares, returned when the cleanup worker
+    /// destroys that navigation's input. The intake first cancels its pane's
+    /// previous navigation. When every share is then held, at most MAX_WORKERS
+    /// holders run and the other pane has one current navigation, so at least one
+    /// holder is a superseded navigation waiting for a worker: it hands its input
+    /// to the cleanup worker without a navigation worker, this dispatcher or UI
+    /// delivery, and the wait ends.
+    async fn admission(&self) -> OwnedSemaphorePermit {
+        self.requests
+            .clone()
+            .acquire_owned()
+            .await
+            .expect("archive navigation shares are never closed")
+    }
     pub(crate) fn cancel(&mut self, pane: PaneId) {
         self.cancellations[pane.index()].cancel();
         self.superseded.notify_waiters();
@@ -188,6 +213,13 @@ impl Controller {
         let cancel = Cancellation::default();
         self.cancellations[pane.index()] = cancel.clone();
         let restore_native_on_failure = matches!(&action, ArchiveAction::Open { .. });
+        {
+            // Before any wait: a superseded result must not act as the current one.
+            let mut states = self.snapshots.lock().unwrap_or_else(|e| e.into_inner());
+            states[pane.index()].archive_navigation = Some(navigation);
+            states[pane.index()].pending = None;
+        }
+        let share = self.admission().await;
         let request = lease.own(Request {
             action: Mutex::new(Some(action)),
             capture: self.capture.clone(),
@@ -200,12 +232,8 @@ impl Controller {
             cancel,
             _scope: self.scope.clone(),
             permit: Mutex::new(None),
+            _share: share,
         });
-        {
-            let mut states = self.snapshots.lock().unwrap_or_else(|e| e.into_inner());
-            states[pane.index()].archive_navigation = Some(navigation);
-            states[pane.index()].pending = None;
-        }
         let request: Arc<WorkerOwned<Request>> = Arc::new(request);
         let ready = self.ready.clone();
         let outbox = self.outbox.clone();
@@ -218,8 +246,12 @@ impl Controller {
             // The newest navigation waits for one instead of being refused; each
             // pane has at most one such waiter because a newer request cancels it.
             let Some(permit) = admit(&budget, &request.cancel, &superseded).await else {
+                // Hand the input and its share to cleanup before delivery, which
+                // can wait for the UI while the intake waits for this share.
+                let snapshots = request.snapshots.clone();
+                drop(request);
                 navigation::publish(
-                    &request.snapshots,
+                    &snapshots,
                     &outbox,
                     pane,
                     navigation,
@@ -268,6 +300,7 @@ impl Controller {
             locale: None,
             catalog: Arc::new(catalog),
             budget,
+            requests: Arc::new(Semaphore::new(MAX_REQUESTS)),
             cancellations: std::array::from_fn(|_| Cancellation::default()),
             superseded: Arc::new(Notify::new()),
             outbox,

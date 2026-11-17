@@ -8,9 +8,12 @@ use tokio::sync::OwnedSemaphorePermit;
 // Preserve both panes' existing retained provider capabilities, their current
 // roots not yet admitted to those registries, and replacement listings produced
 // by the two native workers. External retained outputs share this explicit cap.
-const RETAINED_MOUNTS: usize =
+pub(super) const RETAINED_MOUNTS: usize =
     PANES * (crate::providers::ProviderRegistry::MAX_MOUNTS + 1) + MAX_WORKERS;
-pub(crate) const RETIREMENT_CAPACITY: usize = RETAINED_MOUNTS + MAX_WORKERS + 1;
+// Plus the accepted navigations (MAX_REQUESTS: one per worker and the newest
+// navigation of each pane waiting for a worker) and the serial intake: a new input
+// waiting for its share, or stale input it retires.
+pub(crate) const RETIREMENT_CAPACITY: usize = RETAINED_MOUNTS + MAX_REQUESTS + 1;
 pub(crate) struct Retirement {
     pub(crate) domain: RetirementDomain,
     pub(crate) intake: RetirementWaiter,

@@ -251,6 +251,69 @@ async fn newest_navigation_waits_for_a_worker_held_by_a_superseded_listing() {
     while tasks.join_next().await.is_some() {}
 }
 
+#[tokio::test(flavor = "current_thread")]
+async fn waiting_and_superseded_navigations_stay_within_the_archive_cleanup_share() {
+    // Both workers list archives shared with other tabs until the end of the test.
+    let busy = [shared_mount(46), shared_mount(47)];
+    let waiting = shared_mount(48);
+    let (mut controller, events) = shared_controller(MAX_WORKERS);
+    let mut tasks = JoinSet::new();
+    let mut held = Vec::new();
+    for (pane, mount) in [PaneId::Left, PaneId::Right].into_iter().zip(&busy) {
+        let hold = mount.hold_next();
+        controller
+            .navigate(
+                pane,
+                NavigationId(1),
+                shared_listing(mount.clone()),
+                SortSpec::default(),
+                &mut tasks,
+            )
+            .await;
+        held.push(
+            tokio::task::spawn_blocking(move || {
+                hold.wait_entered();
+                hold
+            })
+            .await
+            .unwrap(),
+        );
+    }
+    // The running listings adopted one retained mount each; keep one token free.
+    let retained: Vec<_> = (3..ownership::RETAINED_MOUNTS)
+        .map(|_| controller.mounts.reserve().unwrap())
+        .collect();
+    // Each pane's newest navigation waits for a worker, then the left pane keeps
+    // superseding its waiter. This runtime polls superseded waiters only while
+    // the intake itself waits, so only the navigation shares bound their slots.
+    let panes = std::iter::once(PaneId::Right)
+        .chain(std::iter::repeat_n(PaneId::Left, 2 * MAX_REQUESTS))
+        .enumerate();
+    for (index, pane) in panes {
+        let navigation = NavigationId(index as u64 + 2);
+        controller
+            .navigate(
+                pane,
+                navigation,
+                shared_listing(waiting.clone()),
+                SortSpec::default(),
+                &mut tasks,
+            )
+            .await;
+        // A retained mount still finds its cleanup slot in the archive share.
+        let reserved = controller.mounts.reserve();
+        assert!(reserved.is_ok(), "{navigation:?}: {:?}", reserved.err());
+    }
+    drop(retained);
+    drop(events);
+    for hold in held {
+        hold.release();
+    }
+    while let Some(result) = tasks.join_next().await {
+        result.unwrap();
+    }
+}
+
 #[tokio::test]
 async fn archive_listings_sort_names_with_backend_locale_keys() {
     struct Locale;
