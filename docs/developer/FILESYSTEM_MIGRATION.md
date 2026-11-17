@@ -100,9 +100,12 @@ duplicate/case-distinct names, and the worker receives no native path: the host
 starts each mount with `Mount::open_captured` from a provider capture. Current host
 limits include two active mounts and a 20-second idle-progress deadline; protocol-1
 workers also keep a 64 MiB container limit (see [filesystem API](FILESYSTEM_API.md)).
-Deadline expiry, a failed exchange (a worker-reported failure, a protocol violation
-or a detected source change), a cancelled startup and mount teardown terminate the
-worker. Cancelling a listing or member read never ends the shared worker: a listing
+Deadline expiry, a cancelled startup, mount teardown and any failed exchange
+terminate the worker. An exchange fails on a worker-reported failure, a protocol
+violation, a pipe, source or staging I/O failure, or a detected source change.
+Checks the host applies after an exchange completes (listing-page ID order, parent
+and size limits, and protocol-1 content length) fail only that request.
+Cancelling a listing or member read never ends the shared worker: a listing
 stops between pages and discards an in-flight page, protocol-3 member reads cancel
 cooperatively, and protocol-1/2 reads finish their exchange while the host discards
 the result. The wire reference is frozen in the released 0.4.0 package, so its

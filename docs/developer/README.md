@@ -101,8 +101,8 @@ One Git repository contains **separate Cargo workspaces**:
 | `plugins/midnight-thumbnail-image/`, `plugins/midnight-thumbnail-video/` | Image and video frame decoding | Released thumbnail/worker SDK, the shared image decoder (images) and plugin-owned codecs/tests |
 | `plugins/midnight-fs-archive/` | ZIP, 7z, TAR and GZIP/XZ/BZIP2/Zstandard streams and TAR wrappers | Released filesystem API and worker SDK plus plugin-owned parsers |
 | `plugins/midnight-filesystem-native-windows/`, `plugins/midnight-filesystem-native-linux/` | Native Browse/Read, metadata, volume, storage and prepared Rename libraries | Public filesystem plugin API/SDK 0.2.0 as path packages from `filesystem-api/`, plus OS bindings |
-| `plugins/midnight-filesystem-native-macos/` | macOS library for the same ABI, without prepared Rename | Same public API/SDK and pinned libc; type-checked for Darwin only, not run, packaged or loaded by the host |
-| `plugins/midnight-filesystem-network/` | Network Neighborhood discovery and share activation | Public filesystem plugin API/SDK path packages plus Windows WNet or Linux GIO |
+| `plugins/midnight-filesystem-native-macos/` | macOS library for the same ABI, without prepared Rename | Same public API/SDK and pinned libc; type-checked and linted for both Darwin targets; never run on macOS, packaged or loaded by the host |
+| `plugins/midnight-filesystem-network/` | Network Neighborhood discovery and share activation | Public filesystem plugin API/SDK path packages plus Windows WNet (windows-sys) or Linux GIO loaded at runtime through libloading |
 | `plugins/midnight-viewer-image/`, `plugins/midnight-viewer-pdf/` | Restricted image decoding and PDF rendering | Released raster/worker SDKs, the shared image decoder (images) and plugin-owned tests/codecs |
 | `plugins/image-decoder/` | Shared bounded image codecs | Path dependency of the image viewer and image thumbnail workers; not a public API |
 | `plugins/midnight-viewer-html/` | Optional Chromium (CEF) HTML provider | Released web viewer API 0.2.0 and pinned CEF bindings |

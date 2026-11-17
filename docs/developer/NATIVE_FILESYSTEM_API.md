@@ -57,12 +57,13 @@ format the date and time.
 Use `CaptureCache` when many captured file identities can be alive at once:
 capturing a revision must not pin a reader for every captured file.
 `InstalledProvider::capture` and `capture_matching` share one cache, so viewer,
-comparison, thumbnail, command-artwork and archive-container captures together keep
-at most 16 resident readers. An evicted reader reopens only while the file keeps its
-captured length and revision, and a capture's readers are released when that
-captured source is released or dropped. `InstalledProvider::shared(home)` is a lazy
-backend-only installation binding pinned until application exit. It has no builtin
-fallback. Do not call these APIs or drop their resource owners on the UI thread.
+comparison, thumbnail, command-icon artwork and archive-container captures together
+keep at most 16 resident readers. An evicted reader reopens only while the file
+keeps its captured length and revision, and a capture's readers are released when
+that captured source is released or dropped. `InstalledProvider::shared(home)` is a
+lazy backend-only installation binding pinned until application exit. It has no
+builtin fallback. Do not call these APIs or drop their resource owners on the UI
+thread.
 
 Nonempty native reads use the host's [checked-read contract](CONTENT_READS.md).
 The native SDK validates the pinned handle and pathname before and after ReadAt,
@@ -83,9 +84,9 @@ and stores the current validated token. See [archive capture qualification](../v
 actual DLL/SO loading, missing/duplicate/incompatible packages, removed-library
 refusal, cancellation cleanup and the reader-budget regression. The application
 composition now uses this installed service for browsing, storage queries, native
-F3, comparison/thumbnail capture and native archive-container capture. Root build
-helpers install the matching native package under
-`filesystems/native.<platform>/`; direct Cargo builds need the
+F3, comparison/thumbnail capture, command-icon artwork capture and native
+archive-container capture. Root build helpers install the matching native package
+under `filesystems/native.<platform>/`; direct Cargo builds need the
 `scripts/build-native-filesystem.ps1` or `.sh` helper before launching.
 Missing/incompatible packages have no static browsing or viewer-read fallback.
 Composition qualification is tracked in the
