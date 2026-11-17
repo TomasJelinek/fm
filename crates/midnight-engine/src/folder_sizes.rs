@@ -15,6 +15,18 @@ use std::{
 const PROGRESS_INTERVAL: Duration = Duration::from_millis(250);
 const PENDING_PATH_BUDGET: usize = 16 * 1024 * 1024;
 
+/// Per-scan bounds. Production always uses `SCAN_LIMITS`; tests shrink them.
+#[derive(Clone, Copy)]
+struct ScanLimits {
+    pending_path_budget: usize,
+    progress_interval: Duration,
+}
+
+const SCAN_LIMITS: ScanLimits = ScanLimits {
+    pending_path_budget: PENDING_PATH_BUDGET,
+    progress_interval: PROGRESS_INTERVAL,
+};
+
 mod batched;
 mod warnings;
 use crate::size_warnings::ReportLog;
@@ -36,6 +48,7 @@ trait ScanSource {
         cancel: &Cancellation,
         emit: &mut dyn FnMut(Entry) -> bool,
     ) -> Result<(), FsError>;
+    fn listing_metadata_complete(&self, entry: &Entry) -> bool;
     fn entry_metadata(&self, path: &Path) -> Result<EntryMetadata, FsError>;
 }
 
@@ -55,6 +68,9 @@ impl<T: DirectoryService + ?Sized> ScanSource for T {
     ) -> Result<(), FsError> {
         DirectoryService::read_directory(self, path, cancel, emit)
     }
+    fn listing_metadata_complete(&self, entry: &Entry) -> bool {
+        DirectoryService::listing_metadata_complete(self, entry)
+    }
     fn entry_metadata(&self, path: &Path) -> Result<EntryMetadata, FsError> {
         DirectoryService::entry_metadata(self, path)
     }
@@ -67,16 +83,16 @@ pub(crate) fn compute(
     cancel: &Cancellation,
     emit: &mut dyn FnMut(EntryId, FolderSize) -> bool,
 ) {
-    compute_with_budget(filesystem, roots, cancel, emit, PENDING_PATH_BUDGET);
+    compute_with_limits(filesystem, roots, cancel, emit, SCAN_LIMITS);
 }
 
 #[cfg(test)]
-fn compute_with_budget(
+fn compute_with_limits(
     filesystem: &dyn FileSystem,
     roots: &[Entry],
     cancel: &Cancellation,
     emit: &mut dyn FnMut(EntryId, FolderSize) -> bool,
-    pending_path_budget: usize,
+    limits: ScanLimits,
 ) {
     let report = ReportLog::for_scan(&crate::ReportArena::testing());
     for root in roots {
@@ -84,7 +100,7 @@ fn compute_with_budget(
             return;
         }
         if matches!(root.kind, EntryKind::Directory | EntryKind::DirectoryLink)
-            && !scan_root(filesystem, root, cancel, emit, pending_path_budget, &report)
+            && !scan_root(filesystem, root, cancel, emit, limits, &report)
         {
             return;
         }
@@ -92,16 +108,18 @@ fn compute_with_budget(
 }
 
 /// This is a live estimate: another process may replace paths while we scan.
-/// Native directory links are resolved for sizing; active ancestry identities
-/// stop cycles. Noncyclic aliases count their logical contents independently.
-/// Paths can change between identity and listing calls; this is not a snapshot.
-/// File links and special-file contents are not opened.
+/// Only a selected root that is itself a directory link is resolved and sized.
+/// Links met during traversal are counted as skipped and never resolved, so
+/// aliases (profile junctions, Wine `dosdevices`) cannot double-count or escape
+/// the selected tree. Active ancestry identities still stop non-link cycles
+/// such as Linux bind mounts. Paths can change between identity and listing
+/// calls; this is not a snapshot. File links and special files are not opened.
 fn scan_root<F: ScanSource + ?Sized>(
     filesystem: &F,
     root: &Entry,
     cancel: &Cancellation,
     emit: &mut dyn FnMut(EntryId, FolderSize) -> bool,
-    pending_path_budget: usize,
+    limits: ScanLimits,
     report: &ReportLog,
 ) -> bool {
     if cancel.is_cancelled() {
@@ -122,6 +140,12 @@ fn scan_root<F: ScanSource + ?Sized>(
         let (path, kind) = match next {
             Pending::Leave(identity) => {
                 ancestors.remove(&identity);
+                continue;
+            }
+            Pending::SkipLink(path) => {
+                // Counted in traversal order, without resolving or opening the target.
+                pending_bytes = pending_bytes.saturating_sub(path_cost(&path));
+                count_skipped(&report, &mut size, &path);
                 continue;
             }
             Pending::Enter(path, kind) => (path, kind),
@@ -179,7 +203,13 @@ fn scan_root<F: ScanSource + ?Sized>(
                 return false;
             }
             if !is_immediate_child(&directory, &entry.path) {
-                report.issue(&mut size, &entry.path, "validate directory entry", io::ErrorKind::InvalidData, "Provider returned a path outside the immediate directory");
+                report.issue(
+                    &mut size,
+                    &entry.path,
+                    "validate directory entry",
+                    io::ErrorKind::InvalidData,
+                    "Provider returned a path outside the immediate directory",
+                );
             } else {
                 match entry.kind {
                     EntryKind::Directory | EntryKind::DirectoryLink | EntryKind::Symlink => {
@@ -188,35 +218,74 @@ fn scan_root<F: ScanSource + ?Sized>(
                         // on a single native path. An over-budget subtree is
                         // visibly partial, never silently reported as zero.
                         if pending_bytes == 0
-                            || pending_bytes.saturating_add(cost) <= pending_path_budget
+                            || pending_bytes.saturating_add(cost) <= limits.pending_path_budget
                         {
                             pending_bytes = pending_bytes.saturating_add(cost);
-                            pending.push(Pending::Enter(entry.path, entry.kind));
+                            pending.push(if entry.kind == EntryKind::Directory {
+                                Pending::Enter(entry.path, entry.kind)
+                            } else {
+                                Pending::SkipLink(entry.path)
+                            });
                         } else {
-                            report.issue(&mut size, &entry.path, "queue directory", io::ErrorKind::OutOfMemory, "Directory frontier budget exhausted; this subtree was not counted");
+                            report.issue(
+                                &mut size,
+                                &entry.path,
+                                "queue directory",
+                                io::ErrorKind::OutOfMemory,
+                                "Directory frontier budget exhausted; this subtree was not counted",
+                            );
                         }
                     }
-                    EntryKind::File => match filesystem.entry_metadata(&entry.path) {
-                        Ok(metadata) => match metadata.size {
-                            Some(bytes) => {
+                    EntryKind::File => {
+                        // Complete enumeration data already carries the length the
+                        // listing shows; only incomplete providers need a stat.
+                        let length = if entry.metadata.size.is_some()
+                            && filesystem.listing_metadata_complete(&entry)
+                        {
+                            Ok(entry.metadata.size)
+                        } else {
+                            filesystem
+                                .entry_metadata(&entry.path)
+                                .map(|metadata| metadata.size)
+                        };
+                        match length {
+                            Ok(Some(bytes)) => {
                                 if !add_checked(&mut size.bytes, bytes) {
-                                    report.issue(&mut size, &entry.path, "sum file lengths", io::ErrorKind::InvalidData, "Total byte count exceeds the supported integer range");
+                                    report.issue(
+                                        &mut size,
+                                        &entry.path,
+                                        "sum file lengths",
+                                        io::ErrorKind::InvalidData,
+                                        "Total byte count exceeds the supported integer range",
+                                    );
                                 }
                                 if !add_checked(&mut size.files, 1) {
-                                    report.issue(&mut size, &entry.path, "count files", io::ErrorKind::InvalidData, "File count exceeds the supported integer range");
+                                    report.issue(
+                                        &mut size,
+                                        &entry.path,
+                                        "count files",
+                                        io::ErrorKind::InvalidData,
+                                        "File count exceeds the supported integer range",
+                                    );
                                 }
                             }
-                            None => report.issue(&mut size, &entry.path, "read file length", io::ErrorKind::InvalidData, "Provider metadata did not contain a file length"),
-                        },
-                        Err(error) => report.provider_error(&mut size, &error, cancel),
-                    },
+                            Ok(None) => report.issue(
+                                &mut size,
+                                &entry.path,
+                                "read file length",
+                                io::ErrorKind::InvalidData,
+                                "Provider metadata did not contain a file length",
+                            ),
+                            Err(error) => report.provider_error(&mut size, &error, cancel),
+                        }
+                    }
                     EntryKind::Other => {}
                 }
             }
             if cancel.is_cancelled() {
                 return false;
             }
-            if last_progress.elapsed() >= PROGRESS_INTERVAL {
+            if last_progress.elapsed() >= limits.progress_interval {
                 report.publish(&mut size);
                 receiver_open = emit(root.id, size.clone());
                 last_progress = Instant::now();
@@ -234,7 +303,7 @@ fn scan_root<F: ScanSource + ?Sized>(
             emit(root.id, size);
             return false;
         }
-        if last_progress.elapsed() >= PROGRESS_INTERVAL {
+        if last_progress.elapsed() >= limits.progress_interval {
             report.publish(&mut size);
             if !emit(root.id, size.clone()) {
                 return false;
@@ -249,7 +318,10 @@ fn scan_root<F: ScanSource + ?Sized>(
 }
 
 enum Pending {
+    /// The selected root (possibly a directory link) or an ordinary child directory.
     Enter(PathBuf, EntryKind),
+    /// A link child: it keeps its frontier slot but is never resolved.
+    SkipLink(PathBuf),
     Leave(SizeDirectoryIdentity),
 }
 

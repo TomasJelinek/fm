@@ -783,8 +783,11 @@ the remaining Slint expansion and measured optimization options.
 
 Directory links and junctions have distinct link artwork. Windows uses the
 system link overlay; other platforms prefer host-theme icons and fall back to
-application artwork. Recursive folder-size scans skip links. Browsing a folder
-does not inspect a link target merely to choose its icon.
+application artwork. Recursive folder-size scans count links inside the measured
+folder as skipped and never follow them, so aliases such as profile junctions are
+not counted twice; only a selected folder row that is itself a link is measured
+through its target. Browsing a folder does not inspect a link target merely to
+choose its icon.
 
 Paths and file identities are kept separately from their displayed text. A failed
 navigation preserves the last usable directory and reports the failed operation.
@@ -794,9 +797,12 @@ Visible directories are watched on the backend. Changes are batched after
 metadata check catches missing native/network notifications. Automatic refresh
 preserves the viewport, selection and command editing; it invalidates earlier
 recursive folder-size estimates.
-Folder sizing uses a bounded fair batch and a shared I/O budget: up to four reads
-only for proven local SSD, one stream for HDD/network/unknown storage. Detection
-errors remain conservative. Other navigation work has independent capacity.
+Folder sizing uses a bounded fair batch and a shared I/O budget: up to the Disk
+operations limit (four by default) of parallel reads only for proven local SSD,
+one stream for HDD/network/unknown storage. Detection errors remain conservative;
+storage is classified once per device on each scan lane. File lengths come from
+complete directory enumeration data without opening each file. Other navigation
+work has independent capacity.
 An active size scan continues across sorting and same-directory refresh; moving
 the cursor, changing selection or working in the other pane does not cancel it.
 Running totals retain a contrasting color and `≈` without an exclamation prefix.
