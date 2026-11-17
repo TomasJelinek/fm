@@ -168,6 +168,7 @@ pub enum ShortcutContext {
     ComparisonSearch,
 }
 
+/// Every context, listed at its `position()`.
 const CONTEXTS: [ShortcutContext; 9] = [
     ShortcutContext::Files,
     ShortcutContext::Search,
@@ -179,6 +180,23 @@ const CONTEXTS: [ShortcutContext; 9] = [
     ShortcutContext::Comparison,
     ShortcutContext::ComparisonSearch,
 ];
+
+impl ShortcutContext {
+    /// The single slot of this context in per-chord resolution tables.
+    const fn position(self) -> usize {
+        self as usize
+    }
+}
+
+// Building and resolving index the same tables by `position()`. Listing contexts
+// out of declaration order fails to compile; append any new context to `CONTEXTS`.
+const _: () = {
+    let mut position = 0;
+    while position < CONTEXTS.len() {
+        assert!(CONTEXTS[position].position() == position);
+        position += 1;
+    }
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ShortcutScope {
@@ -440,8 +458,8 @@ impl ShortcutMap {
                 let chord = ShortcutChord::parse(text)?;
                 let scope = definition.scope_for(&chord);
                 let assigned = explicit_keys.entry(chord).or_default();
-                for (position, context) in CONTEXTS.into_iter().enumerate() {
-                    assigned[position] |= scope.includes(context);
+                for context in CONTEXTS {
+                    assigned[context.position()] |= scope.includes(context);
                 }
             }
         }
@@ -510,9 +528,9 @@ impl ShortcutMap {
                 if !replacements.contains_key(definition.id.as_str())
                     && added_default
                     && explicit_keys.get(&chord).is_some_and(|assigned| {
-                        CONTEXTS.iter().enumerate().any(|(position, context)| {
-                            assigned[position] && scope.includes(*context)
-                        })
+                        CONTEXTS
+                            .into_iter()
+                            .any(|context| assigned[context.position()] && scope.includes(context))
                     })
                 {
                     continue;
@@ -524,12 +542,13 @@ impl ShortcutMap {
                         definition.label
                     ));
                 }
-                for (position, context) in CONTEXTS.into_iter().enumerate() {
+                for context in CONTEXTS {
                     if !scope.includes(context) {
                         continue;
                     }
-                    if let Some(previous) =
-                        result.resolved.entry(chord.clone()).or_default()[position].replace(index)
+                    if let Some(previous) = result.resolved.entry(chord.clone()).or_default()
+                        [context.position()]
+                    .replace(index)
                     {
                         return Err(format!(
                             "{} conflicts between {} and {} in {:?}.",
@@ -552,18 +571,7 @@ impl ShortcutMap {
         chord: &ShortcutChord,
         context: ShortcutContext,
     ) -> Option<&ShortcutDefinition> {
-        let position = match context {
-            ShortcutContext::Files => 0,
-            ShortcutContext::Search => 1,
-            ShortcutContext::Command => 2,
-            ShortcutContext::Other => 3,
-            ShortcutContext::Volume => 4,
-            ShortcutContext::Viewer => 5,
-            ShortcutContext::ViewerSearch => 6,
-            ShortcutContext::Comparison => 7,
-            ShortcutContext::ComparisonSearch => 8,
-        };
-        self.resolved.get(chord)?[position].map(|index| &self.definitions[index])
+        self.resolved.get(chord)?[context.position()].map(|index| &self.definitions[index])
     }
 
     pub fn bindings(&self, action: &str) -> Option<&[ShortcutChord]> {

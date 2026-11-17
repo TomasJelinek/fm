@@ -267,11 +267,15 @@ pub struct ChecksumDigest {
     pub bytes: Vec<u8>,
 }
 impl ChecksumDigest {
+    /// Lowercase hexadecimal text, built in one allocation for row models.
     pub fn hex(&self) -> String {
-        self.bytes
-            .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect()
+        const DIGITS: &[u8; 16] = b"0123456789abcdef";
+        let mut text = String::with_capacity(self.bytes.len().saturating_mul(2));
+        for byte in &self.bytes {
+            text.push(char::from(DIGITS[usize::from(byte >> 4)]));
+            text.push(char::from(DIGITS[usize::from(byte & 0x0f)]));
+        }
+        text
     }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
