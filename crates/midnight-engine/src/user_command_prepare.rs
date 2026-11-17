@@ -89,18 +89,21 @@ impl TargetPin {
         })
     }
 }
-/// A released pin must find the same native object with unchanged facts. A
-/// directory's size/time describe its mutable contents, as for held pins.
+/// A released pin must find the same native object with unchanged facts. Held
+/// pins compare the platform's whole native revision for every kind, so a
+/// directory target counts too: an entry created in it after the pin changes
+/// its modification time and fails either way. Only the revision facts a
+/// `TransferEntry` carries can be compared here: size (absent for directories),
+/// modification time, native attributes and Unix mode. The change time and
+/// the creation time are not carried, so a released pin cannot compare them.
 fn same_target(current: &TransferEntry, captured: &TransferEntry) -> bool {
     let (current_item, captured_item) = (&current.item, &captured.item);
     current.identity == captured.identity
         && current_item.kind == captured_item.kind
-        && (current_item.kind == EntryKind::Directory
-            || (current_item.metadata.size == captured_item.metadata.size
-                && current_item.metadata.modified == captured_item.metadata.modified
-                && current_item.metadata.native_attributes
-                    == captured_item.metadata.native_attributes
-                && current_item.metadata.unix_mode == captured_item.metadata.unix_mode))
+        && current_item.metadata.size == captured_item.metadata.size
+        && current_item.metadata.modified == captured_item.metadata.modified
+        && current_item.metadata.native_attributes == captured_item.metadata.native_attributes
+        && current_item.metadata.unix_mode == captured_item.metadata.unix_mode
 }
 fn reopen_directory(
     service: &dyn TransferService,

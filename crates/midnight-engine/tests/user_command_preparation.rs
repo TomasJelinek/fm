@@ -249,11 +249,13 @@ fn disabled_command_preview_is_allowed_but_execution_remains_disabled() {
 }
 
 /// Fake native pins that count live directory/target handles the way Linux
-/// counts open descriptors, and can replace or retype a captured target.
+/// counts open descriptors, and can replace, retype, touch or chmod a
+/// captured target. A held target revalidates its whole fake revision
+/// (identity, modification time, attributes and mode), as platform pins do.
 mod counted_pins {
     use midnight_core::*;
     use std::{
-        collections::HashSet,
+        collections::{HashMap, HashSet},
         ffi::OsStr,
         hash::{Hash, Hasher},
         path::{Path, PathBuf},
@@ -261,6 +263,7 @@ mod counted_pins {
             Arc, Mutex,
             atomic::{AtomicUsize, Ordering},
         },
+        time::{Duration, UNIX_EPOCH},
     };
 
     #[derive(Default)]
@@ -269,6 +272,8 @@ mod counted_pins {
         peak: AtomicUsize,
         replaced: Mutex<HashSet<PathBuf>>,
         directories: Mutex<HashSet<PathBuf>>,
+        touched: Mutex<HashMap<PathBuf, u64>>,
+        chmodded: Mutex<HashMap<PathBuf, u32>>,
     }
     impl Pins {
         pub fn live(&self) -> usize {
@@ -282,6 +287,26 @@ mod counted_pins {
         }
         pub fn retype_as_directory(&self, path: PathBuf) {
             self.directories.lock().unwrap().insert(path);
+        }
+        /// Change the modification time, as an entry created inside a
+        /// directory does.
+        pub fn touch(&self, path: PathBuf) {
+            *self.touched.lock().unwrap().entry(path).or_default() += 1;
+        }
+        /// Change the native attributes and the Unix mode.
+        pub fn chmod(&self, path: PathBuf) {
+            *self.chmodded.lock().unwrap().entry(path).or_default() += 1;
+        }
+        fn metadata(&self, path: &Path) -> EntryMetadata {
+            let touched = self.touched.lock().unwrap().get(path).copied();
+            let chmodded = self.chmodded.lock().unwrap().get(path).copied();
+            let mode = chmodded.unwrap_or_default();
+            EntryMetadata {
+                modified: Some(UNIX_EPOCH + Duration::from_secs(touched.unwrap_or_default())),
+                native_attributes: Some(0x10 | (mode << 8)),
+                unix_mode: Some(0o40755 ^ mode),
+                ..EntryMetadata::default()
+            }
         }
         fn identity(&self, path: &Path) -> TransferIdentity {
             let mut hash = std::collections::hash_map::DefaultHasher::new();
@@ -358,9 +383,9 @@ mod counted_pins {
                 entry: TransferEntry {
                     identity: self.pins.identity(&path),
                     item: MutationItem {
+                        metadata: self.pins.metadata(&path),
                         path,
                         kind,
-                        metadata: EntryMetadata::default(),
                     },
                 },
                 pins: self.pins.clone(),
@@ -401,7 +426,10 @@ mod counted_pins {
             &self.entry
         }
         fn revalidate(&self, _: &Cancellation) -> Result<(), FsError> {
-            if self.pins.identity(&self.entry.item.path) == self.entry.identity {
+            let path = &self.entry.item.path;
+            if self.pins.identity(path) == self.entry.identity
+                && self.pins.metadata(path) == self.entry.item.metadata
+            {
                 Ok(())
             } else {
                 Err(FsError::from_io(
@@ -486,6 +514,41 @@ fn large_selection_holds_a_bounded_number_of_native_pins_and_revalidates_release
     assert!(prepared.revalidate_for(599, &service, &cancel).is_err());
     assert!(prepared.revalidate_for(0, &service, &cancel).is_err());
     assert!(prepared.revalidate_for(300, &service, &cancel).is_ok());
+    assert!(prepared.revalidate(&service, &cancel).is_err());
+    drop(prepared);
+    assert_eq!(pins.live(), 0);
+}
+
+#[test]
+fn released_directory_targets_reject_after_pin_metadata_changes_like_held_ones() {
+    let directory = fake_root();
+    let pins = Arc::new(counted_pins::Pins::default());
+    let entries = (0..600)
+        .map(|index| {
+            let path = directory.join(format!("item-{index}"));
+            pins.retype_as_directory(path.clone());
+            Entry::new(EntryId(index), path, EntryKind::Directory)
+        })
+        .collect::<Vec<_>>();
+    let request = many_selected(directory, entries, UserCommandLaunch::PerItem);
+    let service = counted_pins::Service(pins.clone());
+    let cancel = Cancellation::default();
+    let prepared = prepare::prepare(&request, &service, &cancel).unwrap();
+    // The active directory and items 0..=254 hold pins; the rest are released.
+    assert_eq!(pins.live(), 256);
+    prepared.revalidate(&service, &cancel).unwrap();
+    // A held directory pin rejects a later mtime change through its revision;
+    // a released one must reject the same change, and an attribute/mode change.
+    pins.touch(directory.join("item-0"));
+    pins.touch(directory.join("item-599"));
+    pins.chmod(directory.join("item-598"));
+    for index in [0, 598, 599] {
+        assert!(
+            prepared.revalidate_for(index, &service, &cancel).is_err(),
+            "item-{index} changed after its pin"
+        );
+    }
+    prepared.revalidate_for(300, &service, &cancel).unwrap();
     assert!(prepared.revalidate(&service, &cancel).is_err());
     drop(prepared);
     assert_eq!(pins.live(), 0);
