@@ -168,12 +168,12 @@ and while an incremental transfer it started is unfinished. Text goes through
 arboard, which serves it on its own connection, so the session cannot see that
 text's `SelectionClear`: it counts the text as owned until its own file publication
 replaces it, and stays open, without a timer, after a text copy. Measured on Linux
-(Xvfb) over two idle seconds: 196 worker wakeups before, none after, both after a
-read and after a file copy; none after a text copy. Other engine timers still wake
-while idle: the drag/drop preparation worker (25 ms), the drag hover forwarder
-(25 ms) and the native drag actor (10 ms). A task of the operations actor that
-panics or is aborted fails its own job, so the registry entry cannot hold one of
-the 32 slots (and actor exit) indefinitely.
+(Xvfb) over two idle seconds after a read, a file copy and a text copy alike: 196
+worker wakeups before, none after. Other engine timers still wake while idle: the
+drag/drop preparation worker (25 ms), the drag hover forwarder (25 ms) and the
+native drag actor (10 ms). A task of the operations actor that panics or is aborted
+fails its own job, so the registry entry cannot hold one of the 32 slots (and actor
+exit) indefinitely.
 
 ## Image viewer spare shutdown
 
