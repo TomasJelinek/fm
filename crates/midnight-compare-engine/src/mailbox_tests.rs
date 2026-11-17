@@ -55,11 +55,19 @@ fn an_undelivered_wake_is_retried_by_the_next_output() {
 /// Races `take` against a concurrent `put`; every round starts with a wake outstanding and
 /// an empty slot. Either the take sees the output or the put wakes again: both missing it
 /// would leave an output nobody is woken for, as when `take` clears the flag after taking.
-/// Bounded by rounds and a short time budget.
+/// Bounded by rounds and a short time budget. A round that does not finish fails the test
+/// at a deadline, and the side threads end with the test, also when it fails.
 #[test]
 fn a_take_and_a_concurrent_put_never_both_miss_the_output() {
     const ROUNDS: usize = 50_000;
     const STOP: usize = usize::MAX;
+    /// Stores `STOP` when dropped, also while the test thread unwinds.
+    struct Stop(Arc<AtomicUsize>);
+    impl Drop for Stop {
+        fn drop(&mut self) {
+            self.0.store(STOP, Ordering::Release);
+        }
+    }
     let woke = Arc::new(AtomicBool::new(false));
     let flag = woke.clone();
     let mailbox = Arc::new(Mailbox::with_wake(Some(Arc::new(move || {
@@ -68,6 +76,7 @@ fn a_take_and_a_concurrent_put_never_both_miss_the_output() {
     }))));
     let took = Arc::new(AtomicBool::new(false));
     let round = Arc::new(AtomicUsize::new(0));
+    let stop = Stop(round.clone());
     let done = Arc::new(AtomicUsize::new(0));
     let side = |action: Box<dyn Fn() + Send>| {
         let (round, done) = (round.clone(), done.clone());
@@ -101,6 +110,8 @@ fn a_take_and_a_concurrent_put_never_both_miss_the_output() {
         })),
     ];
     let started = Instant::now();
+    // Elapses only on failure.
+    let deadline = started + Duration::from_secs(30);
     let (mut rounds, mut missed) = (0, 0);
     while rounds < ROUNDS && started.elapsed() < Duration::from_millis(300) {
         rounds += 1;
@@ -109,13 +120,19 @@ fn a_take_and_a_concurrent_put_never_both_miss_the_output() {
         woke.store(false, Ordering::SeqCst);
         round.store(rounds, Ordering::Release);
         while done.load(Ordering::Acquire) != rounds * 2 {
+            // A side thread leaves early only by panicking.
+            assert!(
+                threads.iter().all(|thread| !thread.is_finished()),
+                "a side thread ended in round {rounds}"
+            );
+            assert!(Instant::now() < deadline, "round {rounds} did not finish");
             std::thread::yield_now();
         }
         if !took.load(Ordering::Relaxed) && !woke.load(Ordering::Relaxed) {
             missed += 1;
         }
     }
-    round.store(STOP, Ordering::Release);
+    drop(stop);
     for thread in threads {
         thread.join().unwrap();
     }
