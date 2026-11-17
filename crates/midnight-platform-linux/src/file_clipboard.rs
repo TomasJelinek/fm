@@ -259,6 +259,28 @@ impl Files {
             Self::Wayland => Ok(()),
         }
     }
+
+    /// Whether the X11 owner still serves a file list; the read-only Wayland transport
+    /// never owns one.
+    pub(super) fn owns_clipboard(&self) -> bool {
+        match self {
+            Self::X11(clipboard) => clipboard.owns_clipboard(),
+            Self::Wayland => false,
+        }
+    }
+
+    /// Wait for X11 owner events (served before this returns), `wake` or `timeout`.
+    pub(super) fn wait(
+        &mut self,
+        wake: Option<&crate::clipboard::Wake>,
+        timeout: Duration,
+    ) -> Result<(), FsError> {
+        match self {
+            Self::X11(clipboard) => clipboard.wait(wake, timeout),
+            // Nothing to serve: only a wake or the timeout ends the wait.
+            Self::Wayland => crate::clipboard::wait(wake, None, timeout).map(drop),
+        }
+    }
 }
 
 pub(crate) fn wayland_read(format: &str) -> Result<Vec<u8>, FsError> {
