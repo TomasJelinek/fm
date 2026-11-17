@@ -300,15 +300,21 @@ mod tests {
     #[test]
     fn only_definitely_missing_processes_are_reported_as_ended() {
         assert!(process_alive(std::process::id()));
-        let mut child = Command::new(std::env::current_exe().unwrap())
-            .args(["--exact", "no-such-test"])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .unwrap();
-        let pid = child.id();
-        child.wait().unwrap();
-        drop(child);
+        let mut child = Fixture(
+            Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "no-such-test"])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .unwrap(),
+        );
+        let pid = child.0.id();
+        child.0.wait().unwrap();
+        // The retained process handle reserves the ID, so no new process can reuse it: the
+        // exited process still opens and its zero-timeout wait reports that it has ended.
         assert!(!process_alive(pid));
+        drop(child);
+        // An ID beyond any the system assigns is definitely missing (ERROR_INVALID_PARAMETER).
+        assert!(!process_alive(0xffff_fffc));
     }
 }

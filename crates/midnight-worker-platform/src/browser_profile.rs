@@ -29,7 +29,9 @@ pub(super) struct Profile {
 impl Profile {
     pub fn new(parent: &Path) -> io::Result<Self> {
         let root = PrivateStore::open(parent)?;
-        SWEEP.call_once(|| sweep_stale_sessions(parent, std::process::id()));
+        SWEEP.call_once(|| {
+            sweep_stale_sessions(parent, std::process::id(), super::native::process_alive)
+        });
         let stamp = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
             .map_err(io::Error::other)?
@@ -101,8 +103,9 @@ fn session_pid(name: &str) -> Option<u32> {
     fields[0].parse().ok().filter(|pid| *pid != 0)
 }
 
-/// Best effort, bounded removal of profiles that no live session owns.
-fn sweep_stale_sessions(parent: &Path, current: u32) {
+/// Best effort, bounded removal of profiles that no live session owns. `alive` reports
+/// whether a recorded process may still run; it decides only sessions without a lock file.
+fn sweep_stale_sessions(parent: &Path, current: u32, alive: impl Fn(u32) -> bool) {
     let Ok(entries) = fs::read_dir(parent) else {
         return;
     };
@@ -131,7 +134,7 @@ fn sweep_stale_sessions(parent: &Path, current: u32) {
         let lock_path = parent.join(format!("{name}.lock"));
         let stale = match lock_released(&lock_path) {
             Some(released) => released,
-            None => pid != current && !super::native::process_alive(pid),
+            None => pid != current && !alive(pid),
         };
         if stale && fs::remove_dir_all(entry.path()).is_ok() {
             let _ = fs::remove_file(&lock_path);
@@ -179,18 +182,6 @@ mod tests {
         }
     }
 
-    fn ended_process() -> u32 {
-        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
-            .args(["--exact", "no-such-test"])
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-            .unwrap();
-        let pid = child.id();
-        child.wait().unwrap();
-        pid
-    }
-
     fn session(parent: &Path, name: &str, lock: bool) -> PathBuf {
         let path = parent.join(name);
         fs::create_dir(&path).unwrap();
@@ -205,7 +196,9 @@ mod tests {
     fn sweep_removes_only_sessions_without_a_live_owner() {
         let parent = tempfile::tempdir().unwrap();
         let current = std::process::id();
-        let ended = ended_process();
+        // Liveness is injected: a real ended process ID could be reused at any moment.
+        let ended = current.wrapping_add(4);
+        let alive = |pid: u32| pid != ended;
         // Released lock: its process ended without cleanup.
         let crashed = session(parent.path(), &format!("session-{current}-1-1"), true);
         // Held lock: a live session, even under a reused or foreign process ID.
@@ -224,7 +217,7 @@ mod tests {
         fs::create_dir(parent.path().join("unrelated")).unwrap();
         fs::write(parent.path().join("session-notes.txt"), b"keep").unwrap();
 
-        sweep_stale_sessions(parent.path(), current);
+        sweep_stale_sessions(parent.path(), current, alive);
 
         assert!(!crashed.exists());
         assert!(
