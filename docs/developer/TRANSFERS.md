@@ -25,6 +25,19 @@ replacement; the consumed source stream is not replayed.
 
 All methods run on backend workers. UI receives bounded immutable progress and
 versioned conflict metadata, and sends a choice with the exact job/version.
+
+Transfer entries carry raw modification times. The Windows adapter formats none
+of them; the Linux adapter still formats every entry it reports until its
+follow-up. The engine formats only displayed entries, on a backend worker and only
+when the adapter supplied no text: both sides of a Copy/Move or Rename conflict
+prompt, and the existing output of a Make File List save confirmation. Copy/Move
+formats through the audited locale (`Engine::configure_audited_locale`), because
+a copy job retains only audited owners; with `configure_locale` alone its prompts
+show adapter text or the UI's UTC fallback. Rename and Make File List use the
+engine locale from either slot. Enumerated, inspected and automatically resolved
+(Replace all, Merge all) entries are never formatted, and progress events carry
+no entry metadata.
+
 Independent Copy/Move jobs run concurrently on every storage class, up to the
 configured disk-I/O limit ([Disk operations](DISK_OPERATIONS.md); Automatic is four)
 and only while their native namespace footprints are disjoint. Each job performs one

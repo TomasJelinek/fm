@@ -47,11 +47,12 @@ impl QualifiedTransferInstallation {
     }
 }
 
-/// Transfer adapters report raw modification times (`localized_modified` may be
-/// absent). Only an entry shown to the user, such as either side of a conflict
-/// prompt, is formatted, and only when its provider left the text absent: the
-/// listing rule (`localize_metadata`). Enumerated, inspected and automatically
-/// resolved entries are never formatted. Call on a backend worker.
+/// A transfer adapter may report raw modification times only: the Windows adapter
+/// does, while the Linux adapter still formats its entries (pending its follow-up).
+/// Only an entry shown to the user, such as either side of a conflict prompt, is
+/// formatted, and only when its provider left the text absent: the listing rule
+/// (`localize_metadata`). The engine never formats enumerated, inspected or
+/// automatically resolved entries. Call on a backend worker.
 pub(crate) fn localize_displayed(item: &mut MutationItem, locale: Option<&dyn LocaleService>) {
     crate::localize_metadata(&mut item.metadata, locale);
 }

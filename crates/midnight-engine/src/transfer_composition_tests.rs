@@ -5,6 +5,10 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
+#[cfg(windows)]
+#[path = "transfer_composition_engine_tests.rs"]
+mod engine;
+
 struct Audited;
 impl TransferService for Audited {
     fn prepare_transfer_source(

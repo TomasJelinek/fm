@@ -2,20 +2,14 @@
 use super::*;
 use std::{ffi::OsString, io, path::Path};
 
+/// Decision routing only. The actor indexes it by job outside the job's lease, so
+/// it owns no service; the job's lease-owned `rename_locale` formats the prompt.
 #[derive(Default)]
 pub(super) struct ConflictState {
     next: AtomicU64,
     pending: Mutex<Option<(u64, std::sync::mpsc::SyncSender<CopyChoice>)>>,
-    /// Formats the two displayed entries; transfer adapters report raw times.
-    locale: Option<Arc<dyn LocaleService>>,
 }
 impl ConflictState {
-    pub(super) fn localized(locale: Option<Arc<dyn LocaleService>>) -> Self {
-        Self {
-            locale,
-            ..Self::default()
-        }
-    }
     pub(super) fn resolve(&self, decision: CopyDecision) {
         let pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
         if let Some((version, sender)) = pending.as_ref()
@@ -37,14 +31,6 @@ impl ConflictState {
             return CopyChoice::Cancel;
         };
         conflict.version = previous + 1;
-        crate::transfer_composition::localize_displayed(
-            &mut conflict.source,
-            self.locale.as_deref(),
-        );
-        crate::transfer_composition::localize_displayed(
-            &mut conflict.target,
-            self.locale.as_deref(),
-        );
         let (sender, receiver) = std::sync::mpsc::sync_channel(1);
         *self.pending.lock().unwrap_or_else(|e| e.into_inner()) = Some((conflict.version, sender));
         let sent = outbox.blocking_send(
@@ -178,7 +164,7 @@ pub(super) fn execute(job: worker::Job, outbox: Outbox) -> OperationProgress {
                 break;
             }
         };
-        let conflict = CopyConflict {
+        let mut conflict = CopyConflict {
             id: progress.id,
             version: 0,
             source: prepared.movement.capture.entry().item.clone(),
@@ -187,6 +173,11 @@ pub(super) fn execute(job: worker::Job, outbox: Outbox) -> OperationProgress {
             can_replace: true,
             can_merge: false,
         };
+        // Only this displayed prompt formats its two entries' times; the pins keep
+        // the entries as their provider reported them.
+        let locale = job.rename_locale.as_deref();
+        crate::transfer_composition::localize_displayed(&mut conflict.source, locale);
+        crate::transfer_composition::localize_displayed(&mut conflict.target, locale);
         match job.rename_conflicts.ask(conflict, &outbox, &job.cancel) {
             CopyChoice::Cancel => {
                 job.cancel.cancel();

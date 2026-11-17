@@ -689,7 +689,7 @@ fn prepare_on_worker(
         edit.localize(locale.as_deref());
     }
     // A Rename conflict prompt formats its two displayed entries with this locale.
-    job.rename_conflicts = Arc::new(rename::ConflictState::localized(locale));
+    job.retain_rename_locale(locale);
     Ok(job)
 }
 

@@ -12,27 +12,9 @@ impl Run {
     fn start(parent: &Path, name: &str) -> Self {
         Self::localized(parent, name, None)
     }
-    /// As `prepare_on_worker` installs the actor's locale for conflict prompts.
+    /// With the locale `prepare_on_worker` gives a Rename job for its prompts.
     fn localized(parent: &Path, name: &str, locale: Option<Arc<dyn LocaleService>>) -> Self {
-        let entries: Arc<[Entry]> = vec![Entry::new(
-            EntryId(1),
-            parent.join("source.txt"),
-            EntryKind::File,
-        )]
-        .into();
-        let request = PrepareOperation {
-            id: OperationId(7),
-            kind: MutationKind::Rename,
-            source: VisibleDirectory {
-                pane: PaneId::Left,
-                navigation: NavigationId(1),
-                path: parent.into(),
-                entries: entries.clone(),
-            },
-            view: Arc::new(DirectoryIndex::from_entries(&entries)),
-            selection: Arc::default(),
-            focused: Some(EntryId(1)),
-        };
+        let request = focused_source(parent, MutationKind::Rename);
         let status = Arc::new(Mutex::new(worker::initial(&request)));
         let cancel = Cancellation::default();
         let mut job = worker::prepare(
@@ -45,7 +27,7 @@ impl Run {
         .unwrap();
         job.confirm(Some(name.into())).unwrap();
         job.set_state(OperationState::Running);
-        job.rename_conflicts = Arc::new(ConflictState::localized(locale));
+        job.retain_rename_locale(locale);
         let decisions = job.rename_conflicts.clone();
         let (sender, events) = mpsc::channel(8);
         let task = tokio::task::spawn_blocking(move || {
@@ -88,6 +70,28 @@ impl Run {
 impl Drop for Run {
     fn drop(&mut self) {
         self.cancel.cancel();
+    }
+}
+/// A `kind` request for the focused `source.txt` of `parent`.
+fn focused_source(parent: &Path, kind: MutationKind) -> PrepareOperation {
+    let entries: Arc<[Entry]> = vec![Entry::new(
+        EntryId(1),
+        parent.join("source.txt"),
+        EntryKind::File,
+    )]
+    .into();
+    PrepareOperation {
+        id: OperationId(7),
+        kind,
+        source: VisibleDirectory {
+            pane: PaneId::Left,
+            navigation: NavigationId(1),
+            path: parent.into(),
+            entries: entries.clone(),
+        },
+        view: Arc::new(DirectoryIndex::from_entries(&entries)),
+        selection: Arc::default(),
+        focused: Some(EntryId(1)),
     }
 }
 fn fixture() -> tempfile::TempDir {
@@ -245,6 +249,61 @@ async fn rename_conflict_prompts_format_only_their_displayed_entries() {
     assert_eq!(run.finish().await.state, OperationState::Cancelled);
     preserved(temp.path(), b"changed");
     assert_eq!(locale.calls(), 4);
+}
+
+/// Only a Rename prompts with transfer entries, so preparation leaves the actor's
+/// locale in that lease-owned job alone. The decision state the actor indexes by
+/// job, outside any lease, never keeps the locale alive.
+#[tokio::test]
+async fn preparation_retains_the_prompt_locale_only_in_a_rename_job() {
+    let temp = fixture();
+    let locale: Arc<dyn LocaleService> =
+        Arc::new(crate::transfer_composition::tests::CountingLocale::default());
+    for kind in [
+        MutationKind::Delete(DeleteMode::Permanent),
+        MutationKind::EditMetadata,
+        MutationKind::CreateFile,
+        MutationKind::CreateDirectory,
+        MutationKind::Rename,
+    ] {
+        let request = focused_source(temp.path(), kind);
+        let status = Arc::new(Mutex::new(worker::initial(&request)));
+        let service: Arc<dyn MutationService> =
+            Arc::new(midnight_platform::LocalFileSystem::new(None));
+        let domain = crate::retirement::RetirementDomain::try_start(1, 0).unwrap();
+        let context = domain.try_reserve().unwrap().own((
+            Input::Flat(request),
+            Some(service),
+            Some(locale.clone()),
+        ));
+        let job = tokio::task::spawn_blocking(move || {
+            prepare_on_worker(
+                context,
+                Cancellation::default(),
+                status,
+                Arc::new(Semaphore::new(MAX_METADATA_TARGETS)),
+            )
+        })
+        .await
+        .unwrap()
+        .unwrap();
+        let rename = kind == MutationKind::Rename;
+        assert_eq!(
+            Arc::strong_count(&locale),
+            1 + usize::from(rename),
+            "only a Rename job keeps the locale: {kind:?}"
+        );
+        assert_eq!(job.rename_locale.is_some(), rename, "{kind:?}");
+        let decisions = job.rename_conflicts.clone();
+        job.retire().await.unwrap();
+        assert_eq!(
+            Arc::strong_count(&locale),
+            1,
+            "the indexed decision state owns no locale: {kind:?}"
+        );
+        drop(decisions);
+    }
+    preserved(temp.path(), b"consented original");
 }
 
 #[tokio::test]

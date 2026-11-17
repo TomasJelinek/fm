@@ -74,8 +74,9 @@ impl EntryWork {
 
 pub(super) struct Job {
     retirement_witness: Option<crate::transfer_composition::TransferRetirementWitness>,
-    /// Formats only the two entries of a displayed conflict prompt; adapters
-    /// report raw times for every enumerated or inspected entry.
+    /// Formats only the two entries of a displayed conflict prompt. The Windows
+    /// adapter reports raw times for every enumerated or inspected entry; the
+    /// Linux adapter still formats its own (pending its follow-up), which wins.
     locale: Option<crate::transfer_composition::QualifiedLocaleInstallation>,
     status: Status,
     progress: CopyProgress,
