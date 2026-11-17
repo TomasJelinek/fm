@@ -70,15 +70,6 @@ fn choose_next_mode(open: &OpenWindow) {
     slint::platform::update_timers_and_animations();
 }
 
-/// Closes the sessions even when an assertion fails, so that the runtime can
-/// shut down and a failing test reports instead of hanging.
-struct Closing<'a>(&'a ViewerWindows);
-impl Drop for Closing<'_> {
-    fn drop(&mut self) {
-        self.0.close_all();
-    }
-}
-
 type Inputs = Rc<RefCell<Vec<ViewerInput>>>;
 
 /// Record inputs; the returned flag decides whether the sender accepts them.
@@ -97,8 +88,7 @@ fn capture(open: &OpenWindow) -> (Inputs, Rc<Cell<bool>>) {
 
 #[test]
 fn mode_chooser_follows_presented_mode_after_model_changes_and_user_choice() {
-    let (_runtime, manager, open, service) = image_presentation_tests::open();
-    let _closing = Closing(&manager);
+    let (_runtime, _manager, open, service) = image_presentation_tests::open();
     open.timer.stop();
     let (inputs, accept) = capture(&open);
     let present = |output| present_outputs(&open, &service, &|_| {}, vec![output]);
@@ -137,8 +127,7 @@ fn mode_chooser_follows_presented_mode_after_model_changes_and_user_choice() {
 
 #[test]
 fn web_policy_boxes_show_policy_in_force_after_document_change_and_refusal() {
-    let (_runtime, manager, open, service) = image_presentation_tests::open();
-    let _closing = Closing(&manager);
+    let (_runtime, _manager, open, service) = image_presentation_tests::open();
     open.timer.stop();
     let (inputs, accept) = capture(&open);
     let present = |output| present_outputs(&open, &service, &|_| {}, vec![output]);

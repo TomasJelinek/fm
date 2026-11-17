@@ -106,9 +106,25 @@ fn frame() -> ViewerFrame {
     }
 }
 
+/// The fixture's viewer windows. Dropping them closes every session, also while
+/// a failed assertion unwinds the test, so that the runtime can shut down and
+/// the failure is reported instead of hanging.
+pub(super) struct TestWindows(ViewerWindows);
+impl std::ops::Deref for TestWindows {
+    type Target = ViewerWindows;
+    fn deref(&self) -> &ViewerWindows {
+        &self.0
+    }
+}
+impl Drop for TestWindows {
+    fn drop(&mut self) {
+        self.0.close_all();
+    }
+}
+
 pub(super) fn open() -> (
     tokio::runtime::Runtime,
-    ViewerWindows,
+    TestWindows,
     Rc<OpenWindow>,
     Service,
 ) {
@@ -160,7 +176,7 @@ pub(super) fn open() -> (
         &|_| {},
         vec![ViewerOutput::Frame(Box::new(frame()))],
     );
-    (runtime, manager, open, service)
+    (runtime, TestWindows(manager), open, service)
 }
 
 #[test]
