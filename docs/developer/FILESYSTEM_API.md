@@ -240,9 +240,10 @@ legacy limits. Shared tab/viewer leases count as the same mount. Source reads ma
 revisit captured ranges and are bounded to 256 KiB. Host listing validation
 also limits a directory to 100,000 nodes and 8 MiB aggregate raw/display names.
 The idle supervisor waits without polling; it observes a hard request
-cancellation every 10 ms only while such an exchange is active. Releasing the last
-reference of a session whose cleanup is already unconfirmed still terminates its
-worker and returns the mount permit; the unconfirmed source stays quarantined.
+cancellation every 10 ms only while such an exchange is active. When
+`release_on_worker` consumes the last host reference of a session whose cleanup is
+already unconfirmed, the host still terminates its worker and returns the mount
+permit; the unconfirmed source stays quarantined.
 
 The current parser imposes no artificial compressed-source, member, aggregate disk
 or expansion-ratio byte ceiling. It retains 100,000-node and 8 MiB name limits,
