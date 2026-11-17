@@ -27,10 +27,16 @@ Branch work that cannot start never ends the session: an optional probe is
 dropped, an explicit expansion or refresh is answered with a row `Rejected`. A
 probe whose row was meanwhile expanded or listed is dropped before dispatch. An
 explicit expansion whose display projection exceeds its budget restores that
-branch with an error, like a failed maintenance step. Only internal invariant
-failures end a session with `Unavailable`; afterwards Commit and viewport
-observations of its last publication are ignored, because answering them with a
-retryable rejection would make the UI commit again in a loop.
+branch with an error, like a failed maintenance step. A session still ends with
+`Unavailable` when a recursive batch cannot be projected for a reason other than
+the resource budget (for example malformed provider data; the batch is rolled
+back first), when a completed listing cannot be turned into a publication, when
+an admission semaphore reports that it is closed, or when an internal invariant
+fails. If such an error occurs while the next branch job is being chosen during
+a refresh pass, it ends that pass with the error instead, and the session
+continues. After `Unavailable`, Commit and viewport observations of the last
+publication are ignored, because answering them with a retryable rejection would
+make the UI commit again in a loop.
 
 Typed navigation preserves full native paths or archive locations and raw node
 identities. An archive target retains the source registration after pane changes
