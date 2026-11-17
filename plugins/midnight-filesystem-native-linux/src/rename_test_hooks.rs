@@ -27,7 +27,7 @@ struct Hooks {
     refuse_next_rename: Option<i32>,
     refuse_next_mkdir: Option<i32>,
     ignore_private_mode: bool,
-    unqualified_filesystem: bool,
+    filesystem_type: Option<u64>,
     case_insensitive_lookup: bool,
     private_group: Option<bool>,
 }
@@ -101,10 +101,15 @@ pub(crate) fn private_mode_ignored() -> bool {
 }
 /// The fixture filesystem is treated like remote or FUSE storage.
 pub(crate) fn treat_filesystem_as_unqualified() {
-    HOOKS.with(|hooks| hooks.borrow_mut().unqualified_filesystem = true);
+    const FUSE_SUPER_MAGIC: u64 = 0x6573_5546;
+    HOOKS.with(|hooks| hooks.borrow_mut().filesystem_type = Some(FUSE_SUPER_MAGIC));
 }
-pub(crate) fn unqualified_filesystem() -> bool {
-    HOOKS.with(|hooks| hooks.borrow().unqualified_filesystem)
+/// The fixture filesystem reports the NFS filesystem type.
+pub(crate) fn treat_filesystem_as_nfs() {
+    HOOKS.with(|hooks| hooks.borrow_mut().filesystem_type = Some(0x6969));
+}
+pub(crate) fn filesystem_type() -> Option<u64> {
+    HOOKS.with(|hooks| hooks.borrow().filesystem_type)
 }
 /// Name lookups fall back to an ASCII case-insensitive match, as on vfat,
 /// exfat, CIFS or casefolded ext4 directories. Exact names still win.

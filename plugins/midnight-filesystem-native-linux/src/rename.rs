@@ -1,6 +1,10 @@
 //! Prepared same-parent Rename. Pins define authority; live namespace checks
 //! are not inode-CAS or isolation from the same UID/root and preopened descendants.
-use crate::{ownership, rename_recovery::Stage, rename_sys as sys, system};
+use crate::{
+    ownership,
+    rename_recovery::{Stage, capture_refusal},
+    rename_sys as sys, system,
+};
 use midnight_filesystem_plugin_api::*;
 use midnight_filesystem_plugin_sdk::{
     CallContext,
@@ -122,17 +126,19 @@ pub(crate) fn trusted_parent(parent: &File) -> Result<(), Failure> {
     }
     Ok(())
 }
-pub(crate) fn local_filesystem(parent: &File) -> bool {
+const NFS_SUPER_MAGIC: u64 = 0x6969;
+fn filesystem_type(parent: &File) -> Option<u64> {
     #[cfg(test)]
-    if crate::rename_test_hooks::unqualified_filesystem() {
-        return false;
+    if let Some(value) = crate::rename_test_hooks::filesystem_type() {
+        return Some(value);
     }
-    system::filesystem(parent).is_ok_and(|value| {
-        matches!(
-            value.f_type as u64,
-            0xef53 | 0x5846_5342 | 0x9123_683e | 0x0102_1994
-        )
-    })
+    system::filesystem(parent)
+        .ok()
+        .map(|value| value.f_type as u64)
+}
+pub(crate) fn local_filesystem(parent: &File) -> bool {
+    filesystem_type(parent)
+        .is_some_and(|value| matches!(value, 0xef53 | 0x5846_5342 | 0x9123_683e | 0x0102_1994))
 }
 fn qualified(parent: &File, source: Identity) -> bool {
     Identity::of(parent).is_ok_and(|identity| identity.device == source.device)
@@ -272,6 +278,14 @@ pub(crate) fn prepare(
     let parent_identity = Identity::of(&parent)?;
     // Refuse before the user chooses a name; execution checks the parent again.
     trusted_parent(&parent)?;
+    if filesystem_type(&parent) == Some(NFS_SUPER_MAGIC) {
+        // The kernel NFS client refuses every renameat2 flag (EINVAL), so the
+        // no-replace capture could never run.
+        return Err(Failure::new(
+            ErrorCode::Unsupported,
+            "Rename is unavailable on NFS mounts: the kernel NFS client cannot rename without the risk of replacing another item.",
+        ));
+    }
     let source = sys::pin(&parent, &name)?;
     let metadata = source.metadata().map_err(Failure::from_io)?;
     let identity = Identity::metadata(&metadata);
@@ -436,19 +450,22 @@ impl Prepared {
                 Ok(stage) => stage,
                 Err(failure) => return Ok(failure.into_outcome()),
             };
-            let capture = (|| {
+            let ready = (|| {
                 self.revalidate()?;
                 stage.validate(self)?;
-                system::cancel(context)?;
-                #[cfg(test)]
-                crate::rename_test_hooks::fire(
-                    crate::rename_test_hooks::Boundary::BeforeCapture,
-                    stage.path(),
-                );
-                sys::rename(&self.parent, &self.name, stage.file(), ITEM, false)
+                system::cancel(context)
             })();
-            if let Err(error) = capture {
-                return Ok(stage.without_capture(self, error));
+            if let Err(error) = ready {
+                // No capture request was issued: nothing can complete later.
+                return Ok(stage.abandon(self, error));
+            }
+            #[cfg(test)]
+            crate::rename_test_hooks::fire(
+                crate::rename_test_hooks::Boundary::BeforeCapture,
+                stage.path(),
+            );
+            if let Err(error) = sys::rename(&self.parent, &self.name, stage.file(), ITEM, false) {
+                return Ok(stage.without_capture(self, capture_refusal(error)));
             }
             let pinned = stage.pin_item();
             #[cfg(test)]

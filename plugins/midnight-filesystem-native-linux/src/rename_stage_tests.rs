@@ -123,34 +123,109 @@ fn restrictive_stage_mode_is_corrected_to_owner_only() {
     assert_eq!(names(&temp.path), ["target"]);
 }
 
+/// The mkdir (`true`) or capture renameat2 on unqualified storage fails with
+/// `errno` without performing it; nothing may remain.
+fn refused_on_unqualified_storage(mkdir: bool, errno: i32) -> RenameOutcome {
+    let _reset = hooks::reset();
+    let temp = Temp::new();
+    let source = temp.path.join("source");
+    fs::write(&source, b"source bytes").unwrap();
+    let original = identity(&source);
+    let client = Client::new();
+    hooks::treat_filesystem_as_unqualified();
+    let prepared = prepare(&client, &source);
+    assert!(!prepared.recoverable_replace);
+    if mkdir {
+        hooks::refuse_next_mkdir(errno);
+    } else {
+        hooks::refuse_next_rename(errno);
+    }
+    let outcome = rename(&client, &prepared, b"target");
+    assert_eq!(identity(&source), original, "errno {errno}: {outcome:?}");
+    assert_eq!(names(&temp.path), ["source"], "errno {errno}: {outcome:?}");
+    outcome
+}
+fn unchanged_with(outcome: &RenameOutcome, code: ErrorCode, errno: i32) -> bool {
+    matches!(outcome, RenameOutcome::Unchanged(failure)
+        if failure.code == code && failure.os_code == Some(errno))
+}
+
 #[test]
 fn definite_refusals_on_unqualified_storage_leave_nothing_behind() {
     for (mkdir, errno, code) in [
         (true, libc::EACCES, ErrorCode::PermissionDenied),
         (true, libc::EROFS, ErrorCode::Io),
-        (false, libc::EINVAL, ErrorCode::Invalid),
         (false, libc::EXDEV, ErrorCode::Io),
+        // CIFS sharing violations: an item another SMB client holds open.
+        (false, libc::EBUSY, ErrorCode::Io),
+        (false, libc::ETXTBSY, ErrorCode::Io),
     ] {
+        let outcome = refused_on_unqualified_storage(mkdir, errno);
+        assert!(
+            unchanged_with(&outcome, code, errno),
+            "errno {errno}: {outcome:?}"
+        );
+    }
+}
+
+#[test]
+fn refused_rename_flags_are_unsupported_and_leave_nothing_behind() {
+    // A FUSE server without rename flags refuses RENAME_NOREPLACE.
+    for errno in [libc::EINVAL, libc::ENOSYS, libc::EOPNOTSUPP] {
+        let outcome = refused_on_unqualified_storage(false, errno);
+        assert!(
+            unchanged_with(&outcome, ErrorCode::Unsupported, errno)
+                && matches!(&outcome, RenameOutcome::Unchanged(failure)
+                    if failure.message.starts_with("This filesystem cannot rename without")),
+            "errno {errno}: {outcome:?}"
+        );
+    }
+}
+
+#[test]
+fn failures_before_the_capture_request_remove_the_stage_on_every_filesystem() {
+    for unqualified in [false, true] {
         let _reset = hooks::reset();
         let temp = Temp::new();
-        let source = temp.path.join("source");
+        let parent = temp.path.join("parent");
+        fs::create_dir(&parent).unwrap();
+        let source = parent.join("source");
         fs::write(&source, b"source bytes").unwrap();
         let original = identity(&source);
         let client = Client::new();
-        hooks::treat_filesystem_as_unqualified();
-        let prepared = prepare(&client, &source);
-        assert!(!prepared.recoverable_replace);
-        if mkdir {
-            hooks::refuse_next_mkdir(errno);
-        } else {
-            // FUSE without rename flags refuses RENAME_NOREPLACE with EINVAL.
-            hooks::refuse_next_rename(errno);
+        if unqualified {
+            hooks::treat_filesystem_as_unqualified();
         }
+        let prepared = prepare(&client, &source);
+        // Other users may change the parent after the stage exists: the capture is never requested.
+        let shared = parent.clone();
+        hooks::at(Boundary::AfterStageCreate, move |_| chmod(&shared, 0o777));
         let outcome = rename(&client, &prepared, b"target");
-        assert!(unchanged(&outcome, code), "errno {errno}: {outcome:?}");
+        chmod(&parent, 0o755);
+        assert!(
+            unchanged(&outcome, ErrorCode::Unsupported),
+            "unqualified {unqualified}: {outcome:?}"
+        );
         assert_eq!(identity(&source), original);
-        assert_eq!(names(&temp.path), ["source"], "errno {errno}");
+        assert_eq!(names(&parent), ["source"], "unqualified {unqualified}");
     }
+}
+
+#[test]
+fn nfs_mounts_are_refused_before_a_name_is_requested() {
+    let _reset = hooks::reset();
+    let temp = Temp::new();
+    let source = temp.path.join("source");
+    fs::write(&source, b"source bytes").unwrap();
+    let client = Client::new();
+    hooks::treat_filesystem_as_nfs();
+    let response = prepare_response(&client, &source);
+    assert!(
+        matches!(&response, Response::Failed(failure)
+            if failure.code == ErrorCode::Unsupported && failure.message.contains("NFS")),
+        "{response:?}"
+    );
+    assert_eq!(names(&temp.path), ["source"]);
 }
 
 #[test]

@@ -204,7 +204,8 @@ impl Plan {
 }
 /// A kernel or file server refused the namespace request instead of performing
 /// it. Any other failure on an unqualified filesystem can hide a request that
-/// completed remotely.
+/// completed remotely. CIFS reports a sharing violation (an item another client
+/// holds open) as EBUSY, or ETXTBSY over SMB1.
 fn definite_refusal(error: &Failure) -> bool {
     matches!(
         error.os_code,
@@ -220,8 +221,27 @@ fn definite_refusal(error: &Failure) -> bool {
                 | libc::EDQUOT
                 | libc::ENAMETOOLONG
                 | libc::EMLINK
+                | libc::EBUSY
+                | libc::ETXTBSY
         )
     )
+}
+/// The capture is a Rename's first `renameat2(RENAME_NOREPLACE)`, into an empty
+/// stage. EINVAL, ENOSYS or EOPNOTSUPP there is the answer of a filesystem that
+/// cannot rename without replacing (a FUSE server without rename flags; NFS is
+/// refused at Prepare), not a problem with the requested name. The OS code stays.
+pub(crate) fn capture_refusal(mut error: Failure) -> Failure {
+    if matches!(
+        error.os_code,
+        Some(libc::EINVAL | libc::ENOSYS | libc::EOPNOTSUPP)
+    ) {
+        error.code = ErrorCode::Unsupported;
+        error.message.insert_str(
+            0,
+            "This filesystem cannot rename without the risk of replacing another item, so Rename is unavailable here; nothing was renamed. No-replace rename refused: ",
+        );
+    }
+    error
 }
 fn unconfirmed_locator(mut error: Failure) -> Failure {
     error.message.insert_str(
@@ -557,6 +577,36 @@ impl Stage {
             error,
         }
     }
+    /// No capture request was issued, so nothing can complete later on any
+    /// filesystem. Remove the stage this call created, as when it is refused at
+    /// creation: only while its name still binds it, and only while it is empty.
+    /// The parent's protection is not required for that removal.
+    pub(crate) fn abandon(self, prepared: &Prepared, error: Failure) -> RenameOutcome {
+        let removed = (|| {
+            let visible = sys::pin(&prepared.parent, &self.plan.name)?;
+            if Identity::of(&visible)? != self.identity
+                || Identity::of(&self.file)? != self.identity
+            {
+                return Err(changed(
+                    "The unused stage name binds another object; it was retained.",
+                ));
+            }
+            sys::rmdir(&prepared.parent, &self.plan.name)
+        })();
+        match removed {
+            Ok(()) => {
+                // The removal itself is the reported namespace fact; syncing it is best effort.
+                let _ = sys::sync(&self.parent_sync);
+                RenameOutcome::Unchanged(error)
+            }
+            Err(removal) => self.required(
+                prepared,
+                RenameRecoveryRole::Source,
+                combine(error, "unused stage removal", removal),
+            ),
+        }
+    }
+    /// The capture request was issued and returned an error.
     pub(crate) fn without_capture(mut self, prepared: &Prepared, error: Failure) -> RenameOutcome {
         // A failed namespace syscall can be ambiguous on remote storage. Observe
         // the retained stage before claiming that capture did not happen.
