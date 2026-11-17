@@ -87,7 +87,7 @@ async fn checksum_capture_provider_lives_through_blocked_read_and_queued_shutdow
             sender,
             wakeup: Arc::new(|| {}),
         },
-        Arc::new(Semaphore::new(1)),
+        crate::transfer_leases::namespace_gate(),
     );
     let first_drop = Arc::new(Mutex::new(None));
     let second_drop = Arc::new(Mutex::new(None));
@@ -145,7 +145,7 @@ async fn checksum_capture_rejected_admission_retires_provider_on_worker() {
             sender,
             wakeup: Arc::new(|| {}),
         },
-        Arc::new(Semaphore::new(1)),
+        crate::transfer_leases::namespace_gate(),
     );
     let dropped = Arc::new(Mutex::new(None));
     assert!(

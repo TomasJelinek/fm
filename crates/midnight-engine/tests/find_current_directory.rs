@@ -63,13 +63,14 @@ async fn current_directory_arrives_while_root_open_is_still_blocked() {
         entered: entered.clone(),
         released: released.clone(),
     });
-    let (send, commands) = mpsc::channel(16);
+
     let (events, mut receive) = mpsc::channel(16);
     let mut engine = Engine::new(
         Engine::lifetime().expect("engine cleanup worker"),
         Arc::new(LocalFileSystem::new(None)),
         events,
     );
+    let (send, commands) = engine.command_channel(16).unwrap();
     engine.configure_find().unwrap().install(service);
     let engine = tokio::spawn(engine.run(commands));
     send.send(Command::StartFind(Box::new(FindRequest::new(
@@ -221,13 +222,14 @@ async fn nested_status(read: bool) {
         entered: entered.clone(),
         released: released.clone(),
     });
-    let (send, commands) = mpsc::channel(16);
+
     let (events, mut receive) = mpsc::channel(16);
     let mut engine = Engine::new(
         Engine::lifetime().expect("engine cleanup worker"),
         Arc::new(LocalFileSystem::new(None)),
         events,
     );
+    let (send, commands) = engine.command_channel(16).unwrap();
     engine.configure_find().unwrap().install(service);
     let engine = tokio::spawn(engine.run(commands));
     let mut request = FindRequest::new(FindSessionId(1), FindGeneration(1), vec![root.clone()]);

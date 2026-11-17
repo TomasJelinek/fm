@@ -84,6 +84,8 @@ pub struct FilesystemPluginInfo {
     pub version: String,
     /// Diagnostics have no configurable provider identity or declared kind.
     pub kind: Option<FilesystemPluginKind>,
+    /// Validated formats advertised by this archive package; empty for other kinds/diagnostics.
+    pub formats: Vec<crate::ArchiveFormat>,
     pub location: Option<PathBuf>,
     pub status: String,
 }

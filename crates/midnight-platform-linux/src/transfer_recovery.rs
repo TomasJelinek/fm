@@ -7,27 +7,14 @@ use std::ffi::OsString;
 
 impl Directory {
     pub(in crate::transfer) fn source_stage(&self, cancel: &Cancellation) -> Result<Self, FsError> {
-        create_named_directory(self, cancel, ".midnight-move-")
+        namespace::change(cancel, |mut change| {
+            self.source_stage_in(cancel, &mut change)
+        })
     }
     pub(in crate::transfer) fn remove_empty_stage(&self, stage: Self) -> Result<(), FsError> {
-        let cleanup = Cancellation::default();
-        self.check_recovery_parent(&cleanup)?;
-        stage.revalidate(&cleanup)?;
-        let name = stage
-            .path
-            .file_name()
-            .ok_or_else(|| invalid(&stage.path, "temporary directory needs a basename"))?;
-        if stage.path.parent() != Some(self.path.as_path())
-            || self.inspect(name, &cleanup)?.map(|entry| entry.identity) != Some(stage.identity)
-        {
-            return Err(invalid(&stage.path, "temporary directory identity changed"));
-        }
-        // The parent is held and protected; the private random name is checked
-        // without following links. Linux rmdir refuses nonempty directories.
-        // As with creation, same-UID/privileged namespace mutation is not isolated.
-        rustix::fs::unlinkat(&*self.file, name, AtFlags::REMOVEDIR)
-            .map_err(|e| error(&stage.path, e.into()))?;
-        self.file.sync_all().map_err(|e| error(&stage.path, e))
+        namespace::change(&Cancellation::default(), |mut change| {
+            self.remove_empty_stage_in(stage, &mut change)
+        })
     }
     pub(in crate::transfer) fn native_file(&self) -> &File {
         &self.file
@@ -234,6 +221,147 @@ impl Stage {
         cancel: &Cancellation,
         before_exchange: impl FnOnce(),
     ) -> Result<TransferPublication, FsError> {
+        namespace::change(cancel, |mut change| {
+            self.replace_in(name, cancel, before_exchange, &mut change)
+        })
+    }
+}
+
+fn create_recovery(
+    directory: &Directory,
+    cancel: &Cancellation,
+    change: &mut namespace::Change<'_>,
+) -> Result<Directory, FsError> {
+    create_named_directory(directory, cancel, ".midnight-recovery-", change)
+}
+
+fn create_named_directory(
+    directory: &Directory,
+    cancel: &Cancellation,
+    prefix: &str,
+    change: &mut namespace::Change<'_>,
+) -> Result<Directory, FsError> {
+    for _ in 0..16 {
+        let mut random = [0u8; 16];
+        File::open("/dev/urandom")
+            .and_then(|mut file| file.read_exact(&mut random))
+            .map_err(|e| error(&directory.path, e))?;
+        let suffix: String = random.iter().map(|byte| format!("{byte:02x}")).collect();
+        let name = OsString::from(format!("{prefix}{suffix}"));
+        if let Some(transaction) = change.as_mut() {
+            let pin = match directory.namespace.private_pin(
+                &directory.file,
+                &directory.path,
+                &name,
+                cancel,
+            ) {
+                Ok(pin) => pin,
+                Err(failure) if failure.kind == io::ErrorKind::AlreadyExists => continue,
+                Err(failure) => return Err(failure),
+            };
+            if !transaction.reserve_private_child(Some(pin), cancel)? {
+                continue;
+            }
+        }
+        match directory.create_directory_in(&name, cancel, change) {
+            Ok(created) => {
+                let file = File::from(
+                    openat2(
+                        &*directory.file,
+                        &name,
+                        DIRECTORY | OFlags::NOFOLLOW,
+                        Mode::empty(),
+                        RESOLVE,
+                    )
+                    .map_err(|e| error(&directory.path, e.into()))?,
+                );
+                let metadata = file.metadata().map_err(|e| error(&directory.path, e))?;
+                if identity(&file, &directory.path)? != created.identity()
+                    || metadata.uid() != rustix::process::geteuid().as_raw()
+                    || metadata.mode() & 0o077 != 0
+                {
+                    return Err(unsupported(
+                        &directory.path,
+                        "recovery directory lost private ownership",
+                    ));
+                }
+                return Directory::from_file(file, directory.path.join(name));
+            }
+            Err(failure) if failure.kind == io::ErrorKind::AlreadyExists => continue,
+            Err(failure) => return Err(failure),
+        }
+    }
+    Err(invalid(
+        &directory.path,
+        "exclusive recovery directory names collided",
+    ))
+}
+
+#[cfg(test)]
+#[path = "transfer_recovery_tests.rs"]
+mod tests;
+
+impl Directory {
+    pub(in crate::transfer) fn source_stage_in(
+        &self,
+        cancel: &Cancellation,
+        change: &mut namespace::Change<'_>,
+    ) -> Result<Self, FsError> {
+        create_named_directory(self, cancel, ".midnight-move-", change)
+    }
+}
+
+impl Directory {
+    pub(in crate::transfer) fn remove_empty_stage_in(
+        &self,
+        stage: Self,
+        change: &mut namespace::Change<'_>,
+    ) -> Result<(), FsError> {
+        let cleanup = Cancellation::default();
+        self.check_recovery_parent(&cleanup)?;
+        stage.revalidate(&cleanup)?;
+        let name = stage
+            .path
+            .file_name()
+            .ok_or_else(|| invalid(&stage.path, "temporary directory needs a basename"))?
+            .to_owned();
+        if stage.path.parent() != Some(self.path.as_path())
+            || self.inspect(&name, &cleanup)?.map(|entry| entry.identity) != Some(stage.identity)
+        {
+            return Err(invalid(&stage.path, "temporary directory identity changed"));
+        }
+        // The parent is held and protected; the private random name is checked
+        // without following links. Linux rmdir refuses nonempty directories.
+        // As with creation, same-UID/privileged namespace mutation is not isolated.
+        self.namespace_announce(&name, change, &cleanup)?;
+        rustix::fs::unlinkat(&*self.file, &name, AtFlags::REMOVEDIR)
+            .map_err(|e| error(&stage.path, e.into()))?;
+        let synced = self.file.sync_all().map_err(|e| error(&stage.path, e));
+        let Directory { file, .. } = stage;
+        let closed = match Arc::try_unwrap(file) {
+            Ok(file) => {
+                drop(file);
+                true
+            }
+            Err(retained) => {
+                drop(retained);
+                false
+            }
+        };
+        self.namespace_changed(&name);
+        self.namespace.retired(&name, closed);
+        synced
+    }
+}
+
+impl Stage {
+    fn replace_in(
+        &mut self,
+        name: &OsStr,
+        cancel: &Cancellation,
+        before_exchange: impl FnOnce(),
+        change: &mut namespace::Change<'_>,
+    ) -> Result<TransferPublication, FsError> {
         if self.published || self.file.is_none() {
             return Err(invalid(
                 &self.directory.path,
@@ -260,7 +388,30 @@ impl Stage {
         replacement.expected.revalidate(cancel)?;
         let expected_identity = replacement.expected.entry().identity;
         let expected_revision = replacement.revision;
-        let recovery = create_recovery(&self.directory, cancel)?;
+        // Capture X before any recovery mutation. The same observer later retains
+        // both X and the replacement Y, including while old read guards remain.
+        self.directory
+            .namespace_reserve_file(name, change, cancel)?;
+        // Announce the displaced selected binding before creating any recovery
+        // name. Its private subtree subsequently covers the new "item" binding.
+        self.directory.namespace_announce(name, change, cancel)?;
+        let recovery = create_recovery(&self.directory, cancel, change)?;
+        // A pre-exchange failure can leave the new object only in recovery/item.
+        // Its file identity needs an independent observer, not just path coverage
+        // by the enclosing private recovery directory.
+        if let Err(error) = recovery
+            .namespace_reserve_file(OsStr::new("item"), change, cancel)
+            .and_then(|()| recovery.namespace_announce(OsStr::new("item"), change, cancel))
+        {
+            return Ok(TransferPublication::RecoveryRequired {
+                published: None,
+                recovery: vec![TransferRecovery {
+                    path: recovery.path.clone(),
+                    identity: Some(recovery.identity),
+                }],
+                error,
+            });
+        }
         let retained = recovery.path.join("item");
         let file = self.file().map_err(|e| error(&retained, e))?;
         let staged_identity = identity(file, &retained)?;
@@ -277,6 +428,7 @@ impl Stage {
         // The linked verified bytes now belong to persistent recovery. No subsequent error
         // or Drop may silently remove this link. Retrying requires an explicit new job.
         self.published = true;
+        recovery.namespace_changed(OsStr::new("item"));
         let path = self.directory.path.join(name);
         let stage_receipt = TransferRecovery {
             path: retained.clone(),
@@ -348,6 +500,8 @@ impl Stage {
             });
         }
         self.published_name = Some(name.to_owned());
+        self.directory.namespace_changed(name);
+        recovery.namespace_changed(OsStr::new("item"));
         let displaced = open_target(&recovery, OsStr::new("item"));
         let displaced = match displaced {
             Ok(file) => file,
@@ -413,57 +567,3 @@ impl Stage {
         })
     }
 }
-
-fn create_recovery(directory: &Directory, cancel: &Cancellation) -> Result<Directory, FsError> {
-    create_named_directory(directory, cancel, ".midnight-recovery-")
-}
-
-fn create_named_directory(
-    directory: &Directory,
-    cancel: &Cancellation,
-    prefix: &str,
-) -> Result<Directory, FsError> {
-    for _ in 0..16 {
-        let mut random = [0u8; 16];
-        File::open("/dev/urandom")
-            .and_then(|mut file| file.read_exact(&mut random))
-            .map_err(|e| error(&directory.path, e))?;
-        let suffix: String = random.iter().map(|byte| format!("{byte:02x}")).collect();
-        let name = OsString::from(format!("{prefix}{suffix}"));
-        match directory.create_directory(&name, cancel) {
-            Ok(created) => {
-                let file = File::from(
-                    openat2(
-                        &*directory.file,
-                        &name,
-                        DIRECTORY | OFlags::NOFOLLOW,
-                        Mode::empty(),
-                        RESOLVE,
-                    )
-                    .map_err(|e| error(&directory.path, e.into()))?,
-                );
-                let metadata = file.metadata().map_err(|e| error(&directory.path, e))?;
-                if identity(&file, &directory.path)? != created.identity()
-                    || metadata.uid() != rustix::process::geteuid().as_raw()
-                    || metadata.mode() & 0o077 != 0
-                {
-                    return Err(unsupported(
-                        &directory.path,
-                        "recovery directory lost private ownership",
-                    ));
-                }
-                return Directory::from_file(file, directory.path.join(name));
-            }
-            Err(failure) if failure.kind == io::ErrorKind::AlreadyExists => continue,
-            Err(failure) => return Err(failure),
-        }
-    }
-    Err(invalid(
-        &directory.path,
-        "exclusive recovery directory names collided",
-    ))
-}
-
-#[cfg(test)]
-#[path = "transfer_recovery_tests.rs"]
-mod tests;

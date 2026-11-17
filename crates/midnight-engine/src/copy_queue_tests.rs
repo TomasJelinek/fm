@@ -146,15 +146,23 @@ async fn native_reservation_keeps_fifo_before_its_ui_payload_arrives() {
     fs::create_dir(&target).unwrap();
     let mut h = Harness::native();
     let reservation = h.controller.reserve().unwrap();
-    h.controller
-        .enqueue(request(1, std::slice::from_ref(&source), &target))
-        .await;
+    let mut waiting = request(1, std::slice::from_ref(&source), &target);
+    waiting.start_policy = TransferStartPolicy::WaitForEarlier;
+    h.controller.enqueue(waiting).await;
     assert!(
         matches!(h.next().await, CopyEvent::Progress(p) if p.state == CopyOperationState::Queued)
     );
-    let overtook = tokio::time::timeout(Duration::from_millis(200), h.next())
-        .await
-        .is_ok();
+    let overtook = tokio::time::timeout(Duration::from_millis(200), async {
+        loop {
+            if let CopyEvent::Progress(progress) = h.next().await
+                && progress.state != CopyOperationState::Queued
+            {
+                break;
+            }
+        }
+    })
+    .await
+    .is_ok();
     drop(reservation);
     assert_eq!(h.terminal(1).await.state, CopyOperationState::Completed);
     h.close().await;
@@ -177,7 +185,13 @@ async fn incomplete_copy_predecessors_preserve_the_source_and_require_reconfirma
         let mut mutations = Mutations::new(&mut h, &source);
         mutations.confirm().await;
         let gate = if outcome == "cancelled" {
-            Some(h.mutation.clone().acquire_owned().await.unwrap())
+            Some(
+                h.mutation
+                    .clone()
+                    .acquire_many_owned(crate::transfer_leases::NAMESPACE_WEIGHT)
+                    .await
+                    .unwrap(),
+            )
         } else {
             None
         };
@@ -273,7 +287,7 @@ async fn cancelling_or_shutting_down_a_predecessor_wait_never_holds_execution_ca
         let reservation = h.controller.reserve().unwrap();
         let mut mutations = Mutations::new(&mut h, &source);
         mutations.confirm().await;
-        assert_eq!(h.mutation.available_permits(), 1);
+        assert_eq!(h.mutation.available_permits(), 32);
         assert_eq!(h.io.available_permits(), 1);
         if shutdown {
             mutations.controller.shutdown();
@@ -304,7 +318,9 @@ async fn claiming_an_earlier_native_slot_after_a_later_copy_preserves_native_fir
     fs::write(&later, b"later copy").unwrap();
     let mut h = Harness::native();
     let reservation = h.controller.reserve().unwrap();
-    h.controller.enqueue(request(1, &[later], &target)).await;
+    let mut waiting = request(1, &[later], &target);
+    waiting.start_policy = TransferStartPolicy::WaitForEarlier;
+    h.controller.enqueue(waiting).await;
     h.controller
         .enqueue_reserved(request(2, &[earlier], &target), reservation)
         .await;
@@ -361,9 +377,11 @@ async fn stopped_copy_consumer_rejects_payload_and_resolves_its_receipt() {
     h.controller
         .enqueue_reserved(request(1, &[root.join("source")], &root), reservation)
         .await;
-    let result = h.terminal(1).await;
-    assert_eq!(result.state, CopyOperationState::Failed);
-    assert_eq!(result.errors[0].kind, std::io::ErrorKind::BrokenPipe);
+    h.wait_capacity(MAX_JOBS).await;
+    assert!(matches!(
+        h.events.try_recv(),
+        Err(mpsc::error::TryRecvError::Empty)
+    ));
     assert!(
         tokio::time::timeout(
             Duration::from_secs(4),
@@ -379,6 +397,8 @@ async fn stopped_copy_consumer_rejects_payload_and_resolves_its_receipt() {
 }
 
 struct PanickingTransfer;
+// The injected call panic creates no deferred owner; destination capabilities are native.
+impl midnight_core::AuditedSynchronousTransferService for PanickingTransfer {}
 impl TransferService for PanickingTransfer {
     fn prepare_transfer_source(
         &self,
@@ -431,6 +451,7 @@ async fn abandoning_many_native_slots_preserves_the_bounded_capacity_and_next_co
     let first = h.controller.reserve().unwrap();
     for _ in 0..MAX_JOBS * 8 {
         drop(h.controller.reserve().unwrap());
+        h.wait_capacity(MAX_JOBS - 1).await;
     }
     assert_eq!(h.controller.capacity().available_permits(), MAX_JOBS - 1);
     h.controller
@@ -487,15 +508,24 @@ async fn explicit_link_options_share_the_32_job_limit_and_freeze_preserve_after_
     assert_eq!(fixture.control.destination_opens.load(Ordering::SeqCst), 0);
     assert_eq!(fixture.control.stages_created.load(Ordering::SeqCst), 0);
     drop(reservations);
-    let gate = h.mutation.clone().acquire_owned().await.unwrap();
+    h.wait_capacity(MAX_JOBS).await;
+    let gate = h
+        .mutation
+        .clone()
+        .acquire_many_owned(crate::transfer_leases::NAMESPACE_WEIGHT)
+        .await
+        .unwrap();
     let mut draft = fixture.options(2);
-    h.controller.enqueue_options(draft.clone()).await;
+    let ready = h.reserve_ready().await;
+    h.enqueue_reserved_input(CopyInput::options(draft.clone()), ready)
+        .await;
     draft.links = CopyLinkPolicy::Reject;
     drop(gate);
     let done = h.terminal(2).await;
     assert_eq!(done.state, CopyOperationState::Completed, "{done:?}");
     assert_eq!(done.files_completed, 1);
     assert_eq!(fixture.control.stages_created.load(Ordering::SeqCst), 1);
+    h.wait_capacity(MAX_JOBS).await;
     assert_eq!(h.controller.capacity().available_permits(), MAX_JOBS);
     assert_eq!(draft.links, CopyLinkPolicy::Reject);
     h.close().await;
@@ -529,7 +559,7 @@ fn assert_link_resources_held_until_drop(
     assert_eq!(owners, expected_owners);
     assert!(
         snapshots.iter().all(|(_, io, mutation, capacity)| {
-            *io == 0 && *mutation == 0 && *capacity == MAX_JOBS - 1
+            *io == 0 && *mutation == 31 && *capacity == MAX_JOBS - 1
         }),
         "cleanup and every native/provider destructor retain all leases: {snapshots:?}"
     );
@@ -599,7 +629,7 @@ async fn shutdown_during_blocked_link_sync_keeps_actual_return_ownership_and_wor
     h.tasks.abort_all();
     while h.tasks.join_next().await.is_some() {}
     assert_eq!(h.io.available_permits(), 0);
-    assert_eq!(h.mutation.available_permits(), 0);
+    assert_eq!(h.mutation.available_permits(), 31);
     assert_eq!(h.controller.capacity().available_permits(), MAX_JOBS - 1);
     assert!(fixture.control.drop_threads().is_empty());
     assert_eq!(fixture.control.cleanups.load(Ordering::SeqCst), 0);
@@ -610,7 +640,7 @@ async fn shutdown_during_blocked_link_sync_keeps_actual_return_ownership_and_wor
         .await
         .unwrap();
     assert_eq!(h.io.available_permits(), 0);
-    assert_eq!(h.mutation.available_permits(), 0);
+    assert_eq!(h.mutation.available_permits(), 31);
     assert_eq!(h.controller.capacity().available_permits(), MAX_JOBS - 1);
     assert!(fixture.control.owner_drops().is_empty());
     assert_eq!(fixture.control.staged_count(), 1);
@@ -621,10 +651,15 @@ async fn shutdown_during_blocked_link_sync_keeps_actual_return_ownership_and_wor
         .await
         .unwrap()
         .unwrap();
-    let mutation = tokio::time::timeout(Duration::from_secs(4), h.mutation.clone().acquire_owned())
-        .await
-        .unwrap()
-        .unwrap();
+    let mutation = tokio::time::timeout(
+        Duration::from_secs(4),
+        h.mutation
+            .clone()
+            .acquire_many_owned(crate::transfer_leases::NAMESPACE_WEIGHT),
+    )
+    .await
+    .unwrap()
+    .unwrap();
     let drops = fixture.control.drop_threads();
     assert!(drops.len() >= 2, "source and stage must both retire");
     assert!(drops.iter().all(|thread| *thread != dispatcher));
@@ -679,7 +714,7 @@ async fn decision_abort_keeps_full_and_partial_link_stages_under_the_dedicated_i
             .await
             .unwrap();
         assert_eq!(h.io.available_permits(), 0);
-        assert_eq!(h.mutation.available_permits(), 0);
+        assert_eq!(h.mutation.available_permits(), 31);
         assert_eq!(h.controller.capacity().available_permits(), MAX_JOBS - 1);
         assert!(fixture.control.owner_drops().is_empty());
         assert!(registered.upgrade().is_some());
@@ -687,7 +722,7 @@ async fn decision_abort_keeps_full_and_partial_link_stages_under_the_dedicated_i
         release.0.take().unwrap().send(()).unwrap();
         wait_for_retired_copy_capacity(&h).await;
         assert_eq!(h.io.available_permits(), 1);
-        assert_eq!(h.mutation.available_permits(), 1);
+        assert_eq!(h.mutation.available_permits(), 32);
         assert_eq!(fixture.control.cleanups.load(Ordering::SeqCst), 1);
         assert_eq!(fixture.control.staged_count(), 0);
         assert_eq!(

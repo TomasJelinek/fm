@@ -61,7 +61,7 @@ fn owned_fixture() -> tempfile::TempDir {
         .unwrap()
 }
 
-async fn tree(commands: &mpsc::Sender<Command>, command: TreeCommand) {
+async fn tree(commands: &midnight_engine::CommandSender, command: TreeCommand) {
     commands
         .send(Command::Tree(Box::new(command)))
         .await
@@ -100,7 +100,7 @@ fn row<'a>(view: &'a TreeProjection, path: &Path) -> &'a TreeDisplayRow {
 }
 
 async fn expand_alias(
-    commands: &mpsc::Sender<Command>,
+    commands: &midnight_engine::CommandSender,
     events: &mut mpsc::Receiver<Event>,
     visible: TreePublication,
     alias: &Path,
@@ -192,10 +192,10 @@ async fn native_junction_tree_keeps_alias_actions_and_rejects_only_ancestor_loop
         None
     );
 
-    let (commands, receive) = mpsc::channel(16);
     let (send, mut events) = mpsc::channel(32);
-    let engine =
-        tokio::spawn(Engine::new(Engine::lifetime().unwrap(), filesystem, send).run(receive));
+    let mut command_engine_1 = Engine::new(Engine::lifetime().unwrap(), filesystem, send);
+    let (commands, receive) = command_engine_1.command_channel(16).unwrap();
+    let engine = tokio::spawn(command_engine_1.run(receive));
     commands
         .send(Command::Navigate {
             pane: PaneId::Left,

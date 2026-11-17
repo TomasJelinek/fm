@@ -154,9 +154,10 @@ impl Worker {
                     .is_some_and(|session| session.queued() > 0)
             {
                 // Wait on the semaphore, never poll for native workers to return.
-                let listing = self.session.as_ref().expect("queued session").waiting_on();
+                let (listing, permits) =
+                    self.session.as_ref().expect("queued session").waiting_on();
                 runtime.block_on(async {
-                    tokio::select! { _ = notified => {}, permit = listing.acquire_owned() => { drop(permit); } }
+                    tokio::select! { _ = notified => {}, permit = listing.acquire_many_owned(permits) => { drop(permit); } }
                 });
                 self.pump();
             } else {

@@ -11,7 +11,10 @@ use std::{
     ops::{Deref, DerefMut},
     panic::{AssertUnwindSafe, catch_unwind},
     pin::Pin,
-    sync::{Arc, Condvar, Mutex, OnceLock},
+    sync::{
+        Arc, Condvar, Mutex, OnceLock, TryLockError,
+        atomic::{AtomicBool, Ordering},
+    },
     task::{Context, Poll, Waker},
     thread::{self, ThreadId},
 };
@@ -30,16 +33,22 @@ struct Control {
 }
 struct Shared {
     queue: Mutex<Queue>,
+    // One allocation marker for each existing indexed payload slot. All reserve
+    // paths use this ledger; the queue does not maintain a second free pool.
+    available: Box<[AtomicBool]>,
+    waiters: Box<[WaiterCell]>,
     ready: Condvar,
     worker: OnceLock<ThreadId>,
 }
 struct Queue {
-    free: Vec<usize>,
     slots: Vec<Option<Job>>,
     pending: VecDeque<usize>,
     closing: bool,
     free_waiters: Vec<usize>,
-    waiters: Vec<Option<Waker>>,
+}
+struct WaiterCell {
+    waker: Mutex<Option<Waker>>,
+    notified: AtomicBool,
 }
 struct Job {
     payload: Payload,
@@ -124,13 +133,18 @@ impl RetirementDomain {
         }
         let shared = Arc::new(Shared {
             queue: Mutex::new(Queue {
-                free: (0..capacity).rev().collect(),
                 slots: (0..capacity).map(|_| None).collect(),
                 pending: VecDeque::with_capacity(capacity),
                 closing: false,
                 free_waiters: (0..waiter_capacity).rev().collect(),
-                waiters: (0..waiter_capacity).map(|_| None).collect(),
             }),
+            available: (0..capacity).map(|_| AtomicBool::new(true)).collect(),
+            waiters: (0..waiter_capacity)
+                .map(|_| WaiterCell {
+                    waker: Mutex::new(None),
+                    notified: AtomicBool::new(false),
+                })
+                .collect(),
             ready: Condvar::new(),
             worker: OnceLock::new(),
         });
@@ -161,20 +175,28 @@ impl RetirementDomain {
     }
 
     pub(crate) fn try_reserve(&self) -> Result<RetirementLease, RetirementBusy> {
-        let slot = self
-            .control
-            .shared
-            .queue
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .free
-            .pop()
-            .ok_or(RetirementBusy)?;
+        self.try_reserve_nowait()
+    }
+
+    /// One bounded scan of the same actual payload slots. No metadata mutex,
+    /// spin loop, waiter registration or cleanup queue participates in refusal.
+    /// Sender rollback keeps its Admission/domain alive through unused lease
+    /// return; this does not change the last Control owner's shutdown protocol.
+    pub(crate) fn try_reserve_nowait(&self) -> Result<RetirementLease, RetirementBusy> {
+        let slot = claim_slot(&self.control.shared).ok_or(RetirementBusy)?;
         Ok(RetirementLease {
             control: self.control.clone(),
             slot: Some(slot),
         })
     }
+}
+
+fn claim_slot(shared: &Shared) -> Option<usize> {
+    shared.available.iter().position(|available| {
+        available
+            .compare_exchange(true, false, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+    })
 }
 
 impl RetirementWaiter {
@@ -191,31 +213,34 @@ impl Future for Reservation<'_> {
     fn poll(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.get_mut();
         assert!(!this.completed, "reservation polled after completion");
-        let mut queue = this
-            .waiter
-            .control
-            .shared
-            .queue
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        if let Some(slot) = queue.free.pop() {
-            let old = queue.waiters[this.waiter.slot].take();
-            drop(queue);
+        let shared = &this.waiter.control.shared;
+        let cell = &shared.waiters[this.waiter.slot];
+        let mut registered = cell.waker.lock().unwrap_or_else(|error| error.into_inner());
+        let old = if registered
+            .as_ref()
+            .is_none_or(|waker| !waker.will_wake(context.waker()))
+        {
+            registered.replace(context.waker().clone())
+        } else {
+            None
+        };
+        // Register before checking capacity. A release unable to take this cell
+        // sets notified first; after unlocking we consume that notification.
+        if let Some(slot) = claim_slot(shared) {
+            let retired = registered.take();
+            drop(registered);
             drop(old);
+            drop(retired);
             this.completed = true;
             return Poll::Ready(RetirementLease {
                 control: this.waiter.control.clone(),
                 slot: Some(slot),
             });
         }
-        let current = &mut queue.waiters[this.waiter.slot];
-        if current
-            .as_ref()
-            .is_none_or(|waker| !waker.will_wake(context.waker()))
-        {
-            let old = current.replace(context.waker().clone());
-            drop(queue);
-            drop(old);
+        drop(registered);
+        drop(old);
+        if cell.notified.swap(false, Ordering::AcqRel) {
+            context.waker().wake_by_ref();
         }
         Poll::Pending
     }
@@ -229,26 +254,28 @@ impl Drop for Reservation<'_> {
 }
 impl Drop for RetirementWaiter {
     fn drop(&mut self) {
-        let old = {
+        let old = self.control.shared.waiters[self.slot]
+            .waker
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .take();
+        {
             let mut queue = self
                 .control
                 .shared
                 .queue
                 .lock()
                 .unwrap_or_else(|error| error.into_inner());
-            let old = queue.waiters[self.slot].take();
             queue.free_waiters.push(self.slot);
-            old
-        };
+        }
         drop(old);
     }
 }
 fn clear_waiter(shared: &Shared, slot: usize) {
-    let old = shared
-        .queue
+    let old = shared.waiters[slot]
+        .waker
         .lock()
         .unwrap_or_else(|error| error.into_inner())
-        .waiters[slot]
         .take();
     drop(old);
 }
@@ -420,28 +447,23 @@ fn destroy(shared: &Shared, slot: usize, job: Job) {
 }
 
 fn release(shared: &Shared, slot: usize) {
-    shared
-        .queue
-        .lock()
-        .unwrap_or_else(|error| error.into_inner())
-        .free
-        .push(slot);
-    // Registration count is fixed at startup; never grow a list of async waiters.
-    let count = shared
-        .queue
-        .lock()
-        .unwrap_or_else(|error| error.into_inner())
-        .waiters
-        .len();
-    for index in 0..count {
-        let waker = shared
-            .queue
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .waiters[index]
-            .take();
-        if let Some(waker) = waker {
-            let _ = catch_unwind(AssertUnwindSafe(|| waker.wake()));
+    let was_free = shared.available[slot].swap(true, Ordering::AcqRel);
+    debug_assert!(!was_free, "a reserved retirement slot is returned once");
+    // The set is fixed at startup. An unused return neither parks on a waiter
+    // nor queues bookkeeping behind an unrelated native destructor.
+    for cell in &shared.waiters {
+        cell.notified.store(true, Ordering::Release);
+        let mut registered = match cell.waker.try_lock() {
+            Ok(registered) => registered,
+            Err(TryLockError::Poisoned(error)) => error.into_inner(),
+            Err(TryLockError::WouldBlock) => continue,
+        };
+        let waker = registered.take();
+        drop(registered);
+        if let Some(waker) = waker
+            && let Err(panic) = catch_unwind(AssertUnwindSafe(|| waker.wake()))
+        {
+            std::mem::forget(panic);
         }
     }
 }
@@ -449,3 +471,7 @@ fn release(shared: &Shared, slot: usize) {
 #[cfg(test)]
 #[path = "retirement_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "retirement_nowait_tests.rs"]
+mod nowait_tests;

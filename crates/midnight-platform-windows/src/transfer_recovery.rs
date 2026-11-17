@@ -22,14 +22,22 @@ use windows_sys::{
 };
 
 impl Directory {
-    pub(in crate::transfer) fn source_stage(&self, cancel: &Cancellation) -> Result<Self, FsError> {
-        create_named_directory(self, cancel, ".midnight-move-", DELETE)
-    }
     pub(in crate::transfer) fn remove_empty_stage(self) -> Result<(), FsError> {
+        let cancel = Cancellation::default();
+        super::super::namespace::change(&cancel, |mutation| self.remove_empty_stage_in(mutation))
+    }
+    pub(in crate::transfer) fn remove_empty_stage_in(
+        self,
+        mutation: &mut super::super::namespace::Mutation<'_>,
+    ) -> Result<(), FsError> {
         self.revalidate(&Cancellation::default())?;
         // Exact directory handle; the kernel refuses nonempty directories. Never
         // enumerate/delete children, reopen a path or weaken the private ACL.
-        native::remove(&self.file).map_err(|e| error(&self.path, e))
+        mutation
+            .remove(&self.file, &Cancellation::default(), || {
+                native::remove(&self.file)
+            })
+            .map_err(|e| error(&self.path, e))
     }
     pub(in crate::transfer) fn capture_handle(
         &self,
@@ -37,10 +45,23 @@ impl Directory {
         name: &OsStr,
         cancel: &Cancellation,
     ) -> Result<PathBuf, FsError> {
+        super::super::namespace::change(cancel, |mutation| {
+            self.capture_handle_in(source, name, cancel, mutation)
+        })
+    }
+    pub(in crate::transfer) fn capture_handle_in(
+        &self,
+        source: &File,
+        name: &OsStr,
+        cancel: &Cancellation,
+        mutation: &mut super::super::namespace::Mutation<'_>,
+    ) -> Result<PathBuf, FsError> {
         self.revalidate(cancel)?;
         validate_name(name).map_err(|e| error(&self.path, e))?;
         let path = self.path.join(name);
-        rename_into(source, &self.file, name).map_err(|e| error(&path, e))?;
+        mutation
+            .rename(source, &self.file, name, cancel)
+            .map_err(|e| error(&path, e))?;
         Ok(path)
     }
     pub(in crate::transfer) fn check_recovery_parent(
@@ -115,6 +136,8 @@ struct Target {
     file: File,
     entry: TransferEntry,
     revision: Revision,
+    // Last: a live conflict/Move guard still retains its own native metadata handle.
+    _namespace_owner: super::super::namespace::NativeOwner,
 }
 impl TransferTarget for Target {
     fn entry(&self) -> &TransferEntry {
@@ -164,12 +187,14 @@ pub(super) fn prepare_target(
         Err(failure) => return Err(error(&path, failure)),
     };
     let (entry, revision) = target_snapshot(&file, &path, || {})?;
+    let namespace_owner = super::super::namespace::owner(&[entry.identity]);
     Ok(Some(Arc::new(Target {
         entry,
         revision,
         file,
         name: name.to_owned(),
         directory: directory.clone(),
+        _namespace_owner: namespace_owner,
     })))
 }
 
@@ -302,6 +327,17 @@ impl Stage {
         cancel: &Cancellation,
         after_capture: impl FnOnce(),
     ) -> Result<TransferPublication, FsError> {
+        super::super::namespace::change(cancel, |mutation| {
+            self.replace_in(name, cancel, after_capture, mutation)
+        })
+    }
+    fn replace_in(
+        &mut self,
+        name: &OsStr,
+        cancel: &Cancellation,
+        after_capture: impl FnOnce(),
+        mutation: &mut super::super::namespace::Mutation<'_>,
+    ) -> Result<TransferPublication, FsError> {
         if self.published || self.cleaned {
             return Err(invalid(&self.path, "stage is no longer available"));
         }
@@ -345,10 +381,18 @@ impl Stage {
             ));
         }
         replacement.expected.revalidate(cancel)?;
-        let recovery = create_recovery(&self.directory, cancel)?;
+        mutation.prepare_rename(&self.file, &self.directory.file, name, cancel)?;
+        let recovery =
+            create_named_directory_in(&self.directory, cancel, ".midnight-recovery-", 0, mutation)?;
         let staged_path = recovery.path.join("replacement");
         let staged_identity = identity(&self.file, &self.path)?;
-        rename_into(&self.file, &recovery.file, OsStr::new("replacement"))
+        mutation
+            .rename(
+                &self.file,
+                &recovery.file,
+                OsStr::new("replacement"),
+                cancel,
+            )
             .map_err(|e| error(&self.path, e))?;
         // From this point, even the verified replacement is persistent recovery data.
         // Drop must close its handle without deleting it if any later step fails.
@@ -359,7 +403,9 @@ impl Stage {
             identity: Some(staged_identity),
         };
         let original_path = recovery.path.join("original");
-        if let Err(failure) = rename_into(&original, &recovery.file, OsStr::new("original")) {
+        if let Err(failure) =
+            mutation.rename(&original, &recovery.file, OsStr::new("original"), cancel)
+        {
             return Ok(TransferPublication::RecoveryRequired {
                 published: None,
                 recovery: vec![staged_receipt],
@@ -373,7 +419,9 @@ impl Stage {
         after_capture();
         // A new final entry created during the explicit gap wins; never remove it.
         let commit = self.directory.revalidate(cancel).and_then(|()| {
-            rename_into(&self.file, &self.directory.file, name).map_err(|e| error(&path, e))
+            mutation
+                .rename(&self.file, &self.directory.file, name, cancel)
+                .map_err(|e| error(&path, e))
         });
         if let Err(error) = commit {
             return Ok(TransferPublication::RecoveryRequired {
@@ -391,7 +439,7 @@ impl Stage {
     }
 }
 
-pub(in crate::transfer) fn rename_into(
+pub(in crate::transfer) fn rename_into_untracked(
     source: &File,
     parent: &File,
     name: &OsStr,
@@ -428,20 +476,41 @@ pub(in crate::transfer) fn rename_into(
     Ok(())
 }
 
+#[cfg(test)]
 fn create_recovery(directory: &Directory, cancel: &Cancellation) -> Result<Directory, FsError> {
     create_named_directory(directory, cancel, ".midnight-recovery-", 0)
 }
-pub(in crate::transfer) fn native_move_recovery(
+pub(in crate::transfer) fn native_move_recovery_in(
     directory: &Directory,
     cancel: &Cancellation,
+    mutation: &mut super::super::namespace::Mutation<'_>,
 ) -> Result<Directory, FsError> {
-    create_named_directory(directory, cancel, ".midnight-recovery-", DELETE)
+    create_named_directory_in(directory, cancel, ".midnight-recovery-", DELETE, mutation)
 }
+#[cfg(test)]
 fn create_named_directory(
     directory: &Directory,
     cancel: &Cancellation,
     prefix: &str,
     additional_access: u32,
+) -> Result<Directory, FsError> {
+    super::super::namespace::change(cancel, |mutation| {
+        create_named_directory_in(directory, cancel, prefix, additional_access, mutation)
+    })
+}
+pub(in crate::transfer) fn source_stage_in(
+    directory: &Directory,
+    cancel: &Cancellation,
+    mutation: &mut super::super::namespace::Mutation<'_>,
+) -> Result<Directory, FsError> {
+    create_named_directory_in(directory, cancel, ".midnight-move-", DELETE, mutation)
+}
+fn create_named_directory_in(
+    directory: &Directory,
+    cancel: &Cancellation,
+    prefix: &str,
+    additional_access: u32,
+    mutation: &mut super::super::namespace::Mutation<'_>,
 ) -> Result<Directory, FsError> {
     for _ in 0..16 {
         checked(cancel, &directory.path)?;
@@ -450,7 +519,14 @@ fn create_named_directory(
             .map_err(|e| error(&directory.path, io::Error::other(e.to_string())))?;
         let suffix: String = random.iter().map(|byte| format!("{byte:02x}")).collect();
         let name = OsString::from(format!("{prefix}{suffix}"));
-        match create_private_directory(&directory.file, &name, additional_access) {
+        match mutation.create(
+            &directory.file,
+            &directory.path,
+            &name,
+            super::super::namespace::Creation::Private(EntryKind::Directory),
+            cancel,
+            || create_private_object(&directory.file, &name, additional_access, true),
+        ) {
             Ok(file) => return Directory::from_file(file, directory.path.join(name)),
             Err(failure) if failure.kind() == io::ErrorKind::AlreadyExists => continue,
             Err(failure) => return Err(error(&directory.path, failure)),
@@ -604,15 +680,45 @@ fn trusted_recovery_parent(file: &File) -> io::Result<()> {
     Ok(())
 }
 
-fn create_private_directory(
+#[cfg(test)]
+pub(in crate::transfer) fn create_private_directory(
     parent: &File,
     name: &OsStr,
     additional_access: u32,
 ) -> io::Result<File> {
-    create_private_object(parent, name, additional_access, true)
+    let cancel = Cancellation::default();
+    super::super::namespace::change(&cancel, |mutation| {
+        mutation
+            .create_relative(parent, name, EntryKind::Directory, &cancel, || {
+                create_private_object(parent, name, additional_access, true)
+            })
+            .map_err(|e| error(Path::new(""), e))
+    })
+    .map_err(|error| io::Error::new(error.kind, error))
 }
 
+#[cfg(test)]
 pub(super) fn create_private_file(parent: &File, name: &OsStr) -> io::Result<File> {
+    let cancel = Cancellation::default();
+    super::super::namespace::change(&cancel, |mutation| {
+        mutation
+            .create_relative(parent, name, EntryKind::File, &cancel, || {
+                create_private_file_untracked(parent, name)
+            })
+            .map_err(|e| error(Path::new(""), e))
+    })
+    .map_err(|error| io::Error::new(error.kind, error))
+}
+// The namespace regression already owns its mutation turn; do not begin a nested one.
+#[cfg(test)]
+pub(in crate::transfer) fn create_private_file_for_namespace_test(
+    parent: &File,
+    name: &OsStr,
+) -> io::Result<File> {
+    create_private_file_untracked(parent, name)
+}
+
+pub(super) fn create_private_file_untracked(parent: &File, name: &OsStr) -> io::Result<File> {
     create_private_object(
         parent,
         name,

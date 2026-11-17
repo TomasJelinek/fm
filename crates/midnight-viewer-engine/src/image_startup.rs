@@ -88,15 +88,31 @@ impl SpareRetirement {
     }
 }
 
-/// Keep this permit alive until the associated prepared worker/session's actual Drop has finished.
-/// In an image actor, declare the permit before the session so reverse local drop order enforces it.
+/// Shared authority for one child reservation. Only the last owner releases capacity.
 pub(crate) struct ChildPermit {
-    release: Option<Box<dyn FnOnce() + Send>>,
+    reservation: Arc<Reservation>,
 }
 
-impl Drop for ChildPermit {
+impl Clone for ChildPermit {
+    fn clone(&self) -> Self {
+        Self {
+            reservation: self.reservation.clone(),
+        }
+    }
+}
+
+struct Reservation {
+    release: Mutex<Option<Box<dyn FnOnce() + Send>>>,
+}
+
+impl Drop for Reservation {
     fn drop(&mut self) {
-        if let Some(release) = self.release.take() {
+        if let Some(release) = self
+            .release
+            .get_mut()
+            .unwrap_or_else(|error| error.into_inner())
+            .take()
+        {
             release();
         }
     }
@@ -144,6 +160,11 @@ impl Startup {
     pub fn opened(&self, provider: &Provider) {
         self.manager.opened(provider);
     }
+
+    /// Memory-only admission fault; actual Ready retirement stays on the backend owner.
+    pub fn cleanup_failed(&self, status: midnight_image_viewer_host::CleanupStatus) {
+        self.manager.cleanup_failed(status);
+    }
 }
 
 /// Native boundaries are injected only to make launch and delayed-exit races deterministic in tests.
@@ -155,10 +176,16 @@ trait Backend: Send + Sync + 'static {
     fn same_provider(left: &Self::Provider, right: &Self::Provider) -> bool;
     /// Exact in-memory catalog/protocol/resource matching; must never perform native I/O.
     fn prepared_matches(prepared: &Self::Prepared, provider: &Self::Provider) -> bool;
-    fn prepare(&self, provider: &Self::Provider, cancel: &AtomicBool)
-    -> io::Result<Self::Prepared>;
+    fn prepare(
+        &self,
+        provider: &Self::Provider,
+        cancel: &AtomicBool,
+        owner: Box<dyn Send>,
+    ) -> io::Result<Self::Prepared>;
     /// Installed identity only, never idle Process.wait, liveness polling, or a source operation.
     fn validate(&self, prepared: &Self::Prepared, provider: &Self::Provider) -> io::Result<()>;
+    fn retire(&self, prepared: Self::Prepared) -> io::Result<()>;
+    fn cleanup_status(&self, error: &io::Error) -> midnight_image_viewer_host::CleanupStatus;
 }
 
 struct Native;
@@ -186,12 +213,26 @@ impl Backend for Native {
         prepared.catalog_matches(provider)
     }
 
-    fn prepare(&self, provider: &Provider, cancel: &AtomicBool) -> io::Result<PreparedImageWorker> {
-        PreparedImageWorker::prepare(provider, cancel, PREPARE_TIMEOUT)
+    fn prepare(
+        &self,
+        provider: &Provider,
+        cancel: &AtomicBool,
+        owner: Box<dyn Send>,
+    ) -> io::Result<PreparedImageWorker> {
+        PreparedImageWorker::prepare_owned(provider, cancel, PREPARE_TIMEOUT, owner)
     }
 
     fn validate(&self, prepared: &PreparedImageWorker, provider: &Provider) -> io::Result<()> {
         prepared.validate_for(provider)
+    }
+
+    fn retire(&self, prepared: PreparedImageWorker) -> io::Result<()> {
+        prepared.close_checked()
+    }
+
+    fn cleanup_status(&self, error: &io::Error) -> midnight_image_viewer_host::CleanupStatus {
+        midnight_image_viewer_host::cleanup_status(error)
+            .unwrap_or(midnight_image_viewer_host::CleanupStatus::ProcessUnconfirmed)
     }
 }
 
@@ -244,10 +285,14 @@ struct Completion {
 
 impl Completion {
     fn finish(&self, result: Result<(), RetirementError>) {
-        *self
+        let mut committed = self
             .result
             .lock()
-            .unwrap_or_else(|error| error.into_inner()) = Some(result);
+            .unwrap_or_else(|error| error.into_inner());
+        if !matches!(*committed, Some(Err(_))) {
+            *committed = Some(result);
+        }
+        drop(committed);
         self.changed.notify_waiters();
     }
 
@@ -281,6 +326,7 @@ struct State<B: Backend> {
     generation: u64,
     shutdown: bool,
     spare_stopped: bool,
+    retirement_failed: bool,
     children: usize,
     demands: usize,
     spare: Spare<B>,
@@ -365,6 +411,7 @@ enum Work<B: Backend> {
     },
     Retire(ReadyResource<B::Prepared>),
     Stop,
+    Failed,
 }
 
 /// Guards queued-demand priority even if backend identity validation unwinds.
@@ -392,6 +439,12 @@ impl<B: Backend> Drop for Demand<B> {
 }
 
 impl<B: Backend> Manager<B> {
+    fn cleanup_failed(&self, status: midnight_image_viewer_host::CleanupStatus) {
+        if status != midnight_image_viewer_host::CleanupStatus::Confirmed {
+            self.control.shared.fail_retirement();
+        }
+    }
+
     fn new(backend: B, schedule: impl FnOnce(Box<dyn FnOnce() + Send>)) -> Self {
         let shared = Arc::new(Shared {
             backend,
@@ -400,6 +453,7 @@ impl<B: Backend> Manager<B> {
                 generation: 0,
                 shutdown: false,
                 spare_stopped: false,
+                retirement_failed: false,
                 children: 0,
                 demands: 0,
                 spare: Spare::Empty,
@@ -412,10 +466,11 @@ impl<B: Backend> Manager<B> {
         let completion = shared.completion.clone();
         schedule(Box::new(move || {
             let result = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                owner.clone().run();
+                owner.clone().run()
             })) {
-                Ok(()) => Ok(()),
-                Err(_) => {
+                Ok(result) => result,
+                Err(payload) => {
+                    std::mem::forget(payload);
                     // Unwinding has finished, but native cleanup may be unconfirmed. Seal work
                     // without manufacturing Empty or releasing any remaining reservations.
                     let mut state = owner.lock();
@@ -514,6 +569,12 @@ impl<B: Backend> Manager<B> {
         };
         loop {
             let mut state = shared.lock();
+            if state.retirement_failed {
+                demand.finish(&mut state);
+                return Err(io::Error::other(
+                    "Image worker admission is closed after unconfirmed cleanup",
+                ));
+            }
             if state.shutdown || cancel.load(Ordering::Acquire) {
                 drop(state);
                 return Err(cancelled());
@@ -600,13 +661,15 @@ impl<B: Backend> Shared<B> {
         state.children += 1;
         let shared = Arc::downgrade(self);
         ChildPermit {
-            release: Some(Box::new(move || {
-                if let Some(shared) = shared.upgrade() {
-                    let mut state = shared.lock();
-                    state.children -= 1;
-                    shared.changed.notify_all();
-                }
-            })),
+            reservation: Arc::new(Reservation {
+                release: Mutex::new(Some(Box::new(move || {
+                    if let Some(shared) = shared.upgrade() {
+                        let mut state = shared.lock();
+                        state.children -= 1;
+                        shared.changed.notify_all();
+                    }
+                }))),
+            }),
         }
     }
 
@@ -619,8 +682,17 @@ impl<B: Backend> Shared<B> {
     ) -> io::Result<Acquisition<B::Prepared>> {
         // Revalidate off-lock before Open. A concurrent catalog invalidation also prevents adoption.
         // Keep the owning struct intact so unwinding also cleans the process before its permit.
-        let valid_identity = self.backend.validate(&ready.prepared, provider).is_ok();
-        let (current, shutdown) = {
+        let valid_identity = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            self.backend.validate(&ready.prepared, provider)
+        })) {
+            Ok(result) => result.is_ok(),
+            Err(payload) => {
+                self.fail_retirement();
+                let _ = self.retire(ready.prepared, ready.permit);
+                std::panic::resume_unwind(payload);
+            }
+        };
+        let (current, shutdown, faulted) = {
             let state = self.lock();
             (
                 state.generation == generation
@@ -628,9 +700,16 @@ impl<B: Backend> Shared<B> {
                         B::prepared_matches(&ready.prepared, catalog_provider)
                     }),
                 state.shutdown,
+                state.retirement_failed,
             )
         };
-        if shutdown || cancel.load(Ordering::Acquire) {
+        if faulted || shutdown || cancel.load(Ordering::Acquire) {
+            drop(self.retire(ready.prepared, ready.permit)?);
+            if faulted {
+                return Err(io::Error::other(
+                    "Image worker admission is closed after unconfirmed cleanup",
+                ));
+            }
             return Err(cancelled());
         }
         if valid_identity && current {
@@ -640,15 +719,15 @@ impl<B: Backend> Shared<B> {
             })
         } else {
             // Cleanup precedes cold fallback; retain this lifetime permit throughout.
-            drop(ready.prepared);
+            let permit = self.retire(ready.prepared, ready.permit)?;
             Ok(Acquisition {
                 prepared: None,
-                permit: ready.permit,
+                permit,
             })
         }
     }
 
-    fn run(self: Arc<Self>) {
+    fn run(self: Arc<Self>) -> Result<(), RetirementError> {
         loop {
             match self.next_work() {
                 Work::Prepare {
@@ -657,17 +736,30 @@ impl<B: Backend> Shared<B> {
                     cancel,
                     permit,
                 } => {
-                    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        self.backend.prepare(&provider, &cancel)
-                    }))
-                    .unwrap_or_else(|_| Err(io::Error::other("Image preparation panicked")));
-                    self.finish_prepare(generation, provider, cancel, permit, result);
+                    let owner: Box<dyn Send> = Box::new(permit.clone());
+                    let result =
+                        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            self.backend.prepare(&provider, &cancel, owner)
+                        })) {
+                            Ok(result) => result,
+                            Err(payload) => {
+                                std::mem::forget(payload);
+                                self.fail_retirement();
+                                std::mem::forget(permit);
+                                return Err(RetirementError::OwnerFailed);
+                            }
+                        };
+                    self.finish_prepare(generation, provider, cancel, permit, result)?;
                 }
                 Work::Retire(ready) => {
-                    drop(ready);
+                    drop(
+                        self.retire(ready.prepared, ready.permit)
+                            .map_err(|_| RetirementError::OwnerFailed)?,
+                    );
                     self.finish_retirement();
                 }
-                Work::Stop => return,
+                Work::Stop => return Ok(()),
+                Work::Failed => return Err(RetirementError::OwnerFailed),
             }
         }
     }
@@ -698,6 +790,9 @@ impl<B: Backend> Shared<B> {
                 };
                 self.changed.notify_all();
                 return Work::Retire(ready);
+            }
+            if state.retirement_failed {
+                return Work::Failed;
             }
             if (state.shutdown || state.spare_stopped) && matches!(state.spare, Spare::Empty) {
                 return Work::Stop;
@@ -745,7 +840,7 @@ impl<B: Backend> Shared<B> {
         cancel: Arc<AtomicBool>,
         permit: ChildPermit,
         result: io::Result<B::Prepared>,
-    ) {
+    ) -> Result<(), RetirementError> {
         match result {
             Ok(prepared) => {
                 let mut state = self.lock();
@@ -765,15 +860,27 @@ impl<B: Backend> Shared<B> {
                         retire: false,
                     };
                     self.changed.notify_all();
-                    return;
+                    return Ok(());
                 }
                 state.spare = Spare::Retiring;
                 self.changed.notify_all();
                 drop(state);
-                drop(prepared);
-                drop(permit);
+                drop(
+                    self.retire(prepared, permit)
+                        .map_err(|_| RetirementError::OwnerFailed)?,
+                );
             }
-            Err(_) => {
+            Err(error) => {
+                let status = self.backend.cleanup_status(&error);
+                if status != midnight_image_viewer_host::CleanupStatus::Confirmed {
+                    self.fail_retirement();
+                    if status == midnight_image_viewer_host::CleanupStatus::ProcessUnconfirmed {
+                        std::mem::forget(permit);
+                    } else {
+                        drop(permit);
+                    }
+                    return Err(RetirementError::OwnerFailed);
+                }
                 let mut state = self.lock();
                 state.spare = Spare::Retiring;
                 self.changed.notify_all();
@@ -784,11 +891,52 @@ impl<B: Backend> Shared<B> {
             }
         }
         self.finish_retirement();
+        Ok(())
+    }
+
+    fn retire(&self, prepared: B::Prepared, permit: ChildPermit) -> io::Result<ChildPermit> {
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            self.backend.retire(prepared)
+        })) {
+            Ok(Ok(())) => Ok(permit),
+            Ok(Err(error)) => {
+                self.fail_retirement();
+                if self.backend.cleanup_status(&error)
+                    == midnight_image_viewer_host::CleanupStatus::ProcessUnconfirmed
+                {
+                    std::mem::forget(permit);
+                } else {
+                    drop(permit);
+                }
+                Err(error)
+            }
+            Err(payload) => {
+                std::mem::forget(payload);
+                self.fail_retirement();
+                std::mem::forget(permit);
+                Err(io::Error::other("Image worker retirement panicked"))
+            }
+        }
+    }
+
+    fn fail_retirement(&self) {
+        let mut state = self.lock();
+        state.retirement_failed = true;
+        state.stop_spare();
+        if matches!(state.spare, Spare::Empty | Spare::Starting { .. }) {
+            state.spare = Spare::Retiring;
+        }
+        self.changed.notify_all();
+        drop(state);
+        // Failure never certifies cleanup, including a claimed worker failing after spare stop.
+        self.completion.finish(Err(RetirementError::OwnerFailed));
     }
 
     fn finish_retirement(&self) {
         let mut state = self.lock();
-        state.spare = Spare::Empty;
+        if !state.retirement_failed {
+            state.spare = Spare::Empty;
+        }
         self.changed.notify_all();
     }
 }

@@ -10,7 +10,7 @@ use tokio::sync::mpsc;
 // Catch path conversion, dropped batches, stale generation results, and metadata
 // associated with the wrong identity across the real provider -> engine boundary.
 pub async fn navigate(
-    commands: &mpsc::Sender<Command>,
+    commands: &midnight_engine::CommandSender,
     events: &mut mpsc::Receiver<Event>,
     pane: PaneId,
     generation: u64,

@@ -1370,13 +1370,14 @@ mod tests {
             gate: Some(gate.clone()),
             ..Icons::default()
         });
-        let (commands, receiver) = mpsc::channel(8);
+
         let (sender, mut events) = mpsc::channel(64);
         let mut engine = crate::Engine::new(
             crate::Engine::lifetime().expect("engine cleanup worker"),
             services.clone(),
             sender,
         );
+        let (commands, receiver) = engine.command_channel(8).unwrap();
         engine
             .configure_desktop()
             .unwrap()
@@ -1478,13 +1479,14 @@ mod tests {
             context_gate: Some(gate.clone()),
             ..Icons::default()
         });
-        let (commands, receiver) = mpsc::channel(8);
+
         let (sender, mut events) = mpsc::channel(32);
         let mut engine = crate::Engine::new(
             crate::Engine::lifetime().expect("engine cleanup worker"),
             services.clone(),
             sender,
         );
+        let (commands, receiver) = engine.command_channel(8).unwrap();
         engine
             .configure_desktop()
             .unwrap()

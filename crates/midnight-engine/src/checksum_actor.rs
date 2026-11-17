@@ -637,8 +637,13 @@ async fn export(
         if save.cancel.is_cancelled() {
             break Err(cancelled());
         }
-        match tokio::time::timeout(Duration::from_millis(25), mutation.clone().acquire_owned())
-            .await
+        match tokio::time::timeout(
+            Duration::from_millis(25),
+            mutation
+                .clone()
+                .acquire_many_owned(crate::transfer_leases::NAMESPACE_WEIGHT),
+        )
+        .await
         {
             Ok(Ok(permit)) => break Ok(permit),
             Ok(Err(_)) => {

@@ -21,7 +21,12 @@ async fn copy_and_move_pause_before_work_resume_only_exact_job_and_finish_normal
         fs::write(&source, b"content retained through pause").unwrap();
         fs::create_dir(&destination).unwrap();
         let mut h = Harness::native();
-        let gate = h.mutation.clone().acquire_owned().await.unwrap();
+        let gate = h
+            .mutation
+            .clone()
+            .acquire_many_owned(crate::transfer_leases::NAMESPACE_WEIGHT)
+            .await
+            .unwrap();
         let request = request(1, std::slice::from_ref(&source), &destination);
         match intent {
             TransferIntent::Copy => h.controller.enqueue(request).await,

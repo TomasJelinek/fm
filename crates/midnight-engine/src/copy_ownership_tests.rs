@@ -26,6 +26,11 @@ struct Payload {
     _native: Native,
     _provider: Provider,
 }
+impl CheckedRetirement for Payload {
+    fn retirement_is_checked(&self) -> bool {
+        true
+    }
+}
 struct Release(Option<mpsc::Sender<()>>);
 impl Drop for Release {
     fn drop(&mut self) {
@@ -48,20 +53,21 @@ fn copy_scope_keeps_capacity_and_mutation_permit_until_native_and_provider_drop_
     let (send, receive) = mpsc::channel();
     let release = Release(Some(send));
     let (provider, retired) = mpsc::channel();
-    let owned = lease.own(Scope {
-        payload: Payload {
+    let mut registry = crate::copy_finished::Registry::default();
+    let (finished, predecessors) = registry.register().unwrap();
+    let (_, pending) = registry.register().unwrap();
+    let mut resources = Resources::admission(fence.register(), finished, permit, predecessors);
+    resources.mutation = Some(mutation_permit);
+    let owned = lease.own(Scope::new(
+        Payload {
             _native: Native {
                 entered,
                 release: receive,
             },
             _provider: Provider(provider),
         },
-        resources: Resources {
-            receipt: fence.register(),
-            mutation: Some(mutation_permit),
-            _capacity: permit,
-        },
-    });
+        resources,
+    ));
     drop(owned);
     let worker = native.recv_timeout(Duration::from_secs(5)).unwrap();
     assert_ne!(worker, thread::current().id());
@@ -71,6 +77,7 @@ fn copy_scope_keeps_capacity_and_mutation_permit_until_native_and_provider_drop_
     );
     assert_eq!(capacity.available_permits(), 0);
     assert_eq!(mutation.available_permits(), 0);
+    assert!(!pending.is_finished());
     assert!(
         domain.try_reserve().is_err(),
         "blocked cleanup retains its slot"
@@ -85,6 +92,7 @@ fn copy_scope_keeps_capacity_and_mutation_permit_until_native_and_provider_drop_
         if let Ok(lease) = domain.try_reserve() {
             assert_eq!(capacity.available_permits(), 1);
             assert_eq!(mutation.available_permits(), 1);
+            assert!(pending.is_finished());
             drop(lease);
             break;
         }

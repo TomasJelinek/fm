@@ -104,12 +104,13 @@ pub(crate) fn render_context(
 pub(crate) fn crop_context(raw: &DocumentPage, window: &Window) -> Option<DocumentPage> {
     let mut page =
         crate::semantic_window::crop_ref(raw, window).unwrap_or_else(|| window.crop(raw.clone()));
-    if !fits_wire(&mut page) {
-        // A complete layout unit can fit the read budget while exceeding the
-        // public exact-anchor/item budget. Preserve exact selection boundaries
-        // and use the same bounded prose fallback as an oversized raw unit.
-        page = window.crop(page);
+    if fits_wire(&mut page) {
+        return Some(page);
     }
+    // A complete layout unit can fit the read budget while exceeding the
+    // public exact-anchor/item budget. Preserve exact selection boundaries
+    // and use the same bounded prose fallback as an oversized raw unit.
+    page = window.crop(page);
     fits_wire(&mut page).then_some(page)
 }
 
@@ -839,3 +840,7 @@ pub fn plain(decoded: &Decoded, revision: u64, eof: bool) -> DocumentPage {
         }],
     }
 }
+
+#[cfg(test)]
+#[path = "crop_context_tests.rs"]
+mod crop_context_tests;

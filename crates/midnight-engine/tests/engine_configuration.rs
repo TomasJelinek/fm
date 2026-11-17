@@ -255,7 +255,7 @@ fn unpolled_run_retires_configured_service_after_tokio_runtime_shutdown() {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .build()
         .unwrap();
-    let (_commands, receiver) = mpsc::channel(1);
+    let (_commands, receiver) = engine.command_channel(1).unwrap();
     let run = engine.run(receiver);
     drop(runtime);
     assert!(observer.entered.try_recv().is_err());

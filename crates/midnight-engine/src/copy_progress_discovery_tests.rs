@@ -115,6 +115,8 @@ struct DiscoveryService {
     gate: Arc<DiscoveryGate>,
 }
 
+// This native-delegating fixture retains only synchronous authority and host counters.
+impl midnight_core::AuditedSynchronousTransferService for DiscoveryService {}
 impl TransferService for DiscoveryService {
     fn prepare_transfer_source(
         &self,
@@ -348,7 +350,12 @@ async fn interrupted_discovery_retains_source_until_actual_return(shutdown: bool
         MAX_JOBS - 1
     );
     fixture.gate.release();
-    fixture.cancelled_terminal().await;
+    if shutdown {
+        fixture.h.wait_shutdown().await;
+    } else {
+        fixture.cancelled_terminal().await;
+    }
+    fixture.h.wait_capacity(MAX_JOBS).await;
     assert!(fixture.gate.returned.load(Ordering::Acquire));
     assert!(fixture.gate.dropped.load(Ordering::Acquire));
     assert_eq!(

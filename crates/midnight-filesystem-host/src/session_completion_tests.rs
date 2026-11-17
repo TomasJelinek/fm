@@ -139,7 +139,7 @@ fn verify_completion(
         stable_entry_ids: false,
         format: Format::Zip,
         container: temporary.path().join("archive.zip"),
-        source: captured,
+        source: Some(captured),
         channel: Mutex::new(Channel {
             input: tempfile::tempfile().unwrap(),
             output,
@@ -148,6 +148,7 @@ fn verify_completion(
         supervision,
         protocol,
         staging: Arc::new(Mutex::new(staging)),
+        close: Arc::new(close::CloseReceipt::new()),
     };
     let result = if listing {
         mount.list(1, &cancel).map(|nodes| nodes.len())

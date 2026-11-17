@@ -30,6 +30,10 @@ fn token(value: u8) -> NodeToken {
 }
 
 impl FilesystemProvider for Owner {
+    fn release_on_worker(self: Arc<Self>) -> Result<(), ProviderError> {
+        drop(self);
+        Ok(())
+    }
     fn resolve(
         &self,
         _location: &StoredLocation,
@@ -42,6 +46,10 @@ impl FilesystemProvider for Owner {
     }
 }
 impl MountedFilesystem for Mount {
+    fn release_on_worker(self: Arc<Self>) -> Result<(), ProviderError> {
+        drop(self);
+        Ok(())
+    }
     fn list(
         &self,
         _directory: &NodeToken,
@@ -73,6 +81,10 @@ impl MountedFilesystem for Mount {
     }
 }
 impl ContentSource for Source {
+    fn release_on_worker(self: Arc<Self>) -> Result<(), midnight_plugin_host::Error> {
+        drop(self);
+        Ok(())
+    }
     fn length(&self) -> u64 {
         0
     }

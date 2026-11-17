@@ -79,85 +79,103 @@ enum Phase {
 #[derive(Default)]
 struct RetirementIo {
     permit: Option<OwnedSemaphorePermit>,
+    admitted: Option<Arc<midnight_work_budget::Permit>>,
     cleanup_owned: bool,
 }
 
 pub(super) struct LinkRetirement {
-    status: Status,
-    cancel: Cancellation,
+    diagnostics: Arc<Diagnostics>,
     io: Mutex<RetirementIo>,
 }
 
+#[derive(Default)]
+struct PendingDiagnostics {
+    failures: VecDeque<TransferLinkCleanupError>,
+    omitted: u64,
+    omitted_recovery: u64,
+}
+/// Bounded diagnostics carry no native owner or execution permit.
+#[derive(Default)]
+pub(super) struct Diagnostics(Mutex<PendingDiagnostics>);
+impl Diagnostics {
+    pub(super) fn record(&self, mut failure: TransferLinkCleanupError) {
+        let mut pending = self.0.lock().unwrap_or_else(|error| error.into_inner());
+        if failure.recovery.len() > MAX_ERROR_DETAILS {
+            pending.omitted_recovery += (failure.recovery.len() - MAX_ERROR_DETAILS) as u64;
+            failure.recovery.truncate(MAX_ERROR_DETAILS);
+        }
+        if pending.failures.len() == MAX_ERROR_DETAILS
+            && let Some(omitted) = pending.failures.pop_front()
+        {
+            pending.omitted += 1;
+            pending.omitted_recovery += omitted.recovery.len() as u64;
+        }
+        pending.failures.push_back(failure);
+    }
+    pub(super) fn drain(&self, progress: &mut CopyProgress) {
+        let mut pending = self.0.lock().unwrap_or_else(|error| error.into_inner());
+        progress.failed = progress
+            .failed
+            .saturating_add(std::mem::take(&mut pending.omitted));
+        progress.recovery_count = progress
+            .recovery_count
+            .saturating_add(std::mem::take(&mut pending.omitted_recovery));
+        for failure in pending.failures.drain(..) {
+            retain_link_cleanup(progress, failure);
+        }
+    }
+}
+
 impl LinkRetirement {
-    pub(super) fn new(status: Status, cancel: Cancellation) -> Self {
+    pub(super) fn new(_status: Status, _cancel: Cancellation) -> Self {
         Self {
-            status,
-            cancel,
+            diagnostics: Arc::default(),
             io: Mutex::default(),
         }
     }
 
+    pub(super) fn diagnostics(&self) -> Arc<Diagnostics> {
+        self.diagnostics.clone()
+    }
+
+    #[cfg(test)]
     fn begin(&self, permit: Option<OwnedSemaphorePermit>) {
         let mut io = self.io.lock().unwrap_or_else(|error| error.into_inner());
         if let Some(permit) = permit {
             debug_assert!(io.permit.is_none(), "a retained permit is reused");
             io.permit = Some(permit);
         }
-        debug_assert!(!io.cleanup_owned || io.permit.is_some());
+        debug_assert!(!io.cleanup_owned || io.permit.is_some() || io.admitted.is_some());
+    }
+
+    fn attach(&self, permit: Arc<midnight_work_budget::Permit>) {
+        let mut io = self.io.lock().unwrap_or_else(|error| error.into_inner());
+        assert!(
+            io.admitted.is_none() && io.permit.is_none(),
+            "Copy I/O is attached once"
+        );
+        io.admitted = Some(permit);
     }
 
     fn holds_io(&self) -> bool {
-        self.io
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .permit
-            .is_some()
+        let io = self.io.lock().unwrap_or_else(|error| error.into_inner());
+        io.permit.is_some() || io.admitted.is_some()
     }
 
     fn retain_cleanup_io(&self) {
         let mut io = self.io.lock().unwrap_or_else(|error| error.into_inner());
         debug_assert!(
-            io.permit.is_some(),
+            io.permit.is_some() || io.admitted.is_some(),
             "link staging runs with Copy I/O ownership"
         );
-        // One serial Copy job owns this dedicated permit. Keep it until Job's
-        // last field drops, after every stage, source and provider registration.
+        // The job's actual admitted permit survives stage/source/provider Drop.
         io.cleanup_owned = true;
     }
 
-    fn accepted(&self) {
-        let permit = {
-            let mut io = self.io.lock().unwrap_or_else(|error| error.into_inner());
-            if io.cleanup_owned {
-                None
-            } else {
-                io.permit.take()
-            }
-        };
-        drop(permit);
-    }
-
     fn report(&self, failure: TransferLinkCleanupError) {
-        let mut progress = self
-            .status
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        retain_link_cleanup(&mut progress, failure);
-        progress.pause_requested = false;
-        progress.paused = false;
-        progress.state = if self.cancel.is_cancelled() {
-            CopyOperationState::Cancelled
-        } else if progress.files_completed > 0 || progress.directories_created > 0 {
-            CopyOperationState::CompletedWithErrors
-        } else {
-            CopyOperationState::Failed
-        };
-        progress.message = progress
-            .errors
-            .iter()
-            .map(ToString::to_string)
-            .collect::<Vec<_>>()
-            .join("\n");
+        self.diagnostics.record(failure);
+        // The sealed owner derives terminal status only after actual native
+        // destruction. This callback records diagnostics, never completion.
     }
 }
 
@@ -421,16 +439,21 @@ fn validate_publication(
 }
 
 impl Job {
+    pub(in crate::copy_operations) fn attach_io_permit(
+        &self,
+        permit: Arc<midnight_work_budget::Permit>,
+    ) {
+        self.link_retirement.attach(permit);
+    }
+
+    #[cfg(test)]
     pub(in crate::copy_operations) fn begin_io_step(&self, permit: Option<OwnedSemaphorePermit>) {
         self.link_retirement.begin(permit);
     }
 
+    #[cfg(test)]
     pub(in crate::copy_operations) fn holds_io_permit(&self) -> bool {
         self.link_retirement.holds_io()
-    }
-
-    pub(in crate::copy_operations) fn complete_io_step(&self) {
-        self.link_retirement.accepted();
     }
 
     pub(super) fn prepare_link(&mut self, work: &mut EntryWork) -> Result<Action, FsError> {

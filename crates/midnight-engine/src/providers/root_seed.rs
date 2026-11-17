@@ -97,6 +97,14 @@ struct RootSeed {
 }
 
 impl MountedFilesystem for RootSeed {
+    fn release_on_worker(self: Arc<Self>) -> Result<(), ProviderError> {
+        crate::copy_nested_retirement::provider_step(|| {
+            let Some(owner) = Arc::into_inner(self) else {
+                return Ok(());
+            };
+            crate::copy_nested_retirement::release_mount(owner.source)
+        })
+    }
     fn browse_directory_identity(
         &self,
         node: &NodeToken,

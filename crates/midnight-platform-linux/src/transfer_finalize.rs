@@ -93,18 +93,24 @@ impl TransferMoveFinalizer for Finalizer {
         if let Some(outcome) = &self.outcome {
             return outcome.clone();
         }
-        let removal = self.revalidate(cancel).and_then(|()| {
-            checked(cancel, &self.source)?;
-            // No path reopen or referent traversal. The directory is private and
-            // held; the selected inode, its revision and lease were just checked.
-            // This is a live operation, not atomic compare-and-unlink. Arbitrary
-            // descheduling across a forced lease timeout remains a documented limit.
-            rustix::fs::unlinkat(
-                self.directory.native_file(),
-                &self.name,
-                rustix::fs::AtFlags::empty(),
-            )
-            .map_err(|e| error(&self.source, e.into()))
+        let removal = namespace::change(cancel, |mut change| {
+            self.revalidate(cancel).and_then(|()| {
+                checked(cancel, &self.source)?;
+                self.directory
+                    .namespace_announce(&self.name, &mut change, cancel)?;
+                // No path reopen or referent traversal. The directory is private and
+                // held; the selected inode, its revision and lease were just checked.
+                // This is a live operation, not atomic compare-and-unlink. Arbitrary
+                // descheduling across a forced lease timeout remains a documented limit.
+                rustix::fs::unlinkat(
+                    self.directory.native_file(),
+                    &self.name,
+                    rustix::fs::AtFlags::empty(),
+                )
+                .map_err(|e| error(&self.source, e.into()))?;
+                self.directory.namespace_changed(&self.name);
+                Ok(())
+            })
         });
         let outcome = match removal {
             Ok(()) => TransferMoveFinalizeOutcome::Removed {

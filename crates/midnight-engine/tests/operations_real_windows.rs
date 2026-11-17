@@ -290,13 +290,21 @@ async fn real_fifo_queue_cancels_queued_job_behind_a_conflict_gate() {
     for id in 2..=9 {
         let source = sources.join(format!("job-{id}"));
         fs::write(&source, format!("payload-{id}")).unwrap();
+        if id != 5 {
+            fs::write(
+                destination.join(format!("job-{id}")),
+                format!("target-{id}"),
+            )
+            .unwrap();
+        }
         harness
-            .enqueue(
+            .enqueue_with_policy(
                 id,
                 &[source],
                 &destination,
                 TransferVerification::default(),
                 false,
+                midnight_core::TransferStartPolicy::WaitForEarlier,
             )
             .await;
     }
@@ -306,17 +314,36 @@ async fn real_fifo_queue_cancels_queued_job_behind_a_conflict_gate() {
         .await
         .unwrap();
     harness.cancel_requested(5).await;
-    assert_eq!(fs::read_dir(&destination).unwrap().count(), 1);
+    // Queued cancellation must finish while job1 still owns the conflict gate.
+    let cancelled = harness.terminal(5).await;
+    assert_eq!(cancelled.state, CopyOperationState::Cancelled);
+    assert_eq!(fs::read_dir(&destination).unwrap().count(), 8);
+    assert!(!destination.join("job-5").exists());
+    for id in [2, 3, 4, 6, 7, 8, 9] {
+        assert_eq!(
+            fs::read(destination.join(format!("job-{id}"))).unwrap(),
+            format!("target-{id}").as_bytes()
+        );
+    }
     harness.decide(1, conflict.version, CopyChoice::Skip).await;
+    // Native decision gates prove FIFO. Terminal delivery may arrive later.
+    for id in [2, 3, 4, 6, 7, 8, 9] {
+        let conflict = harness.next_conflict().await;
+        assert_eq!(conflict.id, OperationId(id));
+        harness
+            .decide(
+                id,
+                conflict.version,
+                CopyChoice::ReplaceRecoverable { all: false },
+            )
+            .await;
+    }
     let skipped = harness.terminal(1).await;
     assert_eq!(skipped.state, CopyOperationState::CompletedWithErrors);
     assert_eq!(skipped.skipped, 1);
     for id in 2..=9 {
         if id == 5 {
-            assert_eq!(
-                harness.terminal(id).await.state,
-                CopyOperationState::Cancelled
-            );
+            assert_eq!(cancelled.state, CopyOperationState::Cancelled);
             continue;
         }
         harness.completed(id).await;
@@ -327,8 +354,10 @@ async fn real_fifo_queue_cancels_queued_job_behind_a_conflict_gate() {
     }
     assert!(!destination.join("job-5").exists());
     assert_eq!(fs::read(sources.join("job-5")).unwrap(), b"payload-5");
-    assert_eq!(harness.terminal_order, vec![1, 2, 3, 4, 5, 6, 7, 8, 9]);
-    fixture.record("PASS nine queued jobs: first conflict deterministically gates mutation; queued #5 cancelled; seven successors copied");
+    let mut terminal_ids = harness.terminal_order.clone();
+    terminal_ids.sort_unstable();
+    assert_eq!(terminal_ids, (1..=9).collect::<Vec<_>>());
+    fixture.record("PASS opt-in FIFO native conflict gates; queued #5 cancelled before releasing #1; seven successor replacements verified");
     harness.close().await;
 }
 

@@ -13,6 +13,7 @@ struct Pending {
     completed: bool,
     captured: bool,
     intent: Option<TransferIntent>,
+    retire_requested: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -60,9 +61,25 @@ fn same_destination(left: &InternalDropDestination, right: &InternalDropDestinat
 
 impl Presenter {
     pub(crate) fn cancel_drag_preview(&mut self) {
-        if let Some(pending) = self.drag_drop.preview.pending.take() {
+        if let Some(pending) = self.drag_drop.preview.pending.as_mut() {
             pending.request.cancel.cancel();
-            self.retired.push(Box::new(pending));
+            pending.retire_requested = true;
+        }
+        if self.owned_command_scope_available() {
+            self.flush_deferred_drag_preview_owner();
+        }
+    }
+
+    pub(super) fn flush_deferred_drag_preview_owner(&mut self) {
+        if self
+            .drag_drop
+            .preview
+            .pending
+            .as_ref()
+            .is_some_and(|pending| pending.retire_requested)
+        {
+            self.retired
+                .push(Box::new(self.drag_drop.preview.pending.take()));
         }
     }
 
@@ -72,6 +89,9 @@ impl Presenter {
         intent: InternalDropIntent,
         send: &dyn Fn(Command) -> bool,
     ) {
+        if !self.owned_command_scope_available() {
+            return;
+        }
         let gesture = self.drag_drop.lifecycle.active().filter(|gesture| {
             gesture.phase == Phase::Ready
                 && self.drag_drop.pointer_down
@@ -91,7 +111,8 @@ impl Presenter {
             .pending
             .as_ref()
             .is_some_and(|pending| {
-                pending.request.id == DragId(gesture.id)
+                !pending.retire_requested
+                    && pending.request.id == DragId(gesture.id)
                     && pending.request.intent == intent
                     && !pending.request.cancel.is_cancelled()
                     && same_destination(&pending.request.destination, &destination)
@@ -124,6 +145,7 @@ impl Presenter {
                 completed: false,
                 captured: false,
                 intent: None,
+                retire_requested: false,
             });
         }
         let pending = self
@@ -151,6 +173,7 @@ impl Presenter {
 
     pub(crate) fn drag_preview_status(&self) -> Status {
         match self.drag_drop.preview.pending.as_ref() {
+            Some(pending) if pending.retire_requested => Status::Rejected,
             Some(pending) if !pending.completed => Status::Pending,
             Some(pending) if pending.intent.is_some() => Status::Allowed(pending.intent.unwrap()),
             _ => Status::Rejected,
@@ -166,6 +189,7 @@ impl Presenter {
         if let Some(pending) = self.drag_drop.preview.pending.as_mut()
             && pending.request.id == id
             && pending.request.revision == revision
+            && !pending.retire_requested
             && !pending.completed
             && !pending.request.cancel.is_cancelled()
             && self
@@ -186,8 +210,11 @@ impl Presenter {
         id: DragId,
         result: &mut Option<Result<Arc<dyn CapturedDropDirectory>, TreeDiagnostic>>,
     ) -> bool {
+        if !self.owned_command_scope_available() {
+            return false;
+        }
         let Some(pending) = self.drag_drop.preview.pending.as_mut().filter(|pending| {
-            pending.request.id == id && !pending.request.cancel.is_cancelled()
+            !pending.retire_requested && pending.request.id == id && !pending.request.cancel.is_cancelled()
                 && matches!(&pending.request.destination, InternalDropDestination::TreeOccurrence { view, request: expected, .. } if view.stamp == stamp && *expected == request)
         }) else { return false; };
         let result = result.take().expect("unhandled tree receipt");

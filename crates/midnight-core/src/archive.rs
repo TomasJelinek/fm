@@ -114,6 +114,36 @@ pub struct ArchiveNode {
 
 /// Host-owned session; only backend workers call these methods.
 pub trait ArchiveMount: Send + Sync + std::fmt::Debug {
+    /// A cleanup failure or unwind already observed by this composition. Implementations
+    /// read cached monotonic status and may forward along their backing data-source edge;
+    /// this query performs no native I/O, wait, release, capture or ownership probe.
+    /// False grants no teardown capability and does not certify successful destruction.
+    fn cleanup_unconfirmed(&self) -> bool {
+        false
+    }
+    /// Consume this reference on the current backend worker. Ok certifies that every
+    /// cleanup responsibility acquired by consuming it has actually completed. References
+    /// still held by another tab/viewer/operation remain that owner's responsibility.
+    /// Concrete implementations use atomic Arc::into_inner: shared releases return
+    /// immediately; the last owner must finish native cleanup, including any independent
+    /// supervisor acknowledgement, before Ok. This call must not need a new I/O slot or
+    /// enqueue teardown behind the worker/domain currently waiting for it.
+    ///
+    /// Opaque implementations retain the incoming Arc and fail closed. Ordinary Drop
+    /// return alone is not a release receipt for an arbitrary deferred native owner.
+    /// Known implementations retain the reference and fail if cleanup_unconfirmed is
+    /// already true, before the atomic shared-reference success shortcut.
+    fn release_on_worker(self: Arc<Self>) -> Result<(), FsError> {
+        std::mem::forget(self);
+        Err(FsError::from_io(
+            "release archive",
+            std::path::Path::new(""),
+            std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "Archive provider cannot confirm worker-owned native teardown",
+            ),
+        ))
+    }
     fn id(&self) -> u64;
     fn list(&self, directory: u64, cancel: &Cancellation) -> Result<Vec<ArchiveNode>, FsError>;
     fn read(
@@ -329,5 +359,95 @@ mod selection_tests {
         assert_eq!(totals.file_bytes(), None);
         totals.change(EntryKind::Symlink, Some(1), false);
         assert_eq!(totals.file_bytes(), Some(u64::MAX));
+    }
+}
+
+#[cfg(test)]
+mod release_tests {
+    use super::*;
+    use std::sync::{
+        Barrier,
+        atomic::{AtomicUsize, Ordering},
+    };
+
+    #[derive(Debug)]
+    struct Opaque(Arc<AtomicUsize>);
+    impl ArchiveMount for Opaque {
+        fn id(&self) -> u64 {
+            1
+        }
+        fn list(&self, _: u64, _: &Cancellation) -> Result<Vec<ArchiveNode>, FsError> {
+            panic!("release must not list")
+        }
+        fn read(&self, _: u64, _: u64, _: u32, _: &Cancellation) -> Result<Vec<u8>, FsError> {
+            panic!("release must not read")
+        }
+        fn validate(&self) -> Result<(), FsError> {
+            panic!("release must not probe")
+        }
+    }
+    impl Drop for Opaque {
+        fn drop(&mut self) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    #[test]
+    fn opaque_default_retains_the_incoming_owner_instead_of_certifying_plain_drop() {
+        let dropped = Arc::new(AtomicUsize::new(0));
+        let mount: Arc<dyn ArchiveMount> = Arc::new(Opaque(dropped.clone()));
+        assert!(!mount.cleanup_unconfirmed());
+        let error = mount.release_on_worker().unwrap_err();
+        assert_eq!(error.kind, std::io::ErrorKind::Unsupported);
+        assert_eq!(dropped.load(Ordering::SeqCst), 0);
+    }
+
+    #[derive(Debug)]
+    struct Synchronous(Opaque);
+    impl ArchiveMount for Synchronous {
+        fn release_on_worker(self: Arc<Self>) -> Result<(), FsError> {
+            if let Some(owner) = Arc::into_inner(self) {
+                drop(owner);
+            }
+            Ok(())
+        }
+        fn id(&self) -> u64 {
+            self.0.id()
+        }
+        fn list(&self, directory: u64, cancel: &Cancellation) -> Result<Vec<ArchiveNode>, FsError> {
+            self.0.list(directory, cancel)
+        }
+        fn read(
+            &self,
+            entry: u64,
+            offset: u64,
+            length: u32,
+            cancel: &Cancellation,
+        ) -> Result<Vec<u8>, FsError> {
+            self.0.read(entry, offset, length, cancel)
+        }
+        fn validate(&self) -> Result<(), FsError> {
+            self.0.validate()
+        }
+    }
+
+    #[test]
+    fn audited_atomic_consumption_assigns_exactly_one_last_owner_under_concurrent_release() {
+        let dropped = Arc::new(AtomicUsize::new(0));
+        let first: Arc<dyn ArchiveMount> = Arc::new(Synchronous(Opaque(dropped.clone())));
+        let second = first.clone();
+        let start = Arc::new(Barrier::new(3));
+        let workers = [first, second].map(|owner| {
+            let start = start.clone();
+            std::thread::spawn(move || {
+                start.wait();
+                owner.release_on_worker()
+            })
+        });
+        start.wait();
+        for worker in workers {
+            worker.join().unwrap().unwrap();
+        }
+        assert_eq!(dropped.load(Ordering::SeqCst), 1);
     }
 }

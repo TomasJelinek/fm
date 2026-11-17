@@ -4,7 +4,7 @@ use midnight_engine::Engine;
 use std::{path::Path, sync::Arc, time::Duration};
 use tokio::sync::mpsc;
 
-async fn tree(commands: &mpsc::Sender<Command>, command: TreeCommand) {
+async fn tree(commands: &midnight_engine::CommandSender, command: TreeCommand) {
     commands
         .send(Command::Tree(Box::new(command)))
         .await
@@ -30,21 +30,19 @@ async fn publication(events: &mut mpsc::Receiver<Event>) -> TreePublication {
 async fn start(
     path: &Path,
 ) -> (
-    mpsc::Sender<Command>,
+    midnight_engine::CommandSender,
     mpsc::Receiver<Event>,
     tokio::task::JoinHandle<()>,
     TreePublication,
 ) {
-    let (commands, receive) = mpsc::channel(16);
     let (send, mut events) = mpsc::channel(32);
-    let engine = tokio::spawn(
-        Engine::new(
-            Engine::lifetime().unwrap(),
-            Arc::new(midnight_platform::LocalFileSystem::new(None)),
-            send,
-        )
-        .run(receive),
+    let mut command_engine_1 = Engine::new(
+        Engine::lifetime().unwrap(),
+        Arc::new(midnight_platform::LocalFileSystem::new(None)),
+        send,
     );
+    let (commands, receive) = command_engine_1.command_channel(16).unwrap();
+    let engine = tokio::spawn(command_engine_1.run(receive));
     commands
         .send(Command::Navigate {
             pane: PaneId::Left,

@@ -1,4 +1,5 @@
 //! One-time service admission before accepting native/provider ownership.
+use crate::transfer_composition::{QualifiedLocaleInstallation, QualifiedTransferInstallation};
 use crate::{ArchiveCapture, Engine};
 use midnight_core::{
     ClipboardService, DesktopServices, EditorService, ElevatedDirectoryService,
@@ -7,6 +8,38 @@ use midnight_core::{
     UserCommandService, WatchService,
 };
 use std::{fmt, sync::Arc};
+
+/// One-time typed admission of the reviewed native transfer graph.
+pub struct AuditedTransferSlot<'a> {
+    slot: ServiceSlot<'a, Arc<dyn TransferService>>,
+    qualified: &'a mut Option<QualifiedTransferInstallation>,
+}
+impl AuditedTransferSlot<'_> {
+    pub fn install<T: midnight_core::AuditedSynchronousTransferService + 'static>(
+        self,
+        service: Arc<T>,
+    ) {
+        *self.qualified = Some(QualifiedTransferInstallation::audited(service.clone()));
+        self.slot.install(service);
+    }
+}
+
+/// Locale comes from the same reviewed concrete native implementation.
+pub struct AuditedLocaleSlot<'a> {
+    slot: ServiceSlot<'a, Arc<dyn LocaleService>>,
+    qualified: &'a mut Option<QualifiedLocaleInstallation>,
+}
+impl AuditedLocaleSlot<'_> {
+    pub fn install<
+        T: LocaleService + midnight_core::AuditedSynchronousTransferService + 'static,
+    >(
+        self,
+        service: Arc<T>,
+    ) {
+        *self.qualified = Some(QualifiedLocaleInstallation::audited(service.clone()));
+        self.slot.install(service);
+    }
+}
 
 /// A service is already installed in this engine. No incoming owner was accepted.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -138,6 +171,19 @@ impl Engine {
         ServiceSlot::vacant(&mut self.services.transfers, "transfers")
     }
 
+    /// Retain audited native teardown provenance before erasing the service.
+    /// An ordinary erased transfer installation never obtains this witness.
+    pub fn configure_audited_transfers(
+        &mut self,
+    ) -> Result<AuditedTransferSlot<'_>, ServiceAlreadyConfigured> {
+        let services = &mut *self.services;
+        let slot = ServiceSlot::vacant(&mut services.transfers, "transfers")?;
+        Ok(AuditedTransferSlot {
+            slot,
+            qualified: &mut services.qualified_transfers,
+        })
+    }
+
     /// Admit Custom Command services once; duplicate configuration accepts no owner.
     pub fn configure_user_commands(
         &mut self,
@@ -173,6 +219,18 @@ impl Engine {
         &mut self,
     ) -> Result<ServiceSlot<'_, Arc<dyn LocaleService>>, ServiceAlreadyConfigured> {
         ServiceSlot::vacant(&mut self.services.locale, "locale")
+    }
+
+    /// Install locale from a concrete reviewed synchronous native service.
+    pub fn configure_audited_locale(
+        &mut self,
+    ) -> Result<AuditedLocaleSlot<'_>, ServiceAlreadyConfigured> {
+        let services = &mut *self.services;
+        let slot = ServiceSlot::vacant(&mut services.locale, "locale")?;
+        Ok(AuditedLocaleSlot {
+            slot,
+            qualified: &mut services.qualified_locale,
+        })
     }
 
     /// Admit native recursive search once; duplicate configuration accepts no owner.

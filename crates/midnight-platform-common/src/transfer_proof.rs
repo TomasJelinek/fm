@@ -30,6 +30,14 @@ pub struct VerifiedFileProof {
 }
 
 impl VerifiedFileCopy {
+    pub fn into_published_proof_admitted(
+        self,
+        cancel: &Cancellation,
+        permit: &midnight_work_budget::Permit,
+    ) -> Result<VerifiedFileProof, FsError> {
+        crate::transfer_io::with_transfer_io_permit(permit, || self.into_published_proof(cancel))?
+    }
+
     pub fn into_published_proof(self, cancel: &Cancellation) -> Result<VerifiedFileProof, FsError> {
         let path = &self.source.entry().item.path;
         check_cancel(cancel, path)?;
@@ -63,6 +71,43 @@ impl VerifiedFileCopy {
 }
 
 impl VerifiedFileProof {
+    pub fn revalidate_finalization_admitted(
+        &self,
+        cancel: &Cancellation,
+        permit: &midnight_work_budget::Permit,
+    ) -> Result<(), FsError> {
+        crate::transfer_io::with_transfer_io_permit(permit, || {
+            self.revalidate_finalization(cancel)
+        })?
+    }
+
+    pub fn revalidate_publication_admitted(
+        &self,
+        cancel: &Cancellation,
+        permit: &midnight_work_budget::Permit,
+    ) -> Result<(), FsError> {
+        crate::transfer_io::with_transfer_io_permit(permit, || self.revalidate_publication(cancel))?
+    }
+
+    pub fn begin_validation_admitted(
+        &mut self,
+        cancel: &Cancellation,
+        permit: &midnight_work_budget::Permit,
+    ) -> Result<(), FsError> {
+        crate::transfer_io::with_transfer_io_permit(permit, || self.begin_validation(cancel))?
+    }
+
+    pub fn validation_step_admitted(
+        &mut self,
+        buffer: &mut [u8],
+        cancel: &Cancellation,
+        permit: &midnight_work_budget::Permit,
+    ) -> Result<FileProofPhase, FsError> {
+        crate::transfer_io::with_transfer_io_permit(permit, || {
+            self.validation_step(buffer, cancel)
+        })?
+    }
+
     /// Fresh source and destination revisions from the completed selected-policy
     /// pass, plus exact published binding and required metadata. This is a per-file
     /// removal gate, not a snapshot or permission to remove another file.

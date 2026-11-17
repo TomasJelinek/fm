@@ -23,6 +23,8 @@ pub(super) struct Directory {
     file: Arc<File>,
     path: PathBuf,
     identity: TransferIdentity,
+    // Last: the final Directory clone closes its native Arc<File> before certification.
+    _namespace_owner: super::namespace::NativeOwner,
 }
 impl Directory {
     pub(in crate::transfer) fn native_file(&self) -> &File {
@@ -32,14 +34,26 @@ impl Directory {
         if !file.metadata().map_err(|e| error(&path, e))?.is_dir() {
             return Err(invalid(&path, "destination is not a directory"));
         }
+        let identity = identity(&file, &path)?;
+        let namespace_owner = super::namespace::owner(&[identity]);
         Ok(Self {
-            identity: identity(&file, &path)?,
+            identity,
             file: Arc::new(file),
             path,
+            _namespace_owner: namespace_owner,
         })
     }
 }
 impl TransferDirectory for Directory {
+    fn native_child_namespace_scope(
+        &self,
+        name: &OsStr,
+        kind: EntryKind,
+        cancel: &Cancellation,
+    ) -> Result<Option<Arc<dyn midnight_core::TransferNamespacePin>>, FsError> {
+        self.revalidate(cancel)?;
+        super::namespace::child_pin(&self.file, &self.path, name, kind, cancel).map(Some)
+    }
     fn open_read_child(
         &self,
         name: &OsStr,
@@ -171,15 +185,27 @@ impl TransferDirectory for Directory {
         self.revalidate(cancel)?;
         validate_name(name).map_err(|e| error(&self.path, e))?;
         let path = self.path.join(name);
-        let file = native::open_relative(
-            &self.file,
-            name,
-            FILE_READ_ATTRIBUTES | FILE_TRAVERSE | SYNCHRONIZE,
-            FILE_SHARE_READ | FILE_SHARE_WRITE,
-            FILE_CREATE,
-            FILE_DIRECTORY_FILE,
-        )
-        .map_err(|e| error(&path, e))?;
+        let file = super::namespace::change(cancel, |mutation| {
+            mutation
+                .create(
+                    &self.file,
+                    &self.path,
+                    name,
+                    super::namespace::Creation::Planned,
+                    cancel,
+                    || {
+                        native::open_relative(
+                            &self.file,
+                            name,
+                            FILE_READ_ATTRIBUTES | FILE_TRAVERSE | SYNCHRONIZE,
+                            FILE_SHARE_READ | FILE_SHARE_WRITE,
+                            FILE_CREATE,
+                            FILE_DIRECTORY_FILE,
+                        )
+                    },
+                )
+                .map_err(|e| error(&path, e))
+        })?;
         Self::from_file(file, path)
             .map(|directory| Arc::new(directory) as Arc<dyn TransferDirectory>)
     }
@@ -236,25 +262,40 @@ impl Directory {
             checked(cancel, &self.path)?;
             let name = next_name()?;
             let path = self.path.join(&name);
-            let created = if preserved.is_some() {
-                recovery::create_private_file(&self.file, &name)
-            } else {
-                native::open_relative(
-                    &self.file,
-                    &name,
-                    FILE_READ_DATA
-                        | FILE_WRITE_DATA
-                        | FILE_READ_ATTRIBUTES
-                        | DELETE
-                        | SYNCHRONIZE
-                        | if metadata { FILE_WRITE_ATTRIBUTES } else { 0 },
-                    FILE_SHARE_READ,
-                    FILE_CREATE,
-                    FILE_NON_DIRECTORY_FILE,
-                )
-            };
+            let created = super::namespace::change(cancel, |mutation| {
+                let file = mutation
+                    .create(
+                        &self.file,
+                        &self.path,
+                        &name,
+                        super::namespace::Creation::Private(EntryKind::File),
+                        cancel,
+                        || {
+                            if preserved.is_some() {
+                                recovery::create_private_file_untracked(&self.file, &name)
+                            } else {
+                                native::open_relative(
+                                    &self.file,
+                                    &name,
+                                    FILE_READ_DATA
+                                        | FILE_WRITE_DATA
+                                        | FILE_READ_ATTRIBUTES
+                                        | DELETE
+                                        | SYNCHRONIZE
+                                        | if metadata { FILE_WRITE_ATTRIBUTES } else { 0 },
+                                    FILE_SHARE_READ,
+                                    FILE_CREATE,
+                                    FILE_NON_DIRECTORY_FILE,
+                                )
+                            }
+                        },
+                    )
+                    .map_err(|e| error(&path, e))?;
+                let namespace_owner = super::namespace::owner_for(&file, &path);
+                Ok((file, namespace_owner))
+            });
             match created {
-                Ok(file) => {
+                Ok((file, namespace_owner)) => {
                     return Ok(Stage {
                         file,
                         directory: self.clone(),
@@ -265,10 +306,11 @@ impl Directory {
                         replacement: None,
                         metadata,
                         preserved,
+                        _namespace_owner: namespace_owner,
                     });
                 }
-                Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
-                Err(e) => return Err(error(&path, e)),
+                Err(e) if e.kind == io::ErrorKind::AlreadyExists => continue,
+                Err(e) => return Err(e),
             }
         }
         Err(error(
@@ -295,6 +337,8 @@ struct Stage {
     cleaned: bool,
     path: PathBuf,
     replacement: Option<recovery::Replacement>,
+    // Last, after the file, parent and replacement guard fields actually drop.
+    _namespace_owner: super::namespace::NativeOwner,
 }
 
 /// Construction failures still own an unpublished stage. Preserve both the primary
@@ -425,7 +469,11 @@ impl StagedTransferFile for Stage {
         validate_name(name).map_err(|e| error(&self.path, e))?;
         let path = self.directory.path.join(name);
         checked(cancel, &path)?;
-        native::rename(&self.file, name).map_err(|e| error(&path, e))?;
+        super::namespace::change(cancel, |mutation| {
+            mutation
+                .rename(&self.file, &self.directory.file, name, cancel)
+                .map_err(|e| error(&path, e))
+        })?;
         self.published = true;
         self.published_name = Some(name.to_owned());
         // Windows has no general directory-entry flush contract for this API. The
@@ -436,7 +484,12 @@ impl StagedTransferFile for Stage {
         if !self.published && !self.cleaned {
             // Disposition is bound to our retained inode, never to a pathname that
             // another process could replace. Denied delete sharing protects this handle.
-            native::remove(&self.file).map_err(|e| error(&self.path, e))?;
+            let cancel = Cancellation::default();
+            super::namespace::change(&cancel, |mutation| {
+                mutation
+                    .remove(&self.file, &cancel, || native::remove(&self.file))
+                    .map_err(|e| error(&self.path, e))
+            })?;
             self.cleaned = true;
         }
         Ok(())

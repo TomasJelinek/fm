@@ -3,6 +3,15 @@ use super::*;
 #[derive(Debug)]
 struct Paths(Vec<PathBuf>, TransferIntent);
 impl CapturedTransferSources for Paths {
+    fn prepares_audited_native_children(&self) -> bool {
+        true
+    }
+    fn release_on_worker(self: Arc<Self>) -> Result<(), FsError> {
+        if let Some(owner) = Arc::into_inner(self) {
+            drop(owner);
+        }
+        Ok(())
+    }
     fn intent(&self) -> TransferIntent {
         self.1
     }
@@ -154,6 +163,15 @@ impl Drop for DropThread {
     }
 }
 impl CapturedTransferSources for DropThread {
+    fn prepares_audited_native_children(&self) -> bool {
+        true
+    }
+    fn release_on_worker(self: Arc<Self>) -> Result<(), FsError> {
+        if let Some(owner) = Arc::into_inner(self) {
+            drop(owner);
+        }
+        Ok(())
+    }
     fn intent(&self) -> TransferIntent {
         TransferIntent::Copy
     }
@@ -208,12 +226,13 @@ async fn assert_retired_off_dispatcher(observed: Arc<Mutex<Option<std::thread::T
 #[tokio::test(flavor = "current_thread")]
 async fn captured_rejected_queue_full_invalid_and_duplicate_retire_on_blocking_workers() {
     let destination = std::env::current_dir().unwrap();
-    let h = Harness::new(None);
+    let h = Harness::without_service();
     let reservations: Vec<_> = (0..32).map(|_| h.controller.reserve().unwrap()).collect();
     let (request, observed) = tracked(1, destination.clone());
     h.controller.enqueue_captured(request).await;
     assert_retired_off_dispatcher(observed).await;
     drop(reservations);
+    h.wait_capacity(MAX_JOBS).await;
     let (request, observed) = tracked(2, PathBuf::from("relative"));
     h.controller.enqueue_captured(request).await;
     assert_retired_off_dispatcher(observed).await;
@@ -225,8 +244,13 @@ async fn captured_rejected_queue_full_invalid_and_duplicate_retire_on_blocking_w
 #[tokio::test(flavor = "current_thread")]
 async fn captured_waiting_for_mutation_and_missing_service_retire_on_blocking_workers() {
     let destination = std::env::current_dir().unwrap();
-    let mut h = Harness::new(None);
-    let gate = h.mutation.clone().acquire_owned().await.unwrap();
+    let mut h = Harness::without_service();
+    let gate = h
+        .mutation
+        .clone()
+        .acquire_many_owned(crate::transfer_leases::NAMESPACE_WEIGHT)
+        .await
+        .unwrap();
     let (request, observed) = tracked(1, destination.clone());
     h.controller.enqueue_captured(request).await;
     h.controller.cancel(OperationId(1));
@@ -242,8 +266,13 @@ async fn captured_waiting_for_mutation_and_missing_service_retire_on_blocking_wo
 #[tokio::test(flavor = "current_thread")]
 async fn captured_queued_shutdown_retires_pending_sources_on_blocking_worker() {
     let destination = std::env::current_dir().unwrap();
-    let mut h = Harness::new(None);
-    let _gate = h.mutation.clone().acquire_owned().await.unwrap();
+    let mut h = Harness::without_service();
+    let _gate = h
+        .mutation
+        .clone()
+        .acquire_many_owned(crate::transfer_leases::NAMESPACE_WEIGHT)
+        .await
+        .unwrap();
     h.controller
         .enqueue(request(1, &[destination.join("ordinary")], &destination))
         .await;
@@ -258,8 +287,13 @@ async fn captured_queued_shutdown_retires_pending_sources_on_blocking_worker() {
 #[tokio::test(flavor = "current_thread")]
 async fn captured_active_abort_retires_source_owner_on_blocking_worker() {
     let destination = std::env::current_dir().unwrap();
-    let mut h = Harness::new(None);
-    let _gate = h.mutation.clone().acquire_owned().await.unwrap();
+    let mut h = Harness::without_service();
+    let _gate = h
+        .mutation
+        .clone()
+        .acquire_many_owned(crate::transfer_leases::NAMESPACE_WEIGHT)
+        .await
+        .unwrap();
     let (request, observed) = tracked(1, destination);
     h.controller.enqueue_captured(request).await;
     tokio::task::yield_now().await;
@@ -284,6 +318,15 @@ impl Drop for GatedDrop {
     }
 }
 impl CapturedTransferSources for GatedDrop {
+    fn prepares_audited_native_children(&self) -> bool {
+        true
+    }
+    fn release_on_worker(self: Arc<Self>) -> Result<(), FsError> {
+        if let Some(owner) = Arc::into_inner(self) {
+            drop(owner);
+        }
+        Ok(())
+    }
     fn intent(&self) -> TransferIntent {
         TransferIntent::Copy
     }
@@ -303,8 +346,9 @@ impl CapturedTransferSources for GatedDrop {
 }
 #[tokio::test(flavor = "current_thread")]
 async fn captured_send_failure_finishes_source_retirement_before_capacity_and_terminal() {
-    let mut h = Harness::new(None);
+    let mut h = Harness::without_service();
     let reservation = h.controller.reserve().unwrap();
+    let fence = h.controller.admission().fence().snapshot();
     h.tasks.abort_all();
     while h.tasks.join_next().await.is_some() {}
     let started = Arc::new(Notify::new());
@@ -322,7 +366,7 @@ async fn captured_send_failure_finishes_source_retirement_before_capacity_and_te
     };
     let capacity = h.controller.capacity();
     let events = &mut h.events;
-    let (request, sender) = reservation.attach(request.into());
+    let (request, sender) = reservation.attach(request.into()).unwrap();
     let enqueue = h.controller.enqueue_input_reserved(request, sender);
     let verify = async {
         tokio::time::timeout(Duration::from_secs(2), started.notified())
@@ -348,7 +392,20 @@ async fn captured_send_failure_finishes_source_retirement_before_capacity_and_te
         );
     };
     tokio::join!(enqueue, verify);
-    assert_eq!(h.terminal(1).await.state, CopyOperationState::Failed);
+    h.wait_capacity(MAX_JOBS).await;
+    assert!(
+        tokio::time::timeout(
+            Duration::from_secs(4),
+            fence.wait(&Cancellation::default(), &std::env::current_dir().unwrap())
+        )
+        .await
+        .unwrap()
+        .is_err()
+    );
+    assert!(matches!(
+        h.events.try_recv(),
+        Err(mpsc::error::TryRecvError::Empty)
+    ));
     h.close().await;
 }
 
@@ -386,6 +443,13 @@ struct InvalidPrepared {
     count: usize,
 }
 impl CapturedTransferSources for InvalidPrepared {
+    fn prepares_audited_native_children(&self) -> bool {
+        true
+    }
+    fn release_on_worker(self: Arc<Self>) -> Result<(), FsError> {
+        let _ = Arc::into_inner(self);
+        Ok(())
+    }
     fn intent(&self) -> TransferIntent {
         self.bound
     }
@@ -489,6 +553,12 @@ fn link_token(value: u8) -> NodeToken {
 }
 
 impl crate::providers::MountedFilesystem for LinkCaptureMount {
+    fn release_on_worker(self: Arc<Self>) -> Result<(), crate::providers::ProviderError> {
+        if let Some(owner) = Arc::into_inner(self) {
+            drop(owner);
+        }
+        Ok(())
+    }
     fn list(
         &self,
         node: &NodeToken,
@@ -597,6 +667,10 @@ impl crate::providers::MountedFilesystem for LinkCaptureMount {
 struct LinkCaptureArchive;
 
 impl ArchiveMount for LinkCaptureArchive {
+    fn release_on_worker(self: Arc<Self>) -> Result<(), FsError> {
+        let _ = Arc::into_inner(self);
+        Ok(())
+    }
     fn id(&self) -> u64 {
         77
     }

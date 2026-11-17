@@ -210,7 +210,7 @@ impl Harness {
                 sender,
                 wakeup: Arc::new(|| {}),
             },
-            Arc::new(Semaphore::new(1)),
+            crate::transfer_leases::namespace_gate(),
             CopyFence::default(),
             &mut tasks,
         );

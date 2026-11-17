@@ -80,14 +80,18 @@ async fn preview_is_read_only_and_execution_failure_reports_an_honest_summary_wi
     let directory = tempfile::tempdir().unwrap();
     let service = Arc::new(LocalFileSystem::new(None));
     let attempts = Arc::new(AtomicUsize::new(0));
-    let (send, commands) = mpsc::channel(16);
+
     let (events, mut receive) = mpsc::channel(16);
     let mut engine = Engine::new(
         Engine::lifetime().expect("engine cleanup worker"),
         service.clone(),
         events,
     );
-    engine.configure_transfers().unwrap().install(service);
+    let (send, commands) = engine.command_channel(16).unwrap();
+    engine
+        .configure_audited_transfers()
+        .unwrap()
+        .install(service);
     engine
         .configure_user_commands()
         .unwrap()
@@ -146,16 +150,15 @@ async fn preview_is_read_only_and_execution_failure_reports_an_honest_summary_wi
 async fn unavailable_service_and_reused_request_ids_are_rejected_visibly() {
     let directory = tempfile::tempdir().unwrap();
     let service = Arc::new(LocalFileSystem::new(None));
-    let (send, commands) = mpsc::channel(16);
+
     let (events, mut receive) = mpsc::channel(16);
-    let engine = tokio::spawn(
-        Engine::new(
-            Engine::lifetime().expect("engine cleanup worker"),
-            service,
-            events,
-        )
-        .run(commands),
+    let mut command_engine_1 = Engine::new(
+        Engine::lifetime().expect("engine cleanup worker"),
+        service,
+        events,
     );
+    let (send, commands) = command_engine_1.command_channel(16).unwrap();
+    let engine = tokio::spawn(command_engine_1.run(commands));
     for id in [3, 3, 2] {
         send.send(Command::PreviewUserCommand(Box::new(request(
             id,

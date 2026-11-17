@@ -1,7 +1,9 @@
 use midnight_core::*;
+#[path = "support/owned_commands.rs"]
+mod owned_commands;
 #[path = "support/selection.rs"]
 mod selection;
-use midnight_ui::{MainWindow, Presenter, install, refresh};
+use midnight_ui::{BeginOwned, MainWindow, Presenter, refresh};
 use slint::{
     ComponentHandle, Model,
     platform::{
@@ -32,6 +34,7 @@ struct Harness {
     time: Rc<Cell<Duration>>,
     window: MainWindow,
     presenter: Rc<RefCell<Presenter>>,
+    begin_owned: BeginOwned,
     commands: Rc<RefCell<Vec<Command>>>,
     accepted: Rc<Cell<bool>>,
 }
@@ -154,13 +157,15 @@ impl Harness {
             })
             .collect();
         for request in requests {
-            self.presenter.borrow_mut().apply_with_sender(
-                Event::ShellMenuFinished {
-                    request,
-                    result: Ok(midnight_core::ShellMenuOutcome::Dismissed),
-                },
-                &|_| true,
-            );
+            owned_commands::run(&self.presenter, &self.begin_owned, |presenter, send| {
+                presenter.apply_with_sender(
+                    Event::ShellMenuFinished {
+                        request,
+                        result: Ok(midnight_core::ShellMenuOutcome::Dismissed),
+                    },
+                    send,
+                );
+            });
         }
         self.commands.borrow_mut().clear();
     }
@@ -215,7 +220,7 @@ fn actual_mouse_selection_and_activation_preserve_entry_identity() {
     let accepted = Rc::new(Cell::new(true));
     let sent = commands.clone();
     let accept = accepted.clone();
-    install(
+    let begin_owned = owned_commands::install(
         &window,
         presenter.clone(),
         Rc::new(move |command| {
@@ -231,6 +236,7 @@ fn actual_mouse_selection_and_activation_preserve_entry_identity() {
         time,
         window,
         presenter,
+        begin_owned,
         commands,
         accepted,
     };

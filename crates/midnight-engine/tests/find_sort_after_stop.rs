@@ -57,13 +57,14 @@ async fn stopped_search_retains_partial_results_and_headers_can_still_sort_them(
     }
     let native = Arc::new(LocalFileSystem::new(None));
     let service = Arc::new(PausedEnumeration(native.clone()));
-    let (send, commands) = mpsc::channel(16);
+
     let (events, mut receive) = mpsc::channel(16);
     let mut engine = Engine::new(
         Engine::lifetime().expect("engine cleanup worker"),
         native,
         events,
     );
+    let (send, commands) = engine.command_channel(16).unwrap();
     engine.configure_find().unwrap().install(service);
     let engine = tokio::spawn(engine.run(commands));
     send.send(Command::StartFind(Box::new(FindRequest::new(

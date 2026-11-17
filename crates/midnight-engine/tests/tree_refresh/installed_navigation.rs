@@ -8,15 +8,15 @@ async fn installed_native_expansion_and_navigation_survive_viewport_pressure() {
         .expect("Set protected native plugin installation");
     let parent = std::env::var_os("MIDNIGHT_TREE_TEST_PARENT").expect("Set parent directory");
     let child = std::env::var_os("MIDNIGHT_TREE_TEST_CHILD").expect("Set child directory name");
-    let (commands, receive) = mpsc::channel(16);
+
     let (send, mut events) = mpsc::channel(32);
     let provider = midnight_native_filesystem_host::InstalledProvider::from_installation(
         installation.into(),
         None,
     );
-    let engine = tokio::spawn(
-        Engine::new(Engine::lifetime().unwrap(), Arc::new(provider), send).run(receive),
-    );
+    let mut command_engine_1 = Engine::new(Engine::lifetime().unwrap(), Arc::new(provider), send);
+    let (commands, receive) = command_engine_1.command_channel(16).unwrap();
+    let engine = tokio::spawn(command_engine_1.run(receive));
     let root = native_root_at(&commands, &mut events, 1, parent.into()).await;
     let initial = enable(&commands, &mut events, root).await;
     let target = initial

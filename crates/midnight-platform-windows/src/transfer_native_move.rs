@@ -57,49 +57,51 @@ pub(super) fn attempt_with(
             "destination is a distinct hard-link alias",
         ));
     }
-    let outcome = if let Some((expected, policy)) = replace {
-        if same_object {
-            return Err(collision(
-                &directory.path().join(name),
-                "cannot replace the source itself",
-            ));
-        }
-        replace_existing(
-            capture,
-            &directory,
-            name,
-            expected,
-            policy,
-            cancel,
-            after_capture,
-        )?
-    } else {
-        if existing.is_some() && !same_object {
-            return Err(collision(
-                &directory.path().join(name),
-                "destination already exists",
-            ));
-        }
-        capture.expected.revalidate(cancel)?;
-        directory.revalidate(cancel)?;
-        checked(cancel, &capture.entry.item.path)?;
-        let moved = if same_parent {
-            native::rename(&capture.file, name)
-        } else {
-            destination::recovery::rename_into(&capture.file, directory.native_file(), name)
-        };
-        match moved {
-            Ok(()) => Outcome::Moved {
-                destination: directory.path().join(name),
-                recovery: Vec::new(),
-                durability_confirmed: false,
-            },
-            Err(failure) if failure.raw_os_error() == Some(ERROR_NOT_SAME_DEVICE as i32) => {
-                return Ok(Outcome::CrossDevice);
+    let outcome = super::super::namespace::change(cancel, |mutation| {
+        mutation.prepare_rename(&capture.file, directory.native_file(), name, cancel)?;
+        if let Some((expected, policy)) = replace {
+            if same_object {
+                return Err(collision(
+                    &directory.path().join(name),
+                    "cannot replace the source itself",
+                ));
             }
-            Err(failure) => return Err(error(&directory.path().join(name), failure)),
+            replace_existing(
+                capture,
+                &directory,
+                name,
+                (expected, policy),
+                cancel,
+                after_capture,
+                mutation,
+            )
+        } else {
+            if existing.is_some() && !same_object {
+                return Err(collision(
+                    &directory.path().join(name),
+                    "destination already exists",
+                ));
+            }
+            capture.expected.revalidate(cancel)?;
+            directory.revalidate(cancel)?;
+            checked(cancel, &capture.entry.item.path)?;
+            let moved = mutation.rename(&capture.file, directory.native_file(), name, cancel);
+            match moved {
+                Ok(()) => Ok(Outcome::Moved {
+                    destination: directory.path().join(name),
+                    recovery: Vec::new(),
+                    durability_confirmed: false,
+                }),
+                Err(failure) if failure.raw_os_error() == Some(ERROR_NOT_SAME_DEVICE as i32) => {
+                    Ok(Outcome::CrossDevice)
+                }
+                Err(failure) => Err(error(&directory.path().join(name), failure)),
+            }
         }
-    };
+    })?;
+    if matches!(outcome, Outcome::CrossDevice) {
+        return Ok(outcome);
+    }
     // Cancellation after a successful rename cannot erase the committed namespace fact.
     state.native_outcome = Some(outcome.clone());
     Ok(outcome)
@@ -178,11 +180,12 @@ fn replace_existing(
     capture: &Capture,
     directory: &destination::Directory,
     name: &OsStr,
-    expected: Arc<dyn TransferTarget>,
-    policy: TransferReplacementPolicy,
+    replacement: (Arc<dyn TransferTarget>, TransferReplacementPolicy),
     cancel: &Cancellation,
     after_capture: impl FnOnce(),
+    mutation: &mut super::super::namespace::Mutation<'_>,
 ) -> Result<Outcome, FsError> {
+    let (expected, policy) = replacement;
     let path = directory.path().join(name);
     if policy != TransferReplacementPolicy::RecoverableCurrentEntry {
         return Err(unsupported(
@@ -230,22 +233,24 @@ fn replace_existing(
         .revalidate(cancel)
         .map_err(|e| collision(&path, &format!("replacement consent changed: {e}")))?;
     capture.expected.revalidate(cancel)?;
-    let recovery = destination::recovery::native_move_recovery(directory, cancel)?;
+    let recovery = destination::recovery::native_move_recovery_in(directory, cancel, mutation)?;
     let original_path = recovery.path().join("original");
     let original_receipt = TransferRecovery {
         path: original_path,
         identity: Some(expected.entry().identity),
     };
     let capture_original = checked(cancel, &path).and_then(|()| {
-        destination::recovery::rename_into(
-            &original,
-            recovery.native_file(),
-            OsStr::new("original"),
-        )
-        .map_err(|e| error(&path, e))
+        mutation
+            .rename(
+                &original,
+                recovery.native_file(),
+                OsStr::new("original"),
+                cancel,
+            )
+            .map_err(|e| error(&path, e))
     });
     if let Err(failure) = capture_original {
-        return cleanup_empty(recovery, failure, false);
+        return cleanup_empty(recovery, failure, false, mutation);
     }
     after_capture();
     let publish = capture
@@ -254,14 +259,18 @@ fn replace_existing(
         .and_then(|()| directory.revalidate(cancel))
         .and_then(|()| checked(cancel, &path))
         .and_then(|()| {
-            destination::recovery::rename_into(&capture.file, directory.native_file(), name)
+            mutation
+                .rename(&capture.file, directory.native_file(), name, cancel)
                 .map_err(|e| error(&path, e))
         });
     if let Err(mut failure) = publish {
         // Restore only into an absent final name. A newly created winner survives.
-        if let Err(restore) =
-            destination::recovery::rename_into(&original, directory.native_file(), name)
-        {
+        if let Err(restore) = mutation.rename(
+            &original,
+            directory.native_file(),
+            name,
+            &Cancellation::default(),
+        ) {
             failure
                 .message
                 .push_str(&format!("; original retained for recovery: {restore}"));
@@ -272,7 +281,7 @@ fn replace_existing(
             });
         }
         drop(original);
-        return cleanup_empty(recovery, failure, true);
+        return cleanup_empty(recovery, failure, true, mutation);
     }
     Ok(Outcome::Moved {
         destination: path,
@@ -285,12 +294,13 @@ fn cleanup_empty(
     directory: destination::Directory,
     mut failure: FsError,
     restored: bool,
+    mutation: &mut super::super::namespace::Mutation<'_>,
 ) -> Result<Outcome, FsError> {
     let receipt = TransferRecovery {
         path: directory.path().to_owned(),
         identity: Some(directory.identity()),
     };
-    match directory.remove_empty_stage() {
+    match directory.remove_empty_stage_in(mutation) {
         Ok(()) if restored => Ok(Outcome::RecoveryRequired {
             destination: None,
             recovery: Vec::new(),

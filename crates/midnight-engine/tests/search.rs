@@ -56,16 +56,15 @@ impl StorageService for Files {
 #[tokio::test]
 async fn engine_search_uses_the_exact_accepted_snapshot_without_filesystem_work() {
     let files = Arc::new(Files::default());
-    let (commands, receiver) = mpsc::channel(16);
+
     let (sender, mut events) = mpsc::channel(32);
-    let engine = tokio::spawn(
-        Engine::new(
-            Engine::lifetime().expect("engine cleanup worker"),
-            files.clone(),
-            sender,
-        )
-        .run(receiver),
+    let mut command_engine_1 = Engine::new(
+        Engine::lifetime().expect("engine cleanup worker"),
+        files.clone(),
+        sender,
     );
+    let (commands, receiver) = command_engine_1.command_channel(16).unwrap();
+    let engine = tokio::spawn(command_engine_1.run(receiver));
     let location = PathBuf::from("folder");
     commands
         .send(Command::Navigate {

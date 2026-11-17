@@ -13,6 +13,11 @@ struct CapturedSource {
     dropped: Arc<Mutex<Option<std::thread::ThreadId>>>,
 }
 impl CapturedClipboardFiles for CapturedSource {
+    fn release_on_worker(self: Arc<Self>) -> Result<(), FsError> {
+        // The fixture owns only clipboard paths and a synchronous drop observation.
+        drop(self);
+        Ok(())
+    }
     fn intent(&self) -> FileClipboardIntent {
         FileClipboardIntent::Copy
     }
@@ -124,7 +129,7 @@ async fn accepted_tree_drag_retains_provider_until_rejection_and_retires_on_work
     .unwrap();
     assert!(weak.upgrade().is_none());
     assert_ne!(dropped.lock().unwrap().unwrap(), owner);
-    assert_eq!(fixture.sink.capacity.capacity().available_permits(), 32);
+    capacity_returned(fixture.sink.capacity.capacity(), 32).await;
     controller.shutdown();
     while tasks.join_next().await.is_some() {}
 }

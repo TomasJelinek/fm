@@ -217,7 +217,7 @@ impl StorageService for Files {
     }
 }
 
-async fn tree(commands: &mpsc::Sender<Command>, command: TreeCommand) {
+async fn tree(commands: &midnight_engine::CommandSender, command: TreeCommand) {
     commands
         .send(Command::Tree(Box::new(command)))
         .await
@@ -268,15 +268,15 @@ async fn listing(events: &mut mpsc::Receiver<Event>, navigation: NavigationId) -
 async fn start(
     files: Arc<Files>,
 ) -> (
-    mpsc::Sender<Command>,
+    midnight_engine::CommandSender,
     mpsc::Receiver<Event>,
     tokio::task::JoinHandle<()>,
     TreePublication,
 ) {
-    let (commands, receive) = mpsc::channel(16);
     let (send, mut events) = mpsc::channel(32);
-    let engine =
-        tokio::spawn(Engine::new(Engine::lifetime().unwrap(), files.clone(), send).run(receive));
+    let mut command_engine_1 = Engine::new(Engine::lifetime().unwrap(), files.clone(), send);
+    let (commands, receive) = command_engine_1.command_channel(16).unwrap();
+    let engine = tokio::spawn(command_engine_1.run(receive));
     commands
         .send(Command::Navigate {
             pane: PaneId::Left,
@@ -300,7 +300,7 @@ async fn start(
     (commands, events, engine, publication)
 }
 
-async fn recursive(commands: &mpsc::Sender<Command>, publication: &TreePublication) {
+async fn recursive(commands: &midnight_engine::CommandSender, publication: &TreePublication) {
     tree(commands, TreeCommand::Commit(publication.view.clone())).await;
     let row = publication
         .view
@@ -666,7 +666,7 @@ async fn scaling_event(events: &mut mpsc::Receiver<Event>) -> TreeEvent {
     }
 }
 
-async fn scaling_ack_size(commands: &mpsc::Sender<Command>, sizes: &TreeSizeSnapshot) {
+async fn scaling_ack_size(commands: &midnight_engine::CommandSender, sizes: &TreeSizeSnapshot) {
     tree(
         commands,
         TreeCommand::Sizes(TreeSizeCommand::Acknowledge {
@@ -678,7 +678,7 @@ async fn scaling_ack_size(commands: &mpsc::Sender<Command>, sizes: &TreeSizeSnap
 }
 
 async fn scaling_setup_publication(
-    commands: &mpsc::Sender<Command>,
+    commands: &midnight_engine::CommandSender,
     events: &mut mpsc::Receiver<Event>,
 ) -> TreePublication {
     loop {
@@ -698,7 +698,7 @@ async fn scaling_setup_publication(
 }
 
 async fn scaling_seed_size(
-    commands: &mpsc::Sender<Command>,
+    commands: &midnight_engine::CommandSender,
     events: &mut mpsc::Receiver<Event>,
     publication: &TreePublication,
     request: TreeRequestId,
@@ -759,7 +759,7 @@ async fn scaling_setup(
     trunk: usize,
     sizes: usize,
 ) -> (
-    mpsc::Sender<Command>,
+    midnight_engine::CommandSender,
     mpsc::Receiver<Event>,
     tokio::task::JoinHandle<()>,
     TreePublication,

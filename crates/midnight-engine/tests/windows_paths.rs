@@ -31,16 +31,15 @@ async fn engine_navigates_windows_unicode_paths_beyond_260_utf16_units() {
         panic!("long-path fixture creation failed: {error}");
     }
     fs::write(directory.join("ověření_中文_🧪.txt"), b"long Unicode path").unwrap();
-    let (commands, receiver) = mpsc::channel(8);
+
     let (sender, mut events) = mpsc::channel(8);
-    let task = tokio::spawn(
-        Engine::new(
-            Engine::lifetime().expect("engine cleanup worker"),
-            Arc::new(LocalFileSystem::new(None)),
-            sender,
-        )
-        .run(receiver),
+    let mut command_engine_1 = Engine::new(
+        Engine::lifetime().expect("engine cleanup worker"),
+        Arc::new(LocalFileSystem::new(None)),
+        sender,
     );
+    let (commands, receiver) = command_engine_1.command_channel(8).unwrap();
+    let task = tokio::spawn(command_engine_1.run(receiver));
     let parents = navigate(
         &commands,
         &mut events,

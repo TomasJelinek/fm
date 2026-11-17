@@ -16,6 +16,11 @@ pub struct Destination {
     pub readback: Mutex<usize>,
 }
 pub struct Transfer(pub Arc<Destination>);
+// This fixture's complete endpoint graph owns only paths, byte buffers and
+// Arc<Destination>'s mutex-protected collections/counters. It has no provider
+// children, native handles, asynchronous work or deferred destructor callbacks.
+impl AuditedSynchronousTransferService for Transfer {}
+
 fn identity(path: &Path) -> TransferIdentity {
     let mut hash = std::collections::hash_map::DefaultHasher::new();
     path.hash(&mut hash);

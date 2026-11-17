@@ -12,6 +12,24 @@ use std::{
     time::Duration,
 };
 
+pub(crate) fn run_actor<R>(
+    operation: impl FnOnce(&mut Option<R>) -> Result<(), String>,
+    fault: impl FnOnce(),
+) -> Result<(), String> {
+    // This actual external reservation must outlive unwinding of the entire operation/session.
+    let mut permit = None;
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| operation(&mut permit))) {
+        Ok(result) => result,
+        Err(payload) => {
+            std::mem::forget(payload);
+            // Retain unknown accounting before even the fault hook can unwind.
+            std::mem::forget(permit.take());
+            fault();
+            Err("Image viewer stopped after an internal error.".into())
+        }
+    }
+}
+
 pub(crate) enum Event {
     Opened {
         pages: Vec<Metadata>,
@@ -78,127 +96,182 @@ impl ImageWorker {
         let thread = std::thread::Builder::new()
             .name("viewer-image".into())
             .spawn(move || {
-                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    // The reservation precedes the session so reverse local destruction
-                    // reaps the native child before releasing its lifetime capacity.
-                    let acquired = startup
-                        .as_ref()
-                        .map(|startup| startup.acquire(&provider, &stopped))
-                        .transpose()
-                        .map_err(|error| error.to_string())?;
-                    let (_permit, prepared) = match acquired {
-                        Some(crate::image_startup::Acquired { permit, prepared }) => {
-                            (Some(permit), prepared)
-                        }
-                        None => (None, None),
-                    };
-                    let mut session = if let Some(prepared) = prepared {
-                        // The manager already rejected stale unused spares. The host performs
-                        // the final identity/source guard immediately before the consuming Open.
-                        ImageSession::open_prepared(
-                            &provider,
-                            prepared,
-                            source,
-                            &stopped,
-                            Duration::from_secs(30),
-                        )
-                    } else {
-                        ImageSession::open(&provider, source, &stopped, Duration::from_secs(30))
-                    }
-                    .map_err(|error| error.to_string())?;
-                    if let Some(startup) = &startup {
-                        startup.opened(&provider);
-                    }
-                    let pages = (0..session.page_count())
-                        .filter_map(|page| session.page_metadata(page))
-                        .collect();
-                    if output
-                        .try_send(Event::Opened {
-                            pages,
-                            document: session.is_document(),
-                        })
-                        .is_err()
-                    {
-                        return Ok(());
-                    }
-                    wake();
-                    while !stopped.load(Ordering::Acquire) {
-                        match requests.recv_timeout(Duration::from_millis(10)) {
-                            Ok(request) => {
-                                let event = match request {
-                                    Render::Tile {
-                                        revision,
-                                        key,
-                                        charge,
-                                    } => {
-                                        let scale = f64::from_bits(key.scale);
-                                        let mut frame = session
-                                            .render_page(
-                                                key.page,
-                                                Viewport {
-                                                    width: EDGE,
-                                                    height: EDGE,
-                                                    scale,
-                                                    origin_x: f64::from(key.x) * f64::from(EDGE)
-                                                        / scale,
-                                                    origin_y: f64::from(key.y) * f64::from(EDGE)
-                                                        / scale,
-                                                },
-                                                &stopped,
-                                                Duration::from_secs(15),
-                                            )
-                                            .map_err(|error| error.to_string())?;
-                                        crate::image_pixels::premultiply(&mut frame.rgba);
-                                        let pixels =
-                                            Arc::new(ViewerPixels::new(frame.rgba, charge)?);
-                                        Event::Frame {
-                                            revision,
-                                            key,
-                                            pixels,
-                                        }
-                                    }
-                                    Render::Validate(revision) => {
-                                        session
-                                            .validate(&stopped)
-                                            .map_err(|error| error.to_string())?;
-                                        Event::Validated(revision)
-                                    }
-                                    Render::Document {
-                                        revision,
-                                        page,
-                                        viewport,
-                                    } => {
-                                        if !session.is_document() {
-                                            return Err(
-                                                "Unexpected document render request.".into()
-                                            );
-                                        }
-                                        let mut frame = session
-                                            .render_page(
+                let result = run_actor(
+                    |permit| {
+                        let acquired = startup
+                            .as_ref()
+                            .map(|startup| startup.acquire(&provider, &stopped))
+                            .transpose()
+                            .map_err(|error| error.to_string())?;
+                        let (acquired_permit, prepared) = match acquired {
+                            Some(crate::image_startup::Acquired { permit, prepared }) => {
+                                (Some(permit), prepared)
+                            }
+                            None => (None, None),
+                        };
+                        *permit = acquired_permit;
+                        let opened = if let Some(prepared) = prepared {
+                            // The manager already rejected stale unused spares. The host performs
+                            // the final identity/source guard immediately before the consuming Open.
+                            ImageSession::open_prepared(
+                                &provider,
+                                prepared,
+                                source,
+                                &stopped,
+                                Duration::from_secs(30),
+                            )
+                        } else {
+                            ImageSession::open_owned(
+                                &provider,
+                                source,
+                                &stopped,
+                                Duration::from_secs(30),
+                                Box::new(permit.as_ref().cloned()),
+                            )
+                        };
+                        let mut session = match opened {
+                            Ok(session) => session,
+                            Err(error) => {
+                                let status = midnight_image_viewer_host::cleanup_status(&error)
+                                    .unwrap_or(
+                                    midnight_image_viewer_host::CleanupStatus::ProcessUnconfirmed,
+                                );
+                                if let Some(startup) = &startup {
+                                    startup.cleanup_failed(status);
+                                }
+                                if status
+                                    == midnight_image_viewer_host::CleanupStatus::ProcessUnconfirmed
+                                {
+                                    std::mem::forget(permit.take());
+                                }
+                                return Err(error.to_string());
+                            }
+                        };
+                        let result = (|| {
+                            if let Some(startup) = &startup {
+                                startup.opened(&provider);
+                            }
+                            let pages = (0..session.page_count())
+                                .filter_map(|page| session.page_metadata(page))
+                                .collect();
+                            if output
+                                .try_send(Event::Opened {
+                                    pages,
+                                    document: session.is_document(),
+                                })
+                                .is_err()
+                            {
+                                return Ok(());
+                            }
+                            wake();
+                            while !stopped.load(Ordering::Acquire) {
+                                match requests.recv_timeout(Duration::from_millis(10)) {
+                                    Ok(request) => {
+                                        let event = match request {
+                                            Render::Tile {
+                                                revision,
+                                                key,
+                                                charge,
+                                            } => {
+                                                let scale = f64::from_bits(key.scale);
+                                                let mut frame = session
+                                                    .render_page(
+                                                        key.page,
+                                                        Viewport {
+                                                            width: EDGE,
+                                                            height: EDGE,
+                                                            scale,
+                                                            origin_x: f64::from(key.x)
+                                                                * f64::from(EDGE)
+                                                                / scale,
+                                                            origin_y: f64::from(key.y)
+                                                                * f64::from(EDGE)
+                                                                / scale,
+                                                        },
+                                                        &stopped,
+                                                        Duration::from_secs(15),
+                                                    )
+                                                    .map_err(|error| error.to_string())?;
+                                                crate::image_pixels::premultiply(&mut frame.rgba);
+                                                let pixels = Arc::new(ViewerPixels::new(
+                                                    frame.rgba, charge,
+                                                )?);
+                                                Event::Frame {
+                                                    revision,
+                                                    key,
+                                                    pixels,
+                                                }
+                                            }
+                                            Render::Validate(revision) => {
+                                                session
+                                                    .validate(&stopped)
+                                                    .map_err(|error| error.to_string())?;
+                                                Event::Validated(revision)
+                                            }
+                                            Render::Document {
+                                                revision,
                                                 page,
                                                 viewport,
-                                                &stopped,
-                                                Duration::from_secs(15),
-                                            )
-                                            .map_err(|error| error.to_string())?;
-                                        crate::image_pixels::premultiply(&mut frame.rgba);
-                                        Event::DocumentFrame { revision, frame }
+                                            } => {
+                                                if !session.is_document() {
+                                                    return Err(
+                                                        "Unexpected document render request."
+                                                            .into(),
+                                                    );
+                                                }
+                                                let mut frame = session
+                                                    .render_page(
+                                                        page,
+                                                        viewport,
+                                                        &stopped,
+                                                        Duration::from_secs(15),
+                                                    )
+                                                    .map_err(|error| error.to_string())?;
+                                                crate::image_pixels::premultiply(&mut frame.rgba);
+                                                Event::DocumentFrame { revision, frame }
+                                            }
+                                        };
+                                        if stopped.load(Ordering::Acquire)
+                                            || output.try_send(event).is_err()
+                                        {
+                                            break;
+                                        }
+                                        wake();
                                     }
-                                };
-                                if stopped.load(Ordering::Acquire)
-                                    || output.try_send(event).is_err()
-                                {
-                                    break;
+                                    Err(mpsc::RecvTimeoutError::Timeout) => {}
+                                    Err(mpsc::RecvTimeoutError::Disconnected) => break,
                                 }
-                                wake();
                             }
-                            Err(mpsc::RecvTimeoutError::Timeout) => {}
-                            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                            Ok::<_, String>(())
+                        })();
+                        if let Err(error) = session.close_checked() {
+                            let status = midnight_image_viewer_host::cleanup_status(&error)
+                                .unwrap_or(
+                                    midnight_image_viewer_host::CleanupStatus::ProcessUnconfirmed,
+                                );
+                            if let Some(startup) = &startup {
+                                startup.cleanup_failed(status);
+                            }
+                            if status
+                                == midnight_image_viewer_host::CleanupStatus::ProcessUnconfirmed
+                            {
+                                std::mem::forget(permit.take());
+                            }
+                            return Err(match result {
+                                Ok(()) => error.to_string(),
+                                Err(original) => format!("{original}; {error}"),
+                            });
                         }
-                    }
-                    Ok::<_, String>(())
-                }))
-                .unwrap_or_else(|_| Err("Image viewer stopped after an internal error.".into()));
+                        result
+                    },
+                    || {
+                        if let Some(startup) = &startup {
+                            startup.cleanup_failed(
+                                midnight_image_viewer_host::CleanupStatus::ProcessUnconfirmed,
+                            );
+                        }
+                    },
+                );
                 if let Err(error) = result
                     && output.try_send(Event::Failed(error)).is_ok()
                 {

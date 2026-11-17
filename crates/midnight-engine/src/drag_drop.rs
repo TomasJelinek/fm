@@ -26,7 +26,6 @@ struct Accepted {
     intent: TransferIntent,
     verification: Option<TransferVerification>,
     permit: copy_operations::Reservation,
-    retention: Option<Arc<Retention>>,
 }
 
 /// Keep provider registrations and capture capacity through normal job cleanup.
@@ -35,6 +34,71 @@ pub(crate) struct Retention {
     _source: Option<Arc<dyn CapturedClipboardFiles>>,
     _target: Option<Arc<dyn CapturedDropDirectory>>,
     pub(crate) completions: Arc<HashMap<std::path::PathBuf, TreeCopyOccurrence>>,
+}
+
+impl Retention {
+    fn release_on_worker(self: Arc<Self>) -> Result<(), FsError> {
+        use crate::copy_nested_retirement::{self as nested, Retained};
+        let context = nested::current().unwrap_or_default();
+        if context.is_quarantined() {
+            std::mem::forget(self);
+            return Err(nested::unconfirmed());
+        }
+        let Some(owner) = Arc::into_inner(self) else {
+            return Ok(());
+        };
+        let mut owner = Retained::new(owner);
+        let mut result = Ok(());
+        let released = context.with(|| {
+            nested::checked_step(|| {
+                result = (|| {
+                    if let Some(source) = owner.get_mut()._source.take() {
+                        nested::release_clipboard_sources(source)?;
+                    }
+                    if let Some(target) = owner.get_mut()._target.take() {
+                        nested::release_drop_directory(target)?;
+                    }
+                    Ok(())
+                })();
+            })
+        });
+        if !released && result.is_ok() {
+            result = Err(nested::unconfirmed());
+        }
+        if let Err(error) = result {
+            context.record(error.clone());
+            return Err(error);
+        }
+        if !context.with(|| nested::checked_step(|| drop(owner.take()))) {
+            return Err(nested::unconfirmed());
+        }
+        Ok(())
+    }
+}
+
+/// The original per-registration owner lives inside Copy's sealed reservation.
+/// Completion metadata can be cloned independently and contains no authority.
+pub(crate) struct RegistrationOwner(Option<Arc<Retention>>);
+impl RegistrationOwner {
+    pub(crate) fn new(retention: Arc<Retention>) -> Self {
+        Self(Some(retention))
+    }
+}
+impl crate::copy_nested_retirement::CheckedRetirement for RegistrationOwner {
+    fn retirement_is_checked(&self) -> bool {
+        true
+    }
+}
+impl Drop for RegistrationOwner {
+    fn drop(&mut self) {
+        if let Some(owner) = self.0.take() {
+            if crate::copy_nested_retirement::current().is_some() {
+                let _ = owner.release_on_worker();
+            } else {
+                drop(owner);
+            }
+        }
+    }
 }
 
 struct Sink {
@@ -57,6 +121,7 @@ impl FileDropSink for Sink {
                 "The drop window has closed.",
             ));
         }
+        let staged = self.capacity.stage_drop()?;
         // Keep the target snapshot locked through admission: UI invalidation either precedes
         // this drop or follows an already accepted immutable destination.
         let targets = self.targets.lock().unwrap_or_else(|e| e.into_inner());
@@ -90,7 +155,7 @@ impl FileDropSink for Sink {
                 ));
             }
         }
-        let permit = self.capacity.reserve()?;
+        let permit = staged.publish()?;
         let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
         // Shutdown clears this same registry. Recheck under its lock so a callback that
         // waited for admission cannot insert a new acknowledged request after cleanup.
@@ -130,7 +195,6 @@ impl FileDropSink for Sink {
                 intent: TransferIntent::Copy,
                 verification: None,
                 permit,
-                retention: None,
             },
         );
         if self.events.try_send(event).is_err() {
@@ -610,12 +674,7 @@ impl Controller {
                 destination: (*accepted.destination).clone(),
             };
             copies
-                .enqueue_drop_reserved(
-                    request,
-                    accepted.intent,
-                    accepted.retention,
-                    accepted.permit,
-                )
+                .enqueue_drop_reserved(request, accepted.intent, accepted.permit)
                 .await;
         }
     }

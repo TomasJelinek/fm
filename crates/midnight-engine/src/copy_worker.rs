@@ -6,6 +6,9 @@ use std::{
     ffi::OsString,
     path::Component,
 };
+#[cfg(test)]
+#[path = "copy_constructor_seal_tests.rs"]
+mod constructor_seal_tests;
 #[path = "copy_discovery.rs"]
 mod discovery;
 #[path = "copy_failures.rs"]
@@ -70,10 +73,13 @@ impl EntryWork {
 }
 
 pub(super) struct Job {
+    retirement_witness: Option<crate::transfer_composition::TransferRetirementWitness>,
     status: Status,
     progress: CopyProgress,
     tracker: Arc<Mutex<Tracker>>,
     pass_ids: crate::operation_throughput::PassIds,
+    finish_started: bool,
+    finish_candidate: Option<CopyProgress>,
     cancel: Cancellation,
     destination: Arc<dyn TransferDirectory>,
     roots: VecDeque<Box<dyn TransferSource>>,
@@ -100,7 +106,8 @@ pub(super) struct Job {
     // Native sources, captures and cleanup authority close before
     // the provider registration and shared capture permit are released.
     drop_retention: Option<Arc<crate::drag_drop::Retention>>,
-    // Last: cleanup-bearing link work retains the dedicated Copy I/O guard
+    drop_completions: Option<Arc<HashMap<std::path::PathBuf, TreeCopyOccurrence>>>,
+    // Last: cleanup-bearing link work retains the admitted Copy I/O guard
     // through actual cleanup and every stage/source/provider destruction.
     link_retirement: Arc<link_job::LinkRetirement>,
 }
@@ -111,8 +118,23 @@ pub(super) fn check_move_bounds<'a>(
     move_job::check_root_bounds(destination, paths)
 }
 impl Job {
-    pub(super) fn set_drop_retention(&mut self, retention: Arc<crate::drag_drop::Retention>) {
-        self.drop_retention = Some(retention);
+    pub(super) fn set_retirement_witness(
+        &mut self,
+        witness: crate::transfer_composition::TransferRetirementWitness,
+    ) {
+        self.retirement_witness = Some(witness);
+    }
+    pub(super) fn retirement_is_checked(&self) -> bool {
+        self.retirement_witness.is_some()
+    }
+    pub(super) fn set_drop_completions(
+        &mut self,
+        completions: Arc<HashMap<std::path::PathBuf, TreeCopyOccurrence>>,
+    ) {
+        self.drop_completions = Some(completions);
+    }
+    pub(super) fn take_drop_retention(&mut self) -> Option<Arc<crate::drag_drop::Retention>> {
+        self.drop_retention.take()
     }
     pub(super) fn set_verification(&mut self, verification: TransferVerification) {
         self.verification = verification;
@@ -140,10 +162,20 @@ impl Job {
             return Self::prepare(request, service, cancel, status);
         }
         move_job::check_bounds(&request)?;
-        let mut job = Self::prepare(request, service, cancel, status)?;
-        let _permit = move_job::permit(&job.cancel, &job.progress.destination_directory)?;
-        job.prepare_metadata(metadata)?;
-        Ok(job)
+        let mut job = ownership::Armed::new(Self::prepare(request, service, cancel, status)?);
+        let permit = match move_job::permit(&job.cancel, &job.progress.destination_directory) {
+            Ok(permit) => permit,
+            Err(error) => {
+                drop(job.into_inner());
+                return Err(error);
+            }
+        };
+        if let Err(error) = job.prepare_metadata(metadata) {
+            drop(job.into_inner());
+            return Err(error);
+        }
+        drop(permit);
+        Ok(job.into_inner())
     }
     pub(super) fn prepare_move_with_metadata(
         request: CopyRequest,
@@ -227,10 +259,10 @@ impl Job {
             roots.push_back(source);
         }
         link_job::admit_roots(&roots, destination.as_ref(), links, &cancel)?;
-        let mut job = Self::from_sources(destination, roots, cancel, status);
+        let mut job = ownership::Armed::new(Self::from_sources(destination, roots, cancel, status));
         job.links = links;
         job.set_verification(request.verification);
-        Ok(job)
+        Ok(job.into_inner())
     }
 
     pub(super) fn prepare_archive(
@@ -401,19 +433,27 @@ impl Job {
             source.revalidate(&cancel)?;
         }
         link_job::admit_roots(&roots, destination.as_ref(), links, &cancel)?;
-        let mut job = Self::from_sources(destination, roots, cancel, status);
+        let mut job = ownership::Armed::new(Self::from_sources(destination, roots, cancel, status));
         job.links = links;
         if metadata != TransferMetadataPolicy::ContentOnly {
             if job.roots.len() > 64 {
-                return Err(error(
+                let error = error(
                     &path,
                     io::ErrorKind::Unsupported,
                     "Required modified time accepts at most 64 roots.",
-                ));
+                );
+                drop(job.into_inner());
+                return Err(error);
             }
-            job.prepare_metadata(metadata)?;
+            if let Err(error) = job.prepare_metadata(metadata) {
+                drop(job.into_inner());
+                return Err(error);
+            }
         }
-        Ok(job)
+        // A provider-backed parent destructor must run before the Job leaves
+        // armed storage, even after successful metadata preflight.
+        drop(parents);
+        Ok(job.into_inner())
     }
 
     fn from_sources(
@@ -433,9 +473,12 @@ impl Job {
             cancel.clone(),
         ));
         Self {
+            retirement_witness: None,
             progress,
             tracker: Arc::new(Mutex::new(Tracker::default())),
             pass_ids: crate::operation_throughput::PassIds::default(),
+            finish_started: false,
+            finish_candidate: None,
             status,
             cancel,
             destination,
@@ -461,6 +504,7 @@ impl Job {
             active_root: None,
             completed_root: None,
             drop_retention: None,
+            drop_completions: None,
             link_retirement,
         }
     }
@@ -630,15 +674,16 @@ impl Job {
                         self.drop_current();
                         return Step::Continue;
                     }
-                    let Some(mut work) = self.current.take() else {
+                    let Some(work) = self.current.take() else {
                         return Step::Continue;
                     };
+                    let mut work = ownership::Armed::new(work);
                     if work
                         .target
                         .as_ref()
                         .is_none_or(|target| target.revalidate(&self.cancel).is_err())
                     {
-                        return self.refresh_conflict(work);
+                        return self.refresh_conflict(work.into_inner());
                     }
                     work.consent = Some(consent);
                     work.replacement_prepared = false;
@@ -647,7 +692,7 @@ impl Job {
                         Consent::Replace => self.replace_all |= all,
                         Consent::Merge => self.merge_all |= all,
                     }
-                    self.current = Some(work);
+                    self.current = Some(work.into_inner());
                 }
                 CopyChoice::Rename(name) => {
                     let valid = !name.is_empty()
@@ -730,7 +775,8 @@ impl Job {
                     let frame = self.stack.last().expect("completed traversal frame");
                     let retaining = frame.retain_source;
                     let completed_before = (frame.failed_before, frame.skipped_before);
-                    if let Some(mut move_work) = self.move_work.take() {
+                    if let Some(move_work) = self.move_work.take() {
+                        let mut move_work = ownership::Armed::new(move_work);
                         let entry = frame.source.entry().clone();
                         let result = if frame.retain_source {
                             move_work.discard(entry.identity)
@@ -741,7 +787,7 @@ impl Job {
                                 .and_then(|()| frame.destination.revalidate(&self.cancel))
                                 .and_then(|()| move_work.remove_directory(&entry, self))
                         };
-                        self.move_work = Some(move_work);
+                        self.move_work = Some(move_work.into_inner());
                         if let Err(error) = result {
                             if retaining {
                                 self.record(error);
@@ -767,9 +813,8 @@ impl Job {
                     source: source
                         .tree_copy_occurrence()
                         .or_else(|| {
-                            self.drop_retention
+                            self.drop_completions
                                 .as_ref()?
-                                .completions
                                 .get(&source.entry().item.path)
                                 .copied()
                         })
@@ -823,7 +868,8 @@ impl Job {
         Step::Continue
     }
 
-    fn process(&mut self, mut work: EntryWork) -> Step {
+    fn process(&mut self, work: EntryWork) -> Step {
+        let mut work = ownership::Armed::new(work);
         self.progress.current_path = Some(work.entry().item.path.clone());
         let result = if work.link.is_some() {
             self.link_step(&mut work)
@@ -834,10 +880,13 @@ impl Job {
         };
         match result {
             Ok(Action::Keep) => {
-                self.current = Some(work);
+                self.current = Some(work.into_inner());
                 Step::Continue
             }
-            Ok(Action::Done) => Step::Continue,
+            Ok(Action::Done) => {
+                drop(work.into_inner());
+                Step::Continue
+            }
             Ok(Action::Directory(destination)) => {
                 self.stack.push(Frame {
                     source: work.source.take().expect("directory source"),
@@ -847,28 +896,29 @@ impl Job {
                     failed_before: self.progress.failed,
                     skipped_before: self.progress.skipped,
                 });
+                drop(work.into_inner());
                 Step::Continue
             }
-            Ok(Action::Conflict(target)) => self.wait_for_conflict(work, target),
+            Ok(Action::Conflict(target)) => self.wait_for_conflict(work.into_inner(), target),
             Err(failure) if failure.kind == io::ErrorKind::AlreadyExists => {
                 // A late collision needs a new target pin and fresh consent.
                 work.consent = None;
                 work.replacement_prepared = false;
                 work.force_prompt = true;
                 match self.observe_target(&mut work) {
-                    Ok(Some(target)) => self.wait_for_conflict(work, target),
+                    Ok(Some(target)) => self.wait_for_conflict(work.into_inner(), target),
                     Ok(None) => {
-                        self.current = Some(work);
+                        self.current = Some(work.into_inner());
                         Step::Continue
                     }
                     Err(error) => {
-                        self.current = Some(work);
+                        self.current = Some(work.into_inner());
                         self.wait_for_failure(error, failures::Context::Entry)
                     }
                 }
             }
             Err(error) => {
-                self.current = Some(work);
+                self.current = Some(work.into_inner());
                 self.wait_for_failure(error, failures::Context::Entry)
             }
         }
@@ -1231,18 +1281,19 @@ impl Job {
             Err(failure) => Err(failure),
         }
     }
-    fn refresh_conflict(&mut self, mut work: EntryWork) -> Step {
+    fn refresh_conflict(&mut self, work: EntryWork) -> Step {
+        let mut work = ownership::Armed::new(work);
         work.consent = None;
         work.replacement_prepared = false;
         work.force_prompt = true;
         match self.observe_target(&mut work) {
-            Ok(Some(target)) => self.wait_for_conflict(work, target),
+            Ok(Some(target)) => self.wait_for_conflict(work.into_inner(), target),
             Ok(None) => {
-                self.current = Some(work);
+                self.current = Some(work.into_inner());
                 Step::Continue
             }
             Err(failure) => {
-                self.current = Some(work);
+                self.current = Some(work.into_inner());
                 self.wait_for_failure(failure, failures::Context::Entry)
             }
         }
@@ -1277,8 +1328,10 @@ impl Job {
         }
     }
     fn drop_current(&mut self) {
-        if let Some(mut work) = self.current.take() {
+        if let Some(work) = self.current.take() {
+            let mut work = ownership::Armed::new(work);
             self.cleanup_work(&mut work);
+            drop(work.into_inner());
         }
         self.progress.current_path = None;
     }
@@ -1297,7 +1350,25 @@ impl Job {
         self.progress.skipped += 1;
         self.progress.phase = CopyOperationPhase::Planning;
     }
-    pub(super) fn finish(mut self) -> CopyProgress {
+    pub(super) fn completion(&self) -> Completion {
+        Completion {
+            status: self.status.clone(),
+            cancel: self.cancel.clone(),
+            link_diagnostics: self.link_retirement.diagnostics(),
+        }
+    }
+    pub(super) fn finish_abandoned(&mut self) {
+        if !self.finish_started {
+            self.cancel.cancel();
+        }
+        self.finish_in_place();
+    }
+    pub(super) fn finish_in_place(&mut self) {
+        if self.finish_started {
+            return;
+        }
+        // A panicking cleanup is never retried; its surrounding Scope retains it.
+        self.finish_started = true;
         if let Some(failure) = self.failure.take() {
             self.record_decided_error(failure.error);
         }
@@ -1305,11 +1376,12 @@ impl Job {
         // disposal. Keep only its diagnostic until the unused stages and Move
         // recovery finish, so they cannot evict the current partial's path.
         let (current_cleanup, current_link_cleanup) =
-            self.current.take().map_or((None, None), |mut work| {
+            self.current.as_mut().map_or((None, None), |work| {
                 let file = work.copy.as_mut().and_then(|copy| copy.cleanup().err());
                 let link = work.link.as_mut().and_then(|copy| copy.cleanup().err());
                 (file, link)
             });
+        drop(self.current.take());
         self.progress.current_path = None;
         // The current copied-file owner is gone; later metadata/Move cleanup
         // must not keep sampling that completed attempt as a live file.
@@ -1319,10 +1391,12 @@ impl Job {
                 self.record_cleanup_error(failure);
             }
         }
-        if let Some(mut move_work) = self.move_work.take() {
-            for error in move_work.cleanup(&mut self) {
+        if let Some(move_work) = self.move_work.take() {
+            let mut move_work = ownership::Armed::new(move_work);
+            for error in move_work.cleanup(self) {
                 self.record_cleanup_error(error);
             }
+            drop(move_work.into_inner());
         }
         if let Some(error) = current_cleanup {
             self.record_cleanup_error(error);
@@ -1335,73 +1409,28 @@ impl Job {
         // dropping. The async caller publishes the returned terminal state only
         // after this worker and its I/O/mutation permits have been released.
         self.store_progress();
-        self.progress.state = if self.cancel.is_cancelled() {
-            CopyOperationState::Cancelled
-        } else if self.progress.failed == 0 && self.progress.skipped == 0 {
-            CopyOperationState::Completed
-        } else if self.progress.failed > 0
-            && self.progress.files_completed == 0
-            && self.progress.directories_created == 0
-            && self.progress.native_entries_moved == 0
-        {
-            CopyOperationState::Failed
-        } else if self.progress.files_completed > 0
-            || self.progress.directories_created > 0
-            || self.progress.native_entries_moved > 0
-            || self.progress.skipped > 0
-        {
-            CopyOperationState::CompletedWithErrors
-        } else {
-            CopyOperationState::Failed
-        };
-        self.progress.message = self
-            .progress
-            .errors
-            .iter()
-            .map(ToString::to_string)
-            .collect::<Vec<_>>()
-            .join("\n");
-        let omitted = self
-            .progress
-            .failed
-            .saturating_sub(self.progress.errors.len() as u64);
-        if omitted > 0 {
-            self.progress.message.push_str(&format!(
-                "\n{omitted} earlier error details omitted from the bounded diagnostic history."
-            ));
+        self.finish_candidate = Some(terminal_progress(self.progress.clone(), &self.cancel));
+    }
+    // Direct Job fixtures have no admission envelope. Runtime callers use Scope.
+    #[cfg(test)]
+    pub(super) fn finish(self) -> CopyProgress {
+        let mut job = ownership::Armed::new(self);
+        let completion = job.completion();
+        if ownership::seal::checked(|| job.finish_in_place()).is_err() {
+            panic!("Copy cleanup is quarantined");
         }
-        if self.progress.skipped > 0 {
-            self.progress.message.push_str(&format!(
-                "\n{} entries or subtrees skipped; source data retained.",
-                self.progress.skipped
-            ));
+        if ownership::seal::checked(|| drop(job.into_inner())).is_err() {
+            panic!("Copy destruction is quarantined");
         }
-        if self.cancel.is_cancelled() {
-            self.progress
-                .message
-                .push_str(if self.progress.intent == TransferIntent::Move {
-                    "\nMove cancelled; completed moves and already published destinations remain."
-                } else {
-                    "\nCopy cancelled; already published files are retained."
-                });
-        }
-        if self.progress.recovery_count > 0 {
-            self.progress.message.push_str(&format!(
-                "\n{} recovery files retained. See the recovery locations in job details.",
-                self.progress.recovery_count
-            ));
-        }
-        if self.progress.intent == TransferIntent::Move {
-            self.progress.message.push_str(&format!("\n{} entries moved by native rename; {} verified source files removed; {} temporary source locations need attention. Unfinished sources were restored unless an error above reports otherwise. Earlier completed moves remain after later errors or cancellation. Open readers can delay storage reclamation. Merged source directories are removed only after completed children and an empty-directory check.", self.progress.native_entries_moved, self.progress.source_files_removed, self.progress.source_residual_count));
-        }
-        self.progress.clone()
+        completion.finish()
     }
     fn advance_move(&mut self) -> Step {
-        let Some(mut work) = self.move_work.take() else {
+        let Some(work) = self.move_work.take() else {
             return Step::Done;
         };
+        let mut work = ownership::Armed::new(work);
         let result = work.advance(self);
-        self.move_work = Some(work);
+        self.move_work = Some(work.into_inner());
         match result {
             Ok(false) => Step::Continue,
             Ok(true) if self.roots.is_empty() && self.stack.is_empty() => Step::Done,
@@ -1410,6 +1439,99 @@ impl Job {
         }
     }
 }
+/// Contains no provider, native handle or execution permit.
+pub(super) struct Completion {
+    status: Status,
+    cancel: Cancellation,
+    link_diagnostics: Arc<link_job::Diagnostics>,
+}
+impl Completion {
+    pub(super) fn retain_errors(&self, errors: Vec<FsError>) {
+        let mut status = self
+            .status
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        for error in errors {
+            status.failed = status.failed.saturating_add(1);
+            if status.errors.len() < MAX_ERROR_DETAILS {
+                status.errors.push(error);
+            }
+        }
+    }
+    pub(super) fn finish(self) -> CopyProgress {
+        let mut status = self
+            .status
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let mut progress = status.clone();
+        self.link_diagnostics.drain(&mut progress);
+        let progress = terminal_progress(progress, &self.cancel);
+        *status = progress.clone();
+        progress
+    }
+}
+fn terminal_progress(mut progress: CopyProgress, cancel: &Cancellation) -> CopyProgress {
+    progress.pause_requested = false;
+    progress.paused = false;
+    progress.wait_reason = None;
+    progress.state = if cancel.is_cancelled() {
+        CopyOperationState::Cancelled
+    } else if progress.failed == 0 && progress.skipped == 0 {
+        CopyOperationState::Completed
+    } else if progress.failed > 0
+        && progress.files_completed == 0
+        && progress.directories_created == 0
+        && progress.native_entries_moved == 0
+    {
+        CopyOperationState::Failed
+    } else if progress.files_completed > 0
+        || progress.directories_created > 0
+        || progress.native_entries_moved > 0
+        || progress.skipped > 0
+    {
+        CopyOperationState::CompletedWithErrors
+    } else {
+        CopyOperationState::Failed
+    };
+    progress.message = progress
+        .errors
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join("\n");
+    let omitted = progress.failed.saturating_sub(progress.errors.len() as u64);
+    if omitted > 0 {
+        progress.message.push_str(&format!(
+            "\n{omitted} earlier error details omitted from the bounded diagnostic history."
+        ));
+    }
+    if progress.skipped > 0 {
+        progress.message.push_str(&format!(
+            "\n{} entries or subtrees skipped; source data retained.",
+            progress.skipped
+        ));
+    }
+    if cancel.is_cancelled() {
+        progress
+            .message
+            .push_str(if progress.intent == TransferIntent::Move {
+                "\nMove cancelled; completed moves and already published destinations remain."
+            } else {
+                "\nCopy cancelled; already published files are retained."
+            });
+    }
+    if progress.recovery_count > 0 {
+        progress.message.push_str(&format!(
+            "\n{} recovery files retained. See the recovery locations in job details.",
+            progress.recovery_count
+        ));
+    }
+    if progress.intent == TransferIntent::Move {
+        progress.message.push_str(&format!("\n{} entries moved by native rename; {} verified source files removed; {} temporary source locations need attention. Unfinished sources were restored unless an error above reports otherwise. Earlier completed moves remain after later errors or cancellation. Open readers can delay storage reclamation. Merged source directories are removed only after completed children and an empty-directory check.", progress.native_entries_moved, progress.source_files_removed, progress.source_residual_count));
+    }
+    progress.clone()
+}
+
 enum Action {
     Keep,
     Done,

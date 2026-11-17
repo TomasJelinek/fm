@@ -17,6 +17,7 @@ pub(super) struct Source {
     stamp: (u64, i64, i64, i64, i64),
     entries: Option<Dir>,
     move_enabled: bool,
+    namespace: Arc<namespace::Bindings>,
 }
 impl Source {
     pub(super) fn enable_move(&mut self) {
@@ -24,6 +25,9 @@ impl Source {
     }
     pub(super) fn native_file(&self) -> Arc<File> {
         self.file.clone()
+    }
+    pub(super) fn namespace_bindings(&self) -> Arc<namespace::Bindings> {
+        self.namespace.clone()
     }
     pub(super) fn open(
         parent: Arc<File>,
@@ -72,6 +76,7 @@ impl Source {
             metadata.ctime_nsec(),
         );
         let parent_identity = identity(&parent, &parent_path)?;
+        let namespace = namespace::Bindings::for_parent(&parent, &parent_path)?;
         Ok(Self {
             entry: entry(&file, &path)?,
             parent,
@@ -83,6 +88,7 @@ impl Source {
             stamp,
             entries: None,
             move_enabled: false,
+            namespace,
         })
     }
     fn make_readable(&mut self, cancel: &Cancellation) -> Result<(), FsError> {
@@ -114,6 +120,22 @@ pub(super) fn open_retained(file: &File, path: &Path) -> Result<File, FsError> {
     Ok(opened)
 }
 impl TransferSource for Source {
+    fn native_namespace_scope(
+        &self,
+        cancel: &Cancellation,
+    ) -> Result<Option<Arc<dyn midnight_core::TransferNamespacePin>>, FsError> {
+        self.revalidate(cancel)?;
+        let pin = self.namespace.pin(
+            &self.parent,
+            &self.parent_path,
+            &self.name,
+            self.entry.item.kind,
+            true,
+            cancel,
+        )?;
+        self.revalidate(cancel)?;
+        Ok(Some(pin))
+    }
     fn discover(
         &self,
         cancel: &Cancellation,

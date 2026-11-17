@@ -1,9 +1,12 @@
 //! Public clipboard and Jobs callbacks preserve admitted-copy ordering under backpressure.
+#[path = "support/owned_commands.rs"]
+mod owned_commands;
 #[path = "support/ui.rs"]
 mod ui;
 
 use midnight_core::*;
-use midnight_ui::{Presenter, install, refresh};
+use midnight_ui::{BeginOwned, Presenter, refresh};
+use owned_commands::install;
 use slint::Model;
 use std::{
     cell::{Cell, RefCell},
@@ -16,7 +19,7 @@ struct Harness {
     presenter: Rc<RefCell<Presenter>>,
     commands: Rc<RefCell<Vec<Command>>>,
     blocked: Rc<Cell<bool>>,
-    send: Rc<dyn Fn(Command) -> bool>,
+    begin: BeginOwned,
 }
 
 impl Harness {
@@ -36,26 +39,28 @@ impl Harness {
             captured.borrow_mut().push(command);
             true
         });
-        install(&ui.window, presenter.clone(), send.clone());
-        presenter.borrow_mut().apply_with_sender(
-            Event::DragDrop(DragDropEvent::DropAccepted {
-                drag: None,
-                token: DropToken(1),
-                pane: PaneId::Right,
-                item_count: 1,
-                intent: TransferIntent::Copy,
-                verification: None,
-                destination: Arc::new(path),
-            }),
-            send.as_ref(),
-        );
+        let begin = install(&ui.window, presenter.clone(), send.clone());
+        owned_commands::run(&presenter, &begin, |presenter, send| {
+            presenter.apply_with_sender(
+                Event::DragDrop(DragDropEvent::DropAccepted {
+                    drag: None,
+                    token: DropToken(1),
+                    pane: PaneId::Right,
+                    item_count: 1,
+                    intent: TransferIntent::Copy,
+                    verification: None,
+                    destination: Arc::new(path),
+                }),
+                send,
+            )
+        });
         refresh(&ui.window, &presenter.borrow());
         Self {
             ui,
             presenter,
             commands,
             blocked,
-            send,
+            begin,
         }
     }
 
@@ -74,25 +79,26 @@ impl Harness {
                 _ => None,
             })
             .unwrap();
-        self.presenter.borrow_mut().apply_with_sender(
-            Event::ClipboardFilesRead {
-                request,
-                destination,
-                result: Ok(FileClipboard {
-                    paths: vec![std::env::temp_dir().join("clipboard source")],
-                    intent: FileClipboardIntent::Copy,
-                }),
-            },
-            self.send.as_ref(),
-        );
+        owned_commands::run(&self.presenter, &self.begin, |presenter, send| {
+            presenter.apply_with_sender(
+                Event::ClipboardFilesRead {
+                    request,
+                    destination,
+                    result: Ok(FileClipboard {
+                        paths: vec![std::env::temp_dir().join("clipboard source")],
+                        intent: FileClipboardIntent::Copy,
+                    }),
+                },
+                send,
+            )
+        });
     }
 
     fn recover(&self) {
         self.blocked.set(false);
-        self.presenter.borrow_mut().apply_with_sender(
-            Event::LocaleLoaded(Ok(NumberLocale::default())),
-            self.send.as_ref(),
-        );
+        owned_commands::run(&self.presenter, &self.begin, |presenter, send| {
+            presenter.apply_with_sender(Event::LocaleLoaded(Ok(NumberLocale::default())), send)
+        });
         refresh(&self.ui.window, &self.presenter.borrow());
     }
 }
@@ -166,18 +172,20 @@ fn locally_cancelled_admissions_keep_session_job_history() {
     let h = Harness::new();
     for token in 1..=20 {
         if token > 1 {
-            h.presenter.borrow_mut().apply_with_sender(
-                Event::DragDrop(DragDropEvent::DropAccepted {
-                    drag: None,
-                    token: DropToken(token),
-                    pane: PaneId::Right,
-                    item_count: 1,
-                    intent: TransferIntent::Copy,
-                    verification: None,
-                    destination: Arc::new(std::env::temp_dir().join("drop ordering")),
-                }),
-                h.send.as_ref(),
-            );
+            owned_commands::run(&h.presenter, &h.begin, |presenter, send| {
+                presenter.apply_with_sender(
+                    Event::DragDrop(DragDropEvent::DropAccepted {
+                        drag: None,
+                        token: DropToken(token),
+                        pane: PaneId::Right,
+                        item_count: 1,
+                        intent: TransferIntent::Copy,
+                        verification: None,
+                        destination: Arc::new(std::env::temp_dir().join("drop ordering")),
+                    }),
+                    send,
+                )
+            });
             refresh(&h.ui.window, &h.presenter.borrow());
         }
         let job =

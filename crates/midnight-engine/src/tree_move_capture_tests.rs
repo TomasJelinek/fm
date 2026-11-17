@@ -208,10 +208,10 @@ fn mixed_move_rejects_at_capture_and_rechecks_all_targets_before_any_source_prep
         )
         .unwrap();
     let sources = Sources {
-        lease: Arc::new(Lease {
+        lease: LeaseReference(Some(Arc::new(Lease {
             capture,
             _permit: capacity.clone().try_acquire_owned().unwrap(),
-        }),
+        }))),
         metadata: false,
         intent: TransferIntent::Move,
     };
@@ -288,10 +288,10 @@ fn finalizer_and_cleanup_ticket_independently_keep_provider_and_capture_permit()
                 &Cancellation::default(),
             )
             .unwrap();
-        let lease = Arc::new(Lease {
+        let lease = LeaseReference(Some(Arc::new(Lease {
             capture,
             _permit: capacity.clone().try_acquire_owned().unwrap(),
-        });
+        })));
         let calls = Arc::new(AtomicUsize::new(0));
         let authority = leased_capture(
             Arc::new(Capture {

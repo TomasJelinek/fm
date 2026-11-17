@@ -230,6 +230,38 @@ cleanup. A prepared child cannot be recycled for another source after consumptio
 The independent image/document API, SDK, MIV1 messages, sandbox and resource-policy
 contracts remain unchanged.
 
+**Implemented additive host lifecycle contract (V4):** source-integrated on
+466+13. Combined library, selected native and normal-profile deployment
+qualification passed on Windows; platform/manual limits are recorded below.
+`prepare_owned` / `open_owned` accept a `Box<dyn Send>` ownership token. Clone
+the same `ChildPermit` reservation into the host before opaque process
+creation, so unclear spawn/reap outcomes retain actual child capacity. Use
+`close_checked` and `cleanup_status` / `CleanupStatus` to observe cleanup;
+unconfirmed process termination retains the reservation, cannot advertise
+`Empty`, and cannot trigger a cold fallback. A pin-only close failure after
+confirmed child termination frees child capacity but seals foreground admission
+and spare refill. Cleanup errors are inspected before conversion to text.
+
+The Windows typed executable pin contract retains a data-read, SHARE_READ-only
+lease for the full `ImageSession`. Identity, length, modification time and trust
+guards remain checked; only ChangeTime drift is tolerated while the lease denies
+data writes. No executable hash is added. Generic user `CapturedFile`, manifest
+validation and Linux strict behavior remain unchanged. This worker-code proof
+is distinct from own-EXE SHA default-OFF selection. These additions belong to the
+Rust host API, not the plugin SDK, ABI or MIV1 protocol.
+
+Qualification: the original native07 failure and fresh protected **17.02 s**
+ChangeTime-only reproduction remain RED evidence, proving neither equal bytes
+nor a mutator. The aged-fixture **8.96 s** diagnostic pass gave no formal credit
+or behavior-fix proof. Backend plugin-host tests passed **97/0/6** and scoped
+format/Clippy checks had zero warnings. The **26 new Viewer test definitions**
+are included in passing host/engine library suites **33/0/4 + 256/0/4**. Fresh
+first-use native07 passed; the remaining selected native cases passed across the
+seven-case Viewer run and four-case thumbnail-fixture/deferred continuation.
+Warm host, runtime inventory/validator and normal-profile deployment passed. Three Linux-specific
+cases and UNC/manual paths remain unrun; desktop10 lacks a qualified observer.
+This worker-proof contract is independent of own-EXE default-OFF selection.
+
 ## Source ranges and archive memory
 
 The user resumed generic archive streaming and private disk spooling on

@@ -23,6 +23,8 @@ mod drag_tests;
 mod metadata;
 #[path = "transfer_move.rs"]
 mod move_source;
+#[path = "transfer_namespace.rs"]
+mod namespace;
 #[path = "transfer_native_location.rs"]
 mod native_location;
 #[path = "transfer_source.rs"]

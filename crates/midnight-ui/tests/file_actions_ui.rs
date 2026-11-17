@@ -1,5 +1,7 @@
 #[path = "support/file_conflicts.rs"]
 mod conflicts;
+#[path = "support/owned_commands.rs"]
+mod owned_commands;
 #[path = "support/owned_windows.rs"]
 mod owned_windows;
 #[path = "support/selection.rs"]
@@ -13,7 +15,8 @@ use i_slint_core::{
     window::{WindowInner, WindowKind},
 };
 use midnight_core::*;
-use midnight_ui::{Presenter, install, refresh};
+use midnight_ui::{BeginOwned, Presenter, refresh};
+use owned_commands::install;
 use slint::{
     ComponentHandle, Model,
     platform::{Key, PointerEventButton, WindowAdapter, WindowEvent},
@@ -26,6 +29,7 @@ struct Harness {
     presenter: Rc<RefCell<Presenter>>,
     commands: Rc<RefCell<Vec<Command>>>,
     base: PathBuf,
+    begin: BeginOwned,
 }
 
 impl Harness {
@@ -38,7 +42,7 @@ impl Harness {
         )));
         let commands = Rc::new(RefCell::new(Vec::new()));
         let sent = commands.clone();
-        install(
+        let begin = install(
             &ui.window,
             presenter.clone(),
             Rc::new(move |command| {
@@ -52,6 +56,7 @@ impl Harness {
             presenter,
             commands,
             base,
+            begin,
         };
         h.complete();
         h.commands.borrow_mut().clear();
@@ -100,13 +105,9 @@ impl Harness {
     }
 
     fn apply(&mut self, event: Event) {
-        let sent = self.commands.clone();
-        self.presenter
-            .borrow_mut()
-            .apply_with_sender(event, &|command| {
-                sent.borrow_mut().push(command);
-                true
-            });
+        owned_commands::run(&self.presenter, &self.begin, |presenter, send| {
+            presenter.apply_with_sender(event, send);
+        });
         self.draw();
     }
 

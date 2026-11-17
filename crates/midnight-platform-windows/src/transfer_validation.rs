@@ -11,6 +11,8 @@ struct ReadGuard {
     file: File,
     revision: Revision,
     path: PathBuf,
+    // Last: a returned independent readback guard closes its duplicate before retirement.
+    _namespace_owner: super::namespace::NativeOwner,
 }
 impl TransferReadGuard for ReadGuard {
     fn revalidate(&self, cancel: &Cancellation) -> Result<(), FsError> {
@@ -36,9 +38,11 @@ pub(super) fn rewind(
     let mut held = file.try_clone().map_err(|e| error(path, e))?;
     let revision = Revision::of(&held, path)?;
     held.seek(SeekFrom::Start(0)).map_err(|e| error(path, e))?;
+    let namespace_owner = super::namespace::try_owner_for(&held, path)?;
     Ok(Box::new(ReadGuard {
         file: held,
         revision,
         path: path.to_owned(),
+        _namespace_owner: namespace_owner,
     }))
 }

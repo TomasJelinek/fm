@@ -443,8 +443,19 @@ fn every_registered_waiter_is_notified_and_repolls_against_real_capacity() {
             .poll(&mut second_context)
             .is_pending()
     );
+    let before_second_return = second_count.0.load(Ordering::SeqCst);
+    assert!(
+        second_reserve
+            .as_mut()
+            .poll(&mut second_context)
+            .is_pending()
+    );
+    assert_eq!(second_count.0.load(Ordering::SeqCst), before_second_return);
     drop(held_second);
-    assert_eq!(second_count.0.load(Ordering::SeqCst), 2);
+    assert_eq!(
+        second_count.0.load(Ordering::SeqCst),
+        before_second_return + 1
+    );
     let Poll::Ready(second_lease) = second_reserve.as_mut().poll(&mut second_context) else {
         panic!("second free slot");
     };

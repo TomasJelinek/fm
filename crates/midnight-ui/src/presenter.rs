@@ -255,6 +255,8 @@ pub struct Presenter {
     search_revisions: [SearchRevision; 2],
     search_cancellations: [Option<SearchRevision>; 2],
     retired: Vec<DeferredDrop>,
+    owned_scope_required: bool,
+    owned_scope_active: bool,
 }
 
 impl Presenter {
@@ -303,10 +305,24 @@ impl Presenter {
             command_toolbar: crate::user_command_presentation::ToolbarState::default(),
             number_locale: NumberLocale::default(),
             retired: vec![],
+            owned_scope_required: false,
+            owned_scope_active: false,
             archive_size_acks: [None; 2],
             tree_size_acks: [None; 2],
             archive_size_observer_next: [0; 2],
         }
+    }
+
+    pub(crate) fn require_owned_command_scope(&mut self) {
+        self.owned_scope_required = true;
+    }
+
+    pub(crate) fn set_owned_command_scope_active(&mut self, active: bool) -> bool {
+        mem::replace(&mut self.owned_scope_active, active)
+    }
+
+    pub(crate) fn owned_command_scope_available(&self) -> bool {
+        !self.owned_scope_required || self.owned_scope_active
     }
 
     /// The caller must transfer these values to a background owner before dropping them.
@@ -377,8 +393,9 @@ impl Presenter {
             .push(Box::new(mem::take(&mut self.finds.sessions)));
         self.retired
             .push(Box::new(mem::take(&mut self.checksums.sessions)));
-        self.retire_copy_draft();
+        self.force_retire_copy_draft();
         self.retire_metadata();
+        self.force_retire_drag_owners();
         self.retire_drag_drop();
         self.retired
             .push(Box::new(mem::take(&mut self.choices.items)));

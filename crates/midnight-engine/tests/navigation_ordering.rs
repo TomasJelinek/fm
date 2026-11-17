@@ -153,7 +153,7 @@ async fn next(events: &mut mpsc::Receiver<Event>) -> Event {
 
 async fn ordered_publications(locale: Option<Arc<Locale>>, expected: &[&str]) {
     let caller = std::thread::current().id();
-    let (commands, receiver) = mpsc::channel(8);
+
     let (sender, mut events) = mpsc::channel(32);
     let fixture = Arc::new(Fixture);
     let mut engine = Engine::new(
@@ -161,6 +161,7 @@ async fn ordered_publications(locale: Option<Arc<Locale>>, expected: &[&str]) {
         fixture.clone(),
         sender,
     );
+    let (commands, receiver) = engine.command_channel(8).unwrap();
     engine.configure_desktop().unwrap().install(fixture);
     if let Some(locale) = &locale {
         engine.configure_locale().unwrap().install(locale.clone());
@@ -270,7 +271,6 @@ async fn unavailable_keys_use_deterministic_raw_label_order() {
 }
 
 async fn rejects_invalid_collation(locale: Locale) {
-    let (commands, receiver) = mpsc::channel(8);
     let (sender, mut events) = mpsc::channel(32);
     let fixture = Arc::new(Fixture);
     let mut engine = Engine::new(
@@ -278,6 +278,7 @@ async fn rejects_invalid_collation(locale: Locale) {
         fixture.clone(),
         sender,
     );
+    let (commands, receiver) = engine.command_channel(8).unwrap();
     engine.configure_desktop().unwrap().install(fixture);
     engine.configure_locale().unwrap().install(Arc::new(locale));
     let task = tokio::spawn(engine.run(receiver));

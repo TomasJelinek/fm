@@ -62,13 +62,14 @@ impl EditorService for Service {
 #[tokio::test(flavor = "current_thread")]
 async fn editor_dispatch_preserves_request_and_reports_worker_launch_error() {
     let service = Arc::new(Service::default());
-    let (commands, receiver) = mpsc::channel(8);
+
     let (sender, mut events) = mpsc::channel(64);
     let mut engine = Engine::new(
         Engine::lifetime().expect("engine cleanup worker"),
         service.clone(),
         sender,
     );
+    let (commands, receiver) = engine.command_channel(8).unwrap();
     engine.configure_editor().unwrap().install(service.clone());
     let task = tokio::spawn(engine.run(receiver));
     let path = std::env::current_dir()
@@ -132,16 +133,15 @@ async fn editor_dispatch_preserves_request_and_reports_worker_launch_error() {
 #[tokio::test]
 async fn editor_rejections_keep_backpressure_when_event_consumer_stops() {
     let service = Arc::new(Service::default());
-    let (commands, receiver) = mpsc::channel(2);
+
     let (sender, mut events) = mpsc::channel(1);
-    let task = tokio::spawn(
-        Engine::new(
-            Engine::lifetime().expect("engine cleanup worker"),
-            service,
-            sender,
-        )
-        .run(receiver),
+    let mut command_engine_1 = Engine::new(
+        Engine::lifetime().expect("engine cleanup worker"),
+        service,
+        sender,
     );
+    let (commands, receiver) = command_engine_1.command_channel(2).unwrap();
+    let task = tokio::spawn(command_engine_1.run(receiver));
     commands
         .send(Command::EditFile {
             request: DesktopRequestId(1),
@@ -239,13 +239,14 @@ async fn captured_tree_editor_resolves_and_retires_only_on_workers_including_rej
         (true, false, true),
     ] {
         let service = Arc::new(Service::default());
-        let (commands, receiver) = mpsc::channel(8);
+
         let (sender, mut events) = mpsc::channel(64);
         let mut engine = Engine::new(
             Engine::lifetime().expect("engine cleanup worker"),
             service.clone(),
             sender,
         );
+        let (commands, receiver) = engine.command_channel(8).unwrap();
         if available {
             engine.configure_editor().unwrap().install(service.clone());
         }

@@ -3,6 +3,8 @@ mod input;
 #[allow(dead_code)]
 #[path = "support/modeless.rs"]
 mod modeless;
+#[path = "support/owned_commands.rs"]
+mod owned_commands;
 #[path = "support/ui.rs"]
 mod ui;
 
@@ -13,7 +15,8 @@ use i_slint_core::{
     window::WindowInner,
 };
 use midnight_core::*;
-use midnight_ui::{Presenter, install, refresh};
+use midnight_ui::{Presenter, refresh};
+use owned_commands::install;
 use slint::{
     ComponentHandle, Model,
     platform::{
@@ -252,7 +255,7 @@ fn archive_dialog_disables_required_modified_time_and_keeps_ordinary_copy() {
     )));
     let commands = Rc::new(RefCell::new(Vec::new()));
     let captured = commands.clone();
-    install(
+    let _begin = install(
         &ui.window,
         state.clone(),
         Rc::new(move |command| {
@@ -377,7 +380,7 @@ fn destination_editor(
     let captured = commands.clone();
     let accepting = Rc::new(Cell::new(true));
     let gate = accepting.clone();
-    install(
+    let begin = install(
         &ui.window,
         state.clone(),
         Rc::new(move |command| {
@@ -395,13 +398,15 @@ fn destination_editor(
         };
         preferences.tabs[0].paths = vec![base.clone()];
         preferences.tabs[1].paths = vec![base.join("target")];
-        state.borrow_mut().apply_with_sender(
-            Event::PreferencesLoaded(Ok(Box::new(preferences))),
-            &|command| {
-                commands.borrow_mut().push(command);
-                true
-            },
-        );
+        owned_commands::run(&state, &begin, |state, _| {
+            state.apply_with_sender(
+                Event::PreferencesLoaded(Ok(Box::new(preferences))),
+                &|command| {
+                    commands.borrow_mut().push(command);
+                    true
+                },
+            )
+        });
     }
     let navigation = commands
         .borrow()
@@ -857,7 +862,7 @@ fn compact_transfer_controls(shortcut: Key, moving: bool) {
             true
         }
     });
-    install(&test.window, state.clone(), send.clone());
+    let begin = install(&test.window, state.clone(), send.clone());
     let mut preferences = UserPreferences {
         density: UiDensity::Touch,
         desktop_font_size: 32,
@@ -867,10 +872,9 @@ fn compact_transfer_controls(shortcut: Key, moving: bool) {
     for (slot, path) in paths.iter().enumerate() {
         preferences.tabs[slot].paths = vec![path.clone()];
     }
-    state.borrow_mut().apply_with_sender(
-        Event::PreferencesLoaded(Ok(Box::new(preferences))),
-        send.as_ref(),
-    );
+    owned_commands::run(&state, &begin, |state, send| {
+        state.apply_with_sender(Event::PreferencesLoaded(Ok(Box::new(preferences))), send)
+    });
     for pane in [PaneId::Left, PaneId::Right] {
         let navigation = commands
             .borrow()
@@ -1121,7 +1125,7 @@ fn legacy_confirmation_preserves_wait_choice_after_refusal_and_freezes_nested_le
     )));
     let commands = Rc::new(RefCell::new(Vec::new()));
     let accepting = Rc::new(Cell::new(true));
-    install(
+    let _begin = install(
         &test.window,
         state.clone(),
         Rc::new({

@@ -145,15 +145,67 @@ pub(crate) struct CapturedTarget {
     pub(crate) _registration: Arc<RootRegistrationLease>,
 }
 
+impl CapturedTarget {
+    pub(crate) fn release_on_worker(self) -> Result<(), ProviderError> {
+        use crate::copy_nested_retirement::{self as nested, Retained};
+        nested::provider_step(|| {
+            let mut registration = Retained::new(self._registration);
+            self.target.release_on_worker()?;
+            registration.take().release_on_worker()
+        })
+    }
+}
+impl CapturedSelection {
+    pub(crate) fn release_on_worker(self) -> Result<(), ProviderError> {
+        use crate::copy_nested_retirement::{self as nested, Retained};
+        nested::provider_step(|| {
+            let mut targets = Retained::new(self.targets.into_iter());
+            while let Some(target) = targets.get_mut().next() {
+                target.captured.release_on_worker()?;
+            }
+            drop(targets.take());
+            Ok(())
+        })
+    }
+}
+
 pub(crate) struct RootRegistrationLease {
-    registry: Arc<ProviderRegistry>,
+    registry: Option<Arc<ProviderRegistry>>,
     provider: ProviderId,
     instance: ProviderInstanceId,
 }
 
+impl RootRegistrationLease {
+    fn release(&mut self) -> Result<(), ProviderError> {
+        use crate::copy_nested_retirement::Retained;
+        let Some(registry) = self.registry.take() else {
+            return Ok(());
+        };
+        let mut registry = Retained::new(registry);
+        registry
+            .get()
+            .unregister_on_worker(&self.provider, self.instance)?;
+        registry.take().release_on_worker()
+    }
+    pub(crate) fn release_on_worker(self: Arc<Self>) -> Result<(), ProviderError> {
+        crate::copy_nested_retirement::provider_step(|| {
+            let Some(mut owner) = Arc::into_inner(self) else {
+                return Ok(());
+            };
+            owner.release()
+        })
+    }
+}
+
 impl Drop for RootRegistrationLease {
     fn drop(&mut self) {
-        let _ = self.registry.unregister(&self.provider, self.instance);
+        if let Some(context) = crate::copy_nested_retirement::current() {
+            if let Err(error) = self.release() {
+                context.record(crate::copy_nested_retirement::fs_error(error));
+            }
+        } else if let Some(registry) = &self.registry {
+            let _ = registry.unregister(&self.provider, self.instance);
+        }
     }
 }
 
@@ -163,6 +215,22 @@ struct CapturedRootProvider {
 }
 
 impl FilesystemProvider for CapturedRootProvider {
+    fn release_on_worker(self: Arc<Self>) -> Result<(), ProviderError> {
+        crate::copy_nested_retirement::provider_step(|| {
+            let Some(mut owner) = Arc::into_inner(self) else {
+                return Ok(());
+            };
+            let opened = owner
+                .opened
+                .get_mut()
+                .unwrap_or_else(|error| error.into_inner())
+                .take();
+            if let Some(opened) = opened {
+                crate::copy_nested_retirement::release_mount(opened.mount)?;
+            }
+            Ok(())
+        })
+    }
     fn resolve(
         &self,
         address: &StoredLocation,
@@ -189,7 +257,7 @@ impl WorkerBudget {
         Self {
             listing,
             branch: Arc::new(Semaphore::new(1)),
-            mutation: Arc::new(Semaphore::new(1)),
+            mutation: crate::transfer_leases::namespace_gate(),
         }
     }
 
@@ -198,15 +266,17 @@ impl WorkerBudget {
         self
     }
 
-    fn acquire(&self, maintenance: bool) -> Result<Option<WorkerPermit>, ProviderError> {
-        let mutation = if maintenance {
-            match self.mutation.clone().try_acquire_owned() {
+    fn acquire(&self, _maintenance: bool) -> Result<Option<WorkerPermit>, ProviderError> {
+        let mutation = {
+            match self
+                .mutation
+                .clone()
+                .try_acquire_many_owned(crate::transfer_leases::NAMESPACE_WEIGHT)
+            {
                 Ok(permit) => Some(permit),
                 Err(TryAcquireError::NoPermits) => return Ok(None),
                 Err(TryAcquireError::Closed) => return Err(ProviderError::Unavailable),
             }
-        } else {
-            None
         };
         let branch = match self.branch.clone().try_acquire_owned() {
             Ok(permit) => permit,
@@ -323,7 +393,7 @@ impl Session {
             }),
         )?;
         let registration = Arc::new(RootRegistrationLease {
-            registry: registry.clone(),
+            registry: Some(registry.clone()),
             provider,
             instance,
         });

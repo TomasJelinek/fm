@@ -21,6 +21,59 @@ pub struct TransferIdentity {
     pub object: [u8; 16],
 }
 
+/// Host-assigned access for an entire native namespace pin.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TransferNamespaceAccess {
+    Read,
+    Write,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TransferNamespaceExtent {
+    Entry,
+    Subtree,
+}
+
+/// Pooled native parent authority metadata, shared by sibling root claims.
+#[derive(Clone, Debug)]
+pub struct TransferNamespaceParent {
+    pub identity: TransferIdentity,
+    /// Qualifies actual native case/alias lookup rules; never display normalization.
+    pub lookup_domain: Arc<[u8]>,
+    /// Actual native parent first, then its ancestors through the native root.
+    pub ancestors: Arc<[TransferIdentity]>,
+}
+
+#[derive(Clone, Debug)]
+pub struct TransferNamespaceScope {
+    /// A native filesystem root uses its own identity as parent, an empty lookup key,
+    /// and an ancestor list starting at that root. No display path becomes authority.
+    pub parent: Arc<TransferNamespaceParent>,
+    /// Comparable only within the same validated parent lookup domain.
+    pub lookup_key: Arc<[u8]>,
+    /// Absent only for a still-absent prospective slot, including a future subtree.
+    pub object: Option<TransferIdentity>,
+    pub extent: TransferNamespaceExtent,
+}
+
+#[derive(Clone, Debug)]
+pub enum TransferNamespaceProbe {
+    /// Complete nonempty ordinary-native footprint. Shared ancestors alone do not intersect.
+    /// An empty footprint is reserved for a certified removed, registered private alias;
+    /// it must never retire an ordinary selected source or destination root.
+    Known(Arc<[TransferNamespaceScope]>),
+    /// Valid authority whose geometry is unqualified; requires global transfer exclusion.
+    Unknown,
+}
+
+/// Metadata-only retained original bindings, independently owned beyond source traversal.
+/// Pool parent/ancestor handles; probing selected sibling leaves must not retain a handle per leaf.
+/// Refresh on a backend worker under lifetime I/O authority, outside registry locks.
+/// Never adopt unrelated replacements. Owned name transitions must update their witness first.
+pub trait TransferNamespacePin: Send + Sync {
+    fn refresh(&self, cancel: &Cancellation) -> Result<TransferNamespaceProbe, FsError>;
+}
+
 #[derive(Clone, Debug)]
 pub struct TransferEntry {
     pub item: MutationItem,
@@ -124,10 +177,39 @@ pub trait TransferService: Send + Sync {
     ) -> Result<Arc<dyn TransferDirectory>, FsError>;
 }
 
+/// Audited host composition for the concrete service and every native capability
+/// it creates: sources, directories, targets, stages, read guards, metadata and
+/// namespace pins, Move captures/finalizers/cleanup tickets, and internal leases.
+/// Releasing a reference is synchronous; if it acquires last-owner responsibility,
+/// actual native destruction completes before return. No deferred cleanup tail
+/// may outlive that return. Shared references release only their own ownership.
+/// Caller-supplied captured providers and independently composed owners are not
+/// covered. There is no blanket implementation and this is not a plugin C ABI.
+pub trait AuditedSynchronousTransferService: TransferService {}
+
+pub(crate) fn unconfirmed_transfer_release(operation: &'static str) -> FsError {
+    FsError::from_io(
+        operation,
+        Path::new(""),
+        std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "Captured provider retirement is unconfirmed; transfer authority remains retained.",
+        ),
+    )
+}
+
 /// A no-follow regular file, ordinary directory or explicitly preserved link.
 /// Iteration opens at most one child per call. Retain directory sources on the traversal stack;
 /// preserved links are leaves and never grant referent reads or traversal.
 pub trait TransferSource: Send {
+    /// Optional exact native root binding/ancestry. None is conservative unknown authority,
+    /// not a claim that this source is independent. Construction and refresh are worker-only.
+    fn native_namespace_scope(
+        &self,
+        _cancel: &Cancellation,
+    ) -> Result<Option<Arc<dyn TransferNamespacePin>>, FsError> {
+        Ok(None)
+    }
     /// Independently read the retained native link's exact bounded representation
     /// without opening its target. Success must revalidate the ORIGINAL retained
     /// parent/ancestor bindings and raw source name against the captured object,
@@ -257,6 +339,17 @@ pub trait TransferSource: Send {
 }
 
 pub trait TransferDirectory: Send + Sync {
+    /// Exact prospective native child slot and optional future subtree, under this pinned
+    /// parent. Qualify native lookup aliases/case rules; None requires conservative exclusion.
+    /// This metadata capability never creates, stages, merges or grants mutation authority.
+    fn native_child_namespace_scope(
+        &self,
+        _name: &OsStr,
+        _kind: crate::EntryKind,
+        _cancel: &Cancellation,
+    ) -> Result<Option<Arc<dyn TransferNamespacePin>>, FsError> {
+        Ok(None)
+    }
     /// Read-only positive admission for this exact native kind/format/flags and
     /// payload on the retained destination. Reject unsupported formats, local
     /// junction forms, permissions or filesystem features explicitly; never
@@ -512,4 +605,79 @@ fn transfer_unsupported(path: &Path, message: &str) -> FsError {
         path,
         std::io::Error::new(std::io::ErrorKind::Unsupported, message),
     )
+}
+
+#[cfg(test)]
+mod namespace_defaults_tests {
+    use super::*;
+
+    struct Legacy;
+    impl TransferSource for Legacy {
+        fn entry(&self) -> &TransferEntry {
+            panic!("namespace opt-out must not inspect entries")
+        }
+        fn revalidate(&self, _: &Cancellation) -> Result<(), FsError> {
+            panic!("namespace opt-out must not perform native validation")
+        }
+        fn read_chunk(&mut self, _: &mut [u8], _: &Cancellation) -> Result<usize, FsError> {
+            panic!("namespace opt-out must not read content")
+        }
+        fn next_child(
+            &mut self,
+            _: &Cancellation,
+        ) -> Result<Option<Box<dyn TransferSource>>, FsError> {
+            panic!("namespace opt-out must not enumerate")
+        }
+    }
+    impl TransferDirectory for Legacy {
+        fn path(&self) -> &Path {
+            panic!("namespace opt-out must not interpret paths")
+        }
+        fn identity(&self) -> TransferIdentity {
+            panic!("namespace opt-out has no native identity")
+        }
+        fn revalidate(&self, _: &Cancellation) -> Result<(), FsError> {
+            panic!("unexpected I/O")
+        }
+        fn inspect(&self, _: &OsStr, _: &Cancellation) -> Result<Option<TransferEntry>, FsError> {
+            panic!("namespace opt-out must not probe children")
+        }
+        fn reject_source_ancestor(
+            &self,
+            _: TransferIdentity,
+            _: &Cancellation,
+        ) -> Result<(), FsError> {
+            panic!("namespace opt-out must not walk ancestors")
+        }
+        fn create_directory(
+            &self,
+            _: &OsStr,
+            _: &Cancellation,
+        ) -> Result<Arc<dyn TransferDirectory>, FsError> {
+            panic!("namespace opt-out must not create objects")
+        }
+        fn stage_file(&self, _: &Cancellation) -> Result<Box<dyn StagedTransferFile>, FsError> {
+            panic!("namespace opt-out must not create stages")
+        }
+    }
+
+    #[test]
+    fn legacy_namespace_capabilities_remain_explicit_opt_out_without_io() {
+        let cancel = Cancellation::default();
+        assert!(Legacy.native_namespace_scope(&cancel).unwrap().is_none());
+        assert!(
+            Legacy
+                .native_child_namespace_scope(OsStr::new("child"), crate::EntryKind::File, &cancel)
+                .unwrap()
+                .is_none()
+        );
+        cancel.cancel();
+        assert!(Legacy.native_namespace_scope(&cancel).unwrap().is_none());
+        assert!(
+            Legacy
+                .native_child_namespace_scope(OsStr::new("child"), crate::EntryKind::File, &cancel)
+                .unwrap()
+                .is_none()
+        );
+    }
 }

@@ -12,6 +12,8 @@ mod archive;
 mod cancel_queue;
 #[path = "copy_completion_tests.rs"]
 mod completion;
+#[path = "copy_concurrency_regression_tests.rs"]
+mod concurrency_regression;
 #[path = "copy_discovery_tests.rs"]
 mod discovery;
 #[path = "copy_error_tests.rs"]
@@ -32,6 +34,8 @@ mod progress_verification;
 mod queue;
 #[path = "copy_replacement_tests.rs"]
 mod replacement;
+#[path = "copy_scheduler_tests.rs"]
+mod scheduler;
 #[path = "copy_stage_retry_tests.rs"]
 mod stage_retry;
 #[path = "copy_throughput_tests.rs"]
@@ -43,7 +47,7 @@ mod verification;
 
 #[tokio::test]
 async fn native_drop_reservations_share_the_actual_copy_job_capacity() {
-    let mut harness = Harness::new(None);
+    let mut harness = Harness::without_service();
     let mut reservations: Vec<_> = (0..32)
         .map(|_| harness.controller.reserve().unwrap())
         .collect();
@@ -62,6 +66,7 @@ async fn native_drop_reservations_share_the_actual_copy_job_capacity() {
         .await;
     let admitted = harness.terminal(2).await;
     assert_eq!(admitted.errors[0].kind, std::io::ErrorKind::Unsupported);
+    harness.wait_capacity(1).await;
     let returned = harness
         .controller
         .reserve()
@@ -99,14 +104,41 @@ struct Harness {
     events: mpsc::Receiver<Event>,
     tasks: JoinSet<()>,
     mutation: Arc<Semaphore>,
-    io: Arc<Semaphore>,
+    io: Arc<IoBudget>,
+    terminals: std::collections::HashMap<OperationId, Arc<CopyProgress>>,
 }
 impl Harness {
-    fn new(service: Option<Arc<dyn TransferService>>) -> Self {
+    fn new<T: midnight_core::AuditedSynchronousTransferService + 'static>(
+        service: Option<Arc<T>>,
+    ) -> Self {
+        Self::with_slots(service, 1)
+    }
+    fn with_slots<T: midnight_core::AuditedSynchronousTransferService + 'static>(
+        service: Option<Arc<T>>,
+        slots: u8,
+    ) -> Self {
+        Self::configured(
+            service.map(crate::transfer_composition::QualifiedTransferInstallation::audited),
+            slots,
+        )
+    }
+    fn without_service() -> Self {
+        Self::configured(None, 1)
+    }
+    fn unqualified(service: Arc<dyn TransferService>) -> Self {
+        Self::configured(
+            Some(crate::transfer_composition::QualifiedTransferInstallation::unqualified(service)),
+            1,
+        )
+    }
+    fn configured(
+        service: Option<crate::transfer_composition::QualifiedTransferInstallation>,
+        slots: u8,
+    ) -> Self {
         let (sender, events) = mpsc::channel(256);
         let mut tasks = JoinSet::new();
-        let mutation = Arc::new(Semaphore::new(1));
-        let io = Arc::new(Semaphore::new(1));
+        let mutation = crate::transfer_leases::namespace_gate();
+        let io = IoBudget::new(Arc::new(midnight_work_budget::Gate::new(slots)));
         let controller = Controller::new(
             crate::worker_retirement::ActorRetirement::testing(),
             service,
@@ -124,6 +156,7 @@ impl Harness {
             tasks,
             mutation,
             io,
+            terminals: std::collections::HashMap::new(),
         }
     }
     fn native() -> Self {
@@ -144,13 +177,51 @@ impl Harness {
         .await
         .expect("copy event timed out")
     }
+    async fn wait_capacity(&self, available: usize) {
+        let capacity = self.controller.capacity();
+        tokio::time::timeout(Duration::from_secs(4), async {
+            while capacity.available_permits() != available {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("checked retirement and delivery must return the expected admission capacity");
+    }
+    async fn reserve_ready(&self) -> Reservation {
+        tokio::time::timeout(Duration::from_secs(4), async {
+            loop {
+                match self.controller.reserve() {
+                    Ok(reservation) => return reservation,
+                    Err(error) if error.kind == io::ErrorKind::WouldBlock => {
+                        tokio::task::yield_now().await;
+                    }
+                    Err(error) => panic!("Copy admission unexpectedly refused: {error}"),
+                }
+            }
+        })
+        .await
+        .expect("actual Copy admission must become ready")
+    }
+    async fn enqueue_reserved_input(&self, input: CopyInput, reservation: Reservation) {
+        let (input, sender) = reservation.attach_input(input);
+        self.controller.enqueue_input_reserved(input, sender).await;
+    }
     async fn terminal(&mut self, id: u64) -> Arc<CopyProgress> {
+        if let Some(progress) = self.terminals.remove(&OperationId(id)) {
+            return progress;
+        }
         loop {
             match self.next().await {
                 CopyEvent::Progress(progress)
                     if progress.id == OperationId(id) && progress.state.is_terminal() =>
                 {
                     return progress;
+                }
+                CopyEvent::Progress(progress) if progress.state.is_terminal() => {
+                    assert!(
+                        self.terminals.insert(progress.id, progress).is_none(),
+                        "duplicate terminal event"
+                    );
                 }
                 // Existing terminal-failure tests explicitly decline recovery. New
                 // recovery tests consume Failure themselves and exercise Retry.
@@ -172,6 +243,10 @@ impl Harness {
         }
     }
     async fn conflict(&mut self, id: u64) -> Arc<CopyConflict> {
+        assert!(
+            !self.terminals.contains_key(&OperationId(id)),
+            "operation already finished"
+        );
         loop {
             match self.next().await {
                 CopyEvent::Conflict(conflict) if conflict.id == OperationId(id) => return conflict,
@@ -179,17 +254,26 @@ impl Harness {
                     !progress.state.is_terminal(),
                     "unexpected terminal copy: {progress:?}"
                 ),
+                CopyEvent::Progress(progress) if progress.state.is_terminal() => {
+                    assert!(
+                        self.terminals.insert(progress.id, progress).is_none(),
+                        "duplicate terminal event"
+                    );
+                }
                 _ => {}
             }
         }
     }
-    async fn close(mut self) {
-        self.controller.shutdown();
+    async fn wait_shutdown(&mut self) {
         tokio::time::timeout(Duration::from_secs(4), async {
             while self.tasks.join_next().await.is_some() {}
         })
         .await
         .unwrap();
+    }
+    async fn close(mut self) {
+        self.controller.shutdown();
+        self.wait_shutdown().await;
     }
 }
 
@@ -293,9 +377,15 @@ async fn selected_copy_shares_admission_and_cancellation_with_paste_and_drop() {
         io::ErrorKind::WouldBlock
     );
     drop(reservations);
-    let gate = h.mutation.clone().acquire_owned().await.unwrap();
-    h.controller
-        .enqueue_selected(selected_request(2, &entries, temp.path()))
+    h.wait_capacity(MAX_JOBS).await;
+    let gate = h
+        .mutation
+        .clone()
+        .acquire_many_owned(crate::transfer_leases::NAMESPACE_WEIGHT)
+        .await
+        .unwrap();
+    let ready = h.reserve_ready().await;
+    h.enqueue_reserved_input(selected_request(2, &entries, temp.path()).into(), ready)
         .await;
     h.controller.cancel(OperationId(2));
     drop(gate);
@@ -339,8 +429,8 @@ async fn conflict_wait_accepts_more_work_and_rejects_stale_decisions() {
     let conflict = h.conflict(1).await;
     assert_eq!(conflict.source.metadata.size, Some(9));
     assert_eq!(conflict.target.metadata.size, Some(4));
-    assert_eq!(h.io.available_permits(), 1);
-    assert_eq!(h.mutation.available_permits(), 0);
+    assert_eq!(h.io.available_permits(), 0);
+    assert_eq!(h.mutation.available_permits(), 31);
     h.controller
         .enqueue(request(2, &[second], &destination))
         .await;
@@ -448,7 +538,12 @@ async fn queue_is_bounded_and_duplicate_ids_cannot_execute_twice() {
     let source = temp.path().join("source");
     fs::write(&source, b"source").unwrap();
     let mut h = Harness::native();
-    let held = h.mutation.clone().acquire_owned().await.unwrap();
+    let held = h
+        .mutation
+        .clone()
+        .acquire_many_owned(crate::transfer_leases::NAMESPACE_WEIGHT)
+        .await
+        .unwrap();
     for id in 1..=33 {
         h.controller
             .enqueue(request(id, std::slice::from_ref(&source), temp.path()))
@@ -460,7 +555,9 @@ async fn queue_is_bounded_and_duplicate_ids_cannot_execute_twice() {
     let rejected = h.terminal(33).await;
     assert_eq!(rejected.state, CopyOperationState::Failed);
     assert!(rejected.message.contains("32"));
-    h.controller.shutdown();
+    for id in 1..=32 {
+        h.controller.cancel(OperationId(id));
+    }
     drop(held);
     let mut terminals = std::collections::HashSet::new();
     while terminals.len() < 32 {
@@ -482,7 +579,12 @@ async fn queued_cancellation_finishes_while_another_mutation_still_holds_the_gat
     fs::write(&source, b"source").unwrap();
     fs::create_dir(&destination).unwrap();
     let mut h = Harness::native();
-    let held = h.mutation.clone().acquire_owned().await.unwrap();
+    let held = h
+        .mutation
+        .clone()
+        .acquire_many_owned(crate::transfer_leases::NAMESPACE_WEIGHT)
+        .await
+        .unwrap();
     h.controller
         .enqueue(request(1, std::slice::from_ref(&source), &destination))
         .await;
@@ -558,6 +660,8 @@ impl Drop for ReleaseOnDrop {
         self.0.store(true, Ordering::Release);
     }
 }
+// Native delegates and fixture state are destroyed synchronously; no retirement queues are hidden.
+impl midnight_core::AuditedSynchronousTransferService for BlockingService {}
 impl TransferService for BlockingService {
     fn prepare_transfer_source(
         &self,
@@ -579,6 +683,38 @@ impl TransferService for BlockingService {
     ) -> Result<Arc<dyn TransferDirectory>, FsError> {
         self.inner.prepare_transfer_destination(path, cancel)
     }
+}
+
+#[tokio::test]
+async fn erased_service_installation_cannot_borrow_an_audited_native_witness() {
+    let temp = fixture();
+    let source = temp.path().join("source");
+    let destination = temp.path().join("destination");
+    fs::write(&source, b"preserved").unwrap();
+    fs::create_dir(&destination).unwrap();
+    let prepared = Arc::new(AtomicUsize::new(0));
+    let service: Arc<dyn TransferService> = Arc::new(BlockingService {
+        inner: midnight_platform::LocalFileSystem::new(None),
+        entered: Arc::new(Notify::new()),
+        released: Arc::new(AtomicBool::new(true)),
+        prepared: prepared.clone(),
+        read_before_block: false,
+    });
+    let mut h = Harness::unqualified(service);
+    h.controller
+        .enqueue(request(1, std::slice::from_ref(&source), &destination))
+        .await;
+    let done = h.terminal(1).await;
+    h.close().await;
+    assert_eq!(done.state, CopyOperationState::Failed);
+    assert!(
+        done.errors
+            .iter()
+            .any(|error| error.kind == io::ErrorKind::Unsupported)
+    );
+    assert_eq!(prepared.load(Ordering::Acquire), 0);
+    assert_eq!(fs::read(source).unwrap(), b"preserved");
+    assert_eq!(fs::read_dir(destination).unwrap().count(), 0);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -613,7 +749,7 @@ async fn cancellation_cannot_start_the_next_copy_before_native_io_returns() {
     h.controller.cancel(OperationId(1));
     tokio::time::sleep(Duration::from_millis(80)).await;
     assert_eq!(h.io.available_permits(), 0);
-    assert_eq!(h.mutation.available_permits(), 0);
+    assert_eq!(h.mutation.available_permits(), 31);
     assert_eq!(prepared.load(Ordering::Acquire), 1);
     assert_eq!(
         h.controller
@@ -635,7 +771,7 @@ async fn cancellation_cannot_start_the_next_copy_before_native_io_returns() {
     assert_eq!(completed.verified_bytes, 16);
     assert_eq!(prepared.load(Ordering::Acquire), 2);
     assert_eq!(h.io.available_permits(), 1);
-    assert_eq!(h.mutation.available_permits(), 1);
+    assert_eq!(h.mutation.available_permits(), 32);
     assert_eq!(fs::read_dir(&destination).unwrap().count(), 1);
     assert_eq!(
         fs::read(destination.join("next-source")).unwrap(),

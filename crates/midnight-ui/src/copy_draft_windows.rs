@@ -53,12 +53,22 @@ pub(super) fn confirm(
     // This synchronous call is the only writer under the Presenter borrow.
     // Route only its newly generated admission notice to the still-open child;
     // an unrelated earlier notice is not consumed or assigned a new identity.
-    let notice = if p.desktop.notice_generation != generation && p.copies.draft.is_some() {
+    let notice = if p.desktop.notice_generation != generation
+        && p.copies
+            .draft
+            .as_ref()
+            .is_some_and(|draft| !draft.retire_requested)
+    {
         p.desktop.notice.take().map(|(_, message)| message)
     } else {
         None
     };
-    if let Some(draft) = p.copies.draft.as_mut().filter(|draft| draft.token == token) {
+    if let Some(draft) = p
+        .copies
+        .draft
+        .as_mut()
+        .filter(|draft| draft.token == token && !draft.retire_requested)
+    {
         if let Some(message) = notice {
             draft.error = message;
         }

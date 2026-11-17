@@ -8,7 +8,7 @@ mod raster_reply;
 mod session;
 pub use session::{ImageSession, Source};
 mod startup;
-pub use startup::PreparedImageWorker;
+pub use startup::{CleanupStatus, PreparedImageWorker, cleanup_status};
 
 #[cfg(windows)]
 #[path = "paths_windows.rs"]

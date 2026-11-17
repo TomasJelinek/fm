@@ -7,7 +7,6 @@ use std::{
     rc::Rc,
     time::Duration,
 };
-use tokio::sync::mpsc;
 
 pub(crate) fn finish_after_image_spare<T>(
     result: Result<crate::startup_recovery::Attempt, String>,
@@ -33,7 +32,7 @@ pub(crate) fn finish_after_image_spare<T>(
 pub(crate) fn install(
     window: &MainWindow,
     presenter: Rc<RefCell<Presenter>>,
-    commands: mpsc::Sender<Command>,
+    commands: Rc<dyn Fn(Command) -> bool>,
     runtime: &tokio::runtime::Handle,
     filesystem: std::sync::Arc<midnight_native_filesystem_host::InstalledProvider>,
     resources: std::sync::Arc<dyn midnight_core::TransferService>,
@@ -55,9 +54,7 @@ pub(crate) fn install(
     viewers.set_preferences_listener(Rc::new(move |change| {
         settings
             .borrow_mut()
-            .save_viewer_preferences(change, &|command| {
-                settings_commands.try_send(command).is_ok()
-            });
+            .save_viewer_preferences(change, settings_commands.as_ref());
     }));
     {
         // Refresh is called with an immutable Presenter borrow. Schedule the
@@ -235,7 +232,7 @@ mod preparation_lifetime_tests {
 fn open(
     window: &MainWindow,
     presenter: &Rc<RefCell<Presenter>>,
-    commands: &mpsc::Sender<Command>,
+    commands: &Rc<dyn Fn(Command) -> bool>,
     manager: &ViewerWindows,
     launch: ViewerLaunch,
     ready: Option<midnight_viewer_ui::OpenReady>,
@@ -260,7 +257,7 @@ fn open(
     let copy = Rc::new(move |text| {
         copy_state
             .borrow_mut()
-            .copy_viewer_text(text, &|command| sender.try_send(command).is_ok())
+            .copy_viewer_text(text, sender.as_ref())
     });
     let placement = WindowPlacement::capture(window.window());
     match ready {
@@ -289,7 +286,7 @@ mod tests;
 fn install_warning_reports(
     window: &MainWindow,
     presenter: &Rc<RefCell<Presenter>>,
-    commands: &mpsc::Sender<Command>,
+    commands: &Rc<dyn Fn(Command) -> bool>,
     viewers: &Rc<ViewerWindows>,
 ) {
     window.on_refresh_warning_viewer(pending_viewers_callback(
@@ -304,7 +301,7 @@ fn install_warning_reports(
 fn install_find_results(
     window: &MainWindow,
     presenter: &Rc<RefCell<Presenter>>,
-    commands: &mpsc::Sender<Command>,
+    commands: &Rc<dyn Fn(Command) -> bool>,
     viewers: &Rc<ViewerWindows>,
 ) {
     window.on_refresh_find_viewer(pending_viewers_callback(
@@ -319,7 +316,7 @@ fn install_find_results(
 fn pending_viewers_callback(
     window: &MainWindow,
     presenter: &Rc<RefCell<Presenter>>,
-    commands: &mpsc::Sender<Command>,
+    commands: &Rc<dyn Fn(Command) -> bool>,
     viewers: &Rc<ViewerWindows>,
     take: fn(&mut Presenter) -> Option<ViewerLaunch>,
 ) -> impl Fn() + use<> {

@@ -9,6 +9,11 @@ use std::{
 
 pub struct Process(Child);
 impl Process {
+    /// Confirm the child was reaped even when shutdown intentionally produces a nonzero
+    /// status. wait() retains its existing success-status result for ordinary callers.
+    pub fn wait_terminated(&mut self) -> io::Result<()> {
+        self.0.wait().map(|_| ())
+    }
     pub fn kill(&mut self) -> io::Result<()> {
         self.0.kill()
     }

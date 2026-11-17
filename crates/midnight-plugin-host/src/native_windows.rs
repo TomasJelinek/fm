@@ -29,6 +29,16 @@ pub(crate) struct Snapshot {
 }
 
 impl Snapshot {
+    /// Compare executable identity under an uninterrupted read-data handle which
+    /// denies write/delete sharing. Only that lease permits ignoring ChangeTime;
+    /// ordinary captured content continues to use strict snapshot equality.
+    pub(crate) fn matches_leased_executable(&self, after: &Self) -> bool {
+        self.volume == after.volume
+            && self.id == after.id
+            && self.length == after.length
+            && self.write == after.write
+    }
+
     pub(crate) fn version_bytes(&self) -> Vec<u8> {
         let mut bytes = b"windows-file-v1".to_vec();
         bytes.extend(self.volume.to_le_bytes());
@@ -102,6 +112,25 @@ pub(crate) fn open_read(path: &Path) -> io::Result<File> {
         ));
     }
     Ok(file)
+}
+
+/// Return the lease handle before any fallible metadata inspection. The caller
+/// must adopt its owner immediately, then verify regular-file and inheritance state.
+pub(crate) fn open_executable_lease(path: &Path) -> io::Result<File> {
+    if path
+        .file_name()
+        .is_none_or(|name| name.encode_wide().any(|unit| unit == u16::from(b':')))
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Trusted executable must name the default file data stream",
+        ));
+    }
+    OpenOptions::new()
+        .read(true)
+        .share_mode(FILE_SHARE_READ)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(paths::literal(path)?)
 }
 
 pub(crate) fn snapshot(file: &File) -> io::Result<Snapshot> {

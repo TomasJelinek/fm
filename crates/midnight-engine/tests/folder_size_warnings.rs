@@ -121,16 +121,15 @@ async fn next(events: &mut mpsc::Receiver<Event>) -> Event {
 async fn cancellation_report(single: bool) {
     let files = Arc::new(Files::default());
     let _release = Release(files.clone());
-    let (commands, input) = mpsc::channel(16);
+
     let (output, mut events) = mpsc::channel(32);
-    let engine = tokio::spawn(
-        Engine::new(
-            Engine::lifetime().expect("engine cleanup worker"),
-            files.clone(),
-            output,
-        )
-        .run(input),
+    let mut command_engine_1 = Engine::new(
+        Engine::lifetime().expect("engine cleanup worker"),
+        files.clone(),
+        output,
     );
+    let (commands, input) = command_engine_1.command_channel(16).unwrap();
+    let engine = tokio::spawn(command_engine_1.run(input));
     commands
         .send(Command::Navigate {
             pane: PaneId::Left,

@@ -87,8 +87,13 @@ fn off_caller(receiver: std::sync::mpsc::Receiver<ThreadId>) {
 #[test]
 fn unpolled_engine_retires_queued_capture_without_tokio() {
     let (notice, retired) = std::sync::mpsc::channel();
-    let (commands, input) = mpsc::channel(2);
     let (events, _receiver) = mpsc::channel(1);
+    let mut engine = Engine::new(
+        Engine::lifetime().expect("engine cleanup worker"),
+        Arc::new(Files(None)),
+        events,
+    );
+    let (commands, input) = engine.command_channel(2).unwrap();
     commands
         .try_send(Command::PrepareCapturedDelete(PrepareCapturedDelete {
             id: OperationId(1),
@@ -99,12 +104,7 @@ fn unpolled_engine_retires_queued_capture_without_tokio() {
             source_directory: PathBuf::from("display-only"),
         }))
         .unwrap();
-    let run = Engine::new(
-        Engine::lifetime().expect("engine cleanup worker"),
-        Arc::new(Files(None)),
-        events,
-    )
-    .run(input);
+    let run = engine.run(input);
     drop(run);
     off_caller(retired);
 }
@@ -142,18 +142,18 @@ fn pending_dispatch() -> (
     };
     let (notice, retired) = std::sync::mpsc::channel();
     let visited = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let (commands, input) = mpsc::channel(2);
+    let (events, receiver) = mpsc::channel(1);
+    events
+        .try_send(Event::PreferencesLoaded(Ok(Default::default())))
+        .unwrap();
+    let mut engine = Engine::new(Engine::lifetime().unwrap(), Arc::new(Files(None)), events);
+    let (commands, input) = engine.command_channel(2).unwrap();
     commands
         .try_send(capture(1, notice.clone(), visited.clone()))
         .unwrap();
     commands
         .try_send(capture(2, notice, visited.clone()))
         .unwrap();
-    let (events, receiver) = mpsc::channel(1);
-    events
-        .try_send(Event::PreferencesLoaded(Ok(Default::default())))
-        .unwrap();
-    let engine = Engine::new(Engine::lifetime().unwrap(), Arc::new(Files(None)), events);
     let mut run = Box::pin(engine.run(input));
     assert!(
         run.as_mut()
@@ -210,12 +210,13 @@ fn stopped_runtime_does_not_control_unpolled_retirement() {
         .unwrap();
     let run = {
         let _entered = runtime.enter();
-        let (commands, input) = mpsc::channel(1);
+        let (events, _receiver) = mpsc::channel(1);
+        let mut engine = Engine::new(Engine::lifetime().unwrap(), Arc::new(Files(None)), events);
+        let (commands, input) = engine.command_channel(1).unwrap();
         commands
             .try_send(capture(1, notice, Arc::default()))
             .unwrap();
-        let (events, _receiver) = mpsc::channel(1);
-        Engine::new(Engine::lifetime().unwrap(), Arc::new(Files(None)), events).run(input)
+        engine.run(input)
     };
     drop(runtime);
     drop(run);
@@ -225,13 +226,13 @@ fn stopped_runtime_does_not_control_unpolled_retirement() {
 #[tokio::test(flavor = "current_thread")]
 async fn normal_shutdown_acknowledges_queued_capture_retirement() {
     let (notice, retired) = std::sync::mpsc::channel();
-    let (commands, input) = mpsc::channel(2);
+    let (events, _receiver) = mpsc::channel(1);
+    let mut engine = Engine::new(Engine::lifetime().unwrap(), Arc::new(Files(None)), events);
+    let (commands, input) = engine.command_channel(2).unwrap();
     commands.try_send(Command::Shutdown).unwrap();
     commands
         .try_send(capture(1, notice, Arc::default()))
         .unwrap();
-    let (events, _receiver) = mpsc::channel(1);
-    let engine = Engine::new(Engine::lifetime().unwrap(), Arc::new(Files(None)), events);
     tokio::time::timeout(Duration::from_secs(3), engine.run(input))
         .await
         .unwrap();
@@ -242,30 +243,52 @@ async fn normal_shutdown_acknowledges_queued_capture_retirement() {
 #[test]
 fn receiver_retirement_keeps_previously_reserved_sends_on_cleanup_worker() {
     use std::future::Future;
-    use std::task::{Context, Waker};
-    let domain = retirement::RetirementDomain::try_start(1, 0).unwrap();
-    let (commands, mut input) = mpsc::channel(1);
-    let permit = commands.clone().try_reserve_owned().unwrap();
+    use std::task::{Context, Poll, Wake, Waker};
+    struct WakeCaller(std::thread::Thread);
+    impl Wake for WakeCaller {
+        fn wake(self: Arc<Self>) {
+            self.0.unpark();
+        }
+    }
+
+    let (events, _receiver) = mpsc::channel(1);
+    let mut engine = Engine::new(Engine::lifetime().unwrap(), Arc::new(Files(None)), events);
+    let (commands, input) = engine.command_channel(1).unwrap();
+    let mut reserve = Box::pin(commands.clone().reserve_owned());
+    let permit = match reserve
+        .as_mut()
+        .poll(&mut Context::from_waker(Waker::noop()))
+    {
+        Poll::Ready(Ok(permit)) => permit,
+        _ => panic!("an empty typed FIFO must reserve its available slot"),
+    };
+    drop(reserve);
     let (notice, retired) = std::sync::mpsc::channel();
-    input.close();
-    let mut ack = Box::pin(
-        domain
-            .try_reserve()
-            .unwrap()
-            .retire(engine_commands::CommandInbox(input)),
-    );
-    assert!(
-        ack.as_mut()
-            .poll(&mut Context::from_waker(Waker::noop()))
-            .is_pending()
-    );
-    assert!(
-        domain.try_reserve().is_err(),
-        "late send still owns reserved capacity"
-    );
-    let sender = permit.send(capture(1, notice, Arc::default()));
+    let run = engine.run(input);
+    drop(run);
+
+    // Observe the real typed inbox closing while an outstanding public permit
+    // still owns its slot. No raw receiver or separately constructed inbox bypass.
+    let waker = Waker::from(Arc::new(WakeCaller(std::thread::current())));
+    let mut closed = Box::pin(commands.closed());
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    while closed
+        .as_mut()
+        .poll(&mut Context::from_waker(&waker))
+        .is_pending()
+    {
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        assert!(
+            !remaining.is_zero(),
+            "retired Engine did not close its typed inbox"
+        );
+        std::thread::park_timeout(remaining);
+    }
+    drop(closed);
+    assert!(commands.is_closed());
+    assert!(retired.try_recv().is_err());
+    permit.try_send(capture(1, notice, Arc::default())).unwrap();
     off_caller(retired);
-    drop(sender);
 }
 
 #[test]
@@ -287,15 +310,14 @@ fn interrupted_tree_shutdown_retires_queued_capture_without_tokio_blocking_capac
     });
     entered.recv_timeout(Duration::from_secs(2)).unwrap();
     let (notice, retired) = std::sync::mpsc::channel();
-    let (commands, input) = mpsc::channel(2);
+    let (events, _receiver) = mpsc::channel(1);
+    let mut engine = Engine::new(Engine::lifetime().unwrap(), Arc::new(Files(None)), events);
+    let (commands, input) = engine.command_channel(2).unwrap();
     commands.try_send(Command::Shutdown).unwrap();
     commands
         .try_send(capture(1, notice, Arc::default()))
         .unwrap();
-    let (events, _receiver) = mpsc::channel(1);
-    let mut run = Box::pin(
-        Engine::new(Engine::lifetime().unwrap(), Arc::new(Files(None)), events).run(input),
-    );
+    let mut run = Box::pin(engine.run(input));
     {
         let _entered = runtime.enter();
         assert!(

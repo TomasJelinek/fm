@@ -1,6 +1,6 @@
 //! Source-free preparation and bounded supervision of one-use restricted transports.
 use crate::Provider;
-use midnight_plugin_host::CapturedFile;
+use midnight_plugin_host::{CapturedFile, TrustedExecutablePin};
 use midnight_worker_platform::{Limits, ResourcePolicy};
 use serde::Deserialize;
 use std::{
@@ -19,13 +19,18 @@ const IMAGE_LIMITS: Limits = Limits {
 };
 const MAX_MANIFEST_BYTES: u64 = 16 * 1024;
 
+#[path = "worker_lifetime.rs"]
+mod lifetime;
+pub use lifetime::{CleanupStatus, cleanup_status};
+pub(crate) use lifetime::{attempt, classified};
+pub(crate) type WorkerOwner<S> = lifetime::Owner<WorkerTransport, ProviderIdentity, S>;
+
 /// One source-free restricted worker that has acknowledged the existing Ready handshake.
 /// Preparation, adoption and Drop run on a backend owner: Drop terminates and reaps the child.
 /// This object retains installed-code identity only; it never owns source content or authority.
 /// It is consumed by `ImageSession::open_prepared` and cannot be reused for another source.
 pub struct PreparedImageWorker {
-    transport: WorkerTransport,
-    identity: ProviderIdentity,
+    owner: WorkerOwner<()>,
 }
 
 impl PreparedImageWorker {
@@ -37,49 +42,70 @@ impl PreparedImageWorker {
         cancel: &AtomicBool,
         timeout: Duration,
     ) -> io::Result<Self> {
-        #[cfg(feature = "startup-diagnostics")]
-        let mut startup =
-            midnight_worker_platform::startup_diagnostics::Trace::new("image_prepare");
-        let start = Instant::now();
-        remaining(cancel, start, timeout)?;
-        let identity = ProviderIdentity::capture(provider)?;
-        #[cfg(feature = "startup-diagnostics")]
-        startup.mark("provider_pinned");
-        remaining(cancel, start, timeout)?;
-        let mut transport = WorkerTransport::spawn(provider)?;
-        #[cfg(feature = "startup-diagnostics")]
-        startup.mark("spawned");
-        let timeout_left = remaining(cancel, start, timeout)?;
-        transport.exchange(cancel, timeout_left, |_, output, stopped| {
-            midnight_worker_sdk::read_ready(output)?;
-            check_cancel(stopped)
-        })?;
-        #[cfg(feature = "startup-diagnostics")]
-        startup.mark("ready");
-        identity.validate_for(provider)?;
-        remaining(cancel, start, timeout)?;
-        #[cfg(feature = "startup-diagnostics")]
-        startup.mark("complete");
-        Ok(Self {
-            transport,
-            identity,
-        })
+        Self::prepare_owned(provider, cancel, timeout, Box::new(()))
+    }
+
+    /// Retain a caller's capacity owner before any possible native launch.
+    pub fn prepare_owned(
+        provider: &Provider,
+        cancel: &AtomicBool,
+        timeout: Duration,
+        owner: Box<dyn Send + 'static>,
+    ) -> io::Result<Self> {
+        let mut owned = WorkerOwner::empty(Some(owner));
+        let result = attempt(|| {
+            #[cfg(feature = "startup-diagnostics")]
+            let mut startup =
+                midnight_worker_platform::startup_diagnostics::Trace::new("image_prepare");
+            let start = Instant::now();
+            remaining(cancel, start, timeout)?;
+            owned.install_identity(ProviderIdentity::capture(provider)?);
+            #[cfg(feature = "startup-diagnostics")]
+            startup.mark("provider_pinned");
+            remaining(cancel, start, timeout)?;
+            owned.start(|| WorkerTransport::spawn(provider))?;
+            #[cfg(feature = "startup-diagnostics")]
+            startup.mark("spawned");
+            let timeout_left = remaining(cancel, start, timeout)?;
+            owned
+                .transport_mut()
+                .exchange(cancel, timeout_left, |_, output, stopped| {
+                    midnight_worker_sdk::read_ready(output)?;
+                    check_cancel(stopped)
+                })?;
+            #[cfg(feature = "startup-diagnostics")]
+            startup.mark("ready");
+            owned.identity().validate_for(provider)?;
+            remaining(cancel, start, timeout)?;
+            #[cfg(feature = "startup-diagnostics")]
+            startup.mark("complete");
+            Ok(())
+        });
+        match result {
+            Ok(()) => Ok(Self { owner: owned }),
+            Err(error) => Err(owned.fail(error)),
+        }
     }
 
     /// Cheap exact descriptor/resource-policy comparison; this does not access the filesystem.
     pub fn catalog_matches(&self, provider: &Provider) -> bool {
-        self.identity.catalog_matches(provider)
+        self.owner.identity().catalog_matches(provider)
     }
 
     /// Revalidate the exact pinned code identity and current package policy before adoption.
     /// This checks no process liveness and does not wait or send any protocol message. A worker
     /// that exited after Ready fails the subsequent Open, which must remain a terminal failure.
     pub fn validate_for(&self, provider: &Provider) -> io::Result<()> {
-        self.identity.validate_for(provider)
+        self.owner.identity().validate_for(provider)
     }
 
-    pub(crate) fn into_parts(self) -> (WorkerTransport, ProviderIdentity) {
-        (self.transport, self.identity)
+    /// Confirm child termination and consuming executable-pin release on a backend worker.
+    pub fn close_checked(mut self) -> io::Result<()> {
+        self.owner.finish()
+    }
+
+    pub(crate) fn into_owner(self) -> WorkerOwner<()> {
+        self.owner
     }
 }
 
@@ -87,7 +113,7 @@ pub(crate) struct ProviderIdentity {
     catalog: Provider,
     policy: ResourcePolicy,
     manifest: CapturedFile,
-    executable: CapturedFile,
+    executable: TrustedExecutablePin,
 }
 
 impl ProviderIdentity {
@@ -114,20 +140,39 @@ impl ProviderIdentity {
         }
         #[cfg(feature = "startup-diagnostics")]
         validation.mark("manifest_matched");
-        let executable = CapturedFile::capture(&provider.executable).map_err(io::Error::other)?;
-        manifest.revalidate().map_err(io::Error::other)?;
-        executable.revalidate().map_err(io::Error::other)?;
-        #[cfg(feature = "startup-diagnostics")]
-        validation.mark("complete");
-        Ok(Self {
+        let executable = attempt(|| {
+            TrustedExecutablePin::capture(provider.package_dir(), &provider.executable)
+                .map_err(io::Error::other)
+        })
+        .map_err(|error| classified(CleanupStatus::PinUnconfirmed, error))?;
+        let mut owned = WorkerOwner::new(Self {
             catalog: provider.clone(),
             policy: IMAGE_LIMITS.into(),
             manifest,
             executable,
-        })
+        });
+        let result = attempt(|| {
+            owned
+                .identity()
+                .manifest
+                .revalidate()
+                .map_err(io::Error::other)?;
+            owned
+                .identity()
+                .executable
+                .revalidate()
+                .map_err(io::Error::other)?;
+            #[cfg(feature = "startup-diagnostics")]
+            validation.mark("complete");
+            Ok(())
+        });
+        match result {
+            Ok(()) => Ok(owned.into_identity()),
+            Err(error) => Err(owned.fail(error)),
+        }
     }
 
-    fn catalog_matches(&self, provider: &Provider) -> bool {
+    pub(crate) fn catalog_matches(&self, provider: &Provider) -> bool {
         let catalog = &self.catalog;
         self.policy == IMAGE_LIMITS.into()
             && catalog.id == provider.id
@@ -158,6 +203,14 @@ impl ProviderIdentity {
         #[cfg(feature = "startup-diagnostics")]
         validation.mark("complete");
         Ok(())
+    }
+}
+
+impl lifetime::Release for ProviderIdentity {
+    fn release_on_worker(self) -> io::Result<()> {
+        self.executable
+            .release_on_worker()
+            .map_err(io::Error::other)
     }
 }
 
@@ -250,6 +303,14 @@ impl WorkerTransport {
     }
 }
 
+impl lifetime::Shutdown for WorkerTransport {
+    fn shutdown(&mut self) -> io::Result<()> {
+        // A kill error can mean the child already exited; the actual wait proves termination.
+        let _ = self.process.kill();
+        self.process.wait_terminated()
+    }
+}
+
 fn supervise<T: Send>(
     cancel: &AtomicBool,
     timeout: Duration,
@@ -285,9 +346,10 @@ fn supervise<T: Send>(
         if result.is_err() {
             terminate();
         }
-        broker
-            .join()
-            .map_err(|_| io::Error::other("Image broker panicked"))?;
+        broker.join().map_err(|payload| {
+            std::mem::forget(payload);
+            io::Error::other("Image broker panicked")
+        })?;
         result
     })
 }

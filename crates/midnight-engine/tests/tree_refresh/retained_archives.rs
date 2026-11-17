@@ -3,16 +3,14 @@ use super::*;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn both_panes_retain_full_archive_registries_and_admit_replacement_roots() {
-    let (commands, receive) = mpsc::channel(16);
     let (send, mut events) = mpsc::channel(32);
-    let engine = tokio::spawn(
-        Engine::new(
-            Engine::lifetime().expect("engine cleanup worker"),
-            Arc::new(Files),
-            send,
-        )
-        .run(receive),
+    let mut command_engine_1 = Engine::new(
+        Engine::lifetime().expect("engine cleanup worker"),
+        Arc::new(Files),
+        send,
     );
+    let (commands, receive) = command_engine_1.command_channel(16).unwrap();
+    let engine = tokio::spawn(command_engine_1.run(receive));
     let mut retained = Vec::new();
     // The existing public behavior is 64 retained mounts in each pane registry.
     // These are independent source identities, not aliases sharing a native guard.

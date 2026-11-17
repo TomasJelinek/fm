@@ -9,6 +9,12 @@ pub(super) struct Pending {
     summary: String,
 }
 
+impl Pending {
+    pub(super) fn is_cancelled(&self) -> bool {
+        self.capture.cancel.is_cancelled()
+    }
+}
+
 impl Presenter {
     pub(super) fn request_tree_transfer(
         &mut self,
@@ -16,6 +22,9 @@ impl Presenter {
         intent: TransferIntent,
         send: &dyn Fn(Command) -> bool,
     ) {
+        if !self.owned_command_scope_available() || self.copies.tree_pending.is_some() {
+            return;
+        }
         let p = &self.panes[pane.index()];
         let Some(capture) = tree_capture::Capture::new(p) else {
             return;
@@ -34,6 +43,20 @@ impl Presenter {
     }
 
     pub(super) fn cancel_tree_transfer(&mut self, pane: Option<PaneId>) {
+        if !self.owned_command_scope_available() {
+            if let Some(pending) =
+                self.copies.tree_pending.as_ref().filter(|pending| {
+                    pane.is_none_or(|pane| pending.capture.view.stamp.pane == pane)
+                })
+            {
+                pending.capture.cancel.cancel();
+            }
+            return;
+        }
+        self.retire_tree_transfer(pane);
+    }
+
+    pub(super) fn retire_tree_transfer(&mut self, pane: Option<PaneId>) {
         if self
             .copies
             .tree_pending
@@ -51,6 +74,9 @@ impl Presenter {
     }
 
     pub(super) fn flush_tree_transfer(&mut self, send: &dyn Fn(Command) -> bool) {
+        if !self.owned_command_scope_available() {
+            return;
+        }
         let Some(mut pending) = self.copies.tree_pending.take() else {
             return;
         };
@@ -172,6 +198,7 @@ impl Presenter {
                         summary: pending.summary.clone(),
                         error: String::new(),
                         intent: pending.intent,
+                        retire_requested: false,
                     });
                 }
                 Err(error) => self.desktop.report(

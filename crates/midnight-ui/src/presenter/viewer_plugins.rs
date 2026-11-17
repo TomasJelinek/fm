@@ -22,6 +22,7 @@ pub(crate) struct ViewerPluginsState {
     pub(crate) filesystem_error: String,
     pub(crate) filesystems_pending: bool,
     pub(crate) filesystem_selected_key: String,
+    pub(crate) archive_selected_key: String,
     pub(crate) thumbnailers: Vec<ThumbnailerPluginInfo>,
     pub(crate) thumbnailer_error: String,
     pub(crate) thumbnailers_pending: bool,
@@ -137,19 +138,51 @@ impl Presenter {
         self.viewer_plugins.revision = self.viewer_plugins.revision.wrapping_add(1);
     }
 
-    pub(crate) fn filesystem_plugin_selected(&self) -> Option<usize> {
+    pub(crate) fn filesystem_plugin_catalog(&self) -> impl Iterator<Item = &FilesystemPluginInfo> {
+        self.viewer_plugins.filesystems.iter().filter(|plugin| {
+            matches!(
+                plugin.kind,
+                Some(FilesystemPluginKind::Native | FilesystemPluginKind::Network)
+            )
+        })
+    }
+
+    pub(crate) fn archive_plugin_catalog(&self) -> impl Iterator<Item = &FilesystemPluginInfo> {
         self.viewer_plugins
             .filesystems
             .iter()
+            .filter(|plugin| plugin.kind == Some(FilesystemPluginKind::Archive))
+    }
+
+    pub(crate) fn filesystem_plugin_selected(&self) -> Option<usize> {
+        self.filesystem_plugin_catalog()
             .position(|plugin| {
                 filesystem_key(plugin) == self.viewer_plugins.filesystem_selected_key
             })
-            .or_else(|| (!self.viewer_plugins.filesystems.is_empty()).then_some(0))
+            .or_else(|| self.filesystem_plugin_catalog().next().map(|_| 0))
+    }
+
+    pub(crate) fn archive_plugin_selected(&self) -> Option<usize> {
+        self.archive_plugin_catalog()
+            .position(|plugin| filesystem_key(plugin) == self.viewer_plugins.archive_selected_key)
+            .or_else(|| self.archive_plugin_catalog().next().map(|_| 0))
     }
 
     pub(crate) fn select_filesystem_plugin(&mut self, index: usize) {
-        if let Some(plugin) = self.viewer_plugins.filesystems.get(index) {
-            self.viewer_plugins.filesystem_selected_key = filesystem_key(plugin);
+        let key = self
+            .filesystem_plugin_catalog()
+            .nth(index)
+            .map(filesystem_key);
+        if let Some(key) = key {
+            self.viewer_plugins.filesystem_selected_key = key;
+            self.viewer_plugins.revision = self.viewer_plugins.revision.wrapping_add(1);
+        }
+    }
+
+    pub(crate) fn select_archive_plugin(&mut self, index: usize) {
+        let key = self.archive_plugin_catalog().nth(index).map(filesystem_key);
+        if let Some(key) = key {
+            self.viewer_plugins.archive_selected_key = key;
             self.viewer_plugins.revision = self.viewer_plugins.revision.wrapping_add(1);
         }
     }

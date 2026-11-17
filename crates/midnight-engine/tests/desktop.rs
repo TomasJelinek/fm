@@ -20,7 +20,6 @@ async fn network_rejections_apply_backpressure_when_event_consumer_stops() {
 }
 
 async fn assert_network_backpressure(available: bool) {
-    let (commands, receiver) = mpsc::channel(2);
     let (sender, mut events) = mpsc::channel(1);
     let services = Arc::new(Services::default());
     let network: Option<Arc<dyn NetworkService>> = if available {
@@ -33,6 +32,7 @@ async fn assert_network_backpressure(available: bool) {
         services,
         sender,
     );
+    let (commands, receiver) = engine.command_channel(2).unwrap();
     if let Some(network) = network {
         engine.configure_network().unwrap().install(network);
     }
@@ -288,13 +288,14 @@ fn navigation() -> Command {
 #[tokio::test]
 async fn empty_terminal_launch_reaches_adapter_but_whitespace_and_nul_do_not() {
     let services = Arc::new(Services::default());
-    let (commands, receiver) = mpsc::channel(8);
+
     let (sender, mut events) = mpsc::channel(32);
     let mut engine = Engine::new(
         Engine::lifetime().expect("engine cleanup worker"),
         services.clone(),
         sender,
     );
+    let (commands, receiver) = engine.command_channel(8).unwrap();
     engine
         .configure_desktop()
         .unwrap()
@@ -350,13 +351,14 @@ async fn empty_terminal_launch_reaches_adapter_but_whitespace_and_nul_do_not() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn desktop_context_and_background_icons_never_launch_commands() {
     let services = Arc::new(Services::default());
-    let (commands, receiver) = mpsc::channel(8);
+
     let (sender, mut events) = mpsc::channel(16);
     let mut engine = Engine::new(
         Engine::lifetime().expect("engine cleanup worker"),
         services.clone(),
         sender,
     );
+    let (commands, receiver) = engine.command_channel(8).unwrap();
     engine
         .configure_desktop()
         .unwrap()
@@ -401,13 +403,14 @@ async fn desktop_context_and_background_icons_never_launch_commands() {
 #[tokio::test]
 async fn desktop_context_publishes_choices_before_loading_each_drive_and_special_icon() {
     let services = Arc::new(Services::default());
-    let (commands, receiver) = mpsc::channel(8);
+
     let (sender, mut events) = mpsc::channel(16);
     let mut engine = Engine::new(
         Engine::lifetime().expect("engine cleanup worker"),
         services.clone(),
         sender,
     );
+    let (commands, receiver) = engine.command_channel(8).unwrap();
     engine
         .configure_desktop()
         .unwrap()
@@ -454,13 +457,14 @@ async fn desktop_context_publishes_choices_before_loading_each_drive_and_special
 async fn modal_properties_do_not_block_navigation_or_explicit_terminal_errors() {
     let services = Arc::new(Services::default());
     let _release = ReleaseProperties(services.clone());
-    let (commands, receiver) = mpsc::channel(8);
+
     let (sender, mut events) = mpsc::channel(32);
     let mut engine = Engine::new(
         Engine::lifetime().expect("engine cleanup worker"),
         services.clone(),
         sender,
     );
+    let (commands, receiver) = engine.command_channel(8).unwrap();
     engine
         .configure_desktop()
         .unwrap()
@@ -530,13 +534,14 @@ async fn modal_properties_do_not_block_navigation_or_explicit_terminal_errors() 
 async fn blocked_default_open_does_not_block_navigation_and_keeps_the_exact_path() {
     let services = Arc::new(Services::default());
     let _release = ReleaseOpen(services.clone());
-    let (commands, receiver) = mpsc::channel(8);
+
     let (sender, mut events) = mpsc::channel(32);
     let mut engine = Engine::new(
         Engine::lifetime().expect("engine cleanup worker"),
         services.clone(),
         sender,
     );
+    let (commands, receiver) = engine.command_channel(8).unwrap();
     engine
         .configure_desktop()
         .unwrap()
@@ -613,13 +618,14 @@ async fn blocked_default_open_does_not_block_navigation_and_keeps_the_exact_path
 #[tokio::test]
 async fn linked_directory_is_internal_and_missing_file_is_a_contextual_error() {
     let services = Arc::new(Services::default());
-    let (commands, receiver) = mpsc::channel(8);
+
     let (sender, mut events) = mpsc::channel(16);
     let mut engine = Engine::new(
         Engine::lifetime().expect("engine cleanup worker"),
         services.clone(),
         sender,
     );
+    let (commands, receiver) = engine.command_channel(8).unwrap();
     engine.configure_desktop().unwrap().install(services);
     let task = tokio::spawn(engine.run(receiver));
     for (id, path) in [(3, "linked-folder"), (4, "missing-open")] {
@@ -670,13 +676,14 @@ async fn linked_directory_is_internal_and_missing_file_is_a_contextual_error() {
 #[tokio::test]
 async fn resolved_directory_target_keeps_the_original_activation_identity() {
     let services = Arc::new(Services::default());
-    let (commands, receiver) = mpsc::channel(8);
+
     let (sender, mut events) = mpsc::channel(16);
     let mut engine = Engine::new(
         Engine::lifetime().expect("engine cleanup worker"),
         services.clone(),
         sender,
     );
+    let (commands, receiver) = engine.command_channel(8).unwrap();
     engine
         .configure_desktop()
         .unwrap()
@@ -728,13 +735,14 @@ async fn resolved_directory_target_keeps_the_original_activation_identity() {
 #[tokio::test]
 async fn desktop_helpers_are_reaped_and_nonzero_status_is_reported() {
     let services = Arc::new(Services::default());
-    let (commands, receiver) = mpsc::channel(8);
+
     let (sender, mut events) = mpsc::channel(16);
     let mut engine = Engine::new(
         Engine::lifetime().expect("engine cleanup worker"),
         services.clone(),
         sender,
     );
+    let (commands, receiver) = engine.command_channel(8).unwrap();
     engine.configure_desktop().unwrap().install(services);
     let task = tokio::spawn(engine.run(receiver));
     for (id, path) in [(1, "helper-success"), (2, "helper-error")] {
@@ -775,13 +783,14 @@ async fn desktop_helpers_are_reaped_and_nonzero_status_is_reported() {
 async fn native_open_capacity_is_bounded_and_rejects_excess_without_dispatch() {
     let services = Arc::new(Services::default());
     let _release = ReleaseOpen(services.clone());
-    let (commands, receiver) = mpsc::channel(16);
+
     let (sender, mut events) = mpsc::channel(32);
     let mut engine = Engine::new(
         Engine::lifetime().expect("engine cleanup worker"),
         services.clone(),
         sender,
     );
+    let (commands, receiver) = engine.command_channel(16).unwrap();
     engine
         .configure_desktop()
         .unwrap()
@@ -846,17 +855,15 @@ async fn native_open_capacity_is_bounded_and_rejects_excess_without_dispatch() {
 
 #[tokio::test]
 async fn plugin_refresh_delivers_all_three_catalog_results_through_a_bounded_channel() {
-    let (commands, receiver) = mpsc::channel(1);
     let (sender, mut events) = mpsc::channel(1);
     let filesystem = Arc::new(midnight_platform::LocalFileSystem::new(None));
-    let task = tokio::spawn(
-        Engine::new(
-            Engine::lifetime().expect("engine cleanup worker"),
-            filesystem,
-            sender,
-        )
-        .run(receiver),
+    let mut command_engine_1 = Engine::new(
+        Engine::lifetime().expect("engine cleanup worker"),
+        filesystem,
+        sender,
     );
+    let (commands, receiver) = command_engine_1.command_channel(1).unwrap();
+    let task = tokio::spawn(command_engine_1.run(receiver));
     commands.send(Command::ListViewerPlugins).await.unwrap();
     tokio::time::timeout(Duration::from_secs(10), async {
         let mut slot = 0;
@@ -972,17 +979,15 @@ async fn rejected_work_cannot_accumulate_unbounded_responses_behind_a_stopped_co
         RejectedWork::Clipboard,
         RejectedWork::SelectionProperties,
     ] {
-        let (commands, receiver) = mpsc::channel(2);
         let (sender, events) = mpsc::channel(1);
         sender.try_send(Event::VolumesUpdated(Vec::new())).unwrap();
-        let engine = tokio::spawn(
-            Engine::new(
-                Engine::lifetime().expect("engine cleanup worker"),
-                Arc::new(Services::default()),
-                sender,
-            )
-            .run(receiver),
+        let mut command_engine_2 = Engine::new(
+            Engine::lifetime().expect("engine cleanup worker"),
+            Arc::new(Services::default()),
+            sender,
         );
+        let (commands, receiver) = command_engine_2.command_channel(2).unwrap();
+        let engine = tokio::spawn(command_engine_2.run(receiver));
         let mut producer = tokio::spawn(async move {
             for id in 1..=2048 {
                 commands.send(case.command(id)).await.unwrap();
@@ -1018,21 +1023,19 @@ async fn closing_full_output_releases_rejected_dispatch_and_allows_shutdown() {
         RejectedWork::Clipboard,
         RejectedWork::SelectionProperties,
     ] {
-        let (commands, receiver) = mpsc::channel(33);
         let (sender, events) = mpsc::channel(1);
         sender.try_send(Event::VolumesUpdated(Vec::new())).unwrap();
+        let mut command_engine = Engine::new(
+            Engine::lifetime().expect("engine cleanup worker"),
+            Arc::new(Services::default()),
+            sender,
+        );
+        let (commands, receiver) = command_engine.command_channel(33).unwrap();
         for id in 1..=32 {
             commands.try_send(case.command(id)).unwrap();
         }
         commands.try_send(Command::Shutdown).unwrap();
-        let mut engine = std::pin::pin!(
-            Engine::new(
-                Engine::lifetime().expect("engine cleanup worker"),
-                Arc::new(Services::default()),
-                sender
-            )
-            .run(receiver)
-        );
+        let mut engine = std::pin::pin!(command_engine.run(receiver));
         // One poll reaches a rejection even for the 16-slot clipboard queue.
         // The full output must block before the queued Shutdown is consumed.
         poll_fn(|context| {
@@ -1040,10 +1043,9 @@ async fn closing_full_output_releases_rejected_dispatch_and_allows_shutdown() {
             std::task::Poll::Ready(())
         })
         .await;
-        assert!(
-            commands.capacity() < 33,
-            "No output backpressure for {case:?}"
-        );
+        // Shutdown closes the public FIFO before worker joins. It must still be
+        // queued behind this rejection, rather than hidden by a later pending join.
+        assert!(!commands.is_closed(), "No output backpressure for {case:?}");
         drop(events);
         tokio::time::timeout(Duration::from_secs(3), engine)
             .await
@@ -1270,13 +1272,13 @@ fn start_system_engine(
     services: Arc<SystemServices>,
     install: bool,
 ) -> (
-    mpsc::Sender<Command>,
+    midnight_engine::CommandSender,
     mpsc::Receiver<Event>,
     tokio::task::JoinHandle<()>,
 ) {
-    let (commands, receiver) = mpsc::channel(16);
     let (sender, events) = mpsc::channel(16);
     let mut engine = Engine::new(Engine::lifetime().unwrap(), services.clone(), sender);
+    let (commands, receiver) = engine.command_channel(16).unwrap();
     if install {
         engine.configure_desktop().unwrap().install(services);
     }

@@ -1,4 +1,6 @@
 //! Actual pointer gestures must keep their original rows and leave clicks unchanged.
+#[path = "support/owned_commands.rs"]
+mod owned_commands;
 #[path = "support/ui.rs"]
 mod ui;
 
@@ -108,7 +110,7 @@ fn installed_drag_feedback_shows_pending_copy_move_rejection_and_escape_cancels(
             true
         }
     });
-    midnight_ui::install(&test.window, state.clone(), send.clone());
+    let begin = owned_commands::install(&test.window, state.clone(), send.clone());
     let navigation = commands
         .borrow()
         .iter()
@@ -160,10 +162,12 @@ fn installed_drag_feedback_shows_pending_copy_move_rejection_and_escape_cancels(
             _ => None,
         })
         .unwrap();
-    state.borrow_mut().apply_with_sender(
-        Event::DragDrop(DragDropEvent::Prepared { id, item_count: 1 }),
-        send.as_ref(),
-    );
+    owned_commands::run(&state, &begin, |state, send| {
+        state.apply_with_sender(
+            Event::DragDrop(DragDropEvent::Prepared { id, item_count: 1 }),
+            send,
+        );
+    });
     test.window.invoke_drag_moved(target.x, target.y);
     assert_eq!(test.window.get_drag_feedback_state(), 2);
     let first = commands
@@ -195,14 +199,16 @@ fn installed_drag_feedback_shows_pending_copy_move_rejection_and_escape_cancels(
                 _ => None,
             })
             .unwrap();
-        state.borrow_mut().apply_with_sender(
-            Event::DragDrop(DragDropEvent::InternalPreview {
-                id,
-                revision: current,
-                intent,
-            }),
-            send.as_ref(),
-        );
+        owned_commands::run(&state, &begin, |state, send| {
+            state.apply_with_sender(
+                Event::DragDrop(DragDropEvent::InternalPreview {
+                    id,
+                    revision: current,
+                    intent,
+                }),
+                send,
+            )
+        });
         test.window.invoke_drag_moved(target.x, target.y);
         test.draw();
         assert_eq!(test.window.get_drag_feedback_state(), expected);
@@ -248,5 +254,5 @@ fn installed_drag_feedback_shows_pending_copy_move_rejection_and_escape_cancels(
     );
     test.window.invoke_drag_host_closed();
     test.window.hide().unwrap();
-    state.borrow_mut().retire_all();
+    owned_commands::run(&state, &begin, |state, _| state.retire_all());
 }

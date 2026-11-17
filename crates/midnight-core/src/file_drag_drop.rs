@@ -72,6 +72,15 @@ pub enum InternalDropIntent {
 /// Provider-retained authority for one ordinary native folder. Resolve and release
 /// final ownership only on backend workers. Navigation revokes an unfinished capture.
 pub trait CapturedDropDirectory: std::fmt::Debug + Send + Sync {
+    /// Consume on a backend worker, acknowledging actual acquired last-owner
+    /// cleanup. Shared references release independently of other tabs. Unknown
+    /// owners remain retained; successful wrapper Drop is not an acknowledgement.
+    fn release_on_worker(self: Arc<Self>) -> Result<(), FsError> {
+        std::mem::forget(self);
+        Err(crate::transfer::unconfirmed_transfer_release(
+            "release captured drop directory",
+        ))
+    }
     fn stamp(&self) -> crate::TreeViewStamp;
     fn row(&self) -> crate::TreeRowId;
     fn resolve(&self, cancel: &Cancellation) -> Result<PathBuf, FsError>;

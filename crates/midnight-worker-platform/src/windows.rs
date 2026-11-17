@@ -25,6 +25,15 @@ pub struct Process {
 }
 
 impl Process {
+    /// Positively wait for termination regardless of the expected forced-shutdown exit
+    /// status. Unlike wait(), a nonzero exit is not an unconfirmed native wait.
+    pub fn wait_terminated(&mut self) -> io::Result<()> {
+        // SAFETY: this owner retains the live process handle throughout the blocking wait.
+        if unsafe { WaitForSingleObject(self.process.as_raw_handle(), INFINITE) } != WAIT_OBJECT_0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
+    }
     pub fn kill(&mut self) -> io::Result<()> {
         // SAFETY: the owned job remains live and contains only this worker.
         check(unsafe { TerminateJobObject(self.job.as_raw_handle(), 1) })

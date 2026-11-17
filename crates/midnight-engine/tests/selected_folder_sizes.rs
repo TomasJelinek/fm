@@ -143,16 +143,15 @@ async fn captured_directories_only_are_read_and_unselected_cached_totals_survive
         selected: AtomicU64::new(7),
         unselected: AtomicU64::new(11),
     });
-    let (commands, receiver) = mpsc::channel(8);
+
     let (sender, mut events) = mpsc::channel(32);
-    let engine = tokio::spawn(
-        Engine::new(
-            Engine::lifetime().expect("engine cleanup worker"),
-            tree.clone(),
-            sender,
-        )
-        .run(receiver),
+    let mut command_engine_1 = Engine::new(
+        Engine::lifetime().expect("engine cleanup worker"),
+        tree.clone(),
+        sender,
     );
+    let (commands, receiver) = command_engine_1.command_channel(8).unwrap();
+    let engine = tokio::spawn(command_engine_1.run(receiver));
     commands
         .send(Command::Navigate {
             pane: PaneId::Left,
@@ -316,16 +315,15 @@ async fn selected_status_reads_cached_totals_and_tracks_global_and_individual_sc
         selected: AtomicU64::new(7),
         unselected: AtomicU64::new(11),
     });
-    let (commands, receiver) = mpsc::channel(8);
+
     let (sender, mut events) = mpsc::channel(32);
-    let engine = tokio::spawn(
-        Engine::new(
-            Engine::lifetime().expect("engine cleanup worker"),
-            tree.clone(),
-            sender,
-        )
-        .run(receiver),
+    let mut command_engine_2 = Engine::new(
+        Engine::lifetime().expect("engine cleanup worker"),
+        tree.clone(),
+        sender,
     );
+    let (commands, receiver) = command_engine_2.command_channel(8).unwrap();
+    let engine = tokio::spawn(command_engine_2.run(receiver));
     commands
         .send(Command::Navigate {
             pane: PaneId::Left,
@@ -419,16 +417,15 @@ async fn reject_native_scan_in_archive(single: bool) {
         selected: AtomicU64::new(7),
         unselected: AtomicU64::new(11),
     });
-    let (commands, receiver) = mpsc::channel(8);
+
     let (sender, mut events) = mpsc::channel(32);
-    let engine = tokio::spawn(
-        Engine::new(
-            Engine::lifetime().expect("engine cleanup worker"),
-            tree.clone(),
-            sender,
-        )
-        .run(receiver),
+    let mut command_engine_3 = Engine::new(
+        Engine::lifetime().expect("engine cleanup worker"),
+        tree.clone(),
+        sender,
     );
+    let (commands, receiver) = command_engine_3.command_channel(8).unwrap();
+    let engine = tokio::spawn(command_engine_3.run(receiver));
     commands
         .send(Command::Navigate {
             pane: PaneId::Left,
@@ -518,16 +515,15 @@ async fn selected_summary_coalesces_root_completions_and_publishes_the_final_val
         selected: AtomicU64::new(7),
         unselected: AtomicU64::new(11),
     });
-    let (commands, receiver) = mpsc::channel(8);
+
     let (sender, mut events) = mpsc::channel(32);
-    let engine = tokio::spawn(
-        Engine::new(
-            Engine::lifetime().expect("engine cleanup worker"),
-            tree,
-            sender,
-        )
-        .run(receiver),
+    let mut command_engine_4 = Engine::new(
+        Engine::lifetime().expect("engine cleanup worker"),
+        tree,
+        sender,
     );
+    let (commands, receiver) = command_engine_4.command_channel(8).unwrap();
+    let engine = tokio::spawn(command_engine_4.run(receiver));
     commands
         .send(Command::Navigate {
             pane: PaneId::Left,

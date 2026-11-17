@@ -18,6 +18,25 @@ pub struct TreeTransferRequest {
 /// Cached accessors do no provider work. Native identity is pinned during preparation;
 /// retaining a draft does not promise an immutable filesystem snapshot.
 pub trait CapturedTransferSources: std::fmt::Debug + Send + Sync {
+    /// A finite host composition promise, independent of native geometry. When
+    /// passed a separately host-audited native service, all returned native
+    /// sources, Move authorities, cleanup tickets and root/alias pins derive from
+    /// that service. Additional retained provider owners use this capability's
+    /// explicit consuming release; archive children use their archive bridge.
+    /// Receiving an audited service alone never qualifies a foreign capture.
+    fn prepares_audited_native_children(&self) -> bool {
+        false
+    }
+    /// Consume this reference on a backend worker. Ok confirms any last-owner
+    /// cleanup acquired by this release; shared tabs/operations need not finish.
+    /// A deferred owner supplies its actual completion bridge. Unknown defaults
+    /// retain ownership and fail rather than treating wrapper Drop as completion.
+    fn release_on_worker(self: Arc<Self>) -> Result<(), FsError> {
+        std::mem::forget(self);
+        Err(crate::transfer::unconfirmed_transfer_release(
+            "release captured transfer sources",
+        ))
+    }
     fn intent(&self) -> TransferIntent;
     fn root_count(&self) -> usize;
     fn metadata_available(&self) -> bool;

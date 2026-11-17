@@ -44,6 +44,30 @@ fn execute(
     hooks: (impl FnOnce(), impl FnOnce()),
     sync: impl FnOnce(&Capture, &destination::Directory, &destination::Directory) -> Result<(), FsError>,
 ) -> Result<TransferNativeMoveOutcome, FsError> {
+    namespace::change(cancel, |mut change| {
+        execute_in(
+            capture,
+            destination,
+            name,
+            replace,
+            cancel,
+            hooks,
+            sync,
+            &mut change,
+        )
+    })
+}
+
+fn execute_in(
+    capture: &Capture,
+    destination: &dyn TransferDirectory,
+    name: &OsStr,
+    replace: Replacement,
+    cancel: &Cancellation,
+    hooks: (impl FnOnce(), impl FnOnce()),
+    sync: impl FnOnce(&Capture, &destination::Directory, &destination::Directory) -> Result<(), FsError>,
+    change: &mut namespace::Change<'_>,
+) -> Result<TransferNativeMoveOutcome, FsError> {
     let (before_capture, before_publish) = hooks;
     let mut retained = capture.native.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(outcome) = retained.as_ref() {
@@ -85,7 +109,18 @@ fn execute(
     capture.revalidate(cancel)?;
     before_capture();
     checked(cancel, &capture.entry.item.path)?;
-    let stage = capture.parent.source_stage(cancel)?;
+    // Collect both original sides before the first private-directory creation.
+    // The reserved private subtree covers capture, publication and restoration
+    // slots for the remainder of this one transaction.
+    capture.namespace.announce(
+        capture.parent.native_file(),
+        capture.parent.path(),
+        &capture.name,
+        change,
+        cancel,
+    )?;
+    target.namespace_announce(name, change, cancel)?;
+    let stage = capture.parent.source_stage_in(cancel, change)?;
     let captured = renameat_with(
         capture.parent.native_file(),
         &capture.name,
@@ -95,7 +130,7 @@ fn execute(
     );
     if let Err(failure) = captured {
         let failure = error(&capture.entry.item.path, failure.into());
-        return match capture.parent.remove_empty_stage(stage) {
+        return match capture.parent.remove_empty_stage_in(stage, change) {
             Ok(()) => Err(failure),
             Err(cleanup) => {
                 let outcome = TransferNativeMoveOutcome::RecoveryRequired {
@@ -108,6 +143,12 @@ fn execute(
             }
         };
     }
+    capture.namespace.changed(
+        capture.parent.native_file(),
+        capture.parent.path(),
+        &capture.name,
+    );
+    stage.namespace_changed(&capture.name);
     // Once captured, neither cancellation nor any error may authorize copy fallback.
     let validated = (|| {
         let actual = stage.inspect(&capture.name, &Cancellation::default())?;
@@ -122,13 +163,13 @@ fn execute(
         checked(cancel, &capture.entry.item.path)
     })();
     if let Err(error) = validated {
-        let outcome = restore(capture, stage, error);
+        let outcome = restore(capture, stage, error, change);
         *retained = Some(outcome.clone());
         return Ok(outcome);
     }
     before_publish();
     if let Err(error) = checked(cancel, &capture.entry.item.path) {
-        let outcome = restore(capture, stage, error);
+        let outcome = restore(capture, stage, error, change);
         *retained = Some(outcome.clone());
         return Ok(outcome);
     }
@@ -148,11 +189,14 @@ fn execute(
             capture,
             stage,
             error(&target.path().join(name), failure.into()),
+            change,
         );
         *retained = Some(outcome.clone());
         return Ok(outcome);
     }
-    let outcome = committed(capture, &target, name, stage, replaced, sync);
+    stage.namespace_changed(&capture.name);
+    target.namespace_changed(name);
+    let outcome = committed(capture, &target, name, stage, replaced, sync, change);
     *retained = Some(outcome.clone());
     Ok(outcome)
 }
@@ -268,6 +312,7 @@ fn restore(
     capture: &Capture,
     stage: destination::Directory,
     mut failure: FsError,
+    change: &mut namespace::Change<'_>,
 ) -> TransferNativeMoveOutcome {
     let recovery = match renameat_with(
         stage.native_file(),
@@ -277,13 +322,19 @@ fn restore(
         RenameFlags::NOREPLACE,
     ) {
         Ok(()) => {
+            capture.namespace.changed(
+                capture.parent.native_file(),
+                capture.parent.path(),
+                &capture.name,
+            );
+            stage.namespace_changed(&capture.name);
             failure
                 .message
                 .push_str("; source name restored without replacement");
             if let Err(sync) = capture.sync_names(&stage) {
                 failure = combined(failure, "restored-name durability", sync);
             }
-            if let Err(cleanup) = capture.parent.remove_empty_stage(stage) {
+            if let Err(cleanup) = capture.parent.remove_empty_stage_in(stage, change) {
                 failure = combined(failure, "empty staging cleanup", cleanup);
             }
             vec![]
@@ -309,6 +360,7 @@ fn committed(
     stage: destination::Directory,
     replaced: Option<(TransferIdentity, destination::recovery::Revision)>,
     sync: impl FnOnce(&Capture, &destination::Directory, &destination::Directory) -> Result<(), FsError>,
+    change: &mut namespace::Change<'_>,
 ) -> TransferNativeMoveOutcome {
     let path = target.path().join(name);
     let cleanup = Cancellation::default();
@@ -364,7 +416,7 @@ fn committed(
     }
     let mut failure = sync(capture, &stage, target).err();
     if replaced.is_none()
-        && let Err(cleanup) = capture.parent.remove_empty_stage(stage)
+        && let Err(cleanup) = capture.parent.remove_empty_stage_in(stage, change)
     {
         failure = Some(match failure {
             Some(error) => combined(error, "empty staging cleanup", cleanup),

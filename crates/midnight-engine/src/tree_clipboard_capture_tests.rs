@@ -217,6 +217,8 @@ fn clipboard_rechecks_provider_context_even_without_a_navigation_cancel() {
     assert!(
         registration
             .registry
+            .as_ref()
+            .expect("live fixture registration owns its provider registry")
             .unregister(&registration.provider, registration.instance)
             .unwrap()
     );

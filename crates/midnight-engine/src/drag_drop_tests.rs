@@ -78,8 +78,21 @@ impl Harness {
     }
 }
 
-#[test]
-fn native_ack_requires_actual_capacity_and_delivery_admission() {
+async fn capacity_returned(capacity: Arc<Semaphore>, expected: u32) {
+    // Sealed reservations release their actual job slots only after worker retirement returns.
+    let returned = tokio::time::timeout(
+        Duration::from_secs(3),
+        capacity.clone().acquire_many_owned(expected),
+    )
+    .await
+    .expect("native drop retirement must return the reserved capacity")
+    .expect("the fixture admission remains open");
+    drop(returned);
+    assert_eq!(capacity.available_permits(), expected as usize);
+}
+
+#[tokio::test]
+async fn native_ack_requires_actual_capacity_and_delivery_admission() {
     let mut h = Harness::new();
     for _ in 0..32 {
         h.sink.try_accept(h.request.clone()).unwrap();
@@ -104,12 +117,12 @@ fn native_ack_requires_actual_capacity_and_delivery_admission() {
     let captured = h.sink.pending.lock().unwrap().remove(&token).unwrap();
     assert_eq!(captured.files.paths, h.request.files.paths);
     drop(captured);
-    assert_eq!(h.sink.capacity.capacity().available_permits(), 1);
+    capacity_returned(h.sink.capacity.capacity(), 1).await;
 
     let h = Harness::new();
     drop(h.events);
     assert!(h.sink.try_accept(h.request).is_err());
-    assert_eq!(h.sink.capacity.capacity().available_permits(), 32);
+    capacity_returned(h.sink.capacity.capacity(), 32).await;
     assert!(h.sink.pending.lock().unwrap().is_empty());
 }
 
@@ -132,34 +145,37 @@ fn stale_regions_navigation_and_retired_hosts_cannot_accept_drop() {
     );
 }
 
-#[test]
-fn shutdown_winning_the_admission_lock_cannot_be_followed_by_native_copy_ack() {
+#[tokio::test]
+async fn shutdown_winning_the_admission_lock_cannot_be_followed_by_native_copy_ack() {
     let fixture = Harness::new();
     let sink = Arc::new(fixture.sink);
     let pending = sink.pending.clone();
-    let locked = pending.lock().unwrap();
-    let worker_sink = sink.clone();
-    let request = fixture.request;
-    let worker = std::thread::spawn(move || worker_sink.try_accept(request));
-    let deadline = std::time::Instant::now() + Duration::from_secs(1);
-    while sink.capacity.capacity().available_permits() == 32 && std::time::Instant::now() < deadline
-    {
-        std::thread::sleep(Duration::from_millis(1));
-    }
-    assert_eq!(
-        sink.capacity.capacity().available_permits(),
-        31,
-        "native callback reached the admission boundary"
-    );
-    sink.cancel.cancel();
-    drop(locked);
-    let result = worker.join().unwrap();
+    let result = {
+        let locked = pending.lock().unwrap();
+        let worker_sink = sink.clone();
+        let request = fixture.request;
+        let worker = std::thread::spawn(move || worker_sink.try_accept(request));
+        let deadline = std::time::Instant::now() + Duration::from_secs(1);
+        while sink.capacity.capacity().available_permits() == 32
+            && std::time::Instant::now() < deadline
+        {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert_eq!(
+            sink.capacity.capacity().available_permits(),
+            31,
+            "native callback reached the admission boundary"
+        );
+        sink.cancel.cancel();
+        drop(locked);
+        worker.join().unwrap()
+    };
     assert!(
         result.is_err(),
         "shutdown must win before native Copy acknowledgement"
     );
     assert!(pending.lock().unwrap().is_empty());
-    assert_eq!(sink.capacity.capacity().available_permits(), 32);
+    capacity_returned(sink.capacity.capacity(), 32).await;
 }
 
 #[test]
@@ -338,6 +354,14 @@ struct OccurrenceSource {
     occurrence: TreeCopyOccurrence,
 }
 impl CapturedClipboardFiles for OccurrenceSource {
+    fn release_on_worker(self: Arc<Self>) -> Result<(), FsError> {
+        // FileClipboard and TreeCopyOccurrence contain only owned metadata;
+        // this fixture has no native or deferred cleanup owner behind the Arc.
+        if let Some(owner) = Arc::into_inner(self) {
+            drop(owner);
+        }
+        Ok(())
+    }
     fn intent(&self) -> FileClipboardIntent {
         FileClipboardIntent::Copy
     }
@@ -469,10 +493,10 @@ async fn accepted_drop(
     let service = Arc::new(midnight_platform::LocalFileSystem::new(None));
     let copies = copy_operations::Controller::new(
         crate::worker_retirement::ActorRetirement::testing(),
-        Some(service.clone()),
+        Some(crate::transfer_composition::QualifiedTransferInstallation::audited(service.clone())),
         outbox.clone(),
         Arc::new(Semaphore::new(1)),
-        Arc::new(Semaphore::new(1)),
+        crate::transfer_leases::IoBudget::new(Arc::new(midnight_work_budget::Gate::new(1))),
         &mut tasks,
     );
     let mut controller = Controller::new(
@@ -707,7 +731,7 @@ async fn shutdown_releases_unclaimed_native_drop_reservations() {
     assert_eq!(fixture.sink.capacity.capacity().available_permits(), 31);
     controller.shutdown();
     while tasks.join_next().await.is_some() {}
-    assert_eq!(fixture.sink.capacity.capacity().available_permits(), 32);
+    capacity_returned(fixture.sink.capacity.capacity(), 32).await;
     assert!(controller.pending.lock().unwrap().is_empty());
 }
 

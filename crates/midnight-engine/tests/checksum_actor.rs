@@ -62,14 +62,18 @@ async fn calculation_retains_backend_results_for_verified_manifest_and_release_r
     let source = temp.path().join("source 文.txt");
     fs::write(&source, b"abc").unwrap();
     let service = Arc::new(LocalFileSystem::new(None));
-    let (send, commands) = mpsc::channel(16);
+
     let (events, mut receive) = mpsc::channel(16);
     let mut engine = Engine::new(
         Engine::lifetime().expect("engine cleanup worker"),
         service.clone(),
         events,
     );
-    engine.configure_transfers().unwrap().install(service);
+    let (send, commands) = engine.command_channel(16).unwrap();
+    engine
+        .configure_audited_transfers()
+        .unwrap()
+        .install(service);
     let engine = tokio::spawn(engine.run(commands));
     send.send(Command::StartChecksums(Box::new(ChecksumRequest::new(
         ChecksumJobId(1),
@@ -114,14 +118,18 @@ async fn cancelled_calculation_and_stale_generation_have_explicit_events() {
     let source = temp.path().join("source");
     fs::write(&source, b"abc").unwrap();
     let service = Arc::new(LocalFileSystem::new(None));
-    let (send, commands) = mpsc::channel(16);
+
     let (events, mut receive) = mpsc::channel(16);
     let mut engine = Engine::new(
         Engine::lifetime().expect("engine cleanup worker"),
         service.clone(),
         events,
     );
-    engine.configure_transfers().unwrap().install(service);
+    let (send, commands) = engine.command_channel(16).unwrap();
+    engine
+        .configure_audited_transfers()
+        .unwrap()
+        .install(service);
     let engine = tokio::spawn(engine.run(commands));
     send.send(Command::StartChecksums(Box::new(ChecksumRequest::new(
         ChecksumJobId(1),
@@ -174,16 +182,15 @@ async fn cancelled_calculation_and_stale_generation_have_explicit_events() {
 async fn unavailable_service_and_monotonic_save_ids_reject_visibly() {
     let temp = native_fixture::fixture();
     let service = Arc::new(LocalFileSystem::new(None));
-    let (send, commands) = mpsc::channel(16);
+
     let (events, mut receive) = mpsc::channel(16);
-    let engine = tokio::spawn(
-        Engine::new(
-            Engine::lifetime().expect("engine cleanup worker"),
-            service,
-            events,
-        )
-        .run(commands),
+    let mut command_engine_1 = Engine::new(
+        Engine::lifetime().expect("engine cleanup worker"),
+        service,
+        events,
     );
+    let (send, commands) = command_engine_1.command_channel(16).unwrap();
+    let engine = tokio::spawn(command_engine_1.run(commands));
     send.send(Command::StartChecksums(Box::new(ChecksumRequest::new(
         ChecksumJobId(1),
         ChecksumGeneration(1),
@@ -219,14 +226,18 @@ async fn captured_manifest_verification_routes_through_the_actor_and_replaces_re
     let manifest = temp.path().join("captured.md5");
     fs::write(&manifest, "900150983cd24fb0d6963f7d28e17f72 *listed\n").unwrap();
     let service = Arc::new(LocalFileSystem::new(None));
-    let (send, commands) = mpsc::channel(16);
+
     let (events, mut receive) = mpsc::channel(16);
     let mut engine = Engine::new(
         Engine::lifetime().expect("engine cleanup worker"),
         service.clone(),
         events,
     );
-    engine.configure_transfers().unwrap().install(service);
+    let (send, commands) = engine.command_channel(16).unwrap();
+    engine
+        .configure_audited_transfers()
+        .unwrap()
+        .install(service);
     let engine = tokio::spawn(engine.run(commands));
     send.send(Command::StartChecksums(Box::new(ChecksumRequest::new(
         ChecksumJobId(1),

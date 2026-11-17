@@ -38,13 +38,14 @@ async fn missing_unicode_descendants_recover_each_parent_and_list_the_first_exis
     let parent = accessible.join("missing");
     let missing = parent.join("child");
     let filesystem = Arc::new(LocalFileSystem::new(None));
-    let (commands, receiver) = mpsc::channel(8);
+
     let (sender, mut events) = mpsc::channel(16);
     let mut engine = Engine::new(
         Engine::lifetime().expect("engine cleanup worker"),
         filesystem.clone(),
         sender,
     );
+    let (commands, receiver) = engine.command_channel(8).unwrap();
     engine
         .configure_navigation_fallback()
         .unwrap()
@@ -165,13 +166,14 @@ async fn cancelled_uncancellable_failure_emits_no_fallback_and_failed_root_stops
         }
     }
     let release = Release(filesystem.clone());
-    let (commands, receiver) = mpsc::channel(8);
+
     let (sender, mut events) = mpsc::channel(16);
     let mut engine = Engine::new(
         Engine::lifetime().expect("engine cleanup worker"),
         filesystem.clone(),
         sender,
     );
+    let (commands, receiver) = engine.command_channel(8).unwrap();
     engine
         .configure_navigation_fallback()
         .unwrap()

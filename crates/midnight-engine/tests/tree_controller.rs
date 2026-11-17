@@ -71,11 +71,11 @@ async fn next_tree(events: &mut mpsc::Receiver<Event>) -> TreeEvent {
         }
     }
 }
-async fn tree(send: &mpsc::Sender<Command>, command: TreeCommand) {
+async fn tree(send: &midnight_engine::CommandSender, command: TreeCommand) {
     send.send(Command::Tree(Box::new(command))).await.unwrap();
 }
 async fn native_root(
-    commands: &mpsc::Sender<Command>,
+    commands: &midnight_engine::CommandSender,
     events: &mut mpsc::Receiver<Event>,
     navigation: u64,
 ) -> TreeRootSnapshot {
@@ -89,7 +89,7 @@ async fn native_root(
 }
 
 async fn native_root_at(
-    commands: &mpsc::Sender<Command>,
+    commands: &midnight_engine::CommandSender,
     events: &mut mpsc::Receiver<Event>,
     navigation: u64,
     path: std::path::PathBuf,
@@ -129,17 +129,16 @@ async fn first_native_level_with_many_visible_children_does_not_exhaust_the_queu
     for i in 0..40 {
         std::fs::create_dir(parent.join(format!("child-{i:02}"))).unwrap();
     }
-    let (commands, receive) = mpsc::channel(16);
+
     let (send, mut events) = mpsc::channel(32);
     let filesystem = midnight_platform::LocalFileSystem::new(None);
-    let engine = tokio::spawn(
-        Engine::new(
-            Engine::lifetime().expect("engine cleanup worker"),
-            Arc::new(filesystem),
-            send,
-        )
-        .run(receive),
+    let mut command_engine_1 = Engine::new(
+        Engine::lifetime().expect("engine cleanup worker"),
+        Arc::new(filesystem),
+        send,
     );
+    let (commands, receive) = command_engine_1.command_channel(16).unwrap();
+    let engine = tokio::spawn(command_engine_1.run(receive));
     let root = native_root_at(&commands, &mut events, 1, directory.path().to_owned()).await;
     let publication = enable(&commands, &mut events, root).await;
     let row = publication.view.rows[0].id;
@@ -188,7 +187,7 @@ async fn first_native_level_with_many_visible_children_does_not_exhaust_the_queu
         .unwrap();
 }
 async fn enable(
-    commands: &mpsc::Sender<Command>,
+    commands: &midnight_engine::CommandSender,
     events: &mut mpsc::Receiver<Event>,
     root: TreeRootSnapshot,
 ) -> TreePublication {
@@ -215,16 +214,15 @@ async fn rejected_refresh_keeps_calculated_sizes_and_frozen_size_order() {
         std::fs::create_dir(&path).unwrap();
         std::fs::write(path.join("leaf"), vec![1; bytes]).unwrap();
     }
-    let (commands, receive) = mpsc::channel(16);
+
     let (send, mut events) = mpsc::channel(64);
-    let engine = tokio::spawn(
-        Engine::new(
-            Engine::lifetime().expect("engine cleanup worker"),
-            Arc::new(midnight_platform::LocalFileSystem::new(None)),
-            send,
-        )
-        .run(receive),
+    let mut command_engine_2 = Engine::new(
+        Engine::lifetime().expect("engine cleanup worker"),
+        Arc::new(midnight_platform::LocalFileSystem::new(None)),
+        send,
     );
+    let (commands, receive) = command_engine_2.command_channel(16).unwrap();
+    let engine = tokio::spawn(command_engine_2.run(receive));
     let root = native_root_at(&commands, &mut events, 1, directory.path().to_owned()).await;
     let publication = enable(&commands, &mut events, root).await;
     tree(&commands, TreeCommand::Commit(publication.view.clone())).await;
@@ -353,16 +351,14 @@ async fn rejected_refresh_keeps_calculated_sizes_and_frozen_size_order() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn foreign_root_is_refused_then_commit_fences_selection_and_native_navigation() {
-    let (commands, receive) = mpsc::channel(16);
     let (send, mut events) = mpsc::channel(32);
-    let engine = tokio::spawn(
-        Engine::new(
-            Engine::lifetime().expect("engine cleanup worker"),
-            Arc::new(Files),
-            send,
-        )
-        .run(receive),
+    let mut command_engine_3 = Engine::new(
+        Engine::lifetime().expect("engine cleanup worker"),
+        Arc::new(Files),
+        send,
     );
+    let (commands, receive) = command_engine_3.command_channel(16).unwrap();
+    let engine = tokio::spawn(command_engine_3.run(receive));
     let root = native_root(&commands, &mut events, 1).await;
     let mut foreign = root.clone();
     foreign.index = Arc::new((*root.index).clone());
@@ -460,16 +456,14 @@ impl ArchiveMount for Archive {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn actual_archive_completion_seeds_tree_and_navigation_retains_registration_after_pane_changes()
  {
-    let (commands, receive) = mpsc::channel(16);
     let (send, mut events) = mpsc::channel(32);
-    let engine = tokio::spawn(
-        Engine::new(
-            Engine::lifetime().expect("engine cleanup worker"),
-            Arc::new(Files),
-            send,
-        )
-        .run(receive),
+    let mut command_engine_4 = Engine::new(
+        Engine::lifetime().expect("engine cleanup worker"),
+        Arc::new(Files),
+        send,
     );
+    let (commands, receive) = command_engine_4.command_channel(16).unwrap();
+    let engine = tokio::spawn(command_engine_4.run(receive));
     let location = ArchiveLocation {
         mount: Some(Arc::new(Archive)),
         directory: 1,
@@ -614,16 +608,15 @@ async fn published(events: &mut mpsc::Receiver<Event>) -> TreePublication {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn blocked_branch_can_be_collapsed_without_a_late_completion_reviving_children() {
     let gate = Arc::new(Gate::default());
-    let (commands, receive) = mpsc::channel(16);
+
     let (send, mut events) = mpsc::channel(32);
-    let engine = tokio::spawn(
-        Engine::new(
-            Engine::lifetime().expect("engine cleanup worker"),
-            Arc::new(BlockingFiles(gate.clone())),
-            send,
-        )
-        .run(receive),
+    let mut command_engine_5 = Engine::new(
+        Engine::lifetime().expect("engine cleanup worker"),
+        Arc::new(BlockingFiles(gate.clone())),
+        send,
     );
+    let (commands, receive) = command_engine_5.command_channel(16).unwrap();
+    let engine = tokio::spawn(command_engine_5.run(receive));
     let root = native_root(&commands, &mut events, 1).await;
     let initial = enable(&commands, &mut events, root).await;
     tree(&commands, TreeCommand::Commit(initial.view.clone())).await;
@@ -688,16 +681,15 @@ async fn blocked_branch_can_be_collapsed_without_a_late_completion_reviving_chil
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn navigation_preserves_branch_budget_until_the_old_provider_actually_returns() {
     let gate = Arc::new(Gate::default());
-    let (commands, receive) = mpsc::channel(16);
+
     let (send, mut events) = mpsc::channel(32);
-    let engine = tokio::spawn(
-        Engine::new(
-            Engine::lifetime().expect("engine cleanup worker"),
-            Arc::new(BlockingFiles(gate.clone())),
-            send,
-        )
-        .run(receive),
+    let mut command_engine_6 = Engine::new(
+        Engine::lifetime().expect("engine cleanup worker"),
+        Arc::new(BlockingFiles(gate.clone())),
+        send,
     );
+    let (commands, receive) = command_engine_6.command_channel(16).unwrap();
+    let engine = tokio::spawn(command_engine_6.run(receive));
     let root = native_root(&commands, &mut events, 1).await;
     let initial = enable(&commands, &mut events, root).await;
     tree(&commands, TreeCommand::Commit(initial.view.clone())).await;
@@ -813,14 +805,14 @@ impl ArchiveMount for GatedArchive {
     }
 }
 async fn archive_root(
-    commands: &mpsc::Sender<Command>,
+    commands: &midnight_engine::CommandSender,
     events: &mut mpsc::Receiver<Event>,
     mount: Arc<dyn ArchiveMount>,
 ) -> TreeRootSnapshot {
     archive_root_at(commands, events, mount, 1).await
 }
 async fn archive_root_at(
-    commands: &mpsc::Sender<Command>,
+    commands: &midnight_engine::CommandSender,
     events: &mut mpsc::Receiver<Event>,
     mount: Arc<dyn ArchiveMount>,
     generation: u64,
@@ -829,7 +821,7 @@ async fn archive_root_at(
 }
 
 async fn archive_root_in_pane_at(
-    commands: &mpsc::Sender<Command>,
+    commands: &midnight_engine::CommandSender,
     events: &mut mpsc::Receiver<Event>,
     mount: Arc<dyn ArchiveMount>,
     pane: PaneId,
@@ -876,16 +868,14 @@ async fn archive_root_in_pane_at(
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn retained_navigation_targets_share_one_pane_mount_budget_across_sessions() {
-    let (commands, receive) = mpsc::channel(16);
     let (send, mut events) = mpsc::channel(32);
-    let engine = tokio::spawn(
-        Engine::new(
-            Engine::lifetime().expect("engine cleanup worker"),
-            Arc::new(Files),
-            send,
-        )
-        .run(receive),
+    let mut command_engine_7 = Engine::new(
+        Engine::lifetime().expect("engine cleanup worker"),
+        Arc::new(Files),
+        send,
     );
+    let (commands, receive) = command_engine_7.command_channel(16).unwrap();
+    let engine = tokio::spawn(command_engine_7.run(receive));
     let mut retained = Vec::new();
     for generation in 1..=64 {
         let root = archive_root_at(&commands, &mut events, Arc::new(Archive), generation).await;
@@ -930,16 +920,14 @@ async fn retained_navigation_targets_share_one_pane_mount_budget_across_sessions
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn oversized_root_payload_is_refused_before_it_enters_the_model_queue() {
-    let (commands, receive) = mpsc::channel(16);
     let (send, mut events) = mpsc::channel(32);
-    let engine = tokio::spawn(
-        Engine::new(
-            Engine::lifetime().expect("engine cleanup worker"),
-            Arc::new(Files),
-            send,
-        )
-        .run(receive),
+    let mut command_engine_8 = Engine::new(
+        Engine::lifetime().expect("engine cleanup worker"),
+        Arc::new(Files),
+        send,
     );
+    let (commands, receive) = command_engine_8.command_channel(16).unwrap();
+    let engine = tokio::spawn(command_engine_8.run(receive));
     let root = native_root(&commands, &mut events, 1).await;
     let mut huge = root.clone();
     let mut entry = root.entries[0].clone();
@@ -1055,17 +1043,16 @@ async fn navigation_cancels_branch_even_while_model_validation_is_blocked() {
         listing: listing.clone(),
         validation: validation.clone(),
     });
-    let (commands, receive) = mpsc::channel(16);
+
     let (send, mut events) = mpsc::channel(32);
     let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let engine = tokio::spawn(
-        Engine::new(
-            Engine::lifetime().expect("engine cleanup worker"),
-            Arc::new(CountingFiles(calls.clone())),
-            send,
-        )
-        .run(receive),
+    let mut command_engine_9 = Engine::new(
+        Engine::lifetime().expect("engine cleanup worker"),
+        Arc::new(CountingFiles(calls.clone())),
+        send,
     );
+    let (commands, receive) = command_engine_9.command_channel(16).unwrap();
+    let engine = tokio::spawn(command_engine_9.run(receive));
     let root = archive_root(&commands, &mut events, mount).await;
     let initial = enable(&commands, &mut events, root).await;
     tree(&commands, TreeCommand::Commit(initial.view.clone())).await;
@@ -1158,17 +1145,16 @@ async fn navigation_cancels_branch_even_while_model_validation_is_blocked() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn foreign_view_is_refused_before_it_can_queue_behind_provider_validation() {
     let gate = Arc::new(ValidationGate::default());
-    let (commands, receive) = mpsc::channel(16);
+
     let (send, mut events) = mpsc::channel(32);
     let background_events = send.clone();
-    let engine = tokio::spawn(
-        Engine::new(
-            Engine::lifetime().expect("engine cleanup worker"),
-            Arc::new(Files),
-            send,
-        )
-        .run(receive),
+    let mut command_engine_10 = Engine::new(
+        Engine::lifetime().expect("engine cleanup worker"),
+        Arc::new(Files),
+        send,
     );
+    let (commands, receive) = command_engine_10.command_channel(16).unwrap();
+    let engine = tokio::spawn(command_engine_10.run(receive));
     let root = archive_root(&commands, &mut events, Arc::new(GatedArchive(gate.clone()))).await;
     let publication = enable(&commands, &mut events, root).await;
     tree(&commands, TreeCommand::Commit(publication.view.clone())).await;
@@ -1227,16 +1213,14 @@ async fn foreign_view_is_refused_before_it_can_queue_behind_provider_validation(
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn oversized_root_index_is_refused_before_queueing() {
-    let (commands, receive) = mpsc::channel(16);
     let (send, mut events) = mpsc::channel(32);
-    let engine = tokio::spawn(
-        Engine::new(
-            Engine::lifetime().expect("engine cleanup worker"),
-            Arc::new(Files),
-            send,
-        )
-        .run(receive),
+    let mut command_engine_11 = Engine::new(
+        Engine::lifetime().expect("engine cleanup worker"),
+        Arc::new(Files),
+        send,
     );
+    let (commands, receive) = command_engine_11.command_channel(16).unwrap();
+    let engine = tokio::spawn(command_engine_11.run(receive));
     let mut root = native_root(&commands, &mut events, 1).await;
     let mut index = (*root.index).clone();
     index.by_path.reserve(100_000);
@@ -1260,16 +1244,14 @@ async fn oversized_root_index_is_refused_before_queueing() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn viewport_probes_only_directories_and_unsupported_file_requests_keep_the_session() {
-    let (commands, receive) = mpsc::channel(16);
     let (send, mut events) = mpsc::channel(32);
-    let engine = tokio::spawn(
-        Engine::new(
-            Engine::lifetime().expect("engine cleanup worker"),
-            Arc::new(Files),
-            send,
-        )
-        .run(receive),
+    let mut command_engine_12 = Engine::new(
+        Engine::lifetime().expect("engine cleanup worker"),
+        Arc::new(Files),
+        send,
     );
+    let (commands, receive) = command_engine_12.command_channel(16).unwrap();
+    let engine = tokio::spawn(command_engine_12.run(receive));
     let root = native_root(&commands, &mut events, 1).await;
     let initial = enable(&commands, &mut events, root).await;
     let rows = TreeViewport::new(
@@ -1357,16 +1339,15 @@ async fn viewport_probes_only_directories_and_unsupported_file_requests_keep_the
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn bounded_queue_rejects_saturation_and_reseeds_selection_before_commit() {
     let gate = Arc::new(ValidationGate::default());
-    let (commands, receive) = mpsc::channel(16);
+
     let (send, mut events) = mpsc::channel(32);
-    let engine = tokio::spawn(
-        Engine::new(
-            Engine::lifetime().expect("engine cleanup worker"),
-            Arc::new(Files),
-            send,
-        )
-        .run(receive),
+    let mut command_engine_13 = Engine::new(
+        Engine::lifetime().expect("engine cleanup worker"),
+        Arc::new(Files),
+        send,
     );
+    let (commands, receive) = command_engine_13.command_channel(16).unwrap();
+    let engine = tokio::spawn(command_engine_13.run(receive));
     let root = archive_root(&commands, &mut events, Arc::new(GatedArchive(gate.clone()))).await;
     gate.enabled
         .store(true, std::sync::atomic::Ordering::SeqCst);
@@ -1420,16 +1401,15 @@ async fn disconnected_engine_releases_blocked_model_resources_after_the_callback
     let gate = Arc::new(ValidationGate::default());
     let mount = Arc::new(GatedArchive(gate.clone()));
     let retained = Arc::downgrade(&mount);
-    let (commands, receive) = mpsc::channel(16);
+
     let (send, mut events) = mpsc::channel(32);
-    let engine = tokio::spawn(
-        Engine::new(
-            Engine::lifetime().expect("engine cleanup worker"),
-            Arc::new(Files),
-            send,
-        )
-        .run(receive),
+    let mut command_engine_14 = Engine::new(
+        Engine::lifetime().expect("engine cleanup worker"),
+        Arc::new(Files),
+        send,
     );
+    let (commands, receive) = command_engine_14.command_channel(16).unwrap();
+    let engine = tokio::spawn(command_engine_14.run(receive));
     let root = archive_root(&commands, &mut events, mount).await;
     gate.enabled
         .store(true, std::sync::atomic::Ordering::SeqCst);
@@ -1466,16 +1446,14 @@ async fn disconnected_engine_releases_blocked_model_resources_after_the_callback
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn enable_reuses_the_actual_completed_root_and_publishes_selection_atomically() {
-    let (commands, receive) = mpsc::channel(16);
     let (send, mut events) = mpsc::channel(32);
-    let engine = tokio::spawn(
-        Engine::new(
-            Engine::lifetime().expect("engine cleanup worker"),
-            Arc::new(Files),
-            send,
-        )
-        .run(receive),
+    let mut command_engine_15 = Engine::new(
+        Engine::lifetime().expect("engine cleanup worker"),
+        Arc::new(Files),
+        send,
     );
+    let (commands, receive) = command_engine_15.command_channel(16).unwrap();
+    let engine = tokio::spawn(command_engine_15.run(receive));
     commands
         .send(Command::Navigate {
             pane: PaneId::Left,

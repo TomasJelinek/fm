@@ -23,6 +23,8 @@ use mailbox::{Generation, Mailbox};
 pub(crate) const CAPTURE_CAPACITY: usize = 4;
 
 pub(crate) struct Services {
+    pub(crate) shared_native: Option<midnight_native_filesystem_host::SharedInstalledProvider>,
+    pub(crate) qualified_locale: Option<crate::transfer_composition::QualifiedLocaleInstallation>,
     pub(crate) rename: crate::tree_rename::Retirement,
     pub(crate) filesystem: Arc<dyn FileSystem>,
     pub(crate) locale: Option<Arc<dyn LocaleService>>,
@@ -56,6 +58,8 @@ impl Controller {
         watch: Option<crate::watch::Handle>,
     ) -> Self {
         let Services {
+            shared_native,
+            qualified_locale,
             filesystem,
             locale,
             reports,
@@ -70,10 +74,17 @@ impl Controller {
         }
         let copy_capacity = Arc::new(Semaphore::new(CAPTURE_CAPACITY));
         let workers = std::array::from_fn(|pane| {
-            let mut native = NativeProvider::new(filesystem.clone());
-            if let Some(locale) = &locale {
-                native = native.with_locale(locale.clone());
-            }
+            let native = if let Some(shared) = &shared_native
+                && (locale.is_none() || qualified_locale.is_some())
+            {
+                NativeProvider::audited(shared.clone(), qualified_locale.clone())
+            } else {
+                let mut native = NativeProvider::new(filesystem.clone());
+                if let Some(locale) = &locale {
+                    native = native.with_locale(locale.clone());
+                }
+                native
+            };
             let mut worker = worker::Worker::new(
                 lanes[pane].clone(),
                 snapshots.clone(),

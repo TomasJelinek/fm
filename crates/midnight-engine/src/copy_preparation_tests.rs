@@ -505,7 +505,7 @@ impl CapturedTransferSources for CapturedMovePaths {
 #[test]
 fn captured_move_retry_retains_original_mutation_pin_after_later_open_fails() {
     let root = std::env::current_dir().unwrap();
-    let input = CopyInput::from(CapturedTransferRequest {
+    let mut input = CopyInput::from(CapturedTransferRequest {
         start_policy: midnight_core::TransferStartPolicy::Immediate,
         verification: midnight_core::TransferVerification::default(),
         id: OperationId(1),
@@ -516,6 +516,7 @@ fn captured_move_retry_retains_original_mutation_pin_after_later_open_fails() {
             root.join("second"),
         ])),
     });
+    input.initialize_captured_intent();
     let status = Arc::new(Mutex::new(super::super::initial(&input)));
     let counts = Arc::new(Counts::default());
     counts.fail_second.store(true, Ordering::SeqCst);
@@ -584,7 +585,7 @@ fn failed_captured_move_preparation_drops_native_authorities_before_provider_lea
     let counts = Arc::new(Counts::default());
     *counts.provider.lock().unwrap() = Some(Arc::downgrade(&provider));
     counts.fail_second.store(true, Ordering::SeqCst);
-    let input = CopyInput::from(CapturedTransferRequest {
+    let mut input = CopyInput::from(CapturedTransferRequest {
         start_policy: midnight_core::TransferStartPolicy::Immediate,
         verification: midnight_core::TransferVerification::default(),
         id: OperationId(1),
@@ -595,6 +596,7 @@ fn failed_captured_move_preparation_drops_native_authorities_before_provider_lea
             _provider: provider,
         }),
     });
+    input.initialize_captured_intent();
     let status = Arc::new(Mutex::new(super::super::initial(&input)));
     let cancel = Cancellation::default();
     let mut preparation = Preparation::new(input, Arc::new(Service(counts.clone())));

@@ -301,7 +301,7 @@ fn watch_scope_keeps_filter_context_ancestors_but_removes_hidden_branches() {
 }
 
 #[test]
-fn blocked_maintenance_allows_explicit_different_branch_expand() {
+fn copy_namespace_share_blocks_maintenance_and_explicit_branch_until_release() {
     let mut fixture = fixture();
     let mutation = fixture.session.budget.mutation.clone();
     let held = mutation.clone().try_acquire_owned().unwrap();
@@ -318,17 +318,35 @@ fn blocked_maintenance_allows_explicit_different_branch_expand() {
         .session
         .branch(&view, request, row, BranchAction::Expand)
         .unwrap();
-    let job = fixture.session.take_work().unwrap();
-    assert!(
-        job.is_some(),
-        "explicit expansion must run while maintenance waits for Copy"
+    assert!(fixture.session.take_work().unwrap().is_none());
+    assert_eq!(
+        mutation.available_permits(),
+        crate::transfer_leases::NAMESPACE_WEIGHT as usize - 1
     );
-    let job = job.unwrap();
-    assert!(!job.maintenance());
-    fixture
-        .session
-        .apply(job.run(), &Cancellation::default())
-        .unwrap();
+    assert!(Arc::ptr_eq(&fixture.session.waiting_on().0, &mutation));
+    assert!(fixture.session.finish_refresh().is_none());
+    drop(held);
+    let mut maintenance = false;
+    let mut explicit = false;
+    // Releasing Copy admits both queued kinds; their relative priority is not
+    // part of namespace exclusion. Both listings require the exclusive gate.
+    for _ in 0..2 {
+        let job = fixture.session.take_work().unwrap().unwrap();
+        maintenance |= job.maintenance();
+        explicit |= !job.maintenance();
+        assert_eq!(mutation.available_permits(), 0);
+        let completion = job.run();
+        assert_eq!(mutation.available_permits(), 0);
+        fixture
+            .session
+            .apply(completion, &Cancellation::default())
+            .unwrap();
+        assert_eq!(
+            mutation.available_permits(),
+            crate::transfer_leases::NAMESPACE_WEIGHT as usize
+        );
+    }
+    assert!(maintenance && explicit);
     assert!(
         fixture
             .session
@@ -337,8 +355,6 @@ fn blocked_maintenance_allows_explicit_different_branch_expand() {
             .iter()
             .any(|row| row.entry.display_name == "child")
     );
-    assert!(fixture.session.finish_refresh().is_none());
-    drop(held);
     assert!(matches!(
         finish(&mut fixture),
         TreeEvent::Refreshed { result: Ok(()), .. }
@@ -570,7 +586,10 @@ fn maintenance_waits_for_mutation_gate_and_retains_it_through_apply() {
     let mut fixture = fixture();
     let selected = select(&mut fixture, "file.txt");
     let gate = fixture.session.budget.mutation.clone();
-    let permit = gate.clone().try_acquire_owned().unwrap();
+    let permit = gate
+        .clone()
+        .try_acquire_many_owned(crate::transfer_leases::NAMESPACE_WEIGHT)
+        .unwrap();
     let original = fixture.graph.rows.lock().unwrap().get(&0).unwrap().clone();
     fixture
         .graph
@@ -582,19 +601,31 @@ fn maintenance_waits_for_mutation_gate_and_retains_it_through_apply() {
         .retain(|row| row.token != token(3));
     refresh(&mut fixture);
     assert!(fixture.session.take_work().unwrap().is_none());
-    assert!(Arc::ptr_eq(&fixture.session.waiting_on(), &gate));
+    assert!(Arc::ptr_eq(&fixture.session.waiting_on().0, &gate));
     assert_eq!(fixture.session.budget.listing.available_permits(), 2);
     fixture.graph.rows.lock().unwrap().insert(0, original);
     drop(permit);
     let job = fixture.session.take_work().unwrap().unwrap();
-    assert!(gate.clone().try_acquire_owned().is_err());
+    assert!(
+        gate.clone()
+            .try_acquire_many_owned(crate::transfer_leases::NAMESPACE_WEIGHT)
+            .is_err()
+    );
     let completion = job.run();
-    assert!(gate.clone().try_acquire_owned().is_err());
+    assert!(
+        gate.clone()
+            .try_acquire_many_owned(crate::transfer_leases::NAMESPACE_WEIGHT)
+            .is_err()
+    );
     fixture
         .session
         .apply(completion, &Cancellation::default())
         .unwrap();
-    assert!(gate.clone().try_acquire_owned().is_ok());
+    assert!(
+        gate.clone()
+            .try_acquire_many_owned(crate::transfer_leases::NAMESPACE_WEIGHT)
+            .is_ok()
+    );
     assert!(fixture.session.selection.snapshot.contains_row(selected));
     assert!(matches!(
         fixture.session.finish_refresh(),
@@ -615,10 +646,10 @@ fn maintenance_holds_no_mutation_gate_while_listing_capacity_is_unavailable() {
             .budget
             .mutation
             .clone()
-            .try_acquire_owned()
+            .try_acquire_many_owned(crate::transfer_leases::NAMESPACE_WEIGHT)
             .is_ok()
     );
-    assert!(Arc::ptr_eq(&fixture.session.waiting_on(), &listing));
+    assert!(Arc::ptr_eq(&fixture.session.waiting_on().0, &listing));
     drop(permits);
     assert!(matches!(
         finish(&mut fixture),
@@ -774,10 +805,13 @@ fn later_mutation_job_blocks_the_next_loaded_branch_step() {
         .apply(root_job.run(), &Cancellation::default())
         .unwrap();
     let gate = fixture.session.budget.mutation.clone();
-    let second_job = gate.clone().try_acquire_owned().unwrap();
+    let second_job = gate
+        .clone()
+        .try_acquire_many_owned(crate::transfer_leases::NAMESPACE_WEIGHT)
+        .unwrap();
     fixture.graph.rows.lock().unwrap().insert(1, vec![]);
     assert!(fixture.session.take_work().unwrap().is_none());
-    assert!(Arc::ptr_eq(&fixture.session.waiting_on(), &gate));
+    assert!(Arc::ptr_eq(&fixture.session.waiting_on().0, &gate));
     fixture
         .graph
         .rows
@@ -812,7 +846,7 @@ fn retired_maintenance_completion_cannot_modify_a_replacement_session() {
     );
     assert!(Arc::ptr_eq(current.session.projection(), &before));
     assert!(current.session.finish_refresh().is_none());
-    assert_eq!(budget.mutation.available_permits(), 1);
+    assert_eq!(budget.mutation.available_permits(), 32);
 }
 
 #[test]

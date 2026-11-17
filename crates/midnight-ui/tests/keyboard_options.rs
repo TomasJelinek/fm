@@ -1,6 +1,8 @@
 #[allow(dead_code)]
 #[path = "support/modeless.rs"]
 mod modeless;
+#[path = "support/owned_commands.rs"]
+mod owned_commands;
 #[path = "support/ui.rs"]
 mod ui;
 
@@ -10,7 +12,7 @@ use i_slint_core::{
     window::{WindowInner, WindowKind},
 };
 use midnight_core::*;
-use midnight_ui::{KeyboardEditorView, Presenter, install, refresh};
+use midnight_ui::{KeyboardEditorView, Presenter, refresh};
 use slint::{
     ComponentHandle, Model,
     platform::{Key, WindowAdapter, WindowEvent, software_renderer::MinimalSoftwareWindow},
@@ -783,7 +785,7 @@ impl Harness {
         )));
         let commands = Rc::new(RefCell::new(Vec::new()));
         let sent = commands.clone();
-        install(
+        let begin = owned_commands::install(
             &ui.window,
             presenter.clone(),
             Rc::new(move |command| {
@@ -827,13 +829,9 @@ impl Harness {
             ..Default::default()
         };
         values.validate().unwrap();
-        presenter.borrow_mut().apply_with_sender(
-            Event::PreferencesLoaded(Ok(values.into())),
-            &|command| {
-                commands.borrow_mut().push(command);
-                true
-            },
-        );
+        owned_commands::run(&presenter, &begin, |p, send| {
+            p.apply_with_sender(Event::PreferencesLoaded(Ok(values.into())), send);
+        });
         let mut h = Self {
             ui,
             presenter,

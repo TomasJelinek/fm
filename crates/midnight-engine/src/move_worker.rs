@@ -2,6 +2,9 @@
 use super::*;
 use midnight_platform_common::transfer::{FileProofPhase, VerifiedFileProof};
 use std::collections::HashMap;
+#[cfg(test)]
+#[path = "copy_finish_seal_tests.rs"]
+mod finish_seal_tests;
 #[path = "move_retry.rs"]
 mod retry;
 #[cfg(test)]
@@ -108,7 +111,7 @@ pub(super) fn prepare_with_metadata(
     metadata: TransferMetadataPolicy,
 ) -> Result<Job, FsError> {
     check_bounds(&request)?;
-    let _permit = permit(&cancel, &request.destination)?;
+    let permit = permit(&cancel, &request.destination)?;
     let mut prepared_roots = VecDeque::new();
     for path in &request.clipboard.paths {
         let prepared = service.prepare_move_source(path, &cancel)?;
@@ -121,16 +124,17 @@ pub(super) fn prepare_with_metadata(
         }
         prepared_roots.push_back(prepared);
     }
-    let mut job = prepare_sources_inner(
+    let mut job = ownership::Armed::new(prepare_sources_inner(
         request.destination,
         prepared_roots,
         service,
         cancel,
         status,
         metadata,
-    )?;
+    )?);
     job.set_verification(request.verification);
-    Ok(job)
+    drop(permit);
+    Ok(job.into_inner())
 }
 
 pub(super) fn prepare_sources(
@@ -141,15 +145,17 @@ pub(super) fn prepare_sources(
     status: Status,
     metadata: TransferMetadataPolicy,
 ) -> Result<Job, FsError> {
-    let _permit = permit(&cancel, &destination_path)?;
-    prepare_sources_inner(
+    let permit = permit(&cancel, &destination_path)?;
+    let job = ownership::Armed::new(prepare_sources_inner(
         destination_path,
         prepared_roots,
         service,
         cancel,
         status,
         metadata,
-    )
+    )?);
+    drop(permit);
+    Ok(job.into_inner())
 }
 fn prepare_sources_inner(
     destination_path: std::path::PathBuf,
@@ -241,7 +247,7 @@ fn prepare_sources_inner(
             }
         }
     }
-    let mut job = Job::from_sources(destination, roots, cancel, status);
+    let mut job = ownership::Armed::new(Job::from_sources(destination, roots, cancel, status));
     job.progress.intent = TransferIntent::Move;
     job.move_work = Some(MoveWork {
         captures,
@@ -258,7 +264,7 @@ fn prepare_sources_inner(
         retryable_failure: false,
         refresh_parents,
     });
-    Ok(job)
+    Ok(job.into_inner())
 }
 
 impl MoveWork {
@@ -655,11 +661,23 @@ impl MoveWork {
             .values_mut()
             .filter_map(|stage| stage.cleanup().err())
             .collect();
-        self.stages.clear();
-        self.proofs.clear();
-        self.finalizer = None;
-        let mut tickets = Vec::new();
-        for capture in self.captures.drain(..) {
+        // Armed drains never destroy their remaining native elements while an
+        // earlier cleanup or destructor is unwinding toward the Copy boundary.
+        let mut stages = ownership::Armed::new(self.stages.drain());
+        for (_, stage) in stages.by_ref() {
+            drop(stage);
+        }
+        drop(stages.into_inner());
+        let mut proofs = ownership::Armed::new(self.proofs.drain(..));
+        for proof in proofs.by_ref() {
+            drop(proof);
+        }
+        drop(proofs.into_inner());
+        drop(self.finalizer.take());
+        let mut tickets = ownership::Armed::new(VecDeque::new());
+        let mut captures = ownership::Armed::new(self.captures.drain(..));
+        for capture in captures.by_ref() {
+            let capture = ownership::Armed::new(capture);
             let source = capture.entry().item.path.clone();
             let restored = match capture.restore() {
                 Ok(()) => true,
@@ -670,7 +688,7 @@ impl MoveWork {
             };
             if restored {
                 if let Some(cleanup) = capture.take_stage_cleanup() {
-                    tickets.push((source, cleanup));
+                    tickets.push_back((source, cleanup));
                 }
             } else if let Some((path, retained)) = &self.active
                 && *path == source
@@ -683,10 +701,13 @@ impl MoveWork {
                 );
             }
             // Drops the capture's exact source handle before cleanup tickets run.
+            drop(capture.into_inner());
         }
-        for (source, cleanup) in tickets {
+        drop(captures.into_inner());
+        while let Some((source, cleanup)) = tickets.pop_front() {
+            let cleanup = ownership::Armed::new(cleanup);
             let path = cleanup.path().to_owned();
-            if let Err(error) = cleanup.cleanup() {
+            if let Err(error) = cleanup.into_inner().cleanup() {
                 record_source(
                     job,
                     source,
@@ -699,6 +720,7 @@ impl MoveWork {
                 errors.push(error);
             }
         }
+        drop(tickets.into_inner());
         self.active = None;
         errors
     }
@@ -721,18 +743,16 @@ fn record_source(
 pub(super) fn permit(
     cancel: &Cancellation,
     path: &Path,
-) -> Result<midnight_work_budget::Permit, FsError> {
-    midnight_work_budget::shared_io()
-        .acquire(midnight_work_budget::Admission::Exclusive, || {
-            cancel.is_cancelled()
-        })
-        .ok_or_else(|| {
+) -> Result<midnight_platform_common::transfer_io::CallPermit, FsError> {
+    midnight_platform_common::transfer_io::acquire_transfer_exclusive_call(cancel, path).map_err(
+        |_| {
             error(
                 path,
                 io::ErrorKind::Interrupted,
                 "Move cancelled; unfinished sources will be restored without replacement.",
             )
-        })
+        },
+    )
 }
 fn unsupported(path: &Path, message: &str) -> FsError {
     error(path, io::ErrorKind::Unsupported, message)

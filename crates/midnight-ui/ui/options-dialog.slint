@@ -212,7 +212,10 @@ export component OptionsBody inherits Rectangle {
               // rightmost actions out of their pointer/input region.
               padding-right: FluentScrollMetrics.overlay-size;
               padding-bottom: root.topic-index == 9 || root.topic-index == 4 || root.topic-index == 7 || root.topic-index == 8 ? Theme.control-height + FluentScrollMetrics.overlay-size : 0px;
-              if root.topic-index == 5 : PluginOptions { available-height: content.visible-height; }
+              if root.topic-index == 5 : PluginOptions {
+                available-height: content.visible-height;
+                open-archive-associations => { root.topic-index = 7; }
+              }
               if root.topic-index == 8 : ColorOptions {
                 // Responsive columns must not depend on their own layout's minimum width.
                 available-width: max(0px, root.width - (root.compact ? 12px : 36px) - FluentScrollMetrics.overlay-size

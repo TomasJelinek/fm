@@ -225,7 +225,13 @@ impl midnight_core::GeneratedTextSource for Tracked {
 
 #[tokio::test(flavor = "current_thread")]
 async fn engine_shutdown_retires_unprocessed_clipboard_sources_off_dispatcher() {
-    let (sender, mut receiver) = mpsc::channel(2);
+    let (events, _events) = mpsc::channel(1);
+    let mut engine = crate::Engine::new(
+        crate::Engine::lifetime().unwrap(),
+        Arc::new(midnight_platform::LocalFileSystem::new(None)),
+        events,
+    );
+    let (sender, receiver) = engine.command_channel(2).unwrap();
     let source = source(FileClipboardIntent::Copy);
     let observed = source.dropped.clone();
     sender
@@ -235,18 +241,41 @@ async fn engine_shutdown_retires_unprocessed_clipboard_sources_off_dispatcher() 
             cancel: Cancellation::default(),
         })
         .unwrap();
-    receiver.close();
-    let domain = crate::retirement::RetirementDomain::try_start(1, 0).unwrap();
-    crate::retire_commands(
-        domain
-            .try_reserve()
-            .unwrap()
-            .own(crate::engine_commands::CommandInbox(receiver)),
-    )
+    let permit = sender.clone().reserve_owned().await.unwrap();
+    let late = self::source(FileClipboardIntent::Copy);
+    let late_observed = late.dropped.clone();
+    // The public unpolled lifetime must own the inbox before its first poll.
+    // A permit reserved before close may still publish into its retiring inbox.
+    drop(engine.run(receiver));
+    let closed = tokio::time::timeout(Duration::from_secs(8), sender.closed()).await;
+    let late_sent = permit.try_send(midnight_core::Command::CopyCapturedFiles {
+        request: DesktopRequestId(34),
+        source: late,
+        cancel: Cancellation::default(),
+    });
+    let accepted_late = late_sent.is_ok();
+    if let Err(error) = late_sent {
+        tokio::task::spawn_blocking(move || drop(error.into_inner()))
+            .await
+            .unwrap();
+    }
+    let retired = tokio::time::timeout(Duration::from_secs(8), async {
+        while observed.lock().unwrap().is_none() || late_observed.lock().unwrap().is_none() {
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+    })
     .await;
+    assert!(closed.is_ok() && accepted_late && retired.is_ok());
     assert!(sender.is_closed());
     assert_ne!(
         observed.lock().unwrap().expect("queued source retired"),
+        std::thread::current().id()
+    );
+    assert_ne!(
+        late_observed
+            .lock()
+            .unwrap()
+            .expect("late reserved source retired"),
         std::thread::current().id()
     );
 }

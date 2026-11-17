@@ -1,11 +1,16 @@
 //! Controlled providers with the production Engine and installed presenter callbacks.
 // Each integration crate exercises a different subset of this shared fixture.
 #![allow(dead_code)]
+#[path = "../../../midnight-explorer/src/command_reclaim.rs"]
+mod command_reclaim;
 #[path = "modeless.rs"]
 pub(super) mod modeless;
 use midnight_core::*;
-use midnight_engine::Engine;
-use midnight_ui::{OperationPresentation, Presenter, install, refresh};
+use midnight_engine::{Engine, reclaim};
+use midnight_ui::{
+    BeginOwned, DeferredDrop, OperationPresentation, OwnedCommandScope, Presenter,
+    install_with_owned, refresh, with_owned_commands,
+};
 use slint::{
     ComponentHandle, Model,
     platform::{WindowAdapter, WindowEvent, software_renderer::MinimalSoftwareWindow},
@@ -159,6 +164,14 @@ impl std::fmt::Debug for Archive {
     }
 }
 impl ArchiveMount for Archive {
+    fn release_on_worker(self: Arc<Self>) -> Result<(), FsError> {
+        // This fixture owns only Calls' counters, strings and finite host
+        // collections. It has no native, provider or asynchronous cleanup tail.
+        if let Some(owner) = Arc::into_inner(self) {
+            drop(owner);
+        }
+        Ok(())
+    }
     fn id(&self) -> u64 {
         77
     }
@@ -236,6 +249,65 @@ impl ArchiveMount for Archive {
     }
 }
 
+struct Routing {
+    calls: Arc<Calls>,
+    requests: Rc<RefCell<Vec<TreeReprojectRequest>>>,
+    rejected: Rc<RefCell<bool>>,
+}
+
+impl Routing {
+    fn prepare(&self, command: &mut Command) -> bool {
+        if matches!(
+            &*command,
+            Command::Navigate { .. } | Command::ArchiveNavigate { .. }
+        ) || matches!(&*command, Command::Tree(tree) if matches!(tree.as_ref(), TreeCommand::Navigate { .. }))
+        {
+            self.calls.navigations.fetch_add(1, Ordering::SeqCst);
+        }
+        // Supply a controlled provider mount for this fixture's typed saved
+        // address. Presenter navigation, Engine listing and tree workers run normally.
+        if let Command::ArchiveNavigate {
+            action: ArchiveAction::List(location),
+            ..
+        } = command
+            && location.address.provider == "test.archive"
+            && location.mount.is_none()
+        {
+            location.mount = Some(Arc::new(Archive(self.calls.clone())));
+            location.directory = 1;
+            location.trail = vec![(1, "fixture.zip".into())];
+        }
+        if let Command::Tree(tree) = &*command
+            && let TreeCommand::Reproject(request) = tree.as_ref()
+        {
+            if *self.rejected.borrow() {
+                return false;
+            }
+            self.requests.borrow_mut().push(request.clone());
+        }
+        true
+    }
+}
+
+struct ObservedScope {
+    inner: Box<dyn OwnedCommandScope>,
+    routing: Rc<Routing>,
+}
+
+impl OwnedCommandScope for ObservedScope {
+    fn send(&self, mut command: Command) -> bool {
+        if !self.routing.prepare(&mut command) {
+            self.inner.retire(Box::new(command));
+            return false;
+        }
+        self.inner.send(command)
+    }
+
+    fn retire(&self, value: DeferredDrop) {
+        self.inner.retire(value);
+    }
+}
+
 pub struct Harness {
     pub ui: super::ui::TestUi,
     windows: Rc<RefCell<Vec<Rc<MinimalSoftwareWindow>>>>,
@@ -255,7 +327,10 @@ pub struct Harness {
     runtime: Runtime,
     events: mpsc::Receiver<Event>,
     engine: Option<JoinHandle<()>>,
-    commands: mpsc::Sender<Command>,
+    commands: midnight_engine::CommandSender,
+    begin_owned: BeginOwned,
+    command_reclaim: command_reclaim::CommandReclaim,
+    retire_queue: mpsc::Sender<reclaim::Retired>,
     watching: bool,
     committed: [Option<NavigationId>; 2],
 }
@@ -266,6 +341,19 @@ struct NativeServices {
     watch: Option<Arc<dyn WatchService>>,
     clipboard: Option<Arc<dyn ClipboardService>>,
     commands: Option<(Arc<dyn UserCommandService>, Vec<UserCommand>)>,
+}
+
+type InstallTransfer = Box<dyn FnOnce(&mut Engine)>;
+
+fn audited_transfer<T: AuditedSynchronousTransferService + 'static>(
+    transfer: Arc<T>,
+) -> InstallTransfer {
+    Box::new(move |engine| {
+        engine
+            .configure_audited_transfers()
+            .unwrap()
+            .install(transfer);
+    })
 }
 
 impl Harness {
@@ -291,31 +379,35 @@ impl Harness {
         h
     }
 
-    pub fn with_transfer(pane: PaneId, archive: bool, transfer: Arc<dyn TransferService>) -> Self {
+    pub fn with_transfer<T: AuditedSynchronousTransferService + 'static>(
+        pane: PaneId,
+        archive: bool,
+        transfer: Arc<T>,
+    ) -> Self {
         let h = Self::with_fixture(
             pane,
             archive,
             &["large", "small", "empty"],
             true,
-            Some(transfer),
+            Some(audited_transfer(transfer)),
             None,
         );
         h.calls.frozen.store(false, Ordering::SeqCst);
         h
     }
 
-    pub fn with_native_transfer(
+    pub fn with_native_transfer<T: AuditedSynchronousTransferService + 'static>(
         pane: PaneId,
         path: PathBuf,
         directory: Arc<dyn FileSystem>,
-        transfer: Arc<dyn TransferService>,
+        transfer: Arc<T>,
     ) -> Self {
         Self::with_fixture(
             pane,
             false,
             &["large", "small", "empty"],
             true,
-            Some(transfer),
+            Some(audited_transfer(transfer)),
             Some(NativeServices {
                 path,
                 directory,
@@ -326,11 +418,11 @@ impl Harness {
         )
     }
 
-    pub fn with_native_watch_transfer(
+    pub fn with_native_watch_transfer<T: AuditedSynchronousTransferService + 'static>(
         pane: PaneId,
         path: PathBuf,
         directory: Arc<dyn FileSystem>,
-        transfer: Arc<dyn TransferService>,
+        transfer: Arc<T>,
         watch: Arc<dyn WatchService>,
     ) -> Self {
         Self::with_fixture(
@@ -338,7 +430,7 @@ impl Harness {
             false,
             &["large", "small", "empty"],
             true,
-            Some(transfer),
+            Some(audited_transfer(transfer)),
             Some(NativeServices {
                 path,
                 directory,
@@ -349,11 +441,11 @@ impl Harness {
         )
     }
 
-    pub fn with_native_clipboard_transfer(
+    pub fn with_native_clipboard_transfer<T: AuditedSynchronousTransferService + 'static>(
         pane: PaneId,
         path: PathBuf,
         directory: Arc<dyn FileSystem>,
-        transfer: Arc<dyn TransferService>,
+        transfer: Arc<T>,
         watch: Arc<dyn WatchService>,
         clipboard: Arc<dyn ClipboardService>,
     ) -> Self {
@@ -362,7 +454,7 @@ impl Harness {
             false,
             &["large", "small", "empty"],
             true,
-            Some(transfer),
+            Some(audited_transfer(transfer)),
             Some(NativeServices {
                 path,
                 directory,
@@ -385,7 +477,7 @@ impl Harness {
             false,
             &["large", "small", "empty"],
             true,
-            Some(native.clone()),
+            Some(audited_transfer(native.clone())),
             Some(NativeServices {
                 path,
                 directory: native,
@@ -401,7 +493,7 @@ impl Harness {
         archive: bool,
         children: &[&str],
         size_fixture: bool,
-        transfer: Option<Arc<dyn TransferService>>,
+        transfer: Option<InstallTransfer>,
         native: Option<NativeServices>,
     ) -> Self {
         let windows = Rc::new(RefCell::new(Vec::new()));
@@ -447,7 +539,7 @@ impl Harness {
             .enable_all()
             .build()
             .unwrap();
-        let (commands, receive) = mpsc::channel(64);
+
         let (events_send, events) = mpsc::channel(64);
         let copying = transfer.is_some();
         let mut engine = Engine::new(
@@ -459,8 +551,8 @@ impl Harness {
             .configure_settings()
             .unwrap()
             .install(Arc::new(Settings(calls.clone())));
-        if let Some(transfer) = transfer {
-            engine.configure_transfers().unwrap().install(transfer);
+        if let Some(install_transfer) = transfer {
+            install_transfer(&mut engine);
         }
         if let Some(watch) = watch {
             engine.configure_watch().unwrap().install(watch);
@@ -474,46 +566,42 @@ impl Harness {
         } else {
             Vec::new()
         };
+        let (commands, receive) = engine.command_channel(64).unwrap();
+        let retire_queue = reclaim::start(runtime.handle(), Arc::new(|| {}));
+        let command_reclaim = command_reclaim::CommandReclaim::new(retire_queue.clone());
         let engine = runtime.spawn(engine.run(receive));
         let presenter = Rc::new(RefCell::new(Presenter::new(path.clone(), path.clone())));
         let requests = Rc::new(RefCell::new(Vec::new()));
         let reject_reproject = Rc::new(RefCell::new(false));
-        let sent_requests = requests.clone();
-        let rejected = reject_reproject.clone();
-        let channel = commands.clone();
-        let archive_calls = calls.clone();
-        let send: Rc<dyn Fn(Command) -> bool> = Rc::new(move |mut command| {
-            if matches!(
-                &command,
-                Command::Navigate { .. } | Command::ArchiveNavigate { .. }
-            ) || matches!(&command, Command::Tree(tree) if matches!(tree.as_ref(), TreeCommand::Navigate { .. }))
-            {
-                archive_calls.navigations.fetch_add(1, Ordering::SeqCst);
-            }
-            // Supply a controlled provider mount for this fixture's typed saved
-            // address. Presenter navigation, Engine listing and tree workers run normally.
-            if let Command::ArchiveNavigate {
-                action: ArchiveAction::List(location),
-                ..
-            } = &mut command
-                && location.address.provider == "test.archive"
-                && location.mount.is_none()
-            {
-                location.mount = Some(Arc::new(Archive(archive_calls.clone())));
-                location.directory = 1;
-                location.trail = vec![(1, "fixture.zip".into())];
-            }
-            if let Command::Tree(tree) = &command
-                && let TreeCommand::Reproject(request) = tree.as_ref()
-            {
-                if *rejected.borrow() {
-                    return false;
-                }
-                sent_requests.borrow_mut().push(request.clone());
-            }
-            channel.try_send(command).is_ok()
+        let routing = Rc::new(Routing {
+            calls: calls.clone(),
+            requests: requests.clone(),
+            rejected: reject_reproject.clone(),
         });
-        install(&ui.window, presenter.clone(), send.clone());
+        let begin = command_reclaim.factory(commands.clone());
+        let observed_routing = routing.clone();
+        let begin_owned: BeginOwned = Rc::new(move || {
+            Some(Box::new(ObservedScope {
+                inner: begin()?,
+                routing: observed_routing.clone(),
+            }))
+        });
+        let channel = commands.clone();
+        let begin_controls = begin_owned.clone();
+        // This fallback is for provider-free controls. Installed ownership-bearing
+        // actions use begin_owned and the same real typed sender.
+        let send: Rc<dyn Fn(Command) -> bool> = Rc::new(move |mut command| {
+            if let Some(scope) = begin_controls() {
+                return scope.send(command);
+            }
+            routing.prepare(&mut command) && channel.try_send(command).is_ok()
+        });
+        install_with_owned(
+            &ui.window,
+            presenter.clone(),
+            send.clone(),
+            begin_owned.clone(),
+        );
         let mut h = Self {
             ui,
             windows,
@@ -534,6 +622,9 @@ impl Harness {
             events,
             engine: Some(engine),
             commands,
+            begin_owned,
+            command_reclaim,
+            retire_queue,
             watching,
             committed: [None; 2],
         };
@@ -684,27 +775,84 @@ impl Harness {
         }
     }
 
+    /// Inspection-only escape hatch: the test caller owns the returned event.
+    /// Delayed/inspected events do not qualify production final-owner retirement.
     pub fn receive(&mut self) -> Event {
-        let result = self.runtime.block_on(async {
-            tokio::time::timeout(Duration::from_secs(5), self.events.recv()).await
-        });
-        result
-            .unwrap_or_else(|_| {
-                panic!(
-                    "no Engine event: rows={:?}, left_error={}, right_error={}, view={:?}",
-                    self.rows()
-                        .iter()
-                        .map(|row| row.name.to_string())
-                        .collect::<Vec<_>>(),
-                    self.ui.window.get_left_error(),
-                    self.ui.window.get_right_error(),
-                    self.view.as_ref().map(|view| view.stamp)
-                )
-            })
-            .unwrap()
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if let Some(scope) = (self.begin_owned)() {
+                let event = self.events.try_recv();
+                drop(scope);
+                match event {
+                    Ok(event) => return event,
+                    Err(mpsc::error::TryRecvError::Disconnected) => {
+                        panic!("Engine event channel closed");
+                    }
+                    Err(mpsc::error::TryRecvError::Empty) => {}
+                }
+            }
+            assert!(
+                Instant::now() < deadline,
+                "no Engine event within five seconds"
+            );
+            self.wait_tick();
+        }
     }
 
     pub fn apply_event(&mut self, event: Event) {
+        let mut event = Some(event);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let presenter = self.presenter.clone();
+        let begin = self.begin_owned.clone();
+        loop {
+            if with_owned_commands(&presenter, &begin, |presenter, send| {
+                self.apply_scoped(event.take().unwrap(), presenter, send);
+            })
+            .is_some()
+            {
+                break;
+            }
+            if Instant::now() >= deadline {
+                // The explicit inspection caller handed ownership back; even a
+                // fixture timeout must not destroy that capture on this thread.
+                self.runtime.block_on(retire_final(
+                    &self.retire_queue,
+                    vec![Box::new(event.take().unwrap())],
+                ));
+                panic!("reclaimer did not accept the inspected event");
+            }
+            self.wait_tick();
+        }
+        self.after_apply();
+    }
+
+    fn drain_one(&mut self) -> bool {
+        let presenter = self.presenter.clone();
+        let begin = self.begin_owned.clone();
+        let consumed = with_owned_commands(&presenter, &begin, |presenter, send| {
+            let event = match self.events.try_recv() {
+                Ok(event) => event,
+                Err(mpsc::error::TryRecvError::Empty) => return false,
+                Err(mpsc::error::TryRecvError::Disconnected) => {
+                    panic!("Engine event channel closed before condition settled");
+                }
+            };
+            self.apply_scoped(event, presenter, send);
+            true
+        }) == Some(true);
+        self.command_reclaim.flush();
+        if consumed {
+            self.after_apply();
+        }
+        consumed
+    }
+
+    fn apply_scoped(
+        &mut self,
+        event: Event,
+        presenter: &mut Presenter,
+        send: &dyn Fn(Command) -> bool,
+    ) {
         if let Event::Copy(CopyEvent::Progress(progress)) = &event {
             self.copy_progress.push(progress.clone());
         }
@@ -733,14 +881,13 @@ impl Harness {
         }
         if let Event::DirectoryChanged { pane, navigation } = event {
             self.watch_hints[pane.index()] += 1;
-            self.presenter
-                .borrow_mut()
-                .refresh_if_changed(pane, navigation, self.send.as_ref());
+            presenter.refresh_if_changed(pane, navigation, send);
         } else {
-            self.presenter
-                .borrow_mut()
-                .apply_with_sender(event, self.send.as_ref());
+            presenter.apply_with_sender(event, send);
         }
+    }
+
+    fn after_apply(&mut self) {
         refresh(&self.ui.window, &self.presenter.borrow());
         self.ui.draw();
         // The application timer samples visible rows even outside thumbnail
@@ -750,10 +897,10 @@ impl Harness {
             (0, self.ui.window.get_left_rows().row_count()),
             (0, self.ui.window.get_right_rows().row_count()),
         ];
-        let mut presenter = self.presenter.borrow_mut();
-        let _ = presenter.thumbnail_targets(ranges, ["", ""]);
-        presenter.flush_selection(self.send.as_ref());
-        drop(presenter);
+        let _ = with_owned_commands(&self.presenter, &self.begin_owned, |presenter, send| {
+            let _ = presenter.thumbnail_targets(ranges, ["", ""]);
+            presenter.flush_selection(send);
+        });
         self.sync_visible();
     }
 
@@ -762,41 +909,55 @@ impl Harness {
             return;
         }
         for pane in [PaneId::Left, PaneId::Right] {
-            if let Some(visible) = self.presenter.borrow().visible_directory(pane) {
-                let navigation = visible.navigation;
-                if self.committed[pane.index()] != Some(navigation)
-                    && (self.send)(Command::PaneCommitted(visible))
-                {
-                    self.committed[pane.index()] = Some(navigation);
+            let committed = &mut self.committed;
+            if with_owned_commands(&self.presenter, &self.begin_owned, |presenter, send| {
+                if let Some(visible) = presenter.visible_directory(pane) {
+                    let navigation = visible.navigation;
+                    if committed[pane.index()] != Some(navigation)
+                        && send(Command::PaneCommitted(visible))
+                    {
+                        committed[pane.index()] = Some(navigation);
+                    }
                 }
+            })
+            .is_none()
+            {
+                break;
             }
         }
+    }
+
+    fn wait_tick(&self) {
+        // No event owner or callback claim crosses this wait.
+        self.runtime.block_on(async {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        });
     }
 
     #[track_caller]
     pub fn until(&mut self, condition: impl Fn(&Self) -> bool) {
         let deadline = Instant::now() + Duration::from_secs(5);
+        let mut last_retry = Instant::now();
         while Instant::now() < deadline {
             if condition(self) {
                 return;
             }
-            let event = self.runtime.block_on(async {
-                tokio::time::timeout(Duration::from_millis(100), self.events.recv()).await
-            });
-            match event {
-                Ok(Some(event)) => self.apply_event(event),
-                Ok(None) => panic!("Engine event channel closed before condition settled"),
-                Err(_) => {
-                    // The app's ordinary 100 ms timer retries desired input even
-                    // when no provider reply is pending (e.g. Options Cancel).
-                    let mut presenter = self.presenter.borrow_mut();
-                    presenter.flush_selection(self.send.as_ref());
-                    presenter.flush_search(self.send.as_ref());
-                    drop(presenter);
+            if !self.drain_one() {
+                if last_retry.elapsed() >= Duration::from_millis(100) {
+                    let _ = with_owned_commands(
+                        &self.presenter,
+                        &self.begin_owned,
+                        |presenter, send| {
+                            presenter.flush_selection(send);
+                            presenter.flush_search(send);
+                        },
+                    );
                     self.sync_visible();
                     refresh(&self.ui.window, &self.presenter.borrow());
                     self.ui.draw();
+                    last_retry = Instant::now();
                 }
+                self.wait_tick();
             }
         }
         panic!(
@@ -825,14 +986,70 @@ impl Harness {
 impl Drop for Harness {
     fn drop(&mut self) {
         self.calls.frozen.store(false, Ordering::SeqCst);
-        let _ = self.commands.try_send(Command::Shutdown);
-        if let Some(engine) = self.engine.take() {
-            self.runtime.block_on(async {
-                tokio::time::timeout(Duration::from_secs(5), engine)
-                    .await
-                    .unwrap()
-                    .unwrap();
-            });
+        self.presenter.borrow_mut().retire_all();
+        let mut retired = self.presenter.borrow_mut().take_retired();
+        if let Some(pending) = self.command_reclaim.take_ready() {
+            retired.extend(pending);
         }
+        retired.push(Box::new(self.view.take()));
+        retired.push(Box::new(std::mem::take(&mut self.views)));
+        retired.push(Box::new(self.selection.take()));
+        retired.push(Box::new(self.sizes.take()));
+        if let Some(mut engine) = self.engine.take() {
+            let result = self.runtime.block_on(async {
+                retire_final(&self.retire_queue, retired).await;
+                tokio::time::timeout(Duration::from_secs(5), async {
+                    let shutdown = self.commands.send(Command::Shutdown);
+                    tokio::pin!(shutdown);
+                    let mut sent = false;
+                    loop {
+                        // Final closed-window ownership goes to the same bounded
+                        // worker queue before another event may be taken.
+                        let permit = self.retire_queue.reserve().await.unwrap();
+                        tokio::select! {
+                            result = &mut shutdown, if !sent => {
+                                result.unwrap();
+                                sent = true;
+                            }
+                            result = &mut engine => return result,
+                            event = self.events.recv() => {
+                                if let Some(event) = event {
+                                    permit.send(vec![Box::new(event)]);
+                                } else {
+                                    return (&mut engine).await;
+                                }
+                            }
+                        }
+                    }
+                })
+                .await
+            });
+            if result.is_err() {
+                engine.abort();
+            }
+            let (_, empty) = mpsc::channel(1);
+            let receiver = std::mem::replace(&mut self.events, empty);
+            let mut retired = reclaim::Retired::new();
+            reclaim::retire_receiver(receiver, &mut retired);
+            self.runtime.block_on(async {
+                retire_final(&self.retire_queue, retired).await;
+                reclaim::barrier(&self.retire_queue).await.unwrap();
+            });
+            if !std::thread::panicking() {
+                assert!(
+                    matches!(result, Ok(Ok(()))),
+                    "Engine shutdown failed: {result:?}"
+                );
+            }
+        }
+    }
+}
+
+async fn retire_final(queue: &mpsc::Sender<reclaim::Retired>, retired: reclaim::Retired) {
+    if let Err(error) = queue.send(retired).await {
+        let retired = error.0;
+        tokio::task::spawn_blocking(move || drop(retired))
+            .await
+            .unwrap();
     }
 }

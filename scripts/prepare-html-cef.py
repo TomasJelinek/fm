@@ -158,7 +158,8 @@ def extract_flat(archive, output, pin, platform_name):
             # No privileged ownership or setuid mode is installed by this build helper.
             target.chmod(0o755 if member.mode & 0o111 else 0o644)
     marker = {"type": "minimal", "name": pin["archive"], "sha1": pin["sha1"]}
-    (output / "archive.json").write_text(json.dumps(marker) + "\n", encoding="utf-8")
+    (output / "archive.json").write_bytes(
+        (json.dumps(marker) + "\n").encode("utf-8"))
 
 
 def prepare(output, offline=False, platform_name=None, cache_root=CACHE_ROOT, environ=None, pin=None):

@@ -1,6 +1,6 @@
 //! Small Slint view models for the backend-supplied viewer catalog.
 use crate::{MainWindow, Presenter, ViewerPluginRow, ViewerPluginsView};
-use midnight_core::{Command, FilesystemPluginKind};
+use midnight_core::{Command, FilesystemPluginInfo, FilesystemPluginKind};
 use slint::{ComponentHandle, ModelRc, VecModel};
 use std::{cell::RefCell, rc::Rc};
 
@@ -18,6 +18,11 @@ pub(crate) fn refresh(window: &MainWindow, presenter: &Presenter) {
     view.set_filesystem_selected(
         presenter
             .filesystem_plugin_selected()
+            .map_or(-1, |index| index as i32),
+    );
+    view.set_archive_selected(
+        presenter
+            .archive_plugin_selected()
             .map_or(-1, |index| index as i32),
     );
     view.set_error(
@@ -116,31 +121,36 @@ pub(crate) fn refresh(window: &MainWindow, presenter: &Presenter) {
         })
         .collect::<Vec<_>>();
     view.set_rows(ModelRc::new(VecModel::from(rows)));
-    let filesystems = state
-        .filesystems
-        .iter()
-        .map(|plugin| ViewerPluginRow {
-            id: plugin.id.as_str().into(),
-            name: plugin.name.as_str().into(),
-            version: plugin.version.as_str().into(),
-            kind: match plugin.kind {
-                Some(FilesystemPluginKind::Native) => "Native filesystem",
-                Some(FilesystemPluginKind::Archive) => "Archive filesystem",
-                Some(FilesystemPluginKind::Network) => "Network filesystem",
-                None => "Package diagnostic",
-            }
-            .into(),
-            status: plugin.status.as_str().into(),
-            location: plugin
-                .location
-                .as_ref()
-                .map(|path| path.to_string_lossy().into_owned())
-                .unwrap_or_default()
-                .into(),
-            ..Default::default()
-        })
+    let filesystems = presenter
+        .filesystem_plugin_catalog()
+        .map(filesystem_row)
         .collect::<Vec<_>>();
     view.set_filesystem_rows(ModelRc::new(VecModel::from(filesystems)));
+    let archives = presenter
+        .archive_plugin_catalog()
+        .map(filesystem_row)
+        .collect::<Vec<_>>();
+    view.set_archive_rows(ModelRc::new(VecModel::from(archives)));
+    let diagnostics = state
+        .filesystems
+        .iter()
+        .filter(|plugin| plugin.kind.is_none())
+        .map(|plugin| {
+            let mut text = plugin.status.clone();
+            if let Some(location) = &plugin.location {
+                if !text.is_empty() {
+                    text.push('\n');
+                }
+                text.push_str(&location.to_string_lossy());
+            }
+            if text.is_empty() {
+                text = plugin.name.clone();
+            }
+            text
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    view.set_filesystem_diagnostics(diagnostics.into());
     let thumbnailers = state
         .thumbnailers
         .iter()
@@ -162,6 +172,47 @@ pub(crate) fn refresh(window: &MainWindow, presenter: &Presenter) {
         .collect::<Vec<_>>();
     view.set_thumbnailer_rows(ModelRc::new(VecModel::from(thumbnailers)));
     view.set_revision(revision.into());
+}
+
+fn filesystem_row(plugin: &FilesystemPluginInfo) -> ViewerPluginRow {
+    let description = if plugin.kind == Some(FilesystemPluginKind::Archive) {
+        let formats = plugin
+            .formats
+            .iter()
+            .map(|format| format.label())
+            .collect::<Vec<_>>();
+        format!(
+            "Declared formats: {}",
+            if formats.is_empty() {
+                "None declared".into()
+            } else {
+                formats.join("; ")
+            }
+        )
+    } else {
+        String::new()
+    };
+    ViewerPluginRow {
+        id: plugin.id.as_str().into(),
+        name: plugin.name.as_str().into(),
+        version: plugin.version.as_str().into(),
+        kind: match plugin.kind {
+            Some(FilesystemPluginKind::Native) => "Native filesystem",
+            Some(FilesystemPluginKind::Archive) => "Archive filesystem",
+            Some(FilesystemPluginKind::Network) => "Network filesystem",
+            None => "Package diagnostic",
+        }
+        .into(),
+        description: description.into(),
+        status: plugin.status.as_str().into(),
+        location: plugin
+            .location
+            .as_ref()
+            .map(|path| path.to_string_lossy().into_owned())
+            .unwrap_or_default()
+            .into(),
+        ..Default::default()
+    }
 }
 
 pub(crate) fn install(
@@ -217,6 +268,17 @@ pub(crate) fn install(
             if let Ok(index) = usize::try_from(index) {
                 change(&weak, &state, |presenter| {
                     presenter.select_filesystem_plugin(index)
+                });
+            }
+        });
+    let weak = window.as_weak();
+    let state = presenter.clone();
+    window
+        .global::<ViewerPluginsView>()
+        .on_select_archive(move |index| {
+            if let Ok(index) = usize::try_from(index) {
+                change(&weak, &state, |presenter| {
+                    presenter.select_archive_plugin(index)
                 });
             }
         });

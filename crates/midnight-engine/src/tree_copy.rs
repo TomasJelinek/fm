@@ -17,8 +17,64 @@ struct Lease {
     capture: CapturedSelection,
     _permit: OwnedSemaphorePermit,
 }
+impl Lease {
+    fn release_on_worker(self: Arc<Self>) -> Result<(), ProviderError> {
+        use crate::copy_nested_retirement::{self as nested, Retained};
+        nested::provider_step(|| {
+            let Some(owner) = Arc::into_inner(self) else {
+                return Ok(());
+            };
+            let mut permit = Retained::new(owner._permit);
+            owner.capture.release_on_worker()?;
+            drop(permit.take());
+            Ok(())
+        })
+    }
+}
+#[derive(Clone)]
+struct LeaseReference(Option<Arc<Lease>>);
+impl std::ops::Deref for LeaseReference {
+    type Target = Arc<Lease>;
+    fn deref(&self) -> &Self::Target {
+        self.0.as_ref().expect("tree capture remains owned")
+    }
+}
+impl Drop for LeaseReference {
+    fn drop(&mut self) {
+        if let Some(context) = crate::copy_nested_retirement::current()
+            && let Some(lease) = self.0.take()
+            && let Err(error) = lease.release_on_worker()
+        {
+            context.record(crate::copy_nested_retirement::fs_error(error));
+        }
+    }
+}
+// Used only for the four native authority fields below, created by the service
+// supplied to this known capture. The independently audited service witness is
+// checked by Preparation before calling prepare; this wrapper mints no witness.
+struct NativeAuthority<T>(Option<T>);
+impl<T> std::ops::Deref for NativeAuthority<T> {
+    type Target = T;
+    fn deref(&self) -> &T {
+        self.0.as_ref().expect("native authority remains owned")
+    }
+}
+impl<T> std::ops::DerefMut for NativeAuthority<T> {
+    fn deref_mut(&mut self) -> &mut T {
+        self.0.as_mut().expect("native authority remains owned")
+    }
+}
+impl<T> Drop for NativeAuthority<T> {
+    fn drop(&mut self) {
+        if crate::copy_nested_retirement::current().is_some()
+            && let Some(owner) = self.0.take()
+        {
+            crate::copy_nested_retirement::checked_step(|| drop(owner));
+        }
+    }
+}
 struct Sources {
-    lease: Arc<Lease>,
+    lease: LeaseReference,
     metadata: bool,
     intent: TransferIntent,
 }
@@ -82,10 +138,10 @@ impl Session {
             root_count,
             metadata_available: metadata,
             sources: Arc::new(Sources {
-                lease: Arc::new(Lease {
+                lease: LeaseReference(Some(Arc::new(Lease {
                     capture,
                     _permit: permit,
-                }),
+                }))),
                 metadata,
                 intent: request.intent,
             }),
@@ -93,6 +149,18 @@ impl Session {
     }
 }
 impl CapturedTransferSources for Sources {
+    fn prepares_audited_native_children(&self) -> bool {
+        true
+    }
+    fn release_on_worker(self: Arc<Self>) -> Result<(), FsError> {
+        crate::copy_nested_retirement::provider_step(|| {
+            if let Some(owner) = Arc::into_inner(self) {
+                drop(owner);
+            }
+            Ok(())
+        })
+        .map_err(crate::copy_nested_retirement::fs_error)
+    }
     fn intent(&self) -> TransferIntent {
         self.intent
     }
@@ -201,7 +269,7 @@ impl CapturedTransferSources for Sources {
                 }
             };
             roots.push_back(Box::new(LeasedSource {
-                source,
+                source: NativeAuthority(Some(source)),
                 lease: self.lease.clone(),
                 occurrence: Some(TreeCopyOccurrence {
                     stamp: self.lease.capture.view.stamp,
@@ -251,7 +319,7 @@ impl Sources {
             }
             roots.push_back(PreparedTransferMove {
                 source: Box::new(LeasedSource {
-                    source: prepared.source,
+                    source: NativeAuthority(Some(prepared.source)),
                     lease: self.lease.clone(),
                     occurrence: Some(TreeCopyOccurrence {
                         stamp: self.lease.capture.view.stamp,
@@ -273,20 +341,26 @@ fn failure(message: &str) -> FsError {
     }
 }
 struct LeasedSource {
-    source: Box<dyn TransferSource>,
-    lease: Arc<Lease>,
+    source: NativeAuthority<Box<dyn TransferSource>>,
+    lease: LeaseReference,
     occurrence: Option<TreeCopyOccurrence>,
 }
 impl LeasedSource {
     fn child(&self, source: Box<dyn TransferSource>) -> Box<dyn TransferSource> {
         Box::new(Self {
-            source,
+            source: NativeAuthority(Some(source)),
             lease: self.lease.clone(),
             occurrence: None,
         })
     }
 }
 impl TransferSource for LeasedSource {
+    fn native_namespace_scope(
+        &self,
+        cancel: &Cancellation,
+    ) -> Result<Option<Arc<dyn TransferNamespacePin>>, FsError> {
+        self.source.native_namespace_scope(cancel)
+    }
     fn discover(
         &self,
         cancel: &Cancellation,
@@ -372,17 +446,17 @@ impl TransferSource for LeasedSource {
 
 fn leased_capture(
     inner: Arc<dyn TransferMoveCapture>,
-    lease: &Arc<Lease>,
+    lease: &LeaseReference,
 ) -> Arc<dyn TransferMoveCapture> {
     Arc::new(LeasedMoveCapture {
-        inner,
+        inner: NativeAuthority(Some(inner)),
         lease: lease.clone(),
     })
 }
 // Authority fields precede the lease: providers remain live through authority destruction.
 struct LeasedMoveCapture {
-    inner: Arc<dyn TransferMoveCapture>,
-    lease: Arc<Lease>,
+    inner: NativeAuthority<Arc<dyn TransferMoveCapture>>,
+    lease: LeaseReference,
 }
 impl TransferMoveCapture for LeasedMoveCapture {
     fn try_native_move(
@@ -415,7 +489,7 @@ impl TransferMoveCapture for LeasedMoveCapture {
         cancel: &Cancellation,
     ) -> Result<Box<dyn TransferMoveFinalizer>, FsError> {
         Ok(Box::new(LeasedFinalizer {
-            inner: self.inner.prepare_finalization(cancel)?,
+            inner: NativeAuthority(Some(self.inner.prepare_finalization(cancel)?)),
             _lease: self.lease.clone(),
         }))
     }
@@ -431,15 +505,15 @@ impl TransferMoveCapture for LeasedMoveCapture {
     fn take_stage_cleanup(&self) -> Option<Box<dyn TransferMoveStageCleanup>> {
         self.inner.take_stage_cleanup().map(|inner| {
             Box::new(LeasedCleanup {
-                inner,
+                inner: NativeAuthority(Some(inner)),
                 _lease: self.lease.clone(),
             }) as Box<dyn TransferMoveStageCleanup>
         })
     }
 }
 struct LeasedFinalizer {
-    inner: Box<dyn TransferMoveFinalizer>,
-    _lease: Arc<Lease>,
+    inner: NativeAuthority<Box<dyn TransferMoveFinalizer>>,
+    _lease: LeaseReference,
 }
 impl TransferMoveFinalizer for LeasedFinalizer {
     fn revalidate(&self, cancel: &Cancellation) -> Result<(), FsError> {
@@ -451,15 +525,23 @@ impl TransferMoveFinalizer for LeasedFinalizer {
 }
 // Own no source, capture or finalizer: native DELETE owners must close before cleanup.
 struct LeasedCleanup {
-    inner: Box<dyn TransferMoveStageCleanup>,
-    _lease: Arc<Lease>,
+    inner: NativeAuthority<Box<dyn TransferMoveStageCleanup>>,
+    _lease: LeaseReference,
 }
 impl TransferMoveStageCleanup for LeasedCleanup {
     fn path(&self) -> &Path {
         self.inner.path()
     }
-    fn cleanup(self: Box<Self>) -> Result<(), FsError> {
-        self.inner.cleanup()
+    fn cleanup(mut self: Box<Self>) -> Result<(), FsError> {
+        let inner = self.inner.0.take().expect("cleanup ticket remains owned");
+        if crate::copy_nested_retirement::current().is_none() {
+            return inner.cleanup();
+        }
+        let mut result = Ok(());
+        if !crate::copy_nested_retirement::checked_step(|| result = inner.cleanup()) {
+            return Err(crate::copy_nested_retirement::unconfirmed());
+        }
+        result
     }
 }
 

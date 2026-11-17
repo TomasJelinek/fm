@@ -1,6 +1,6 @@
 //! UI input and geometry only; native payloads and filesystem work stay on workers.
 use crate::{
-    MainWindow, Presenter,
+    BeginOwned, MainWindow, Presenter,
     drag_lifecycle::{GestureSnapshot, Phase},
     pane,
     presenter::drag_drop::invalidate,
@@ -41,12 +41,14 @@ struct Target {
 struct Bridge {
     presenter: Rc<RefCell<Presenter>>,
     send: Rc<dyn Fn(Command) -> bool>,
+    begin_owned: BeginOwned,
     targets: SharedDropTargets,
     cursor: Cell<slint::LogicalPosition>,
     modifiers: Cell<(bool, bool, bool)>,
     handoff: Cell<bool>,
     gesture: GestureSnapshot,
     cancel_pending: Cell<Option<DragId>>,
+    shutdown_pending: Cell<bool>,
     visual: RefCell<Option<DragVisual>>,
     lifetime: RefCell<Option<(u64, Cancellation)>>,
     timer: slint::Timer,
@@ -138,6 +140,13 @@ impl Bridge {
         }
     }
     fn flush_cancel(&self) -> bool {
+        if self.shutdown_pending.get() {
+            let Ok(mut p) = self.presenter.try_borrow_mut() else {
+                return false;
+            };
+            self.shutdown_pending.set(false);
+            p.shutdown_drag_drop(self.send.as_ref());
+        }
         let Some(id) = self.cancel_pending.get() else {
             return true;
         };
@@ -162,59 +171,80 @@ impl Bridge {
         if !self.flush_cancel() {
             return;
         }
-        let Ok(mut p) = self.presenter.try_borrow_mut() else {
+        let Some((active, visual, label)) =
+            crate::with_owned_commands(&self.presenter, &self.begin_owned, |p, send| {
+                let active = p.drag_drop.lifecycle.active();
+                let target = active
+                    .filter(|g| g.phase == Phase::Ready)
+                    .and_then(|_| self.target(window, p));
+                let intent = self.intent();
+                p.update_drag_preview(
+                    target.as_ref().map(|target| target.destination.clone()),
+                    intent,
+                    send,
+                );
+                let feedback = match active.map(|g| g.phase) {
+                    None | Some(Phase::Native) => 0,
+                    Some(Phase::Ready) => match p.drag_preview_status() {
+                        Status::Pending => 2,
+                        Status::Allowed(TransferIntent::Copy) => 3,
+                        Status::Allowed(TransferIntent::Move) => 4,
+                        Status::Rejected => 5,
+                    },
+                    _ => 1,
+                };
+                let hover = if active.is_some_and(|g| g.phase != Phase::Native) {
+                    target
+                        .as_ref()
+                        .filter(|_| matches!(feedback, 3 | 4))
+                        .map(|target| target.pane)
+                } else {
+                    p.drag_drop.hover
+                };
+                if active.is_some_and(|g| g.phase != Phase::Native) {
+                    p.drag_drop.hover = hover;
+                }
+                let row = target
+                    .as_ref()
+                    .filter(|_| matches!(feedback, 3 | 4))
+                    .map_or(-1, |target| target.row);
+                let item_count = p.drag_drop.item_count;
+                let visual = (
+                    active.map(|g| g.phase),
+                    item_count,
+                    hover,
+                    row,
+                    intent,
+                    target
+                        .as_ref()
+                        .map_or_else(Default::default, |target| target.name.clone()),
+                    feedback,
+                );
+                let destination = target
+                    .as_ref()
+                    .filter(|target| target.row >= 0)
+                    .map_or("this panel", |target| target.name.as_str());
+                let label = match feedback {
+                    1 => "Preparing drag…".into(),
+                    2 => "Checking destination…".into(),
+                    3 | 4 => format!(
+                        "{} {} item(s) into {destination}",
+                        if feedback == 3 { "Copy" } else { "Move" },
+                        item_count
+                    )
+                    .into(),
+                    5 => "Not allowed here".into(),
+                    _ => "Copy into this panel".into(),
+                };
+                (active, visual, label)
+            })
+        else {
             return;
         };
-        let active = p.drag_drop.lifecycle.active();
-        let target = active
-            .filter(|g| g.phase == Phase::Ready)
-            .and_then(|_| self.target(window, &p));
-        let intent = self.intent();
-        p.update_drag_preview(
-            target.as_ref().map(|target| target.destination.clone()),
-            intent,
-            self.send.as_ref(),
-        );
-        let feedback = match active.map(|g| g.phase) {
-            None | Some(Phase::Native) => 0,
-            Some(Phase::Ready) => match p.drag_preview_status() {
-                Status::Pending => 2,
-                Status::Allowed(TransferIntent::Copy) => 3,
-                Status::Allowed(TransferIntent::Move) => 4,
-                Status::Rejected => 5,
-            },
-            _ => 1,
-        };
-        let hover = if active.is_some_and(|g| g.phase != Phase::Native) {
-            target
-                .as_ref()
-                .filter(|_| matches!(feedback, 3 | 4))
-                .map(|target| target.pane)
-        } else {
-            p.drag_drop.hover
-        };
-        if active.is_some_and(|g| g.phase != Phase::Native) {
-            p.drag_drop.hover = hover;
-        }
-        let row = target
-            .as_ref()
-            .filter(|_| matches!(feedback, 3 | 4))
-            .map_or(-1, |target| target.row);
-        let item_count = p.drag_drop.item_count;
-        let visual = (
-            active.map(|g| g.phase),
-            item_count,
-            hover,
-            row,
-            intent,
-            target
-                .as_ref()
-                .map_or_else(Default::default, |target| target.name.clone()),
-            feedback,
-        );
+        let (_, _, hover, row, _, _, feedback) = &visual;
+        let (hover, row, feedback) = (*hover, *row, *feedback);
         // Property updates may synchronously report lost focus/cancellation.
         // Never keep the Presenter borrow across those callbacks.
-        drop(p);
         let previous_feedback = self.visual.borrow().as_ref().map_or(0, |visual| visual.6);
         if self.visual.borrow().as_ref() != Some(&visual) {
             *self.visual.borrow_mut() = Some(visual);
@@ -225,22 +255,7 @@ impl Bridge {
             window.set_drag_hover_pane(hover.map_or(-1, |pane| pane.index() as i32));
             window.set_drag_hover_row(row);
             window.set_drag_feedback_state(feedback);
-            let destination = target
-                .as_ref()
-                .filter(|target| target.row >= 0)
-                .map_or("this panel", |target| target.name.as_str());
-            window.set_drag_label(match feedback {
-                1 => "Preparing drag…".into(),
-                2 => "Checking destination…".into(),
-                3 | 4 => format!(
-                    "{} {} item(s) into {destination}",
-                    if feedback == 3 { "Copy" } else { "Move" },
-                    item_count
-                )
-                .into(),
-                5 => "Not allowed here".into(),
-                _ => "Copy into this panel".into(),
-            });
+            window.set_drag_label(label);
         }
         let cursor = self.cursor.get();
         window.set_drag_x(cursor.x);
@@ -271,7 +286,11 @@ impl Bridge {
         }
         self.remember_host(&p);
         p.publish_drag_targets(rectangles);
-        p.flush_drag_commands(self.send.as_ref());
+        p.flush_drag_control_commands(self.send.as_ref());
+        drop(p);
+        let _ = crate::with_owned_commands(&self.presenter, &self.begin_owned, |p, send| {
+            p.flush_drag_commands(send);
+        });
     }
 
     fn target(&self, window: &MainWindow, p: &Presenter) -> Option<Target> {
@@ -350,23 +369,20 @@ impl Bridge {
         if !self.flush_cancel() {
             return;
         }
-        let Ok(mut p) = self.presenter.try_borrow_mut() else {
+        if crate::with_owned_commands(&self.presenter, &self.begin_owned, |p, send| {
+            let target = self.target(window, p).filter(|_| {
+                !matches!(
+                    p.drag_preview_status(),
+                    crate::presenter::drag_drop::preview::Status::Rejected
+                )
+            });
+            p.release_file_drag(target.map(|target| target.destination), self.intent(), send);
+        })
+        .is_none()
+        {
             self.cancel(window, false);
             return;
-        };
-        let target = self.target(window, &p).filter(|_| {
-            !matches!(
-                p.drag_preview_status(),
-                crate::presenter::drag_drop::preview::Status::Rejected
-            )
-        });
-        let intent = self.intent();
-        p.release_file_drag(
-            target.map(|target| target.destination),
-            intent,
-            self.send.as_ref(),
-        );
-        drop(p);
+        }
         self.update(window);
     }
 
@@ -413,12 +429,10 @@ impl Bridge {
                 .flatten()
         };
         if let Some(id) = id {
-            let armed = {
-                let Ok(mut p) = self.presenter.try_borrow_mut() else {
-                    return;
-                };
+            let armed = crate::with_owned_commands(&self.presenter, &self.begin_owned, |p, _| {
                 p.arm_native_drag(id)
-            };
+            })
+            .unwrap_or(false);
             if armed {
                 // Mark the native phase before releasing Slint's and the OS's
                 // grabs. Their synchronous cancel/release notifications are not
@@ -437,9 +451,8 @@ impl Bridge {
                     .with_winit_window(|window| released = native::release_input(window));
                 self.handoff.set(false);
                 if !released || !(self.send)(Command::StartDrag(id)) {
-                    self.presenter
-                        .borrow_mut()
-                        .cancel_file_drag(self.send.as_ref());
+                    self.cancel_pending.set(Some(id));
+                    self.flush_cancel();
                 }
             }
         }
@@ -451,6 +464,7 @@ pub(crate) fn install(
     window: &MainWindow,
     presenter: Rc<RefCell<Presenter>>,
     send: Rc<dyn Fn(Command) -> bool>,
+    begin_owned: BeginOwned,
 ) {
     let (targets, gesture) = {
         let p = presenter.borrow();
@@ -462,12 +476,14 @@ pub(crate) fn install(
     let bridge = Rc::new(Bridge {
         presenter,
         send,
+        begin_owned,
         targets: targets.clone(),
         cursor: Cell::new(slint::LogicalPosition::new(-1.0, -1.0)),
         modifiers: Cell::new((false, false, false)),
         handoff: Cell::new(false),
         gesture,
         cancel_pending: Cell::new(None),
+        shutdown_pending: Cell::new(false),
         visual: RefCell::new(None),
         lifetime: RefCell::new(None),
         timer: slint::Timer::default(),
@@ -486,19 +502,18 @@ pub(crate) fn install(
         if !state.flush_cancel() {
             return false;
         }
-        let started = {
-            let Ok(mut p) = state.presenter.try_borrow_mut() else {
-                return false;
-            };
-            p.attach_drag_host(
-                host(&window).unwrap_or(NativeDragWindow::Unsupported),
-                state.send.as_ref(),
-            );
-            state.remember_host(&p);
-            if !p.drag_drop.attached {
-                return false;
-            }
-            p.begin_file_drag(pane(id), row, identity.as_str(), state.send.as_ref())
+        let drag_host = host(&window).unwrap_or(NativeDragWindow::Unsupported);
+        let Some(started) =
+            crate::with_owned_commands(&state.presenter, &state.begin_owned, |p, send| {
+                p.attach_drag_host(drag_host, send);
+                state.remember_host(p);
+                if !p.drag_drop.attached {
+                    return false;
+                }
+                p.begin_file_drag(pane(id), row, identity.as_str(), send)
+            })
+        else {
+            return false;
         };
         crate::refresh(&window, &state.presenter.borrow());
         state.publish(&window);
@@ -542,10 +557,12 @@ pub(crate) fn install(
     });
     let state = bridge.clone();
     window.on_drag_host_closed(move || {
-        state
-            .presenter
-            .borrow_mut()
-            .shutdown_drag_drop(state.send.as_ref())
+        invalidate(&state.targets);
+        if let Some((_, lifetime)) = state.lifetime.borrow().as_ref() {
+            lifetime.cancel();
+        }
+        state.shutdown_pending.set(true);
+        state.flush_cancel();
     });
     let weak = window.as_weak();
     let state = Rc::downgrade(&bridge);

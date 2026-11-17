@@ -12,7 +12,7 @@ async fn event(receive: &mut mpsc::Receiver<Event>) -> Event {
         .unwrap()
 }
 async fn search(
-    send: &mpsc::Sender<Command>,
+    send: &midnight_engine::CommandSender,
     receive: &mut mpsc::Receiver<Event>,
     root: &Path,
     generation: u64,
@@ -30,7 +30,7 @@ async fn search(
     .0
 }
 async fn search_request(
-    send: &mpsc::Sender<Command>,
+    send: &midnight_engine::CommandSender,
     receive: &mut mpsc::Receiver<Event>,
     request: FindRequest,
 ) -> (Vec<Arc<FindResult>>, FindSummary) {
@@ -59,7 +59,7 @@ fn same_request(actual: FindValidationRequest, expected: FindValidationRequest) 
         && actual.token == expected.token
 }
 async fn validate(
-    send: &mpsc::Sender<Command>,
+    send: &midnight_engine::CommandSender,
     receive: &mut mpsc::Receiver<Event>,
     request: FindValidationRequest,
 ) -> Result<Box<FindEntry>, FsError> {
@@ -75,7 +75,7 @@ async fn validate(
     }
 }
 async fn capture(
-    send: &mpsc::Sender<Command>,
+    send: &midnight_engine::CommandSender,
     receive: &mut mpsc::Receiver<Event>,
     result: FindResultId,
     generation: u64,
@@ -97,14 +97,15 @@ async fn capture(
     }
 }
 fn engine() -> (
-    mpsc::Sender<Command>,
+    midnight_engine::CommandSender,
     mpsc::Receiver<Event>,
     tokio::task::JoinHandle<()>,
 ) {
     let service = Arc::new(LocalFileSystem::new(None));
-    let (send, commands) = mpsc::channel(32);
+
     let (events, receive) = mpsc::channel(32);
     let mut engine = Engine::new(Engine::lifetime().unwrap(), service.clone(), events);
+    let (send, commands) = engine.command_channel(32).unwrap();
     engine.configure_find().unwrap().install(service);
     (send, receive, tokio::spawn(engine.run(commands)))
 }
@@ -231,13 +232,13 @@ fn capture_provider_final_drop_survives_runtime_shutdown_off_caller_thread() {
     let (dropped, observe) = std::sync::mpsc::channel();
     let runtime = tokio::runtime::Runtime::new().unwrap();
     let source = runtime.block_on(async {
-        let (send, commands) = mpsc::channel(16);
         let (events, mut receive) = mpsc::channel(16);
         let mut engine = Engine::new(
             Engine::lifetime().unwrap(),
             Arc::new(LocalFileSystem::new(None)),
             events,
         );
+        let (send, commands) = engine.command_channel(16).unwrap();
         engine.configure_find().unwrap().install(Arc::new(Tracked {
             native: LocalFileSystem::new(None),
             dropped: Some(dropped),

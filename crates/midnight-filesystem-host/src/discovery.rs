@@ -20,6 +20,12 @@ pub struct Package {
     pub protocol: Protocol,
     pub(crate) formats: Vec<Format>,
 }
+impl Package {
+    /// Validated archive formats in declaration order, with duplicates removed.
+    pub fn available_formats(&self) -> Vec<ArchiveFormat> {
+        available_archive_formats(&self.formats)
+    }
+}
 #[derive(Default, Debug)]
 pub struct Catalog {
     pub packages: Vec<Package>,
@@ -40,6 +46,30 @@ struct Manifest {
     target: String,
     protocol: u32,
     formats: Vec<String>,
+}
+fn available_archive_formats<'a>(
+    declared: impl IntoIterator<Item = &'a Format>,
+) -> Vec<ArchiveFormat> {
+    let mut formats = Vec::new();
+    for format in declared {
+        let format = match format {
+            Format::Zip => ArchiveFormat::Zip,
+            Format::Tar => ArchiveFormat::Tar,
+            Format::Gzip => ArchiveFormat::Gzip,
+            Format::TarGzip => ArchiveFormat::TarGzip,
+            Format::SevenZip => ArchiveFormat::SevenZip,
+            Format::Xz => ArchiveFormat::Xz,
+            Format::TarXz => ArchiveFormat::TarXz,
+            Format::Bzip2 => ArchiveFormat::Bzip2,
+            Format::TarBzip2 => ArchiveFormat::TarBzip2,
+            Format::Zstd => ArchiveFormat::Zstd,
+            Format::TarZstd => ArchiveFormat::TarZstd,
+        };
+        if !formats.contains(&format) {
+            formats.push(format);
+        }
+    }
+    formats
 }
 impl Catalog {
     pub fn discover(directory: &Path) -> io::Result<Self> {
@@ -91,26 +121,7 @@ impl Catalog {
     }
     /// Only formats advertised by trusted, compatible installed workers.
     pub fn available_formats(&self) -> Vec<ArchiveFormat> {
-        let mut formats = Vec::new();
-        for format in self.packages.iter().flat_map(|package| &package.formats) {
-            let format = match format {
-                Format::Zip => ArchiveFormat::Zip,
-                Format::Tar => ArchiveFormat::Tar,
-                Format::Gzip => ArchiveFormat::Gzip,
-                Format::TarGzip => ArchiveFormat::TarGzip,
-                Format::SevenZip => ArchiveFormat::SevenZip,
-                Format::Xz => ArchiveFormat::Xz,
-                Format::TarXz => ArchiveFormat::TarXz,
-                Format::Bzip2 => ArchiveFormat::Bzip2,
-                Format::TarBzip2 => ArchiveFormat::TarBzip2,
-                Format::Zstd => ArchiveFormat::Zstd,
-                Format::TarZstd => ArchiveFormat::TarZstd,
-            };
-            if !formats.contains(&format) {
-                formats.push(format);
-            }
-        }
-        formats
+        available_archive_formats(self.packages.iter().flat_map(|package| &package.formats))
     }
     pub fn choose_provider(
         &self,
@@ -224,6 +235,77 @@ fn package(path: &Path) -> io::Result<Option<Package>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn packages_report_distinct_formats_in_first_declaration_order() {
+        let mut catalog = catalog();
+        catalog.packages[0].formats = vec![Format::Tar, Format::Zip, Format::Tar, Format::SevenZip];
+        let mut second = catalog.packages[0].clone();
+        second.id = "second".into();
+        second.formats = vec![Format::Xz, Format::Zip, Format::TarXz, Format::Xz];
+        let mut empty = second.clone();
+        empty.id = "empty".into();
+        empty.formats.clear();
+        catalog.packages.extend([second, empty]);
+
+        assert_eq!(
+            catalog.packages[0].available_formats(),
+            [
+                ArchiveFormat::Tar,
+                ArchiveFormat::Zip,
+                ArchiveFormat::SevenZip,
+            ]
+        );
+        assert_eq!(
+            catalog.packages[1].available_formats(),
+            [ArchiveFormat::Xz, ArchiveFormat::Zip, ArchiveFormat::TarXz,]
+        );
+        assert!(catalog.packages[2].available_formats().is_empty());
+        assert_eq!(
+            catalog.available_formats(),
+            [
+                ArchiveFormat::Tar,
+                ArchiveFormat::Zip,
+                ArchiveFormat::SevenZip,
+                ArchiveFormat::Xz,
+                ArchiveFormat::TarXz,
+            ]
+        );
+    }
+
+    #[test]
+    fn package_and_catalog_formats_convert_every_supported_archive_format() {
+        let mut catalog = catalog();
+        catalog.packages[0].formats = vec![
+            Format::TarZstd,
+            Format::Zstd,
+            Format::TarBzip2,
+            Format::Bzip2,
+            Format::TarXz,
+            Format::Xz,
+            Format::SevenZip,
+            Format::TarGzip,
+            Format::Gzip,
+            Format::Tar,
+            Format::Zip,
+        ];
+        let expected = [
+            ArchiveFormat::TarZstd,
+            ArchiveFormat::Zstd,
+            ArchiveFormat::TarBzip2,
+            ArchiveFormat::Bzip2,
+            ArchiveFormat::TarXz,
+            ArchiveFormat::Xz,
+            ArchiveFormat::SevenZip,
+            ArchiveFormat::TarGzip,
+            ArchiveFormat::Gzip,
+            ArchiveFormat::Tar,
+            ArchiveFormat::Zip,
+        ];
+        assert_eq!(catalog.packages[0].available_formats(), expected);
+        assert_eq!(catalog.available_formats(), expected);
+        assert!(Catalog::default().available_formats().is_empty());
+    }
 
     #[test]
     fn filesystem_friendly_name_metadata_is_optional_and_validated() {

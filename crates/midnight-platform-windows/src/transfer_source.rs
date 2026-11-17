@@ -27,6 +27,8 @@ pub(super) struct Source {
     names: VecDeque<OsString>,
     ended: bool,
     move_enabled: bool,
+    // Last: all native fields, including lazy readable upgrades, close before this signal.
+    _namespace_owner: super::namespace::NativeOwner,
 }
 impl Source {
     pub(super) fn open(
@@ -101,8 +103,10 @@ impl Source {
             meta.creation_time(),
         );
         let parent_identity = identity(&parent, &parent_path)?;
+        let entry = entry(&file, &path)?;
+        let namespace_owner = super::namespace::owner(&[parent_identity, entry.identity]);
         Ok(Self {
-            entry: entry(&file, &path)?,
+            entry,
             parent,
             parent_path,
             parent_identity,
@@ -113,6 +117,7 @@ impl Source {
             names: VecDeque::new(),
             ended: false,
             move_enabled: move_root,
+            _namespace_owner: namespace_owner,
         })
     }
     fn fill_names(&mut self) -> Result<(), FsError> {
@@ -173,6 +178,20 @@ impl Source {
     }
 }
 impl TransferSource for Source {
+    fn native_namespace_scope(
+        &self,
+        cancel: &Cancellation,
+    ) -> Result<Option<Arc<dyn midnight_core::TransferNamespacePin>>, FsError> {
+        self.revalidate(cancel)?;
+        super::namespace::source_pin(
+            &self.parent,
+            &self.parent_path,
+            &self.name,
+            &self.entry,
+            cancel,
+        )
+        .map(Some)
+    }
     fn discover(
         &self,
         cancel: &Cancellation,
@@ -241,7 +260,12 @@ impl TransferSource for Source {
             ));
         }
         self.revalidate(cancel)?;
-        super::metadata::prepare(self.file.clone(), &self.entry.item.path, cancel)
+        super::metadata::prepare(
+            self.file.clone(),
+            self._namespace_owner.clone(),
+            &self.entry.item.path,
+            cancel,
+        )
     }
     fn rewind_for_validation(
         &mut self,

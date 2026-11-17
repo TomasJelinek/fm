@@ -81,7 +81,7 @@ struct Request {
     navigation: NavigationId,
     sort: SortSpec,
     cancel: Cancellation,
-    scope: TaskLifetime,
+    _scope: TaskLifetime,
     // Last: native input and original service owners finish cleanup first.
     permit: Option<OwnedSemaphorePermit>,
 }
@@ -180,7 +180,7 @@ impl Controller {
             navigation,
             sort,
             cancel,
-            scope: self.scope.clone(),
+            _scope: self.scope.clone(),
             permit: None,
         });
         {

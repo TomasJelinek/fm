@@ -1,7 +1,7 @@
 //! Killable persistent worker and bounded read-only broker. All entry points run on backend workers.
 use crate::{
     DocumentMetadata, Frame, Metadata, PreparedImageWorker, Provider, Viewport,
-    startup::{ProviderIdentity, WorkerTransport, cancelled, check_cancel},
+    startup::{ProviderIdentity, WorkerOwner, WorkerTransport, attempt, cancelled, check_cancel},
 };
 use midnight_image_viewer_api::{self as api, Message};
 use std::{
@@ -46,8 +46,7 @@ impl Source for midnight_plugin_host::CapturedFile {
 /// Memory is capped at 512 MiB, retained RGBA at 128 MiB; cumulative process CPU is 60 seconds.
 /// Each operation additionally has the supplied wall-clock deadline and cancellation flag.
 pub struct ImageSession {
-    transport: WorkerTransport,
-    source: CapturedSource,
+    owner: WorkerOwner<CapturedSource>,
     metadata: Metadata,
     document: Option<DocumentMetadata>,
     request_id: u64,
@@ -62,21 +61,38 @@ impl ImageSession {
         cancel: &AtomicBool,
         timeout: Duration,
     ) -> io::Result<Self> {
+        Self::open_owned(provider, source, cancel, timeout, Box::new(()))
+    }
+
+    /// Retain the caller's native-child reservation before any possible process creation.
+    pub fn open_owned(
+        provider: &Provider,
+        source: Arc<dyn Source>,
+        cancel: &AtomicBool,
+        timeout: Duration,
+        owner: Box<dyn Send + 'static>,
+    ) -> io::Result<Self> {
+        let mut owned = WorkerOwner::empty(Some(owner)).with_source(CapturedSource::new(source));
         #[cfg(feature = "startup-diagnostics")]
         let mut startup = midnight_worker_platform::startup_diagnostics::Trace::new("image_open");
-        check_cancel(cancel)?;
-        let identity = ProviderIdentity::capture(provider)?;
-        #[cfg(feature = "startup-diagnostics")]
-        startup.mark("provider_validated");
-        let source = CapturedSource::capture(source)?;
-        #[cfg(feature = "startup-diagnostics")]
-        startup.mark("source_validated");
-        let transport = WorkerTransport::spawn(provider)?;
-        #[cfg(feature = "startup-diagnostics")]
-        startup.mark("spawned");
-        Self::new(transport, source).open_source(
+        let result = attempt(|| {
+            check_cancel(cancel)?;
+            owned.install_identity(ProviderIdentity::capture(provider)?);
+            #[cfg(feature = "startup-diagnostics")]
+            startup.mark("provider_validated");
+            owned.source_mut().capture()?;
+            #[cfg(feature = "startup-diagnostics")]
+            startup.mark("source_validated");
+            owned.start(|| WorkerTransport::spawn(provider))?;
+            #[cfg(feature = "startup-diagnostics")]
+            startup.mark("spawned");
+            Ok(())
+        });
+        if let Err(error) = result {
+            return Err(owned.fail(error));
+        }
+        Self::new(owned).open_source(
             provider,
-            identity,
             cancel,
             timeout,
             true,
@@ -95,23 +111,31 @@ impl ImageSession {
         cancel: &AtomicBool,
         timeout: Duration,
     ) -> io::Result<Self> {
+        // Attach the source before cancellation or another fallible boundary can retire the child.
+        let mut owned = prepared
+            .into_owner()
+            .with_source(CapturedSource::new(source));
         #[cfg(feature = "startup-diagnostics")]
         let mut startup =
             midnight_worker_platform::startup_diagnostics::Trace::new("image_open_prepared");
-        check_cancel(cancel)?;
-        if !prepared.catalog_matches(provider) {
-            return Err(io::Error::other("Prepared image worker catalog changed"));
+        let result = attempt(|| {
+            check_cancel(cancel)?;
+            if !owned.identity().catalog_matches(provider) {
+                return Err(io::Error::other("Prepared image worker catalog changed"));
+            }
+            #[cfg(feature = "startup-diagnostics")]
+            startup.mark("catalog_matched");
+            owned.source_mut().capture()?;
+            #[cfg(feature = "startup-diagnostics")]
+            startup.mark("source_validated");
+            check_cancel(cancel)?;
+            Ok(())
+        });
+        if let Err(error) = result {
+            return Err(owned.fail(error));
         }
-        #[cfg(feature = "startup-diagnostics")]
-        startup.mark("catalog_matched");
-        let source = CapturedSource::capture(source)?;
-        #[cfg(feature = "startup-diagnostics")]
-        startup.mark("source_validated");
-        check_cancel(cancel)?;
-        let (transport, identity) = prepared.into_parts();
-        Self::new(transport, source).open_source(
+        Self::new(owned).open_source(
             provider,
-            identity,
             cancel,
             timeout,
             false,
@@ -120,10 +144,9 @@ impl ImageSession {
         )
     }
 
-    fn new(transport: WorkerTransport, source: CapturedSource) -> Self {
+    fn new(owner: WorkerOwner<CapturedSource>) -> Self {
         Self {
-            transport,
-            source,
+            owner,
             metadata: Metadata {
                 width: 1,
                 height: 1,
@@ -137,118 +160,133 @@ impl ImageSession {
     fn open_source(
         mut self,
         provider: &Provider,
-        identity: ProviderIdentity,
         cancel: &AtomicBool,
         timeout: Duration,
         read_ready: bool,
         #[cfg(feature = "startup-diagnostics")]
         startup: &mut midnight_worker_platform::startup_diagnostics::Trace,
     ) -> io::Result<Self> {
-        let length = self.source.length;
-        let metadata = self.exchange(cancel, timeout, |input, output, source, stopped| {
-            #[cfg(feature = "startup-diagnostics")]
-            startup.mark("broker_started");
-            if read_ready {
-                midnight_worker_sdk::read_ready(output)?;
-            }
-            #[cfg(feature = "startup-diagnostics")]
-            startup.mark("ready");
-            check_cancel(cancel)?;
-            check_cancel(stopped)?;
-            identity.validate_for(provider)?;
-            #[cfg(feature = "startup-diagnostics")]
-            startup.mark("identity_revalidated");
-            check_cancel(cancel)?;
-            check_cancel(stopped)?;
-            api::write_message(
-                input,
-                &Message::Open {
-                    source_length: length,
+        let result = attempt(|| {
+            let length = self.owner.source().length;
+            let metadata = self.exchange(
+                cancel,
+                timeout,
+                |input, output, source, identity, stopped| {
+                    #[cfg(feature = "startup-diagnostics")]
+                    startup.mark("broker_started");
+                    if read_ready {
+                        midnight_worker_sdk::read_ready(output)?;
+                    }
+                    #[cfg(feature = "startup-diagnostics")]
+                    startup.mark("ready");
+                    check_cancel(cancel)?;
+                    check_cancel(stopped)?;
+                    identity.validate_for(provider)?;
+                    #[cfg(feature = "startup-diagnostics")]
+                    startup.mark("identity_revalidated");
+                    check_cancel(cancel)?;
+                    check_cancel(stopped)?;
+                    api::write_message(
+                        input,
+                        &Message::Open {
+                            source_length: length,
+                        },
+                    )?;
+                    #[cfg(feature = "startup-diagnostics")]
+                    startup.mark("open_sent");
+                    let mut read_total = 0u64;
+                    #[cfg(feature = "startup-diagnostics")]
+                    let mut first_read = true;
+                    for _ in 0..8192 {
+                        check_cancel(cancel)?;
+                        check_cancel(stopped)?;
+                        match api::read_message(output)? {
+                            Message::Read {
+                                offset,
+                                length: amount,
+                            } => {
+                                #[cfg(feature = "startup-diagnostics")]
+                                if first_read {
+                                    startup.mark("first_read_request");
+                                }
+                                let end = offset
+                                    .checked_add(u64::from(amount))
+                                    .filter(|end| *end <= length)
+                                    .ok_or_else(|| {
+                                        io::Error::other(
+                                            "Image worker read outside captured source",
+                                        )
+                                    })?;
+                                read_total += u64::from(amount);
+                                if read_total > 256 * 1024 * 1024 {
+                                    return Err(io::Error::other(
+                                        "Image source-read budget exhausted",
+                                    ));
+                                }
+                                let bytes = {
+                                    let budget = midnight_work_budget::shared_io();
+                                    let _permit = budget
+                                        .acquire(
+                                            midnight_work_budget::storage_admission(
+                                                source.confirmed_local_ssd(),
+                                            ),
+                                            || {
+                                                cancel.load(Ordering::Acquire)
+                                                    || stopped.load(Ordering::Acquire)
+                                            },
+                                        )
+                                        .ok_or_else(cancelled)?;
+                                    #[cfg(feature = "startup-diagnostics")]
+                                    if first_read {
+                                        startup.mark("first_read_permit");
+                                    }
+                                    source.validate()?;
+                                    let bytes = source.read_at(offset, amount)?;
+                                    source.validate()?;
+                                    bytes
+                                };
+                                if bytes.len() as u64 != end - offset {
+                                    return Err(io::Error::other(
+                                        "Image source returned a short read",
+                                    ));
+                                }
+                                #[cfg(feature = "startup-diagnostics")]
+                                if first_read {
+                                    startup.mark("first_read_complete");
+                                    first_read = false;
+                                }
+                                api::write_message(input, &Message::Data(bytes))?;
+                            }
+                            Message::Metadata(metadata) if provider.protocol == 1 => {
+                                return Ok((metadata, None));
+                            }
+                            Message::DocumentMetadata(document) if provider.protocol == 2 => {
+                                document.validate()?;
+                                return Ok((document.pages[0], Some(document)));
+                            }
+                            Message::Failure => return Err(rejected()),
+                            _ => return Err(io::Error::other("Unexpected image-open response")),
+                        }
+                    }
+                    Err(io::Error::other(
+                        "Image source request-count budget exhausted",
+                    ))
                 },
             )?;
             #[cfg(feature = "startup-diagnostics")]
-            startup.mark("open_sent");
-            let mut read_total = 0u64;
+            startup.mark("metadata");
+            self.metadata = metadata.0;
+            self.document = metadata.1;
+            self.validate_source()?;
             #[cfg(feature = "startup-diagnostics")]
-            let mut first_read = true;
-            for _ in 0..8192 {
-                check_cancel(cancel)?;
-                check_cancel(stopped)?;
-                match api::read_message(output)? {
-                    Message::Read {
-                        offset,
-                        length: amount,
-                    } => {
-                        #[cfg(feature = "startup-diagnostics")]
-                        if first_read {
-                            startup.mark("first_read_request");
-                        }
-                        let end = offset
-                            .checked_add(u64::from(amount))
-                            .filter(|end| *end <= length)
-                            .ok_or_else(|| {
-                                io::Error::other("Image worker read outside captured source")
-                            })?;
-                        read_total += u64::from(amount);
-                        if read_total > 256 * 1024 * 1024 {
-                            return Err(io::Error::other("Image source-read budget exhausted"));
-                        }
-                        let bytes = {
-                            let budget = midnight_work_budget::shared_io();
-                            let _permit = budget
-                                .acquire(
-                                    midnight_work_budget::storage_admission(
-                                        source.confirmed_local_ssd(),
-                                    ),
-                                    || {
-                                        cancel.load(Ordering::Acquire)
-                                            || stopped.load(Ordering::Acquire)
-                                    },
-                                )
-                                .ok_or_else(cancelled)?;
-                            #[cfg(feature = "startup-diagnostics")]
-                            if first_read {
-                                startup.mark("first_read_permit");
-                            }
-                            source.validate()?;
-                            let bytes = source.read_at(offset, amount)?;
-                            source.validate()?;
-                            bytes
-                        };
-                        if bytes.len() as u64 != end - offset {
-                            return Err(io::Error::other("Image source returned a short read"));
-                        }
-                        #[cfg(feature = "startup-diagnostics")]
-                        if first_read {
-                            startup.mark("first_read_complete");
-                            first_read = false;
-                        }
-                        api::write_message(input, &Message::Data(bytes))?;
-                    }
-                    Message::Metadata(metadata) if provider.protocol == 1 => {
-                        return Ok((metadata, None));
-                    }
-                    Message::DocumentMetadata(document) if provider.protocol == 2 => {
-                        document.validate()?;
-                        return Ok((document.pages[0], Some(document)));
-                    }
-                    Message::Failure => return Err(rejected()),
-                    _ => return Err(io::Error::other("Unexpected image-open response")),
-                }
-            }
-            Err(io::Error::other(
-                "Image source request-count budget exhausted",
-            ))
-        })?;
-        #[cfg(feature = "startup-diagnostics")]
-        startup.mark("metadata");
-        self.metadata = metadata.0;
-        self.document = metadata.1;
-        self.validate_source()?;
-        #[cfg(feature = "startup-diagnostics")]
-        startup.mark("complete");
-        check_cancel(cancel)?;
-        Ok(self)
+            startup.mark("complete");
+            check_cancel(cancel)?;
+            Ok(())
+        });
+        match result {
+            Ok(()) => Ok(self),
+            Err(error) => Err(self.owner.fail(error)),
+        }
     }
 
     pub fn metadata(&self) -> Metadata {
@@ -319,7 +357,7 @@ impl ImageSession {
                     viewport,
                 }
             };
-            let frame = self.exchange(cancel, timeout, |input, output, _, _| {
+            let frame = self.exchange(cancel, timeout, |input, output, _, _, _| {
                 api::write_message(input, &message)?;
                 match crate::raster_reply::read(output, viewport.width, viewport.height)? {
                     Message::Rgba { id, frame }
@@ -339,7 +377,7 @@ impl ImageSession {
         })();
         if result.is_err() {
             self.failed = true;
-            self.transport.kill();
+            self.owner.transport_mut().kill();
         }
         result
     }
@@ -351,22 +389,26 @@ impl ImageSession {
             .and_then(|()| check_cancel(cancel));
         if self.failed || result.is_err() {
             self.failed = true;
-            self.transport.kill();
+            self.owner.transport_mut().kill();
             return result.and(Err(io::Error::other("Image session already ended")));
         }
         result
     }
 
     /// Terminate and reap on the owning backend worker. UI close handlers only signal cancellation.
-    pub fn close(mut self) {
-        self.transport.kill();
+    pub fn close(self) {
+        let _ = self.close_checked();
+    }
+
+    /// Positively confirm process termination and pin release; inspect errors before formatting.
+    pub fn close_checked(mut self) -> io::Result<()> {
+        self.owner.finish()
     }
 
     fn validate_source(&self) -> io::Result<()> {
-        self.source.source.validate()?;
-        if self.source.source.length() != self.source.length
-            || self.source.source.version() != self.source.version
-        {
+        let source = self.owner.source();
+        source.source.validate()?;
+        if source.source.length() != source.length || source.source.version() != source.version {
             return Err(io::Error::other("Image source version changed"));
         }
         Ok(())
@@ -380,19 +422,19 @@ impl ImageSession {
             &mut File,
             &mut BufReader<File>,
             &dyn Source,
+            &ProviderIdentity,
             &AtomicBool,
         ) -> io::Result<T>
         + Send,
     ) -> io::Result<T> {
-        let source = self.source.source.as_ref();
-        let result = self
-            .transport
-            .exchange(cancel, timeout, |input, output, stopped| {
-                operation(input, output, source, stopped)
-            });
+        let (transport, identity, source) = self.owner.parts();
+        let source = source.expect("live captured source").source.as_ref();
+        let result = transport.exchange(cancel, timeout, |input, output, stopped| {
+            operation(input, output, source, identity, stopped)
+        });
         if result.is_err() {
             self.failed = true;
-            self.transport.kill();
+            self.owner.transport_mut().kill();
         }
         result
     }
@@ -405,15 +447,19 @@ struct CapturedSource {
 }
 
 impl CapturedSource {
-    fn capture(source: Arc<dyn Source>) -> io::Result<Self> {
-        source.validate()?;
-        let length = source.length();
-        let version = source.version();
-        Ok(Self {
+    fn new(source: Arc<dyn Source>) -> Self {
+        Self {
             source,
-            length,
-            version,
-        })
+            length: 0,
+            version: Vec::new(),
+        }
+    }
+
+    fn capture(&mut self) -> io::Result<()> {
+        self.source.validate()?;
+        self.length = self.source.length();
+        self.version = self.source.version();
+        Ok(())
     }
 }
 fn rejected() -> io::Error {

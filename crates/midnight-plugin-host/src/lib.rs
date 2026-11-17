@@ -25,14 +25,20 @@ mod installation;
 mod installation;
 /// Resolve the installation used by every plugin host on a backend worker.
 ///
-/// Windows prefers a protected executable directory, then an explicitly
-/// registered private deployment with an identical executable hash. Malformed
-/// or unsafe registrations return an error. A missing registration is allowed
-/// for a standalone executable without adjacent plugin directories.
+/// Windows first uses a protected executable directory. Otherwise, a protected
+/// pointer scoped to the launch path selects an explicitly deployed legacy
+/// schema-1 registration. Default matching uses source executable length and
+/// native LastWriteTime metadata; it does not establish executable byte equality.
+/// `MIDNIGHT_VERIFY_RUNTIME_SHA256` absent or `0` leaves strict verification off;
+/// `1` enables the previous strict executable hash and snapshot checks. Other
+/// values are rejected. Using a deployment requires updating a missing or stale
+/// pointer. A standalone executable without adjacent plugin directories remains
+/// allowed. Malformed or unsafe registrations return an error.
 /// Other platforms retain executable-relative discovery.
 ///
-/// The result is retained until restart. Discovery and loading still validate
-/// package permissions; resolving a location does not authorize its contents.
+/// The result and environment choice are retained until restart. Package ACL,
+/// ABI and loading checks still apply; resolving a location does not authorize
+/// its contents.
 pub fn installed_executable() -> Result<std::path::PathBuf, Error> {
     static INSTALLATION: std::sync::OnceLock<Result<std::path::PathBuf, Error>> =
         std::sync::OnceLock::new();
@@ -73,6 +79,8 @@ mod native;
 mod package_trust;
 mod trusted_library;
 pub use trusted_library::TrustedLibrary;
+mod trusted_executable;
+pub use trusted_executable::TrustedExecutablePin;
 mod replies;
 #[cfg(windows)]
 #[path = "trust_windows.rs"]

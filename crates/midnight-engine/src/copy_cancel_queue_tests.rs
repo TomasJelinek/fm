@@ -27,6 +27,8 @@ struct Service {
     inner: moves::CrossDeviceService,
     control: Arc<Control>,
 }
+// Native delegates and fixture state are destroyed synchronously; no retirement queues are hidden.
+impl midnight_core::AuditedSynchronousTransferService for Service {}
 impl TransferService for Service {
     fn prepare_transfer_source(
         &self,
@@ -317,7 +319,7 @@ async fn cancelled_case(
         !premature_terminal,
         "terminal cancellation before native {point:?} returned"
     );
-    assert_eq!(held, (0, 0));
+    assert_eq!(held, (0, 31));
     assert_eq!(done.state, CopyOperationState::Cancelled, "{done:?}");
     assert!(done.errors.is_empty(), "{done:?}");
     assert_eq!(done.verification, verification);

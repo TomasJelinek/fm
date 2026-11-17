@@ -216,6 +216,7 @@ pub(super) fn prepare(
         file: capture.file.clone(),
         revision: Revision::of(&capture.file, source)?,
         outcome: None,
+        _namespace_owner: super::super::namespace::owner(&[capture.entry.identity]),
     };
     finalizer.revalidate(cancel)?;
     Ok(Box::new(finalizer))
@@ -229,6 +230,8 @@ struct Finalizer {
     file: Arc<File>,
     revision: Revision,
     outcome: Option<TransferMoveFinalizeOutcome>,
+    // Last: the retained source and recovery-directory handles close before this signal.
+    _namespace_owner: super::super::namespace::NativeOwner,
 }
 impl TransferMoveFinalizer for Finalizer {
     fn revalidate(&self, cancel: &Cancellation) -> Result<(), FsError> {
@@ -260,26 +263,32 @@ impl TransferMoveFinalizer for Finalizer {
         }
         let removal = self.revalidate(cancel).and_then(|()| {
             checked(cancel, &self.source)?;
-            let info = FILE_DISPOSITION_INFO_EX {
-                Flags: FILE_DISPOSITION_FLAG_DELETE
-                    | FILE_DISPOSITION_FLAG_POSIX_SEMANTICS
-                    | FILE_DISPOSITION_FLAG_FORCE_IMAGE_SECTION_CHECK,
-            };
-            // SAFETY: live DELETE-capable source handle, fixed native structure. No
-            // readonly override. POSIX removes this staged link when our DELETE
-            // owners close; other read handles may still retain physical storage.
-            if unsafe {
-                SetFileInformationByHandle(
-                    self.file.as_raw_handle(),
-                    FileDispositionInfoEx,
-                    (&info as *const FILE_DISPOSITION_INFO_EX).cast(),
-                    size_of::<FILE_DISPOSITION_INFO_EX>() as u32,
-                )
-            } == 0
-            {
-                return Err(error(&self.source, io::Error::last_os_error()));
-            }
-            Ok(())
+            super::super::namespace::change(cancel, |mutation| {
+                mutation
+                    .remove(&self.file, cancel, || {
+                        let info = FILE_DISPOSITION_INFO_EX {
+                            Flags: FILE_DISPOSITION_FLAG_DELETE
+                                | FILE_DISPOSITION_FLAG_POSIX_SEMANTICS
+                                | FILE_DISPOSITION_FLAG_FORCE_IMAGE_SECTION_CHECK,
+                        };
+                        // SAFETY: live DELETE-capable source handle, fixed native structure. No
+                        // readonly override. POSIX removes this staged link when our DELETE
+                        // owners close; other read handles may still retain physical storage.
+                        if unsafe {
+                            SetFileInformationByHandle(
+                                self.file.as_raw_handle(),
+                                FileDispositionInfoEx,
+                                (&info as *const FILE_DISPOSITION_INFO_EX).cast(),
+                                size_of::<FILE_DISPOSITION_INFO_EX>() as u32,
+                            )
+                        } == 0
+                        {
+                            return Err(io::Error::last_os_error());
+                        }
+                        Ok(())
+                    })
+                    .map_err(|e| error(&self.source, e))
+            })
         });
         let outcome = match removal {
             Err(error) => TransferMoveFinalizeOutcome::Retained {

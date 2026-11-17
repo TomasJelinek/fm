@@ -1,4 +1,5 @@
-//! Process-wide fair I/O admission. Never hold a permit during decoding, hashing or channel waits.
+//! Process-wide fair I/O admission. Transfer jobs may retain one shared slot through teardown;
+//! other consumers retain their existing call-scoped admission policy.
 use std::{
     collections::VecDeque,
     sync::{Arc, Condvar, Mutex, OnceLock},
@@ -96,6 +97,30 @@ impl Gate {
             .unwrap_or_else(|error| error.into_inner())
             .limit
     }
+    /// Try immediate admission without queuing or overtaking an existing waiter.
+    /// This supports rolling back a lifetime transfer slot when its namespace
+    /// share is unavailable, without awaiting one resource while holding another.
+    pub fn try_acquire(self: &Arc<Self>, admission: Admission) -> Option<Permit> {
+        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        if !state.queue.is_empty() || state.exclusive {
+            return None;
+        }
+        let eligible = match admission {
+            Admission::Shared => state.active_shared < state.limit,
+            Admission::Exclusive => state.active_shared == 0,
+        };
+        if !eligible {
+            return None;
+        }
+        match admission {
+            Admission::Shared => state.active_shared += 1,
+            Admission::Exclusive => state.exclusive = true,
+        }
+        Some(Permit {
+            gate: self.clone(),
+            admission,
+        })
+    }
     /// FIFO prevents an exclusive HDD request from being starved by a stream of SSD requests.
     /// Cancellation removes a queued ticket within one short polling interval.
     pub fn acquire(
@@ -144,6 +169,15 @@ impl Gate {
 pub struct Permit {
     gate: Arc<Gate>,
     admission: Admission,
+}
+impl Permit {
+    /// Whether this live guard consumes capacity from the exact configured gate.
+    pub fn belongs_to(&self, gate: &Arc<Gate>) -> bool {
+        Arc::ptr_eq(&self.gate, gate)
+    }
+    pub fn is_shared(&self) -> bool {
+        self.admission == Admission::Shared
+    }
 }
 impl Drop for Permit {
     fn drop(&mut self) {
@@ -370,6 +404,62 @@ mod tests {
         let gate = Arc::new(Gate::new(1));
         assert!(gate.acquire(Admission::Exclusive, || true).is_none());
         assert_eq!(gate.snapshot().queued, 0);
+        assert_eq!(gate.snapshot().available, 1);
+    }
+
+    #[test]
+    fn try_admission_respects_capacity_and_identifies_the_actual_guard() {
+        let gate = Arc::new(Gate::new(2));
+        let other = Arc::new(Gate::new(2));
+        let first = gate.try_acquire(Admission::Shared).unwrap();
+        let second = gate.try_acquire(Admission::Shared).unwrap();
+        assert!(first.belongs_to(&gate));
+        assert!(!first.belongs_to(&other));
+        assert!(first.is_shared());
+        assert!(gate.try_acquire(Admission::Shared).is_none());
+        assert!(gate.try_acquire(Admission::Exclusive).is_none());
+        drop(first);
+        assert!(gate.try_acquire(Admission::Shared).is_some());
+        drop(second);
+        let exclusive = gate.try_acquire(Admission::Exclusive).unwrap();
+        assert!(exclusive.belongs_to(&gate));
+        assert!(!exclusive.is_shared());
+        assert!(gate.try_acquire(Admission::Shared).is_none());
+        drop(exclusive);
+        assert_eq!(gate.snapshot().available, 2);
+    }
+
+    #[test]
+    fn try_admission_cannot_bypass_a_queued_exclusive_request() {
+        let gate = Arc::new(Gate::new(2));
+        let held = gate.try_acquire(Admission::Shared).unwrap();
+        let exclusive = Waiting::new(gate.clone(), Admission::Exclusive);
+        queued(&gate, 1);
+        assert_eq!(gate.snapshot().available, 1);
+        assert!(gate.try_acquire(Admission::Shared).is_none());
+        drop(held);
+        exclusive.assert_entered();
+        assert!(gate.try_acquire(Admission::Shared).is_none());
+        drop(exclusive);
+        assert!(gate.try_acquire(Admission::Shared).is_some());
+    }
+
+    #[test]
+    fn try_admission_waits_for_a_decreased_limit_to_drain() {
+        let gate = Arc::new(Gate::new(3));
+        let first = gate.try_acquire(Admission::Shared).unwrap();
+        let second = gate.try_acquire(Admission::Shared).unwrap();
+        let third = gate.try_acquire(Admission::Shared).unwrap();
+        gate.set_limit(1).unwrap();
+        assert!(gate.try_acquire(Admission::Shared).is_none());
+        drop(first);
+        assert!(gate.try_acquire(Admission::Shared).is_none());
+        drop(second);
+        assert!(gate.try_acquire(Admission::Shared).is_none());
+        drop(third);
+        let resumed = gate.try_acquire(Admission::Shared).unwrap();
+        assert_eq!(gate.snapshot().active_shared, 1);
+        drop(resumed);
         assert_eq!(gate.snapshot().available, 1);
     }
 }

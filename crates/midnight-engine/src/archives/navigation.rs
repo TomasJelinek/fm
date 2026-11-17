@@ -28,7 +28,7 @@ pub(super) fn run(request: &Request, mounts: &Mounts) -> Result<ArchiveListing, 
             let source = capture_source(request.capture.as_ref(), &path, None, &request.cancel)?;
             let raw = Mount::open_captured(package, format, &path, source, &request.cancel)?;
             let address = raw.address();
-            let mount = mounts.adopt_reserved(raw, reserved, request.scope.clone());
+            let mount = mounts.adopt_reserved(raw, reserved);
             (
                 ArchiveLocation {
                     address,
@@ -47,7 +47,7 @@ pub(super) fn run(request: &Request, mounts: &Mounts) -> Result<ArchiveListing, 
         }
         ArchiveAction::List(mut location) => {
             let mount = if let Some(raw) = location.mount.take() {
-                mounts.adopt(raw, request.scope.clone())?
+                mounts.adopt(raw)?
             } else {
                 let reserved = mounts.reserve()?;
                 location = restore(
@@ -60,7 +60,7 @@ pub(super) fn run(request: &Request, mounts: &Mounts) -> Result<ArchiveListing, 
                     .mount
                     .take()
                     .ok_or_else(|| error("Archive is unavailable"))?;
-                mounts.adopt_reserved(raw, reserved, request.scope.clone())
+                mounts.adopt_reserved(raw, reserved)
             };
             (location, mount)
         }

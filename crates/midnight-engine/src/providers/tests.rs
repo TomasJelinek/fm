@@ -6,6 +6,10 @@ struct EmptyProvider;
 struct EmptyMount;
 
 impl FilesystemProvider for EmptyProvider {
+    fn release_on_worker(self: Arc<Self>) -> Result<(), ProviderError> {
+        drop(self);
+        Ok(())
+    }
     fn resolve(
         &self,
         _address: &StoredLocation,
@@ -18,6 +22,10 @@ impl FilesystemProvider for EmptyProvider {
     }
 }
 impl MountedFilesystem for EmptyMount {
+    fn release_on_worker(self: Arc<Self>) -> Result<(), ProviderError> {
+        drop(self);
+        Ok(())
+    }
     fn list(
         &self,
         _directory: &NodeToken,
@@ -149,6 +157,10 @@ struct FilesMount {
 }
 
 impl FilesystemProvider for FilesProvider {
+    fn release_on_worker(self: Arc<Self>) -> Result<(), ProviderError> {
+        drop(self);
+        Ok(())
+    }
     fn resolve(
         &self,
         _address: &StoredLocation,
@@ -179,6 +191,10 @@ fn file(value: u8) -> ProviderEntry {
     }
 }
 impl MountedFilesystem for FilesMount {
+    fn release_on_worker(self: Arc<Self>) -> Result<(), ProviderError> {
+        drop(self);
+        Ok(())
+    }
     fn list(
         &self,
         _directory: &NodeToken,
@@ -213,6 +229,10 @@ struct TestContent {
     short_read: bool,
 }
 impl ContentSource for TestContent {
+    fn release_on_worker(self: Arc<Self>) -> Result<(), midnight_plugin_host::Error> {
+        drop(self);
+        Ok(())
+    }
     fn length(&self) -> u64 {
         5
     }
@@ -364,6 +384,10 @@ fn blocked_resolution_does_not_hold_registry_lock_and_late_output_is_rejected() 
         resume: Mutex<mpsc::Receiver<()>>,
     }
     impl FilesystemProvider for BlockingProvider {
+        fn release_on_worker(self: Arc<Self>) -> Result<(), ProviderError> {
+            drop(self);
+            Ok(())
+        }
         fn resolve(
             &self,
             _address: &StoredLocation,

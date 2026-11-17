@@ -6,6 +6,30 @@ corrections to stale stage references are tracked in [Active work](ACTIVE_WORK.m
 Implementation presence, recorded targeted results and native/release qualification
 are separate states; the latter is not implied by a checked plan or green subset.
 
+The 16 November independent Windows plugin qualification passed Source 49
+and Markdown 76 with 1 ignored, covering all 13 normal artifacts each. Physical
+desktop and full-app qualification remain separate; earlier 41/42 are prior subsets.
+The specific Copy authority fix passed five required runtime cases, while AB56
+remained 78/1/0 with four critical selectors unrun in that phase. The initial
+13-component rebuild passed with recorded warnings. Corrected full Engine lib
+passed 1375/0/8, filesystem-host lib 46/0/1 and RealOps 14/0/1
+(passed/failed/ignored). All 6 API, 11 production plugins, 2 support boundaries
+and root doctests passed. Corrected UI continuation qualified 460 unique cases
+across 82 harnesses. Scoped quality and warm host/inventory/validator passed;
+the corrected first-use image regression and all 25 selected native cases are
+qualified across the retained and final scoped runs. Viewer libraries passed
+33/0/4 and 256/0/4; the thumbnail observer fixture correction passed four native
+cases without changing production timeouts. Actual normal-profile deployment and
+launcher registration were verified. Original RED evidence is preserved.
+Desktop10/manual/UNC/Linux gaps remain.
+[Active work](ACTIVE_WORK.md) retains exact scopes.
+
+Compatible plugin packages can be replaced with the app closed, then loaded
+after restart. There is no per-plugin pinned SHA. Protected path metadata
+selects the registered runtime by default; opt-in verification uses EXE hashes.
+Loaders still check ABI, platform, manifest and permissions.
+See [runtime discovery](developer/RUNTIME_DISCOVERY.md).
+
 The integrated 12 November panel batch adds bounded tree publication/command
 admission, captured native actions and root-level native directory comparison.
 Ctrl+D clears every mark, including folders and expanded descendants; Ctrl+Shift+D
@@ -252,7 +276,7 @@ preferences. See [verification and limits](verification/2026-11-08-markdown-tabl
 | Archive providers | Independent workers browse ZIP/7z/GZIP/TAR and TAR.GZ/TAR.XZ/TAR.BZ2/TAR.ZST plus raw compressed streams; F5 uses verified copying. Protocol 2 streams captured source ranges and verified members through private disk storage without artificial source/member/decoded-disk/ratio byte ceilings | Protocol 1 retains legacy limits. Protocol 2 retains two mounts, 512 MiB worker memory, 20-second progress watchdog, 256 KiB I/O, 100,000 entries, 8 MiB names and decoder/header bounds; available private TEMP storage can limit content. Installed Windows/Linux worker checks passed 9 November; complete application/UI qualification remains separate. No writing, passwords, nested mounts, RAR or external member launch; unavailable saved tabs remain explicit. [API and limits](developer/FILESYSTEM_API.md), [streaming verification](verification/2026-11-09-archive-streaming.md) |
 | PDF | Independent isolated PDF plugin with page controls, zoom and pan; new PDFs open Fit window, including enlargement of small pages; Ctrl+PageUp/Down preserves manual zoom, while Fit adapts to each page size | Hayro rendering; unsupported/encrypted documents report an error. No scripts/network/link activation; bounded source/pages/rendering. See [opening/zoom verification](verification/2026-11-08-viewer-opening-toolbar.md) |
 | File comparison | Ctrl+Shift+C or the shared top toolbar opens text differences or image comparison with Side-by-Side, Swipe and Onion Skin; two active-panel selections take priority, otherwise an opposite selection or exact same-name counterpart is used. An unresolved pair opens File A / File B with native Browse and editable paths. | Native regular files only, including visible root files in an expanded native panel; automatic matching uses visible native names with exact case, never an unrelated opposite cursor; bounded text diff and raster sizes. [Automatic pairing](verification/2026-11-08-comparison-same-name.md), [manual choice contract](developer/FILE_COMPARISON.md) |
-| Comparator settings / associations — planned | Ordered BOTH-basename overrides for Automatic, built-in text/images or a trusted external native program; [design](superpowers/specs/2026-11-13-comparator-associations-design.md), [UI wireframes](superpowers/specs/2026-11-13-comparator-associations-ui.md) and [plan](superpowers/plans/2026-11-13-comparator-associations.md). | Design/planning only; no new implementation or passing tests claimed. Existing file comparison remains available. |
+| Comparator settings / associations — planned | Ordered BOTH-basename overrides for Automatic, built-in text/images or a trusted external native program; [design](superpowers/specs/2026-11-13-comparator-associations-design.md), [UI wireframes](superpowers/specs/2026-11-13-comparator-associations-ui.md) and [plan](superpowers/plans/2026-11-13-comparator-associations.md). | Canonical comparator feature/settings/routing/external launch remain unimplemented. Private Core passed 43 targeted cases; it and independent UI/Viewer candidates remain unintegrated. UI baseline was a setup failure. Existing file comparison remains available. |
 | Custom Commands | Windows/Linux backend supports captured native arguments/cwd, per-item or grouped execution, previews and bounded process ownership; settings includes drag ordering, a conditional toolbar and configurable shortcuts | Windows Program/PowerShell/Cmd and Linux Program/POSIX profiles. Cmd supports single-line literal scripts with qualified direct native argument companions; builtins and reparsing have separate semantics. Native macOS support remains unavailable. [Cmd qualification](verification/2026-11-12-cmd-custom-commands.md). [Custom Commands design](superpowers/specs/2026-11-07-user-commands-design.md), [settings verification](verification/2026-11-07-custom-command-settings.md) |
 | Native providers | Independent Windows/Linux native libraries provide panel Browse/Stat/Storage and native F3 content; required packages are included by build/release helpers, with no hidden fallback | Remaining services still use explicit OS adapters. Generic provider action migration, writes/watches and nested-container attachment remain pending; inline directory browsing is integrated. [Native API](developer/NATIVE_FILESYSTEM_API.md) |
 | Network Neighborhood | Independent Windows WNet/MPR and Linux GIO/GVfs plugin; Network entry after drives in the dropdown and each panel drive bar, incremental discovery, cache, manual targets, explicit native-share handoff, parent/back context, persisted typed tabs and discovery Hot Paths with configurable numbered shortcuts | Requires OS discovery/runtime services. Discovery bookmarks retain opaque provider identity even when unavailable; [schema/shortcut evidence](verification/2026-11-11-network-hot-paths.md). Controlled live SMB/FUSE interoperability and interactive Linux credentials remain separate qualification/implementation work; native share Hot Paths also work. macOS is a later adapter. [Contract](developer/NETWORK_FILESYSTEM.md), [qualification](verification/2026-11-09-network-neighborhood.md) |
@@ -263,11 +287,12 @@ preferences. See [verification and limits](verification/2026-11-08-markdown-tabl
 The older [follow-up stages](superpowers/plans/2026-11-05-follow-up-stages.md)
 retain historical requests; later accepted per-file Move, verification and dialog
 refinements supersede conflicting stage text. Current assignments and remaining
-acceptance are in [Active work](ACTIVE_WORK.md). Native copy runs serially with a 256 KiB
-buffer. Future concurrent copying is permitted only when both source and
-destination are positively classified as local SSD storage. HDD, network and
-unknown storage retain serial copying. Details are in the repository's security
-and architecture documents.
+acceptance are in [Active work](ACTIVE_WORK.md). Bounded admission and native
+Copy scheduling are implemented in the current source; the specific authority
+fix has targeted passes while broader concurrency/retirement acceptance remains
+open. Endpoint qualification and device budgets remain required; HDD, network
+and unknown storage retain serial copying. Details are in the repository's
+security and architecture documents.
 
 The [10 November same-SSD benchmark](verification/2026-11-10-ssd-copy-probe.md)
 measured substantial gains in the native primitive for large/mixed files, but

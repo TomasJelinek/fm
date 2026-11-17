@@ -127,13 +127,14 @@ async fn verify_listing(complete: bool) {
     });
     let locale = Arc::new(Locale::default());
     let caller = std::thread::current().id();
-    let (commands, receiver) = mpsc::channel(8);
+
     let (sender, mut events) = mpsc::channel(32);
     let mut engine = Engine::new(
         Engine::lifetime().expect("engine cleanup worker"),
         filesystem.clone(),
         sender,
     );
+    let (commands, receiver) = engine.command_channel(8).unwrap();
     engine.configure_locale().unwrap().install(locale.clone());
     let task = tokio::spawn(engine.run(receiver));
     commands

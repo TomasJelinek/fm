@@ -3,7 +3,9 @@ import hashlib
 import importlib.util
 import io
 import json
+import os
 from pathlib import Path
+import subprocess
 import tarfile
 import tempfile
 import unittest
@@ -74,7 +76,12 @@ class PrepareHtmlCef(unittest.TestCase):
             self.assertEqual(result, self.output)
             self.assertEqual({path.relative_to(result).as_posix(): path.read_bytes()
                               for path in result.rglob("*") if path.is_file()}, files)
-            self.assertEqual((result / "chrome-sandbox").stat().st_mode & 0o7777, 0o755)
+            sandbox_mode = (result / "chrome-sandbox").stat().st_mode & 0o7777
+            self.assertEqual(sandbox_mode & 0o7000, 0)
+            if os.name == "nt":
+                self.assertTrue(sandbox_mode & 0o200, "Windows fixture must remain writable")
+            else:
+                self.assertEqual(sandbox_mode, 0o755)
             (result / "libcef.so").write_bytes(b"Corrupt SDK cache")
             self.assertEqual(self.prepare(pin), self.output)
             self.assertEqual((result / "libcef.so").read_bytes(), b"Linux runtime\n")
@@ -121,8 +128,18 @@ class PrepareHtmlCef(unittest.TestCase):
         self.output.parent.mkdir(parents=True)
         outside = self.root / "outside"
         outside.mkdir()
-        self.output.symlink_to(outside, target_is_directory=True)
-        with self.assertRaises(ValueError):
+        if os.name == "nt":
+            subprocess.run(
+                ["cmd.exe", "/d", "/c", "mklink", "/J", str(self.output), str(outside)],
+                check=True, capture_output=True, text=True,
+                creationflags=subprocess.CREATE_NO_WINDOW)
+            self.addCleanup(os.rmdir, self.output)
+            self.assertTrue(self.output.lstat().st_file_attributes & 0x400)
+        else:
+            self.output.symlink_to(outside, target_is_directory=True)
+            self.addCleanup(self.output.unlink)
+        self.assertTrue(self.output.samefile(outside))
+        with self.assertRaisesRegex(ValueError, "links/reparse points"):
             self.prepare(pin)
         self.assertEqual(list(outside.iterdir()), [])
 

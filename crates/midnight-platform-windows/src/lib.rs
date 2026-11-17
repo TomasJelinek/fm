@@ -57,6 +57,10 @@ pub struct WindowsFileSystem {
     home: Option<PathBuf>,
 }
 
+// The reviewed transfer graph closes its native handles and oplock/drain owners
+// synchronously. Independently supplied captured providers are excluded.
+impl midnight_core::AuditedSynchronousTransferService for WindowsFileSystem {}
+
 impl WindowsFileSystem {
     /// Creates an adapter with an optional Home root supplied by the application.
     /// The Home path is preserved verbatim and need not exist.

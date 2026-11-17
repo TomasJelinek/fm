@@ -60,6 +60,12 @@ pub struct OpenedLocation {
 
 /// Blocking provider resolution. A missing package never falls back to native I/O.
 pub trait FilesystemProvider: Send + Sync + 'static {
+    /// Consume this reference on a worker. A last owner must explicitly finish
+    /// all nested native work before returning; opaque owners remain retained.
+    fn release_on_worker(self: Arc<Self>) -> Result<(), ProviderError> {
+        std::mem::forget(self);
+        Err(crate::copy_nested_retirement::provider_error())
+    }
     fn resolve(
         &self,
         location: &StoredLocation,
@@ -73,6 +79,12 @@ pub trait FilesystemProvider: Send + Sync + 'static {
 /// the mount. Metadata/content can change; capturing content must validate its
 /// own revision, and a node reference is never immutable object identity.
 pub trait MountedFilesystem: Send + Sync + 'static {
+    /// A shared release does not wait for another tab. The concrete last owner
+    /// must acknowledge its native/provider tails before returning success.
+    fn release_on_worker(self: Arc<Self>) -> Result<(), ProviderError> {
+        std::mem::forget(self);
+        Err(crate::copy_nested_retirement::provider_error())
+    }
     /// Read-only target identity for ancestor cycle detection. No resolved path
     /// or operation authority is returned. Unsupported ordinary directories keep
     /// their existing browsing semantics; directory links require an identity.
@@ -153,6 +165,8 @@ impl fmt::Display for ProviderError {
 impl std::error::Error for ProviderError {}
 
 #[cfg(test)]
+mod archive_taint_tests;
+#[cfg(test)]
 mod browse_identity_tests;
 #[cfg(test)]
 mod contract_tests;
@@ -160,6 +174,9 @@ mod contract_tests;
 mod folder_listing_tests;
 #[cfg(test)]
 mod ownership_tests;
+#[cfg(test)]
+#[path = "../provider_retirement_tests.rs"]
+mod retirement_tests;
 #[cfg(test)]
 mod target_contract_tests;
 #[cfg(test)]

@@ -160,9 +160,11 @@ impl Job {
                         .filter(|copy| copy.phase() == CopyPhase::Failed)
                         .map_or(Ok(()), |copy| copy.retry(&self.cancel)),
                     Context::Move => {
-                        let mut work = self.move_work.take().expect("failed move remains owned");
+                        let mut work = ownership::Armed::new(
+                            self.move_work.take().expect("failed move remains owned"),
+                        );
                         let result = work.retry(self);
-                        self.move_work = Some(work);
+                        self.move_work = Some(work.into_inner());
                         result
                     }
                     Context::Enumeration => unreachable!("enumeration cannot advertise retry"),
@@ -183,7 +185,9 @@ impl Job {
                 match self.failure_context {
                     Context::Entry => self.skip_current(),
                     Context::Enumeration | Context::DirectoryRemoval => {
-                        let frame = self.stack.pop().expect("failed enumeration frame");
+                        let frame = ownership::Armed::new(
+                            self.stack.pop().expect("failed enumeration frame"),
+                        );
                         for parent in &mut self.stack {
                             parent.retain_source = true;
                         }
@@ -192,15 +196,18 @@ impl Job {
                         {
                             self.record(error);
                         }
+                        drop(frame.into_inner());
                         self.progress.skipped += 1;
                     }
                     Context::Move => {
                         for frame in &mut self.stack {
                             frame.retain_source = true;
                         }
-                        let mut work = self.move_work.take().expect("failed move remains owned");
+                        let mut work = ownership::Armed::new(
+                            self.move_work.take().expect("failed move remains owned"),
+                        );
                         let result = work.skip_failed(self);
-                        self.move_work = Some(work);
+                        self.move_work = Some(work.into_inner());
                         if let Err(error) = result {
                             self.record(error);
                         }

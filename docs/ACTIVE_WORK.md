@@ -1,4 +1,8 @@
-# Active work and requirements evidence — 13 November 2026
+# Active work and requirements evidence — 17 November 2026
+
+<a id="active-work-and-requirements-evidence--13-november-2026"></a>
+<a id="active-work-and-requirements-evidence--15-november-2026"></a>
+<a id="active-work-and-requirements-evidence--16-november-2026"></a>
 
 This is the current implementation/acceptance ledger alongside
 [Feature status](FEATURE_STATUS.md) and the preserved
@@ -9,6 +13,87 @@ code or a green subset into complete qualification.
 <a id="current-checkpoint"></a>
 
 ## Current checkpoint
+
+**ACTIVE — explicitly resumed by the user on 15 November 2026:** implement all
+designed app features, test each deeply and polish all UI. Copy/Move convergence
+comes first; role work still requires scoped acceptance and exclusive ownership.
+
+The qualification preparation used feature branch `codex/copy-move-progress-20261113` at merge commit
+`a93557d4fc650c6dd8d83ad4ddd66003841a3e5a`, incorporating `origin/main` `ccf7310`.
+All 250 WIP files were restored: 237 byte-identical and 13 intentional
+combinations. The additional `copy_delivery_tests.rs` combination adapts two old
+helper calls without changing assertions; all 61 untracked files were retained.
+These are merge/restoration facts, not a new test qualification. Root reports
+both independent source reviews passed.
+
+The user requires build/tests followed by commit, merge into `main` and push;
+Root owns Git/integration after validation. This **16–17 November 2026** checkpoint
+attributes results to each receipt's dated source identity, rather than the
+commit that will contain this document. Three-target fixture qualification binds
+449+13 freeze `0dd6200d…`; independent qualification binds keyboard450 freeze
+`b743552c…`. Clipping qualification binds 452+13 freeze `aaf5b7c0…`;
+each receipt retains its full identity and source guard.
+
+Old D `_build` was deleted after hash-verified recovery, recovering approximately
+**186.87 GiB**. Recovery manifest SHA-256 is
+`e02fc095a219e2d495252a99c06eb6d4c663c3208ff9d2eb6289572ac08ef193`;
+final deletion receipt SHA-256 is
+`c2a942efdc1068dd1301ccc6671cff7ad30f8c29a5c5d4121b67b1c1b4a38be1`.
+Both are retained on C; `final-recovery-file-mapping.jsonl` maps old D evidence
+paths to verified backups. Historical paths below describe that recovered scope.
+`.tools` was retained; archival binaries are not fresh build inputs.
+
+| Current assignment | Verified scope and remaining boundary |
+| --- | --- |
+| Build/final QA | Initial **13 components** built; inventory **1,823 files / 641,250,519 B**, accepted exits **0**, zero compiler error lines. Classified **58 warning lines** (viewers 5, FFmpeg 52, thumbnailer 1) plus **8 cmp emissions** remain recorded, including original strict viewer diagnostics FAIL and continuation acceptance. Stopped redundant FFmpeg recheck **-1** earns no GREEN. Latest warm host, **13-component inventory/validator GREEN**; final qualification remains open. |
+| Runtime verification | Canonical own-EXE verification defaults **OFF** (flag absent/`0`); `MIDNIGHT_VERIFY_RUNTIME_SHA256=1` opts into strict hashing. Latest Rust plugin-host tests **97 passed / 0 failed / 6 ignored**; all **33 installation selectors** passed. Native PowerShell scripts passed; fresh Rust public-API children consumed a PS-produced pointer with flag **absent / 0 / 1**, all passed. One-time deployment refresh is required for old hash-only registrations in OFF. No default EXE byte-equality claim; loader/path/permission guards remain. [Contract](developer/RUNTIME_DISCOVERY.md). Manual, UNC and Linux qualification remain separate. |
+| Independent qualification | All **6 API**, **11 production plugin** and **2 support** boundaries passed, including separate C ABI qualification; root doctests exited **0**, all owned Cargo exited. Receipt `independent-all-green-keyboard450.json` retains original source/config/lock/toolchain guards through reviewed host test-only transitions. These results do not qualify physical desktop or the remaining root UI/native/deployment gates. |
+| UI continuation | Keyboard **32 GREEN**, mouse **1 GREEN** and strict scoped checks passed. Clipping fix: **32/0/0** (settings 22, toolbar 3, forms 6, volume 1), unchanged assertions, 452+13 no drift. The **82 harnesses / 460 unique cases** account for **449 − 21 overlap + 32 fresh**; original row-Y61/clip-Y65 failure stays RED history. Scoped quality is GREEN. Desktop10 has no qualified observer: an accepted nonblocking qualification gap. |
+| Native25 qualification | Original 14/1/10 and fresh 17.02 s ChangeTime-only RED remain preserved. The corrected first-use image07 passed in 17.00 s, followed by six related Viewer native passes. A separate thumbnail observer ended before a queued request was observed; its test-only correction retains the production two-second timeout and verifies actual queued cleanup (2.008 s). The four-case correction/deferred continuation passed 4/0/0. Together with 14 retained earlier passes, all **25 selected native cases are qualified**. Viewer libraries passed **33/0/4 + 256/0/4**; plugin-host **97/0/6**. The 26 new Viewer definitions are included in these passing suites. Scoped formatting/strict Clippy passed. Host warm, 13-component inventory/runtime validator and actual normal-profile deployment/launcher registration passed. Linux3/UNC/desktop10/manual gaps remain explicit. |
+| Fixture-correction qualification | After 23 reviewed test-only fixture corrections, full Engine lib **1375 passed / 0 failed / 8 ignored**, filesystem-host lib **46/0/1** (47 selectors), RealOps **14/0/1**. Receipt `fixture-corrections-green-v1/three-target-result.json` records all three GREEN and **449+13** guards without drift. Original Engine **57 RED**, FIFO **1 RED** and filesystem-host abort remain historical. Eight Windows environment failures reran **8/8 GREEN** with short TEMP and unchanged source. No production queue/security weakening. Later rows record the completed scoped normal/API/plugin/doctest/native/warm/deployment qualification; desktop/manual/platform gaps remain separate. |
+| Copy/Move | The specific authority fix passed **five required runtime cases**. AB56 was **78/1/0**: B-pure 71/1/0, g059 2/0/0, required-five 5/0/0; retirement waiter observed **3**, expected **2**, and **four critical selectors were unrun** in that phase. Reviewed test correction is canonical; retain original failure. Native timestamp ownership has meaningful old-RED then GREEN and fixture-v3 GREEN; the early ErrorKind mismatch was not meaningful RED. Final broader validation is pending. |
+| Native/Viewer prior results | Native52 parent **5/0/0**, corrected Native53 namespace **9/0/0**, strict scheduler witness **1/0/0** retain their inputs. Latest independent Windows Source qualification is **49 passed**, Markdown **76 passed / 1 ignored**, each across all **13 normal artifacts**; earlier Source 41/Markdown 42 are prior subsets, not additive. Old public-ABI paging failed unchanged **2 MiB**: C++ **3,165,411 B**, JSON **3,154,953 B**; candidate **1,138,446 / 1,122,063 B** passed. Metric: incremental Rust allocation requests, not RSS/general timing or physical desktop/full-app qualification. |
+| Comparator | Private Core GREEN **43/0/0** (configuration 30, policy 8, preferences 5), compile **9.7549131 s**, zero errors/warnings; Core remains excluded from canonical. UI baseline was a setup failure. Private Core/UI/Viewer candidates do not implement canonical comparator feature/settings/routing/external launch. |
+| Retained evidence | Prior 420-file six-artifact compile, **49/0/0** selected passes and separate native50 **0/1/0** retain their inputs; so do the prior **69-artifact** compiler and interrupted attempt. Archive Options Host 2/UI 16/installed-catalog 1, old normal fixtures 4/5 and corrected catalog51 1/0/0 remain scoped, not full qualification. Recorded strict Clippy v4/source-size passes do not establish final current-source QA. |
+
+Retain the separate **188 producer/UI passes / 0 failed / 1 existing optional
+benchmark ignored** and host-foundation **54/0/0 Windows** plus **54/0/0 Linux**
+at their recorded inputs (foundation commit `4570154`; Linux functional only).
+These are not combined new scheduler/current-head evidence. The earlier private Windows app **`937e9bfc`** retains its original source
+and limits below; the refreshed 17 November executable and registration are
+recorded next. Imported Linux desktop/runtime notes retain their own scope.
+
+
+### Final Windows checkpoint evidence — 17 November 2026
+
+The production host passed a zero-warning warm build (114.43 s). Inventory
+`final-warm-f450-pin466/final-component-artifact-inventory.json` checked all 13
+components and 1,823 files; the separate runtime validator exited 0. The unchanged
+12 independent components were retained, without replaying their builds.
+Viewer qualification binds 466+13 freeze `a7a32151…`; only the thumbnail native
+observer fixture changed for 467+13 freeze `fdc08657…`. No production decoder or
+application timeout changed in that correction. Original failed receipts remain.
+
+Receipts under `_build/verification/final-review-tests-20261116/` include
+`viewer-pin-visibility-v4-libs/plugin-host-result.json`,
+`native11-pin466-first-use/native11-first-use-result.json` (7 passed, then the
+thumbnail fixture failure), and
+`native4-observer467/native4-observer-correction-result.json` (4/0/0). The retained
+14 earlier native passes keep their original source and provenance. This is
+scoped automated acceptance, not physical desktop or Linux qualification.
+
+Actual normal-profile deployment and the protected registration plus launcher
+pointer were checked in `final-normal-profile-deploy467/verified-registration.json`.
+Source and deployed EXE SHA-256: `803a8b72bb98c5d804943905f76fe31bc7d01ee0b5bbfbda5ba0caf51e04629e`.
+Installation: `C:\Users\tjelinek\MidnightExplorer-20261117-012737-57ffdd4e`. No application was launched for this
+deployment. Own-EXE SHA verification remains default OFF, opt-in with
+`MIDNIGHT_VERIFY_RUNTIME_SHA256=1`. Git/remote CI outcomes are reported separately.
+
+### Retained incoming-main notes and earlier checkpoints
+
+The following main-branch integration notes and Windows pause checkpoint are
+preserved verbatim. Their authorization/status wording describes those records;
+the explicit active checkpoint above governs current assignments.
 
 The current Linux integration was explicitly requested after this branch was verified.
 The current [required-module integration report](verification/2026-11-13-required-runtime-modules.md)
@@ -173,14 +258,14 @@ and **qualification** rather than converting every missing receipt into missing 
 
 | Role | Current focus |
 | --- | --- |
-| Orchestrator | Scoped task queue, acceptance criteria, exclusive files, independent review, source/build identity and source/Git integration. |
-| Architect | Remaining provider/engine/UI contracts, Rename finish ownership, native Preserve authority and archive/nesting/capacity decisions. |
-| Backend agent | Native/provider cutover, COPY native hooks, source/identity/consent guards, Find-report reproduction and remaining service lifetimes. |
-| Viewer agent | Source/Markdown/image/PDF/HTML workers, matching packaged-runtime qualification and unresolved viewer opening/scrolling paths. |
-| UI agent | Captured actions, modal/focus/input/layout integration and native/platform acceptance; no capability enablement from source-only gates. |
-| GitHub build system and build tools developer | Retain coherent build/consumer-origin and registered startup receipts; coordinate pending remote CI, source/target leases, packaging and authorized publishing. |
-| Perf agent | Source drag, HTML queue, native tree/scrolling and SSD copy measurements; distinguish protocol/software observations from input-to-paint. |
-| Documentation guru | Maintain current contracts/status, requirement boundaries and verified source/environment evidence. |
+| Orchestrator | Coordinate validation, exclusive ownership, independent acceptance and Git/main/push after receipts; preserve private/unintegrated boundaries. |
+| Architect | Review contracts and qualification limits. Private comparator source remains separate from canonical feature/settings/routing/external launch. |
+| Backend agent | Finish formal first-use native11 and deployment evidence; retain scoped Copy/fixture results and unattributed native failure. Private Core remains excluded. |
+| Viewer agent | Retain Source49/Markdown76+1ignored independent scopes and prior allocation evidence; desktop/manual/packaged-runtime gaps and private comparator separation remain explicit. |
+| UI agent | UI460 unique cases/82 harnesses and scoped quality are GREEN; retain original RED and private comparator setup-failure history. |
+| GitHub build system and build tools developer | Preserve guards/receipts; warm/inventory/validator GREEN. Complete formal native/deployment, then monitor/fix GitHub after Root pushes. Desktop observer gap is accepted. |
+| Perf agent | Merged Copy/Move source/cost review and actual measurement boundaries; preserve retained graph/metadata/parent-handle costs, with no general linearity or unmeasured speedup claim. |
+| Documentation guru | Preserve all incoming main notes/IDs/history while updating the active checkpoint and exact receipt scopes privately; Root coordinates canonical integration. |
 
 Assignments require acceptance criteria and explicit file ownership; role chats do
 not authorize unrelated backlog work. Agree shared API/UI edits with the Architect

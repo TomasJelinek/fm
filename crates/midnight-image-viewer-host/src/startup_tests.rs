@@ -1,5 +1,8 @@
 //! Startup boundaries use real catalog pins; native acceptance requires an explicit installation.
 use super::*;
+#[cfg(windows)]
+#[path = "startup_pin_windows_tests.rs"]
+mod pin_windows;
 use crate::{ImageSession, Source, Viewport};
 use std::{
     fs,
@@ -229,6 +232,7 @@ fn equal_manifest_bytes_on_a_replaced_file_do_not_match_the_prepared_identity() 
 }
 
 #[test]
+#[cfg(not(windows))]
 fn equal_executable_bytes_on_a_replaced_file_do_not_match_the_prepared_identity() {
     let fixture = Fixture::new();
     let identity = ProviderIdentity::capture(&fixture.provider).unwrap();
@@ -262,6 +266,7 @@ fn preparation_cancellation_precedes_native_startup() {
     .err()
     .expect("cancelled preparation cannot start the invalid fixture executable");
     assert_eq!(error.kind(), io::ErrorKind::Interrupted);
+    assert_eq!(cleanup_status(&error), Some(CleanupStatus::Confirmed));
 }
 
 #[test]
@@ -272,6 +277,7 @@ fn preparation_zero_deadline_precedes_native_startup() {
             .err()
             .expect("expired preparation cannot start the invalid fixture executable");
     assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+    assert_eq!(cleanup_status(&error), Some(CleanupStatus::Confirmed));
 }
 
 #[test]
@@ -493,7 +499,7 @@ fn paired_cold_and_prepared_worker_control() {
         creation_successes,
     );
     let cleanup_start = Instant::now();
-    cold.close();
+    cold.close_checked().unwrap();
     let cold_cleanup = cleanup_start.elapsed();
     assert!(cold_cleanup < Duration::from_secs(5));
     assert_eq!(Arc::strong_count(&cold_source), 1);
@@ -609,7 +615,7 @@ fn paired_cold_and_prepared_worker_control() {
             .is_err()
     );
     let cleanup_start = Instant::now();
-    session.close();
+    session.close_checked().unwrap();
     let ready_cleanup = cleanup_start.elapsed();
     assert!(ready_cleanup < Duration::from_secs(5));
     assert_eq!(Arc::strong_count(&source), 1);

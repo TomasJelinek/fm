@@ -9,6 +9,44 @@ use midnight_plugin_sdk::{
 };
 use std::{collections::BTreeMap, sync::Arc};
 
+// Keep the BOM plus the latest complete-line states, including during insertion.
+const MAX_CHECKPOINTS: usize = 256;
+
+// Only the latest 255 staged states can survive the live cache's retention rule.
+// Inline ring storage has no geometric allocation growth on newline-dense input.
+struct CheckpointBatch {
+    entries: [(u64, State); MAX_CHECKPOINTS - 1],
+    len: usize,
+    next: usize,
+}
+
+const _: () = assert!(size_of::<CheckpointBatch>() <= 8192);
+
+impl CheckpointBatch {
+    fn new() -> Self {
+        Self {
+            entries: [(0, State::default()); MAX_CHECKPOINTS - 1],
+            len: 0,
+            next: 0,
+        }
+    }
+
+    fn push(&mut self, checkpoint: (u64, State)) {
+        self.entries[self.next] = checkpoint;
+        self.next = (self.next + 1) % self.entries.len();
+        self.len = (self.len + 1).min(self.entries.len());
+    }
+
+    fn iter(&self) -> impl Iterator<Item = (u64, State)> + '_ {
+        let first = if self.len == self.entries.len() {
+            self.next
+        } else {
+            0
+        };
+        (0..self.len).map(move |at| self.entries[(first + at) % self.entries.len()])
+    }
+}
+
 pub struct Hints {
     name: String,
     language: Option<Language>,
@@ -26,7 +64,25 @@ impl Hints {
     }
     pub fn initialize(&mut self, prefix: &str, bom: u64) {
         self.language = syntax::detect(&self.name, prefix);
-        self.checkpoints.insert(bom, State::default());
+        self.insert_checkpoint(bom, State::default());
+    }
+
+    fn insert_checkpoint(&mut self, offset: u64, state: State) {
+        if let Some(previous) = self.checkpoints.get_mut(&offset) {
+            *previous = state;
+            return;
+        }
+        if self.checkpoints.len() >= MAX_CHECKPOINTS {
+            let Some(first) = self.checkpoints.keys().nth(1).copied() else {
+                return;
+            };
+            if offset < first {
+                return;
+            }
+            // Evict before inserting, keeping the BOM and latest 255 offsets.
+            self.checkpoints.remove(&first);
+        }
+        self.checkpoints.insert(offset, state);
     }
 }
 
@@ -177,7 +233,7 @@ pub fn viewport(
         // This prevents tokens or comment/string delimiters being split.
         let mut spans = Vec::new();
         let mut cursor = 0;
-        let mut checkpoints = Vec::new();
+        let mut checkpoints = CheckpointBatch::new();
         let mut valid = true;
         for line in decoded.text[..end].split_inclusive('\n') {
             let Some(part) =
@@ -213,12 +269,8 @@ pub fn viewport(
         if valid {
             page.spans = spans;
             let mut hints = lock(&session.hints);
-            for checkpoint in checkpoints {
-                hints.checkpoints.insert(checkpoint.0, checkpoint.1);
-            }
-            while hints.checkpoints.len() > 256 {
-                let first = hints.checkpoints.keys().nth(1).copied().unwrap();
-                hints.checkpoints.remove(&first);
+            for (offset, state) in checkpoints.iter() {
+                hints.insert_checkpoint(offset, state);
             }
         }
     }
@@ -258,3 +310,7 @@ fn subset(decoded: &Decoded, start: usize, end: usize) -> Decoded {
 pub fn search_text(decoded: &Decoded, revision: u64, eof: bool) -> TextPage {
     decoded.clone().page(revision, eof)
 }
+
+#[cfg(test)]
+#[path = "paging_tests.rs"]
+mod tests;

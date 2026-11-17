@@ -7,16 +7,15 @@ async fn native_sweep_publishes_actual_additions_and_removals_before_correlated_
     std::fs::create_dir(&parent).unwrap();
     std::fs::create_dir(parent.join("old child")).unwrap();
     std::fs::write(directory.path().join("old.txt"), b"old").unwrap();
-    let (commands, receive) = mpsc::channel(16);
+
     let (send, mut events) = mpsc::channel(32);
-    let engine = tokio::spawn(
-        Engine::new(
-            Engine::lifetime().expect("engine cleanup worker"),
-            Arc::new(midnight_platform::LocalFileSystem::new(None)),
-            send,
-        )
-        .run(receive),
+    let mut command_engine_1 = Engine::new(
+        Engine::lifetime().expect("engine cleanup worker"),
+        Arc::new(midnight_platform::LocalFileSystem::new(None)),
+        send,
     );
+    let (commands, receive) = command_engine_1.command_channel(16).unwrap();
+    let engine = tokio::spawn(command_engine_1.run(receive));
     let root = native_root_at(&commands, &mut events, 1, directory.path().to_owned()).await;
     let first = enable(&commands, &mut events, root).await;
     let parent_row = first
@@ -130,16 +129,14 @@ async fn native_sweep_publishes_actual_additions_and_removals_before_correlated_
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn archive_refresh_is_correlated_unsupported_and_preserves_initial_action_snapshot() {
-    let (commands, receive) = mpsc::channel(16);
     let (send, mut events) = mpsc::channel(32);
-    let engine = tokio::spawn(
-        Engine::new(
-            Engine::lifetime().expect("engine cleanup worker"),
-            Arc::new(Files),
-            send,
-        )
-        .run(receive),
+    let mut command_engine_2 = Engine::new(
+        Engine::lifetime().expect("engine cleanup worker"),
+        Arc::new(Files),
+        send,
     );
+    let (commands, receive) = command_engine_2.command_channel(16).unwrap();
+    let engine = tokio::spawn(command_engine_2.run(receive));
     let root = archive_root(&commands, &mut events, Arc::new(Archive)).await;
     let publication = enable(&commands, &mut events, root).await;
     assert!(

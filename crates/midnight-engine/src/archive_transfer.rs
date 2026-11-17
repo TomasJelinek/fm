@@ -15,11 +15,13 @@ pub(super) fn resolve(
     request: &ArchiveCopyRequest,
     cancel: &Cancellation,
 ) -> Result<VecDeque<Box<dyn TransferSource>>, FsError> {
-    let mount = request
-        .location
-        .mount
-        .clone()
-        .ok_or_else(|| failure("Archive is unavailable."))?;
+    let mount = MountReference::new(
+        request
+            .location
+            .mount
+            .clone()
+            .ok_or_else(|| failure("Archive is unavailable."))?,
+    );
     check(&*mount, cancel)?;
     let wanted: HashSet<_> = if request.selected.is_empty() {
         request
@@ -40,7 +42,9 @@ pub(super) fn resolve(
             "Archive copy requires between 1 and 4096 captured entries.",
         ));
     }
-    let actual = mount.list(request.location.directory, cancel)?;
+    let actual = mount.list(request.location.directory, cancel);
+    crate::copy_nested_retirement::observe_archive(&*mount);
+    let actual = actual?;
     let mut actual_map = std::collections::HashMap::new();
     for node in actual {
         if actual_map.insert(node.id.entry, node).is_some() {
@@ -93,7 +97,7 @@ pub(crate) struct Traversal {
 }
 
 struct Source {
-    mount: Arc<dyn ArchiveMount>,
+    mount: MountReference,
     node: ArchiveNode,
     entry: TransferEntry,
     offset: u64,
@@ -101,9 +105,69 @@ struct Source {
     depth: usize,
     visited: Arc<Mutex<Traversal>>,
 }
+
+/// Every Copy-owned clone, including a failed construction or recursive source,
+/// consumes the archive capability instead of assuming Arc Drop is native close.
+struct MountReference(Option<Arc<dyn ArchiveMount>>);
+impl MountReference {
+    fn new(mount: Arc<dyn ArchiveMount>) -> Self {
+        Self(Some(mount))
+    }
+    fn release(&mut self) -> Result<(), FsError> {
+        match self.0.take() {
+            Some(mount) => crate::copy_nested_retirement::release_archive(mount),
+            None => Ok(()),
+        }
+    }
+}
+impl Clone for MountReference {
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
+    }
+}
+impl std::ops::Deref for MountReference {
+    type Target = dyn ArchiveMount;
+    fn deref(&self) -> &Self::Target {
+        &**self.0.as_ref().expect("archive reference remains owned")
+    }
+}
+impl Drop for MountReference {
+    fn drop(&mut self) {
+        // TransferSource currently has no consuming close method. Its actual
+        // checked destruction is therefore the fallback acknowledgement point;
+        // a failed release latches Copy's context and never panics from Drop.
+        let _ = self.release();
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn retirement_source_for_test(mount: Arc<dyn ArchiveMount>) -> Box<dyn TransferSource> {
+    let node = ArchiveNode {
+        id: VirtualEntryId {
+            mount: mount.id(),
+            entry: 2,
+        },
+        parent: 1,
+        raw_name: Arc::from(&b"member"[..]),
+        display_name: "member".into(),
+        kind: EntryKind::File,
+        size: Some(0),
+        modified: None,
+        readable: true,
+    };
+    Box::new(
+        Source::new(
+            MountReference::new(mount),
+            node,
+            0,
+            Arc::new(Mutex::new(Traversal::default())),
+        )
+        .unwrap(),
+    )
+}
 impl Source {
     fn new(
-        mount: Arc<dyn ArchiveMount>,
+        mount: MountReference,
         node: ArchiveNode,
         depth: usize,
         visited: Arc<Mutex<Traversal>>,
@@ -190,7 +254,9 @@ impl TransferSource for Source {
         let length = buffer.len().min(256 * 1024) as u32;
         let bytes = self
             .mount
-            .read(self.node.id.entry, self.offset, length, cancel)?;
+            .read(self.node.id.entry, self.offset, length, cancel);
+        crate::copy_nested_retirement::observe_archive(&*self.mount);
+        let bytes = bytes?;
         if bytes.len() > length as usize {
             return Err(failure("Archive provider exceeded the read budget."));
         }
@@ -225,7 +291,9 @@ impl TransferSource for Source {
             return Err(failure("Archive file has no children."));
         }
         if self.children.is_none() {
-            let children = self.mount.list(self.node.id.entry, cancel)?;
+            let children = self.mount.list(self.node.id.entry, cancel);
+            crate::copy_nested_retirement::observe_archive(&*self.mount);
+            let children = children?;
             {
                 let mut budget = self.visited.lock().unwrap_or_else(|e| e.into_inner());
                 budget.listed = budget.listed.saturating_add(children.len());
@@ -261,13 +329,16 @@ impl TransferSource for Source {
 
 fn check(mount: &dyn ArchiveMount, cancel: &Cancellation) -> Result<(), FsError> {
     if cancel.is_cancelled() {
+        crate::copy_nested_retirement::observe_archive(mount);
         return Err(error(
             Path::new(""),
             io::ErrorKind::Interrupted,
             "Archive copy cancelled.",
         ));
     }
-    mount.validate()
+    let result = mount.validate();
+    crate::copy_nested_retirement::observe_archive(mount);
+    result
 }
 fn failure(message: &str) -> FsError {
     error(Path::new(""), io::ErrorKind::InvalidData, message)
@@ -282,18 +353,22 @@ pub(crate) fn captured_root(
     traversal: Arc<Mutex<Traversal>>,
     cancel: &Cancellation,
 ) -> Result<Box<dyn TransferSource>, FsError> {
-    let mount = target
-        .location
-        .mount
-        .clone()
-        .ok_or_else(|| failure("Archive is unavailable."))?;
+    let mount = MountReference::new(
+        target
+            .location
+            .mount
+            .clone()
+            .ok_or_else(|| failure("Archive is unavailable."))?,
+    );
     check(&*mount, cancel)?;
     let expected = target
         .original
         .as_ref()
         .or(target.member.as_ref())
         .ok_or_else(|| failure("Archive root has no original member record."))?;
-    let actual = mount.list(expected.parent, cancel)?;
+    let actual = mount.list(expected.parent, cancel);
+    crate::copy_nested_retirement::observe_archive(&*mount);
+    let actual = actual?;
     {
         let mut budget = traversal.lock().unwrap_or_else(|e| e.into_inner());
         budget.listed = budget.listed.saturating_add(actual.len());
@@ -330,3 +405,7 @@ pub(crate) fn captured_root(
     }
     Ok(Box::new(Source::new(mount, node, 0, traversal)?))
 }
+
+#[cfg(test)]
+#[path = "archive_transfer_taint_tests.rs"]
+mod taint_tests;

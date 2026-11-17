@@ -1,5 +1,6 @@
 //! Observe verification through Controller events while real destination reads are held.
 use super::*;
+use crate::transfer_leases::NAMESPACE_WEIGHT;
 use std::{
     ffi::OsStr,
     io::{Read, Seek, SeekFrom, Write},
@@ -77,6 +78,8 @@ impl Drop for ReleaseGates {
 }
 
 struct Service(Arc<Gates>);
+// Native delegates and fixture state are destroyed synchronously; no retirement queues are hidden.
+impl midnight_core::AuditedSynchronousTransferService for Service {}
 impl TransferService for Service {
     fn prepare_transfer_source(
         &self,
@@ -507,7 +510,7 @@ async fn cancelling_blocked_verification_retains_native_capacity_until_read_retu
         harness.io.available_permits(),
         harness.mutation.available_permits(),
     );
-    assert_eq!(held_capacity, (0, 0));
+    assert_eq!(held_capacity, (0, NAMESPACE_WEIGHT as usize - 1));
     harness.controller.cancel(OperationId(1));
     let cancelled = tokio::time::timeout(Duration::from_secs(4), async {
         loop {
@@ -535,6 +538,7 @@ async fn cancelling_blocked_verification_retains_native_capacity_until_read_retu
     );
     gates.release(1);
     let done = observed.terminal(&mut harness).await;
+    harness.wait_capacity(NAMESPACE_WEIGHT as usize).await;
     let returned_capacity = (
         harness.io.available_permits(),
         harness.mutation.available_permits(),
@@ -549,7 +553,7 @@ async fn cancelling_blocked_verification_retains_native_capacity_until_read_retu
     assert_eq!(done.current_file_size, None);
     assert_eq!(done.current_file_verified, 0);
     assert_no_verification_pass(&done);
-    assert_eq!(returned_capacity, (1, 1));
+    assert_eq!(returned_capacity, (1, NAMESPACE_WEIGHT as usize));
     assert!(gates.cleaned.load(Ordering::SeqCst) > 0);
     assert_eq!(fs::read_dir(&destination).unwrap().count(), 0);
     assert_eq!(fs::read(&source).unwrap(), bytes);

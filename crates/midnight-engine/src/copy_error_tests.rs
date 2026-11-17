@@ -1,4 +1,5 @@
 use super::*;
+use crate::transfer_leases::NAMESPACE_WEIGHT;
 use std::{
     ffi::OsStr,
     io::{Read, Seek, SeekFrom, Write},
@@ -68,7 +69,11 @@ async fn destination_retry_repeats_failure_then_works_without_stale_consent() {
     let first = failure(&mut h, 1).await;
     assert!(first.can_retry);
     assert!(!first.can_skip);
-    assert_eq!(h.io.available_permits(), 1);
+    assert_eq!(h.io.available_permits(), 0);
+    assert_eq!(
+        h.mutation.available_permits(),
+        NAMESPACE_WEIGHT as usize - 1
+    );
     decide(&h, &first, CopyChoice::Retry).await;
     let second = failure(&mut h, 1).await;
     assert!(second.version > first.version);
@@ -99,6 +104,9 @@ async fn destination_retry_repeats_failure_then_works_without_stale_consent() {
         fs::read(destination.join("copied.bin")).unwrap(),
         fs::read(source).unwrap()
     );
+    h.wait_capacity(NAMESPACE_WEIGHT as usize).await;
+    assert_eq!(h.io.available_permits(), 1);
+    assert_eq!(h.mutation.available_permits(), NAMESPACE_WEIGHT as usize);
     h.close().await;
 }
 
@@ -124,7 +132,11 @@ async fn partial_disk_full_write_pauses_and_retries_without_corrupting_or_recopy
     assert!(error.can_retry && error.can_skip);
     assert!(!destination.join("source.bin").exists());
     assert_eq!(fs::read(&source).unwrap(), bytes);
-    assert_eq!(h.io.available_permits(), 1);
+    assert_eq!(h.io.available_permits(), 0);
+    assert_eq!(
+        h.mutation.available_permits(),
+        NAMESPACE_WEIGHT as usize - 1
+    );
     decide(&h, &error, CopyChoice::Retry).await;
     let done = h.terminal(1).await;
     assert_eq!(done.state, CopyOperationState::Completed);
@@ -135,6 +147,9 @@ async fn partial_disk_full_write_pauses_and_retries_without_corrupting_or_recopy
     assert_eq!(done.failed, 0);
     assert_eq!(fs::read(destination.join("source.bin")).unwrap(), bytes);
     assert_eq!(fs::read_dir(destination).unwrap().count(), 1);
+    h.wait_capacity(NAMESPACE_WEIGHT as usize).await;
+    assert_eq!(h.io.available_permits(), 1);
+    assert_eq!(h.mutation.available_permits(), NAMESPACE_WEIGHT as usize);
     h.close().await;
 }
 
@@ -159,7 +174,11 @@ async fn cancel_partial_write_cleans_stage_and_releases_the_next_queued_job() {
     h.controller
         .enqueue(request(2, std::slice::from_ref(&next), &destination))
         .await;
-    assert_eq!(h.io.available_permits(), 1);
+    assert_eq!(h.io.available_permits(), 0);
+    assert_eq!(
+        h.mutation.available_permits(),
+        NAMESPACE_WEIGHT as usize - 1
+    );
     decide(&h, &error, CopyChoice::Cancel).await;
     let cancelled = h.terminal(1).await;
     assert_eq!(cancelled.state, CopyOperationState::Cancelled);
@@ -176,6 +195,9 @@ async fn cancel_partial_write_cleans_stage_and_releases_the_next_queued_job() {
         fs::read(next).unwrap()
     );
     assert_eq!(fs::read_dir(destination).unwrap().count(), 1);
+    h.wait_capacity(NAMESPACE_WEIGHT as usize).await;
+    assert_eq!(h.io.available_permits(), 1);
+    assert_eq!(h.mutation.available_permits(), NAMESPACE_WEIGHT as usize);
     h.close().await;
 }
 
@@ -250,6 +272,8 @@ struct DiskFullService {
     fail: Arc<AtomicBool>,
     repeat: bool,
 }
+// Native delegates and fixture state are destroyed synchronously; no retirement queues are hidden.
+impl midnight_core::AuditedSynchronousTransferService for DiskFullService {}
 impl TransferService for DiskFullService {
     fn prepare_transfer_source(
         &self,

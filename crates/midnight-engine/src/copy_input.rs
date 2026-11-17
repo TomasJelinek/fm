@@ -11,8 +11,50 @@ enum Sources {
     Paths(FileClipboard),
     SharedPaths(Arc<FileClipboard>),
     Selection(SelectedFiles),
-    Archive(Box<ArchiveCopyRequest>),
-    Captured(Arc<dyn CapturedTransferSources>),
+    Archive(ArchiveOwner),
+    Captured(CapturedOwner),
+}
+
+#[derive(Clone)]
+struct CapturedOwner(Option<Arc<dyn CapturedTransferSources>>);
+impl std::ops::Deref for CapturedOwner {
+    type Target = dyn CapturedTransferSources;
+    fn deref(&self) -> &Self::Target {
+        &**self.0.as_ref().expect("captured input remains owned")
+    }
+}
+impl Drop for CapturedOwner {
+    fn drop(&mut self) {
+        if let Some(source) = self.0.take() {
+            if crate::copy_nested_retirement::current().is_some() {
+                let _ = crate::copy_nested_retirement::release_transfer_sources(source);
+            } else {
+                drop(source);
+            }
+        }
+    }
+}
+
+#[derive(Clone)]
+struct ArchiveOwner(Option<Box<ArchiveCopyRequest>>);
+impl std::ops::Deref for ArchiveOwner {
+    type Target = ArchiveCopyRequest;
+    fn deref(&self) -> &Self::Target {
+        self.0.as_ref().expect("archive input remains owned")
+    }
+}
+impl Drop for ArchiveOwner {
+    fn drop(&mut self) {
+        let Some(mut request) = self.0.take() else {
+            return;
+        };
+        if crate::copy_nested_retirement::current().is_some()
+            && let Some(mount) = request.location.mount.take()
+        {
+            let _ = crate::copy_nested_retirement::release_archive(mount);
+        }
+        drop(request);
+    }
 }
 
 impl From<CapturedTransferRequest> for CopyInput {
@@ -20,13 +62,16 @@ impl From<CapturedTransferRequest> for CopyInput {
         Self {
             id: request.id,
             destination: request.destination,
-            intent: request.sources.intent(),
+            // The retained source is armed before its first foreign accessor.
+            // The bounded worker initializes the actual intent before publishing.
+            intent: TransferIntent::Copy,
             metadata: request.metadata,
             verification: request.verification,
             start_policy: request.start_policy,
             links: CopyLinkPolicy::Reject,
-            _retention: None,
-            sources: Sources::Captured(request.sources),
+            _completions: None,
+            audited_native_children: None,
+            sources: Sources::Captured(CapturedOwner(Some(request.sources))),
         }
     }
 }
@@ -40,8 +85,9 @@ impl From<ArchiveCopyRequest> for CopyInput {
             verification: request.verification,
             start_policy: request.start_policy,
             links: CopyLinkPolicy::Reject,
-            _retention: None,
-            sources: Sources::Archive(Box::new(request)),
+            _completions: None,
+            audited_native_children: None,
+            sources: Sources::Archive(ArchiveOwner(Some(Box::new(request)))),
         }
     }
 }
@@ -72,7 +118,8 @@ pub(super) struct CopyInput {
     sources: Sources,
     // Preparation retains failed/retried admission and hands successful ownership
     // to Job. WorkerOwned keeps cancellation destruction off UI.
-    pub(super) _retention: Option<Arc<crate::drag_drop::Retention>>,
+    pub(super) _completions: Option<Arc<HashMap<PathBuf, TreeCopyOccurrence>>>,
+    audited_native_children: Option<bool>,
 }
 
 impl From<CopyRequest> for CopyInput {
@@ -85,7 +132,8 @@ impl From<CopyRequest> for CopyInput {
             verification: request.verification,
             start_policy: request.start_policy,
             links: CopyLinkPolicy::Reject,
-            _retention: None,
+            _completions: None,
+            audited_native_children: None,
             sources: Sources::Paths(request.clipboard),
         }
     }
@@ -101,13 +149,53 @@ impl From<SelectedCopyRequest> for CopyInput {
             verification: request.verification,
             start_policy: request.start_policy,
             links: CopyLinkPolicy::Reject,
-            _retention: None,
+            _completions: None,
+            audited_native_children: None,
             sources: Sources::Selection(request.files),
         }
     }
 }
 
 impl CopyInput {
+    #[expect(
+        clippy::result_large_err,
+        reason = "Return unmatched commands to their armed admission scope without an extra box."
+    )]
+    pub(super) fn from_command(command: Command) -> Result<Self, Command> {
+        Ok(match command {
+            Command::EnqueueCopy(request) => request.into(),
+            Command::EnqueueSelectedCopy(request) => request.into(),
+            Command::EnqueueMove(request) => Self::move_paths(request),
+            Command::EnqueueSelectedMove(request) => Self::move_selection(request),
+            Command::EnqueueClipboardMove(request) => Self::move_clipboard(request),
+            Command::EnqueueTransferWithMetadata(request) => Self::metadata(*request),
+            Command::EnqueueCopyWithOptions(request) => Self::options(*request),
+            Command::EnqueueArchiveCopy(request) => request.into(),
+            Command::EnqueueCapturedTransfer(request) => request.into(),
+            command => return Err(command),
+        })
+    }
+    pub(super) fn initialize_captured_intent(&mut self) {
+        if let Sources::Captured(sources) = &self.sources {
+            self.intent = sources.intent();
+        }
+    }
+    pub(super) fn native_children_are_audited(&mut self) -> bool {
+        if let Some(checked) = self.audited_native_children {
+            return checked;
+        }
+        let checked = match &self.sources {
+            Sources::Captured(sources) => sources.prepares_audited_native_children(),
+            _ => true,
+        };
+        self.audited_native_children = Some(checked);
+        checked
+    }
+    pub(super) fn retirement_is_checked(&self) -> bool {
+        // Native request fields are metadata. Captured/archive references have
+        // explicit consuming owners; an unknown release trips the existing seal.
+        true
+    }
     pub(super) fn options(request: CopyOptionsRequest) -> Self {
         let mut input = match request.input {
             CopyOptionsInput::Native(request) => Self::metadata(request),
@@ -136,7 +224,8 @@ impl CopyInput {
             verification: request.verification,
             start_policy: request.start_policy,
             links: CopyLinkPolicy::Reject,
-            _retention: None,
+            _completions: None,
+            audited_native_children: None,
             sources: Sources::SharedPaths(request.clipboard),
         }
     }

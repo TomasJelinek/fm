@@ -38,16 +38,14 @@ async fn installed_native_files_only_expansion_ignores_superseded_observations()
 }
 
 async fn assert_leaf_expansion(filesystem: Arc<dyn FileSystem>, parent: &Path, child: &str) {
-    let (commands, receive) = mpsc::channel(16);
     let (send, mut events) = mpsc::channel(32);
-    let engine = tokio::spawn(
-        Engine::new(
-            Engine::lifetime().expect("engine cleanup worker"),
-            filesystem,
-            send,
-        )
-        .run(receive),
+    let mut command_engine_1 = Engine::new(
+        Engine::lifetime().expect("engine cleanup worker"),
+        filesystem,
+        send,
     );
+    let (commands, receive) = command_engine_1.command_channel(16).unwrap();
+    let engine = tokio::spawn(command_engine_1.run(receive));
     let root = native_root_at(&commands, &mut events, 1, parent.to_owned()).await;
     let initial = enable(&commands, &mut events, root).await;
     let position = initial

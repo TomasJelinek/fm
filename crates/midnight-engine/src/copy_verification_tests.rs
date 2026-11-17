@@ -5,6 +5,14 @@ use std::collections::VecDeque;
 #[derive(Debug)]
 struct CapturedPath(PathBuf);
 impl CapturedTransferSources for CapturedPath {
+    fn prepares_audited_native_children(&self) -> bool {
+        // This fixture retains only a path and delegates every native child to the supplied service.
+        true
+    }
+    fn release_on_worker(self: Arc<Self>) -> Result<(), FsError> {
+        drop(self);
+        Ok(())
+    }
     fn intent(&self) -> TransferIntent {
         TransferIntent::Copy
     }

@@ -11,15 +11,27 @@ mod clipboard;
 mod clipboard_text;
 mod comparison;
 mod copy_fence;
+mod copy_finished;
+mod copy_namespace;
+mod copy_nested_retirement;
 mod copy_operations;
+mod copy_services;
 mod desktop;
 mod diagnostic_text;
 mod drag_drop;
 mod elevation;
+#[cfg(test)]
+mod engine_command_admission_fixture;
 mod engine_commands;
+pub use engine_commands::{
+    CommandChannelError, CommandPermit, CommandReceiver, CommandSendError, CommandSender,
+    OwnedCommandPermit,
+};
 mod engine_configuration;
 mod engine_lifetime;
-pub use engine_configuration::{ServiceAlreadyConfigured, ServiceSlot};
+pub use engine_configuration::{
+    AuditedLocaleSlot, AuditedTransferSlot, ServiceAlreadyConfigured, ServiceSlot,
+};
 mod engine_run;
 mod report_arena;
 pub use report_arena::ReportArena;
@@ -79,6 +91,8 @@ pub mod snapshot;
 mod streaming_selection;
 #[cfg(test)]
 mod task_service_tests;
+mod transfer_composition;
+mod transfer_leases;
 mod tree_actor;
 mod tree_clipboard;
 mod tree_controller;
@@ -178,12 +192,16 @@ impl Drop for Request {
 pub struct Engine {
     services: retirement::WorkerOwned<EngineServices>,
     run: retirement::RetirementLease,
-    commands: retirement::RetirementLease,
+    commands: Option<retirement::RetirementLease>,
+    copy_admission: copy_operations::Admission,
     resources: engine_lifetime::Resources,
 }
 
 #[derive(Clone)]
 struct EngineServices {
+    shared_native: Option<midnight_native_filesystem_host::SharedInstalledProvider>,
+    qualified_transfers: Option<transfer_composition::QualifiedTransferInstallation>,
+    qualified_locale: Option<transfer_composition::QualifiedLocaleInstallation>,
     elevation: Option<Arc<dyn midnight_core::ElevatedDirectoryService>>,
     archive_capture: Option<ArchiveCapture>,
     navigation_fallback: Option<Arc<dyn midnight_core::NavigationFallbackService>>,
@@ -305,6 +323,9 @@ impl Engine {
         wakeup: Arc<dyn Fn() + Send + Sync>,
     ) -> Self {
         let services = EngineServices {
+            shared_native: None,
+            qualified_transfers: None,
+            qualified_locale: None,
             elevation: None,
             archive_capture: None,
             navigation_fallback: None,
@@ -328,22 +349,74 @@ impl Engine {
                 wakeup,
             },
         };
+        let copy_admission =
+            copy_operations::Admission::new(lifetime.resources.copies.domain.clone());
         Self {
             services: lifetime.services.own(services),
             run: lifetime.run,
-            commands: lifetime.commands,
+            commands: Some(lifetime.commands),
+            copy_admission,
             resources: lifetime.resources,
         }
     }
 
-    /// Take command ownership synchronously, including before the first future poll.
-    pub fn run(self, commands: mpsc::Receiver<Command>) -> EngineRun {
+    /// Use the host's process-pinned installed-native composition. Ordinary
+    /// erased filesystems do not acquire its provider retirement provenance.
+    pub fn with_shared_native_filesystem(
+        lifetime: EngineLifetime,
+        filesystem: midnight_native_filesystem_host::SharedInstalledProvider,
+        events: mpsc::Sender<Event>,
+        wakeup: Arc<dyn Fn() + Send + Sync>,
+    ) -> Self {
+        let mut engine = Self::with_wakeup(lifetime, filesystem.service(), events, wakeup);
+        engine.services.shared_native = Some(filesystem);
+        engine
+    }
+
+    /// Create the single admitted FIFO after configuring services. Receiver
+    /// ownership is protected immediately, including before the first run poll.
+    pub fn command_channel(
+        &mut self,
+        capacity: usize,
+    ) -> Result<(CommandSender, CommandReceiver), CommandChannelError> {
+        if capacity == 0 {
+            return Err(CommandChannelError::InvalidCapacity);
+        }
+        let lease = self
+            .commands
+            .take()
+            .ok_or(CommandChannelError::AlreadyConfigured)?;
+        Ok(CommandSender::channel(
+            capacity,
+            self.copy_admission.clone(),
+            lease,
+        ))
+    }
+
+    /// Run commands admitted by this Engine's typed channel. A foreign receiver
+    /// is retired without executing commands; it cannot borrow another budget.
+    pub fn run(self, commands: CommandReceiver) -> EngineRun {
         let active = (*self.services).clone();
         let scope = task_lifetime::TaskLifetime::new(Arc::new(self.services));
-        let commands = self.commands.own(engine_commands::CommandInbox(commands));
+        if !self.copy_admission.same(&commands.admission) {
+            return EngineRun::new(
+                self.run,
+                async move {
+                    let _resources = self.resources;
+                    let _commands = commands;
+                    eprintln!("Engine rejected a command receiver from another Engine.");
+                },
+                scope,
+            );
+        }
         EngineRun::new(
             self.run,
-            active.run_inner(commands, self.resources, scope.clone()),
+            active.run_inner(
+                commands.inbox,
+                self.resources,
+                scope.clone(),
+                self.copy_admission,
+            ),
             scope,
         )
     }
@@ -355,6 +428,7 @@ impl EngineServices {
         mut commands: retirement::WorkerOwned<engine_commands::CommandInbox>,
         resources: engine_lifetime::Resources,
         scope: task_lifetime::TaskLifetime,
+        copy_admission: copy_operations::Admission,
     ) {
         // Reserve capacity for each pane even when the other pane accumulates
         // uncancellable OS reads on unavailable media.
@@ -431,9 +505,11 @@ impl EngineServices {
             path_picker::Controller::new(scope.clone(), self.path_picker, self.outbox.clone());
         let snapshots: Snapshots =
             Arc::new(resources.snapshots.own(Mutex::new(Default::default())));
-        let mutation_gate = Arc::new(Semaphore::new(1));
+        let mutation_gate = transfer_leases::namespace_gate();
         let trees = tree_controller::Controller::new(
             tree_controller::Services {
+                shared_native: self.shared_native.clone(),
+                qualified_locale: self.qualified_locale.clone(),
                 filesystem: self.filesystem.clone(),
                 locale: self.locale.clone(),
                 reports: resources.reports.clone(),
@@ -496,12 +572,19 @@ impl EngineServices {
             self.outbox.clone(),
             mutation_gate.clone(),
         );
-        let copies = copy_operations::Controller::new(
+        let copies = copy_operations::Controller::with_admission(
             resources.copies,
-            self.transfers.clone(),
+            copy_admission,
+            self.qualified_transfers.clone().or_else(|| {
+                self.transfers.as_ref().map(|service| {
+                    transfer_composition::QualifiedTransferInstallation::unqualified(
+                        service.clone(),
+                    )
+                })
+            }),
             self.outbox.clone(),
             mutation_gate.clone(),
-            Arc::new(Semaphore::new(1)),
+            transfer_leases::IoBudget::new(midnight_work_budget::shared_io()),
             &mut tasks,
         );
         let operations = operations::Controller::new(
@@ -577,6 +660,14 @@ impl EngineServices {
                     desktop.properties(self.filesystem.clone(), prepared.request, prepared.paths, &mut tasks).await;
                 }
                 command = commands.recv() => {
+                    let command = match command {
+                        Some(engine_commands::Message::GuardedCopy(admitted)) => {
+                            copies.enqueue_admitted(admitted);
+                            continue;
+                        }
+                        Some(engine_commands::Message::Plain(command)) => Some(command.into_command()),
+                        None => None,
+                    };
                     let mut elevated = None;
                     let offer_elevation = self.elevation.is_some() && matches!(&command, Some(Command::Navigate { .. }));
                     let command = match command {
@@ -805,15 +896,11 @@ impl EngineServices {
                         Some(Command::ValidateFilenameColors(request)) => filename_colors.validate(request),
                         Some(Command::MatchFilenameColors(request)) => filename_colors.matches(request),
                         Some(Command::ClearFilenameColors { pane, id }) => filename_colors.clear(pane, id),
-                        Some(Command::EnqueueCopy(request)) => copies.enqueue(request).await,
-                        Some(Command::EnqueueSelectedCopy(request)) => copies.enqueue_selected(request).await,
-                        Some(Command::EnqueueMove(request)) => copies.enqueue_move(request).await,
-                        Some(Command::EnqueueSelectedMove(request)) => copies.enqueue_selected_move(request).await,
-                        Some(Command::EnqueueClipboardMove(request)) => copies.enqueue_clipboard_move(request).await,
-                        Some(Command::EnqueueTransferWithMetadata(request)) => copies.enqueue_metadata(*request).await,
-                        Some(Command::EnqueueCopyWithOptions(request)) => copies.enqueue_options(*request).await,
-                        Some(Command::EnqueueArchiveCopy(request)) => copies.enqueue_archive(request).await,
-                        Some(Command::EnqueueCapturedTransfer(request)) => copies.enqueue_captured(request).await,
+                        Some(Command::EnqueueCopy(_) | Command::EnqueueSelectedCopy(_)
+                            | Command::EnqueueMove(_) | Command::EnqueueSelectedMove(_)
+                            | Command::EnqueueClipboardMove(_) | Command::EnqueueTransferWithMetadata(_)
+                            | Command::EnqueueCopyWithOptions(_) | Command::EnqueueArchiveCopy(_)
+                            | Command::EnqueueCapturedTransfer(_)) => unreachable!("Copy requires its guarded envelope"),
                         Some(Command::DecideCopy(decision)) => copies.decide(decision).await,
                         Some(Command::CancelCopy(id)) => copies.cancel(id),
                         Some(Command::SetCopyPaused { id, paused }) => copies.set_paused(id, paused).await,

@@ -1,5 +1,5 @@
 import { FallbackIcons } from "action-icons.slint";
-import { HintedCheckBox, HintedActionButton } from "hinted-inputs.slint";
+import { HintedCheckBox, HintedActionButton, HintedComboBox } from "hinted-inputs.slint";
 import { ListView, LineEdit, ScrollView } from "std-widgets.slint";
 import { TipBody } from "controls.slint";
 import { FluentScrollMetrics } from "fluent-scroll-metrics.slint";
@@ -28,6 +28,9 @@ export global ViewerPluginsView {
     in property <[ViewerPluginRow]> filesystem-rows;
     in property <int> filesystem-selected: -1;
     in property <string> filesystem-error;
+    in property <string> filesystem-diagnostics;
+    in property <[ViewerPluginRow]> archive-rows;
+    in property <int> archive-selected: -1;
     in property <[ViewerPluginRow]> thumbnailer-rows;
     in property <int> thumbnailer-selected: -1;
     in property <string> thumbnailer-error;
@@ -44,6 +47,7 @@ export global ViewerPluginsView {
     callback toggle(string, bool);
     callback select(int);
     callback select-filesystem(int);
+    callback select-archive(int);
     callback select-thumbnailer(int);
     callback edit-extensions(string);
     callback reset-extensions();
@@ -146,14 +150,24 @@ component ReadOnlyPluginCatalog inherits VerticalLayout {
     }
     if root.selected >= 0 : VerticalLayout {
         spacing: 6px; alignment: start;
+        Text {
+            text: root.current.name + (root.current.version == "" ? "" : " · " + root.current.version);
+            color: Theme.strong-text; font-size: Theme.font-size; font-weight: 600; wrap: word-wrap;
+        }
         Text { text: root.current.kind; color: Theme.text; font-size: Theme.small-font; wrap: word-wrap; }
+        if root.current.id != "" : Text {
+            text: "ID: " + root.current.id; color: Theme.secondary-text; font-size: Theme.small-font; wrap: char-wrap;
+        }
         if root.current.description != "" : Text {
             text: root.current.description; color: Theme.text; font-size: Theme.small-font; wrap: word-wrap;
         }
         Text { text: root.current.status; color: Theme.text; font-size: Theme.small-font; wrap: word-wrap; }
         if root.current.location != "" : Text {
-            text: root.current.location; color: Theme.secondary-text; font-size: Theme.small-font; wrap: word-wrap;
+            text: root.current.location; color: Theme.secondary-text; font-size: Theme.small-font; wrap: char-wrap;
         }
+    }
+    if ViewerPluginsView.pending && root.error == "" && root.rows.length == 0 : Text {
+        text: "Refreshing plugin catalogs…"; color: Theme.secondary-text; font-size: Theme.font-size; wrap: word-wrap;
     }
     if root.error != "" : ErrorNotice { text: root.error; }
     if !ViewerPluginsView.pending && root.error == "" && root.rows.length == 0 : Text {
@@ -164,6 +178,8 @@ component ReadOnlyPluginCatalog inherits VerticalLayout {
 export component PluginOptions inherits Rectangle {
     in property <length> available-height: 580px;
     private property <int> section;
+    private property <bool> compact-tabs: root.width < max(440px, Theme.font-size * 32);
+    callback open-archive-associations();
     // Give the installed catalog the space it needs first. Details share the
     // page's scrolling area; they must not reserve hundreds of empty pixels.
     private property <int> visible-rows: max(2, floor(
@@ -180,7 +196,12 @@ export component PluginOptions inherits Rectangle {
         VerticalLayout {
             spacing: 8px; alignment: start;
             padding-right: FluentScrollMetrics.overlay-size;
-    DialogTabs { labels: ["Viewers", "Filesystems", "Thumbnailers"]; current-index <=> root.section; }
+    if !root.compact-tabs : DialogTabs { labels: ["Viewers", "Filesystems", "Archives", "Thumbnailers"]; current-index <=> root.section; }
+    if root.compact-tabs : HintedComboBox {
+        accessible-label: "Plugin type"; model: ["Viewers", "Filesystems", "Archives", "Thumbnailers"];
+        current-index: root.section; hint: "Choose the installed plugin category.";
+        selected(value) => { root.section = self.current-index; }
+    }
     if root.section == 0 : VerticalLayout {
         spacing: 8px; alignment: start;
         ListHeader {
@@ -245,7 +266,31 @@ export component PluginOptions inherits Rectangle {
         empty-text: "No filesystem plugins are installed beside this application.";
         selected-row(index) => { ViewerPluginsView.select-filesystem(index); }
     }
-    if root.section == 2 : ReadOnlyPluginCatalog {
+    if root.section == 2 : VerticalLayout {
+        spacing: 8px; alignment: start;
+        ReadOnlyPluginCatalog {
+            rows: ViewerPluginsView.archive-rows; selected: ViewerPluginsView.archive-selected;
+            visible-rows: root.visible-rows; label: "Archive plugins";
+            error: ViewerPluginsView.filesystem-error;
+            empty-text: "No archive plugins are installed beside this application.";
+            selected-row(index) => { ViewerPluginsView.select-archive(index); }
+        }
+        HintedActionButton {
+            text: root.compact-tabs ? "Associations…" : "Archive associations…";
+            accessible-label: "Archive associations…";
+            hint: "Choose which file types open as archive folders.";
+            clicked => { root.open-archive-associations(); }
+        }
+    }
+    if (root.section == 1 || root.section == 2) && ViewerPluginsView.filesystem-diagnostics != "" : VerticalLayout {
+        spacing: 6px;
+        Text { text: "Filesystem and archive package diagnostics"; color: Theme.strong-text; font-size: Theme.font-size; wrap: word-wrap; }
+        ErrorNotice {
+            text: ViewerPluginsView.filesystem-diagnostics;
+            context-key: root.section == 1 ? "filesystem-packages" : "archive-packages";
+        }
+    }
+    if root.section == 3 : ReadOnlyPluginCatalog {
         rows: ViewerPluginsView.thumbnailer-rows; selected: ViewerPluginsView.thumbnailer-selected;
         visible-rows: root.visible-rows; label: "Thumbnailer plugins";
         error: ViewerPluginsView.thumbnailer-error;
@@ -261,7 +306,7 @@ export component PluginOptions inherits Rectangle {
             text: ViewerPluginsView.pending ? "Rescanning…" : "Rescan all plugins";
             enabled: !ViewerPluginsView.pending;
             fallback-icon: FallbackIcons.refresh;
-            hint: "Rescan all installed viewer, filesystem and thumbnailer packages.";
+            hint: "Rescan all installed viewer, filesystem, archive and thumbnailer packages.";
             clicked => { ViewerPluginsView.refresh(); }
         }
     }

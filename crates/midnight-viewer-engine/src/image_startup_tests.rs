@@ -43,6 +43,8 @@ struct Counters {
     reject_identity: AtomicBool,
     panic_identity: AtomicBool,
     panic_reap: AtomicBool,
+    retire_unconfirmed: AtomicBool,
+    pin_unconfirmed: AtomicBool,
     validation_barrier: Mutex<Option<(SyncSender<()>, Receiver<()>)>>,
 }
 
@@ -63,6 +65,8 @@ enum Outcome {
         exit: Receiver<()>,
     },
     Failed,
+    Unconfirmed,
+    Panic,
 }
 
 struct Exit {
@@ -94,6 +98,7 @@ struct FakePrepared {
     reaping: SyncSender<()>,
     exit: Receiver<()>,
     counters: Arc<Counters>,
+    _owner: Box<dyn Send>,
 }
 
 impl Drop for FakePrepared {
@@ -125,7 +130,12 @@ impl Backend for FakeBackend {
         prepared.provider == *provider
     }
 
-    fn prepare(&self, provider: &TestProvider, _cancel: &AtomicBool) -> io::Result<FakePrepared> {
+    fn prepare(
+        &self,
+        provider: &TestProvider,
+        _cancel: &AtomicBool,
+        owner: Box<dyn Send>,
+    ) -> io::Result<FakePrepared> {
         self.counters.launches.fetch_add(1, Ordering::AcqRel);
         self.counters.live.fetch_add(1, Ordering::AcqRel);
         let (finish, completed) = mpsc::sync_channel(1);
@@ -142,11 +152,17 @@ impl Backend for FakeBackend {
                 reaping,
                 exit,
                 counters: self.counters.clone(),
+                _owner: owner,
             }),
             Outcome::Failed => {
                 self.counters.live.fetch_sub(1, Ordering::AcqRel);
                 Err(io::Error::other("controlled preparation failure"))
             }
+            Outcome::Unconfirmed => {
+                std::mem::forget(owner);
+                Err(io::Error::other(MockCleanup::Process))
+            }
+            Outcome::Panic => panic!("controlled native preparation panic"),
         }
     }
 
@@ -167,6 +183,430 @@ impl Backend for FakeBackend {
             Ok(())
         }
     }
+
+    fn retire(&self, prepared: FakePrepared) -> io::Result<()> {
+        if self.counters.retire_unconfirmed.load(Ordering::Acquire) {
+            std::mem::forget(prepared);
+            return Err(io::Error::other(MockCleanup::Process));
+        }
+        drop(prepared);
+        if self.counters.pin_unconfirmed.load(Ordering::Acquire) {
+            return Err(io::Error::other(MockCleanup::Pin));
+        }
+        Ok(())
+    }
+
+    fn cleanup_status(&self, error: &io::Error) -> midnight_image_viewer_host::CleanupStatus {
+        use midnight_image_viewer_host::CleanupStatus;
+        match error
+            .get_ref()
+            .and_then(|cause| cause.downcast_ref::<MockCleanup>())
+        {
+            Some(MockCleanup::Process) => CleanupStatus::ProcessUnconfirmed,
+            Some(MockCleanup::Pin) => CleanupStatus::PinUnconfirmed,
+            None => CleanupStatus::Confirmed,
+        }
+    }
+}
+
+#[derive(Debug)]
+enum MockCleanup {
+    Process,
+    Pin,
+}
+impl std::fmt::Display for MockCleanup {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "controlled unconfirmed cleanup: {self:?}")
+    }
+}
+impl std::error::Error for MockCleanup {}
+
+fn assert_spare_fence_failed(harness: &Harness) {
+    harness.wait(|state| state.retirement_failed && matches!(state.spare, Spare::Retiring));
+    let retirement = harness.manager().spare_retirement();
+    let probe = WaitProbe::new();
+    let mut waiting = std::pin::pin!(retirement.wait());
+    let result = match probe.poll(waiting.as_mut()) {
+        Poll::Pending => {
+            probe.woken.recv_timeout(WAIT).unwrap();
+            probe.poll(waiting.as_mut())
+        }
+        ready => ready,
+    };
+    assert_eq!(result, Poll::Ready(Err(RetirementError::OwnerFailed)));
+    assert!(harness.attempts.try_recv().is_err());
+}
+
+#[test]
+fn boxed_reservation_clone_releases_capacity_only_after_its_last_owner_drops() {
+    let mut harness = Harness::new();
+    let acquired = harness.cold(&provider("image"));
+    let host_owner: Box<dyn Send> = Box::new(acquired.permit.clone());
+    drop(acquired);
+    harness.wait(|state| state.children == 1);
+    drop(host_owner);
+    harness.wait(|state| state.children == 0);
+    harness.shutdown();
+}
+
+#[test]
+fn unconfirmed_preparation_retains_capacity_and_fails_the_spare_fence() {
+    let harness = Harness::new();
+    harness.configure(&[provider("image")]);
+    harness.attempt().finish.send(Outcome::Unconfirmed).unwrap();
+    assert_spare_fence_failed(&harness);
+    assert_eq!(harness.manager().control.shared.lock().children, 1);
+    assert_eq!(harness.counters.live.load(Ordering::Acquire), 1);
+}
+
+#[test]
+fn panicking_preparation_cannot_publish_empty_or_release_unknown_capacity() {
+    let harness = Harness::new();
+    harness.configure(&[provider("image")]);
+    harness.attempt().finish.send(Outcome::Panic).unwrap();
+    assert_spare_fence_failed(&harness);
+    assert_eq!(harness.manager().control.shared.lock().children, 1);
+    assert_eq!(harness.counters.live.load(Ordering::Acquire), 1);
+}
+
+#[test]
+fn unconfirmed_stale_worker_retirement_never_returns_a_cold_fallback() {
+    let harness = Harness::new();
+    let image = provider("image");
+    harness.configure(std::slice::from_ref(&image));
+    let _exit = harness.attempt().ready(false);
+    harness.ready();
+    harness
+        .counters
+        .reject_identity
+        .store(true, Ordering::Release);
+    harness
+        .counters
+        .retire_unconfirmed
+        .store(true, Ordering::Release);
+    assert!(
+        harness
+            .manager()
+            .acquire(&image, &AtomicBool::new(false))
+            .is_err()
+    );
+    assert_spare_fence_failed(&harness);
+    assert_eq!(harness.manager().control.shared.lock().children, 1);
+    assert_eq!(harness.counters.live.load(Ordering::Acquire), 1);
+    assert_eq!(harness.counters.launches.load(Ordering::Acquire), 1);
+}
+
+#[test]
+fn pin_only_retirement_failure_releases_child_capacity_but_never_falls_back() {
+    let harness = Harness::new();
+    let image = provider("image");
+    harness.configure(std::slice::from_ref(&image));
+    let _exit = harness.attempt().ready(false);
+    harness.ready();
+    harness
+        .counters
+        .reject_identity
+        .store(true, Ordering::Release);
+    harness
+        .counters
+        .pin_unconfirmed
+        .store(true, Ordering::Release);
+    assert!(
+        harness
+            .manager()
+            .acquire(&image, &AtomicBool::new(false))
+            .is_err()
+    );
+    assert_spare_fence_failed(&harness);
+    assert_eq!(harness.manager().control.shared.lock().children, 0);
+    assert_eq!(harness.counters.live.load(Ordering::Acquire), 0);
+    assert_eq!(harness.counters.launches.load(Ordering::Acquire), 1);
+    assert!(
+        harness
+            .manager()
+            .acquire(&image, &AtomicBool::new(false))
+            .is_err()
+    );
+    assert!(harness.attempts.try_recv().is_err());
+    assert_eq!(harness.counters.launches.load(Ordering::Acquire), 1);
+}
+
+#[test]
+fn active_session_pin_failure_seals_admission_even_after_child_capacity_is_free() {
+    let mut harness = Harness::new();
+    let image = provider("image");
+    let active = harness.cold(&image);
+    harness
+        .manager()
+        .cleanup_failed(midnight_image_viewer_host::CleanupStatus::PinUnconfirmed);
+    drop(active);
+    assert_spare_fence_failed(&harness);
+    assert_eq!(harness.manager().control.shared.lock().children, 0);
+    assert!(
+        harness
+            .manager()
+            .acquire(&image, &AtomicBool::new(false))
+            .is_err()
+    );
+    assert_eq!(harness.counters.launches.load(Ordering::Acquire), 0);
+    assert!(harness.attempts.try_recv().is_err());
+    harness.shutdown();
+}
+
+#[test]
+fn confirmed_active_session_cleanup_keeps_ordinary_cold_admission_available() {
+    let mut harness = Harness::new();
+    harness
+        .manager()
+        .cleanup_failed(midnight_image_viewer_host::CleanupStatus::Confirmed);
+    let active = harness.cold(&provider("image"));
+    assert_eq!(harness.manager().control.shared.lock().children, 1);
+    drop(active);
+    harness.shutdown();
+}
+
+#[test]
+fn missing_native_cleanup_marker_is_never_treated_as_confirmed() {
+    assert_eq!(
+        Native.cleanup_status(&io::Error::other("unclassified native failure")),
+        midnight_image_viewer_host::CleanupStatus::ProcessUnconfirmed,
+    );
+}
+
+#[test]
+fn completion_failure_survives_a_later_success_for_current_and_late_waiters() {
+    let completion = Completion::default();
+    let probe = WaitProbe::new();
+    let mut waiting = std::pin::pin!(completion.wait());
+    assert!(probe.poll(waiting.as_mut()).is_pending());
+
+    // The spare owner can finish a previously selected Stop after another owner reports failure.
+    completion.finish(Err(RetirementError::OwnerFailed));
+    completion.finish(Ok(()));
+    assert_eq!(
+        probe.poll(waiting.as_mut()),
+        Poll::Ready(Err(RetirementError::OwnerFailed))
+    );
+
+    completion.finish(Ok(()));
+    let mut late = std::pin::pin!(completion.wait());
+    assert_eq!(
+        probe.poll(late.as_mut()),
+        Poll::Ready(Err(RetirementError::OwnerFailed))
+    );
+}
+
+#[test]
+fn pin_failure_seals_admission_before_last_capacity_release_at_both_boundaries() {
+    for during_preparation in [true, false] {
+        let mut harness = Harness::new();
+        let image = provider("image");
+        let mut occupied: Vec<_> = (0..CHILD_LIMIT).map(|_| harness.cold(&image)).collect();
+        let Acquisition { prepared, permit } = occupied.pop().unwrap();
+        assert!(prepared.is_none());
+        let shared = harness.manager().control.shared.clone();
+        let callback_shared = shared.clone();
+        let (released_tx, released_rx) = mpsc::sync_channel(1);
+        let (resume_tx, resume_rx) = mpsc::sync_channel(1);
+        let gated = ChildPermit {
+            reservation: Arc::new(Reservation {
+                release: Mutex::new(Some(Box::new(move || {
+                    let sealed = callback_shared.lock().retirement_failed;
+                    // Exercise the actual last-owner callback that frees a child and wakes demand.
+                    drop(permit);
+                    let _ = released_tx.send(sealed);
+                    let _ = resume_rx.recv_timeout(WAIT);
+                }))),
+            }),
+        };
+
+        let manager = harness.manager().clone();
+        let demand_image = image.clone();
+        let (demand_tx, demand_rx) = mpsc::sync_channel(1);
+        let demand = std::thread::spawn(move || {
+            let result = manager.acquire(&demand_image, &AtomicBool::new(false));
+            let _ = demand_tx.send(result.is_err());
+        });
+        harness.wait(|state| state.demands == 1);
+
+        let counters = harness.counters.clone();
+        let failure = std::thread::spawn(move || {
+            if during_preparation {
+                let generation = shared.lock().generation;
+                shared
+                    .finish_prepare(
+                        generation,
+                        image,
+                        Arc::new(AtomicBool::new(false)),
+                        gated,
+                        Err(io::Error::other(MockCleanup::Pin)),
+                    )
+                    .is_err()
+            } else {
+                let (reaping, _reaped) = mpsc::sync_channel(1);
+                let (finished, exit) = mpsc::sync_channel(1);
+                finished.send(()).unwrap();
+                counters.live.fetch_add(1, Ordering::AcqRel);
+                counters.pin_unconfirmed.store(true, Ordering::Release);
+                let prepared = FakePrepared {
+                    provider: image,
+                    reaping,
+                    exit,
+                    counters,
+                    _owner: Box::new(()),
+                };
+                shared.retire(prepared, gated).is_err()
+            }
+        });
+
+        let sealed_at_release = released_rx.recv_timeout(WAIT);
+        let rejected_demand = demand_rx.recv_timeout(WAIT);
+        // Unblock the releasing callback before any assertion, even when testing a regression.
+        let _ = resume_tx.send(());
+        let failed = failure.join().unwrap();
+        demand.join().unwrap();
+        assert_eq!(
+            sealed_at_release,
+            Ok(true),
+            "admission must be sealed off-lock before release"
+        );
+        assert_eq!(
+            rejected_demand,
+            Ok(true),
+            "a woken waiter must never receive a cold reservation"
+        );
+        assert!(failed);
+        assert_spare_fence_failed(&harness);
+        assert_eq!(harness.counters.launches.load(Ordering::Acquire), 0);
+        drop(occupied);
+        harness.shutdown();
+    }
+}
+
+#[test]
+fn actor_panic_seals_admission_before_external_reservation_can_be_released() {
+    #[derive(Debug, PartialEq, Eq)]
+    enum Event {
+        Released(bool),
+        Sealed,
+    }
+
+    let mut harness = Harness::new();
+    let image = provider("image");
+    let mut occupied: Vec<_> = (0..CHILD_LIMIT).map(|_| harness.cold(&image)).collect();
+    let Acquisition { prepared, permit } = occupied.pop().unwrap();
+    assert!(prepared.is_none());
+    let shared = harness.manager().control.shared.clone();
+    let (events_tx, events_rx) = mpsc::sync_channel(2);
+    let released_tx = events_tx.clone();
+    let (release_tx, release_rx) = mpsc::sync_channel(1);
+    let (fault_tx, fault_rx) = mpsc::sync_channel(1);
+    let gated = ChildPermit {
+        reservation: Arc::new(Reservation {
+            release: Mutex::new(Some(Box::new(move || {
+                let sealed = shared.lock().retirement_failed;
+                drop(permit);
+                let _ = released_tx.send(Event::Released(sealed));
+                let _ = release_rx.recv_timeout(WAIT);
+            }))),
+        }),
+    };
+
+    let manager = harness.manager().clone();
+    let demand_image = image.clone();
+    let (demand_tx, demand_rx) = mpsc::sync_channel(1);
+    let demand = std::thread::spawn(move || {
+        let result = manager.acquire(&demand_image, &AtomicBool::new(false));
+        let _ = demand_tx.send(result.is_err());
+    });
+    harness.wait(|state| state.demands == 1);
+
+    let manager = harness.manager().clone();
+    let actor = std::thread::spawn(move || {
+        crate::image_worker::run_actor(
+            |external| {
+                *external = Some(gated);
+                panic!("controlled active image actor panic");
+            },
+            || {
+                manager
+                    .cleanup_failed(midnight_image_viewer_host::CleanupStatus::ProcessUnconfirmed);
+                let _ = events_tx.send(Event::Sealed);
+                let _ = fault_rx.recv_timeout(WAIT);
+            },
+        )
+    });
+
+    let first_event = events_rx.recv_timeout(WAIT);
+    let rejected_demand = demand_rx.recv_timeout(WAIT);
+    // Release both possible gates before asserting, including when reproducing old unwinding.
+    let _ = release_tx.send(());
+    let _ = fault_tx.send(());
+    assert!(actor.join().unwrap().is_err());
+    demand.join().unwrap();
+    assert_eq!(first_event, Ok(Event::Sealed));
+    assert_eq!(rejected_demand, Ok(true));
+    assert!(
+        events_rx.try_recv().is_err(),
+        "unknown reservation must be retained"
+    );
+    assert_eq!(
+        harness.manager().control.shared.lock().children,
+        CHILD_LIMIT
+    );
+    assert_spare_fence_failed(&harness);
+    assert_eq!(harness.counters.launches.load(Ordering::Acquire), 0);
+    drop(occupied);
+    harness.shutdown();
+}
+
+#[test]
+fn late_unconfirmed_claim_retirement_is_visible_after_spare_stop_completed() {
+    let harness = Harness::new();
+    let image = provider("image");
+    harness.configure(std::slice::from_ref(&image));
+    let _exit = harness.attempt().ready(false);
+    harness.ready();
+    let (started_tx, started_rx) = mpsc::sync_channel(1);
+    let (release_tx, release_rx) = mpsc::sync_channel(1);
+    *harness.counters.validation_barrier.lock().unwrap() = Some((started_tx, release_rx));
+    harness
+        .counters
+        .reject_identity
+        .store(true, Ordering::Release);
+    harness
+        .counters
+        .retire_unconfirmed
+        .store(true, Ordering::Release);
+    let manager = harness.manager().clone();
+    let demand = std::thread::spawn(move || manager.acquire(&image, &AtomicBool::new(false)));
+    started_rx.recv_timeout(WAIT).unwrap();
+    let retirement = harness.manager().spare_retirement();
+    retirement.stop_spare();
+    let probe = WaitProbe::new();
+    let mut waiting = std::pin::pin!(retirement.wait());
+    let result = match probe.poll(waiting.as_mut()) {
+        Poll::Pending => {
+            probe.woken.recv_timeout(WAIT).unwrap();
+            probe.poll(waiting.as_mut())
+        }
+        ready => ready,
+    };
+    assert_eq!(result, Poll::Ready(Ok(())));
+    harness.exited.recv_timeout(WAIT).unwrap();
+    release_tx.send(()).unwrap();
+    assert!(demand.join().unwrap().is_err());
+    let late = harness.manager().spare_retirement();
+    let mut late_wait = std::pin::pin!(late.wait());
+    assert_eq!(
+        probe.poll(late_wait.as_mut()),
+        Poll::Ready(Err(RetirementError::OwnerFailed))
+    );
+    assert_eq!(harness.manager().control.shared.lock().children, 1);
+    assert!(matches!(
+        harness.manager().control.shared.lock().spare,
+        Spare::Retiring
+    ));
 }
 
 struct Harness {
@@ -775,6 +1215,7 @@ fn claimed_child_keeps_the_budget_until_its_destructor_finishes() {
 fn panicking_identity_validation_keeps_capacity_reserved_until_native_drop_finishes() {
     let mut harness = Harness::new();
     let image = provider("image");
+    let active: Vec<_> = (0..3).map(|_| harness.cold(&image)).collect();
     harness.configure(std::slice::from_ref(&image));
     let exit = harness.attempt().ready(true);
     harness.ready();
@@ -794,14 +1235,19 @@ fn panicking_identity_validation_keeps_capacity_reserved_until_native_drop_finis
     });
     exit.reaping.recv_timeout(WAIT).unwrap();
     harness.wait(|state| state.demands == 0);
-    assert_eq!(harness.manager().control.shared.lock().children, 1);
+    assert_eq!(harness.manager().control.shared.lock().children, 4);
+    assert!(harness.manager().control.shared.lock().retirement_failed);
     assert!(received.try_recv().is_err());
-    let active: Vec<_> = (0..3).map(|_| harness.cold(&image)).collect();
-    harness.wait(|state| state.children == 4);
     exit.finish.send(()).unwrap();
     assert!(received.recv_timeout(WAIT).unwrap());
     demand.join().unwrap();
     harness.wait(|state| state.children == 3);
+    assert!(
+        harness
+            .manager()
+            .acquire(&image, &AtomicBool::new(false))
+            .is_err()
+    );
     drop(active);
     harness.shutdown();
 }
@@ -1097,8 +1543,8 @@ fn spare_retirement_reports_owner_failure_without_claiming_cleanup_or_resetting_
         let state = harness.manager().control.shared.lock();
         assert!(state.spare_stopped);
         assert!(!state.shutdown);
-        // Normal unwinding released only the spare's own permit. The active reservation survives.
-        assert_eq!(state.children, 1);
+        // Unconfirmed retirement retains the spare reservation as well as the active one.
+        assert_eq!(state.children, 2);
         assert!(matches!(state.spare, Spare::Retiring));
         assert!(state.refill.is_none());
         state.generation
@@ -1107,7 +1553,7 @@ fn spare_retirement_reports_owner_failure_without_claiming_cleanup_or_resetting_
     harness.manager().opened(&image);
     let state = harness.manager().control.shared.lock();
     assert_eq!(state.generation, generation);
-    assert_eq!(state.children, 1);
+    assert_eq!(state.children, 2);
     assert!(matches!(state.spare, Spare::Retiring));
     assert!(state.refill.is_none());
     drop(state);

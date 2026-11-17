@@ -1,4 +1,6 @@
 //! Installed drag bridge: raw capture, cancellation, panel geometry and internal fallback.
+#[path = "support/owned_commands.rs"]
+mod owned_commands;
 #[path = "support/owned_windows.rs"]
 mod owned_windows;
 #[path = "support/render.rs"]
@@ -8,7 +10,8 @@ mod ui;
 
 use i_slint_core::items::AccessibleRole;
 use midnight_core::*;
-use midnight_ui::{Presenter, install, refresh};
+use midnight_ui::{BeginOwned, Presenter, refresh};
+use owned_commands::install;
 use slint::{
     ComponentHandle,
     platform::{Key, PointerEventButton, WindowEvent},
@@ -26,7 +29,7 @@ struct Harness {
     presenter: Rc<RefCell<Presenter>>,
     commands: Rc<RefCell<Vec<Command>>>,
     refuse_cancel: Rc<Cell<bool>>,
-    send: Rc<dyn Fn(Command) -> bool>,
+    begin: BeginOwned,
 }
 
 impl Harness {
@@ -54,7 +57,7 @@ impl Harness {
             captured.borrow_mut().push(command);
             true
         });
-        install(&ui.window, presenter.clone(), send.clone());
+        let begin = install(&ui.window, presenter.clone(), send.clone());
         for (pane, path) in [(PaneId::Left, left), (PaneId::Right, right.clone())] {
             ui.window.invoke_action(pane.index() as i32, 3);
             let navigation = commands
@@ -115,7 +118,7 @@ impl Harness {
             presenter,
             commands,
             refuse_cancel,
-            send,
+            begin,
         }
     }
 
@@ -161,10 +164,12 @@ impl Harness {
     }
 
     fn prepared(&mut self, id: DragId) {
-        self.presenter.borrow_mut().apply_with_sender(
-            Event::DragDrop(DragDropEvent::Prepared { id, item_count: 1 }),
-            self.send.as_ref(),
-        );
+        owned_commands::run(&self.presenter, &self.begin, |presenter, send| {
+            presenter.apply_with_sender(
+                Event::DragDrop(DragDropEvent::Prepared { id, item_count: 1 }),
+                send,
+            )
+        });
         refresh(&self.ui.window, &self.presenter.borrow());
         self.ui.draw();
     }
@@ -252,14 +257,16 @@ impl Harness {
         position: slint::LogicalPosition,
         intent: Option<TransferIntent>,
     ) {
-        self.presenter.borrow_mut().apply_with_sender(
-            Event::DragDrop(DragDropEvent::InternalPreview {
-                id: request.id,
-                revision: request.revision,
-                intent,
-            }),
-            self.send.as_ref(),
-        );
+        owned_commands::run(&self.presenter, &self.begin, |presenter, send| {
+            presenter.apply_with_sender(
+                Event::DragDrop(DragDropEvent::InternalPreview {
+                    id: request.id,
+                    revision: request.revision,
+                    intent,
+                }),
+                send,
+            )
+        });
         // Refresh the installed bridge at its unchanged pointer position, just
         // as its regular timer does after a worker receipt reaches the presenter.
         self.ui.window.invoke_drag_moved(position.x, position.y);
@@ -359,7 +366,7 @@ fn internal_drop_highlights_the_exact_folder_and_captures_its_identity() {
 #[test]
 fn release_escape_and_navigation_cannot_be_revived_by_late_preparation() {
     let mut h = Harness::new();
-    for kind in 0..2 {
+    for kind in 0..3 {
         let id = h.start();
         match kind {
             0 => h.release(),
@@ -855,13 +862,15 @@ fn deferred_focus_loss_cannot_cancel_a_later_gesture_after_the_old_backend_recei
         let _guard = h.presenter.borrow_mut();
         h.ui.window.invoke_drag_cancel();
     }
-    h.presenter.borrow_mut().apply_with_sender(
-        Event::DragDrop(DragDropEvent::Finished {
-            id: old,
-            outcome: DragFinish::Cancelled,
-        }),
-        h.send.as_ref(),
-    );
+    owned_commands::run(&h.presenter, &h.begin, |presenter, send| {
+        presenter.apply_with_sender(
+            Event::DragDrop(DragDropEvent::Finished {
+                id: old,
+                outcome: DragFinish::Cancelled,
+            }),
+            send,
+        )
+    });
     h.release();
     let current = h.start();
     assert_ne!(current, old);

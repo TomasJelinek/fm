@@ -217,8 +217,9 @@ impl CapturedFile {
             .as_ref()
             .ok_or_else(|| Error("Missing content identity".into()))?;
         let file = native::open_read(&self.path)?;
-        if native::snapshot(&file)? != *snapshot {
-            return Err(changed());
+        let current = native::snapshot(&file)?;
+        if current != *snapshot {
+            return Err(native_changed("open", &self.path, snapshot, &current));
         }
         Ok(Reader::Native {
             file,
@@ -271,8 +272,9 @@ impl Reader {
         let Self::Native { file, snapshot } = self else {
             return Err(Error("Invalid content reader".into()));
         };
-        if native::snapshot(file)? != *snapshot {
-            return Err(changed());
+        let current = native::snapshot(file)?;
+        if current != *snapshot {
+            return Err(native_changed("read_before", file, snapshot, &current));
         }
         let length = snapshot
             .length
@@ -281,8 +283,9 @@ impl Reader {
         let mut bytes = vec![0; length];
         file.seek(SeekFrom::Start(offset))?;
         file.read_exact(&mut bytes)?;
-        if native::snapshot(file)? != *snapshot {
-            return Err(changed());
+        let current = native::snapshot(file)?;
+        if current != *snapshot {
+            return Err(native_changed("read_after", file, snapshot, &current));
         }
         Ok(bytes)
     }
@@ -320,6 +323,30 @@ fn read_source(
         ));
     }
     Ok(bytes)
+}
+
+fn native_changed(
+    stage: &str,
+    source: &impl std::fmt::Debug,
+    expected: &native::Snapshot,
+    current: &native::Snapshot,
+) -> Error {
+    // Keep both snapshots before the potentially long, Debug-escaped source path.
+    const LIMIT: usize = 4096;
+    const TRUNCATED: &str = "... (truncated)";
+    let mut message = format!(
+        "{} [stage={stage}; expected={expected:?}; current={current:?}; source={source:?}]",
+        changed(),
+    );
+    if message.len() > LIMIT {
+        let mut end = LIMIT - TRUNCATED.len();
+        while !message.is_char_boundary(end) {
+            end -= 1;
+        }
+        message.truncate(end);
+        message.push_str(TRUNCATED);
+    }
+    Error(message)
 }
 
 fn changed() -> Error {

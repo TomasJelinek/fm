@@ -1,6 +1,8 @@
 //! Embedded operation forms retain the backend target and the exact UI occurrence.
 #[path = "support/modeless.rs"]
 mod modeless;
+#[path = "support/owned_commands.rs"]
+mod owned_commands;
 #[path = "support/ui.rs"]
 mod ui;
 
@@ -9,7 +11,8 @@ use i_slint_core::{
     window::WindowInner,
 };
 use midnight_core::*;
-use midnight_ui::{MainWindow, OperationPresentation, Presenter, install, refresh};
+use midnight_ui::{BeginOwned, MainWindow, OperationPresentation, Presenter, refresh};
+use owned_commands::install;
 use slint::{
     ComponentHandle, Model, SharedString,
     platform::{Key, WindowAdapter, WindowEvent, software_renderer::MinimalSoftwareWindow},
@@ -28,6 +31,7 @@ struct Harness {
     commands: Rc<RefCell<Vec<Command>>>,
     accepting: Rc<Cell<bool>>,
     paths: [PathBuf; 2],
+    begin: BeginOwned,
 }
 
 impl Harness {
@@ -46,7 +50,7 @@ impl Harness {
         let captured = commands.clone();
         let accepting = Rc::new(Cell::new(true));
         let gate = accepting.clone();
-        install(
+        let begin = install(
             &main,
             state.clone(),
             Rc::new(move |command| {
@@ -97,6 +101,7 @@ impl Harness {
             commands,
             accepting,
             paths,
+            begin,
         }
     }
 
@@ -181,9 +186,9 @@ impl Harness {
                 metadata: EntryMetadata::default(),
             }],
         };
-        self.state
-            .borrow_mut()
-            .apply(Event::Operation(OperationEvent::Preview(Arc::new(preview))));
+        owned_commands::run(&self.state, &self.begin, |state, _| {
+            state.apply(Event::Operation(OperationEvent::Preview(Arc::new(preview))));
+        });
         refresh(&self.main, &self.state.borrow());
         let child = self.child();
         self.commands.borrow_mut().clear();

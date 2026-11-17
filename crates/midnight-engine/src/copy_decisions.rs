@@ -1,4 +1,4 @@
-//! Async decision waiting never holds a blocking worker or an I/O permit.
+//! Async decisions keep lifetime authority without occupying a blocking worker.
 use super::*;
 
 pub(super) struct DecisionWaiter<'a> {
@@ -6,7 +6,7 @@ pub(super) struct DecisionWaiter<'a> {
     pub cancel: &'a Cancellation,
     pub waiting: &'a AtomicU64,
     pub decisions: &'a mut mpsc::Receiver<CopyDecision>,
-    pub outbox: &'a Outbox,
+    pub outbox: &'a CopyOutbox,
     pub throughput: &'a Arc<Mutex<Tracker>>,
 }
 
@@ -59,88 +59,180 @@ pub(super) fn retryable_error(error: &FsError) -> bool {
     )
 }
 
+#[derive(Default)]
+struct NamespacePlan {
+    installed: bool,
+}
+impl NamespacePlan {
+    fn poll(
+        &mut self,
+        claim: &crate::copy_namespace::Claim,
+        endpoints: Vec<(
+            TransferNamespaceAccess,
+            Option<Arc<dyn TransferNamespacePin>>,
+        )>,
+        io: Arc<midnight_work_budget::Permit>,
+        cancel: &Cancellation,
+    ) -> Result<bool, FsError> {
+        if !self.installed {
+            // plan_union takes the immutable pins before refresh can fail.
+            // Retry revalidates those same owners; it must not install again.
+            self.installed = true;
+            claim.plan_union(endpoints, io, cancel)?;
+        } else {
+            // Any revalidation clones close under the caller's sealed context.
+            drop(endpoints);
+            drop(io);
+        }
+        claim.try_grant(cancel)
+    }
+}
+
+enum PreparationStep {
+    Waiting(Owned<preparation::Preparation>, NamespacePlan),
+    Failed(Owned<preparation::Preparation>, NamespacePlan, FsError),
+    Ready(Owned<worker::Job>),
+    Unconfirmed,
+}
+
 pub(super) async fn prepare_job(
-    input: Owned<(CopyInput, Arc<dyn TransferService>)>,
-    io_budget: &Arc<Semaphore>,
+    input: Owned<CopyInput>,
+    service: QualifiedTransferInstallation,
     waiter: &mut DecisionWaiter<'_>,
 ) -> Result<Owned<worker::Job>, Box<CopyProgress>> {
-    let mut preparation = ownership::map(input, |(input, service)| {
-        let mut preparation = preparation::Preparation::new(input, service);
-        preparation.attach_tracker(waiter.throughput.clone());
-        preparation
-    });
+    let tracker = waiter.throughput.clone();
+    let created = tokio::task::spawn_blocking(move || {
+        ownership::map(input, |input| {
+            let mut preparation = preparation::Preparation::qualified(input, service);
+            preparation.attach_tracker(tracker);
+            preparation
+        })
+    })
+    .await;
+    let mut preparation = match created {
+        Ok(Ok(preparation)) => preparation,
+        Ok(Err(_)) => return Err(Box::new(retirement_unconfirmed(waiter.status))),
+        Err(error) => {
+            std::mem::forget(error);
+            return Err(Box::new(retirement_unconfirmed(waiter.status)));
+        }
+    };
+    let mut plan = NamespacePlan::default();
     let mut version = 0u64;
     loop {
         set_state(waiter.status, CopyOperationState::Preparing);
         publish(waiter.outbox, snapshot(waiter.status)).await;
-        if !wait_for_pause(
-            waiter.cancel,
-            waiter.status,
-            waiter.outbox,
-            waiter.throughput,
-        )
-        .await
-        {
-            drop_preparation(preparation).await;
-            return Err(Box::new(cancelled(waiter.status)));
-        }
-        let Some(permit) = acquire_resources(
-            io_budget,
-            waiter.cancel,
-            waiter.status,
-            waiter.outbox,
-            Some(waiter.throughput),
-        )
-        .await
-        else {
-            drop_preparation(preparation).await;
-            return Err(Box::new(cancelled(waiter.status)));
-        };
-        let cancel = waiter.cancel.clone();
-        let status = waiter.status.clone();
-        let attempt = tokio::task::spawn_blocking(move || {
-            let _permit = permit;
-            match preparation.attempt(cancel, status) {
-                Ok(mut job) => {
+        // Revalidate preparation endpoints once for each explicit attempt. A
+        // blocked grant subsequently refreshes through its retained registry.
+        let mut revalidate = true;
+        let error = loop {
+            if !wait_for_pause(
+                waiter.cancel,
+                waiter.status,
+                waiter.outbox,
+                waiter.throughput,
+            )
+            .await
+            {
+                set_resource_wait(waiter.status, Some(waiter.throughput), None);
+                let progress =
+                    retire_input(preparation, cancelled(waiter.status), waiter.status).await;
+                return Err(Box::new(progress));
+            }
+            let cancel = waiter.cancel.clone();
+            let status = waiter.status.clone();
+            let tracker = waiter.throughput.clone();
+            let attempt = tokio::task::spawn_blocking(move || {
+                let result = ownership::run(&mut preparation, |scope| {
+                    let endpoints = if revalidate || !plan.installed {
+                        scope.pin_endpoints(&cancel, &status)?
+                    } else {
+                        Vec::new()
+                    };
+                    let resources = scope.resources_mut();
+                    let io = resources.real_io.as_ref().cloned().ok_or_else(|| {
+                        error(
+                            Path::new(""),
+                            io::ErrorKind::InvalidInput,
+                            "Preparation has no admitted I/O owner.",
+                        )
+                    })?;
+                    let claim = resources.namespace().ok_or_else(|| {
+                        error(
+                            Path::new(""),
+                            io::ErrorKind::InvalidInput,
+                            "Preparation has no namespace claim.",
+                        )
+                    })?;
+                    if !plan.poll(claim, endpoints, io, &cancel)? {
+                        return Ok(None);
+                    }
+                    set_resource_wait(&status, Some(&tracker), None);
+                    let mut job = ownership::Armed::new(scope.attempt(cancel, status)?);
                     job.set_decision_version(version);
-                    // Close retained preparation owners on the worker, before Move can remove sources.
-                    let (scope, lease) = preparation.into_parts();
-                    let Scope {
-                        payload: preparation,
-                        resources,
-                    } = scope;
-                    let job = lease.own(Scope {
-                        payload: job,
-                        resources,
-                    });
-                    drop(preparation);
-                    Ok(job)
+                    Ok(Some(job))
+                });
+                match result {
+                    Ok(Ok(Some(job))) => {
+                        match ownership::handoff_job(preparation, job.into_inner()) {
+                            Ok(job) => PreparationStep::Ready(job),
+                            Err(_) => PreparationStep::Unconfirmed,
+                        }
+                    }
+                    Ok(Ok(None)) => PreparationStep::Waiting(preparation, plan),
+                    Ok(Err(error)) => PreparationStep::Failed(preparation, plan, error),
+                    Err(_) => {
+                        // run has already armed/quarantined every native owner.
+                        drop(preparation);
+                        PreparationStep::Unconfirmed
+                    }
                 }
-                Err(error) => Err(Box::new((preparation, error))),
-            }
-        })
-        .await;
-        let error;
-        (preparation, error) = match attempt {
-            Ok(Ok(job)) => return Ok(job),
-            Ok(Err(failure)) => *failure,
-            Err(error) => {
-                return Err(Box::new(panicked(
-                    waiter.status,
-                    error.to_string(),
-                    waiter.cancel,
-                )));
+            })
+            .await;
+            match attempt {
+                Ok(PreparationStep::Ready(job)) => return Ok(job),
+                Ok(PreparationStep::Waiting(returned, retained_plan)) => {
+                    preparation = returned;
+                    plan = retained_plan;
+                    revalidate = false;
+                    let changed =
+                        snapshot(waiter.status).wait_reason != Some(TransferWaitReason::Resources);
+                    if changed {
+                        set_resource_wait(
+                            waiter.status,
+                            Some(waiter.throughput),
+                            Some(TransferWaitReason::Resources),
+                        );
+                        publish(waiter.outbox, snapshot(waiter.status)).await;
+                    }
+                    tokio::time::sleep(Duration::from_millis(25)).await;
+                }
+                Ok(PreparationStep::Failed(returned, retained_plan, error)) => {
+                    preparation = returned;
+                    plan = retained_plan;
+                    set_resource_wait(waiter.status, Some(waiter.throughput), None);
+                    break error;
+                }
+                Ok(PreparationStep::Unconfirmed) => {
+                    return Err(Box::new(retirement_unconfirmed(waiter.status)));
+                }
+                Err(error) => {
+                    std::mem::forget(error);
+                    return Err(Box::new(retirement_unconfirmed(waiter.status)));
+                }
             }
         };
-        // Before admission, recorded errors are owned-stage cleanup residuals.
-        // A fresh attempt cannot erase them or accumulate more abandoned stages.
+        // Recorded preparation failures include owned-stage residuals. Retry
+        // cannot erase those or accumulate further abandoned cleanup stages.
         if waiter.cancel.is_cancelled()
             || snapshot(waiter.status).failed != 0
             || !retryable_error(&error)
             || version == u64::MAX
         {
-            drop_preparation(preparation).await;
-            return Err(Box::new(failed(waiter.status, error, waiter.cancel)));
+            let progress = failed(waiter.status, error, waiter.cancel);
+            return Err(Box::new(
+                retire_input(preparation, progress, waiter.status).await,
+            ));
         }
         version += 1;
         let progress = snapshot(waiter.status);
@@ -173,14 +265,15 @@ pub(super) async fn prepare_job(
             )
             .await;
         if !retry || waiter.cancel.is_cancelled() {
-            drop_preparation(preparation).await;
             let mut progress = cancelled(waiter.status);
             progress.errors.push(error);
-            return Err(Box::new(progress));
+            return Err(Box::new(
+                retire_input(preparation, progress, waiter.status).await,
+            ));
         }
     }
 }
 
-async fn drop_preparation(preparation: Owned<preparation::Preparation>) {
-    let _ = preparation.retire().await;
-}
+#[cfg(test)]
+#[path = "copy_namespace_preparation_tests.rs"]
+mod namespace_preparation_tests;

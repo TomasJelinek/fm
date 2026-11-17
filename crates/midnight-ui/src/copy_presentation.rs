@@ -4,56 +4,78 @@ use super::*;
 pub(super) fn install(
     window: &MainWindow,
     presenter: Rc<RefCell<Presenter>>,
-    send: Rc<dyn Fn(Command) -> bool>,
+    _send: Rc<dyn Fn(Command) -> bool>,
+    begin_owned: crate::BeginOwned,
 ) {
     let weak = window.as_weak();
     let state = presenter.clone();
+    let begin_confirm = begin_owned.clone();
     window.on_confirm_copy_draft(move |token, destination| {
         let Some(window) = weak.upgrade() else {
             return;
         };
-        if window.get_copy_draft_wait() {
-            state.borrow_mut().confirm_copy_dialog_options(
-                token.as_str(),
-                destination.as_str(),
-                if window.get_copy_draft_preserve_time() {
-                    TransferMetadataPolicy::RequireModifiedTime
-                } else {
-                    TransferMetadataPolicy::ContentOnly
-                },
-                TransferStartPolicy::WaitForEarlier,
-                send.as_ref(),
-            );
-        } else if window.get_copy_draft_preserve_time() {
-            state.borrow_mut().confirm_copy_dialog_metadata(
-                token.as_str(),
-                destination.as_str(),
-                TransferMetadataPolicy::RequireModifiedTime,
-                send.as_ref(),
-            );
-        } else {
-            state.borrow_mut().confirm_copy_dialog(
-                token.as_str(),
-                destination.as_str(),
-                send.as_ref(),
-            );
+        // Claim before the Presenter action clones a captured draft or builds a request.
+        if crate::with_owned_commands(&state, &begin_confirm, |p, send| {
+            if window.get_copy_draft_wait() {
+                p.confirm_copy_dialog_options(
+                    token.as_str(),
+                    destination.as_str(),
+                    if window.get_copy_draft_preserve_time() {
+                        TransferMetadataPolicy::RequireModifiedTime
+                    } else {
+                        TransferMetadataPolicy::ContentOnly
+                    },
+                    TransferStartPolicy::WaitForEarlier,
+                    send,
+                );
+            } else if window.get_copy_draft_preserve_time() {
+                p.confirm_copy_dialog_metadata(
+                    token.as_str(),
+                    destination.as_str(),
+                    TransferMetadataPolicy::RequireModifiedTime,
+                    send,
+                );
+            } else {
+                p.confirm_copy_dialog(token.as_str(), destination.as_str(), send);
+            }
+        })
+        .is_none()
+            && let Ok(mut p) = state.try_borrow_mut()
+        {
+            p.copy_dialog_reclaim_busy(token.as_str());
         }
         // Showing/closing popups synchronously reads presenter-backed row models.
-        crate::refresh(&window, &state.borrow());
+        if let Ok(p) = state.try_borrow() {
+            crate::refresh(&window, &p);
+        }
     });
     let weak = window.as_weak();
     window.on_cancel_copy_draft(move |token| {
         let Some(window) = weak.upgrade() else {
             return;
         };
-        presenter.borrow_mut().cancel_copy_dialog(token.as_str());
-        crate::refresh(&window, &presenter.borrow());
+        if crate::with_owned_commands(&presenter, &begin_owned, |p, _| {
+            p.cancel_copy_dialog(token.as_str());
+        })
+        .is_none()
+            && let Ok(mut p) = presenter.try_borrow_mut()
+        {
+            p.defer_cancel_copy_dialog(token.as_str());
+        }
+        if let Ok(p) = presenter.try_borrow() {
+            crate::refresh(&window, &p);
+        }
         window.invoke_focus_files();
     });
 }
 
 fn refresh_draft(window: &MainWindow, presenter: &Presenter) {
-    let Some(draft) = &presenter.copies.draft else {
+    let Some(draft) = presenter
+        .copies
+        .draft
+        .as_ref()
+        .filter(|draft| !draft.retire_requested)
+    else {
         if !window.get_copy_draft_token().is_empty() {
             // The native host restores its captured invoking item on explicit
             // close. Background retirement must not change owner focus.
@@ -94,7 +116,11 @@ pub(super) fn refresh(window: &MainWindow, presenter: &Presenter) {
     refresh_draft(window, presenter);
     if let Some((id, version)) = presenter.active_rename_decision() {
         if presenter.operations.preview.is_none()
-            && presenter.copies.draft.is_none()
+            && presenter
+                .copies
+                .draft
+                .as_ref()
+                .is_none_or(|draft| draft.retire_requested)
             && let Some(conflict) = presenter
                 .operations
                 .rename_conflicts
@@ -112,7 +138,13 @@ pub(super) fn refresh(window: &MainWindow, presenter: &Presenter) {
         }
         return;
     };
-    if presenter.operations.preview.is_some() || presenter.copies.draft.is_some() {
+    if presenter.operations.preview.is_some()
+        || presenter
+            .copies
+            .draft
+            .as_ref()
+            .is_some_and(|draft| !draft.retire_requested)
+    {
         return;
     }
     if let Some(failure) = presenter

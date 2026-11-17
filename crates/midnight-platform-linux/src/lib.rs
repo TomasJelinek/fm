@@ -50,6 +50,10 @@ pub struct LinuxFileSystem {
     home: Option<PathBuf>,
 }
 
+// Requires the composed transfer_lease reply-owner handoff: no lease-worker file
+// reference survives a successful reply. Native capability destruction is direct.
+impl midnight_core::AuditedSynchronousTransferService for LinuxFileSystem {}
+
 impl LinuxFileSystem {
     /// Creates an adapter with an optional Home root supplied by the application.
     /// The Home path is preserved verbatim and need not exist.

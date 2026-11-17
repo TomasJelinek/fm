@@ -107,7 +107,7 @@ impl Fixture {
             stable_entry_ids: true,
             format: Format::Zip,
             container: temp.path().join("owned.zip"),
-            source: captured,
+            source: Some(captured),
             channel: Mutex::new(Channel {
                 input: tempfile::tempfile().unwrap(),
                 output,
@@ -121,6 +121,7 @@ impl Fixture {
             staging: Arc::new(Mutex::new(Some(
                 crate::staging::Staging::open(&temp.path().join("spool")).unwrap(),
             ))),
+            close: Arc::new(close::CloseReceipt::new()),
         };
         *source.supervision.lock().unwrap() = Arc::downgrade(&mount.supervision);
         Self {

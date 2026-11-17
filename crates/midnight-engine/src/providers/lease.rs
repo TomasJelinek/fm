@@ -45,6 +45,9 @@ pub struct MountedEntry {
 }
 
 impl MountedLocation {
+    pub(crate) fn release_on_worker(self) -> Result<(), ProviderError> {
+        self.lease.release_on_worker()
+    }
     pub(super) fn new(
         address: StoredLocation,
         reference: MountRef,
@@ -257,20 +260,99 @@ impl MountedLocation {
             return Err(ProviderError::Unsupported);
         }
         let request = self.lease.lifetime.linked(cancel);
-        check_cancel(&request)?;
-        let source = self.lease.mount.open_content(&node.token, &request)?;
-        check_cancel(&request)?;
-        let source = CapturedFile::from_source(source)
-            .map_err(|error| ProviderError::Failed(error.to_string()))?;
-        check_cancel(&request)?;
-        Ok(Arc::new(LeasedContent {
-            lease: self.lease.clone(),
-            source,
-        }))
+        let mut construction = crate::copy_nested_retirement::Retained::new(ContentConstruction {
+            source: None,
+            captured: None,
+            lease: Some(self.lease.clone()),
+        });
+        let result = (|| {
+            check_cancel(&request)?;
+            let source = self.lease.mount.open_content(&node.token, &request)?;
+            construction.get_mut().source = Some(source);
+            check_cancel(&request)?;
+            // The anchor keeps final responsibility while the host constructor
+            // validates and may reject its independently consumed reference.
+            let source = construction
+                .get()
+                .source
+                .as_ref()
+                .expect("returned content")
+                .clone();
+            construction.get_mut().captured = Some(
+                CapturedFile::from_source(source)
+                    .map_err(|error| ProviderError::Failed(error.to_string()))?,
+            );
+            check_cancel(&request)?;
+            construction.get_mut().release_source()?;
+            let state = construction.get_mut();
+            Ok(Arc::new(LeasedContent {
+                lease: state.lease.take().expect("captured mount lease"),
+                source: state.captured.take().expect("validated content"),
+            }) as Arc<dyn ContentSource>)
+        })();
+        let result = match result {
+            Ok(source) => Ok(source),
+            Err(original) => Err(super::registry::construction_failure(
+                original,
+                construction.get_mut().release(),
+            )),
+        };
+        drop(construction.take());
+        result
+    }
+}
+
+struct ContentConstruction {
+    source: Option<Arc<dyn ContentSource>>,
+    captured: Option<CapturedFile>,
+    lease: Option<Arc<MountLease>>,
+}
+impl ContentConstruction {
+    fn release_source(&mut self) -> Result<(), ProviderError> {
+        if let Some(source) = self.source.take() {
+            crate::copy_nested_retirement::content_step(|| source.release_on_worker())
+                .map_err(|error| ProviderError::Failed(error.to_string()))?;
+        }
+        Ok(())
+    }
+    fn release(&mut self) -> Result<(), ProviderError> {
+        use crate::copy_nested_retirement::{self as nested, Retained};
+        let mut lease = Retained::new(self.lease.take());
+        let mut captured = Retained::new(self.captured.take());
+        self.release_source()?;
+        if let Some(captured) = captured.take() {
+            nested::release_captured_file(captured)
+                .map_err(|error| ProviderError::Failed(error.to_string()))?;
+        }
+        if let Some(lease) = lease.take() {
+            lease.release_on_worker()?;
+        }
+        Ok(())
     }
 }
 
 impl MountLease {
+    fn release_on_worker(self: Arc<Self>) -> Result<(), ProviderError> {
+        use crate::copy_nested_retirement::{self as nested, Retained};
+        nested::provider_step(|| {
+            let Some(owner) = Arc::into_inner(self) else {
+                return Ok(());
+            };
+            let MountLease {
+                mount,
+                _registration,
+                _permit,
+                ..
+            } = owner;
+            let mut tail = Retained::new((_registration, _permit));
+            nested::release_mount(mount)?;
+            let (registration, permit) = tail.take();
+            let mut permit = Retained::new(permit);
+            registration.release_on_worker()?;
+            drop(permit.take());
+            Ok(())
+        })
+    }
     fn validate_kind(&self, token: &NodeToken, kind: EntryKind) -> Result<(), ProviderError> {
         let nodes = self.nodes.lock().map_err(|_| poisoned())?;
         if nodes.get(token).is_some_and(|known| *known != kind) {
@@ -332,6 +414,29 @@ impl fmt::Debug for LeasedContent {
 }
 
 impl ContentSource for LeasedContent {
+    fn cleanup_unconfirmed(&self) -> bool {
+        self.source.cleanup_unconfirmed()
+    }
+    fn release_on_worker(self: Arc<Self>) -> Result<(), midnight_plugin_host::Error> {
+        use crate::copy_nested_retirement::{self as nested, Retained};
+        let mut reference = Retained::new(self);
+        nested::content_step(|| {
+            if reference.get().cleanup_unconfirmed() {
+                return Err(midnight_plugin_host::Error(
+                    nested::unconfirmed().to_string(),
+                ));
+            }
+            let Some(owner) = Arc::into_inner(reference.take()) else {
+                return Ok(());
+            };
+            let mut lease = Retained::new(owner.lease);
+            nested::release_captured_file(owner.source)?;
+            lease
+                .take()
+                .release_on_worker()
+                .map_err(|error| midnight_plugin_host::Error(error.to_string()))
+        })
+    }
     fn length(&self) -> u64 {
         self.source.length()
     }

@@ -8,6 +8,13 @@ use midnight_core::{
 use std::sync::Arc;
 
 impl Session {
+    #[cfg(test)]
+    pub(crate) fn archive_for_taint_test(source: Arc<dyn ArchiveMount>) -> Arc<dyn ArchiveMount> {
+        Arc::new(NavigationArchive {
+            source: Some(source),
+            registration: None,
+        })
+    }
     pub(crate) fn navigate(
         &mut self,
         view: &Arc<TreeProjection>,
@@ -41,8 +48,8 @@ impl Session {
                 let mut location = target.location.clone();
                 let source = location.mount.take().ok_or(ProviderError::Unavailable)?;
                 location.mount = Some(Arc::new(NavigationArchive {
-                    source,
-                    _registration: self.registration.clone(),
+                    source: Some(source),
+                    registration: Some(self.registration.clone()),
                 }));
                 TreeNavigationTarget::Archive(location)
             }
@@ -55,22 +62,67 @@ impl Session {
 }
 
 struct NavigationArchive {
-    source: Arc<dyn ArchiveMount>,
-    _registration: Arc<RootRegistrationLease>,
+    source: Option<Arc<dyn ArchiveMount>>,
+    registration: Option<Arc<RootRegistrationLease>>,
+}
+impl NavigationArchive {
+    fn source(&self) -> &Arc<dyn ArchiveMount> {
+        self.source
+            .as_ref()
+            .expect("navigation archive remains owned")
+    }
+    fn release(&mut self) -> Result<(), FsError> {
+        use crate::copy_nested_retirement::{self as nested, Retained};
+        let mut registration = Retained::new(self.registration.take());
+        if let Some(source) = self.source.take() {
+            nested::release_archive(source)?;
+        }
+        if let Some(registration) = registration.take() {
+            registration.release_on_worker().map_err(nested::fs_error)?;
+        }
+        Ok(())
+    }
+}
+impl Drop for NavigationArchive {
+    fn drop(&mut self) {
+        if let Some(context) = crate::copy_nested_retirement::current()
+            && let Err(error) = self.release()
+        {
+            context.record(error);
+        }
+    }
 }
 impl std::fmt::Debug for NavigationArchive {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("NavigationArchive")
-            .field("id", &self.source.id())
+            .field("id", &self.source().id())
             .finish()
     }
 }
 impl ArchiveMount for NavigationArchive {
+    fn cleanup_unconfirmed(&self) -> bool {
+        self.source().cleanup_unconfirmed()
+    }
+    fn release_on_worker(self: Arc<Self>) -> Result<(), FsError> {
+        let mut reference = crate::copy_nested_retirement::Retained::new(self);
+        if reference.get().cleanup_unconfirmed() {
+            return Err(crate::copy_nested_retirement::unconfirmed());
+        }
+        let Some(mut owner) = Arc::into_inner(reference.take()) else {
+            return Ok(());
+        };
+        let context = crate::copy_nested_retirement::current().unwrap_or_default();
+        let result = context.with(|| owner.release());
+        if let Err(error) = &result {
+            context.record(error.clone());
+        }
+        result
+    }
     fn id(&self) -> u64 {
-        self.source.id()
+        self.source().id()
     }
     fn list(&self, directory: u64, cancel: &Cancellation) -> Result<Vec<ArchiveNode>, FsError> {
-        self.source.list(directory, cancel)
+        self.source().list(directory, cancel)
     }
     fn read(
         &self,
@@ -79,9 +131,59 @@ impl ArchiveMount for NavigationArchive {
         length: u32,
         cancel: &Cancellation,
     ) -> Result<Vec<u8>, FsError> {
-        self.source.read(entry, offset, length, cancel)
+        self.source().read(entry, offset, length, cancel)
     }
     fn validate(&self) -> Result<(), FsError> {
-        self.source.validate()
+        self.source().validate()
+    }
+}
+
+#[cfg(test)]
+mod retirement_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    #[derive(Debug)]
+    struct Source(Arc<AtomicUsize>);
+    impl ArchiveMount for Source {
+        fn id(&self) -> u64 {
+            1
+        }
+        fn list(&self, _: u64, _: &Cancellation) -> Result<Vec<ArchiveNode>, FsError> {
+            Ok(Vec::new())
+        }
+        fn read(&self, _: u64, _: u64, _: u32, _: &Cancellation) -> Result<Vec<u8>, FsError> {
+            Ok(Vec::new())
+        }
+        fn validate(&self) -> Result<(), FsError> {
+            Ok(())
+        }
+        fn release_on_worker(self: Arc<Self>) -> Result<(), FsError> {
+            if let Some(source) = Arc::into_inner(self) {
+                source.0.fetch_add(1, Ordering::SeqCst);
+            }
+            Ok(())
+        }
+    }
+    #[test]
+    fn navigation_archive_drains_shared_and_last_empty_registration() {
+        for shared in [true, false] {
+            let registration = Arc::new(RootRegistrationLease {
+                registry: Some(Arc::new(crate::providers::ProviderRegistry::default())),
+                provider: midnight_core::ProviderId::new("retirement-fixture").unwrap(),
+                instance: midnight_core::ProviderInstanceId(std::num::NonZeroU64::new(1).unwrap()),
+            });
+            let outside = shared.then(|| registration.clone());
+            let releases = Arc::new(AtomicUsize::new(0));
+            let mount = Arc::new(NavigationArchive {
+                source: Some(Arc::new(Source(releases.clone()))),
+                registration: Some(registration),
+            });
+            let context = crate::copy_nested_retirement::Context::default();
+            let result = context.with(|| mount.release_on_worker());
+            assert!(result.is_ok());
+            assert!(!context.is_quarantined());
+            assert_eq!(releases.load(Ordering::SeqCst), 1);
+            drop(outside);
+        }
     }
 }

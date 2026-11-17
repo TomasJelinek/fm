@@ -156,7 +156,7 @@ impl Gate {
 }
 
 struct Harness {
-    commands: mpsc::Sender<Command>,
+    commands: midnight_engine::CommandSender,
     events: mpsc::Receiver<Event>,
     engine: tokio::task::JoinHandle<()>,
     files: Arc<Files>,
@@ -165,17 +165,15 @@ struct Harness {
 }
 impl Harness {
     fn new() -> Self {
-        let (commands, receive) = mpsc::channel(32);
         let (send, events) = mpsc::channel(64);
         let files = Arc::new(Files::default());
-        let engine = tokio::spawn(
-            Engine::new(
-                Engine::lifetime().expect("engine cleanup worker"),
-                files.clone(),
-                send,
-            )
-            .run(receive),
+        let mut command_engine_1 = Engine::new(
+            Engine::lifetime().expect("engine cleanup worker"),
+            files.clone(),
+            send,
         );
+        let (commands, receive) = command_engine_1.command_channel(32).unwrap();
+        let engine = tokio::spawn(command_engine_1.run(receive));
         Self {
             commands,
             events,

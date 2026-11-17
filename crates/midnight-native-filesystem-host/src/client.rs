@@ -152,11 +152,11 @@ impl NativeProvider {
                 }
                 _ => None,
             };
-            if let Some(close) = close {
-                if let Err(error) = Lease::new(self, close).release_on_worker() {
-                    *unconfirmed = true;
-                    return Err(error);
-                }
+            if let Some(close) = close
+                && let Err(error) = Lease::new(self, close).release_on_worker()
+            {
+                *unconfirmed = true;
+                return Err(error);
             }
             return Err(invalid("Filesystem returned an unexpected response"));
         }

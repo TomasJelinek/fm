@@ -16,6 +16,8 @@ struct Pin {
     path: PathBuf,
     revision: Revision,
     modified: SystemTime,
+    // Last: the retained file closes before this owner can acknowledge native retirement.
+    _namespace_owner: super::namespace::NativeOwner,
 }
 impl TransferModifiedTimePin for Pin {
     fn modified(&self) -> SystemTime {
@@ -34,6 +36,7 @@ impl TransferModifiedTimePin for Pin {
 }
 pub(super) fn prepare(
     file: Arc<File>,
+    namespace_owner: super::namespace::NativeOwner,
     path: &Path,
     cancel: &Cancellation,
 ) -> Result<Box<dyn TransferModifiedTimePin>, FsError> {
@@ -56,6 +59,7 @@ pub(super) fn prepare(
         path: path.to_owned(),
         revision: captured.revision,
         modified: captured.modified,
+        _namespace_owner: namespace_owner,
     }))
 }
 pub(super) fn modified(

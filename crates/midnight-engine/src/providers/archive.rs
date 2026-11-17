@@ -458,6 +458,23 @@ impl CapturedArchive {
 }
 
 impl MountedFilesystem for CapturedArchive {
+    fn release_on_worker(self: Arc<Self>) -> Result<(), ProviderError> {
+        use crate::copy_nested_retirement::{self as nested, Retained};
+        nested::provider_step(|| {
+            let Some(owner) = Arc::into_inner(self) else {
+                return Ok(());
+            };
+            let mut captured = Retained::new(owner.captured);
+            nested::release_archive(owner.mount)
+                .map_err(|error| ProviderError::Failed(error.to_string()))?;
+            if let Some(mount) = captured.get_mut().mount.take() {
+                nested::release_archive(mount)
+                    .map_err(|error| ProviderError::Failed(error.to_string()))?;
+            }
+            drop(captured.take());
+            Ok(())
+        })
+    }
     fn resolve_target(
         &self,
         node: &NodeToken,
@@ -560,6 +577,24 @@ impl fmt::Debug for MemberContent {
 }
 
 impl ContentSource for MemberContent {
+    fn cleanup_unconfirmed(&self) -> bool {
+        self.mount.cleanup_unconfirmed()
+    }
+    fn release_on_worker(self: Arc<Self>) -> Result<(), Error> {
+        let mut reference = crate::copy_nested_retirement::Retained::new(self);
+        crate::copy_nested_retirement::content_step(|| {
+            if reference.get().cleanup_unconfirmed() {
+                return Err(Error(
+                    crate::copy_nested_retirement::unconfirmed().to_string(),
+                ));
+            }
+            let Some(owner) = Arc::into_inner(reference.take()) else {
+                return Ok(());
+            };
+            crate::copy_nested_retirement::release_archive(owner.mount)
+                .map_err(|error| Error(error.to_string()))
+        })
+    }
     fn length(&self) -> u64 {
         self.length
     }
@@ -596,6 +631,17 @@ impl ContentSource for MemberContent {
         }
         Ok(bytes)
     }
+}
+
+#[cfg(test)]
+pub(super) fn member_for_taint_test(mount: Arc<dyn ArchiveMount>) -> Arc<dyn ContentSource> {
+    Arc::new(MemberContent {
+        mount,
+        entry: 2,
+        length: 0,
+        name: "member".into(),
+        version: vec![1],
+    })
 }
 
 fn token(mount: u64, entry: u64) -> Result<NodeToken, ProviderError> {

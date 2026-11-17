@@ -4,28 +4,166 @@
 use super::*;
 use input::Resolved;
 use std::{ffi::OsStr, path::PathBuf, sync::MutexGuard};
+#[cfg(test)]
+#[path = "copy_preparation_handoff_tests.rs"]
+mod handoff_tests;
+#[path = "copy_planned_source.rs"]
+mod planned_source;
+#[cfg(test)]
+#[path = "copy_planning_tests.rs"]
+mod planning_tests;
+
+type EndpointPins = Vec<(
+    TransferNamespaceAccess,
+    Option<Arc<dyn TransferNamespacePin>>,
+)>;
 
 pub(super) struct Preparation {
     // Failed attempts retain native pins. Destroy those authorities while input
     // still owns the captured provider registration and capture permit.
     service: RetainedService,
+    planned: Option<PlannedInput>,
+    endpoints: Option<EndpointPins>,
+    destination_pin: Option<PinnedDirectory>,
     input: CopyInput,
     finished: bool,
     tracker: Option<Arc<Mutex<Tracker>>>,
+    audited_native_children: bool,
 }
 
 impl Preparation {
+    #[cfg(test)]
     pub(super) fn new(input: CopyInput, service: Arc<dyn TransferService>) -> Self {
-        Self {
-            service: RetainedService::new(service),
+        Self::qualified(
             input,
+            crate::transfer_composition::QualifiedTransferInstallation::unqualified(service),
+        )
+    }
+    pub(super) fn qualified(
+        input: CopyInput,
+        service: crate::transfer_composition::QualifiedTransferInstallation,
+    ) -> Self {
+        let mut input = ownership::Armed::new(input);
+        let audited_native_children = input.native_children_are_audited();
+        Self {
+            service: RetainedService::qualified(service),
+            planned: None,
+            endpoints: None,
+            destination_pin: None,
+            input: input.into_inner(),
             finished: false,
             tracker: None,
+            audited_native_children,
         }
+    }
+
+    pub(super) fn retirement_is_checked(&self) -> bool {
+        self.service.witness.is_some() && self.audited_native_children
     }
 
     pub(super) fn attach_tracker(&mut self, tracker: Arc<Mutex<Tracker>>) {
         self.tracker = Some(tracker);
+    }
+
+    /// Read-only endpoint capture. The caller must grant the complete union before
+    /// attempt; an absent capability is an opaque endpoint, never an empty claim.
+    pub(super) fn pin_endpoints(
+        &mut self,
+        cancel: &Cancellation,
+        status: &Status,
+    ) -> Result<EndpointPins, FsError> {
+        check_cancel(&self.input.destination, cancel)?;
+        self.input.validate()?;
+        if !self.retirement_is_checked() {
+            return Err(error(
+                &self.input.destination,
+                io::ErrorKind::Unsupported,
+                "Transfer sources do not supply an audited native composition and consuming provider release.",
+            ));
+        }
+        if self.finished {
+            return Err(error(
+                &self.input.destination,
+                io::ErrorKind::InvalidInput,
+                "Transfer preparation has already completed.",
+            ));
+        }
+        if let Some(endpoints) = &self.endpoints {
+            for (_, pin) in endpoints {
+                if let Some(pin) = pin {
+                    pin.refresh(cancel)?;
+                }
+            }
+            return Ok(endpoints.clone());
+        }
+        if self.planned.is_none() {
+            let resolved = self.input.clone().resolve(&self.service, cancel)?;
+            self.planned = Some(PlannedInput::new(resolved));
+        }
+        // Retain the original existing destination before opening a write-capable
+        // destination. Unsupported read-only providers take the opaque lane.
+        if self.destination_pin.is_none() {
+            match self
+                .service
+                .service
+                .prepare_checksum_directory(&self.input.destination, cancel)
+            {
+                Ok(directory) => {
+                    let pin = PinnedDirectory {
+                        path: self.input.destination.clone(),
+                        identity: directory.identity(),
+                        directory,
+                    };
+                    pin.revalidate(cancel)?;
+                    self.destination_pin = Some(pin);
+                }
+                Err(error) if error.kind == io::ErrorKind::Unsupported => {}
+                // Native rename does not require directory enumeration rights.
+                // A denied read-only probe cannot grant positive geometry, but
+                // the opaque lane can still try metadata-only Move after grant.
+                Err(error)
+                    if self.input.intent == TransferIntent::Move
+                        && error.kind == io::ErrorKind::PermissionDenied => {}
+                Err(error) => return Err(error),
+            }
+        }
+        let roots = self.planned.as_ref().expect("planned input").roots(
+            &self.service,
+            self.input.links,
+            cancel,
+        )?;
+        status
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .requested_roots = roots.len() as u64;
+        let access = if self.input.intent == TransferIntent::Move {
+            TransferNamespaceAccess::Write
+        } else {
+            TransferNamespaceAccess::Read
+        };
+        let mut endpoints = Vec::new();
+        for root in roots {
+            root.revalidate(cancel)?;
+            endpoints.push((access, root.native_namespace_scope(cancel)?));
+            let name = root.entry().item.path.file_name().ok_or_else(|| {
+                error(
+                    &root.entry().item.path,
+                    io::ErrorKind::InvalidInput,
+                    "Transfer source needs a basename.",
+                )
+            })?;
+            let pin = match &self.destination_pin {
+                Some(destination) => destination.directory.native_child_namespace_scope(
+                    name,
+                    root.entry().item.kind,
+                    cancel,
+                )?,
+                None => None,
+            };
+            endpoints.push((TransferNamespaceAccess::Write, pin));
+        }
+        self.endpoints = Some(endpoints.clone());
+        Ok(endpoints)
     }
 
     pub(super) fn attempt(
@@ -44,9 +182,31 @@ impl Preparation {
         // Refuse incompatible options before revalidating or preparing providers.
         self.input.validate()?;
         self.service.revalidate(&cancel)?;
+        if let Some(destination) = &self.destination_pin {
+            destination.revalidate(&cancel)?;
+            // Preserve the planned existing root identity across the capability upgrade.
+            let authority = if self.input.intent == TransferIntent::Move {
+                Authority::Move
+            } else {
+                Authority::Copy(CopyLinkPolicy::Reject)
+            };
+            let writable = self
+                .service
+                .destination(&self.input.destination, authority, &cancel)?;
+            if writable.identity() != destination.identity {
+                return Err(error(
+                    &self.input.destination,
+                    io::ErrorKind::InvalidData,
+                    "Planned transfer destination changed identity.",
+                ));
+            }
+        }
         let metadata = self.input.metadata;
         let links = self.input.links;
-        let resolved = self.input.clone().resolve(&self.service, &cancel)?;
+        let resolved = match &self.planned {
+            Some(planned) => planned.resolve(),
+            None => self.input.clone().resolve(&self.service, &cancel)?,
+        };
         let requested_roots = match &resolved {
             Resolved::Native(request) | Resolved::NativeMove(request) => {
                 request.clipboard.paths.len()
@@ -61,7 +221,7 @@ impl Preparation {
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .requested_roots = requested_roots as u64;
-        let mut job = match resolved {
+        let mut job = ownership::Armed::new(match resolved {
             Resolved::NativeMove(request) => worker::Job::prepare_move_with_metadata(
                 request,
                 &self.service,
@@ -104,20 +264,135 @@ impl Preparation {
                 destination,
                 sources,
             } => worker::Job::prepare_archive(destination, sources, &self.service, cancel, status),
-        }?;
+        }?);
+        if let Some(witness) = self.service.witness {
+            job.set_retirement_witness(witness);
+        }
         if let Some(tracker) = &self.tracker {
             job.attach_tracker(tracker.clone());
         }
         job.set_verification(self.input.verification);
         job.prepare_discovery();
-        if let Some(retention) = &self.input._retention {
-            job.set_drop_retention(retention.clone());
+        if let Some(completions) = &self.input._completions {
+            job.set_drop_completions(completions.clone());
         }
         self.finished = true;
         // In particular, do not keep the Move source or capture alive until the
         // whole job ends: all source owners must close before stage cleanup.
         self.service.release();
-        Ok(job)
+        self.planned = None;
+        self.destination_pin = None;
+        self.endpoints = None;
+        Ok(job.into_inner())
+    }
+}
+
+enum PlannedInput {
+    Native(CopyRequest, bool),
+    Copy(PathBuf, Vec<SharedSource>, bool),
+    Move(PathBuf, Vec<(SharedSource, Arc<dyn TransferMoveCapture>)>),
+}
+impl PlannedInput {
+    fn new(resolved: Resolved) -> Self {
+        match resolved {
+            Resolved::Native(request) => Self::Native(request, false),
+            Resolved::NativeMove(request) => Self::Native(request, true),
+            Resolved::Archive {
+                destination,
+                sources,
+            } => Self::Copy(
+                destination,
+                sources.into_iter().map(SharedSource::new).collect(),
+                true,
+            ),
+            Resolved::Captured {
+                destination,
+                sources: PreparedCapturedTransfer::Copy(sources),
+            } => Self::Copy(
+                destination,
+                sources.into_iter().map(SharedSource::new).collect(),
+                false,
+            ),
+            Resolved::Captured {
+                destination,
+                sources: PreparedCapturedTransfer::Move(sources),
+            } => Self::Move(
+                destination,
+                sources
+                    .into_iter()
+                    .map(|source| (SharedSource::new(source.source), source.capture))
+                    .collect(),
+            ),
+        }
+    }
+    fn resolve(&self) -> Resolved {
+        match self {
+            Self::Native(request, moved) => {
+                if *moved {
+                    Resolved::NativeMove(request.clone())
+                } else {
+                    Resolved::Native(request.clone())
+                }
+            }
+            Self::Copy(destination, roots, archive) => {
+                let sources = roots
+                    .iter()
+                    .map(|source| Box::new(source.clone()) as Box<dyn TransferSource>)
+                    .collect();
+                if *archive {
+                    Resolved::Archive {
+                        destination: destination.clone(),
+                        sources,
+                    }
+                } else {
+                    Resolved::Captured {
+                        destination: destination.clone(),
+                        sources: PreparedCapturedTransfer::Copy(sources),
+                    }
+                }
+            }
+            Self::Move(destination, roots) => Resolved::Captured {
+                destination: destination.clone(),
+                sources: PreparedCapturedTransfer::Move(
+                    roots
+                        .iter()
+                        .map(|(source, capture)| PreparedTransferMove {
+                            source: Box::new(source.clone()),
+                            capture: capture.clone(),
+                        })
+                        .collect(),
+                ),
+            },
+        }
+    }
+    fn roots(
+        &self,
+        service: &RetainedService,
+        links: CopyLinkPolicy,
+        cancel: &Cancellation,
+    ) -> Result<Vec<SharedSource>, FsError> {
+        match self {
+            Self::Native(request, moved) => request
+                .clipboard
+                .paths
+                .iter()
+                .map(|path| {
+                    service
+                        .source(
+                            path,
+                            if *moved {
+                                Authority::Move
+                            } else {
+                                Authority::Copy(links)
+                            },
+                            cancel,
+                        )
+                        .map(|source| source.source)
+                })
+                .collect(),
+            Self::Copy(_, roots, _) => Ok(roots.clone()),
+            Self::Move(_, roots) => Ok(roots.iter().map(|(source, _)| source.clone()).collect()),
+        }
     }
 }
 
@@ -135,13 +410,21 @@ struct Pins {
 
 struct RetainedService {
     service: Arc<dyn TransferService>,
+    witness: Option<crate::transfer_composition::TransferRetirementWitness>,
     pins: Mutex<Pins>,
 }
 
 impl RetainedService {
+    #[cfg(test)]
     fn new(service: Arc<dyn TransferService>) -> Self {
+        Self::qualified(
+            crate::transfer_composition::QualifiedTransferInstallation::unqualified(service),
+        )
+    }
+    fn qualified(service: crate::transfer_composition::QualifiedTransferInstallation) -> Self {
         Self {
-            service,
+            witness: service.witness(),
+            service: service.service(),
             pins: Mutex::default(),
         }
     }
@@ -198,11 +481,23 @@ impl RetainedService {
                     (prepared.source, Some(prepared.capture))
                 }
             };
-            let source = PinnedSource {
+            // Install the original owner before any fallible pin qualification.
+            // A failed probe must never permit Retry to capture a new pathname.
+            let ready = PinnedSource {
                 source: SharedSource::new(source),
                 capture,
             };
-            self.pins(path)?.sources.insert(key, source.clone());
+            let displaced = self.pins(path)?.sources.insert(key.clone(), ready.clone());
+            drop(displaced);
+            let source = planned_source::defer(
+                self.service.clone(),
+                authority,
+                Box::new(ready.source.clone()),
+                ready.capture.clone(),
+                cancel,
+            )?;
+            let displaced = self.pins(path)?.sources.insert(key, source.clone());
+            drop(displaced);
             source
         };
         source.revalidate(cancel)?;
@@ -379,6 +674,12 @@ impl SharedSource {
 }
 
 impl TransferSource for SharedSource {
+    fn native_namespace_scope(
+        &self,
+        cancel: &Cancellation,
+    ) -> Result<Option<Arc<dyn TransferNamespacePin>>, FsError> {
+        self.source()?.native_namespace_scope(cancel)
+    }
     fn discover(
         &self,
         cancel: &Cancellation,

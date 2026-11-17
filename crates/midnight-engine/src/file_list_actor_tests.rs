@@ -31,7 +31,7 @@ pub(super) fn controller() -> (Controller, mpsc::Receiver<Event>, JoinSet<()>) {
     (
         Controller::testing(
             None,
-            Arc::new(Semaphore::new(1)),
+            crate::transfer_leases::namespace_gate(),
             outbox,
             crate::test_snapshots(Default::default()),
         ),

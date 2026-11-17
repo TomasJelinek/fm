@@ -50,6 +50,53 @@ pub struct VerifiedFileCopy {
     failure_stage: midnight_core::CopyErrorStage,
 }
 impl VerifiedFileCopy {
+    /// Execute the existing bounded step under the job's retained Shared I/O owner.
+    pub fn step_admitted(
+        &mut self,
+        cancel: &Cancellation,
+        permit: &midnight_work_budget::Permit,
+    ) -> Result<CopyPhase, FsError> {
+        crate::transfer_io::with_transfer_io_permit(permit, || self.step(cancel))?
+    }
+
+    pub fn cleanup_admitted(
+        &mut self,
+        permit: &midnight_work_budget::Permit,
+    ) -> Result<(), FsError> {
+        crate::transfer_io::with_transfer_io_permit(permit, || self.cleanup())?
+    }
+
+    pub fn publish_admitted(
+        &mut self,
+        name: &OsStr,
+        cancel: &Cancellation,
+        permit: &midnight_work_budget::Permit,
+    ) -> Result<TransferPublication, FsError> {
+        crate::transfer_io::with_transfer_io_permit(permit, || self.publish(name, cancel))?
+    }
+
+    pub fn prepare_replacement_admitted(
+        &mut self,
+        name: &OsStr,
+        expected: Arc<dyn TransferTarget>,
+        policy: TransferReplacementPolicy,
+        cancel: &Cancellation,
+        permit: &midnight_work_budget::Permit,
+    ) -> Result<(), FsError> {
+        crate::transfer_io::with_transfer_io_permit(permit, || {
+            self.prepare_replacement(name, expected, policy, cancel)
+        })?
+    }
+
+    pub fn publish_replace_admitted(
+        &mut self,
+        name: &OsStr,
+        cancel: &Cancellation,
+        permit: &midnight_work_budget::Permit,
+    ) -> Result<TransferPublication, FsError> {
+        crate::transfer_io::with_transfer_io_permit(permit, || self.publish_replace(name, cancel))?
+    }
+
     pub fn new(
         source: Box<dyn TransferSource>,
         stage: Box<dyn StagedTransferFile>,
@@ -143,7 +190,8 @@ impl VerifiedFileCopy {
         self.stage.cleanup()
     }
     /// At most one 256 KiB block, or bounded sync/metadata finalization. Individual
-    /// native calls share the process I/O budget; hashing runs after releasing it.
+    /// Standalone native calls share the process I/O budget. An admitted job
+    /// retains its lifetime permit; no nested call acquires another admission.
     pub fn step(&mut self, cancel: &Cancellation) -> Result<CopyPhase, FsError> {
         if self.phase == CopyPhase::Failed {
             return Err(failure(
@@ -513,14 +561,11 @@ impl VerifiedFileCopy {
         Ok(outcome)
     }
 }
-fn io_permit(cancel: &Cancellation, path: &Path) -> Result<midnight_work_budget::Permit, FsError> {
-    // Transfer capabilities currently carry no verified storage classification. Conservatively
-    // serialize source and target calls; concurrent copies require both to be confirmed SSDs.
-    midnight_work_budget::shared_io()
-        .acquire(midnight_work_budget::Admission::Exclusive, || {
-            cancel.is_cancelled()
-        })
-        .ok_or_else(|| io_error(path, io::ErrorKind::Interrupted.into()))
+fn io_permit(
+    cancel: &Cancellation,
+    path: &Path,
+) -> Result<crate::transfer_io::CallPermit, FsError> {
+    crate::transfer_io::acquire_transfer_call(cancel, path)
 }
 fn check_cancel(cancel: &Cancellation, path: &Path) -> Result<(), FsError> {
     if cancel.is_cancelled() {

@@ -6,6 +6,8 @@ use super::*;
 pub(in super::super) struct CrossDeviceService(
     pub(in super::super) midnight_platform::LocalFileSystem,
 );
+// This native-delegating fixture retains only synchronous authority and host counters.
+impl midnight_core::AuditedSynchronousTransferService for CrossDeviceService {}
 impl TransferService for CrossDeviceService {
     fn prepare_transfer_source(
         &self,

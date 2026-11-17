@@ -21,11 +21,16 @@ pub(crate) struct DragDropState {
     pub(crate) preview: preview::State,
     pub(crate) hover: Option<PaneId>,
     pub(super) tree: tree_drag::State,
-    origins: HashMap<DragId, copy_selection::CapturedOrigins>,
+    origins: HashMap<DragId, DragOrigin>,
     cancelled: VecDeque<DragId>,
     accepted: VecDeque<(DropToken, OperationId, TransferVerification)>,
     rejected: VecDeque<DropToken>,
     last_drop_token: u64,
+}
+
+struct DragOrigin {
+    capture: copy_selection::CapturedOrigins,
+    retire_requested: bool,
 }
 
 pub(crate) fn invalidate(targets: &SharedDropTargets) {
@@ -55,6 +60,9 @@ impl Presenter {
         identity: &str,
         send: &dyn Fn(Command) -> bool,
     ) -> bool {
+        if !self.owned_command_scope_available() {
+            return false;
+        }
         self.flush_drag_commands(send);
         if self.operations.closing
             || self.drag_drop.closed
@@ -119,6 +127,9 @@ impl Presenter {
     }
 
     pub(super) fn start_file_drag(&mut self, pane: PaneId, row: usize) -> Option<DragId> {
+        if !self.owned_command_scope_available() {
+            return None;
+        }
         let id = self
             .drag_drop
             .lifecycle
@@ -130,9 +141,13 @@ impl Presenter {
         self.drag_drop.hover = None;
         self.active = pane;
         self.focus_display_row(pane, row);
-        self.drag_drop
-            .origins
-            .insert(id, self.capture_copy_origins());
+        self.drag_drop.origins.insert(
+            id,
+            DragOrigin {
+                capture: self.capture_copy_origins(),
+                retire_requested: false,
+            },
+        );
         Some(id)
     }
 
@@ -144,7 +159,12 @@ impl Presenter {
     }
 
     fn retire_drag_origin(&mut self, id: DragId) {
-        if let Some(origin) = self.drag_drop.origins.remove(&id) {
+        if let Some(origin) = self.drag_drop.origins.get_mut(&id) {
+            origin.retire_requested = true;
+        }
+        if self.owned_command_scope_available()
+            && let Some(origin) = self.drag_drop.origins.remove(&id)
+        {
             self.retired.push(Box::new(origin));
         }
     }
@@ -156,6 +176,7 @@ impl Presenter {
         files: SelectedFiles,
         send: &dyn Fn(Command) -> bool,
     ) {
+        debug_assert!(self.owned_command_scope_available());
         self.desktop.requests.remove(&request);
         let Some(gesture) = self.drag_drop.lifecycle.active().filter(|g| g.id == id.0) else {
             self.retired.push(Box::new(files));
@@ -192,19 +213,20 @@ impl Presenter {
             } else {
                 PaneId::Right
             };
-            if self.selection_actions[pane.index()]
-                .as_ref()
-                .is_some_and(|pending| {
-                    matches!(pending.intent, selection_actions::SelectionIntent::Drag(id)
+            if self.owned_command_scope_available()
+                && self.selection_actions[pane.index()]
+                    .as_ref()
+                    .is_some_and(|pending| {
+                        matches!(pending.intent, selection_actions::SelectionIntent::Drag(id)
                     if id.0 == gesture.id)
-                })
+                    })
             {
                 self.cancel_selection_actions(pane);
             }
         }
         self.drag_drop.pointer_down = false;
         self.drag_drop.hover = None;
-        self.flush_drag_commands(send);
+        self.flush_drag_control_commands(send);
     }
 
     pub(crate) fn release_file_drag(
@@ -213,6 +235,10 @@ impl Presenter {
         intent: InternalDropIntent,
         send: &dyn Fn(Command) -> bool,
     ) {
+        if !self.owned_command_scope_available() {
+            self.cancel_file_drag(send);
+            return;
+        }
         self.cancel_drag_preview();
         self.drag_drop.pointer_down = false;
         let Some(gesture) = self.drag_drop.lifecycle.release() else {
@@ -328,7 +354,7 @@ impl Presenter {
     }
 
     pub(crate) fn arm_native_drag(&mut self, id: DragId) -> bool {
-        if self.drag_native_ready() != Some(id) {
+        if !self.owned_command_scope_available() || self.drag_native_ready() != Some(id) {
             return false;
         }
         self.cancel_drag_preview();
@@ -447,6 +473,14 @@ impl Presenter {
     }
 
     pub(crate) fn flush_drag_commands(&mut self, send: &dyn Fn(Command) -> bool) {
+        self.flush_drag_control_commands(send);
+        if self.owned_command_scope_available() {
+            self.flush_tree_drag(send);
+        }
+    }
+
+    /// Provider-free control retries remain live while reclamation is occupied.
+    pub(crate) fn flush_drag_control_commands(&mut self, send: &dyn Fn(Command) -> bool) {
         if let Some(gesture) = self.drag_drop.lifecycle.active() {
             let pane = if gesture.source.pane == 0 {
                 PaneId::Left
@@ -454,12 +488,13 @@ impl Presenter {
                 PaneId::Right
             };
             if let Some(stale) = self.drag_drop.lifecycle.validate(self.drag_stamp(pane)) {
+                self.cancel_drag_preview();
+                self.cancel_tree_drag(None);
                 self.queue_cancelled_drag(DragId(stale.id));
                 self.drag_drop.pointer_down = false;
                 self.drag_drop.hover = None;
             }
         }
-        self.flush_tree_drag(send);
         if !self.drag_drop.attached
             && !self.drag_drop.closed
             && !self.operations.closing
@@ -502,7 +537,7 @@ impl Presenter {
     ) -> bool {
         // The copy worker accepts monotonically increasing operation IDs. A later paste
         // cannot pass an earlier admitted drop whose handoff is still backpressured.
-        self.flush_drag_commands(send);
+        self.flush_drag_control_commands(send);
         self.drag_drop.accepted.is_empty()
     }
 
@@ -526,7 +561,7 @@ impl Presenter {
         }
         self.copies.conflicts.retain(|conflict| conflict.id != id);
         self.trim_copy_history();
-        self.flush_drag_commands(send);
+        self.flush_drag_control_commands(send);
         true
     }
 
@@ -550,14 +585,58 @@ impl Presenter {
     }
 
     pub(super) fn retire_drag_drop(&mut self) {
+        self.cancel_drag_preview();
         self.cancel_tree_drag(None);
-        self.retired
-            .push(Box::new(mem::take(&mut self.drag_drop.origins)));
+        for origin in self.drag_drop.origins.values_mut() {
+            origin.retire_requested = true;
+        }
         self.drag_drop.closed = true;
         if let Some(host) = &self.drag_drop.host {
             host.lifetime.cancel();
         }
         invalidate(&self.drag_drop.targets);
+        self.flush_deferred_drag_owners();
+    }
+
+    /// Drain the existing marked slots only while this callback owns a reclaim claim.
+    pub(crate) fn flush_deferred_drag_owners(&mut self) {
+        if !self.owned_command_scope_available() {
+            return;
+        }
+        self.flush_deferred_tree_clipboard_owner();
+        self.flush_deferred_tree_drag_owners();
+        self.flush_deferred_drag_preview_owner();
+        while let Some(id) = self
+            .drag_drop
+            .origins
+            .iter()
+            .find_map(|(id, origin)| origin.retire_requested.then_some(*id))
+        {
+            self.retire_drag_origin(id);
+        }
+        for pane in [PaneId::Left, PaneId::Right] {
+            if self.selection_actions[pane.index()]
+                .as_ref()
+                .is_some_and(|pending| {
+                    matches!(pending.intent, selection_actions::SelectionIntent::Drag(id)
+                        if !self.drag_drop.lifecycle.active().is_some_and(|gesture| gesture.id == id.0))
+                })
+            {
+                self.cancel_selection_actions(pane);
+            }
+        }
+    }
+
+    /// Post-window shutdown owns the final worker handoff and may drain every slot.
+    pub(super) fn force_retire_drag_owners(&mut self) {
+        self.cancel_tree_clipboard(None);
+        self.cancel_drag_preview();
+        self.cancel_tree_drag(None);
+        self.flush_deferred_tree_clipboard_owner();
+        self.flush_deferred_tree_drag_owners();
+        self.flush_deferred_drag_preview_owner();
+        self.retired
+            .push(Box::new(mem::take(&mut self.drag_drop.origins)));
     }
 
     pub(super) fn dispatch_drag_event(
@@ -682,7 +761,9 @@ impl Presenter {
                     return None;
                 }
                 self.drag_drop.last_drop_token = token.0;
-                let origins = drag.and_then(|drag| self.drag_drop.origins.remove(&drag));
+                let origins = drag
+                    .and_then(|drag| self.drag_drop.origins.remove(&drag))
+                    .map(|origin| origin.capture);
                 let next = self.operations.next_id.checked_add(1);
                 if self.operations.closing
                     || self.drag_drop.closed
@@ -733,5 +814,68 @@ impl Presenter {
         }
         self.flush_drag_commands(send);
         None
+    }
+}
+
+#[cfg(test)]
+mod ownership_tests {
+    use super::*;
+    use std::cell::RefCell;
+
+    #[test]
+    fn native_drop_retries_the_original_admission_without_an_owned_claim() {
+        let root = std::env::temp_dir();
+        let mut p = Presenter::new(root.clone(), root.clone());
+        let (token, id) = (DropToken(7), OperationId(11));
+        let verification = p.transfer_verification();
+        p.operations.next_id = id.0 - 1;
+        p.require_owned_command_scope();
+        assert!(!p.owned_command_scope_available());
+
+        let attempts = RefCell::new(0);
+        let refuse = |command| {
+            assert!(matches!(command, Command::AcceptDrop {
+                token: actual_token,
+                id: actual_id,
+                verification: actual_verification,
+            } if actual_token == token && actual_id == id && actual_verification == verification));
+            *attempts.borrow_mut() += 1;
+            false
+        };
+        p.apply_with_sender(
+            Event::DragDrop(DragDropEvent::DropAccepted {
+                drag: None,
+                token,
+                pane: PaneId::Right,
+                item_count: 1,
+                destination: Arc::new(root),
+                intent: TransferIntent::Copy,
+                verification: Some(verification),
+            }),
+            &refuse,
+        );
+        for _ in 0..8 {
+            p.flush_drag_commands(&refuse);
+            assert_eq!(
+                p.drag_drop.accepted.front(),
+                Some(&(token, id, verification))
+            );
+            assert_eq!(p.operations.next_id, id.0);
+            assert_eq!(p.copies.progress.len(), 1);
+            assert_eq!(p.copies.progress[0].id, id);
+        }
+        assert_eq!(*attempts.borrow(), 9);
+        assert!(p.drag_drop.tree.source.is_none());
+        assert!(p.drag_drop.tree.destination.is_none());
+        assert!(p.take_retired().is_empty());
+        p.flush_drag_control_commands(&|command| {
+            assert!(
+                matches!(command, Command::AcceptDrop { token: actual, .. } if actual == token)
+            );
+            true
+        });
+        assert!(p.drag_drop.accepted.is_empty());
+        assert_eq!(p.operations.next_id, id.0);
+        assert_eq!(p.copies.progress.len(), 1);
     }
 }

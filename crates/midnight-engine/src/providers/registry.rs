@@ -20,6 +20,17 @@ pub(super) struct Registration {
     lifetime: Cancellation,
 }
 
+impl Registration {
+    pub(super) fn release_on_worker(self: Arc<Self>) -> Result<(), ProviderError> {
+        crate::copy_nested_retirement::provider_step(|| {
+            let Some(owner) = Arc::into_inner(self) else {
+                return Ok(());
+            };
+            crate::copy_nested_retirement::release_provider(owner.provider)
+        })
+    }
+}
+
 /// Backend-owned routing registry. Plugin calls and resource destruction stay outside its lock.
 #[derive(Default)]
 pub struct ProviderRegistry {
@@ -28,6 +39,57 @@ pub struct ProviderRegistry {
 }
 
 impl ProviderRegistry {
+    pub(crate) fn unregister_on_worker(
+        &self,
+        id: &ProviderId,
+        instance: ProviderInstanceId,
+    ) -> Result<bool, ProviderError> {
+        let retired = {
+            let mut providers = self.providers.lock().map_err(|_| poisoned())?;
+            if !providers
+                .get(id)
+                .is_some_and(|entry| entry.instance == instance)
+            {
+                return Ok(false);
+            }
+            let removed = providers.remove(id);
+            if let Some(removed) = &removed {
+                removed.lifetime.cancel();
+            }
+            removed
+        };
+        if let Some(retired) = retired {
+            retired.release_on_worker()?;
+        }
+        Ok(true)
+    }
+
+    pub(crate) fn release_on_worker(self: Arc<Self>) -> Result<(), ProviderError> {
+        use crate::copy_nested_retirement::{self as nested, Retained};
+        nested::provider_step(|| {
+            let Some(owner) = Arc::into_inner(self) else {
+                return Ok(());
+            };
+            let mut owner = Retained::new(owner);
+            let entries = std::mem::take(
+                owner
+                    .get_mut()
+                    .providers
+                    .get_mut()
+                    .unwrap_or_else(|error| error.into_inner()),
+            );
+            let mut entries = Retained::new(entries.into_values());
+            while let Some(entry) = entries.get_mut().next() {
+                entry.lifetime.cancel();
+                entry.release_on_worker()?;
+            }
+            drop(entries.take());
+            if !nested::checked_step(|| drop(owner.take())) {
+                return Err(nested::provider_error());
+            }
+            Ok(())
+        })
+    }
     /// Shared with native-owner retirement admission; keep the pane policy in one place.
     pub(crate) const MAX_MOUNTS: usize = MAX_MOUNTS;
     pub fn register(
@@ -94,26 +156,103 @@ impl ProviderRegistry {
                 .ok_or(ProviderError::Unavailable)?
         };
         let request = registration.lifetime.linked(cancel);
-        check_cancel(&request)?;
-        let permit = MountPermit::acquire(self.mounts.clone())?;
-        let opened = registration.provider.resolve(address, &request)?;
-        check_cancel(&request)?;
-        let reference = MountRef {
-            instance: registration.instance,
-            mount: next_id(&NEXT_ID)?,
-            generation: next_id(&NEXT_ID)?,
+        let mut construction = crate::copy_nested_retirement::Retained::new(Resolution {
+            registration: Some(registration),
+            permit: None,
+            opened: None,
+            mounted: None,
+        });
+        let result = (|| {
+            check_cancel(&request)?;
+            construction.get_mut().permit = Some(MountPermit::acquire(self.mounts.clone())?);
+            let opened = construction
+                .get()
+                .registration
+                .as_ref()
+                .expect("registered resolution")
+                .provider
+                .resolve(address, &request)?;
+            construction.get_mut().opened = Some(opened);
+            check_cancel(&request)?;
+            let registration = construction
+                .get()
+                .registration
+                .as_ref()
+                .expect("registered resolution");
+            let reference = MountRef {
+                instance: registration.instance,
+                mount: next_id(&NEXT_ID)?,
+                generation: next_id(&NEXT_ID)?,
+            };
+            // Request cancellation must not become the mount's lifetime.
+            let lifetime = registration.lifetime.child();
+            let state = construction.get_mut();
+            state.mounted = Some(MountedLocation::new(
+                address.clone(),
+                reference,
+                state.opened.take().expect("returned mount"),
+                lifetime,
+                state.registration.take().expect("registered resolution"),
+                state.permit.take().expect("admitted mount"),
+            ));
+            check_cancel(&request)?;
+            Ok(state.mounted.take().expect("completed mount"))
+        })();
+        let result = match result {
+            Ok(mounted) => Ok(mounted),
+            Err(original) => Err(construction_failure(
+                original,
+                construction.get_mut().release(),
+            )),
         };
-        // Request cancellation must not become the mount's lifetime.
-        let mounted = MountedLocation::new(
-            address.clone(),
-            reference,
-            opened,
-            registration.lifetime.child(),
-            registration,
-            permit,
-        );
-        check_cancel(&request)?;
-        Ok(mounted)
+        drop(construction.take());
+        result
+    }
+}
+
+struct Resolution {
+    opened: Option<super::OpenedLocation>,
+    mounted: Option<MountedLocation>,
+    registration: Option<Arc<Registration>>,
+    permit: Option<MountPermit>,
+}
+impl Resolution {
+    fn release(&mut self) -> Result<(), ProviderError> {
+        use crate::copy_nested_retirement::{self as nested, Retained};
+        let mut tail = Retained::new((self.registration.take(), self.permit.take()));
+        if let Some(mounted) = self.mounted.take() {
+            mounted.release_on_worker()?;
+        }
+        if let Some(opened) = self.opened.take() {
+            nested::release_mount(opened.mount)?;
+        }
+        let (registration, permit) = tail.take();
+        let mut permit = Retained::new(permit);
+        if let Some(registration) = registration {
+            registration.release_on_worker()?;
+        }
+        drop(permit.take());
+        Ok(())
+    }
+}
+
+/// The Copy context retains a separate exact teardown diagnostic. A standalone
+/// caller has only this return channel, so preserve both descriptions there.
+pub(super) fn construction_failure(
+    original: ProviderError,
+    cleanup: Result<(), ProviderError>,
+) -> ProviderError {
+    match cleanup {
+        Ok(()) => original,
+        Err(cleanup) if crate::copy_nested_retirement::current().is_some() => {
+            if let Some(context) = crate::copy_nested_retirement::current() {
+                context.record(crate::copy_nested_retirement::fs_error(cleanup));
+            }
+            original
+        }
+        Err(cleanup) => {
+            ProviderError::Failed(format!("{original} Cleanup was not confirmed: {cleanup}"))
+        }
     }
 }
 
@@ -169,6 +308,10 @@ fn next_id(counter: &AtomicU64) -> Result<NonZeroU64, ProviderError> {
         .map_err(|_| ProviderError::ResourceLimited)?;
     NonZeroU64::new(value).ok_or(ProviderError::ResourceLimited)
 }
+
+#[cfg(test)]
+#[path = "provider_construction_tests.rs"]
+mod construction_tests;
 
 #[cfg(test)]
 mod tests {

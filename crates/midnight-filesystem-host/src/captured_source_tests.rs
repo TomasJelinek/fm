@@ -19,6 +19,10 @@ struct Source {
     reads: AtomicUsize,
 }
 impl ContentSource for Source {
+    fn release_on_worker(self: Arc<Self>) -> Result<(), Error> {
+        let _ = Arc::into_inner(self);
+        Ok(())
+    }
     fn length(&self) -> u64 {
         self.length
     }

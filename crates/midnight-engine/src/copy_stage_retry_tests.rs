@@ -18,6 +18,8 @@ struct Service {
     native: moves::CrossDeviceService,
     control: Arc<Control>,
 }
+// This native-delegating fixture retains only synchronous authority and host counters.
+impl midnight_core::AuditedSynchronousTransferService for Service {}
 impl TransferService for Service {
     fn prepare_transfer_source(
         &self,

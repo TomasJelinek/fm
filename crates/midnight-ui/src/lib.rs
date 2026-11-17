@@ -1,5 +1,7 @@
 //! In-memory presentation and a virtualized Slint shell. All I/O lives behind commands.
 #![deny(unsafe_code)]
+#[cfg(test)]
+extern crate self as midnight_ui;
 mod action_icons;
 mod archive_options;
 mod argument_rows;
@@ -14,6 +16,9 @@ mod dialog_focus;
 mod dialog_host;
 mod dialog_native;
 mod dialog_presentation;
+#[cfg(test)]
+#[path = "../tests/support/owned_commands.rs"]
+mod owned_command_test_support;
 mod window_position;
 pub use dialog_native::configure_dialog_window_attributes;
 pub use window_position::restore_window_position;
@@ -45,6 +50,8 @@ mod navigation_models;
 mod operation_detail;
 mod operation_presentation;
 mod operation_windows;
+mod owned_commands;
+pub use owned_commands::{BeginOwned, OwnedCommandScope, with_owned_commands};
 mod panel_filter_windows;
 mod panel_models;
 mod panel_pointer;
@@ -872,12 +879,28 @@ pub fn install_file_keys(window: &MainWindow) {
     tooltip::install(window).expect("install UI event observer after Slint initialization");
 }
 
-/// Register UI callbacks and request the initial locations. The sender must be nonblocking.
+/// Install provider-free controls without enabling captured-owner actions.
+/// Production hosts must use [`install_with_owned`] to enable Copy/Move,
+/// captured clipboard actions and dragging with bounded reclamation.
 pub fn install(
     window: &MainWindow,
     presenter: Rc<RefCell<Presenter>>,
     send: Rc<dyn Fn(Command) -> bool>,
 ) {
+    install_with_owned(window, presenter, send, Rc::new(|| None));
+}
+
+/// Register callbacks with a nonblocking control sender and bounded owned-action factory.
+/// Both send paths must refer to the same Engine command channel. The
+/// control sender is only used for provider-free commands; all captured
+/// owner construction/forwarding requires `begin_owned` to succeed first.
+pub fn install_with_owned(
+    window: &MainWindow,
+    presenter: Rc<RefCell<Presenter>>,
+    send: Rc<dyn Fn(Command) -> bool>,
+    begin_owned: BeginOwned,
+) {
+    presenter.borrow_mut().require_owned_command_scope();
     let owner = dialog_host::DialogOwner::new(window);
     let weak = window.as_weak();
     owner.set_input_gate(move |blocked| {
@@ -916,12 +939,12 @@ pub fn install(
     metadata_presentation::bind(window, &presenter, &send);
     tooltip::install(window).expect("install tooltip event observer after Slint initialization");
     scroll_input::install(window);
-    shell_bridge::install(window, presenter.clone(), send.clone());
-    copy_presentation::install(window, presenter.clone(), send.clone());
-    operation_windows::install(window, presenter.clone(), send.clone());
+    shell_bridge::install(window, presenter.clone(), send.clone(), begin_owned.clone());
+    copy_presentation::install(window, presenter.clone(), send.clone(), begin_owned.clone());
+    operation_windows::install(window, presenter.clone(), send.clone(), begin_owned.clone());
     jobs_windows::install(window, presenter.clone(), send.clone());
     decision_windows::install(window, presenter.clone(), send.clone());
-    drag_bridge::install(window, presenter.clone(), send.clone());
+    drag_bridge::install(window, presenter.clone(), send.clone(), begin_owned.clone());
     selection_bridge::install(window, presenter.clone(), send.clone());
     window.set_font_choices(Rc::new(font_model::FontRows::new(presenter.clone())).into());
     window.set_left_rows(ModelRc::new(Rows::new(presenter.clone(), PaneId::Left)));
@@ -934,14 +957,12 @@ pub fn install(
         ($name:ident, $reset:expr, |$w:ident, $p:ident, $s:ident $(, $arg:ident)*|
             $body:block) => {{
             let weak = window.as_weak(); let state = presenter.clone(); let sender = send.clone();
+            let begin = begin_owned.clone();
             window.$name(move |$($arg),*| {
                 let Some($w) = weak.upgrade() else { return; };
-                {
-                    let mut state = state.borrow_mut();
-                    let $p = &mut *state;
-                    let $s = sender.as_ref();
-                    $body
-                }
+                if owned_commands::with_control_commands(
+                    &state, &begin, sender.as_ref(), |$p, $s| $body,
+                ).is_none() { return; }
                 refresh_properties(&$w, &state.borrow(), $reset);
             });
         }};

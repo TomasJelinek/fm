@@ -1,11 +1,16 @@
 //! Real UI -> Engine -> native filesystem fixture; never reads or saves user preferences.
 #![allow(dead_code)]
+#[path = "../../../midnight-explorer/src/command_reclaim.rs"]
+mod command_reclaim;
 #[path = "modeless.rs"]
 mod modeless;
 use midnight_core::*;
-use midnight_engine::Engine;
+use midnight_engine::{Engine, reclaim};
 use midnight_platform::LocalFileSystem;
-use midnight_ui::{OperationPresentation, Presenter, install, refresh};
+use midnight_ui::{
+    BeginOwned, DeferredDrop, OperationPresentation, OwnedCommandScope, Presenter,
+    install_with_owned, refresh, with_owned_commands,
+};
 use slint::{
     ComponentHandle, Model,
     platform::{WindowAdapter, WindowEvent, software_renderer::MinimalSoftwareWindow},
@@ -21,6 +26,24 @@ use std::{
 use tokio::{runtime::Runtime, sync::mpsc, task::JoinHandle};
 
 struct Settings(UserPreferences);
+
+struct ObservedScope {
+    inner: Box<dyn OwnedCommandScope>,
+    internal_drops: Rc<Cell<usize>>,
+}
+
+impl OwnedCommandScope for ObservedScope {
+    fn send(&self, command: Command) -> bool {
+        if matches!(&command, Command::InternalDrop(_)) {
+            self.internal_drops.set(self.internal_drops.get() + 1);
+        }
+        self.inner.send(command)
+    }
+
+    fn retire(&self, value: DeferredDrop) {
+        self.inner.retire(value);
+    }
+}
 impl SettingsService for Settings {
     fn load_preferences(&self) -> Result<UserPreferences, FsError> {
         Ok(self.0.clone())
@@ -45,7 +68,10 @@ pub struct Harness {
     pub internal_drops: Rc<Cell<usize>>,
     pub send: Rc<dyn Fn(Command) -> bool>,
     events: mpsc::Receiver<Event>,
-    commands: mpsc::Sender<Command>,
+    commands: midnight_engine::CommandSender,
+    begin_owned: BeginOwned,
+    command_reclaim: command_reclaim::CommandReclaim,
+    retire_queue: mpsc::Sender<reclaim::Retired>,
     committed: [Option<NavigationId>; 2],
     runtime: Option<Runtime>,
     engine: Option<JoinHandle<()>>,
@@ -89,7 +115,7 @@ impl Harness {
             .enable_all()
             .build()
             .unwrap();
-        let (commands, receive) = mpsc::channel(64);
+
         let (events_send, events) = mpsc::channel(64);
         let service = Arc::new(LocalFileSystem::new(None));
         let mut preferences = UserPreferences::default();
@@ -101,7 +127,7 @@ impl Harness {
             events_send,
         );
         engine
-            .configure_transfers()
+            .configure_audited_transfers()
             .unwrap()
             .install(service.clone());
         engine
@@ -113,6 +139,9 @@ impl Harness {
             .configure_settings()
             .unwrap()
             .install(Arc::new(Settings(preferences)));
+        let (commands, receive) = engine.command_channel(64).unwrap();
+        let retire_queue = reclaim::start(runtime.handle(), Arc::new(|| {}));
+        let command_reclaim = command_reclaim::CommandReclaim::new(retire_queue.clone());
         let engine = runtime.spawn(engine.run(receive));
         let windows = Rc::new(RefCell::new(Vec::new()));
         slint::platform::set_platform(Box::new(modeless::Windows(windows.clone()))).unwrap();
@@ -135,14 +164,32 @@ impl Harness {
         let presenter = Rc::new(RefCell::new(Presenter::new(left.clone(), right.clone())));
         let sender = commands.clone();
         let internal_drops = Rc::new(Cell::new(0));
+        let begin = command_reclaim.factory(commands.clone());
+        let observed_drops = internal_drops.clone();
+        let begin_owned: BeginOwned = Rc::new(move || {
+            Some(Box::new(ObservedScope {
+                inner: begin()?,
+                internal_drops: observed_drops.clone(),
+            }))
+        });
         let drops = internal_drops.clone();
+        let begin_controls = begin_owned.clone();
         let send: Rc<dyn Fn(Command) -> bool> = Rc::new(move |command| {
+            if let Some(scope) = begin_controls() {
+                return scope.send(command);
+            }
+            // Only provider-free controls may use the unavailable-claim fallback.
             if matches!(&command, Command::InternalDrop(_)) {
                 drops.set(drops.get() + 1);
             }
             sender.try_send(command).is_ok()
         });
-        install(&ui.window, presenter.clone(), send.clone());
+        install_with_owned(
+            &ui.window,
+            presenter.clone(),
+            send.clone(),
+            begin_owned.clone(),
+        );
         let mut h = Self {
             ui,
             windows,
@@ -159,6 +206,9 @@ impl Harness {
             send,
             events,
             commands,
+            begin_owned,
+            command_reclaim,
+            retire_queue,
             committed: [None; 2],
             runtime: Some(runtime),
             engine: Some(engine),
@@ -241,7 +291,7 @@ impl Harness {
         self.settle();
     }
 
-    fn apply(&mut self, event: Event) {
+    fn apply(&mut self, event: Event, presenter: &mut Presenter, send: &dyn Fn(Command) -> bool) {
         match &event {
             Event::Copy(CopyEvent::Progress(progress)) => self.copies.push(progress.clone()),
             Event::Operation(OperationEvent::Progress(progress)) => {
@@ -257,52 +307,61 @@ impl Harness {
             _ => {}
         }
         if let Event::DirectoryChanged { pane, navigation } = event {
-            self.presenter
-                .borrow_mut()
-                .refresh_if_changed(pane, navigation, self.send.as_ref());
+            presenter.refresh_if_changed(pane, navigation, send);
         } else {
-            self.presenter
-                .borrow_mut()
-                .apply_with_sender(event, self.send.as_ref());
+            presenter.apply_with_sender(event, send);
         }
+    }
+
+    fn drain_one(&mut self) -> bool {
+        let presenter = self.presenter.clone();
+        let begin = self.begin_owned.clone();
+        let consumed = with_owned_commands(&presenter, &begin, |presenter, send| {
+            let Ok(event) = self.events.try_recv() else {
+                return false;
+            };
+            self.apply(event, presenter, send);
+            true
+        }) == Some(true);
+        self.command_reclaim.flush();
         refresh(&self.ui.window, &self.presenter.borrow());
+        consumed
     }
 
     pub fn settle(&mut self) {
         for _ in 0..4 {
             for _ in 0..128 {
-                let Ok(event) = self.events.try_recv() else {
+                if !self.drain_one() {
                     break;
-                };
-                self.apply(event);
+                }
             }
-            {
-                let mut presenter = self.presenter.borrow_mut();
-                presenter.flush_selection(self.send.as_ref());
-                presenter.flush_search(self.send.as_ref());
-                let retired = presenter.take_retired();
-                self.runtime
-                    .as_ref()
-                    .unwrap()
-                    .spawn_blocking(move || drop(retired));
-            }
+            let _ = with_owned_commands(&self.presenter, &self.begin_owned, |presenter, send| {
+                presenter.flush_selection(send);
+                presenter.flush_search(send);
+            });
             self.sync_visible();
             self.ui.draw();
         }
     }
 
     fn sync_visible(&mut self) {
-        // Match the app's VisibleSync: native operations require the exact
-        // displayed snapshot, acknowledged on the same FIFO command channel.
-        // Retry a full queue without marking an unaccepted snapshot delivered.
+        // Claim before cloning a visible listing, then acknowledge through the
+        // same typed sender as the installed operation callbacks.
         for pane in [PaneId::Left, PaneId::Right] {
-            if let Some(visible) = self.presenter.borrow().visible_directory(pane) {
-                let navigation = visible.navigation;
-                if self.committed[pane.index()] != Some(navigation)
-                    && (self.send)(Command::PaneCommitted(visible))
-                {
-                    self.committed[pane.index()] = Some(navigation);
+            let committed = &mut self.committed;
+            if with_owned_commands(&self.presenter, &self.begin_owned, |presenter, send| {
+                if let Some(visible) = presenter.visible_directory(pane) {
+                    let navigation = visible.navigation;
+                    if committed[pane.index()] != Some(navigation)
+                        && send(Command::PaneCommitted(visible))
+                    {
+                        committed[pane.index()] = Some(navigation);
+                    }
                 }
+            })
+            .is_none()
+            {
+                break;
             }
         }
     }
@@ -324,11 +383,10 @@ impl Harness {
                 self.copies.last(),
                 self.operations.last()
             );
-            if let Ok(Some(event)) = self.runtime.as_ref().unwrap().block_on(async {
-                tokio::time::timeout(Duration::from_millis(10), self.events.recv()).await
-            }) {
-                self.apply(event);
-            }
+            // Wait without taking an event or holding a claim across the await.
+            self.runtime.as_ref().unwrap().block_on(async {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            });
         }
     }
 
@@ -354,32 +412,59 @@ impl Harness {
             return;
         };
         self.presenter.borrow_mut().retire_all();
-        let retired = self.presenter.borrow_mut().take_retired();
-        runtime.spawn_blocking(move || drop(retired));
+        let mut retired = self.presenter.borrow_mut().take_retired();
+        if let Some(pending) = self.command_reclaim.take_ready() {
+            retired.extend(pending);
+        }
         let mut engine = self.engine.take().unwrap();
         let result = runtime.block_on(async {
+            retire_final(&self.retire_queue, retired).await;
             tokio::time::timeout(Duration::from_secs(8), async {
-                self.commands.send(Command::Shutdown).await.unwrap();
+                let shutdown = self.commands.send(Command::Shutdown);
+                tokio::pin!(shutdown);
+                let mut sent = false;
                 loop {
+                    // Post-window drain reserves the existing worker batch before
+                    // taking an event; no callback claim spans this await.
+                    let permit = self.retire_queue.reserve().await.unwrap();
                     tokio::select! {
+                        result = &mut shutdown, if !sent => {
+                            result.unwrap();
+                            sent = true;
+                        }
                         result = &mut engine => return result,
                         event = self.events.recv() => {
                             if let Some(event) = event {
-                                match event {
-                                    Event::Copy(CopyEvent::Progress(progress)) => self.copies.push(progress),
-                                    Event::Operation(OperationEvent::Progress(progress)) => self.operations.push(progress),
+                                match &event {
+                                    Event::Copy(CopyEvent::Progress(progress)) => {
+                                        self.copies.push(progress.clone());
+                                    }
+                                    Event::Operation(OperationEvent::Progress(progress)) => {
+                                        self.operations.push(progress.clone());
+                                    }
                                     _ => {}
                                 }
-                            } else { return (&mut engine).await; }
+                                permit.send(vec![Box::new(event)]);
+                            } else {
+                                return (&mut engine).await;
+                            }
                         }
                     }
                 }
-            }).await
+            })
+            .await
         });
         if result.is_err() {
             engine.abort();
         }
-        self.events.close();
+        let (_, empty) = mpsc::channel(1);
+        let receiver = std::mem::replace(&mut self.events, empty);
+        let mut retired = reclaim::Retired::new();
+        reclaim::retire_receiver(receiver, &mut retired);
+        runtime.block_on(async {
+            retire_final(&self.retire_queue, retired).await;
+            reclaim::barrier(&self.retire_queue).await.unwrap();
+        });
         runtime.shutdown_timeout(Duration::from_secs(3));
         if !std::thread::panicking() {
             assert!(
@@ -395,5 +480,14 @@ impl Drop for Harness {
     fn drop(&mut self) {
         self.shutdown();
         // Retain only this owned fixture as inspectable QA evidence.
+    }
+}
+
+async fn retire_final(queue: &mpsc::Sender<reclaim::Retired>, retired: reclaim::Retired) {
+    if let Err(error) = queue.send(retired).await {
+        let retired = error.0;
+        tokio::task::spawn_blocking(move || drop(retired))
+            .await
+            .unwrap();
     }
 }

@@ -30,6 +30,16 @@ pub struct TreeClipboardRequest {
 /// worker retains this source through publication and revalidates immediately
 /// before writing. Native paste establishes its own live operation authority.
 pub trait CapturedClipboardFiles: std::fmt::Debug + Send + Sync {
+    /// Backend-only consuming release. Ok confirms cleanup responsibility acquired
+    /// by this reference; another live owner never requires a global wait. An
+    /// unknown/deferred implementation must retain or explicitly acknowledge its
+    /// actual native cleanup rather than infer completion from wrapper Drop.
+    fn release_on_worker(self: Arc<Self>) -> Result<(), FsError> {
+        std::mem::forget(self);
+        Err(crate::transfer::unconfirmed_transfer_release(
+            "release captured clipboard files",
+        ))
+    }
     /// Cached operation intent; performs no provider or filesystem work.
     fn intent(&self) -> FileClipboardIntent;
     /// Cached completion identity for this zero-based root in the immutable order

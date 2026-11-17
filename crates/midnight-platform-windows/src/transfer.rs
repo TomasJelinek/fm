@@ -14,6 +14,8 @@ mod destination;
 mod metadata;
 #[path = "transfer_move.rs"]
 mod move_source;
+#[path = "transfer_namespace.rs"]
+mod namespace;
 #[path = "transfer_source.rs"]
 mod source;
 #[path = "transfer_validation.rs"]

@@ -143,7 +143,7 @@ export component UserCommandForm inherits VerticalLayout {
             row: root.narrow ? 1 : 0; col: root.narrow ? 0 : 1;
             spacing: 6px; alignment: start; cross-axis-alignment: center;
             working-directory-browse := ActionButton { text: "Browse…"; accessible-label: "Browse working directory"; compact: true;
-                height: self.min-height;
+                height: self.min-height; vertical-padding: root.narrow ? 3px : 5px;
                 enabled: !UserCommandSettingsView.busy; clicked => { UserCommandSettingsView.browse(1); } }
             CompactPicker {
                 label: root.narrow ? "" : "Variables";

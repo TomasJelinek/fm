@@ -4,6 +4,8 @@ use std::{
     io::{self, Cursor, Read, Seek, SeekFrom, Write},
     sync::{Arc, Mutex},
 };
+#[path = "transfer_admitted_tests.rs"]
+mod admitted;
 #[path = "transfer_cleanup_tests.rs"]
 mod cleanup_contract;
 #[path = "transfer_edges_tests.rs"]

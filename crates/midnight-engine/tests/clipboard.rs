@@ -47,13 +47,14 @@ impl ClipboardService for Clipboard {
 async fn explicit_copy_preserves_literal_unicode_and_serializes_on_backend_worker() {
     let clipboard = Arc::new(Clipboard::default());
     let caller = std::thread::current().id();
-    let (commands, receiver) = mpsc::channel(8);
+
     let (sender, mut events) = mpsc::channel(8);
     let mut engine = Engine::new(
         Engine::lifetime().expect("engine cleanup worker"),
         Arc::new(midnight_platform::LocalFileSystem::new(None)),
         sender,
     );
+    let (commands, receiver) = engine.command_channel(8).unwrap();
     engine
         .configure_clipboard()
         .unwrap()
@@ -96,16 +97,14 @@ async fn explicit_copy_preserves_literal_unicode_and_serializes_on_backend_worke
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn missing_clipboard_service_reports_failure_without_claiming_a_copy() {
-    let (commands, receiver) = mpsc::channel(4);
     let (sender, mut events) = mpsc::channel(4);
-    let engine = tokio::spawn(
-        Engine::new(
-            Engine::lifetime().expect("engine cleanup worker"),
-            Arc::new(midnight_platform::LocalFileSystem::new(None)),
-            sender,
-        )
-        .run(receiver),
+    let mut command_engine_1 = Engine::new(
+        Engine::lifetime().expect("engine cleanup worker"),
+        Arc::new(midnight_platform::LocalFileSystem::new(None)),
+        sender,
     );
+    let (commands, receiver) = command_engine_1.command_channel(4).unwrap();
+    let engine = tokio::spawn(command_engine_1.run(receiver));
     commands
         .send(Command::CopyText {
             request: DesktopRequestId(7),
@@ -123,13 +122,14 @@ async fn missing_clipboard_service_reports_failure_without_claiming_a_copy() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn invalid_clipboard_text_never_reaches_the_native_service() {
     let clipboard = Arc::new(Clipboard::default());
-    let (commands, receiver) = mpsc::channel(4);
+
     let (sender, mut events) = mpsc::channel(4);
     let mut engine = Engine::new(
         Engine::lifetime().expect("engine cleanup worker"),
         Arc::new(midnight_platform::LocalFileSystem::new(None)),
         sender,
     );
+    let (commands, receiver) = engine.command_channel(4).unwrap();
     engine
         .configure_clipboard()
         .unwrap()
@@ -181,7 +181,7 @@ impl ClipboardService for ObservedClipboard {
 #[tokio::test]
 async fn aborting_engine_releases_clipboard_session_while_output_remains_full() {
     let clipboard = Arc::new(ClipboardLifetime::default());
-    let (commands, receiver) = mpsc::channel(2);
+
     let (sender, events) = mpsc::channel(1);
     sender.try_send(Event::VolumesUpdated(Vec::new())).unwrap();
     let mut backend = Engine::new(
@@ -189,6 +189,7 @@ async fn aborting_engine_releases_clipboard_session_while_output_remains_full() 
         Arc::new(midnight_platform::LocalFileSystem::new(None)),
         sender,
     );
+    let (commands, receiver) = backend.command_channel(2).unwrap();
     backend
         .configure_clipboard()
         .unwrap()

@@ -1,6 +1,6 @@
 //! Embedded confirmation lifetime. Records contain UI identity, never captured providers.
 use crate::{
-    MainWindow, OperationPresentation, Presenter, copy_draft_windows,
+    BeginOwned, MainWindow, OperationPresentation, Presenter, copy_draft_windows,
     dialog_focus::{FocusReturn, restore_after_popup},
     dialog_host::{DialogSession, DialogSessions},
     tool_window_failure::Failures,
@@ -34,7 +34,7 @@ impl Key {
                 .copies
                 .draft
                 .as_ref()
-                .is_some_and(|draft| draft.token == *token),
+                .is_some_and(|draft| draft.token == *token && !draft.retire_requested),
         }
     }
 }
@@ -58,6 +58,7 @@ struct Context {
     main: slint::Weak<MainWindow>,
     state: std::rc::Weak<RefCell<Presenter>>,
     send: Rc<dyn Fn(Command) -> bool>,
+    begin_owned: BeginOwned,
     windows: RefCell<Windows>,
     closing: Rc<Cell<bool>>,
     failures: Failures<OperationId>,
@@ -74,12 +75,14 @@ pub(crate) fn install(
     main: &MainWindow,
     state: Rc<RefCell<Presenter>>,
     send: Rc<dyn Fn(Command) -> bool>,
+    begin_owned: BeginOwned,
 ) {
     let closing = Rc::new(Cell::new(false));
     let context = Rc::new(Context {
         main: main.as_weak(),
         state: Rc::downgrade(&state),
         send: send.clone(),
+        begin_owned,
         windows: RefCell::new(Windows::default()),
         failures: Failures::new(
             main,
@@ -103,11 +106,17 @@ pub(crate) fn install(
         close_record(context.windows.borrow_mut().record.take(), false);
         // Copy drafts are local, provider-bearing captures: their existing cancel
         // route transfers ownership to backend reclamation instead of dropping here.
-        if let Some(state) = context.state.upgrade() {
-            let mut p = state.borrow_mut();
-            if let Some(token) = p.copies.draft.as_ref().map(|draft| draft.token.clone()) {
-                p.cancel_copy_dialog(&token);
-            }
+        if let Some(state) = context.state.upgrade()
+            && crate::with_owned_commands(&state, &context.begin_owned, |p, _| {
+                if let Some(token) = p.copies.draft.as_ref().map(|draft| draft.token.clone()) {
+                    p.cancel_copy_dialog(&token);
+                }
+            })
+            .is_none()
+            && let Ok(mut p) = state.try_borrow_mut()
+            && let Some(token) = p.copies.draft.as_ref().map(|draft| draft.token.clone())
+        {
+            p.defer_cancel_copy_dialog(&token);
         }
     });
 }
@@ -268,32 +277,49 @@ fn confirm(ctx: &Rc<Context>, session: DialogSession, value: SharedString) {
     if record.cancelling.get() {
         return;
     }
-    let accepted = {
-        let mut p = state.borrow_mut();
-        if !record.key.current(&p) {
-            return;
-        }
-        let error = match &record.key {
-            Key::Operation(id) => {
+    let accepted = match &record.key {
+        Key::Operation(id) => {
+            let mut p = state.borrow_mut();
+            if !record.key.current(&p) {
+                return;
+            }
+            *record.error.borrow_mut() = {
                 p.confirm_operation(&id.0.to_string(), value.to_string(), ctx.send.as_ref());
                 "The operation queue is busy. Try again.".into()
+            };
+            !record.key.current(&p)
+        }
+        Key::Copy(token) => {
+            match crate::with_owned_commands(&state, &ctx.begin_owned, |p, send| {
+                if !record.key.current(p) {
+                    return false;
+                }
+                *record.error.borrow_mut() = copy_draft_windows::confirm(
+                    p,
+                    token,
+                    value.as_str(),
+                    main.global::<OperationPresentation>().get_option_checked(),
+                    main.global::<OperationPresentation>().get_wait_checked(),
+                    send,
+                );
+                !record.key.current(p)
+            }) {
+                Some(accepted) => accepted,
+                None => {
+                    if let Ok(mut p) = state.try_borrow_mut() {
+                        *record.error.borrow_mut() = p.copy_dialog_reclaim_busy(token);
+                    }
+                    false
+                }
             }
-            Key::Copy(token) => copy_draft_windows::confirm(
-                &mut p,
-                token,
-                value.as_str(),
-                main.global::<OperationPresentation>().get_option_checked(),
-                main.global::<OperationPresentation>().get_wait_checked(),
-                ctx.send.as_ref(),
-            ),
-        };
-        *record.error.borrow_mut() = error;
-        !record.key.current(&p)
+        }
     };
     if accepted {
         remove(ctx, session, true);
     }
-    crate::refresh(&main, &state.borrow());
+    if let Ok(p) = state.try_borrow() {
+        crate::refresh(&main, &p);
+    }
 }
 fn dismiss(ctx: &Rc<Context>, session: DialogSession) {
     let (Some(record), Some(state), Some(main)) = (
@@ -303,21 +329,34 @@ fn dismiss(ctx: &Rc<Context>, session: DialogSession) {
     ) else {
         return;
     };
-    let accepted = {
-        let Ok(mut p) = state.try_borrow_mut() else {
-            wait_to_cancel(ctx, &record);
-            update_warning(&record, &main);
-            return;
-        };
-        if !record.key.current(&p) {
-            return;
-        }
-        match &record.key {
-            Key::Operation(id) => cancel_prepared(&mut p, *id, ctx.send.as_ref()),
-            Key::Copy(token) => {
+    let accepted = match &record.key {
+        Key::Copy(token) => {
+            match crate::with_owned_commands(&state, &ctx.begin_owned, |p, _| {
                 p.cancel_copy_dialog(token);
                 true
+            }) {
+                Some(accepted) => accepted,
+                None => {
+                    let Ok(mut p) = state.try_borrow_mut() else {
+                        wait_to_cancel(ctx, &record);
+                        update_warning(&record, &main);
+                        return;
+                    };
+                    p.defer_cancel_copy_dialog(token);
+                    true
+                }
             }
+        }
+        Key::Operation(id) => {
+            let Ok(mut p) = state.try_borrow_mut() else {
+                wait_to_cancel(ctx, &record);
+                update_warning(&record, &main);
+                return;
+            };
+            if !record.key.current(&p) {
+                return;
+            }
+            cancel_prepared(&mut p, *id, ctx.send.as_ref())
         }
     };
     if accepted {
@@ -325,7 +364,9 @@ fn dismiss(ctx: &Rc<Context>, session: DialogSession) {
     } else {
         wait_to_cancel(ctx, &record);
     }
-    crate::refresh(&main, &state.borrow());
+    if let Ok(p) = state.try_borrow() {
+        crate::refresh(&main, &p);
+    }
 }
 fn wait_to_cancel(ctx: &Rc<Context>, record: &Record) {
     *record.error.borrow_mut() = "Waiting to cancel…".into();
@@ -402,16 +443,26 @@ fn retry_failed_copy(ctx: &Rc<Context>, token: String, message: String, delay: D
         if ctx.closing.get() || ctx.windows.borrow().failed_copy.as_ref() != Some(&token) {
             return;
         }
-        let Ok(mut p) = state.try_borrow_mut() else {
-            retry_failed_copy(&ctx, token, message, Duration::from_millis(250));
-            return;
-        };
-        if Key::Copy(token.clone()).current(&p) {
-            p.cancel_copy_dialog(&token);
-            p.desktop.report("Copy/Move window", message);
+        if crate::with_owned_commands(&state, &ctx.begin_owned, |p, _| {
+            if Key::Copy(token.clone()).current(p) {
+                p.cancel_copy_dialog(&token);
+                p.desktop.report("Copy/Move window", message.clone());
+            }
+        })
+        .is_none()
+        {
+            let Ok(mut p) = state.try_borrow_mut() else {
+                retry_failed_copy(&ctx, token, message, Duration::from_millis(250));
+                return;
+            };
+            if Key::Copy(token.clone()).current(&p) {
+                p.defer_cancel_copy_dialog(&token);
+                p.desktop.report("Copy/Move window", message);
+            }
         }
-        drop(p);
-        crate::refresh(&main, &state.borrow());
+        if let Ok(p) = state.try_borrow() {
+            crate::refresh(&main, &p);
+        }
     });
 }
 

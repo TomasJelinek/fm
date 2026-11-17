@@ -9,7 +9,7 @@ fn mount(root: &Path) -> Mount {
         provider_version: "1.2.3".into(),
         stable_entry_ids: true,
         format: Format::Zip,
-        source: CapturedFile::capture(&container).unwrap(),
+        source: Some(CapturedFile::capture(&container).unwrap()),
         container,
         channel: Mutex::new(Channel {
             input: tempfile::tempfile().unwrap(),
@@ -22,6 +22,7 @@ fn mount(root: &Path) -> Mount {
         }),
         protocol: Protocol::V2,
         staging: Arc::new(Mutex::new(None)),
+        close: Arc::new(close::CloseReceipt::new()),
     }
 }
 
@@ -29,7 +30,7 @@ fn mount(root: &Path) -> Mount {
 fn cache_authority_survives_sessions_but_separates_providers_versions_formats_and_members() {
     let root = tempfile::tempdir().unwrap();
     let mut mount = mount(root.path());
-    let revision = mount.source.stable_version();
+    let revision = mount.source().stable_version();
     let identity = mount
         .persistent_member_identity(2, &revision)
         .unwrap()
@@ -90,7 +91,7 @@ fn cache_authority_survives_sessions_but_separates_providers_versions_formats_an
 fn absent_capability_changed_sources_and_wrong_revisions_cannot_authorize_cache_reuse() {
     let root = tempfile::tempdir().unwrap();
     let mut mount = mount(root.path());
-    let revision = mount.source.stable_version();
+    let revision = mount.source().stable_version();
     mount.stable_entry_ids = false;
     assert!(
         mount

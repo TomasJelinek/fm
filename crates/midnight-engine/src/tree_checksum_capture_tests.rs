@@ -186,6 +186,8 @@ fn checksum_capture_survives_navigation_but_not_cancel_or_provider_revocation() 
             let registration = &f.session.registration;
             registration
                 .registry
+                .as_ref()
+                .expect("live fixture registration owns its provider registry")
                 .unregister(&registration.provider, registration.instance)
                 .unwrap();
             assert!(captured.sources.resolve(&Cancellation::default()).is_err());

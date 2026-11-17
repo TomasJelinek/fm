@@ -1,5 +1,7 @@
 //! Convert UI gestures into captured native-menu and file-clipboard intents.
-use crate::{MainWindow, Presenter, pane, presenter::MenuAnchor, refresh};
+use crate::{
+    BeginOwned, MainWindow, Presenter, pane, presenter::MenuAnchor, refresh, with_owned_commands,
+};
 use midnight_core::{ShellMenuModifiers, ShellMenuPosition};
 use slint::{ComponentHandle, winit_030::WinitWindowAccessor};
 use std::{cell::RefCell, rc::Rc};
@@ -40,10 +42,11 @@ pub(crate) fn install(
     window: &MainWindow,
     presenter: Rc<RefCell<Presenter>>,
     send: Rc<dyn Fn(midnight_core::Command) -> bool>,
+    begin_owned: BeginOwned,
 ) {
     let weak = window.as_weak();
     let state = presenter.clone();
-    let sender = send.clone();
+    let begin = begin_owned.clone();
     window.on_row_context_menu(move |id, row, x, y, control, shift| {
         let Some(window) = weak.upgrade() else {
             return;
@@ -52,10 +55,14 @@ pub(crate) fn install(
             return;
         };
         let anchor = anchor(&window, x, y, control, shift);
-        state
-            .borrow_mut()
-            .request_entry_menu(pane(id), row, anchor, sender.as_ref());
-        refresh(&window, &state.borrow());
+        if with_owned_commands(&state, &begin, |p, send| {
+            p.request_entry_menu(pane(id), row, anchor, send);
+        })
+        .is_none()
+        {
+            report_busy(&state);
+        }
+        refresh_if_idle(&window, &state);
     });
     let weak = window.as_weak();
     let state = presenter.clone();
@@ -68,54 +75,84 @@ pub(crate) fn install(
         state
             .borrow_mut()
             .request_drive_menu(pane(id), token.as_str(), anchor, sender.as_ref());
-        refresh(&window, &state.borrow());
+        refresh_if_idle(&window, &state);
     });
     let weak = window.as_weak();
     let state = presenter.clone();
-    let sender = send.clone();
+    let begin = begin_owned.clone();
     window.on_file_clipboard(move |id, operation| {
         let Some(window) = weak.upgrade() else {
             return;
         };
+        if with_owned_commands(&state, &begin, |p, send| match operation {
+            0 => p.copy_files(pane(id), send),
+            1 => p.paste_files(pane(id), send),
+            2 => p.request_copy_dialog(pane(id), send),
+            3 => p.request_move_dialog(pane(id), send),
+            4 => p.cut_files(pane(id), send),
+            _ => (),
+        })
+        .is_none()
         {
-            let mut p = state.borrow_mut();
-            match operation {
-                0 => p.copy_files(pane(id), sender.as_ref()),
-                1 => p.paste_files(pane(id), sender.as_ref()),
-                2 => p.request_copy_dialog(pane(id), sender.as_ref()),
-                3 => p.request_move_dialog(pane(id), sender.as_ref()),
-                4 => p.cut_files(pane(id), sender.as_ref()),
-                _ => return,
-            }
+            report_busy(&state);
         }
-        refresh(&window, &state.borrow());
+        refresh_if_idle(&window, &state);
     });
     let weak = window.as_weak();
     let state = presenter.clone();
-    let sender = send;
+    let begin = begin_owned.clone();
     window.on_file_menu_action(move |token, action| {
         let Some(window) = weak.upgrade() else {
             return;
         };
-        state
-            .borrow_mut()
-            .file_menu_action(token.as_str(), action, sender.as_ref());
-        refresh(&window, &state.borrow());
+        if with_owned_commands(&state, &begin, |p, send| {
+            p.file_menu_action(token.as_str(), action, send);
+        })
+        .is_none()
+        {
+            report_busy(&state);
+        }
+        refresh_if_idle(&window, &state);
     });
     let weak = window.as_weak();
     window.on_file_menu_dismissed(move |token| {
         let weak = weak.clone();
         let presenter = presenter.clone();
+        let begin = begin_owned.clone();
         // A refresh can show another popup and synchronously remove this menu's
         // focus while it still borrows the presenter. Retire the menu next tick.
         slint::Timer::single_shot(std::time::Duration::ZERO, move || {
             let Some(window) = weak.upgrade() else {
                 return;
             };
-            presenter.borrow_mut().dismiss_file_menu(token.as_str());
-            refresh(&window, &presenter.borrow());
+            if with_owned_commands(&presenter, &begin, |p, _| {
+                p.dismiss_file_menu(token.as_str());
+            })
+            .is_none()
+            {
+                // The captured tree-menu owner stays in its existing slot.
+                if let Ok(mut p) = presenter.try_borrow_mut() {
+                    p.dismiss_file_menu(token.as_str());
+                }
+            }
+            refresh_if_idle(&window, &presenter);
         });
     });
+}
+
+fn report_busy(presenter: &Rc<RefCell<Presenter>>) {
+    if let Ok(mut p) = presenter.try_borrow_mut() {
+        p.desktop.report(
+            "File action busy",
+            "Wait for the current action to finish and try again.".into(),
+        );
+    }
+}
+
+fn refresh_if_idle(window: &MainWindow, presenter: &Rc<RefCell<Presenter>>) {
+    if let Ok(p) = presenter.try_borrow() {
+        refresh(window, &p);
+    }
 }
 
 pub(crate) fn update(window: &MainWindow, presenter: &Presenter) {

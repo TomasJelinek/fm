@@ -2,6 +2,7 @@
 #![forbid(unsafe_code)]
 
 mod command_artwork;
+mod command_reclaim;
 mod comparator;
 mod native_content;
 mod shutdown;
@@ -135,7 +136,9 @@ fn run() -> Result<(), String> {
     };
     let engine_lifetime = Engine::lifetime().map_err(|error| error.to_string())?;
     let local = Arc::new(LocalFileSystem::new(home_directory()));
-    let filesystem = midnight_native_filesystem_host::InstalledProvider::shared(home_directory());
+    let shared_native =
+        midnight_native_filesystem_host::InstalledProvider::shared_composition(home_directory());
+    let filesystem = shared_native.service();
     filesystem.set_size_directory_service(local.clone());
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
@@ -158,7 +161,7 @@ fn run() -> Result<(), String> {
             engine_lifetime,
             &runtime,
             local,
-            filesystem,
+            shared_native,
             &options,
             &mut image_spare_retirement,
         )
@@ -200,7 +203,6 @@ async fn smoke_test(
     filesystem: Arc<midnight_native_filesystem_host::InstalledProvider>,
     options: &Options,
 ) -> Result<(), String> {
-    let (commands, receiver) = mpsc::channel(16);
     let (sender, mut events) = mpsc::channel(16);
     let mut engine = Engine::new(engine_lifetime, filesystem.clone(), sender);
     engine
@@ -211,6 +213,9 @@ async fn smoke_test(
         .configure_locale()
         .map_err(|error| error.to_string())?
         .install(midnight_platform::locale_service());
+    let (commands, receiver) = engine
+        .command_channel(16)
+        .map_err(|error| error.to_string())?;
     let engine = tokio::spawn(engine.run(receiver));
     commands
         .send(Command::ListVolumes)
@@ -274,10 +279,11 @@ fn run_window(
     engine_lifetime: midnight_engine::EngineLifetime,
     runtime: &tokio::runtime::Runtime,
     local: Arc<LocalFileSystem>,
-    filesystem: Arc<midnight_native_filesystem_host::InstalledProvider>,
+    shared_native: midnight_native_filesystem_host::SharedInstalledProvider,
     options: &Options,
     image_spare_retirement: &mut Option<midnight_viewer_engine::ImageSpareRetirement>,
 ) -> Result<startup_recovery::Attempt, String> {
+    let filesystem = shared_native.service();
     // Desktop integration and mutations keep their explicit platform services.
     // Browsing, volume queries and viewer reads route only through the native plugin.
     let desktop: Arc<dyn DesktopServices> = local.clone();
@@ -324,7 +330,6 @@ fn run_window(
         });
     let network = midnight_platform::network_service();
     window.set_network_available(network.is_some());
-    let (commands, command_receiver) = mpsc::channel(32);
     let (event_sender, event_receiver) = mpsc::channel(32);
     let receiver = Rc::new(RefCell::new(event_receiver));
     let gate = Arc::new(WakeGate::default());
@@ -340,10 +345,10 @@ fn run_window(
         }
     });
     let retire_queue = reclaim::start(runtime.handle(), notify.clone());
-    let retire_pending = Rc::new(RefCell::new(None::<reclaim::Retired>));
-    let mut engine = Engine::with_wakeup(
+    let command_reclaim = command_reclaim::CommandReclaim::new(retire_queue.clone());
+    let mut engine = Engine::with_shared_native_filesystem(
         engine_lifetime,
-        filesystem.clone(),
+        shared_native,
         event_sender,
         notify.clone(),
     );
@@ -371,7 +376,7 @@ fn run_window(
             filesystem.clone(),
         ));
     engine
-        .configure_transfers()
+        .configure_audited_transfers()
         .map_err(|error| error.to_string())?
         .install(local.clone());
     engine
@@ -391,9 +396,9 @@ fn run_window(
         .map_err(|error| error.to_string())?
         .install(local.clone());
     engine
-        .configure_locale()
+        .configure_audited_locale()
         .map_err(|error| error.to_string())?
-        .install(midnight_platform::locale_service());
+        .install(local.clone());
     engine
         .configure_mutations()
         .map_err(|error| error.to_string())?
@@ -420,6 +425,22 @@ fn run_window(
             .map_err(|error| error.to_string())?
             .install(network);
     }
+    let (commands, command_receiver) = engine
+        .command_channel(32)
+        .map_err(|error| error.to_string())?;
+    let begin_owned = command_reclaim.factory(commands.clone());
+    let control_commands = commands.clone();
+    let control_send: Rc<dyn Fn(Command) -> bool> = Rc::new(move |command| {
+        // Captured owners and listing acknowledgements use an owned scope.
+        // This fallback receives only provider-free controls and metadata.
+        match control_commands.try_send(command) {
+            Ok(()) => true,
+            Err(error) => {
+                drop(error.into_inner());
+                false
+            }
+        }
+    });
     let engine = runtime.spawn(engine.run(command_receiver));
 
     let completed = Rc::new(Cell::new([false; 2]));
@@ -440,14 +461,16 @@ fn run_window(
     let visible_sync = Rc::new(RefCell::new(VisibleSync::default()));
     let ui_visible_sync = visible_sync.clone();
     let ui_commands = commands.clone();
+    let ui_begin_owned = begin_owned.clone();
+    let ui_reclaim = command_reclaim.clone();
     let final_retire_queue = retire_queue.clone();
-    let final_retire_pending = retire_pending.clone();
+    let final_command_reclaim = command_reclaim.clone();
     let size_updates = Rc::new(RefCell::new(size_refresh::SizeRefresh::default()));
     let pending_sizes = size_updates.clone();
     let window_state = Rc::new(window_state::WindowState::install(
         &window,
         presenter.clone(),
-        commands.clone(),
+        control_send.clone(),
         !options.ui_smoke,
     ));
     let startup = Rc::new(startup::Startup::install(
@@ -464,59 +487,51 @@ fn run_window(
         let start = Instant::now();
         let mut changed = false;
         let mut preferences_applied = false;
-        let mut can_drain = reclaim::flush_pending(&retire_queue, &mut retire_pending.borrow_mut());
+        let mut can_drain = ui_reclaim.flush();
         {
             let mut events = ui_receiver.borrow_mut();
-            let mut presenter = state.borrow_mut();
-            if can_drain {
-                let retired = presenter.take_retired();
-                if !retired.is_empty() {
-                    *retire_pending.borrow_mut() = Some(retired);
-                    can_drain =
-                        reclaim::flush_pending(&retire_queue, &mut retire_pending.borrow_mut());
-                }
-            }
             for _ in 0..16 {
                 if !can_drain {
                     break;
                 }
-                let Ok(event) = events.try_recv() else {
-                    break;
-                };
-                preferences_applied |= matches!(&event, Event::PreferencesLoaded(_));
-                let size_only = matches!(
-                    &event,
-                    Event::FolderSizeUpdated { .. }
-                        | Event::FolderSizesFinished { .. }
-                        | Event::ArchiveSizes(_)
-                );
-                if let Event::ListingFinished { pane, .. } | Event::ListingFailed { pane, .. } =
-                    &event
-                {
-                    let mut finished = done.get();
-                    finished[pane.index()] = true;
-                    done.set(finished);
-                }
-                if let Event::DirectoryChanged { pane, navigation } = event {
-                    presenter.refresh_if_changed(pane, navigation, &|command| {
-                        ui_commands.try_send(command).is_ok()
+                let consumed =
+                    midnight_ui::with_owned_commands(&state, &ui_begin_owned, |p, send| {
+                        // Claim precedes the ownership-bearing dequeue, including
+                        // stale events and immediate follow-up capture submissions.
+                        let Ok(event) = events.try_recv() else {
+                            return false;
+                        };
+                        preferences_applied |= matches!(&event, Event::PreferencesLoaded(_));
+                        let size_only = matches!(
+                            &event,
+                            Event::FolderSizeUpdated { .. }
+                                | Event::FolderSizesFinished { .. }
+                                | Event::ArchiveSizes(_)
+                        );
+                        if let Event::ListingFinished { pane, .. }
+                        | Event::ListingFailed { pane, .. } = &event
+                        {
+                            let mut finished = done.get();
+                            finished[pane.index()] = true;
+                            done.set(finished);
+                        }
+                        if let Event::DirectoryChanged { pane, navigation } = event {
+                            p.refresh_if_changed(pane, navigation, send);
+                        } else {
+                            p.apply_with_sender(event, send);
+                        }
+                        if size_only {
+                            pending_sizes.borrow_mut().changed();
+                        } else {
+                            changed = true;
+                        }
+                        true
                     });
-                } else {
-                    presenter
-                        .apply_with_sender(event, &|command| ui_commands.try_send(command).is_ok());
-                }
-                if size_only {
-                    pending_sizes.borrow_mut().changed();
-                } else {
-                    changed = true;
-                }
-                let retired = presenter.take_retired();
-                if !retired.is_empty() {
-                    *retire_pending.borrow_mut() = Some(retired);
-                    can_drain =
-                        reclaim::flush_pending(&retire_queue, &mut retire_pending.borrow_mut());
-                }
-                if !can_drain || start.elapsed() >= Duration::from_millis(3) {
+                can_drain = ui_reclaim.flush();
+                if consumed != Some(true)
+                    || !can_drain
+                    || start.elapsed() >= Duration::from_millis(3)
+                {
                     break;
                 }
             }
@@ -524,7 +539,7 @@ fn run_window(
         if changed {
             midnight_ui::refresh(&window, &state.borrow());
             pending_sizes.borrow_mut().painted();
-            sync_visible(&state.borrow(), &ui_commands, &ui_visible_sync);
+            sync_visible(&state, &ui_begin_owned, &ui_visible_sync);
         }
         if preferences_applied {
             // Both successful and failed reads must complete startup, after
@@ -534,8 +549,9 @@ fn run_window(
         // Clear before rechecking the queue. A producer racing this check either
         // schedules its own callback or leaves data seen by this recheck.
         drain_gate.release();
+        can_drain = ui_reclaim.flush();
         if (can_drain && !ui_receiver.borrow().is_empty())
-            || (!can_drain && retire_queue.capacity() > 0)
+            || (!can_drain && !retire_queue.is_closed() && retire_queue.capacity() > 0)
         {
             reschedule();
         }
@@ -590,14 +606,14 @@ fn run_window(
         }
     });
 
-    let sender = commands.clone();
+    let send_controls = control_send.clone();
     let startup_request = startup.clone();
-    midnight_ui::install(
+    midnight_ui::install_with_owned(
         &window,
         presenter.clone(),
         Rc::new(move |command| {
             let initial_preferences = matches!(&command, Command::LoadPreferences);
-            let sent = sender.try_send(command).is_ok();
+            let sent = send_controls(command);
             if initial_preferences && !sent {
                 // install reports the rejected request and refreshes before
                 // returning to the event loop. Do not leave startup waiting.
@@ -605,11 +621,12 @@ fn run_window(
             }
             sent
         }),
+        begin_owned.clone(),
     );
     let (viewers, image_preparation) = viewers::install(
         &window,
         presenter.clone(),
-        commands.clone(),
+        control_send.clone(),
         runtime.handle(),
         filesystem.clone(),
         local.clone(),
@@ -619,12 +636,12 @@ fn run_window(
         &window,
         presenter.clone(),
         filesystem.clone(),
-        commands.clone(),
+        control_send.clone(),
     );
     let comparators = comparator::install(
         &window,
         presenter.clone(),
-        commands.clone(),
+        control_send.clone(),
         runtime.handle(),
         local,
         filesystem,
@@ -648,7 +665,8 @@ fn run_window(
     // Directory rows are shared; this timer only reads identities and tries sends.
     let visible_timer = slint::Timer::default();
     let sync_state = presenter.clone();
-    let sync_commands = commands.clone();
+    let sync_controls = control_send.clone();
+    let sync_begin_owned = begin_owned.clone();
     let sync_window = window.as_weak();
     let sync_viewers = viewers.clone();
     let sync_comparators = comparators.clone();
@@ -656,18 +674,20 @@ fn run_window(
         slint::TimerMode::Repeated,
         Duration::from_millis(100),
         move || {
-            let mut state = sync_state.borrow_mut();
-            if state.continue_operation_shutdown(&|command| sync_commands.try_send(command).is_ok())
-                && let Some(window) = sync_window.upgrade()
             {
-                state.shutdown_drag_drop(&|command| sync_commands.try_send(command).is_ok());
-                sync_viewers.close_all();
-                sync_comparators.close_all();
-                window.invoke_close_find_windows();
-                window.invoke_close_checksum_windows();
-                window.invoke_close_file_list_window();
-                window.invoke_close_information_windows();
-                let _ = window.hide();
+                let mut state = sync_state.borrow_mut();
+                if state.continue_operation_shutdown(&*sync_controls)
+                    && let Some(window) = sync_window.upgrade()
+                {
+                    state.shutdown_drag_drop(&*sync_controls);
+                    sync_viewers.close_all();
+                    sync_comparators.close_all();
+                    window.invoke_close_find_windows();
+                    window.invoke_close_checksum_windows();
+                    window.invoke_close_file_list_window();
+                    window.invoke_close_information_windows();
+                    let _ = window.hide();
+                }
             }
             if sync_window
                 .upgrade()
@@ -676,12 +696,15 @@ fn run_window(
                 sync_viewers.close_all();
                 sync_comparators.close_all();
             }
-            state.flush_selection(&|command| sync_commands.try_send(command).is_ok());
-            state.flush_filters(&|command| sync_commands.try_send(command).is_ok());
-            state.flush_filename_colors(&|command| sync_commands.try_send(command).is_ok());
-            state.flush_search(&|command| sync_commands.try_send(command).is_ok());
-            state.flush_comparison(&|command| sync_commands.try_send(command).is_ok());
-            sync_visible(&state, &sync_commands, &visible_sync);
+            let _ =
+                midnight_ui::with_owned_commands(&sync_state, &sync_begin_owned, |state, send| {
+                    state.flush_selection(send);
+                    state.flush_filters(send);
+                    state.flush_filename_colors(send);
+                    state.flush_search(send);
+                    state.flush_comparison(send);
+                });
+            sync_visible(&sync_state, &sync_begin_owned, &visible_sync);
         },
     );
     if options.ui_smoke {
@@ -757,7 +780,7 @@ fn run_window(
         reclaim::retire_receiver(closing_events, &mut retired);
         presenter.borrow_mut().retire_all();
         retired.extend(presenter.borrow_mut().take_retired());
-        if let Some(pending) = final_retire_pending.borrow_mut().take() {
+        if let Some(pending) = final_command_reclaim.take_ready() {
             retired.extend(pending);
         }
         let sent_shutdown = commands.try_send(Command::Shutdown).is_ok();
@@ -801,13 +824,19 @@ fn run_window(
 }
 
 fn sync_visible(
-    presenter: &Presenter,
-    commands: &mpsc::Sender<Command>,
+    presenter: &Rc<RefCell<Presenter>>,
+    begin_owned: &midnight_ui::BeginOwned,
     sync: &RefCell<VisibleSync>,
 ) {
     for pane in [PaneId::Left, PaneId::Right] {
-        if let Some(visible) = presenter.visible_directory(pane) {
-            sync.borrow_mut().send(visible, commands);
+        if midnight_ui::with_owned_commands(presenter, begin_owned, |p, send| {
+            if let Some(visible) = p.visible_directory(pane) {
+                sync.borrow_mut().send(visible, send);
+            }
+        })
+        .is_none()
+        {
+            break;
         }
     }
 }

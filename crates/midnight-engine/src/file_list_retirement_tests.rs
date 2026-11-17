@@ -121,7 +121,7 @@ impl Fixture {
         let (sender, events) = tokio::sync::mpsc::channel(16);
         let controller = Controller::testing(
             Some(service),
-            Arc::new(Semaphore::new(1)),
+            crate::transfer_leases::namespace_gate(),
             Outbox {
                 sender,
                 wakeup: Arc::new(|| {}),

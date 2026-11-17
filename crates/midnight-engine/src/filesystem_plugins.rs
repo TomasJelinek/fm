@@ -37,6 +37,7 @@ pub(super) fn catalog(executable: &Path) -> Result<Vec<FilesystemPluginInfo>, St
                     name: package.name.unwrap_or_else(|| fallback.into()),
                     version: package.version,
                     kind: Some(kind),
+                    formats: Vec::new(),
                     location: Some(package.directory),
                     status: error.as_ref().map_or_else(
                         || "Installed".into(),
@@ -52,19 +53,18 @@ pub(super) fn catalog(executable: &Path) -> Result<Vec<FilesystemPluginInfo>, St
     }
     match midnight_filesystem_host::Catalog::discover(directory) {
         Ok(catalog) => {
-            rows.extend(
-                catalog
-                    .packages
-                    .into_iter()
-                    .map(|package| FilesystemPluginInfo {
-                        id: package.id,
-                        name: package.name.unwrap_or_else(|| "Archive filesystem".into()),
-                        version: package.version,
-                        kind: Some(FilesystemPluginKind::Archive),
-                        location: Some(package.directory),
-                        status: "Installed".into(),
-                    }),
-            );
+            rows.extend(catalog.packages.into_iter().map(|package| {
+                let formats = package.available_formats();
+                FilesystemPluginInfo {
+                    id: package.id,
+                    name: package.name.unwrap_or_else(|| "Archive filesystem".into()),
+                    version: package.version,
+                    kind: Some(FilesystemPluginKind::Archive),
+                    formats,
+                    location: Some(package.directory),
+                    status: "Installed".into(),
+                }
+            }));
             diagnostics.extend(catalog.diagnostics);
         }
         Err(error) => {
@@ -81,6 +81,7 @@ pub(super) fn catalog(executable: &Path) -> Result<Vec<FilesystemPluginInfo>, St
         name: "Unavailable filesystem package".into(),
         version: String::new(),
         kind: None,
+        formats: Vec::new(),
         location: None,
         status: message,
     }));
@@ -110,6 +111,66 @@ mod tests {
             "schema_version=1\nid='{id}'\nname='Network filesystem'\nkind='filesystem-network'\nversion='1'\nentry_library='worker.dll'\ntarget='{}'\nabi_major=1\nminimum_host_minor=2\nprotocol=1\ncapabilities=['browse','stat','volumes','activate','refresh','resolve-text']\naddress_encoding='opaque'\n",
             midnight_plugin_host::host_target()
         )).unwrap();
+    }
+
+    fn archive(root: &Path, directory: &str, id: &str, formats: &str) {
+        let path = root.join("filesystems").join(directory);
+        std::fs::create_dir_all(&path).unwrap();
+        std::fs::write(path.join("worker.exe"), b"not executable, never started").unwrap();
+        std::fs::write(path.join("plugin.toml"), format!(
+            "schema_version=1\nid='{id}'\nname='{directory}'\nkind='filesystem-worker'\nversion='1'\nentry_executable='worker.exe'\ntarget='{}'\nprotocol=2\nformats=[{formats}]\n",
+            midnight_plugin_host::host_target()
+        )).unwrap();
+    }
+
+    #[test]
+    #[ignore = "requires a trusted HOST_TEST_INSTALL_ROOT"]
+    fn fixture_catalog_preserves_each_archive_packages_declared_formats() {
+        use midnight_core::ArchiveFormat;
+        let root = fixture();
+        archive(
+            root.path(),
+            "zip-name",
+            "archive.first",
+            "'gzip','tar','gzip'",
+        );
+        archive(root.path(), "tar-name", "archive.second", "'zip'");
+        network(root.path(), "network", "network.fixture");
+        let rows = catalog(&root.path().join("me.exe")).unwrap();
+        assert_eq!(rows.len(), 3, "{rows:?}");
+        for (id, directory, formats) in [
+            (
+                "archive.first",
+                "zip-name",
+                vec![ArchiveFormat::Gzip, ArchiveFormat::Tar],
+            ),
+            ("archive.second", "tar-name", vec![ArchiveFormat::Zip]),
+        ] {
+            let row = rows.iter().find(|row| row.id == id).unwrap();
+            assert_eq!(row.kind, Some(FilesystemPluginKind::Archive));
+            assert_eq!(row.formats, formats);
+            assert_eq!(row.name, directory);
+            assert_eq!(row.version, "1");
+            assert_eq!(row.status, "Installed");
+            assert_eq!(
+                row.location.as_ref(),
+                Some(
+                    &root
+                        .path()
+                        .join("filesystems")
+                        .join(directory)
+                        .canonicalize()
+                        .unwrap()
+                )
+            );
+            assert_eq!(
+                std::fs::read(row.location.as_ref().unwrap().join("worker.exe")).unwrap(),
+                b"not executable, never started"
+            );
+        }
+        let network = rows.iter().find(|row| row.id == "network.fixture").unwrap();
+        assert!(network.formats.is_empty());
+        assert!(rows.windows(2).all(|pair| pair[0].name <= pair[1].name));
     }
 
     #[test]
@@ -152,6 +213,7 @@ mod tests {
             rows.iter()
                 .all(|row| row.id.is_empty() && row.kind.is_none())
         );
+        assert!(rows.iter().all(|row| row.formats.is_empty()));
         for package in ["missing-library", "malformed"] {
             assert!(
                 rows.iter().any(|row| row.status.contains(package)),
@@ -182,6 +244,7 @@ mod tests {
         network(root.path(), "two", "network.duplicate");
         let rows = catalog(&root.path().join("me.exe")).unwrap();
         assert!(rows.iter().all(|row| row.id.is_empty()));
+        assert!(rows.iter().all(|row| row.formats.is_empty()));
         assert!(
             rows.iter()
                 .any(|row| row.status.contains("Duplicate native filesystem ID"))
@@ -208,6 +271,9 @@ mod tests {
             assert_eq!(row.status, "Installed");
             assert!(!row.id.is_empty());
             assert!(row.location.as_ref().is_some_and(|path| path.is_absolute()));
+            if kind != FilesystemPluginKind::Archive {
+                assert!(row.formats.is_empty());
+            }
         }
     }
 }

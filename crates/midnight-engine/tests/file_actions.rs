@@ -82,13 +82,14 @@ async fn receive(events: &mut mpsc::Receiver<Event>) -> Event {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn file_clipboard_preserves_captured_order_pumps_owner_and_reads_captured_destination() {
     let clipboard = Arc::new(Clipboard::default());
-    let (commands, receiver) = mpsc::channel(8);
+
     let (sender, mut events) = mpsc::channel(8);
     let mut engine = Engine::new(
         Engine::lifetime().expect("engine cleanup worker"),
         Arc::new(midnight_platform::LocalFileSystem::new(None)),
         sender,
     );
+    let (commands, receiver) = engine.command_channel(8).unwrap();
     engine
         .configure_clipboard()
         .unwrap()
@@ -166,13 +167,14 @@ impl ShellMenuService for Menu {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn native_menu_is_bounded_and_does_not_block_other_engine_requests() {
     let menu = Arc::new(Menu::default());
-    let (commands, receiver) = mpsc::channel(8);
+
     let (sender, mut events) = mpsc::channel(8);
     let mut engine = Engine::new(
         Engine::lifetime().expect("engine cleanup worker"),
         Arc::new(midnight_platform::LocalFileSystem::new(None)),
         sender,
     );
+    let (commands, receiver) = engine.command_channel(8).unwrap();
     engine.configure_shell_menu().unwrap().install(menu.clone());
     let engine = tokio::spawn(engine.run(receiver));
     let path = std::env::temp_dir().join("文档.txt");

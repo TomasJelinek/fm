@@ -79,20 +79,27 @@ impl Session {
     }
 
     /// Select the semaphore that actually blocked admission; hold no other permit while waiting.
-    pub(crate) fn waiting_on(&self) -> Arc<Semaphore> {
-        if self.runnable_maintenance() && self.budget.mutation.available_permits() == 0 {
-            self.budget.mutation.clone()
+    pub(crate) fn waiting_on(&self) -> (Arc<Semaphore>, u32) {
+        if self.budget.mutation.available_permits()
+            < crate::transfer_leases::NAMESPACE_WEIGHT as usize
+        {
+            (
+                self.budget.mutation.clone(),
+                crate::transfer_leases::NAMESPACE_WEIGHT,
+            )
         } else if self.budget.branch.available_permits() == 0 {
-            self.budget.branch.clone()
+            (self.budget.branch.clone(), 1)
         } else {
-            self.budget.listing.clone()
+            (self.budget.listing.clone(), 1)
         }
     }
 
     pub(super) fn runnable_maintenance(&self) -> bool {
         !self.recursive_batch_active()
             && self.next_is_maintenance()
-            && !(self.budget.mutation.available_permits() == 0 && self.explicit_work_ready())
+            && !(self.budget.mutation.available_permits()
+                < crate::transfer_leases::NAMESPACE_WEIGHT as usize
+                && self.explicit_work_ready())
     }
 
     pub(super) fn take_refresh_branch(&mut self) -> Result<PendingBranch, ProviderError> {

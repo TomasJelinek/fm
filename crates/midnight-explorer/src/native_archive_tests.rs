@@ -7,6 +7,9 @@ use midnight_core::{
 use midnight_engine::Engine;
 use tokio::sync::mpsc;
 
+#[path = "copy_archive_retirement_native_tests.rs"]
+mod copy_retirement;
+
 fn installation() -> PathBuf {
     std::env::var_os("MIDNIGHT_NATIVE_TEST_INSTALLATION")
         .unwrap()
@@ -19,17 +22,17 @@ fn fixture() -> PathBuf {
 fn start(
     provider: Arc<InstalledProvider>,
 ) -> (
-    mpsc::Sender<Command>,
+    midnight_engine::CommandSender,
     mpsc::Receiver<Event>,
     tokio::task::JoinHandle<()>,
 ) {
-    let (commands, receiver) = mpsc::channel(16);
     let (sender, events) = mpsc::channel(16);
     let mut engine = Engine::new(
         Engine::lifetime().expect("engine cleanup worker"),
         provider.clone(),
         sender,
     );
+    let (commands, receiver) = engine.command_channel(16).unwrap();
     engine
         .configure_archive_capture()
         .unwrap()
@@ -38,7 +41,7 @@ fn start(
     (commands, events, task)
 }
 async fn navigate(
-    commands: &mpsc::Sender<Command>,
+    commands: &midnight_engine::CommandSender,
     events: &mut mpsc::Receiver<Event>,
     action: ArchiveAction,
     id: u64,
@@ -71,7 +74,7 @@ async fn navigate(
     .expect("Archive navigation timed out")
 }
 async fn shutdown(
-    commands: mpsc::Sender<Command>,
+    commands: midnight_engine::CommandSender,
     events: mpsc::Receiver<Event>,
     task: tokio::task::JoinHandle<()>,
 ) {

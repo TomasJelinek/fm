@@ -9,7 +9,9 @@ pub mod icon_snapshot;
 pub mod metadata;
 pub mod settings;
 pub mod transfer;
+pub mod transfer_io;
 pub mod transfer_modified_time;
+pub mod transfer_namespace;
 
 use midnight_core::{
     Cancellation, DirectoryService, Entry, EntryId, EntryKind, EntryMetadata, FsError, SpaceInfo,

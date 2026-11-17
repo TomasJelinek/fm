@@ -33,10 +33,18 @@ fn first_frame(load: Load) {
     let window = MainWindow::new().unwrap();
     let presenter = Rc::new(RefCell::new(Presenter::new("left".into(), "right".into())));
     let (commands, mut received) = tokio::sync::mpsc::channel(32);
+    let control_send: Rc<dyn Fn(Command) -> bool> =
+        Rc::new(move |command| match commands.try_send(command) {
+            Ok(()) => true,
+            Err(error) => {
+                drop(error.into_inner());
+                false
+            }
+        });
     let state = Rc::new(WindowState::install(
         &window,
         presenter.clone(),
-        commands,
+        control_send,
         true,
     ));
     let startup_owner = crate::startup_gate::Owner::new();

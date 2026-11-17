@@ -684,7 +684,7 @@ async fn acquire_mutation(
     {
         return Err(Box::new(job.failure(error).await));
     }
-    let acquire = gate.acquire_owned();
+    let acquire = gate.acquire_many_owned(crate::transfer_leases::NAMESPACE_WEIGHT);
     tokio::pin!(acquire);
     let permit = loop {
         tokio::select! {

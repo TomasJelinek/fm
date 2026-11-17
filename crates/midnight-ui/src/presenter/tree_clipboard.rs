@@ -27,6 +27,7 @@ pub(super) struct Pending {
     pub purpose: Purpose,
     pub source: Option<Arc<dyn CapturedClipboardFiles>>,
     pub desktop_request: Option<DesktopRequestId>,
+    retire_requested: bool,
 }
 impl Pending {
     fn command(
@@ -95,7 +96,10 @@ impl Presenter {
         purpose: Purpose,
         send: &dyn Fn(Command) -> bool,
     ) {
-        if self.operations.closing || !self.native_action_allowed(pane) {
+        if !self.owned_command_scope_available()
+            || self.operations.closing
+            || !self.native_action_allowed(pane)
+        {
             return;
         }
         if self.file_actions.tree_clipboard.is_some() {
@@ -123,6 +127,7 @@ impl Presenter {
         purpose: Purpose,
         send: &dyn Fn(Command) -> bool,
     ) {
+        debug_assert!(self.owned_command_scope_available());
         if self.operations.closing || self.file_actions.tree_clipboard.is_some() {
             capture.cancel.cancel();
             self.retired.push(Box::new(capture));
@@ -135,31 +140,47 @@ impl Presenter {
             purpose,
             source: None,
             desktop_request: None,
+            retire_requested: false,
         });
         self.flush_tree_clipboard(send);
     }
 
     pub(super) fn cancel_tree_clipboard(&mut self, pane: Option<PaneId>) {
+        if let Some(pending) = self
+            .file_actions
+            .tree_clipboard
+            .as_mut()
+            .filter(|pending| pane.is_none_or(|pane| pending.capture.view.stamp.pane == pane))
+        {
+            pending.capture.cancel.cancel();
+            pending.retire_requested = true;
+            if let Some(request) = pending.desktop_request {
+                self.desktop.requests.remove(&request);
+            }
+        }
+        if self.owned_command_scope_available() {
+            self.flush_deferred_tree_clipboard_owner();
+        }
+    }
+
+    pub(super) fn flush_deferred_tree_clipboard_owner(&mut self) {
         if self
             .file_actions
             .tree_clipboard
             .as_ref()
-            .is_some_and(|pending| pane.is_none_or(|pane| pending.capture.view.stamp.pane == pane))
+            .is_some_and(|pending| pending.retire_requested)
         {
-            let pending = self
-                .file_actions
-                .tree_clipboard
-                .take()
-                .expect("matched tree action");
-            pending.capture.cancel.cancel();
-            if let Some(request) = pending.desktop_request {
-                self.desktop.requests.remove(&request);
-            }
-            self.retired.push(Box::new(pending));
+            self.retired
+                .push(Box::new(self.file_actions.tree_clipboard.take()));
         }
     }
 
     pub(super) fn flush_tree_clipboard(&mut self, send: &dyn Fn(Command) -> bool) {
+        // Timer/control callers cannot displace or clone a captured native source.
+        if !self.owned_command_scope_available() {
+            return;
+        }
+        self.flush_deferred_tree_clipboard_owner();
         let Some(mut pending) = self.file_actions.tree_clipboard.take() else {
             return;
         };
@@ -224,8 +245,10 @@ impl Presenter {
         result: Result<Arc<dyn CapturedClipboardFiles>, TreeDiagnostic>,
         send: &dyn Fn(Command) -> bool,
     ) {
+        debug_assert!(self.owned_command_scope_available());
         let Some(pending) = self.file_actions.tree_clipboard.as_mut().filter(|pending| {
-            pending.capture.view.stamp == stamp
+            !pending.retire_requested
+                && pending.capture.view.stamp == stamp
                 && pending.capture.request == Some(request)
                 && pending.source.is_none()
         }) else {
@@ -250,17 +273,13 @@ impl Presenter {
     }
 
     pub(super) fn tree_clipboard_finished(&mut self, request: DesktopRequestId) {
-        if self
-            .file_actions
-            .tree_clipboard
-            .as_ref()
-            .is_some_and(|pending| {
-                pending.desktop_request == Some(request)
-                    && !matches!(pending.purpose, Purpose::Menu(_))
-            })
-        {
-            self.retired
-                .push(Box::new(self.file_actions.tree_clipboard.take()));
+        if let Some(pending) = self.file_actions.tree_clipboard.as_mut().filter(|pending| {
+            pending.desktop_request == Some(request) && !matches!(pending.purpose, Purpose::Menu(_))
+        }) {
+            pending.retire_requested = true;
+        }
+        if self.owned_command_scope_available() {
+            self.flush_deferred_tree_clipboard_owner();
         }
     }
 }

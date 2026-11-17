@@ -4,15 +4,16 @@ mod render;
 mod ui;
 
 use i_slint_core::{
-    accessibility::AccessibilityAction,
+    accessibility::{AccessibilityAction, AccessibleStringProperty},
+    item_tree::ItemRc,
     items::{AccessibleRole, TextCursorAffinity, TextInput},
-    window::WindowInner,
+    window::{WindowInner, WindowKind},
 };
 use midnight_core::{
-    Command, Event, FilesystemPluginInfo, FilesystemPluginKind, ThumbnailerPluginInfo,
-    UserPreferences, ViewerPluginInfo,
+    ArchiveFormat, Command, Event, FilesystemPluginInfo, FilesystemPluginKind,
+    ThumbnailerPluginInfo, UserPreferences, ViewerPluginInfo,
 };
-use midnight_ui::{Presenter, ViewerPluginRow, ViewerPluginsView, install, refresh};
+use midnight_ui::{MainWindow, Presenter, ViewerPluginRow, ViewerPluginsView, install, refresh};
 use slint::{
     ComponentHandle, Model, ModelRc, VecModel,
     platform::{Key, WindowAdapter},
@@ -129,6 +130,11 @@ fn plugins_exposes_a_separate_read_only_filesystems_overview() {
         kind: Some(kind),
         location: Some(base.join("filesystems").join(id)),
         status: "Installed".into(),
+        formats: if kind == FilesystemPluginKind::Archive {
+            vec![ArchiveFormat::Zip]
+        } else {
+            Vec::new()
+        },
     })
     .collect();
     h.presenter
@@ -149,7 +155,7 @@ fn plugins_exposes_a_separate_read_only_filesystems_overview() {
         h.ui.window
             .global::<ViewerPluginsView>()
             .get_filesystem_selected(),
-        2
+        1
     );
     assert!(
         h.sent.borrow().is_empty(),
@@ -603,4 +609,465 @@ fn all_six_installed_viewers_fit_without_catalog_scrolling_at_normal_sizes() {
         }
         render::snapshot(&h.ui, &format!("six-viewers-{density}-{font}"));
     }
+}
+
+fn package(
+    id: &str,
+    name: &str,
+    kind: FilesystemPluginKind,
+    formats: Vec<ArchiveFormat>,
+) -> FilesystemPluginInfo {
+    FilesystemPluginInfo {
+        id: id.into(),
+        name: name.into(),
+        version: "2.3".into(),
+        kind: Some(kind),
+        formats,
+        location: Some(
+            std::env::current_dir()
+                .unwrap()
+                .join("filesystem packages/資料")
+                .join(id),
+        ),
+        status: "Installed · artifact validated".into(),
+    }
+}
+
+fn package_diagnostics() -> [FilesystemPluginInfo; 3] {
+    [
+        (
+            "malformed.zip",
+            "Malformed archive manifest: expected an object",
+        ),
+        (
+            "missing-worker",
+            "Missing worker artifact: archive-worker.exe",
+        ),
+        (
+            "duplicate-id",
+            "Duplicate filesystem package ID: archive.first",
+        ),
+    ]
+    .map(|(directory, status)| FilesystemPluginInfo {
+        id: String::new(),
+        name: "Unavailable package".into(),
+        version: String::new(),
+        kind: None,
+        formats: Vec::new(),
+        location: Some(
+            std::env::current_dir()
+                .unwrap()
+                .join("filesystem packages/invalid")
+                .join(directory),
+        ),
+        status: status.into(),
+    })
+}
+
+fn filesystem_catalog() -> Vec<FilesystemPluginInfo> {
+    let [malformed, missing, duplicate] = package_diagnostics();
+    vec![
+        package(
+            "native.fixture",
+            "Native filesystem",
+            FilesystemPluginKind::Native,
+            Vec::new(),
+        ),
+        package(
+            "archive.first",
+            "Archive first",
+            FilesystemPluginKind::Archive,
+            vec![ArchiveFormat::Zip, ArchiveFormat::Tar],
+        ),
+        malformed,
+        package(
+            "network.fixture",
+            "Network filesystem",
+            FilesystemPluginKind::Network,
+            Vec::new(),
+        ),
+        package(
+            "archive.second",
+            "Archive second",
+            FilesystemPluginKind::Archive,
+            vec![ArchiveFormat::SevenZip],
+        ),
+        missing,
+        package(
+            "archive.empty",
+            "Archive without declarations",
+            FilesystemPluginKind::Archive,
+            Vec::new(),
+        ),
+        duplicate,
+    ]
+}
+
+fn popup_root(window: &MainWindow) -> ItemRc {
+    let inner = WindowInner::from_pub(window.window());
+    let popups = inner.active_popups();
+    let popup = popups
+        .iter()
+        .rev()
+        .find(|popup| !matches!(popup.window_kind, WindowKind::ToolTip))
+        .expect("Options popup");
+    ItemRc::new_root(popup.component.clone())
+}
+
+fn named_item(item: ItemRc, label: &str, role: AccessibleRole) -> Option<ItemRc> {
+    if item.accessible_role() == role
+        && item
+            .accessible_string_property(AccessibleStringProperty::Label)
+            .is_some_and(|value| value == label)
+    {
+        return Some(item);
+    }
+    let mut child = item.first_child();
+    while let Some(item) = child {
+        child = item.next_sibling();
+        if let Some(found) = named_item(item, label, role) {
+            return Some(found);
+        }
+    }
+    None
+}
+
+fn plugin_tab_strip(item: ItemRc) -> Option<ItemRc> {
+    let mut child = item.first_child();
+    while let Some(item) = child {
+        child = item.next_sibling();
+        if let Some(found) = plugin_tab_strip(item) {
+            return Some(found);
+        }
+    }
+    ["Viewers", "Filesystems", "Archives", "Thumbnailers"]
+        .iter()
+        .all(|label| named_item(item.clone(), label, AccessibleRole::Button).is_some())
+        .then_some(item)
+}
+
+impl Harness {
+    fn filesystem_catalog(&mut self, catalog: Vec<FilesystemPluginInfo>) {
+        self.presenter
+            .borrow_mut()
+            .apply(Event::FilesystemPluginsListed(Ok(catalog)));
+        refresh(&self.ui.window, &self.presenter.borrow());
+        self.settle();
+    }
+
+    fn plugin_tab(&mut self, label: &str) {
+        let strip = plugin_tab_strip(popup_root(&self.ui.window)).expect("plugin tab strip");
+        let tab = named_item(strip, label, AccessibleRole::Button).expect("plugin category tab");
+        let bounds = tab.geometry();
+        let origin = tab.map_to_native_window(bounds.origin);
+        ui::click(
+            &self.ui.window,
+            origin.x + bounds.width() / 2.0,
+            origin.y + bounds.height() / 2.0,
+        );
+        self.settle();
+        assert_eq!(self.ui.window.get_options_topic_index(), 5);
+    }
+
+    fn popup_text(&self) -> String {
+        ui::visible_text_values(popup_root(&self.ui.window))
+            .iter()
+            .map(|value| value.as_str())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    fn rescans(&self) -> usize {
+        self.sent
+            .borrow()
+            .iter()
+            .filter(|command| matches!(command, Command::ListViewerPlugins))
+            .count()
+    }
+}
+
+#[test]
+fn archive_catalog_is_read_only_and_uses_each_packages_declared_formats() {
+    let mut h = Harness::new();
+    let catalog = filesystem_catalog();
+    let first = catalog[1].clone();
+    h.filesystem_catalog(catalog);
+    h.sent.borrow_mut().clear();
+    h.plugin_tab("Archives");
+    let list = ui::popup_item(&h.ui.window, "Archive plugins", AccessibleRole::List);
+    assert!(!has_role(list, AccessibleRole::Checkbox));
+    assert!(ui::try_popup_item(&h.ui.window, "Move viewer up", AccessibleRole::Button).is_none());
+    assert!(ui::try_popup_item(&h.ui.window, "Move viewer down", AccessibleRole::Button).is_none());
+    assert!(
+        ui::try_popup_item(&h.ui.window, "Viewer extensions", AccessibleRole::TextInput).is_none()
+    );
+    let view = h.ui.window.global::<ViewerPluginsView>();
+    assert_eq!(
+        view.get_filesystem_rows()
+            .iter()
+            .map(|row| row.id.to_string())
+            .collect::<Vec<_>>(),
+        ["native.fixture", "network.fixture"]
+    );
+    let archives = view.get_archive_rows();
+    assert_eq!(
+        archives
+            .iter()
+            .map(|row| row.id.to_string())
+            .collect::<Vec<_>>(),
+        ["archive.first", "archive.second", "archive.empty"]
+    );
+    let row = archives.row_data(0).unwrap();
+    assert_eq!(row.name, first.name.as_str());
+    assert_eq!(row.version, first.version.as_str());
+    assert_eq!(row.status, first.status.as_str());
+    assert_eq!(
+        row.location,
+        first.location.unwrap().to_string_lossy().as_ref()
+    );
+    assert_eq!(row.description, "Declared formats: ZIP; TAR");
+    assert!(!row.configurable);
+    assert!(
+        h.popup_text().contains("archive.first"),
+        "package ID is visible"
+    );
+    h.click("Archive second · 2.3", AccessibleRole::ListItem);
+    let view = h.ui.window.global::<ViewerPluginsView>();
+    assert_eq!(view.get_archive_selected(), 1);
+    assert_eq!(
+        view.get_archive_rows().row_data(1).unwrap().description,
+        "Declared formats: 7-Zip"
+    );
+    assert!(h.popup_text().contains("archive.second"));
+    h.click(
+        "Archive without declarations · 2.3",
+        AccessibleRole::ListItem,
+    );
+    assert_eq!(
+        h.ui.window
+            .global::<ViewerPluginsView>()
+            .get_archive_rows()
+            .row_data(2)
+            .unwrap()
+            .description,
+        "Declared formats: None declared"
+    );
+    assert!(
+        h.sent.borrow().is_empty(),
+        "reading package rows must not discover, start workers or save preferences"
+    );
+}
+
+#[test]
+fn unclassified_package_diagnostics_and_catalog_errors_are_visible_on_both_tabs() {
+    let mut h = Harness::new();
+    h.filesystem_catalog(filesystem_catalog());
+    h.sent.borrow_mut().clear();
+    for tab in ["Filesystems", "Archives"] {
+        h.plugin_tab(tab);
+        let diagnostics =
+            h.ui.window
+                .global::<ViewerPluginsView>()
+                .get_filesystem_diagnostics();
+        let text = h.popup_text();
+        assert!(text.contains("Filesystem and archive package diagnostics"));
+        for diagnostic in package_diagnostics() {
+            let path = diagnostic.location.unwrap().to_string_lossy().into_owned();
+            assert!(diagnostics.contains(&diagnostic.status));
+            assert!(diagnostics.contains(&path));
+            assert!(text.contains(&diagnostic.status));
+            assert!(text.contains(&path));
+        }
+    }
+    let error = "Filesystem and archive catalog unavailable: package metadata denied";
+    h.presenter
+        .borrow_mut()
+        .apply(Event::FilesystemPluginsListed(Err(error.into())));
+    refresh(&h.ui.window, &h.presenter.borrow());
+    h.settle();
+    for tab in ["Filesystems", "Archives"] {
+        h.plugin_tab(tab);
+        let view = h.ui.window.global::<ViewerPluginsView>();
+        assert_eq!(view.get_filesystem_error(), error);
+        assert_eq!(view.get_archive_rows().row_count(), 0);
+        assert_eq!(view.get_archive_selected(), -1);
+        assert!(h.popup_text().contains(error));
+    }
+    assert!(h.sent.borrow().is_empty());
+}
+
+#[test]
+fn archive_and_filesystem_selections_survive_rescan_independently_after_reordering() {
+    let mut h = Harness::new();
+    h.filesystem_catalog(filesystem_catalog());
+    h.plugin_tab("Filesystems");
+    h.click("Network filesystem · 2.3", AccessibleRole::ListItem);
+    h.plugin_tab("Archives");
+    h.click("Archive first · 2.3", AccessibleRole::ListItem);
+    let view = h.ui.window.global::<ViewerPluginsView>();
+    assert_eq!(view.get_filesystem_selected(), 1);
+    assert_eq!(view.get_archive_selected(), 0);
+    h.sent.borrow_mut().clear();
+    h.click("Rescan all plugins", AccessibleRole::Button);
+    h.ui.window.global::<ViewerPluginsView>().invoke_refresh();
+    assert_eq!(h.rescans(), 1);
+    assert!(h.ui.window.global::<ViewerPluginsView>().get_pending());
+    let mut reordered = filesystem_catalog();
+    reordered.reverse();
+    h.filesystem_catalog(reordered.clone());
+    h.presenter
+        .borrow_mut()
+        .apply(Event::ViewerPluginsListed(Ok(Vec::new())));
+    refresh(&h.ui.window, &h.presenter.borrow());
+    assert!(h.ui.window.global::<ViewerPluginsView>().get_pending());
+    h.presenter
+        .borrow_mut()
+        .apply(Event::ThumbnailerPluginsListed(Ok(Vec::new())));
+    refresh(&h.ui.window, &h.presenter.borrow());
+    h.settle();
+    let view = h.ui.window.global::<ViewerPluginsView>();
+    assert!(!view.get_pending());
+    assert_eq!(view.get_filesystem_selected(), 0);
+    assert_eq!(view.get_archive_selected(), 2);
+    assert_eq!(
+        view.get_archive_rows().row_data(2).unwrap().id,
+        "archive.first"
+    );
+    h.plugin_tab("Filesystems");
+    assert_eq!(
+        h.ui.window
+            .global::<ViewerPluginsView>()
+            .get_filesystem_selected(),
+        0
+    );
+    reordered.retain(|plugin| plugin.id != "archive.first");
+    h.filesystem_catalog(reordered);
+    let view = h.ui.window.global::<ViewerPluginsView>();
+    assert_eq!(view.get_filesystem_selected(), 0);
+    assert_eq!(view.get_archive_selected(), 0);
+    assert_eq!(
+        view.get_archive_rows().row_data(0).unwrap().id,
+        "archive.empty"
+    );
+    assert_eq!(
+        h.sent.borrow().len(),
+        1,
+        "only the shared rescan sends a command"
+    );
+}
+
+#[test]
+fn archive_empty_state_waits_for_the_shared_loading_cycle() {
+    let mut h = Harness::new();
+    h.plugin_tab("Archives");
+    let view = h.ui.window.global::<ViewerPluginsView>();
+    assert_eq!(view.get_archive_rows().row_count(), 0);
+    assert_eq!(view.get_archive_selected(), -1);
+    assert!(h.popup_text().contains("No archive plugins"));
+    h.sent.borrow_mut().clear();
+    h.click("Rescan all plugins", AccessibleRole::Button);
+    assert!(h.ui.window.global::<ViewerPluginsView>().get_pending());
+    assert!(!h.popup_text().contains("No archive plugins"));
+    ui::popup_item(&h.ui.window, "Rescanning…", AccessibleRole::Button);
+    h.ui.window.global::<ViewerPluginsView>().invoke_refresh();
+    assert_eq!(h.rescans(), 1);
+    for event in [
+        Event::ViewerPluginsListed(Ok(Vec::new())),
+        Event::FilesystemPluginsListed(Ok(Vec::new())),
+    ] {
+        h.presenter.borrow_mut().apply(event);
+    }
+    refresh(&h.ui.window, &h.presenter.borrow());
+    assert!(h.ui.window.global::<ViewerPluginsView>().get_pending());
+    h.presenter
+        .borrow_mut()
+        .apply(Event::ThumbnailerPluginsListed(Ok(Vec::new())));
+    refresh(&h.ui.window, &h.presenter.borrow());
+    h.settle();
+    assert!(!h.ui.window.global::<ViewerPluginsView>().get_pending());
+    assert!(h.popup_text().contains("No archive plugins"));
+}
+
+#[test]
+fn archive_associations_navigation_preserves_the_options_draft_without_sending_commands() {
+    let mut h = Harness::new();
+    h.filesystem_catalog(filesystem_catalog());
+    h.edit("rs; draft-only");
+    h.sent.borrow_mut().clear();
+    h.plugin_tab("Archives");
+    h.click("Archive associations…", AccessibleRole::Button);
+    assert_eq!(h.ui.window.get_options_topic_index(), 7);
+    ui::popup_item(
+        &h.ui.window,
+        "Search archive associations",
+        AccessibleRole::TextInput,
+    );
+    h.ui.options_topic(5);
+    h.settle();
+    assert_eq!(
+        h.ui.window.global::<ViewerPluginsView>().get_extensions(),
+        "rs; draft-only"
+    );
+    assert!(
+        h.sent.borrow().is_empty(),
+        "association navigation is local UI state"
+    );
+    h.click("Cancel", AccessibleRole::Button);
+    assert!(h.saves().is_empty());
+    h.ui.window.invoke_show_options();
+    h.ui.window.set_options_topic_index(5);
+    h.settle();
+    assert_eq!(
+        h.ui.window.global::<ViewerPluginsView>().get_extensions(),
+        "rs; py"
+    );
+}
+
+#[test]
+fn archive_catalog_keyboard_selection_and_compact_category_picker_remain_accessible() {
+    let mut h = Harness::new();
+    h.filesystem_catalog(filesystem_catalog());
+    h.plugin_tab("Archives");
+    h.click("Archive first · 2.3", AccessibleRole::ListItem);
+    h.sent.borrow_mut().clear();
+    for (key, selected) in [(Key::DownArrow, 1), (Key::End, 2), (Key::Home, 0)] {
+        ui::key(&h.ui.window, key);
+        h.settle();
+        assert_eq!(
+            h.ui.window
+                .global::<ViewerPluginsView>()
+                .get_archive_selected(),
+            selected
+        );
+    }
+    for (width, height, font) in [(760, 650, 22), (420, 360, 28)] {
+        h.ui.window.invoke_apply_fonts("".into(), font, font);
+        h.ui.resize(width, height);
+        h.settle();
+        let picker = ui::popup_item(&h.ui.window, "Plugin type", AccessibleRole::Combobox);
+        let bounds = picker.geometry();
+        let origin = picker.map_to_native_window(bounds.origin);
+        assert!(bounds.width() > 0.0 && bounds.height() > 0.0);
+        assert!(origin.x >= 0.0 && origin.y >= 0.0);
+        assert!(origin.x + bounds.width() <= width as f32 + 1.0);
+        assert!(origin.y + bounds.height() <= height as f32 + 1.0);
+        let rescan = ui::popup_item(&h.ui.window, "Rescan all plugins", AccessibleRole::Button);
+        let bounds = rescan.geometry();
+        let origin = rescan.map_to_native_window(bounds.origin);
+        assert!(origin.y >= 0.0 && origin.y + bounds.height() <= height as f32 + 1.0);
+        h.click("Plugin type", AccessibleRole::Combobox);
+        ui::key(&h.ui.window, Key::UpArrow);
+        ui::key(&h.ui.window, Key::UpArrow);
+        ui::key(&h.ui.window, Key::Return);
+        h.settle();
+        ui::popup_item(&h.ui.window, "Viewer priority", AccessibleRole::List);
+        h.click("Plugin type", AccessibleRole::Combobox);
+        ui::key(&h.ui.window, Key::DownArrow);
+        ui::key(&h.ui.window, Key::DownArrow);
+        ui::key(&h.ui.window, Key::Return);
+        h.settle();
+        ui::popup_item(&h.ui.window, "Archive plugins", AccessibleRole::List);
+        render::snapshot(&h.ui, &format!("archive-plugin-picker-{width}-{font}"));
+    }
+    assert!(h.sent.borrow().is_empty());
 }

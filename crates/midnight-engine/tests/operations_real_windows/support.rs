@@ -133,7 +133,7 @@ pub fn populate(directory: &Path) -> (u64, u64) {
 }
 
 pub struct Harness {
-    pub commands: mpsc::Sender<Command>,
+    pub commands: midnight_engine::CommandSender,
     pub terminal_order: Vec<u64>,
     events: mpsc::Receiver<Event>,
     task: Option<JoinHandle<()>>,
@@ -143,15 +143,16 @@ pub struct Harness {
 impl Harness {
     pub fn new() -> Self {
         let provider = Arc::new(LocalFileSystem::new(None));
-        let (commands, receiver) = mpsc::channel(128);
+
         let (sender, events) = mpsc::channel(512);
         let mut engine = Engine::new(
             Engine::lifetime().expect("engine cleanup worker"),
             provider.clone(),
             sender,
         );
+        let (commands, receiver) = engine.command_channel(128).unwrap();
         engine
-            .configure_transfers()
+            .configure_audited_transfers()
             .unwrap()
             .install(provider.clone());
         engine.configure_mutations().unwrap().install(provider);
@@ -172,8 +173,28 @@ impl Harness {
         verification: TransferVerification,
         moving: bool,
     ) {
+        self.enqueue_with_policy(
+            id,
+            sources,
+            destination,
+            verification,
+            moving,
+            midnight_core::TransferStartPolicy::Immediate,
+        )
+        .await;
+    }
+
+    pub async fn enqueue_with_policy(
+        &self,
+        id: u64,
+        sources: &[PathBuf],
+        destination: &Path,
+        verification: TransferVerification,
+        moving: bool,
+        start_policy: midnight_core::TransferStartPolicy,
+    ) {
         let request = CopyRequest {
-            start_policy: midnight_core::TransferStartPolicy::Immediate,
+            start_policy,
             verification,
             id: OperationId(id),
             clipboard: FileClipboard {
@@ -238,6 +259,17 @@ impl Harness {
                         "expected conflict: {progress:?}"
                     );
                 }
+                _ => {}
+            }
+        }
+    }
+
+    pub async fn next_conflict(&mut self) -> Arc<CopyConflict> {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(120);
+        loop {
+            match self.next(deadline).await {
+                CopyEvent::Conflict(conflict) => return conflict,
+                CopyEvent::Failure(error) => panic!("unexpected operation failure: {error:?}"),
                 _ => {}
             }
         }

@@ -20,8 +20,41 @@ pub(super) struct Directory {
     file: Arc<File>,
     path: PathBuf,
     identity: TransferIdentity,
+    namespace: Arc<namespace::Bindings>,
 }
 impl Directory {
+    pub(in crate::transfer) fn namespace_reserve_file(
+        &self,
+        name: &OsStr,
+        change: &mut namespace::Change<'_>,
+        cancel: &Cancellation,
+    ) -> Result<(), FsError> {
+        if let Some(transaction) = change.as_mut() {
+            let pin = self
+                .namespace
+                .private_file_pin(&self.file, &self.path, name, cancel)?;
+            if !transaction.reserve_private_child(Some(pin), cancel)? {
+                return Err(error(
+                    &self.path.join(name),
+                    io::ErrorKind::WouldBlock.into(),
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    pub(in crate::transfer) fn namespace_announce(
+        &self,
+        name: &OsStr,
+        change: &mut namespace::Change<'_>,
+        cancel: &Cancellation,
+    ) -> Result<(), FsError> {
+        self.namespace
+            .announce(&self.file, &self.path, name, change, cancel)
+    }
+    pub(in crate::transfer) fn namespace_changed(&self, name: &OsStr) {
+        self.namespace.changed(&self.file, &self.path, name);
+    }
     pub(super) fn check_recovery_parent(&self, cancel: &Cancellation) -> Result<(), FsError> {
         self.revalidate(cancel)?;
         let parent = self.file.metadata().map_err(|e| error(&self.path, e))?;
@@ -40,14 +73,28 @@ impl Directory {
         if !file.metadata().map_err(|e| error(&path, e))?.is_dir() {
             return Err(invalid(&path, "destination is not a directory"));
         }
+        let file = Arc::new(file);
+        let namespace = namespace::Bindings::for_parent(&file, &path)?;
         Ok(Self {
             identity: identity(&file, &path)?,
-            file: Arc::new(file),
+            file,
             path,
+            namespace,
         })
     }
 }
 impl TransferDirectory for Directory {
+    fn native_child_namespace_scope(
+        &self,
+        name: &OsStr,
+        kind: EntryKind,
+        cancel: &Cancellation,
+    ) -> Result<Option<Arc<dyn midnight_core::TransferNamespacePin>>, FsError> {
+        self.revalidate(cancel)?;
+        self.namespace
+            .pin(&self.file, &self.path, name, kind, false, cancel)
+            .map(|pin| Some(pin as Arc<dyn midnight_core::TransferNamespacePin>))
+    }
     fn open_read_child(
         &self,
         name: &OsStr,
@@ -178,35 +225,9 @@ impl TransferDirectory for Directory {
         name: &OsStr,
         cancel: &Cancellation,
     ) -> Result<Arc<dyn TransferDirectory>, FsError> {
-        self.revalidate(cancel)?;
-        validate_name(name, &self.path)?;
-        // mkdirat does not return an inode handle. Until openat2 completes, protect
-        // the new name against a different unprivileged UID replacing it. A sticky
-        // directory is safe only when its owner is us or trusted root. Same-UID and
-        // privileged namespace mutation remain outside this provider's contract.
-        self.check_recovery_parent(cancel)?;
-        let owner = rustix::process::geteuid().as_raw();
-        let path = self.path.join(name);
-        mkdirat(&*self.file, name, Mode::RWXU).map_err(|e| error(&path, e.into()))?;
-        let file = File::from(
-            openat2(
-                &*self.file,
-                name,
-                DIRECTORY | OFlags::NOFOLLOW,
-                Mode::empty(),
-                RESOLVE,
-            )
-            .map_err(|e| error(&path, e.into()))?,
-        );
-        let created = file.metadata().map_err(|e| error(&path, e))?;
-        if created.uid() != owner || created.mode() & 0o077 != 0 {
-            return Err(unsupported(
-                &path,
-                "The newly created copy directory is not private and owned; it was left untouched.",
-            ));
-        }
-        Self::from_file(file, path)
-            .map(|directory| Arc::new(directory) as Arc<dyn TransferDirectory>)
+        namespace::change(cancel, |mut change| {
+            self.create_directory_in(name, cancel, &mut change)
+        })
     }
     fn stage_file(&self, cancel: &Cancellation) -> Result<Box<dyn StagedTransferFile>, FsError> {
         self.make_stage(false, cancel)
@@ -398,6 +419,64 @@ impl StagedTransferFile for Stage {
         name: &OsStr,
         cancel: &Cancellation,
     ) -> Result<TransferPublication, FsError> {
+        namespace::change(cancel, |mut change| {
+            self.publish_no_replace_in(name, cancel, &mut change)
+        })
+    }
+    fn cleanup(&mut self) -> Result<(), FsError> {
+        self.file.take();
+        Ok(())
+    }
+}
+
+impl Directory {
+    pub(super) fn create_directory_in(
+        &self,
+        name: &OsStr,
+        cancel: &Cancellation,
+        change: &mut namespace::Change<'_>,
+    ) -> Result<Arc<dyn TransferDirectory>, FsError> {
+        self.revalidate(cancel)?;
+        validate_name(name, &self.path)?;
+        // mkdirat does not return an inode handle. Until openat2 completes, protect
+        // the new name against a different unprivileged UID replacing it. A sticky
+        // directory is safe only when its owner is us or trusted root. Same-UID and
+        // privileged namespace mutation remain outside this provider's contract.
+        self.check_recovery_parent(cancel)?;
+        let owner = rustix::process::geteuid().as_raw();
+        let path = self.path.join(name);
+        self.namespace_announce(name, change, cancel)?;
+        mkdirat(&*self.file, name, Mode::RWXU).map_err(|e| error(&path, e.into()))?;
+        self.namespace_changed(name);
+        let file = File::from(
+            openat2(
+                &*self.file,
+                name,
+                DIRECTORY | OFlags::NOFOLLOW,
+                Mode::empty(),
+                RESOLVE,
+            )
+            .map_err(|e| error(&path, e.into()))?,
+        );
+        let created = file.metadata().map_err(|e| error(&path, e))?;
+        if created.uid() != owner || created.mode() & 0o077 != 0 {
+            return Err(unsupported(
+                &path,
+                "The newly created copy directory is not private and owned; it was left untouched.",
+            ));
+        }
+        Self::from_file(file, path)
+            .map(|directory| Arc::new(directory) as Arc<dyn TransferDirectory>)
+    }
+}
+
+impl Stage {
+    fn publish_no_replace_in(
+        &mut self,
+        name: &OsStr,
+        cancel: &Cancellation,
+        change: &mut namespace::Change<'_>,
+    ) -> Result<TransferPublication, FsError> {
         if self.published {
             return Err(invalid(&self.directory.path, "stage was already published"));
         }
@@ -409,6 +488,9 @@ impl StagedTransferFile for Stage {
         // symlink. This documented O_TMPFILE publication form works without CAP_DAC_READ_SEARCH.
         let descriptor = format!("/proc/self/fd/{}", file.as_raw_fd());
         checked(cancel, &path)?;
+        self.directory
+            .namespace_reserve_file(name, change, cancel)?;
+        self.directory.namespace_announce(name, change, cancel)?;
         linkat(
             CWD,
             descriptor.as_str(),
@@ -419,6 +501,7 @@ impl StagedTransferFile for Stage {
         .map_err(|e| error(&path, e.into()))?;
         self.published = true;
         self.published_name = Some(name.to_owned());
+        self.directory.namespace_changed(name);
         match self.directory.file.sync_all() {
             Ok(()) => Ok(TransferPublication::Published(path)),
             Err(failure) => Ok(TransferPublication::PublishedDurabilityUnconfirmed {
@@ -426,9 +509,5 @@ impl StagedTransferFile for Stage {
                 path,
             }),
         }
-    }
-    fn cleanup(&mut self) -> Result<(), FsError> {
-        self.file.take();
-        Ok(())
     }
 }

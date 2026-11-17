@@ -105,13 +105,14 @@ async fn listing_uses_locale_on_a_worker_and_resort_reuses_keys_without_native_c
     let provider = Arc::new(Fixture::default());
     let locale = Arc::new(Locale::default());
     let caller = std::thread::current().id();
-    let (commands, receiver) = mpsc::channel(8);
+
     let (sender, mut events) = mpsc::channel(32);
     let mut engine = Engine::new(
         Engine::lifetime().expect("engine cleanup worker"),
         provider.clone(),
         sender,
     );
+    let (commands, receiver) = engine.command_channel(8).unwrap();
     engine.configure_locale().unwrap().install(locale.clone());
     let engine = tokio::spawn(engine.run(receiver));
     commands
@@ -167,13 +168,13 @@ async fn listing_uses_locale_on_a_worker_and_resort_reuses_keys_without_native_c
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn real_collation_errors_report_listing_failure_without_publishing_wrong_order() {
-    let (commands, receiver) = mpsc::channel(8);
     let (sender, mut events) = mpsc::channel(32);
     let mut engine = Engine::new(
         Engine::lifetime().expect("engine cleanup worker"),
         Arc::new(Fixture::default()),
         sender,
     );
+    let (commands, receiver) = engine.command_channel(8).unwrap();
     engine.configure_locale().unwrap().install(Arc::new(Locale {
         fail: true,
         ..Default::default()

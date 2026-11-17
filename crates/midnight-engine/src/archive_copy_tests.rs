@@ -8,6 +8,12 @@ struct MemoryMount {
     changed: AtomicBool,
 }
 impl ArchiveMount for MemoryMount {
+    fn release_on_worker(self: Arc<Self>) -> Result<(), FsError> {
+        if let Some(owner) = Arc::into_inner(self) {
+            drop(owner);
+        }
+        Ok(())
+    }
     fn id(&self) -> u64 {
         77
     }
@@ -332,13 +338,25 @@ async fn archive_copy_shares_admission_capacity_and_cancellation() {
         io::ErrorKind::WouldBlock
     );
     drop(reservations);
-    let gate = h.mutation.clone().acquire_owned().await.unwrap();
+    h.wait_capacity(MAX_JOBS).await;
+    let gate = h
+        .mutation
+        .clone()
+        .acquire_many_owned(crate::transfer_leases::NAMESPACE_WEIGHT)
+        .await
+        .unwrap();
     let mut request = input(archive, temp.path());
     request.id = OperationId(2);
-    h.controller.enqueue_archive(request).await;
+    let ready = h.reserve_ready().await;
+    h.enqueue_reserved_input(request.into(), ready).await;
     h.controller.cancel(OperationId(2));
     drop(gate);
-    assert_eq!(h.terminal(2).await.state, CopyOperationState::Cancelled);
+    let cancelled = h.terminal(2).await;
+    assert_eq!(
+        cancelled.state,
+        CopyOperationState::Cancelled,
+        "{cancelled:?}"
+    );
     assert_eq!(fs::read_dir(temp.path()).unwrap().count(), 0);
     h.close().await;
 }
@@ -349,6 +367,12 @@ struct ReidentifiedMount {
     identity: u64,
 }
 impl ArchiveMount for ReidentifiedMount {
+    fn release_on_worker(self: Arc<Self>) -> Result<(), FsError> {
+        if let Some(owner) = Arc::into_inner(self) {
+            return owner.inner.release_on_worker();
+        }
+        Ok(())
+    }
     fn id(&self) -> u64 {
         self.identity
     }

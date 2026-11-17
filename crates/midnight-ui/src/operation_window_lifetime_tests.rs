@@ -63,6 +63,7 @@ impl Harness {
             main: main.as_weak(),
             state: Rc::downgrade(&state),
             send: send.clone(),
+            begin_owned: Rc::new(|| None),
             windows: RefCell::new(Windows::default()),
             failures: Failures::new(&main, &state, &send, &closing, "fixture", cancel_prepared),
             closing,
@@ -113,6 +114,67 @@ impl Harness {
         self.clock.set(Duration::from_millis(millis));
         slint::platform::update_timers_and_animations();
     }
+}
+
+#[test]
+fn embedded_copy_busy_factory_preserves_draft_and_dismisses_in_place() {
+    std::thread::spawn(|| {
+        let h = Harness::new();
+        let path = std::env::temp_dir().join("owned-copy-window");
+        let token = {
+            let mut p = h.state.borrow_mut();
+            p.start_copy(
+                midnight_core::FileClipboard {
+                    paths: vec![path.join("source.txt")],
+                    intent: midnight_core::FileClipboardIntent::Move,
+                },
+                path.clone(),
+                &|_| panic!("opening a Move draft must not enqueue it"),
+            );
+            p.require_owned_command_scope();
+            p.copies.draft.as_ref().unwrap().token.clone()
+        };
+        crate::refresh(&h.main, &h.state.borrow());
+        let record = h.ctx.windows.borrow().record.as_ref().unwrap().clone();
+        for _ in 0..64 {
+            confirm(
+                &h.ctx,
+                record.session,
+                path.to_string_lossy().as_ref().into(),
+            );
+        }
+        {
+            let p = h.state.borrow();
+            assert!(!p.has_live_operations());
+            assert!(p.copies.progress.is_empty());
+            let draft = p.copies.draft.as_ref().unwrap();
+            assert_eq!(draft.token, token);
+            assert!(!draft.retire_requested);
+            assert!(!draft.error.is_empty());
+        }
+        assert!(h.commands.borrow().is_empty());
+        assert!(record.key.current(&h.state.borrow()));
+        dismiss(&h.ctx, record.session);
+        {
+            let p = h.state.borrow();
+            let draft = p.copies.draft.as_ref().unwrap();
+            assert_eq!(draft.token, token);
+            assert!(draft.retire_requested);
+            assert!(!record.key.current(&p));
+        }
+        assert!(h.ctx.windows.borrow().record.is_none());
+        assert!(!h.main.global::<OperationPresentation>().get_active());
+        crate::refresh(&h.main, &h.state.borrow());
+        assert!(
+            h.ctx.windows.borrow().record.is_none(),
+            "hidden draft reopened"
+        );
+        h.state.borrow_mut().retire_all();
+        drop(h.state.borrow_mut().take_retired());
+        h.main.hide().unwrap();
+    })
+    .join()
+    .unwrap();
 }
 #[test]
 fn embedded_operation_old_occurrence_cannot_confirm_or_cancel_replacement() {

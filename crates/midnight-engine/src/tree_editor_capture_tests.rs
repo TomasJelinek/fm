@@ -207,6 +207,8 @@ fn tree_editor_capture_cancellation_navigation_and_provider_revocation_reject_re
                 let registration = &f.session.registration;
                 registration
                     .registry
+                    .as_ref()
+                    .expect("live fixture registration owns its provider registry")
                     .unregister(&registration.provider, registration.instance)
                     .unwrap();
             }

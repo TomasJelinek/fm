@@ -107,14 +107,14 @@ pub(crate) fn install(
     window: &MainWindow,
     presenter: Rc<RefCell<Presenter>>,
     filesystem: std::sync::Arc<midnight_native_filesystem_host::InstalledProvider>,
-    commands: tokio::sync::mpsc::Sender<Command>,
+    send: Rc<dyn Fn(Command) -> bool>,
 ) -> Controller {
     install_service(
         window,
         presenter,
         Rc::new(Service::installed()),
         content::Factory::installed(filesystem),
-        Rc::new(move |command| commands.try_send(command).is_ok()),
+        send,
     )
 }
 

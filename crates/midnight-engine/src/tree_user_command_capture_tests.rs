@@ -207,6 +207,8 @@ async fn tree_user_command_capture_retains_provider_after_navigation_and_rejects
             let registration = &f.session.registration;
             registration
                 .registry
+                .as_ref()
+                .expect("live fixture registration owns its provider registry")
                 .unregister(&registration.provider, registration.instance)
                 .unwrap();
             assert!(sources.revalidate(&Cancellation::default()).is_err());

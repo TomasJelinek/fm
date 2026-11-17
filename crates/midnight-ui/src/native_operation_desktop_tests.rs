@@ -89,7 +89,7 @@ fn embedded_operation_keeps_main_enabled_and_native_close_cancels_without_mutati
     let observed = sent.clone();
     let unexpected_mutation = Rc::new(Cell::new(false));
     let unexpected = unexpected_mutation.clone();
-    crate::install(
+    let begin = crate::owned_command_test_support::install(
         &main,
         state.clone(),
         Rc::new(move |command| {
@@ -203,7 +203,9 @@ fn embedded_operation_keeps_main_enabled_and_native_close_cancels_without_mutati
                     if !main.window().is_visible() {
                         return Err("Native close hid the application while dismissing a dialog".into());
                     }
-                    state.borrow_mut().request_copy_dialog(PaneId::Left, &|_| false);
+                    crate::owned_command_test_support::run(&state, &begin, |state, _| {
+                        state.request_copy_dialog(PaneId::Left, &|_| false);
+                    });
                     if state.borrow().copies.draft.is_none() { return Err("Copy draft was not captured".into()) }
                     crate::refresh(&main, &state.borrow());
                     phase = 3;

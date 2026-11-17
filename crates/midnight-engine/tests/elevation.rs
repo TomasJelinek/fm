@@ -74,7 +74,7 @@ async fn next(events: &mut mpsc::Receiver<Event>) -> Event {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn only_explicit_receipt_retries_captured_path_once_and_preserves_complete_metadata() {
     let path = std::env::current_dir().unwrap().join("denied-unicode-中文");
-    let (commands, receiver) = mpsc::channel(16);
+
     let (sender, mut events) = mpsc::channel(32);
     let service = Arc::new(Authorized::default());
     let mut engine = Engine::new(
@@ -82,6 +82,7 @@ async fn only_explicit_receipt_retries_captured_path_once_and_preserves_complete
         Arc::new(Denied::default()),
         sender,
     );
+    let (commands, receiver) = engine.command_channel(16).unwrap();
     engine
         .configure_elevated_directories()
         .unwrap()
@@ -149,7 +150,7 @@ async fn only_explicit_receipt_retries_captured_path_once_and_preserves_complete
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn background_refresh_denial_never_offers_authorization() {
     let path = std::env::current_dir().unwrap().join("denied");
-    let (commands, receiver) = mpsc::channel(16);
+
     let (sender, mut events) = mpsc::channel(32);
     let service = Arc::new(Authorized::default());
     let mut engine = Engine::new(
@@ -157,6 +158,7 @@ async fn background_refresh_denial_never_offers_authorization() {
         Arc::new(Denied::default()),
         sender,
     );
+    let (commands, receiver) = engine.command_channel(16).unwrap();
     engine
         .configure_elevated_directories()
         .unwrap()
@@ -222,7 +224,7 @@ impl NavigationFallbackService for Fallback {
 
 async fn assert_failed_authorization_retry(kind: io::ErrorKind) {
     let path = std::env::current_dir().unwrap().join("denied-unicode-中文");
-    let (commands, receiver) = mpsc::channel(16);
+
     let (sender, mut events) = mpsc::channel(32);
     let filesystem = Arc::new(Denied::default());
     let service = Arc::new(FailedAuthorization {
@@ -238,6 +240,7 @@ async fn assert_failed_authorization_retry(kind: io::ErrorKind) {
         filesystem.clone(),
         sender,
     );
+    let (commands, receiver) = engine.command_channel(16).unwrap();
     engine
         .configure_elevated_directories()
         .unwrap()

@@ -59,6 +59,7 @@ struct Harness {
     display: Rc<Display>,
     accepting: Rc<Cell<bool>>,
     cancelled: Rc<RefCell<Vec<OperationId>>>,
+    begin: BeginOwned,
 }
 impl Harness {
     fn new() -> Self {
@@ -70,7 +71,7 @@ impl Harness {
         let state = Rc::new(RefCell::new(Presenter::new(root.clone(), root)));
         let accepting = Rc::new(Cell::new(false));
         let cancelled = Rc::new(RefCell::new(Vec::new()));
-        install(
+        let begin = crate::owned_command_test_support::install(
             &main,
             state.clone(),
             Rc::new({
@@ -95,6 +96,7 @@ impl Harness {
             display,
             accepting,
             cancelled,
+            begin,
         }
     }
     fn preview(&self, id: u64) {
@@ -192,14 +194,16 @@ fn embedded_operation_retired_cancel_retry_cannot_cancel_replacement_preview() {
 fn embedded_copy_cancellation_defers_while_presenter_is_borrowed() {
     std::thread::spawn(|| {
         let h = Harness::new();
-        h.state.borrow_mut().start_copy(
-            FileClipboard {
-                paths: vec![std::env::temp_dir().join("native-operation-failure/source.txt")],
-                intent: FileClipboardIntent::Move,
-            },
-            std::env::temp_dir(),
-            &|_| panic!("opening a captured Move draft never submits a transfer"),
-        );
+        crate::owned_command_test_support::run(&h.state, &h.begin, |state, _| {
+            state.start_copy(
+                FileClipboard {
+                    paths: vec![std::env::temp_dir().join("native-operation-failure/source.txt")],
+                    intent: FileClipboardIntent::Move,
+                },
+                std::env::temp_dir(),
+                &|_| panic!("opening a captured Move draft never submits a transfer"),
+            )
+        });
         let token = h
             .state
             .borrow()

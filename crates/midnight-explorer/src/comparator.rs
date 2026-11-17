@@ -1,5 +1,5 @@
 use midnight_compare_ui::{ComparatorWindows, WindowPlacement};
-use midnight_core::{PaneId, ViewerAppearance};
+use midnight_core::{Command, PaneId, ViewerAppearance};
 use midnight_ui::{MainWindow, Presenter, Theme};
 use slint::ComponentHandle;
 use std::{cell::RefCell, rc::Rc, sync::Arc};
@@ -7,7 +7,7 @@ use std::{cell::RefCell, rc::Rc, sync::Arc};
 pub(crate) fn install(
     window: &MainWindow,
     presenter: Rc<RefCell<Presenter>>,
-    commands: tokio::sync::mpsc::Sender<midnight_core::Command>,
+    commands: Rc<dyn Fn(Command) -> bool>,
     runtime: &tokio::runtime::Handle,
     picker: Arc<dyn midnight_core::PathPickerService>,
     filesystem: Arc<midnight_native_filesystem_host::InstalledProvider>,
@@ -20,7 +20,7 @@ pub(crate) fn install(
     windows.set_font_listener(Rc::new(move |family| {
         settings.borrow_mut().save_viewer_preferences(
             midnight_core::ViewerPreferenceChange::ComparisonFont(family),
-            &|command| commands.try_send(command).is_ok(),
+            commands.as_ref(),
         );
     }));
     let manager = windows.clone();

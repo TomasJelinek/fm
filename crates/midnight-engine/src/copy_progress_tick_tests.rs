@@ -15,17 +15,17 @@ fn running() -> Status {
     Arc::new(Mutex::new(progress))
 }
 
-fn outbox() -> (Outbox, mpsc::Receiver<Event>, Arc<AtomicUsize>) {
+fn outbox() -> (CopyOutbox, mpsc::Receiver<Event>, Arc<AtomicUsize>) {
     let (sender, receiver) = mpsc::channel(1);
     let wakes = Arc::new(AtomicUsize::new(0));
     let notify = wakes.clone();
     (
-        Outbox {
+        CopyOutbox::unblocked(Outbox {
             sender,
             wakeup: Arc::new(move || {
                 notify.fetch_add(1, Ordering::Relaxed);
             }),
-        },
+        }),
         receiver,
         wakes,
     )
@@ -62,7 +62,7 @@ fn worker_presampled_ticks_still_publish_fresh_bytes_elapsed_and_wakeup() {
         }
         // The worker already produced this interval's sample. The periodic
         // sampler therefore has no new rate observation of its own to publish.
-        publish_progress_snapshot(&outbox, &status, None);
+        publish_progress_tick(&outbox, &status, None);
         let progress = receive(&mut receiver);
         assert_eq!(progress.copied_bytes, copied);
         assert_eq!(progress.current_file_copied, copied);
@@ -94,10 +94,10 @@ fn full_outbox_does_not_block_and_next_tick_retries_latest_status() {
         progress.copied_bytes = 262_144;
         progress.current_file_copied = 262_144;
     }
-    publish_progress_snapshot(&outbox, &status, Some(snapshot(&status)));
+    publish_progress_tick(&outbox, &status, Some(snapshot(&status)));
     assert_eq!(wakes.load(Ordering::Relaxed), 0);
     assert_eq!(receive(&mut receiver).copied_bytes, 0);
-    publish_progress_snapshot(&outbox, &status, None);
+    publish_progress_tick(&outbox, &status, None);
     assert_eq!(receive(&mut receiver).copied_bytes, 262_144);
     assert_eq!(wakes.load(Ordering::Relaxed), 1);
 }
@@ -107,7 +107,7 @@ fn closed_outbox_does_not_wake_or_block_the_copy_worker() {
     let status = running();
     let (outbox, receiver, wakes) = outbox();
     drop(receiver);
-    publish_progress_snapshot(&outbox, &status, Some(snapshot(&status)));
-    publish_progress_snapshot(&outbox, &status, None);
+    publish_progress_tick(&outbox, &status, Some(snapshot(&status)));
+    publish_progress_tick(&outbox, &status, None);
     assert_eq!(wakes.load(Ordering::Relaxed), 0);
 }

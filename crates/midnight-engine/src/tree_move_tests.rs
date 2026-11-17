@@ -28,7 +28,8 @@ fn capture_paths(
         })
         .collect::<Vec<_>>()
         .into();
-    let native = NativeProvider::new(Arc::new(midnight_platform::LocalFileSystem::new(None)));
+    let native =
+        NativeProvider::for_audited_test(Arc::new(midnight_platform::LocalFileSystem::new(None)));
     let opened = native
         .capture_root(paths[0].parent().unwrap(), &entries, &cancel)
         .unwrap();

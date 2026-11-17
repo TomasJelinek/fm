@@ -86,6 +86,7 @@ fn prepare_native_child(
         name: name.to_owned(),
         parent,
         state: Mutex::new(State::default()),
+        _namespace_owner: super::namespace::owner(&[source.entry().identity]),
     });
     Ok((source, capture))
 }
@@ -103,6 +104,8 @@ struct Capture {
     name: OsString,
     parent: destination::Directory,
     state: Mutex<State>,
+    // Last: source File, consent guard, parent and retained recovery state close first.
+    _namespace_owner: super::namespace::NativeOwner,
 }
 impl TransferMoveCapture for Capture {
     fn try_native_move(
@@ -137,7 +140,11 @@ impl TransferMoveCapture for Capture {
         finalization::qualify_directory(&self.file, path)?;
         checked(cancel, path)?;
         // Exact held DELETE handle; the kernel refuses a nonempty directory.
-        native::remove(&self.file).map_err(|e| error(path, e))?;
+        super::namespace::change(cancel, |mutation| {
+            mutation
+                .remove(&self.file, cancel, || native::remove(&self.file))
+                .map_err(|e| error(path, e))
+        })?;
         Ok(midnight_core::TransferDirectoryRemoval {
             state: midnight_core::TransferSourceRemoval::DeletePending,
             durability_confirmed: false,
@@ -233,11 +240,24 @@ impl Capture {
         if let Some(outcome) = &state.outcome {
             return Ok(outcome.clone());
         }
+        super::namespace::change(cancel, |mutation| {
+            self.capture_with_in(&mut state, cancel, before_capture, after_capture, mutation)
+        })
+    }
+    fn capture_with_in(
+        &self,
+        state: &mut State,
+        cancel: &Cancellation,
+        before_capture: impl FnOnce(),
+        after_capture: impl FnOnce(),
+        mutation: &mut super::namespace::Mutation<'_>,
+    ) -> Result<TransferMoveCaptureOutcome, FsError> {
         self.revalidate(cancel)?;
         self.parent.check_recovery_parent(cancel)?;
-        let recovery = self.parent.source_stage(cancel)?;
+        mutation.prepare_file(&self.file, cancel)?;
+        let recovery = destination::recovery::source_stage_in(&self.parent, cancel, mutation)?;
         if let Err(mut failure) = self.revalidate(cancel) {
-            if let Err(cleanup) = recovery.remove_empty_stage() {
+            if let Err(cleanup) = recovery.remove_empty_stage_in(mutation) {
                 failure
                     .message
                     .push_str(&format!("; temporary directory cleanup failed: {cleanup}"));
@@ -245,10 +265,10 @@ impl Capture {
             return Err(failure);
         }
         before_capture();
-        let path = match recovery.capture_handle(&self.file, &self.name, cancel) {
+        let path = match recovery.capture_handle_in(&self.file, &self.name, cancel, mutation) {
             Ok(path) => path,
             Err(mut failure) => {
-                if let Err(cleanup) = recovery.remove_empty_stage() {
+                if let Err(cleanup) = recovery.remove_empty_stage_in(mutation) {
                     failure
                         .message
                         .push_str(&format!("; temporary directory cleanup failed: {cleanup}"));
@@ -274,7 +294,10 @@ impl Capture {
             Err(error) => Some(error),
         };
         let outcome = if let Some(error) = failure {
-            match self.parent.capture_handle(&self.file, &self.name, &cleanup) {
+            match self
+                .parent
+                .capture_handle_in(&self.file, &self.name, &cleanup, mutation)
+            {
                 Ok(_) => TransferMoveCaptureOutcome::Restored {
                     source: self.entry.item.path.clone(),
                     error,

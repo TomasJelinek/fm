@@ -39,12 +39,59 @@ pub struct NativeProvider {
     filesystem: Arc<dyn FileSystem>,
     capture: Option<NativeCapture>,
     locale: Option<Arc<dyn midnight_core::LocaleService>>,
+    audited: bool,
 }
 
 pub type NativeCapture =
     Arc<dyn Fn(&Path, &Cancellation) -> Result<CapturedFile, ProviderError> + Send + Sync>;
 
+fn release_native_fields(
+    filesystem: Arc<dyn FileSystem>,
+    capture: Option<NativeCapture>,
+    locale: Option<Arc<dyn midnight_core::LocaleService>>,
+    audited: bool,
+) -> Result<(), ProviderError> {
+    use crate::copy_nested_retirement::{self as nested, Retained};
+    let mut fields = Retained::new((filesystem, capture, locale));
+    if !audited || fields.get().1.is_some() {
+        return Err(nested::provider_error());
+    }
+    let (filesystem, capture, locale) = fields.take();
+    let mut tail = Retained::new((capture, locale));
+    if !nested::checked_step(|| drop(filesystem)) {
+        return Err(nested::provider_error());
+    }
+    if !nested::checked_step(|| drop(tail.take())) {
+        return Err(nested::provider_error());
+    }
+    Ok(())
+}
+
 impl NativeProvider {
+    #[cfg(test)]
+    pub(crate) fn for_audited_test<T>(service: Arc<T>) -> Self
+    where
+        T: FileSystem + midnight_core::AuditedSynchronousTransferService + 'static,
+    {
+        Self {
+            filesystem: service,
+            capture: None,
+            locale: None,
+            audited: true,
+        }
+    }
+
+    pub(crate) fn audited(
+        installed: midnight_native_filesystem_host::SharedInstalledProvider,
+        locale: Option<crate::transfer_composition::QualifiedLocaleInstallation>,
+    ) -> Self {
+        Self {
+            filesystem: installed.service(),
+            capture: None,
+            locale: locale.map(|installation| installation.service()),
+            audited: true,
+        }
+    }
     pub(crate) fn filesystem(&self) -> Arc<dyn FileSystem> {
         self.filesystem.clone()
     }
@@ -93,6 +140,7 @@ impl NativeProvider {
                 filesystem: self.filesystem.clone(),
                 capture: self.capture.clone(),
                 locale: self.locale.clone(),
+                audited: self.audited,
                 nodes: Mutex::new(nodes),
             }),
         };
@@ -109,16 +157,19 @@ impl NativeProvider {
             filesystem,
             capture: None,
             locale: None,
+            audited: false,
         }
     }
 
     /// Production injects the installed filesystem plugin's capture service.
     /// A browse-only adapter returns Unsupported for content, never native I/O.
     pub fn with_capture(mut self, capture: NativeCapture) -> Self {
+        self.audited = false;
         self.capture = Some(capture);
         self
     }
     pub fn with_locale(mut self, locale: Arc<dyn midnight_core::LocaleService>) -> Self {
+        self.audited = false;
         self.locale = Some(locale);
         self
     }
@@ -145,6 +196,14 @@ pub fn native_location(path: &Path) -> Result<StoredLocation, ProviderError> {
 }
 
 impl FilesystemProvider for NativeProvider {
+    fn release_on_worker(self: Arc<Self>) -> Result<(), ProviderError> {
+        crate::copy_nested_retirement::provider_step(|| {
+            let Some(owner) = Arc::into_inner(self) else {
+                return Ok(());
+            };
+            release_native_fields(owner.filesystem, owner.capture, owner.locale, owner.audited)
+        })
+    }
     fn resolve(
         &self,
         location: &StoredLocation,
@@ -170,6 +229,7 @@ impl FilesystemProvider for NativeProvider {
                 filesystem: self.filesystem.clone(),
                 capture: self.capture.clone(),
                 locale: self.locale.clone(),
+                audited: self.audited,
                 nodes: Mutex::new(nodes),
             }),
             root,
@@ -182,9 +242,18 @@ struct NativeMount {
     capture: Option<NativeCapture>,
     locale: Option<Arc<dyn midnight_core::LocaleService>>,
     nodes: Mutex<NativeNodes>,
+    audited: bool,
 }
 
 impl MountedFilesystem for NativeMount {
+    fn release_on_worker(self: Arc<Self>) -> Result<(), ProviderError> {
+        crate::copy_nested_retirement::provider_step(|| {
+            let Some(owner) = Arc::into_inner(self) else {
+                return Ok(());
+            };
+            release_native_fields(owner.filesystem, owner.capture, owner.locale, owner.audited)
+        })
+    }
     fn browse_directory_identity(
         &self,
         node: &NodeToken,
@@ -352,6 +421,23 @@ impl MountedFilesystem for NativeMount {
 #[derive(Debug)]
 struct NativeContent(CapturedFile);
 impl ContentSource for NativeContent {
+    fn cleanup_unconfirmed(&self) -> bool {
+        self.0.cleanup_unconfirmed()
+    }
+    fn release_on_worker(self: Arc<Self>) -> Result<(), midnight_plugin_host::Error> {
+        let mut reference = crate::copy_nested_retirement::Retained::new(self);
+        crate::copy_nested_retirement::content_step(|| {
+            if reference.get().cleanup_unconfirmed() {
+                return Err(midnight_plugin_host::Error(
+                    crate::copy_nested_retirement::unconfirmed().to_string(),
+                ));
+            }
+            let Some(owner) = Arc::into_inner(reference.take()) else {
+                return Ok(());
+            };
+            crate::copy_nested_retirement::release_captured_file(owner.0)
+        })
+    }
     fn length(&self) -> u64 {
         self.0.length()
     }
@@ -367,6 +453,11 @@ impl ContentSource for NativeContent {
     fn read_at(&self, offset: u64, length: u32) -> Result<Vec<u8>, midnight_plugin_host::Error> {
         self.0.read_at(offset, length)
     }
+}
+
+#[cfg(test)]
+pub(super) fn content_for_taint_test(source: CapturedFile) -> Arc<dyn ContentSource> {
+    Arc::new(NativeContent(source))
 }
 
 #[cfg(test)]

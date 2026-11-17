@@ -1,4 +1,5 @@
 use super::*;
+use crate::transfer_leases::{NAMESPACE_WEIGHT, namespace_gate};
 use midnight_core::*;
 use std::{
     path::{Path, PathBuf},
@@ -19,7 +20,7 @@ impl Gate {
         self.changed.notify_all();
     }
 }
-struct Files(Arc<Gate>);
+struct Files(Arc<Gate>, bool);
 impl DirectoryService for Files {
     fn read_directory(
         &self,
@@ -38,10 +39,18 @@ impl DirectoryService for Files {
             )
             .unwrap();
         assert!(!result.1.timed_out(), "fixture provider must be released");
+        // Keep the directory stable if maintenance runs before explicit Expand.
+        if self.1 && path.ends_with("retained.txt") {
+            return Ok(());
+        }
         emit(Entry::new(
             EntryId(1),
             path.join("retained.txt"),
-            EntryKind::File,
+            if self.1 {
+                EntryKind::Directory
+            } else {
+                EntryKind::File
+            },
         ));
         Ok(())
     }
@@ -80,10 +89,10 @@ fn fixture() -> Fixture {
 fn fixture_with_gate(hold_mutation: bool) -> (Fixture, Option<OwnedSemaphorePermit>) {
     let lane = Arc::new(Mailbox::default());
     let gate = Arc::new(Gate::default());
-    let mutation = Arc::new(Semaphore::new(1));
+    let mutation = namespace_gate();
     let held = hold_mutation.then(|| mutation.clone().try_acquire_owned().unwrap());
     let listing = Arc::new(Semaphore::new(1));
-    let native = NativeProvider::new(Arc::new(Files(gate.clone())));
+    let native = NativeProvider::new(Arc::new(Files(gate.clone(), hold_mutation)));
     let path: PathBuf = std::env::current_dir()
         .unwrap()
         .join("_build/worker-refresh-fixture");
@@ -179,7 +188,7 @@ fn fixture_with_gate(hold_mutation: bool) -> (Fixture, Option<OwnedSemaphorePerm
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn explicit_expand_completes_on_worker_while_maintenance_waits_for_copy_gate() {
+async fn copy_share_blocks_explicit_expand_and_maintenance_until_release() {
     let (mut fixture, held) = fixture_with_gate(true);
     assert!(!fixture.worker.inflight);
     fixture.receiver.try_recv().unwrap();
@@ -190,38 +199,14 @@ async fn explicit_expand_completes_on_worker_while_maintenance_waits_for_copy_ga
         action: TreeBranchAction::Expand,
     });
     fixture.worker.pump();
-    tokio::time::timeout(Duration::from_secs(2), fixture.gate.entered.notified())
-        .await
-        .unwrap();
+    assert!(!fixture.worker.inflight);
     assert!(!fixture.worker.maintenance_inflight);
-    fixture.gate.release();
-    let completion = tokio::time::timeout(Duration::from_secs(2), async {
-        loop {
-            if let Some(Input::Completion(completion)) = fixture.lane.pop() {
-                break completion;
-            }
-            fixture.lane.wake.notified().await;
-        }
-    })
-    .await
-    .unwrap();
-    let event = fixture.worker.complete(completion).unwrap();
-    let TreeEvent::Published(publication) = event else {
-        panic!("Expand must publish its completed listing");
-    };
-    assert_eq!(publication.view.rows[0].disclosure, TreeDisclosure::Empty);
-    let session = fixture.worker.session.as_mut().unwrap();
-    assert!(session.commit(&publication.view));
-    assert_eq!(
-        session.watch_scope().unwrap().unwrap().targets.len(),
-        2,
-        "confirmed empty directory retains its expansion intent and watch"
-    );
     assert_eq!(
         fixture.mutation.available_permits(),
-        0,
-        "Copy gate remains held through explicit Expand completion"
+        NAMESPACE_WEIGHT as usize - 1,
+        "one Copy share blocks both kinds of exclusive tree listing"
     );
+    assert!(fixture.lane.take_completion().is_none());
     assert!(
         fixture
             .worker
@@ -231,26 +216,68 @@ async fn explicit_expand_completes_on_worker_while_maintenance_waits_for_copy_ga
             .finish_refresh()
             .is_none()
     );
-    fixture.receiver.try_recv().unwrap();
     drop(held);
-    fixture.worker.pump();
-    assert!(fixture.worker.maintenance_inflight);
-    let completion = tokio::time::timeout(Duration::from_secs(2), async {
-        loop {
-            if let Some(Input::Completion(completion)) = fixture.lane.pop() {
-                break completion;
-            }
-            fixture.lane.wake.notified().await;
+    // This case checks admission, not outbox saturation. Drain normal output
+    // while both queued listings complete; the following cases retain full queues.
+    let mut receiver = fixture.receiver;
+    let output = tokio::spawn(async move {
+        let mut events = Vec::new();
+        while let Some(event) = receiver.recv().await {
+            events.push(event);
         }
-    })
-    .await
-    .unwrap();
-    fixture.worker.complete(completion);
+        events
+    });
+    let mut maintenance = false;
+    let mut explicit = false;
+    for _ in 0..2 {
+        fixture.worker.pump();
+        assert!(fixture.worker.inflight);
+        let is_maintenance = fixture.worker.maintenance_inflight;
+        maintenance |= is_maintenance;
+        explicit |= !is_maintenance;
+        tokio::time::timeout(Duration::from_secs(2), fixture.gate.entered.notified())
+            .await
+            .unwrap();
+        assert_eq!(fixture.mutation.available_permits(), 0);
+        fixture.gate.release();
+        let completion = tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if let Some(Input::Completion(completion)) = fixture.lane.pop() {
+                    break completion;
+                }
+                fixture.lane.wake.notified().await;
+            }
+        })
+        .await
+        .unwrap();
+        let event = fixture.worker.complete(completion).unwrap();
+        let TreeEvent::Published(publication) = event else {
+            panic!("completed listing must publish");
+        };
+        let session = fixture.worker.session.as_mut().unwrap();
+        assert!(session.commit(&publication.view));
+        if !is_maintenance {
+            assert_eq!(publication.view.rows[0].disclosure, TreeDisclosure::Empty);
+            assert_eq!(
+                session.watch_scope().unwrap().unwrap().targets.len(),
+                2,
+                "confirmed empty directory retains its expansion intent and watch"
+            );
+        }
+    }
+    assert!(maintenance && explicit);
     fixture.worker.pump();
-    assert!(
-        matches!(fixture.receiver.try_recv().unwrap(), Event::Tree(event) if matches!(*event, TreeEvent::Refreshed { result: Ok(()), .. }))
+    assert_eq!(
+        fixture.mutation.available_permits(),
+        NAMESPACE_WEIGHT as usize
     );
-    assert_eq!(fixture.mutation.available_permits(), 1);
+    drop(fixture.worker);
+    let events = tokio::time::timeout(Duration::from_secs(2), output)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(events.iter().any(|event| matches!(event, Event::Tree(event)
+            if matches!(event.as_ref(), TreeEvent::Refreshed { result: Ok(()), .. }))));
 }
 
 fn selection(view: Arc<TreeProjection>) -> TreeCommand {
@@ -301,8 +328,11 @@ async fn full_outbox_still_applies_maintenance_and_releases_gate_before_selectio
         worker
     });
     gate.release();
-    let released =
-        tokio::time::timeout(Duration::from_secs(1), mutation.clone().acquire_owned()).await;
+    let released = tokio::time::timeout(
+        Duration::from_secs(1),
+        mutation.clone().acquire_many_owned(NAMESPACE_WEIGHT),
+    )
+    .await;
     let released_before_drain = released.is_ok();
     drop(released);
     // Drain even on RED so no test worker or permit survives the assertion.
@@ -376,7 +406,12 @@ async fn reset_unblocks_full_output_but_running_provider_keeps_gate_until_return
         .await
         .unwrap()
         .unwrap();
-    assert!(mutation.clone().try_acquire_owned().is_err());
+    assert!(
+        mutation
+            .clone()
+            .try_acquire_many_owned(NAMESPACE_WEIGHT)
+            .is_err()
+    );
     worker.handle(lane.pop().unwrap());
     assert!(worker.session.is_none());
     gate.release();
@@ -391,7 +426,7 @@ async fn reset_unblocks_full_output_but_running_provider_keeps_gate_until_return
     })
     .await
     .unwrap();
-    assert_eq!(mutation.available_permits(), 1);
+    assert_eq!(mutation.available_permits(), NAMESPACE_WEIGHT as usize);
     assert!(worker.session.is_none());
     drop(receiver);
 }

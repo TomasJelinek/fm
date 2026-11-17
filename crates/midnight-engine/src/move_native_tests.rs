@@ -1,5 +1,6 @@
 //! The real queue must choose native namespace moves before any content authority.
 use super::*;
+use crate::transfer_leases::NAMESPACE_WEIGHT;
 use std::ffi::OsStr;
 
 #[derive(Clone, Copy)]
@@ -50,6 +51,8 @@ fn unsupported(path: &Path) -> FsError {
     )
 }
 struct Service(Arc<Counts>);
+// This finite fixture graph owns only synchronous in-memory state and bounded holds.
+impl midnight_core::AuditedSynchronousTransferService for Service {}
 impl TransferService for Service {
     fn prepare_transfer_source(
         &self,
@@ -482,9 +485,18 @@ async fn stalled_native_move_keeps_capacity_and_reports_late_commit_after_cancel
     };
     assert_eq!(waiting.throughput.items_per_second, 0.0);
     assert_eq!(harness.io.available_permits(), 0);
-    assert_eq!(harness.mutation.available_permits(), 0);
+    assert_eq!(
+        harness.mutation.available_permits(),
+        NAMESPACE_WEIGHT as usize - 1
+    );
     counts.released.store(true, Ordering::Release);
     let done = harness.terminal(1).await;
+    harness.wait_capacity(NAMESPACE_WEIGHT as usize).await;
+    assert_eq!(harness.io.available_permits(), 1);
+    assert_eq!(
+        harness.mutation.available_permits(),
+        NAMESPACE_WEIGHT as usize
+    );
     harness.close().await;
     assert_eq!(done.state, CopyOperationState::Cancelled, "{done:?}");
     assert_eq!(done.native_entries_moved, 1);

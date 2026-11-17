@@ -223,7 +223,7 @@ pub(super) fn folder(
 }
 
 pub(super) fn execute(
-    work: Work,
+    mut work: Work,
     state: &SharedState,
     snapshots: &Snapshots,
     events: &mpsc::Sender<DragDropEvent>,
@@ -268,25 +268,30 @@ pub(super) fn execute(
         )?;
         let files = (*work.files).clone();
         files.validate()?;
+        let mut staged = work.host.sink.capacity.stage_drop()?;
         let retention = (work.captured.is_some() || work.target.is_some()).then(|| {
+            let completions = Arc::new(
+                work.files
+                    .paths
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(index, path)| {
+                        Some((
+                            path.clone(),
+                            work.captured.as_ref()?.tree_copy_occurrence(index)?,
+                        ))
+                    })
+                    .collect(),
+            );
             Arc::new(Retention {
-                _source: work.captured.clone(),
-                _target: work.target.clone(),
-                completions: Arc::new(
-                    work.files
-                        .paths
-                        .iter()
-                        .enumerate()
-                        .filter_map(|(index, path)| {
-                            Some((
-                                path.clone(),
-                                work.captured.as_ref()?.tree_copy_occurrence(index)?,
-                            ))
-                        })
-                        .collect(),
-                ),
+                _source: work.captured.take(),
+                _target: work.target.take(),
+                completions,
             })
         });
+        if let Some(retention) = retention {
+            staged.retain_registration(retention);
+        }
         let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
         if work.cancel.is_cancelled()
             || state
@@ -306,7 +311,7 @@ pub(super) fn execute(
         let snapshots = snapshots.lock().unwrap_or_else(|e| e.into_inner());
         current_source(&snapshots[work.source_pane.index()], work.source_navigation)?;
         current_source(&snapshots[pane.index()], navigation)?;
-        let permit = work.host.sink.capacity.reserve()?;
+        let permit = staged.publish()?;
         let token = DropToken(
             work.host
                 .sink
@@ -341,7 +346,6 @@ pub(super) fn execute(
                 intent,
                 verification: Some(work.request.verification),
                 permit,
-                retention,
             },
         );
         if events.try_send(event).is_err() {
@@ -387,6 +391,10 @@ pub(super) fn execute(
     };
     send_worker_event(events, event, shutdown);
 }
+
+#[cfg(test)]
+#[path = "drag_drop_retirement_tests.rs"]
+mod retirement_tests;
 
 pub(super) fn resolve_intent(
     intent: InternalDropIntent,

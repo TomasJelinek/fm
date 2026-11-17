@@ -249,13 +249,14 @@ async fn cancelled_native_listing_keeps_worker_admission_until_the_native_call_r
 #[tokio::test(flavor = "current_thread")]
 async fn stale_public_archive_command_retires_raw_native_input_before_controller_admission() {
     let mut fixture = Fixture::new(false);
-    let (commands, input) = tokio::sync::mpsc::channel(4);
+
     let (sender, _events) = tokio::sync::mpsc::channel(256);
-    let engine = crate::Engine::new(
+    let mut engine = crate::Engine::new(
         crate::Engine::lifetime().unwrap(),
         Arc::new(midnight_platform::LocalFileSystem::new(None)),
         sender,
     );
+    let (commands, input) = engine.command_channel(4).unwrap();
     let task = tokio::spawn(engine.run(input));
     commands
         .send(Command::Navigate {

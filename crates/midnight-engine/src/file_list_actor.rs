@@ -307,7 +307,10 @@ fn run(
     // remains bounded and cancellation releases this worker within one poll.
     let _guard = loop {
         super::file_list_records::check(&job.cancel)?;
-        match mutation.clone().try_acquire_owned() {
+        match mutation
+            .clone()
+            .try_acquire_many_owned(crate::transfer_leases::NAMESPACE_WEIGHT)
+        {
             Ok(permit) => break permit,
             Err(tokio::sync::TryAcquireError::Closed) => {
                 return Err(error("File output is shutting down."));

@@ -7,6 +7,20 @@ use std::{fmt, io, path::PathBuf, sync::Arc};
 struct TargetContext(Vec<(MountedLocation, NodeRef)>);
 
 impl TargetContext {
+    fn release_on_worker(self: Arc<Self>) -> Result<(), ProviderError> {
+        use crate::copy_nested_retirement::{self as nested, Retained};
+        nested::provider_step(|| {
+            let Some(owner) = Arc::into_inner(self) else {
+                return Ok(());
+            };
+            let mut locations = Retained::new(owner.0.into_iter());
+            while let Some((location, _)) = locations.get_mut().next() {
+                location.release_on_worker()?;
+            }
+            drop(locations.take());
+            Ok(())
+        })
+    }
     fn validate(&self) -> Result<(), ProviderError> {
         for (location, node) in &self.0 {
             location.validate_reference(node)?;
@@ -32,6 +46,27 @@ pub struct MountedTarget {
 }
 
 impl MountedTarget {
+    #[cfg(test)]
+    pub(crate) fn archive_for_taint_test(source: Arc<dyn ArchiveMount>) -> Arc<dyn ArchiveMount> {
+        Arc::new(LeasedArchive {
+            source: Some(source),
+            context: Some(Arc::new(TargetContext(Vec::new()))),
+            path: PathBuf::new(),
+        })
+    }
+    pub(crate) fn release_on_worker(self) -> Result<(), ProviderError> {
+        use crate::copy_nested_retirement::{self as nested, Retained};
+        nested::provider_step(|| {
+            let mut context = Retained::new(self.context);
+            if let ProviderTarget::Archive(mut archive) = self.target
+                && let Some(source) = archive.location.mount.take()
+            {
+                nested::release_archive(source)
+                    .map_err(|error| ProviderError::Failed(error.to_string()))?;
+            }
+            context.take().release_on_worker()
+        })
+    }
     /// Validates registrations, not source revision or a panel-selection snapshot.
     /// Cloned archive handles retain the same context and reject its revocation.
     pub fn value(&self) -> Result<&ProviderTarget, ProviderError> {
@@ -76,8 +111,8 @@ impl MountedLocation {
                     "resolved archive target has no live mount",
                 ))?;
             archive.location.mount = Some(Arc::new(LeasedArchive {
-                source,
-                context: context.clone(),
+                source: Some(source),
+                context: Some(context.clone()),
                 path: archive.location.address.container.clone(),
             }));
         }
@@ -86,8 +121,8 @@ impl MountedLocation {
 }
 
 struct LeasedArchive {
-    source: Arc<dyn ArchiveMount>,
-    context: Arc<TargetContext>,
+    source: Option<Arc<dyn ArchiveMount>>,
+    context: Option<Arc<TargetContext>>,
     path: PathBuf,
 }
 
@@ -95,14 +130,31 @@ impl fmt::Debug for LeasedArchive {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("LeasedArchive")
-            .field("id", &self.source.id())
+            .field("id", &self.source().id())
             .finish_non_exhaustive()
     }
 }
 
 impl LeasedArchive {
+    fn source(&self) -> &Arc<dyn ArchiveMount> {
+        self.source.as_ref().expect("archive source remains owned")
+    }
+    fn context(&self) -> &TargetContext {
+        self.context.as_ref().expect("archive target remains owned")
+    }
+    fn release(&mut self) -> Result<(), FsError> {
+        use crate::copy_nested_retirement::{self as nested, Retained};
+        let mut context = Retained::new(self.context.take());
+        if let Some(source) = self.source.take() {
+            nested::release_archive(source)?;
+        }
+        if let Some(context) = context.take() {
+            context.release_on_worker().map_err(nested::fs_error)?;
+        }
+        Ok(())
+    }
     fn check(&self, cancel: &Cancellation) -> Result<(), FsError> {
-        self.context
+        self.context()
             .validate()
             .and_then(|()| check_cancel(cancel))
             .map_err(|error| {
@@ -110,16 +162,43 @@ impl LeasedArchive {
             })
     }
 }
+impl Drop for LeasedArchive {
+    fn drop(&mut self) {
+        if let Some(context) = crate::copy_nested_retirement::current()
+            && let Err(error) = self.release()
+        {
+            context.record(error);
+        }
+    }
+}
 
 impl ArchiveMount for LeasedArchive {
+    fn cleanup_unconfirmed(&self) -> bool {
+        self.source().cleanup_unconfirmed()
+    }
+    fn release_on_worker(self: Arc<Self>) -> Result<(), FsError> {
+        let mut reference = crate::copy_nested_retirement::Retained::new(self);
+        if reference.get().cleanup_unconfirmed() {
+            return Err(crate::copy_nested_retirement::unconfirmed());
+        }
+        let Some(mut owner) = Arc::into_inner(reference.take()) else {
+            return Ok(());
+        };
+        let context = crate::copy_nested_retirement::current().unwrap_or_default();
+        let result = context.with(|| owner.release());
+        if let Err(error) = &result {
+            context.record(error.clone());
+        }
+        result
+    }
     fn id(&self) -> u64 {
-        self.source.id()
+        self.source().id()
     }
 
     fn list(&self, directory: u64, cancel: &Cancellation) -> Result<Vec<ArchiveNode>, FsError> {
-        let request = self.context.request(cancel);
+        let request = self.context().request(cancel);
         self.check(&request)?;
-        let rows = self.source.list(directory, &request);
+        let rows = self.source().list(directory, &request);
         self.check(&request)?;
         rows
     }
@@ -131,9 +210,9 @@ impl ArchiveMount for LeasedArchive {
         length: u32,
         cancel: &Cancellation,
     ) -> Result<Vec<u8>, FsError> {
-        let request = self.context.request(cancel);
+        let request = self.context().request(cancel);
         self.check(&request)?;
-        let bytes = self.source.read(entry, offset, length, &request);
+        let bytes = self.source().read(entry, offset, length, &request);
         self.check(&request)?;
         bytes
     }
@@ -141,8 +220,47 @@ impl ArchiveMount for LeasedArchive {
     fn validate(&self) -> Result<(), FsError> {
         let cancel = Cancellation::default();
         self.check(&cancel)?;
-        let result = self.source.validate();
+        let result = self.source().validate();
         self.check(&cancel)?;
         result
+    }
+}
+
+#[cfg(test)]
+mod retirement_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    #[derive(Debug)]
+    struct Source(Arc<AtomicUsize>);
+    impl ArchiveMount for Source {
+        fn id(&self) -> u64 {
+            1
+        }
+        fn list(&self, _: u64, _: &Cancellation) -> Result<Vec<ArchiveNode>, FsError> {
+            Ok(Vec::new())
+        }
+        fn read(&self, _: u64, _: u64, _: u32, _: &Cancellation) -> Result<Vec<u8>, FsError> {
+            Ok(Vec::new())
+        }
+        fn validate(&self) -> Result<(), FsError> {
+            Ok(())
+        }
+        fn release_on_worker(self: Arc<Self>) -> Result<(), FsError> {
+            if let Some(source) = Arc::into_inner(self) {
+                source.0.fetch_add(1, Ordering::SeqCst);
+            }
+            Ok(())
+        }
+    }
+    #[test]
+    fn leased_archive_forwards_consuming_release_before_its_empty_context() {
+        let releases = Arc::new(AtomicUsize::new(0));
+        let mount = Arc::new(LeasedArchive {
+            source: Some(Arc::new(Source(releases.clone()))),
+            context: Some(Arc::new(TargetContext(Vec::new()))),
+            path: PathBuf::new(),
+        });
+        mount.release_on_worker().unwrap();
+        assert_eq!(releases.load(Ordering::SeqCst), 1);
     }
 }

@@ -93,7 +93,7 @@ pub(super) struct SyncBlock {
 }
 
 struct ObservedResources {
-    io: Arc<Semaphore>,
+    io: Arc<crate::transfer_leases::IoBudget>,
     mutation: Arc<Semaphore>,
     capacity: Arc<Semaphore>,
 }
@@ -170,7 +170,7 @@ impl Control {
 
     pub(super) fn observe_resources(
         &self,
-        io: Arc<Semaphore>,
+        io: Arc<crate::transfer_leases::IoBudget>,
         mutation: Arc<Semaphore>,
         capacity: Arc<Semaphore>,
     ) {
@@ -224,6 +224,8 @@ pub(super) struct Service {
     control: Arc<Control>,
 }
 
+// This finite fixture graph owns only synchronous in-memory state and bounded holds.
+impl midnight_core::AuditedSynchronousTransferService for Service {}
 impl TransferService for Service {
     fn prepare_checksum_directory(
         &self,

@@ -174,7 +174,7 @@ class PrepareThumbnailFfmpeg(unittest.TestCase):
 
     def test_prebuilt_result_is_exact_json_contract_after_hash_and_policy_checks(self):
         module = self.module()
-        prefix = self.prefix(module)
+        prefix = self.prefix(module, sys.platform)
         archive = self.root / 'ffmpeg-9.0.2.tar.xz'
         archive.write_bytes(b'Verified archive fixture')
         clang = self.root / 'clang'

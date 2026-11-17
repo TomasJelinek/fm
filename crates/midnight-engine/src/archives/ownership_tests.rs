@@ -91,35 +91,29 @@ impl ArchiveMount for Source {
         Ok(Some(vec![7]))
     }
 }
-fn fixture() -> (RetirementDomain, Mounts, TaskLifetime) {
+fn fixture() -> (RetirementDomain, Mounts) {
     let domain = RetirementDomain::try_start(RETIREMENT_CAPACITY, 1).unwrap();
     let mounts = Mounts::new(domain.clone());
-    (domain, mounts, TaskLifetime::testing(()))
+    (domain, mounts)
 }
 #[test]
 fn canonical_alias_reuse_preserves_identity_and_does_not_spend_another_mount_slot() {
-    let (_domain, mounts, scope) = fixture();
+    let (_domain, mounts) = fixture();
     let raw: Arc<dyn ArchiveMount> = Arc::new(Source::new());
-    let first = mounts.adopt(raw.clone(), scope.clone()).unwrap();
-    let repeated = mounts.adopt(raw, scope.clone()).unwrap();
+    let first = mounts.adopt(raw.clone()).unwrap();
+    let repeated = mounts.adopt(raw).unwrap();
     assert!(Arc::ptr_eq(&first, &repeated));
     let exposed: Arc<dyn ArchiveMount> = first.clone();
-    let round_trip = mounts.adopt(exposed, scope.clone()).unwrap();
+    let round_trip = mounts.adopt(exposed).unwrap();
     assert!(Arc::ptr_eq(&first, &round_trip));
-    let second = mounts
-        .adopt(Arc::new(Source::new()), scope.clone())
-        .unwrap();
+    let second = mounts.adopt(Arc::new(Source::new())).unwrap();
     assert_eq!(first.id(), second.id());
     assert!(
         !Arc::ptr_eq(&first, &second),
         "numeric IDs do not establish source identity"
     );
     let retained: Vec<_> = (2..RETAINED_MOUNTS)
-        .map(|_| {
-            mounts
-                .adopt(Arc::new(Source::new()), scope.clone())
-                .unwrap()
-        })
+        .map(|_| mounts.adopt(Arc::new(Source::new())).unwrap())
         .collect();
     assert!(
         mounts.reserve().is_err(),
@@ -137,7 +131,7 @@ fn canonical_alias_reuse_preserves_identity_and_does_not_spend_another_mount_slo
         );
         thread::sleep(Duration::from_millis(1));
     };
-    let third = mounts.adopt_reserved(Arc::new(Source::new()), replacement, scope);
+    let third = mounts.adopt_reserved(Arc::new(Source::new()), replacement);
     assert!(!Arc::ptr_eq(&first, &third));
     assert!(
         Arc::ptr_eq(&first, &round_trip),
@@ -147,11 +141,11 @@ fn canonical_alias_reuse_preserves_identity_and_does_not_spend_another_mount_slo
 }
 #[test]
 fn guarded_archive_forwards_optional_read_and_persistent_authority_methods_exactly() {
-    let (_domain, mounts, scope) = fixture();
+    let (_domain, mounts) = fixture();
     let source = Source::new();
     let calls = source.calls.clone();
     let path = source.path.clone();
-    let mount = mounts.adopt(Arc::new(source), scope).unwrap();
+    let mount = mounts.adopt(Arc::new(source)).unwrap();
     assert_eq!(mount.id(), 71);
     mount.validate().unwrap();
     assert!(mount.list(13, &Cancellation::default()).unwrap().is_empty());
@@ -181,7 +175,7 @@ fn guarded_archive_forwards_optional_read_and_persistent_authority_methods_exact
 #[test]
 fn native_cleanup_keeps_retained_mount_and_cleanup_slots_through_blocked_or_panicking_drop() {
     for panic in [false, true] {
-        let (domain, mounts, scope) = fixture();
+        let (domain, mounts) = fixture();
         let (entered, observe) = mpsc::channel();
         let (release, wait) = mpsc::channel();
         let mut source = Source::new();
@@ -190,7 +184,7 @@ fn native_cleanup_keeps_retained_mount_and_cleanup_slots_through_blocked_or_pani
             release: Mutex::new(wait),
             panic,
         });
-        let mount = mounts.adopt(Arc::new(source), scope).unwrap();
+        let mount = mounts.adopt(Arc::new(source)).unwrap();
         let others: Vec<_> = (1..RETIREMENT_CAPACITY)
             .map(|_| domain.try_reserve().unwrap())
             .collect();

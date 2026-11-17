@@ -8,6 +8,218 @@ pub(super) struct CopyContext {
     pub(super) intent: TransferIntent,
 }
 
+#[cfg(test)]
+mod owned_draft_tests {
+    use super::*;
+    use std::{
+        cell::Cell,
+        sync::atomic::{AtomicUsize, Ordering},
+    };
+
+    #[derive(Debug)]
+    struct Sources(Arc<AtomicUsize>);
+    impl Drop for Sources {
+        fn drop(&mut self) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+    impl CapturedTransferSources for Sources {
+        fn intent(&self) -> TransferIntent {
+            TransferIntent::Copy
+        }
+        fn root_count(&self) -> usize {
+            1
+        }
+        fn metadata_available(&self) -> bool {
+            false
+        }
+        fn prepare(
+            &self,
+            _: &dyn TransferService,
+            _: &Cancellation,
+        ) -> Result<PreparedCapturedTransfer, FsError> {
+            panic!("UI must not prepare captured sources")
+        }
+    }
+    fn draft() -> (Presenter, Arc<AtomicUsize>) {
+        let path = std::env::temp_dir().join("owned-copy-draft");
+        let mut p = Presenter::new(path.clone(), path.clone());
+        let drops = Arc::new(AtomicUsize::new(0));
+        p.copies.draft = Some(CopyDraft {
+            token: "copy-draft:1".into(),
+            input: CopyDraftInput::Tree(TreeTransferCapture {
+                intent: TransferIntent::Copy,
+                root_count: 1,
+                metadata_available: false,
+                sources: Arc::new(Sources(drops.clone())),
+            }),
+            source: "source".into(),
+            destination: path,
+            summary: "one item".into(),
+            error: String::new(),
+            intent: TransferIntent::Copy,
+            retire_requested: false,
+        });
+        (p, drops)
+    }
+
+    #[test]
+    fn deferred_cancel_keeps_exact_draft_until_an_owned_flush() {
+        let (mut p, drops) = draft();
+        p.require_owned_command_scope();
+        p.defer_cancel_copy_dialog("stale-token");
+        assert!(!p.copies.draft.as_ref().unwrap().retire_requested);
+        for _ in 0..64 {
+            p.defer_cancel_copy_dialog("copy-draft:1");
+        }
+        assert!(p.copies.draft.as_ref().unwrap().retire_requested);
+        assert!(p.retired.is_empty());
+        assert_eq!(drops.load(Ordering::SeqCst), 0);
+        p.flush_deferred_copy_draft();
+        assert!(p.copies.draft.is_some());
+        assert!(p.retired.is_empty());
+        p.set_owned_command_scope_active(true);
+        p.flush_deferred_copy_draft();
+        assert!(p.copies.draft.is_none());
+        assert_eq!(drops.load(Ordering::SeqCst), 0);
+        let retired = p.take_retired();
+        assert_eq!(retired.len(), 1);
+        drop(retired);
+        assert_eq!(drops.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn installed_presenter_rejects_repeated_unguarded_submit_before_cloning() {
+        let (mut p, drops) = draft();
+        p.require_owned_command_scope();
+        let next_id = p.operations.next_id;
+        let destination = std::env::temp_dir().join("destination");
+        for _ in 0..64 {
+            p.confirm_copy_dialog("copy-draft:1", &destination.to_string_lossy(), &|_| {
+                panic!("an installed presenter requires the caller's owned scope")
+            });
+        }
+        assert_eq!(p.operations.next_id, next_id);
+        assert!(p.copies.progress.is_empty());
+        assert!(p.retired.is_empty());
+        assert!(!p.copies.draft.as_ref().unwrap().error.is_empty());
+        assert_eq!(drops.load(Ordering::SeqCst), 0);
+        p.cancel_copy_dialog("copy-draft:1");
+        assert!(p.copies.draft.as_ref().unwrap().retire_requested);
+        assert!(p.retired.is_empty());
+        p.force_retire_copy_draft();
+        drop(p.take_retired());
+        assert_eq!(drops.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn busy_shutdown_hides_draft_in_place_and_keeps_cancel_controls_responsive() {
+        let (mut p, drops) = draft();
+        p.require_owned_command_scope();
+        p.copies.progress.push(Arc::new(CopyProgress::queued(
+            OperationId(9),
+            std::env::temp_dir(),
+            1,
+            TransferIntent::Copy,
+        )));
+        let cancels = Cell::new(0);
+        let send = |command| {
+            assert!(matches!(command, Command::CancelCopy(OperationId(9))));
+            cancels.set(cancels.get() + 1);
+            true
+        };
+        p.request_operation_shutdown(&send);
+        assert!(!p.continue_operation_shutdown(&send));
+        assert_eq!(cancels.get(), 2);
+        assert!(p.operations.closing);
+        assert!(p.copies.draft.as_ref().unwrap().retire_requested);
+        assert_eq!(drops.load(Ordering::SeqCst), 0);
+        p.flush_deferred_copy_draft();
+        assert!(p.copies.draft.is_some());
+        p.set_owned_command_scope_active(true);
+        p.flush_deferred_copy_draft();
+        assert!(p.copies.draft.is_none());
+        assert_eq!(drops.load(Ordering::SeqCst), 0);
+        drop(p.take_retired());
+        assert_eq!(drops.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn successful_send_retires_original_draft_after_a_fast_backend_releases_its_clone() {
+        let (mut p, drops) = draft();
+        let destination = std::env::temp_dir().join("destination");
+        p.confirm_copy_dialog("copy-draft:1", &destination.to_string_lossy(), &|command| {
+            drop(command);
+            true
+        });
+        assert!(p.copies.draft.is_none());
+        assert_eq!(p.copies.progress.len(), 1);
+        assert_eq!(drops.load(Ordering::SeqCst), 0);
+        drop(p.take_retired());
+        assert_eq!(drops.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn exhausted_operation_id_retires_unused_builder_without_replacing_draft() {
+        let (mut p, drops) = draft();
+        p.operations.next_id = u64::MAX;
+        let destination = std::env::temp_dir().join("destination");
+        p.confirm_copy_dialog("copy-draft:1", &destination.to_string_lossy(), &|_| {
+            panic!("exhausted ids must not send")
+        });
+        assert_eq!(p.operations.next_id, u64::MAX);
+        assert!(p.copies.progress.is_empty());
+        assert!(p.copies.draft.is_some());
+        let retired = p.take_retired();
+        assert_eq!(retired.len(), 1);
+        drop(retired);
+        assert_eq!(drops.load(Ordering::SeqCst), 0);
+        p.retire_copy_draft();
+        drop(p.take_retired());
+        assert_eq!(drops.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn hidden_draft_cannot_submit_or_consume_an_operation_id() {
+        let (mut p, drops) = draft();
+        p.defer_cancel_copy_dialog("copy-draft:1");
+        let next_id = p.operations.next_id;
+        let destination = std::env::temp_dir().join("destination");
+        for _ in 0..64 {
+            p.confirm_copy_dialog("copy-draft:1", &destination.to_string_lossy(), &|_| {
+                panic!("a hidden draft must not build or send a request")
+            });
+        }
+        assert_eq!(p.operations.next_id, next_id);
+        assert!(p.copies.progress.is_empty());
+        assert!(p.retired.is_empty());
+        assert_eq!(drops.load(Ordering::SeqCst), 0);
+        p.retire_copy_draft();
+        drop(p.take_retired());
+        assert_eq!(drops.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn deferred_cancel_prevents_replacing_the_draft_owner() {
+        let (mut p, drops) = draft();
+        p.defer_cancel_copy_dialog("copy-draft:1");
+        let destination = std::env::temp_dir().join("replacement");
+        p.open_clipboard_move(
+            FileClipboard {
+                paths: vec![destination.join("source.txt")],
+                intent: FileClipboardIntent::Move,
+            },
+            destination,
+        );
+        assert_eq!(p.copies.draft.as_ref().unwrap().token, "copy-draft:1");
+        assert!(p.copies.draft.as_ref().unwrap().retire_requested);
+        assert_eq!(drops.load(Ordering::SeqCst), 0);
+        p.retire_copy_draft();
+        drop(p.take_retired());
+        assert_eq!(drops.load(Ordering::SeqCst), 1);
+    }
+}
+
 pub(crate) struct CopyDraft {
     pub(crate) token: String,
     pub(super) input: CopyDraftInput,
@@ -16,6 +228,8 @@ pub(crate) struct CopyDraft {
     pub(crate) summary: String,
     pub(crate) error: String,
     pub(crate) intent: TransferIntent,
+    /// Hidden in place until an owned callback can detach the captured sources.
+    pub(crate) retire_requested: bool,
 }
 
 impl CopyDraft {
@@ -154,6 +368,13 @@ impl Presenter {
         {
             return;
         }
+        if !self.owned_command_scope_available() {
+            self.desktop.report(
+                "Copy/Move queue busy",
+                "Wait for the previous transfer request to finish. Try again.".into(),
+            );
+            return;
+        }
         if intent == TransferIntent::Move && self.panes[pane.index()].archive.is_some() {
             self.desktop.report(
                 "Move unavailable",
@@ -212,6 +433,7 @@ impl Presenter {
             summary,
             error: String::new(),
             intent: context.intent,
+            retire_requested: false,
         });
     }
 
@@ -253,11 +475,15 @@ impl Presenter {
         start_policy: TransferStartPolicy,
         send: &dyn Fn(Command) -> bool,
     ) {
+        if !self.owned_command_scope_available() {
+            self.copy_dialog_reclaim_busy(token);
+            return;
+        }
         let Some(draft) = self
             .copies
             .draft
             .as_mut()
-            .filter(|draft| draft.token == token)
+            .filter(|draft| draft.token == token && !draft.retire_requested)
         else {
             return;
         };
@@ -359,10 +585,15 @@ impl Presenter {
             summary,
             error: String::new(),
             intent: TransferIntent::Copy,
+            retire_requested: false,
         });
     }
 
     pub(crate) fn cancel_copy_dialog(&mut self, token: &str) {
+        if !self.owned_command_scope_available() {
+            self.defer_cancel_copy_dialog(token);
+            return;
+        }
         if self
             .copies
             .draft
@@ -370,6 +601,53 @@ impl Presenter {
             .is_some_and(|draft| draft.token == token)
         {
             self.retire_copy_draft();
+        }
+    }
+
+    pub(crate) fn copy_dialog_reclaim_busy(&mut self, token: &str) -> String {
+        let message = "Wait for the previous transfer request to finish. Try again.";
+        if let Some(draft) = self
+            .copies
+            .draft
+            .as_mut()
+            .filter(|draft| draft.token == token && !draft.retire_requested)
+        {
+            draft.error = message.into();
+        }
+        message.into()
+    }
+
+    /// Cancellation stays responsive without taking the provider-bearing owner.
+    pub(crate) fn defer_cancel_copy_dialog(&mut self, token: &str) {
+        if let Some(draft) = self
+            .copies
+            .draft
+            .as_mut()
+            .filter(|draft| draft.token == token)
+        {
+            draft.retire_requested = true;
+        }
+    }
+
+    /// Called only while the current callback owns the existing reclaim batch.
+    pub(crate) fn flush_deferred_copy_draft(&mut self) {
+        if !self.owned_command_scope_available() {
+            return;
+        }
+        if self
+            .copies
+            .draft
+            .as_ref()
+            .is_some_and(|draft| draft.retire_requested)
+        {
+            self.retire_copy_draft();
+        } else if self
+            .copies
+            .tree_pending
+            .as_ref()
+            .is_some_and(|pending| pending.is_cancelled())
+        {
+            self.cancel_tree_transfer(None);
         }
     }
 
@@ -388,11 +666,24 @@ impl Presenter {
             summary: format!("{} clipboard items", self.number_locale.format_u64(count)),
             error: String::new(),
             intent: TransferIntent::Move,
+            retire_requested: false,
         });
     }
 
     pub(super) fn retire_copy_draft(&mut self) {
-        self.cancel_tree_transfer(None);
+        if !self.owned_command_scope_available() {
+            if let Some(draft) = &mut self.copies.draft {
+                draft.retire_requested = true;
+            }
+            self.cancel_tree_transfer(None);
+            return;
+        }
+        self.force_retire_copy_draft();
+    }
+
+    /// Only the post-window drain may bypass the live callback's ownership claim.
+    pub(super) fn force_retire_copy_draft(&mut self) {
+        self.retire_tree_transfer(None);
         if let Some(draft) = self.copies.draft.take() {
             self.retired.push(Box::new(draft));
         }

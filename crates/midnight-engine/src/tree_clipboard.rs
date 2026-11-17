@@ -143,6 +143,19 @@ impl std::fmt::Debug for DropDirectory {
     }
 }
 impl CapturedDropDirectory for DropDirectory {
+    fn release_on_worker(self: Arc<Self>) -> Result<(), FsError> {
+        use crate::copy_nested_retirement::{self as nested, Retained};
+        nested::provider_step(|| {
+            let Some(owner) = Arc::into_inner(self) else {
+                return Ok(());
+            };
+            let mut permit = Retained::new(owner._permit);
+            owner.captured.release_on_worker()?;
+            drop(permit.take());
+            Ok(())
+        })
+        .map_err(nested::fs_error)
+    }
     fn stamp(&self) -> TreeViewStamp {
         self.stamp
     }
@@ -178,6 +191,19 @@ impl Sources {
     }
 }
 impl CapturedClipboardFiles for Sources {
+    fn release_on_worker(self: Arc<Self>) -> Result<(), FsError> {
+        use crate::copy_nested_retirement::{self as nested, Retained};
+        nested::provider_step(|| {
+            let Some(owner) = Arc::into_inner(self) else {
+                return Ok(());
+            };
+            let mut permit = Retained::new(owner._permit);
+            owner.capture.release_on_worker()?;
+            drop(permit.take());
+            Ok(())
+        })
+        .map_err(nested::fs_error)
+    }
     fn intent(&self) -> FileClipboardIntent {
         self.intent
     }

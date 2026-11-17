@@ -99,7 +99,7 @@ async fn blocked_copy_emits_zero_activity_without_releasing_native_capacity() {
     assert_eq!(sampled.completed_roots, 0);
     assert!(done.current_file_size.is_none());
     assert_eq!(done.current_file_copied, 0);
-    assert_eq!(capacity, (0, 0));
+    assert_eq!(capacity, (0, 31));
     assert_eq!(done.state, CopyOperationState::Cancelled);
     assert_eq!(done.throughput.transfer_per_second, 0.0);
 }
@@ -195,6 +195,8 @@ struct DelayedDropService {
     entered: Arc<Notify>,
     released: Arc<AtomicBool>,
 }
+// Native delegates and fixture state are destroyed synchronously; no retirement queues are hidden.
+impl midnight_core::AuditedSynchronousTransferService for DelayedDropService {}
 impl TransferService for DelayedDropService {
     fn prepare_transfer_source(
         &self,
@@ -259,7 +261,7 @@ async fn throughput_timer_cannot_publish_terminal_before_native_resource_cleanup
         Err(_) => h.terminal(1).await,
     };
     h.close().await;
-    assert_eq!(capacity, (0, 0));
+    assert_eq!(capacity, (0, 31));
     assert!(
         !premature,
         "terminal progress cannot precede native resource release"

@@ -8,7 +8,6 @@ use std::{
     rc::Rc,
     time::{Duration, Instant},
 };
-use tokio::sync::mpsc;
 #[cfg(all(test, target_os = "linux"))]
 mod linux_tests;
 #[cfg(all(test, windows))]
@@ -42,7 +41,7 @@ impl WindowState {
     pub(crate) fn install(
         window: &MainWindow,
         presenter: Rc<RefCell<Presenter>>,
-        commands: mpsc::Sender<Command>,
+        commands: Rc<dyn Fn(Command) -> bool>,
         enabled: bool,
     ) -> Self {
         let state = Rc::new(RefCell::new(State::default()));
@@ -56,7 +55,7 @@ impl WindowState {
                     shared.borrow_mut().sample(
                         &window,
                         &mut presenter.borrow_mut(),
-                        &|command| commands.try_send(command).is_ok(),
+                        commands.as_ref(),
                         false,
                     );
                 }

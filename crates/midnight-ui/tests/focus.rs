@@ -4,9 +4,11 @@ use i_slint_core::{
     window::WindowInner,
 };
 use midnight_core::*;
+#[path = "support/owned_commands.rs"]
+mod owned_commands;
 #[path = "support/selection.rs"]
 mod selection;
-use midnight_ui::{MainWindow, Presenter, Theme, install};
+use midnight_ui::{MainWindow, Presenter, Theme};
 use slint::{
     ComponentHandle, Model,
     platform::{
@@ -155,7 +157,7 @@ fn toolbar_and_header_callbacks_transfer_actual_keyboard_focus() {
     let presenter = Rc::new(RefCell::new(Presenter::new(left.clone(), right.clone())));
     let commands = Rc::new(RefCell::new(vec![]));
     let sent = commands.clone();
-    install(
+    let begin = owned_commands::install(
         &window,
         presenter.clone(),
         Rc::new(move |command| {
@@ -205,17 +207,19 @@ fn toolbar_and_header_callbacks_transfer_actual_keyboard_focus() {
     );
     assert_eq!(window.get_command_text().as_str(), left_directory);
 
-    presenter.borrow_mut().apply(Event::DesktopContext {
-        system_locations: Vec::new(),
-        network_position: 0,
-        shell: ShellFlavor::Posix,
-        locations: vec![NavigationLocation {
-            id: "d".into(),
-            label: "D:".into(),
-            path: "drive-d".into(),
-            kind: LocationKind::Volume,
-            drive_letter: Some('d'),
-        }],
+    owned_commands::run(&presenter, &begin, |p, _| {
+        p.apply(Event::DesktopContext {
+            system_locations: Vec::new(),
+            network_position: 0,
+            shell: ShellFlavor::Posix,
+            locations: vec![NavigationLocation {
+                id: "d".into(),
+                label: "D:".into(),
+                path: "drive-d".into(),
+                kind: LocationKind::Volume,
+                drive_letter: Some('d'),
+            }],
+        });
     });
     complete(
         &presenter,

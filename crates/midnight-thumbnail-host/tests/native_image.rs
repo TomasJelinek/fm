@@ -44,19 +44,24 @@ fn decoder_deadline_cancels_a_broker_queued_behind_the_shared_io_gate() {
         .acquire(midnight_work_budget::Admission::Exclusive, || false)
         .unwrap();
     let start = std::time::Instant::now();
-    let queued = AtomicBool::new(false);
+    let finished = AtomicBool::new(false);
+    let queued_at = std::sync::Mutex::new(None);
     let error = std::thread::scope(|scope| {
         scope.spawn(|| {
-            let deadline = std::time::Instant::now() + Duration::from_secs(4);
-            while std::time::Instant::now() < deadline {
+            // Native process creation precedes the decoder deadline and can be slow
+            // on a cold Windows installation. Observe until the actual decode ends.
+            let deadline = std::time::Instant::now() + Duration::from_secs(30);
+            while !finished.load(std::sync::atomic::Ordering::Acquire)
+                && std::time::Instant::now() < deadline
+            {
                 if gate.snapshot().queued > 0 {
-                    queued.store(true, std::sync::atomic::Ordering::Release);
+                    *queued_at.lock().unwrap() = Some(std::time::Instant::now());
                     break;
                 }
                 std::thread::sleep(Duration::from_millis(1));
             }
         });
-        decode::decode(
+        let error = decode::decode(
             std::path::Path::new(&helper),
             &Unread,
             Request {
@@ -69,14 +74,21 @@ fn decoder_deadline_cancels_a_broker_queued_behind_the_shared_io_gate() {
             &AtomicBool::new(false),
             Duration::from_secs(2),
         )
-        .unwrap_err()
+        .unwrap_err();
+        finished.store(true, std::sync::atomic::Ordering::Release);
+        error
     });
     assert_eq!(error.kind(), io::ErrorKind::TimedOut);
-    assert!(
-        queued.load(std::sync::atomic::Ordering::Acquire),
-        "The test must exercise a broker queued behind the held gate"
+    let queued_at = queued_at
+        .lock()
+        .unwrap()
+        .expect("The test must exercise a broker queued behind the held gate");
+    assert!(queued_at.elapsed() < Duration::from_secs(3));
+    eprintln!(
+        "Native startup plus deadline: {:?}; queued cleanup: {:?}",
+        start.elapsed(),
+        queued_at.elapsed()
     );
-    assert!(start.elapsed() < Duration::from_secs(5));
     drop(held);
 }
 
@@ -203,19 +215,23 @@ fn decoder_cooperative_source_observes_viewport_and_timeout_cancellation() {
             observed: AtomicBool::new(false),
         };
         let cancel = AtomicBool::new(false);
+        let finished = AtomicBool::new(false);
         let error = std::thread::scope(|scope| {
             if viewport {
                 scope.spawn(|| {
-                    let deadline = std::time::Instant::now() + Duration::from_secs(4);
+                    let deadline = std::time::Instant::now() + Duration::from_secs(30);
                     while !source.entered.load(Ordering::Acquire)
+                        && !finished.load(Ordering::Acquire)
                         && std::time::Instant::now() < deadline
                     {
                         std::thread::sleep(Duration::from_millis(1));
                     }
-                    cancel.store(true, Ordering::Release);
+                    if source.entered.load(Ordering::Acquire) {
+                        cancel.store(true, Ordering::Release);
+                    }
                 });
             }
-            decode::decode(
+            let error = decode::decode(
                 std::path::Path::new(&helper),
                 &source,
                 Request {
@@ -228,7 +244,9 @@ fn decoder_cooperative_source_observes_viewport_and_timeout_cancellation() {
                 &cancel,
                 Duration::from_secs(2),
             )
-            .unwrap_err()
+            .unwrap_err();
+            finished.store(true, Ordering::Release);
+            error
         });
         assert_eq!(
             error.kind(),

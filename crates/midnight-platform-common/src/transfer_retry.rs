@@ -12,6 +12,14 @@ pub(super) enum RetryCheckpoint {
 }
 
 impl VerifiedFileCopy {
+    pub fn retry_admitted(
+        &mut self,
+        cancel: &Cancellation,
+        permit: &midnight_work_budget::Permit,
+    ) -> Result<(), FsError> {
+        crate::transfer_io::with_transfer_io_permit(permit, || self.retry(cancel))?
+    }
+
     /// True only for a failed pre-publication operation with a safe checkpoint.
     /// No worker retries automatically; the caller must obtain an explicit choice.
     pub fn can_retry(&self) -> bool {

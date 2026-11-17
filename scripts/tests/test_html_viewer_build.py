@@ -149,14 +149,19 @@ class WebSdkEnvironment(unittest.TestCase):
             root = Path(directory)
             tools = root / "bin"
             tools.mkdir()
-            python = tools / "python"
+            python = tools / ("python-fixture.py" if os.name == "nt" else "python")
             report = root / "delegation.json"
             python.write_text(f"#!{sys.executable}\nimport json,os,sys\n"
                               "from pathlib import Path\n"
                               "Path(os.environ['WEB_SDK_DELEGATION_REPORT']).write_text(json.dumps({\n"
                               "'args':sys.argv[1:],'cargo':os.environ['CARGO'],\n"
                               "'cargo_home':os.environ['CARGO_HOME'],'rustup_home':os.environ['RUSTUP_HOME']}))\n")
-            python.chmod(0o755)
+            if os.name == "nt":
+                launcher = tools / "python.cmd"
+                launcher.write_text(
+                    f'@echo off\n"{sys.executable}" "{python}" %*\n', encoding="utf-8")
+            else:
+                python.chmod(0o755)
             output = root / "_build/release"
             environment = dict(os.environ, PATH=str(tools) + os.pathsep + os.environ["PATH"],
                                CARGO="selected-cargo", CARGO_HOME=str(root / "cargo home"),
@@ -220,7 +225,13 @@ with tarfile.open(target/(prefix+'.crate'),'w:gz') as archive:
     member=tarfile.TarInfo(prefix+'/Cargo.toml');member.size=len(contents)
     archive.addfile(member,io.BytesIO(contents))
 ''')
-            cargo.chmod(0o755)
+            if os.name == "nt":
+                launcher = root / "inert-cargo.cmd"
+                launcher.write_text(
+                    f'@echo off\n"{sys.executable}" "{cargo}" %*\n', encoding="utf-8")
+                cargo = launcher
+            else:
+                cargo.chmod(0o755)
             environment = dict(os.environ, CARGO=str(cargo), CARGO_HOME=str(root / "selected cargo"),
                                RUSTUP_HOME=str(root / "selected rustup"), WEB_SDK_ENV_REPORT=str(report))
             result = subprocess.run([sys.executable, "-B", str(scripts / "package.py")],

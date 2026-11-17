@@ -29,7 +29,7 @@ async fn checksum_retirement_covers_dequeued_and_queued_captures_when_adapter_ab
             sender,
             wakeup: Arc::new(|| {}),
         },
-        Arc::new(Semaphore::new(1)),
+        crate::transfer_leases::namespace_gate(),
     );
     let resolved = Arc::new(AtomicUsize::new(0));
     let (first, first_drop) = channel::channel();
@@ -93,7 +93,7 @@ fn checksum_retirement_covers_service_when_runtime_stops_before_actor_is_polled(
                 sender,
                 wakeup: Arc::new(|| {}),
             },
-            Arc::new(Semaphore::new(1)),
+            crate::transfer_leases::namespace_gate(),
         )
     };
     drop(runtime);
@@ -160,7 +160,7 @@ async fn checksum_retirement_keeps_rejected_capture_slot_and_quota_until_drop_fi
             sender,
             wakeup: Arc::new(|| {}),
         },
-        Arc::new(Semaphore::new(1)),
+        crate::transfer_leases::namespace_gate(),
     ));
     let gate = DropGate::new();
     let _release = ReleaseGate(gate.clone());

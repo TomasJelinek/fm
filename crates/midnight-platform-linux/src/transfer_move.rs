@@ -117,6 +117,7 @@ fn prepare_native_child(
         state: Mutex::new(State::default()),
         lease: Mutex::new(None),
         native: Mutex::new(None),
+        namespace: source.namespace_bindings(),
     });
     Ok((source, capture))
 }
@@ -127,6 +128,7 @@ struct State {
     retained: Option<destination::Directory>,
 }
 struct Capture {
+    namespace: Arc<namespace::Bindings>,
     entry: TransferEntry,
     expected: Arc<dyn TransferTarget>,
     _file: Arc<File>,
@@ -153,31 +155,8 @@ impl TransferMoveCapture for Capture {
         &self,
         cancel: &Cancellation,
     ) -> Result<midnight_core::TransferDirectoryRemoval, FsError> {
-        let path = &self.entry.item.path;
-        self.parent.check_recovery_parent(cancel)?;
-        if self.entry.item.kind != EntryKind::Directory
-            || identity(&self._file, path)? != self.entry.identity
-            || self
-                .parent
-                .inspect(&self.name, cancel)?
-                .is_none_or(|entry| {
-                    entry.identity != self.entry.identity || entry.item.kind != EntryKind::Directory
-                })
-        {
-            return Err(invalid(path, "Move directory identity changed"));
-        }
-        checked(cancel, path)?;
-        // Empty-only, directory-relative removal. Linux has no inode-CAS rmdir;
-        // retain the documented live-validation namespace threat boundary.
-        rustix::fs::unlinkat(
-            self.parent.native_file(),
-            &self.name,
-            rustix::fs::AtFlags::REMOVEDIR,
-        )
-        .map_err(|e| error(path, e.into()))?;
-        Ok(midnight_core::TransferDirectoryRemoval {
-            state: midnight_core::TransferSourceRemoval::Unlinked,
-            durability_confirmed: self.parent.native_file().sync_all().is_ok(),
+        namespace::change(cancel, |mut change| {
+            self.remove_empty_directory_in(cancel, &mut change)
         })
     }
     fn preflight_finalization(&self, cancel: &Cancellation) -> Result<(), FsError> {
@@ -257,52 +236,8 @@ impl Capture {
         &self,
         sync: impl FnOnce(&destination::Directory) -> Result<(), FsError>,
     ) -> Result<(), FsError> {
-        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        let Some(stage) = &state.retained else {
-            return Ok(());
-        };
-        let receipt = match &state.outcome {
-            Some(TransferMoveCaptureOutcome::Restored { .. }) => return Ok(()),
-            Some(TransferMoveCaptureOutcome::Captured { recovery, .. }) => recovery,
-            Some(TransferMoveCaptureOutcome::RecoveryRequired { recovery, .. }) => recovery
-                .first()
-                .ok_or_else(|| invalid(&self.entry.item.path, "staged source receipt missing"))?,
-            None => {
-                return Err(invalid(
-                    &self.entry.item.path,
-                    "staged source outcome missing",
-                ));
-            }
-        };
-        let cleanup = Cancellation::default();
-        self.parent.check_recovery_parent(&cleanup)?;
-        let visible = stage.inspect(&self.name, &cleanup)?;
-        if receipt.identity.is_none() || visible.map(|entry| entry.identity) != receipt.identity {
-            return Err(invalid(
-                &receipt.path,
-                "staged source identity changed before restoration",
-            ));
-        }
-        renameat_with(
-            stage.native_file(),
-            &self.name,
-            self.parent.native_file(),
-            &self.name,
-            RenameFlags::NOREPLACE,
-        )
-        .map_err(|e| error(&self.entry.item.path, e.into()))?;
-        let synced = sync(stage);
-        // Record the namespace fact before reporting any failed durability check.
-        state.outcome = Some(TransferMoveCaptureOutcome::Restored {
-            source: self.entry.item.path.clone(),
-            error: invalid(&self.entry.item.path, "temporary source staging restored"),
-        });
-        synced.map_err(|mut failure| {
-            failure.message = format!(
-                "Source was restored; directory durability is unconfirmed: {}",
-                failure.message
-            );
-            failure
+        namespace::change(&Cancellation::default(), |mut change| {
+            self.restore_in(sync, &mut change)
         })
     }
     fn read_lease(&self, cancel: &Cancellation) -> Result<Arc<lease::ReadLease>, FsError> {
@@ -333,12 +268,169 @@ impl Capture {
         before_capture: impl FnOnce(),
         after_capture: impl FnOnce(),
     ) -> Result<TransferMoveCaptureOutcome, FsError> {
+        namespace::change(cancel, |mut change| {
+            self.capture_in(cancel, before_capture, after_capture, &mut change)
+        })
+    }
+    fn sync_names(&self, recovery: &destination::Directory) -> Result<(), FsError> {
+        recovery
+            .native_file()
+            .sync_all()
+            .and_then(|()| self.parent.native_file().sync_all())
+            .map_err(|e| error(&self.entry.item.path, e))
+    }
+}
+
+#[cfg(test)]
+#[path = "transfer_move_tests.rs"]
+mod tests;
+
+#[cfg(test)]
+#[path = "transfer_move_cleanup_tests.rs"]
+mod cleanup_tests;
+
+#[cfg(test)]
+#[path = "transfer_finalize_tests.rs"]
+mod finalization_tests;
+
+#[cfg(test)]
+#[path = "transfer_native_move_tests.rs"]
+mod native_tests;
+
+impl Capture {
+    fn remove_empty_directory_in(
+        &self,
+        cancel: &Cancellation,
+        change: &mut namespace::Change<'_>,
+    ) -> Result<midnight_core::TransferDirectoryRemoval, FsError> {
+        let path = &self.entry.item.path;
+        self.parent.check_recovery_parent(cancel)?;
+        if self.entry.item.kind != EntryKind::Directory
+            || identity(&self._file, path)? != self.entry.identity
+            || self
+                .parent
+                .inspect(&self.name, cancel)?
+                .is_none_or(|entry| {
+                    entry.identity != self.entry.identity || entry.item.kind != EntryKind::Directory
+                })
+        {
+            return Err(invalid(path, "Move directory identity changed"));
+        }
+        checked(cancel, path)?;
+        self.namespace.announce(
+            self.parent.native_file(),
+            self.parent.path(),
+            &self.name,
+            change,
+            cancel,
+        )?;
+        // Empty-only, directory-relative removal. Linux has no inode-CAS rmdir;
+        // retain the documented live-validation namespace threat boundary.
+        rustix::fs::unlinkat(
+            self.parent.native_file(),
+            &self.name,
+            rustix::fs::AtFlags::REMOVEDIR,
+        )
+        .map_err(|e| error(path, e.into()))?;
+        self.namespace
+            .changed(self.parent.native_file(), self.parent.path(), &self.name);
+        Ok(midnight_core::TransferDirectoryRemoval {
+            state: midnight_core::TransferSourceRemoval::Unlinked,
+            durability_confirmed: self.parent.native_file().sync_all().is_ok(),
+        })
+    }
+}
+
+impl Capture {
+    fn restore_in(
+        &self,
+        sync: impl FnOnce(&destination::Directory) -> Result<(), FsError>,
+        change: &mut namespace::Change<'_>,
+    ) -> Result<(), FsError> {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(stage) = &state.retained else {
+            return Ok(());
+        };
+        let receipt = match &state.outcome {
+            Some(TransferMoveCaptureOutcome::Restored { .. }) => return Ok(()),
+            Some(TransferMoveCaptureOutcome::Captured { recovery, .. }) => recovery,
+            Some(TransferMoveCaptureOutcome::RecoveryRequired { recovery, .. }) => recovery
+                .first()
+                .ok_or_else(|| invalid(&self.entry.item.path, "staged source receipt missing"))?,
+            None => {
+                return Err(invalid(
+                    &self.entry.item.path,
+                    "staged source outcome missing",
+                ));
+            }
+        };
+        let cleanup = Cancellation::default();
+        self.parent.check_recovery_parent(&cleanup)?;
+        let visible = stage.inspect(&self.name, &cleanup)?;
+        if receipt.identity.is_none() || visible.map(|entry| entry.identity) != receipt.identity {
+            return Err(invalid(
+                &receipt.path,
+                "staged source identity changed before restoration",
+            ));
+        }
+        self.namespace.announce(
+            self.parent.native_file(),
+            self.parent.path(),
+            &self.name,
+            change,
+            &cleanup,
+        )?;
+        stage.namespace_announce(&self.name, change, &cleanup)?;
+        renameat_with(
+            stage.native_file(),
+            &self.name,
+            self.parent.native_file(),
+            &self.name,
+            RenameFlags::NOREPLACE,
+        )
+        .map_err(|e| error(&self.entry.item.path, e.into()))?;
+        self.namespace
+            .changed(self.parent.native_file(), self.parent.path(), &self.name);
+        stage.namespace_changed(&self.name);
+        let synced = sync(stage);
+        // Record the namespace fact before reporting any failed durability check.
+        state.outcome = Some(TransferMoveCaptureOutcome::Restored {
+            source: self.entry.item.path.clone(),
+            error: invalid(&self.entry.item.path, "temporary source staging restored"),
+        });
+        synced.map_err(|mut failure| {
+            failure.message = format!(
+                "Source was restored; directory durability is unconfirmed: {}",
+                failure.message
+            );
+            failure
+        })
+    }
+}
+
+impl Capture {
+    fn capture_in(
+        &self,
+        cancel: &Cancellation,
+        before_capture: impl FnOnce(),
+        after_capture: impl FnOnce(),
+        change: &mut namespace::Change<'_>,
+    ) -> Result<TransferMoveCaptureOutcome, FsError> {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(outcome) = &state.outcome {
             return Ok(outcome.clone());
         }
         self.revalidate(cancel)?;
-        let recovery = self.parent.source_stage(cancel)?;
+        // This original binding and any selected descendants remain announced
+        // throughout capture and any same-turn no-replace restoration.
+        self.namespace.announce(
+            self.parent.native_file(),
+            self.parent.path(),
+            &self.name,
+            change,
+            cancel,
+        )?;
+        let recovery = self.parent.source_stage_in(cancel, change)?;
         let captured = (|| {
             self.revalidate(cancel)?;
             before_capture();
@@ -353,13 +445,16 @@ impl Capture {
             .map_err(|e| error(&self.entry.item.path, e.into()))
         })();
         if let Err(mut failure) = captured {
-            if let Err(cleanup) = self.parent.remove_empty_stage(recovery) {
+            if let Err(cleanup) = self.parent.remove_empty_stage_in(recovery, change) {
                 failure
                     .message
                     .push_str(&format!("; temporary directory cleanup failed: {cleanup}"));
             }
             return Err(failure);
         }
+        self.namespace
+            .changed(self.parent.native_file(), self.parent.path(), &self.name);
+        recovery.namespace_changed(&self.name);
         // Name capture is recoverable, not expected-inode CAS. Inspect only metadata;
         // even a raced-in link/device/tree is retained and never opened for contents.
         after_capture();
@@ -410,6 +505,12 @@ impl Capture {
                 RenameFlags::NOREPLACE,
             ) {
                 Ok(()) => {
+                    self.namespace.changed(
+                        self.parent.native_file(),
+                        self.parent.path(),
+                        &self.name,
+                    );
+                    recovery.namespace_changed(&self.name);
                     if let Err(sync) = self.sync_names(&recovery) {
                         error
                             .message
@@ -447,27 +548,4 @@ impl Capture {
         state.outcome = Some(outcome.clone());
         Ok(outcome)
     }
-    fn sync_names(&self, recovery: &destination::Directory) -> Result<(), FsError> {
-        recovery
-            .native_file()
-            .sync_all()
-            .and_then(|()| self.parent.native_file().sync_all())
-            .map_err(|e| error(&self.entry.item.path, e))
-    }
 }
-
-#[cfg(test)]
-#[path = "transfer_move_tests.rs"]
-mod tests;
-
-#[cfg(test)]
-#[path = "transfer_move_cleanup_tests.rs"]
-mod cleanup_tests;
-
-#[cfg(test)]
-#[path = "transfer_finalize_tests.rs"]
-mod finalization_tests;
-
-#[cfg(test)]
-#[path = "transfer_native_move_tests.rs"]
-mod native_tests;

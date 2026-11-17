@@ -2,6 +2,10 @@
 #[path = "performance_probe/native_parent.rs"]
 mod native_parent;
 #[path = "performance_probe/render_observer.rs"]
+#[expect(
+    dead_code,
+    reason = "HTML uses redraw timing without the inactive Source drag proof."
+)]
 mod render_observer;
 #[path = "support/html_wheel.rs"]
 mod wheel;
@@ -87,6 +91,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             injected_wheel: true,
             native_events: Rc::new(RefCell::new(Vec::new())),
             timeline: timeline::Trace,
+            // HTML wheel timing does not collect the inactive Source drag proof.
+            native_proof: None,
         })
         .select()?;
     let runtime = tokio::runtime::Builder::new_multi_thread()

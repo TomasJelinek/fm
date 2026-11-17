@@ -17,6 +17,9 @@ static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 static ACTIVE: AtomicUsize = AtomicUsize::new(0);
 const DEADLINE: Duration = Duration::from_secs(20);
 
+#[path = "session_close.rs"]
+mod close;
+
 struct Supervision {
     stop: AtomicBool,
     deadline: Mutex<Option<(Instant, Cancellation)>>,
@@ -47,11 +50,12 @@ pub struct Mount {
     stable_entry_ids: bool,
     format: Format,
     container: PathBuf,
-    source: CapturedFile,
+    source: Option<CapturedFile>,
     channel: Mutex<Channel>,
     supervision: Arc<Supervision>,
     protocol: Protocol,
     staging: Arc<Mutex<Option<crate::staging::Staging>>>,
+    close: Arc<close::CloseReceipt>,
 }
 impl std::fmt::Debug for Mount {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -61,6 +65,12 @@ impl std::fmt::Debug for Mount {
     }
 }
 impl Mount {
+    fn source(&self) -> &CapturedFile {
+        match &self.source {
+            Some(source) => source,
+            None => unreachable!("archive source already consumed by last-owner release"),
+        }
+    }
     #[cfg(test)]
     pub(crate) fn staging_present(&self) -> bool {
         self.staging
@@ -78,31 +88,35 @@ impl Mount {
         cancel: &Cancellation,
     ) -> Result<Arc<Self>, FsError> {
         let fail = |error: io::Error| FsError::from_io("open archive", locator, error);
-        if cancel.is_cancelled() {
-            return Err(fail(io::ErrorKind::Interrupted.into()));
-        }
-        if !locator.is_absolute() || locator.as_os_str().as_encoded_bytes().contains(&0) {
-            return Err(fail(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "Archive container locator must be an absolute native path",
-            )));
-        }
-        if package.protocol == Protocol::V1 && source.length() > 64 * 1024 * 1024 {
-            return Err(fail(io::Error::other(
-                "Archive source exceeds 64 MiB mount budget",
-            )));
-        }
-        if source.stable_version().len() > 256 {
-            return Err(fail(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "Archive source revision exceeds address budget",
-            )));
-        }
-        source.revalidate().map_err(|e| fail(io::Error::other(e)))?;
-        if cancel.is_cancelled() {
-            return Err(fail(io::ErrorKind::Interrupted.into()));
-        }
-        Self::start(package, format, locator, source, cancel)
+        let mut source = close::CapturedInput::new(source);
+        let prepared = (|| {
+            if cancel.is_cancelled() {
+                return Err(fail(io::ErrorKind::Interrupted.into()));
+            }
+            if !locator.is_absolute() || locator.as_os_str().as_encoded_bytes().contains(&0) {
+                return Err(fail(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "Archive container locator must be an absolute native path",
+                )));
+            }
+            if package.protocol == Protocol::V1 && source.get().length() > 64 * 1024 * 1024 {
+                return Err(fail(io::Error::other(
+                    "Archive source exceeds 64 MiB mount budget",
+                )));
+            }
+            if source.get().stable_version().len() > 256 {
+                return Err(fail(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "Archive source revision exceeds address budget",
+                )));
+            }
+            source.revalidate().map_err(|e| fail(io::Error::other(e)))?;
+            if cancel.is_cancelled() {
+                return Err(fail(io::ErrorKind::Interrupted.into()));
+            }
+            Self::start(package, format, locator, &mut source, cancel)
+        })();
+        prepared.map_err(|error| source.finish_error(error))
     }
 
     pub fn address(&self) -> midnight_core::ArchiveAddress {
@@ -122,7 +136,7 @@ impl Mount {
                 Format::TarZstd => midnight_core::ArchiveFormat::TarZstd,
             }),
             container: self.container.clone(),
-            source_version: self.source.stable_version(),
+            source_version: self.source().stable_version(),
             components: Vec::new(),
         }
     }
@@ -144,10 +158,12 @@ impl Mount {
         package: &Package,
         format: Format,
         path: &Path,
-        source: CapturedFile,
+        source: &mut close::CapturedInput,
         cancel: &Cancellation,
     ) -> Result<Arc<Self>, FsError> {
         let fail = |error: io::Error| FsError::from_io("open archive", path, error);
+        let receipt = Arc::new(close::CloseReceipt::new());
+        receipt.observe_cleanup(source.cleanup_unconfirmed());
         let staging = Arc::new(Mutex::new(if package.protocol.supports_staging() {
             Some(
                 crate::staging::Staging::open(
@@ -158,15 +174,7 @@ impl Mount {
         } else {
             None
         }));
-        ACTIVE
-            .try_update(Ordering::AcqRel, Ordering::Acquire, |n| {
-                (n < 2).then_some(n + 1)
-            })
-            .map_err(|_| {
-                fail(io::Error::other(
-                    "Two archive mounts are already active; close one first",
-                ))
-            })?;
+        let accounting = close::Accounting::reserve().map_err(fail)?;
         let spawned = if package.protocol.supports_staging() {
             midnight_worker_platform::spawn_with_policy(
                 &package.executable,
@@ -184,40 +192,52 @@ impl Mount {
                 },
             )
         };
-        let worker = match spawned {
-            Ok(value) => value,
-            Err(error) => {
-                ACTIVE.fetch_sub(1, Ordering::AcqRel);
-                return Err(fail(error));
-            }
-        };
+        let worker = spawned.map_err(fail)?;
         let state = Arc::new(Supervision {
             stop: AtomicBool::new(false),
             deadline: Mutex::new(Some((Instant::now() + DEADLINE, cancel.clone()))),
         });
         let supervised = state.clone();
-        let cleanup = staging.clone();
-        let mut process = worker.process;
+        let supervisor_receipt = receipt.clone();
+        // The startup owner remains recoverable if creating the existing supervisor
+        // thread fails. It is never captured as an unarmed closure-local process.
+        let owner = Arc::new(Mutex::new(Some(close::Supervisor::new(
+            worker.process,
+            staging.clone(),
+            accounting,
+        ))));
+        let supervisor_owner = owner.clone();
         if let Err(error) = std::thread::Builder::new()
             .name("archive-supervisor".into())
             .spawn(move || {
-                loop {
-                    let expired = supervised.expired_at(Instant::now());
-                    if supervised.stop.load(Ordering::Acquire) || expired {
-                        break;
-                    }
-                    std::thread::sleep(Duration::from_millis(10));
+                let owner = supervisor_owner
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .take();
+                if let Some(owner) = owner {
+                    close::supervise(owner, supervised, supervisor_receipt);
+                } else {
+                    supervisor_receipt.failed("Archive supervisor owner missing".into());
                 }
-                supervised.stop.store(true, Ordering::Release);
-                let _ = process.kill();
-                let _ = process.wait();
-                // Final content-file releases stay on the supervisor after in-flight I/O.
-                cleanup.lock().unwrap_or_else(|e| e.into_inner()).take();
-                ACTIVE.fetch_sub(1, Ordering::AcqRel);
             })
         {
-            ACTIVE.fetch_sub(1, Ordering::AcqRel);
-            return Err(fail(error));
+            state.stop.store(true, Ordering::Release);
+            let retained = owner.lock().unwrap_or_else(|e| e.into_inner()).take();
+            if let Some(retained) = retained {
+                // start() already runs on a backend worker; do not need another thread
+                // or release process accounting before actual fallback destruction.
+                close::supervise(retained, state.clone(), receipt.clone());
+            } else {
+                receipt.failed("Archive startup owner could not be recovered".into());
+            }
+            let mut error = fail(error);
+            if let Err(cleanup) = receipt.wait() {
+                error.kind = io::ErrorKind::Other;
+                error
+                    .message
+                    .push_str(&format!("; archive cleanup unconfirmed: {cleanup}"));
+            }
+            return Err(error);
         }
         let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
         let mount = Arc::new(Self {
@@ -227,7 +247,7 @@ impl Mount {
             stable_entry_ids: package.stable_entry_ids,
             format,
             container: path.to_owned(),
-            source,
+            source: Some(source.take()),
             channel: Mutex::new(Channel {
                 input: worker.input,
                 output: worker.output,
@@ -236,22 +256,37 @@ impl Mount {
             supervision: state,
             protocol: package.protocol,
             staging,
+            close: receipt,
         });
-        {
-            let mut channel = mount.channel.lock().unwrap_or_else(|e| e.into_inner());
-            if package.protocol.supports_staging() {
-                midnight_worker_sdk::read_policy_ready(&mut channel.output).map_err(fail)?;
-            } else {
-                midnight_worker_sdk::read_ready(&mut channel.output).map_err(fail)?;
+        let opened = (|| {
+            {
+                let mut channel = mount.channel.lock().unwrap_or_else(|e| e.into_inner());
+                if package.protocol.supports_staging() {
+                    midnight_worker_sdk::read_policy_ready(&mut channel.output).map_err(fail)?;
+                } else {
+                    midnight_worker_sdk::read_ready(&mut channel.output).map_err(fail)?;
+                }
             }
-        }
-        match mount.exchange(cancel, |request| Message::Open {
-            request,
-            format,
-            length: mount.source.length(),
-        })? {
-            Message::Opened { root: 1, .. } => Ok(mount),
-            _ => Err(fail(io::Error::other("Invalid archive open response"))),
+            match mount.exchange(cancel, |request| Message::Open {
+                request,
+                format,
+                length: mount.source().length(),
+            })? {
+                Message::Opened { root: 1, .. } => Ok(()),
+                _ => Err(fail(io::Error::other("Invalid archive open response"))),
+            }
+        })();
+        match opened {
+            Ok(()) => Ok(mount),
+            Err(error) => match mount.release_on_worker() {
+                Ok(()) => Err(error),
+                Err(mut cleanup) => {
+                    cleanup
+                        .message
+                        .push_str(&format!("; original archive open failure: {error}"));
+                    Err(cleanup)
+                }
+            },
         }
     }
 
@@ -363,17 +398,16 @@ impl Mount {
                         broker_bytes = broker_bytes
                             .checked_add(u64::from(length))
                             .ok_or_else(|| fail(io::ErrorKind::InvalidData.into()))?;
-                        if (self.protocol == Protocol::V1 && broker_bytes > self.source.length())
+                        if (self.protocol == Protocol::V1 && broker_bytes > self.source().length())
                             || offset
                                 .checked_add(u64::from(length))
-                                .is_none_or(|end| end > self.source.length())
+                                .is_none_or(|end| end > self.source().length())
                         {
                             return Err(fail(io::Error::other("Archive source broker budget")));
                         }
-                        let bytes = self
-                            .source
-                            .read_at(offset, length)
-                            .map_err(|e| fail(io::Error::other(e)))?;
+                        let result = self.source().read_at(offset, length);
+                        self.close.observe_cleanup(self.source().cleanup_unconfirmed());
+                        let bytes = result.map_err(|e| fail(io::Error::other(e)))?;
                         if bytes.len() != length as usize {
                             return Err(fail(io::ErrorKind::UnexpectedEof.into()));
                         }
@@ -489,6 +523,12 @@ impl Mount {
     }
 }
 impl ArchiveMount for Mount {
+    fn cleanup_unconfirmed(&self) -> bool {
+        self.close.cleanup_unconfirmed() || self.source().cleanup_unconfirmed()
+    }
+    fn release_on_worker(self: Arc<Self>) -> Result<(), FsError> {
+        close::release(self)
+    }
     fn id(&self) -> u64 {
         self.id
     }
@@ -510,7 +550,7 @@ impl ArchiveMount for Mount {
                 ),
             )
         };
-        if entry < 2 || expected_source_version != self.source.stable_version() {
+        if entry < 2 || expected_source_version != self.source().stable_version() {
             return Err(invalid());
         }
         self.validate()?;
@@ -531,12 +571,15 @@ impl ArchiveMount for Mount {
             identity.extend_from_slice(part);
         }
         identity.push(self.format as u8);
-        identity.extend_from_slice(&self.source.length().to_le_bytes());
+        identity.extend_from_slice(&self.source().length().to_le_bytes());
         identity.extend_from_slice(&entry.to_le_bytes());
         Ok(Some(identity))
     }
     fn validate(&self) -> Result<(), FsError> {
-        self.source.revalidate().map_err(|e| {
+        let result = self.source().revalidate();
+        self.close
+            .observe_cleanup(self.source().cleanup_unconfirmed());
+        result.map_err(|e| {
             FsError::from_io(
                 "archive source changed",
                 &self.container,

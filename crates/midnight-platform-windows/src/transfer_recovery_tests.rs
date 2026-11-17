@@ -340,6 +340,7 @@ fn stage(path: &Path) -> Stage {
         FILE_NON_DIRECTORY_FILE,
     )
     .unwrap();
+    let namespace_owner = crate::transfer::namespace::owner_for(&file, &path.join("private-stage"));
     let mut stage = Stage {
         metadata: false,
         preserved: None,
@@ -350,6 +351,7 @@ fn stage(path: &Path) -> Stage {
         cleaned: false,
         path: path.join("private-stage"),
         replacement: None,
+        _namespace_owner: namespace_owner,
     };
     stage.write_all(b"verified bytes").unwrap();
     stage.sync(&cancel).unwrap();

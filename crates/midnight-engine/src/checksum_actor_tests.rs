@@ -190,7 +190,7 @@ async fn two_pending_gate_waiters_bound_admission_and_cancel_save_preserves_resu
 
 #[tokio::test]
 async fn cancelled_native_export_keeps_mutation_permit_and_shutdown_waits_for_cleanup() {
-    let gate = Arc::new(Semaphore::new(1));
+    let gate = crate::transfer_leases::namespace_gate();
     let barrier = Barrier::new();
     let _release = ReleaseOnDrop(barrier.clone());
     let (controller, _events, directory) = setup(gate.clone(), Some(barrier.clone()));
@@ -217,7 +217,7 @@ async fn cancelled_native_export_keeps_mutation_permit_and_shutdown_waits_for_cl
         .unwrap()
         .unwrap();
     assert!(barrier.returned.load(Ordering::Acquire));
-    assert_eq!(gate.available_permits(), 1);
+    assert_eq!(gate.available_permits(), 32);
 }
 
 #[tokio::test]
@@ -366,7 +366,8 @@ async fn stale_generation_is_rechecked_before_a_backpressured_event_can_be_publi
 async fn verification_admission_fits_alongside_retained_calculation_or_verification() {
     let _quota = checksum::test_quota_fixture().await;
     for previous_verification in [false, true] {
-        let (controller, _events, directory) = setup(Arc::new(Semaphore::new(1)), None);
+        let (controller, _events, directory) =
+            setup(crate::transfer_leases::namespace_gate(), None);
         let held = if previous_verification {
             checksum::reserve_verification(&ChecksumVerifyRequest {
                 job: ChecksumJobId(1),

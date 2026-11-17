@@ -83,13 +83,13 @@ impl Presenter {
 
     pub(super) fn tree_menu_token(&self) -> Option<String> {
         self.tree_menu()
-            .filter(|(_, menu)| menu.fallback)
+            .filter(|(pending, menu)| !pending.capture.cancel.is_cancelled() && menu.fallback)
             .and_then(|(pending, _)| pending.desktop_request.map(|request| request.0.to_string()))
     }
 
     pub(super) fn tree_menu_anchor(&self) -> Option<(f32, f32, bool)> {
         self.tree_menu()
-            .filter(|(_, menu)| menu.fallback)
+            .filter(|(pending, menu)| !pending.capture.cancel.is_cancelled() && menu.fallback)
             .map(|(_, menu)| (menu.anchor.logical.0, menu.anchor.logical.1, true))
     }
 
@@ -109,6 +109,11 @@ impl Presenter {
     ) -> bool {
         if token.is_empty() || self.tree_menu_token().as_deref() != Some(token) {
             return false;
+        }
+        if !self.owned_command_scope_available() {
+            self.desktop
+                .report("File action busy", "Try the action again.".into());
+            return true;
         }
         if (0..=5).contains(&action) {
             let pending = self
