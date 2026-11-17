@@ -282,9 +282,18 @@ impl Drop for Lock {
     }
 }
 
+/// Errors are shown to the user, so they carry fixed text only.
 pub(super) fn read_files(data: &IDataObject) -> Result<FileClipboard, FsError> {
     // SAFETY: OLE owns the supplied data object and returns an owned, initialized STGMEDIUM.
-    let medium = Medium(unsafe { data.GetData(&format()).map_err(error)? });
+    // A cross-process source controls its error description (IErrorInfo): keep the code.
+    let medium = Medium(unsafe {
+        data.GetData(&format()).map_err(|failure| {
+            error(format!(
+                "The drag source did not provide its file list ({}).",
+                failure.code()
+            ))
+        })?
+    });
     if medium.0.tymed != TYMED_HGLOBAL.0 as u32 {
         return Err(error("The native file list is not global-memory data."));
     }
@@ -303,8 +312,16 @@ pub(super) fn read_files(data: &IDataObject) -> Result<FileClipboard, FsError> {
     let _lock = Lock(memory);
     // The lock remains held while the bounded decoder copies each lossless native path.
     let bytes = unsafe { std::slice::from_raw_parts(pointer.cast::<u8>(), length) };
+    // The shared decoder words its errors for the clipboard; one drop message names
+    // every condition it rejects.
+    let paths = crate::file_clipboard::decode_hdrop(bytes).map_err(|_| {
+        error(format!(
+            "The dropped file list is malformed, not Unicode, or longer than \
+             {MAX_FILE_CLIPBOARD_PATHS} items."
+        ))
+    })?;
     Ok(FileClipboard {
-        paths: crate::file_clipboard::decode_hdrop(bytes)?,
+        paths,
         intent: FileClipboardIntent::Copy,
     })
 }

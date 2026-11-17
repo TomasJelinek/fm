@@ -393,6 +393,7 @@ impl DropHarness {
             events,
             next: controller.next.clone(),
             hover: controller.hover.clone(),
+            refused: controller.refused.clone(),
             cancel: controller.cancel.clone(),
         });
         let captured = case.capture();

@@ -10,8 +10,9 @@ use std::{
     },
 };
 use windows::Win32::{
-    Foundation::{DRAGDROP_S_CANCEL, DRAGDROP_S_DROP},
+    Foundation::{DRAGDROP_S_CANCEL, DRAGDROP_S_DROP, E_FAIL, E_NOTIMPL},
     System::{
+        Com::{FORMATETC, IAdviseSink, IDataObject_Impl, IEnumFORMATETC, IEnumSTATDATA, STGMEDIUM},
         Ole::{DROPEFFECT_COPY, DROPEFFECT_MOVE, DROPEFFECT_NONE, OleInitialize, OleUninitialize},
         SystemServices::MODIFIERKEYS_FLAGS,
     },
@@ -105,9 +106,11 @@ fn timer_teardown_removes_an_unconsumed_cancel_wake_before_the_next_drag() {
     );
 }
 
+#[derive(Default)]
 struct Capture {
     refuse: AtomicBool,
     requests: Mutex<Vec<FileDropRequest>>,
+    rejected: Mutex<Vec<FsError>>,
 }
 impl FileDropSink for Capture {
     fn try_accept(&self, request: FileDropRequest) -> Result<(), FsError> {
@@ -117,109 +120,287 @@ impl FileDropSink for Capture {
         self.requests.lock().unwrap().push(request);
         Ok(())
     }
+    fn reject(&self, error: FsError) {
+        self.rejected.lock().unwrap().push(error);
+    }
+}
+
+impl Capture {
+    fn take_rejected(&self) -> Vec<String> {
+        std::mem::take(&mut *self.rejected.lock().unwrap())
+            .into_iter()
+            .map(|error| error.message)
+            .collect()
+    }
+}
+
+/// An owned live window whose client columns 100..200 are the Right pane's drop target.
+struct DropFixture {
+    hwnd: windows_sys::Win32::Foundation::HWND,
+    host: DragHost,
+    targets: SharedDropTargets,
+    sink: Arc<Capture>,
+    target: IDropTarget,
+    // Declared last: OLE is uninitialized only after the target is released.
+    _ole: Ole,
+}
+impl DropFixture {
+    fn new() -> Self {
+        let ole = Ole::new().unwrap();
+        let class: Vec<u16> = "STATIC\0".encode_utf16().collect();
+        let hwnd = unsafe {
+            CreateWindowExW(
+                0,
+                class.as_ptr(),
+                class.as_ptr(),
+                0,
+                0,
+                0,
+                200,
+                100,
+                ptr::null_mut(),
+                ptr::null_mut(),
+                ptr::null_mut(),
+                ptr::null_mut(),
+            )
+        };
+        assert!(!hwnd.is_null());
+        let host = DragHost {
+            generation: 1,
+            native: NativeDragWindow::Windows {
+                hwnd: hwnd as usize,
+            },
+            lifetime: Cancellation::default(),
+        };
+        let targets = Arc::new(Mutex::new(DropTargets {
+            host_generation: 1,
+            revision: 1,
+            targets: vec![FileDropTarget {
+                pane: PaneId::Right,
+                navigation: NavigationId(2),
+                directory: Arc::new(PathBuf::from("C:\\destination")),
+                rect: DropRect {
+                    x: 100,
+                    y: 0,
+                    width: 100,
+                    height: 100,
+                },
+            }],
+        }));
+        let sink = Arc::new(Capture::default());
+        let target = make_target(host.clone(), targets.clone(), sink.clone()).unwrap();
+        Self {
+            hwnd,
+            host,
+            targets,
+            sink,
+            target,
+            _ole: ole,
+        }
+    }
+    /// Screen coordinates of a client point, as OLE supplies them.
+    fn at(&self, x: i32, y: i32) -> POINTL {
+        let mut point = POINT { x, y };
+        assert_ne!(unsafe { ClientToScreen(self.hwnd, &mut point) }, 0);
+        POINTL {
+            x: point.x,
+            y: point.y,
+        }
+    }
+    fn enter(&self, data: &IDataObject, offered: DROPEFFECT, at: POINTL) -> DROPEFFECT {
+        let mut effect = offered;
+        unsafe {
+            self.target
+                .DragEnter(data, MODIFIERKEYS_FLAGS(1), at, &mut effect)
+                .unwrap();
+        }
+        effect
+    }
+    fn drop_files(&self, data: &IDataObject, keys: u32, at: POINTL) -> DROPEFFECT {
+        let mut effect = DROPEFFECT_COPY;
+        unsafe {
+            self.target
+                .Drop(data, MODIFIERKEYS_FLAGS(keys), at, &mut effect)
+                .unwrap();
+        }
+        effect
+    }
+}
+impl Drop for DropFixture {
+    fn drop(&mut self) {
+        unsafe {
+            DestroyWindow(self.hwnd);
+        }
+    }
 }
 
 #[test]
 fn ole_target_uses_drop_coordinates_and_reports_copy_only_after_sink_admission() {
-    unsafe {
-        OleInitialize(None).unwrap();
-    }
-    let class: Vec<u16> = "STATIC\0".encode_utf16().collect();
-    let hwnd = unsafe {
-        CreateWindowExW(
-            0,
-            class.as_ptr(),
-            class.as_ptr(),
-            0,
-            0,
-            0,
-            200,
-            100,
-            ptr::null_mut(),
-            ptr::null_mut(),
-            ptr::null_mut(),
-            ptr::null_mut(),
-        )
-    };
-    assert!(!hwnd.is_null());
-    let host = DragHost {
-        generation: 1,
-        native: NativeDragWindow::Windows {
-            hwnd: hwnd as usize,
-        },
-        lifetime: Cancellation::default(),
-    };
-    let targets = Arc::new(Mutex::new(DropTargets {
-        host_generation: 1,
-        revision: 1,
-        targets: vec![FileDropTarget {
-            pane: PaneId::Right,
-            navigation: NavigationId(2),
-            directory: Arc::new(PathBuf::from("C:\\destination")),
-            rect: DropRect {
-                x: 100,
-                y: 0,
-                width: 100,
-                height: 100,
-            },
-        }],
-    }));
-    let sink = Arc::new(Capture {
-        refuse: AtomicBool::new(false),
-        requests: Mutex::new(Vec::new()),
-    });
-    let target = make_target(host.clone(), targets, sink.clone()).unwrap();
+    let f = DropFixture::new();
     let data = make_data(&files()).unwrap();
-    let mut point = POINT { x: 150, y: 50 };
-    assert_ne!(unsafe { ClientToScreen(hwnd, &mut point) }, 0);
-    let at = POINTL {
-        x: point.x,
-        y: point.y,
-    };
-    let mut effect = DROPEFFECT_MOVE;
+    let at = f.at(150, 50);
+    assert_eq!(f.enter(&data, DROPEFFECT_MOVE, at), DROPEFFECT_NONE);
+    assert_eq!(f.enter(&data, DROPEFFECT_COPY, at), DROPEFFECT_COPY);
+    f.sink.refuse.store(true, Ordering::Relaxed);
+    assert_eq!(f.drop_files(&data, 0, at), DROPEFFECT_NONE);
+    assert!(f.sink.requests.lock().unwrap().is_empty());
+    assert_eq!(
+        f.sink.take_rejected(),
+        ["queue full"],
+        "the sink's refusal must reach the user"
+    );
+    f.sink.refuse.store(false, Ordering::Relaxed);
+    assert_eq!(f.enter(&data, DROPEFFECT_COPY, at), DROPEFFECT_COPY);
+    assert_eq!(f.drop_files(&data, 0, at), DROPEFFECT_COPY);
+    assert_eq!(
+        f.sink.requests.lock().unwrap()[0].target.pane,
+        PaneId::Right
+    );
+    assert!(f.sink.take_rejected().is_empty());
+    f.host.lifetime.cancel();
+    let mut effect = DROPEFFECT_COPY;
     unsafe {
-        target
-            .DragEnter(&data, MODIFIERKEYS_FLAGS(1), at, &mut effect)
-            .unwrap();
-    }
-    assert_eq!(effect, DROPEFFECT_NONE);
-    effect = DROPEFFECT_COPY;
-    unsafe {
-        target
-            .DragEnter(&data, MODIFIERKEYS_FLAGS(1), at, &mut effect)
-            .unwrap();
-    }
-    assert_eq!(effect, DROPEFFECT_COPY);
-    sink.refuse.store(true, Ordering::Relaxed);
-    effect = DROPEFFECT_COPY;
-    unsafe {
-        target
-            .Drop(&data, MODIFIERKEYS_FLAGS(0), at, &mut effect)
-            .unwrap();
-    }
-    assert_eq!(effect, DROPEFFECT_NONE);
-    assert!(sink.requests.lock().unwrap().is_empty());
-    sink.refuse.store(false, Ordering::Relaxed);
-    effect = DROPEFFECT_COPY;
-    unsafe {
-        target
-            .Drop(&data, MODIFIERKEYS_FLAGS(0), at, &mut effect)
-            .unwrap();
-    }
-    assert_eq!(effect, DROPEFFECT_COPY);
-    assert_eq!(sink.requests.lock().unwrap()[0].target.pane, PaneId::Right);
-    host.lifetime.cancel();
-    effect = DROPEFFECT_COPY;
-    unsafe {
-        target
+        f.target
             .DragOver(MODIFIERKEYS_FLAGS(1), at, &mut effect)
             .unwrap();
     }
     assert_eq!(effect, DROPEFFECT_NONE);
-    drop(target);
-    drop(data);
-    unsafe {
-        DestroyWindow(hwnd);
-        OleUninitialize();
+    // A window that has closed refuses the drop and has nobody to tell.
+    assert_eq!(f.drop_files(&data, 0, at), DROPEFFECT_NONE);
+    assert!(f.sink.take_rejected().is_empty());
+}
+
+/// A CF_HDROP with `count` distinct paths; `wide: false` writes an ANSI header.
+fn hdrop(count: usize, wide: bool) -> Vec<u8> {
+    let mut bytes = 20u32.to_le_bytes().to_vec(); // DROPFILES.pFiles
+    bytes.extend([0u8; 12]); // pt and fNC
+    bytes.extend(u32::from(wide).to_le_bytes());
+    for index in 0..count {
+        for unit in format!("C:\\{index}").encode_utf16().chain([0]) {
+            bytes.extend(unit.to_le_bytes());
+        }
     }
+    bytes.extend([0u8; 2]);
+    bytes
+}
+
+#[test]
+fn ole_target_reports_a_file_list_it_cannot_read_instead_of_dropping_silently() {
+    let f = DropFixture::new();
+    let at = f.at(150, 50);
+    for (payload, case) in [
+        (hdrop(MAX_FILE_CLIPBOARD_PATHS + 1, true), "4097 paths"),
+        (hdrop(1, false), "ANSI list"),
+    ] {
+        let data = data::malformed_offer(payload);
+        // The cursor promises Copy for any CF_HDROP; only Drop decodes the list.
+        assert_eq!(f.enter(&data, DROPEFFECT_COPY, at), DROPEFFECT_COPY);
+        assert_eq!(f.drop_files(&data, 0, at), DROPEFFECT_NONE);
+        assert_eq!(
+            f.sink.take_rejected(),
+            ["The dropped file list is malformed, not Unicode, or longer than 4096 items."],
+            "{case}: the read failure must be reported in drop terms"
+        );
+    }
+    assert!(f.sink.requests.lock().unwrap().is_empty());
+}
+
+#[test]
+fn ole_target_reports_a_release_that_no_longer_matches_its_copy_cursor() {
+    let f = DropFixture::new();
+    let data = make_data(&files()).unwrap();
+    let at = f.at(150, 50);
+    // OLE delivers Drop only after DragOver showed Copy, so each refusal follows a
+    // Copy cursor: Shift pressed at release, the pointer left the pane, or the pane
+    // started loading and withdrew its drop target.
+    assert_eq!(f.enter(&data, DROPEFFECT_COPY, at), DROPEFFECT_COPY);
+    assert_eq!(f.drop_files(&data, 4, at), DROPEFFECT_NONE);
+    assert_eq!(
+        f.sink.take_rejected(),
+        ["Dropped files can only be copied; release them without Shift or Alt."]
+    );
+    assert_eq!(f.enter(&data, DROPEFFECT_COPY, at), DROPEFFECT_COPY);
+    assert_eq!(f.drop_files(&data, 0, f.at(50, 50)), DROPEFFECT_NONE);
+    assert_eq!(f.sink.take_rejected(), ["The drop destination changed."]);
+    assert_eq!(f.enter(&data, DROPEFFECT_COPY, at), DROPEFFECT_COPY);
+    {
+        let mut targets = f.targets.lock().unwrap();
+        targets.revision += 1;
+        targets.targets.clear();
+    }
+    assert_eq!(f.drop_files(&data, 0, at), DROPEFFECT_NONE);
+    assert_eq!(f.sink.take_rejected(), ["The drop destination changed."]);
+    assert!(f.sink.requests.lock().unwrap().is_empty());
+    // A Drop without a current DragEnter, or after DragLeave, had no Copy cursor.
+    assert_eq!(f.drop_files(&data, 0, at), DROPEFFECT_NONE);
+    assert_eq!(f.enter(&data, DROPEFFECT_COPY, at), DROPEFFECT_NONE);
+    unsafe { f.target.DragLeave().unwrap() };
+    assert_eq!(f.drop_files(&data, 0, at), DROPEFFECT_NONE);
+    assert!(f.sink.take_rejected().is_empty());
+}
+
+const SOURCE_TEXT: &str = "text chosen by the drag source";
+
+/// A drag source that offers a file list but fails to render it, with an error
+/// description of its own choosing (any length, for a cross-process source).
+#[implement(IDataObject)]
+struct Unrenderable;
+impl IDataObject_Impl for Unrenderable_Impl {
+    fn GetData(&self, _: *const FORMATETC) -> windows::core::Result<STGMEDIUM> {
+        Err(windows::core::Error::new(E_FAIL, SOURCE_TEXT.repeat(8)))
+    }
+    fn GetDataHere(&self, _: *const FORMATETC, _: *mut STGMEDIUM) -> windows::core::Result<()> {
+        Err(E_NOTIMPL.into())
+    }
+    fn QueryGetData(&self, _: *const FORMATETC) -> HRESULT {
+        HRESULT(0)
+    }
+    fn GetCanonicalFormatEtc(&self, _: *const FORMATETC, _: *mut FORMATETC) -> HRESULT {
+        E_NOTIMPL
+    }
+    fn SetData(
+        &self,
+        _: *const FORMATETC,
+        _: *const STGMEDIUM,
+        _: BOOL,
+    ) -> windows::core::Result<()> {
+        Err(E_NOTIMPL.into())
+    }
+    fn EnumFormatEtc(&self, _: u32) -> windows::core::Result<IEnumFORMATETC> {
+        Err(E_NOTIMPL.into())
+    }
+    fn DAdvise(
+        &self,
+        _: *const FORMATETC,
+        _: u32,
+        _: Ref<IAdviseSink>,
+    ) -> windows::core::Result<u32> {
+        Err(E_NOTIMPL.into())
+    }
+    fn DUnadvise(&self, _: u32) -> windows::core::Result<()> {
+        Err(E_NOTIMPL.into())
+    }
+    fn EnumDAdvise(&self) -> windows::core::Result<IEnumSTATDATA> {
+        Err(E_NOTIMPL.into())
+    }
+}
+
+#[test]
+fn ole_target_reports_an_unrenderable_file_list_by_code_only() {
+    let f = DropFixture::new();
+    let data: IDataObject = Unrenderable.into();
+    let Err(failure) = (unsafe { data.GetData(&FORMATETC::default()) }) else {
+        panic!("the fixture must fail to render its file list");
+    };
+    assert!(
+        failure.message().contains(SOURCE_TEXT),
+        "the fixture must carry the source's description: {failure}"
+    );
+    let at = f.at(150, 50);
+    assert_eq!(f.enter(&data, DROPEFFECT_COPY, at), DROPEFFECT_COPY);
+    assert_eq!(f.drop_files(&data, 0, at), DROPEFFECT_NONE);
+    assert_eq!(
+        f.sink.take_rejected(),
+        ["The drag source did not provide its file list (0x80004005)."]
+    );
 }

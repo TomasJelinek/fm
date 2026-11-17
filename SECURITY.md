@@ -748,6 +748,15 @@ the current shared snapshot and immediately reserves actual capacity in the same
 permit until the UI supplies its normal operation ID and the backend enqueues it.
 Queue saturation, stale destinations and failed delivery are rejected. Shutdown
 and rejection release reservations; neither can leave an unbounded pending queue.
+OLE delivers a drop only after the Windows target showed the Copy cursor. When the
+target then refuses it (an unreadable or over-limit file list, failed admission, or
+a destination, pointer or modifier change since that cursor), it still answers "no
+effect" and also reports the reason as a drag/drop failure without a gesture ID.
+Report texts are fixed: a drag source's own error description is never shown, only
+its HRESULT code. The callback never waits for delivery: the backend keeps only the
+latest undelivered refusal, outside the bounded event queue, and reports it once the
+UI accepts events again, unless the drop window has closed by then. Linux X11 drops
+are still refused without a report.
 
 Pending drop admissions retain their ordering relative to later clipboard copies.
 Cancelling one before backend enqueue rejects its token rather than sending a

@@ -799,9 +799,8 @@ impl Presenter {
                     self.finish_tree_drag(id);
                     self.retire_drag_origin(id);
                 }
-                if id.is_none() {
-                    self.drag_drop.supported = Some(false);
-                }
+                // Without a gesture this is a refused incoming drop or a session failure;
+                // only `Ready { supported: false }` revokes native drag support.
                 self.desktop.status = format!("Drag/drop: {error}");
             }
         }

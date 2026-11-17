@@ -306,6 +306,49 @@ fn exhausted_operation_ids_reject_an_admitted_drop_without_creating_a_job() {
 }
 
 #[test]
+fn refused_external_drop_reports_its_reason_and_keeps_native_dragging() {
+    let (mut p, _) = loaded();
+    let send = |_: Command| true;
+    p.attach_drag_host(NativeDragWindow::Windows { hwnd: 1 }, &send);
+    let host_generation = p.drag_drop.host.as_ref().unwrap().generation;
+    let ready = |supported| {
+        Event::DragDrop(DragDropEvent::Ready {
+            host_generation,
+            supported,
+        })
+    };
+    p.apply_with_sender(ready(true), &send);
+    assert_eq!(p.drag_drop.supported, Some(true));
+    p.apply_with_sender(
+        Event::DragDrop(DragDropEvent::Failed {
+            id: None,
+            error: FsError::from_io(
+                "Windows file drag/drop",
+                Path::new(""),
+                io::Error::other("The drop destination changed."),
+            ),
+        }),
+        &send,
+    );
+    assert!(
+        p.desktop.status.contains("The drop destination changed."),
+        "{}",
+        p.desktop.status
+    );
+    assert_eq!(
+        p.drag_drop.supported,
+        Some(true),
+        "a refused drop must not disable native dragging"
+    );
+    p.apply_with_sender(ready(false), &send);
+    assert_eq!(
+        p.drag_drop.supported,
+        Some(false),
+        "a lost session still revokes native dragging"
+    );
+}
+
+#[test]
 fn unavailable_native_gesture_keeps_the_next_gesture_eligible_for_native_dragging() {
     let (mut p, _) = loaded();
     let sent = RefCell::new(Vec::new());
