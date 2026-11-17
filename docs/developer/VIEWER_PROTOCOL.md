@@ -50,11 +50,13 @@ zero. The current local broker supplies a known length and one reader per
 instance; plugins must preserve the general schema's optional length semantics.
 `display_name` is display-only and does not authorize OS access.
 
-The host captures a file's content identity when the viewer navigates to it,
-including Space/Backspace navigation, so a session starts from the current file.
-`Open.revision` then stays fixed: reads after the source changes fail instead of
-mixing revisions, and a mode change of the displayed file keeps that identity.
-Navigating to the file again captures its current content for a new session.
+The host captures the focused file's content identity when the viewer opens.
+Space/Backspace navigation to another file of the order uses an identity prefetched
+for it only while revalidation shows that file unchanged, and captures the file
+otherwise, so each session starts from the file's current content. `Open.revision`
+then stays fixed: reads after the source changes fail instead of mixing revisions.
+A mode change of the displayed file keeps that identity. So does Space/Backspace in
+a single-file order or in a Find or generated view: it reopens the held identity.
 
 `ReadAt.length` is nonzero and bounded; `offset + length` must not overflow `u64`.
 Successful `ReadReply.bytes` must equal the separate raw buffer's length and be
