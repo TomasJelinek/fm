@@ -11,6 +11,13 @@ use std::{
 };
 use x11_dl::xlib;
 
+thread_local! {
+    // `Xlib::open` resolves the whole Xlib symbol table (~780 entries), and one
+    // dialog show needs it up to three times. Load it once per UI thread; an
+    // unavailable library stays unavailable, as each fresh open would fail too.
+    static XLIB: Option<xlib::Xlib> = xlib::Xlib::open().ok();
+}
+
 pub(super) fn configure(
     attributes: WindowAttributes,
     _owner: &Window,
@@ -59,13 +66,15 @@ pub(super) fn attach(owner: &Window, child: &Window, role: super::WindowRole) {
     if display != child_display {
         return;
     }
-    let Ok(xlib) = xlib::Xlib::open() else { return };
-    // SAFETY: these XIDs/display pointers are borrowed from live Winit windows on
-    // their UI thread. Xlib consumes the numbers synchronously and retains no Rust data.
-    unsafe {
-        (xlib.XSetTransientForHint)(display, child_id, owner_id);
-        (xlib.XFlush)(display);
-    }
+    XLIB.with(|xlib| {
+        let Some(xlib) = xlib else { return };
+        // SAFETY: these XIDs/display pointers are borrowed from live Winit windows on
+        // their UI thread. Xlib consumes the numbers synchronously and retains no Rust data.
+        unsafe {
+            (xlib.XSetTransientForHint)(display, child_id, owner_id);
+            (xlib.XFlush)(display);
+        }
+    });
 }
 
 /// Copy a bounded CARDINAL property, releasing Xlib's allocation on every path.
@@ -127,15 +136,18 @@ pub(super) fn work_area(window: &Window) -> Option<(i32, i32, u32, u32)> {
     let position = monitor.position();
     let size = monitor.size();
     let fallback = (position.x, position.y, size.width, size.height);
-    let Ok(xlib) = xlib::Xlib::open() else {
+    let (desktop, work_areas) = XLIB
+        .with(|xlib| {
+            let xlib = xlib.as_ref()?;
+            let desktop = cardinal_property(xlib, display, c"_NET_CURRENT_DESKTOP")
+                .and_then(|values| values.first().copied())
+                .unwrap_or(0);
+            Some((desktop, cardinal_property(xlib, display, c"_NET_WORKAREA")?))
+        })
+        .unwrap_or_else(|| (0, Vec::new()));
+    if work_areas.is_empty() {
         return Some(fallback);
-    };
-    let desktop = cardinal_property(&xlib, display, c"_NET_CURRENT_DESKTOP")
-        .and_then(|values| values.first().copied())
-        .unwrap_or(0);
-    let Some(work_areas) = cardinal_property(&xlib, display, c"_NET_WORKAREA") else {
-        return Some(fallback);
-    };
+    }
     let offset = usize::try_from(desktop).ok()?.checked_mul(4)?;
     let Some(area) = work_areas.get(offset..offset.checked_add(4)?) else {
         return Some(fallback);
