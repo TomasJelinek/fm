@@ -292,32 +292,66 @@ impl Directory {
     }
 }
 
+/// Why an empty stage was not cleanly removed.
+enum StageRemovalError {
+    /// The stage was not removed and may remain.
+    Retained(FsError),
+    /// The stage was removed; only syncing its parent failed, so the removal may
+    /// not survive a crash.
+    Unsynced(FsError),
+}
+
 impl Directory {
     pub(in crate::transfer) fn remove_empty_stage_in(
         &self,
         stage: Self,
         change: &mut namespace::Change<'_>,
     ) -> Result<(), FsError> {
+        self.remove_empty_stage_checked(stage, change)
+            .map_err(|failure| match failure {
+                StageRemovalError::Retained(error) | StageRemovalError::Unsynced(error) => error,
+            })
+    }
+
+    /// `remove_empty_stage_in`, telling a stage that may remain apart from one
+    /// that was removed before syncing its parent failed.
+    fn remove_empty_stage_checked(
+        &self,
+        stage: Self,
+        change: &mut namespace::Change<'_>,
+    ) -> Result<(), StageRemovalError> {
+        let remains = StageRemovalError::Retained;
         let cleanup = Cancellation::default();
-        self.check_recovery_parent(&cleanup)?;
-        stage.revalidate(&cleanup)?;
+        self.check_recovery_parent(&cleanup).map_err(remains)?;
+        stage.revalidate(&cleanup).map_err(remains)?;
         let name = stage
             .path
             .file_name()
-            .ok_or_else(|| invalid(&stage.path, "temporary directory needs a basename"))?
+            .ok_or_else(|| remains(invalid(&stage.path, "temporary directory needs a basename")))?
             .to_owned();
         if stage.path.parent() != Some(self.path.as_path())
-            || self.inspect(&name, &cleanup)?.map(|entry| entry.identity) != Some(stage.identity)
+            || self
+                .inspect(&name, &cleanup)
+                .map_err(remains)?
+                .map(|entry| entry.identity)
+                != Some(stage.identity)
         {
-            return Err(invalid(&stage.path, "temporary directory identity changed"));
+            return Err(remains(invalid(
+                &stage.path,
+                "temporary directory identity changed",
+            )));
         }
         // The parent is held and protected; the private random name is checked
         // without following links. Linux rmdir refuses nonempty directories.
         // As with creation, same-UID/privileged namespace mutation is not isolated.
-        self.namespace_announce(&name, change, &cleanup)?;
+        self.namespace_announce(&name, change, &cleanup)
+            .map_err(remains)?;
         rustix::fs::unlinkat(&*self.file, &name, AtFlags::REMOVEDIR)
-            .map_err(|e| error(&stage.path, e.into()))?;
-        let synced = self.file.sync_all().map_err(|e| error(&stage.path, e));
+            .map_err(|e| remains(error(&stage.path, e.into())))?;
+        let synced = self
+            .file
+            .sync_all()
+            .map_err(|e| StageRemovalError::Unsynced(error(&stage.path, e)));
         let Directory { file, .. } = stage;
         let closed = match Arc::try_unwrap(file) {
             Ok(file) => {
@@ -414,13 +448,21 @@ impl Stage {
             Err(mut failure) => {
                 // Nothing was linked, so the private recovery directory is still empty:
                 // remove it, or report it as a residual instead of leaking it silently.
+                // A directory removed before its parent's sync failed is no residual.
                 let residual = TransferRecovery {
                     path: recovery.path.clone(),
                     identity: Some(recovery.identity),
                 };
-                return match self.directory.remove_empty_stage_in(recovery, change) {
+                return match self.directory.remove_empty_stage_checked(recovery, change) {
                     Ok(()) => Err(failure),
-                    Err(cleanup) => {
+                    Err(StageRemovalError::Unsynced(sync)) => {
+                        failure.message.push_str(&format!(
+                            "; the empty recovery directory was removed, but that removal \
+                             may not be durable: {sync}"
+                        ));
+                        Err(failure)
+                    }
+                    Err(StageRemovalError::Retained(cleanup)) => {
                         failure
                             .message
                             .push_str(&format!("; empty recovery directory cleanup: {cleanup}"));

@@ -189,6 +189,51 @@ fn a_failed_recovery_link_removes_the_empty_recovery_directory() {
 }
 
 #[test]
+fn a_recovery_directory_removed_before_its_parent_sync_failed_is_not_a_residual() {
+    let Some(temp) = fixture() else {
+        return;
+    };
+    let target = temp.path().join("target");
+    fs::write(&target, b"consented original").unwrap();
+    let mut stage = stage_with(temp.path(), OFlags::EXCL);
+    // Every directory operation works through an O_PATH handle except fsync
+    // (EBADF), so only the parent sync after the successful rmdir fails.
+    stage.directory = Directory::from_file(
+        File::from(
+            openat(
+                CWD,
+                temp.path(),
+                OFlags::PATH | OFlags::DIRECTORY | OFlags::CLOEXEC,
+                Mode::empty(),
+            )
+            .unwrap(),
+        ),
+        temp.path().to_owned(),
+    )
+    .unwrap();
+    let failure = stage
+        .replace(OsStr::new("target"), &Cancellation::default(), || {
+            panic!("an unlinked stage must not reach the exchange")
+        })
+        .expect_err("a removed recovery directory must not be reported as a residual");
+    assert_eq!(failure.kind, io::ErrorKind::NotFound);
+    assert!(
+        failure
+            .message
+            .contains("the empty recovery directory was removed"),
+        "{}",
+        failure.message
+    );
+    drop(stage);
+    assert_eq!(fs::read(&target).unwrap(), b"consented original");
+    let entries: Vec<_> = fs::read_dir(temp.path())
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .collect();
+    assert_eq!(entries, [OsStr::new("target")]);
+}
+
+#[test]
 fn replacement_at_the_last_revalidation_boundary_is_retained_after_exchange() {
     let Some(temp) = fixture() else {
         return;
