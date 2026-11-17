@@ -130,6 +130,40 @@ fn command_icon_capture_denial_revision_change_and_cancellation_discard_pixels()
     );
     assert_eq!(service.calls.load(Ordering::SeqCst), 1);
 }
+#[test]
+fn icon_cache_forgets_the_least_recently_requested_type_instead_of_refusing_new_ones() {
+    let key = |index: usize| IconKey {
+        kind: IconKind::File,
+        extension: Some(format!("log{index}").into()),
+        drive_root: None,
+        size: 16,
+    };
+    let mut recent = RecentIcons::default();
+    for index in 0..ICON_CAPACITY {
+        assert!(recent.admit(&key(index)));
+    }
+    // Rotated logs filled the cache; type 0 was used again recently.
+    assert!(!recent.admit(&key(0)));
+    let pdf = IconKey {
+        extension: Some("pdf".into()),
+        ..key(0)
+    };
+    assert!(
+        recent.admit(&pdf),
+        "a new type still loads when the cache is full"
+    );
+    assert!(!recent.admit(&pdf));
+    assert!(
+        !recent.admit(&key(0)),
+        "the recently used type stays cached"
+    );
+    assert!(
+        recent.admit(&key(1)),
+        "the least recently requested type was forgotten and loads again"
+    );
+    assert_eq!(recent.keys.len(), ICON_CAPACITY);
+}
+
 #[tokio::test]
 async fn command_icons_progress_before_a_full_queue_of_cached_ordinary_duplicates() {
     let directory = tempfile::tempdir().unwrap();

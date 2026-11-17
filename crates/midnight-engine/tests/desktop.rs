@@ -12,11 +12,13 @@ use std::{
 };
 use tokio::sync::{Notify, mpsc};
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn network_rejections_apply_backpressure_when_event_consumer_stops() {
-    for available in [false, true] {
-        assert_network_backpressure(available).await;
-    }
+    // Independent engines share one 200 ms detection window.
+    tokio::join!(
+        assert_network_backpressure(false),
+        assert_network_backpressure(true)
+    );
 }
 
 async fn assert_network_backpressure(available: bool) {
