@@ -1,4 +1,5 @@
 use super::*;
+use crate::rename_test_support::{Client, Temp};
 use midnight_filesystem_plugin_api::abi::*;
 use midnight_filesystem_plugin_sdk::{Filesystem, Reply, native::NativeAdapter};
 use std::{ffi::CString, io::Read, os::unix::ffi::OsStrExt};
@@ -27,18 +28,9 @@ impl Filesystem for Race {
 
 #[test]
 fn regular_probe_reopens_the_held_inode_after_path_becomes_fifo() {
-    let base = std::env::temp_dir().join(format!("native-open-race-{}", std::process::id()));
-    // The native runner's TMPDIR is inside its dedicated _build fixture root.
-    assert!(base.components().any(|part| part.as_os_str() == "_build"));
-    std::fs::create_dir(&base).unwrap();
-    struct Cleanup(PathBuf);
-    impl Drop for Cleanup {
-        fn drop(&mut self) {
-            std::fs::remove_dir_all(&self.0).unwrap();
-        }
-    }
-    let _cleanup = Cleanup(base.clone());
-    let path = base.join("source");
+    // The owned fixture root lies inside the repository's _build output.
+    let base = Temp::new();
+    let path = base.path.join("source");
     std::fs::write(&path, b"held regular content").unwrap();
     let mut api = Api::default();
     // SAFETY: complete writable descriptor with lifetime covering all calls below.
@@ -95,4 +87,54 @@ fn regular_probe_reopens_the_held_inode_after_path_becomes_fifo() {
             eof: true
         }
     );
+}
+
+#[test]
+fn validation_checks_the_current_name_without_opening_content_again() {
+    let temp = Temp::new();
+    let path = temp.path.join("selected");
+    std::fs::write(&path, vec![7u8; 4096]).unwrap();
+    let client = Client::new();
+    let (mount, node) = client.resolve(&path);
+    let opens = || DATA_OPENS.with(std::cell::Cell::get);
+    let before = opens();
+    let Response::Opened { reader, .. } = client.call(Request::OpenRead {
+        mount,
+        node: node.id,
+    }) else {
+        panic!("regular file must open")
+    };
+    for _ in 0..3 {
+        assert_eq!(
+            client.call(Request::ValidateRead { reader }),
+            Response::Unit
+        );
+    }
+    for offset in [0, 2048] {
+        assert_eq!(
+            client.call(Request::ReadAt {
+                reader,
+                offset,
+                length: 2048,
+            }),
+            Response::Content {
+                bytes: vec![7u8; 2048],
+                eof: offset == 2048,
+            }
+        );
+    }
+    assert_eq!(opens() - before, 1, "only OpenRead opens file content");
+    // The metadata-only check still detects a replaced name.
+    std::fs::rename(&path, temp.path.join("held")).unwrap();
+    std::fs::write(&path, vec![7u8; 4096]).unwrap();
+    assert!(matches!(
+        client.call(Request::ValidateRead { reader }),
+        Response::Failed(Failure {
+            code: ErrorCode::SourceChanged,
+            ..
+        })
+    ));
+    assert_eq!(opens() - before, 1);
+    assert_eq!(client.call(Request::CloseRead { reader }), Response::Unit);
+    assert_eq!(client.call(Request::CloseMount { mount }), Response::Unit);
 }
