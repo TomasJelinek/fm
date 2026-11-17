@@ -9,8 +9,11 @@ implemented and tested, including an independently exported DLL/SO conformance
 fixture on Windows and Linux. The application loader, LiveValidated content
 broker, viewer window and independent Basic, Source and Markdown viewers are now
 implemented and integrated. ABI 1.0 and package version 0.1.0 remain a versioned
-draft, not a long-term compatibility promise. Filesystem/provider plugins are
-still design-only; the reserved filesystem kind is not an implemented provider API.
+draft, not a long-term compatibility promise. This ABI's `KIND_FILESYSTEM` constant
+stays reserved and unused: filesystem providers are implemented through separate
+public contracts, the native filesystem ABI 1.3 (`midnight_filesystem_entry_v1`, see
+[the protocol](../filesystem-api/NATIVE_PLUGIN_PROTOCOL.md)) and the restricted
+archive worker protocol (`midnight-filesystem-api`).
 
 The [developer guide](../docs/developer/README.md) covers architecture and package
 independence, [build/test/install commands](../docs/developer/QUICK_START.md),
