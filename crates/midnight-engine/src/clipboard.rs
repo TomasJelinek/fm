@@ -750,6 +750,9 @@ mod paste_capture_tests;
 #[cfg(test)]
 #[path = "clipboard_wake_tests.rs"]
 mod wake_tests;
+#[cfg(all(test, windows))]
+#[path = "clipboard_wake_windows_tests.rs"]
+mod wake_windows_tests;
 
 #[cfg(test)]
 mod tests {
