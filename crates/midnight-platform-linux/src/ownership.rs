@@ -76,12 +76,7 @@ pub(crate) fn check_created_directory(
     // an error), which identifies a filesystem that cannot represent it. The
     // pinned handle may be O_PATH: this readable reopen of exactly that directory
     // serves fchmod and the ACL query, which then needs no /proc fallback.
-    let readable = openat(
-        directory,
-        ".",
-        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-        Mode::empty(),
-    );
+    let readable = reopen_readable(directory);
     if let Ok(readable) = &readable {
         let _ = fchmod(readable, Mode::RWXU);
     }
@@ -96,7 +91,11 @@ pub(crate) fn check_created_directory(
             Err(_) => may_have_access_acl(directory),
         },
         (parent_stat.st_uid, parent_stat.st_gid, parent_stat.st_mode),
-        || may_have_access_acl(&parent),
+        // The parent may be an O_PATH pin too.
+        || match reopen_readable(&parent) {
+            Ok(readable) => may_have_access_acl(&readable),
+            Err(_) => may_have_access_acl(&parent),
+        },
     );
     if !admitted {
         return Err(io::Error::new(
@@ -145,6 +144,16 @@ fn foreign_owner() -> io::Error {
     io::Error::new(
         io::ErrorKind::PermissionDenied,
         "the new private directory is not owned by this user",
+    )
+}
+
+/// A readable descriptor of exactly the directory `directory` refers to.
+fn reopen_readable(directory: impl AsFd) -> rustix::io::Result<std::os::fd::OwnedFd> {
+    openat(
+        directory,
+        ".",
+        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::empty(),
     )
 }
 
