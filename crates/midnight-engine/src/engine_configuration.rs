@@ -165,12 +165,6 @@ impl Engine {
     }
 
     /// Admit native transfer services once; duplicate configuration accepts no owner.
-    pub fn configure_transfers(
-        &mut self,
-    ) -> Result<ServiceSlot<'_, Arc<dyn TransferService>>, ServiceAlreadyConfigured> {
-        ServiceSlot::vacant(&mut self.services.transfers, "transfers")
-    }
-
     /// Retain audited native teardown provenance before erasing the service.
     /// An ordinary erased transfer installation never obtains this witness.
     pub fn configure_audited_transfers(

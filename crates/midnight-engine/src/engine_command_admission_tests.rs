@@ -88,7 +88,13 @@ async fn unpolled_sender_refuses_thirty_third_copy_intact_without_capture_callba
     };
     let shutdown = sender.try_send(Command::Shutdown).is_ok();
     let joined = tokio::time::timeout(OBSERVE, task).await;
-    assert!(no_callback && no_event && intact && native_control && drained && sent && shutdown);
+    assert!(no_callback, "no_callback");
+    assert!(no_event, "no_event");
+    assert!(intact, "intact");
+    assert!(native_control, "native_control");
+    assert!(drained, "drained");
+    assert!(sent, "sent");
+    assert!(shutdown, "shutdown");
     assert!(joined.is_ok_and(|result| result.is_ok()));
     assert_eq!(terminal.unwrap().state, CopyOperationState::Completed);
     assert!(case.copied_bytes_match());
@@ -136,7 +142,11 @@ async fn full_and_closed_command_fifo_return_capture_ownership_without_getters()
     } else {
         false
     };
-    assert!(full_untouched && full_intact && closed_signal && closed_untouched && closed_intact);
+    assert!(full_untouched, "full_untouched");
+    assert!(full_intact, "full_intact");
+    assert!(closed_signal, "closed_signal");
+    assert!(closed_untouched, "closed_untouched");
+    assert!(closed_intact, "closed_intact");
     assert!(full_probe.checked_close() && closed_probe.checked_close());
 }
 
@@ -189,7 +199,10 @@ async fn async_send_and_both_permit_forms_cannot_bypass_copy_admission() {
     };
     drop(run);
     let closed = wait_async(OBSERVE, || sender.is_closed()).await;
-    assert!(async_refused && borrowed_refused && owned_refused && closed);
+    assert!(async_refused, "async_refused");
+    assert!(borrowed_refused, "borrowed_refused");
+    assert!(owned_refused, "owned_refused");
+    assert!(closed, "closed");
     for probe in [asynchronous, borrowed, owned] {
         assert_eq!(probe.calls(), 0);
         assert!(probe.checked_close());
@@ -222,7 +235,10 @@ async fn queued_before_run_copy_then_cancel_preserves_control_fifo() {
     let shutdown = sender.try_send(Command::Shutdown).is_ok();
     probe.release();
     let joined = tokio::time::timeout(OBSERVE, task).await;
-    assert!(admitted && untouched && closed && shutdown);
+    assert!(admitted, "admitted");
+    assert!(untouched, "untouched");
+    assert!(closed, "closed");
+    assert!(shutdown, "shutdown");
     assert!(joined.is_ok_and(|result| result.is_ok()));
     assert_eq!(terminal.unwrap().state, CopyOperationState::Cancelled);
     assert!(probe.all_callbacks_off(std::thread::current().id()));
@@ -262,17 +278,15 @@ async fn blocked_rejection_outbox_does_not_block_cancel_or_shutdown_in_real_loop
     let joined = tokio::time::timeout(OBSERVE, task).await;
     case.close_event_sender();
     let drained = tokio::time::timeout(OBSERVE, drainer).await;
-    assert!(
-        admitted
-            && entered
-            && invalid_sent
-            && cancel_sent
-            && cancelled
-            && held
-            && shutdown_sent
-            && closing
-            && not_closed
-    );
+    assert!(admitted, "admitted");
+    assert!(entered, "entered");
+    assert!(invalid_sent, "invalid_sent");
+    assert!(cancel_sent, "cancel_sent");
+    assert!(cancelled, "cancelled");
+    assert!(held, "held");
+    assert!(shutdown_sent, "shutdown_sent");
+    assert!(closing, "closing");
+    assert!(not_closed, "not_closed");
     assert!(
         joined.is_ok_and(|result| result.is_ok()) && drained.is_ok_and(|result| result.is_ok())
     );
@@ -312,7 +326,12 @@ fn admitted_captured_command_abandoned_without_runtime_uses_reserved_native_clea
     probe.release();
     let closed = wait_sync(OBSERVE, || probe.closed());
     let transport_closed = wait_sync(OBSERVE, || sender.is_closed());
-    assert!(admitted && held && not_closed && no_getters && closed && transport_closed);
+    assert!(admitted, "admitted");
+    assert!(held, "held");
+    assert!(not_closed, "not_closed");
+    assert!(no_getters, "no_getters");
+    assert!(closed, "closed");
+    assert!(transport_closed, "transport_closed");
     assert_ne!(probe.drop_thread(), Some(caller));
     assert!(probe.checked_close() && !probe.timed_out());
 }

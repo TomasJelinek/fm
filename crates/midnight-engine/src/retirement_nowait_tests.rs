@@ -20,10 +20,8 @@ impl Wake for WakeCount {
 }
 
 fn exhaust(domain: &RetirementDomain, count: usize) {
-    let leases: Vec<_> = (0..count)
-        .map(|_| domain.try_reserve_nowait().unwrap())
-        .collect();
-    assert!(domain.try_reserve_nowait().is_err());
+    let leases: Vec<_> = (0..count).map(|_| domain.try_reserve().unwrap()).collect();
+    assert!(domain.try_reserve().is_err());
     let unique: std::collections::HashSet<_> =
         leases.iter().map(|lease| lease.slot.unwrap()).collect();
     assert_eq!(unique.len(), count);
@@ -37,10 +35,10 @@ fn nowait_reserve_and_unused_rollback_ignore_a_held_payload_queue_lock() {
     let worker_domain = domain.clone();
     let (sent, received) = mpsc::channel();
     let worker = thread::spawn(move || {
-        let first = worker_domain.try_reserve_nowait().unwrap();
+        let first = worker_domain.try_reserve().unwrap();
         let slot = first.slot.unwrap();
         drop(first);
-        let again = worker_domain.try_reserve_nowait().unwrap();
+        let again = worker_domain.try_reserve().unwrap();
         let reused = again.slot == Some(slot);
         drop(again);
         sent.send(reused).unwrap();
@@ -56,7 +54,7 @@ fn nowait_reserve_and_unused_rollback_ignore_a_held_payload_queue_lock() {
 fn legacy_and_nowait_reservations_share_the_same_exact_slot_capacity() {
     let domain = RetirementDomain::try_start(3, 1).unwrap();
     let first = domain.try_reserve().unwrap();
-    let second = domain.try_reserve_nowait().unwrap();
+    let second = domain.try_reserve().unwrap();
     let mut waiter = domain.new_waiter().unwrap();
     let wake = Waker::from(Arc::new(WakeCount::default()));
     let mut context = Context::from_waker(&wake);
@@ -67,7 +65,7 @@ fn legacy_and_nowait_reservations_share_the_same_exact_slot_capacity() {
     assert_ne!(first.slot, second.slot);
     assert_ne!(first.slot, third.slot);
     assert_ne!(second.slot, third.slot);
-    assert!(domain.try_reserve_nowait().is_err());
+    assert!(domain.try_reserve().is_err());
     assert!(domain.try_reserve().is_err());
     drop((first, second, third, pending));
     exhaust(&domain, 3);
@@ -76,7 +74,7 @@ fn legacy_and_nowait_reservations_share_the_same_exact_slot_capacity() {
 #[test]
 fn unused_return_wakes_a_registered_waiter_while_payload_queue_is_locked() {
     let domain = RetirementDomain::try_start(1, 1).unwrap();
-    let lease = domain.try_reserve_nowait().unwrap();
+    let lease = domain.try_reserve().unwrap();
     let mut waiter = domain.new_waiter().unwrap();
     let count = Arc::new(WakeCount::default());
     let waker = Waker::from(count.clone());
@@ -111,7 +109,7 @@ fn unused_return_wakes_a_registered_waiter_while_payload_queue_is_locked() {
 #[test]
 fn unused_return_does_not_wait_for_a_waiter_cell_and_preserves_notification() {
     let domain = RetirementDomain::try_start(1, 1).unwrap();
-    let lease = domain.try_reserve_nowait().unwrap();
+    let lease = domain.try_reserve().unwrap();
     let mut waiter = domain.new_waiter().unwrap();
     let index = waiter.slot;
     let count = Arc::new(WakeCount::default());
@@ -152,7 +150,7 @@ fn concurrent_unused_returns_never_leave_a_polled_reservation_asleep() {
         domain.control.shared.waiters[waiter.slot]
             .notified
             .store(false, Ordering::SeqCst);
-        let lease = domain.try_reserve_nowait().unwrap();
+        let lease = domain.try_reserve().unwrap();
         let start = Arc::new(std::sync::Barrier::new(2));
         let worker_start = start.clone();
         let worker = thread::spawn(move || {
@@ -208,9 +206,9 @@ fn rollback_reuses_another_slot_while_actual_native_destruction_is_held() {
     let (sent, received) = mpsc::channel();
     let worker = thread::spawn(move || {
         for _ in 0..64 {
-            let unused = worker_domain.try_reserve_nowait().unwrap();
+            let unused = worker_domain.try_reserve().unwrap();
             assert!(
-                worker_domain.try_reserve_nowait().is_err(),
+                worker_domain.try_reserve().is_err(),
                 "held native slot was reused early"
             );
             drop(unused);
