@@ -49,7 +49,7 @@ comparator builders are separate APIs and are unchanged by this migration.
 
 ## Capacity and ownership
 
-One engine reserves a domain with 327 payload slots and eight reusable waiter tokens
+One engine reserves a domain with 329 payload slots and eight reusable waiter tokens
 (serialized intakes for operations, copies, archives, checksums, shell menu and desktop,
 the drag backlog drain and the clipboard rejection path):
 
@@ -71,7 +71,7 @@ the drag backlog drain and the clipboard rejection path):
 | Clipboard inbox and one serialized rejection | 2 |
 | File List retained jobs and generated outputs | 12 |
 | Dynamically discovered network provider | 1 |
-| Archive navigation: 132 retained mounts, two requests and one intake | 135 |
+| Archive navigation: 132 retained mounts, two worker inputs, one waiting navigation per pane and one intake | 137 |
 | Archive-size pending state, one per pane | 2 |
 | Shared diagnostic report arena | 1 |
 | Native tree Rename/Metadata captures, sharing the four tree-action permits | 4 |
@@ -263,14 +263,21 @@ and double-panic behavior still apply.
 ## Archive navigation and queued size work
 
 Archive navigation guards accepted input through native work and reply delivery.
-Busy or stale input retires through one serialized intake acknowledgement; aborting
-that wait does not cancel cleanup. Native mounts are adopted before leaving their
+The newest navigation of each pane waits for one of the two workers; a newer request
+or a cancel retires a waiting navigation with an Interrupted result. Each accepted
+navigation holds one of four navigation shares, returned when the cleanup worker
+destroys its input. The serial intake reserves its slot, cancels the pane's previous
+navigation (recording the new navigation first, so a superseded result never acts as
+current) and then waits for a share; the wait always ends because at most two holders
+run and each pane has one current navigation, so one holder is a superseded input on
+its way to cleanup. Only stale input retires through the serialized intake
+acknowledgement; aborting that wait does not cancel cleanup. Native mounts are adopted before leaving their
 worker and exposed only through a canonical guarded proxy. A shared 132-token retention budget
 bounds native lifetime, including externally retained listings whose worker already
 exited. Its capacity covers the existing two pane registries of 64 mounts each,
 two current roots outside those registries and two workers producing replacements.
-This explicit aggregate bound is distinct from the two-request admission and host
-process limits. Arbitrary external output holders also consume this budget; it is
+This explicit aggregate bound is distinct from the navigation shares, the two-worker
+admission and host process limits. Arbitrary external output holders also consume this budget; it is
 not a proof that those holders cannot retain more outputs. Closed/failed sessions
 still occupy their token until final destruction. Saturation reports busy and
 accepted content is never evicted.

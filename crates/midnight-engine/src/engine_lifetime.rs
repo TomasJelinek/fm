@@ -38,6 +38,33 @@ pub(crate) struct DragRetirement {
     pub(crate) pending: RetirementLease,
     pub(crate) backlog: RetirementWaiter,
 }
+
+/// Payload slots of the engine retirement domain. `docs/developer/ENGINE_LIFETIME.md`
+/// states this total and its per-owner breakdown; a test keeps the two in step.
+// Copy and mutation each retain 32 jobs, one intake and one service context.
+// Drag retains state, pending drops and one serial backlog drain.
+// The run, shared services, command receiver and snapshots each retain one slot.
+pub(crate) const DOMAIN_CAPACITY: usize = crate::operations::MAX_JOBS
+    + crate::copy_operations::MAX_JOBS
+    + 11
+    + crate::checksum_actor::RETIREMENT_CAPACITY
+    + crate::user_commands::MAX_JOBS
+    + 1
+    + crate::clipboard::RETIREMENT_CAPACITY
+    + crate::desktop::EDITOR_RETIREMENT_CAPACITY
+    + crate::shell_menu::RETIREMENT_CAPACITY
+    + crate::watch::RETIREMENT_CAPACITY
+    + crate::network_neighborhood::RETIREMENT_CAPACITY
+    + crate::file_list_actor::RETIREMENT_CAPACITY
+    + crate::archive_sizes::RETIREMENT_CAPACITY
+    + crate::archives::RETIREMENT_CAPACITY
+    + crate::report_arena::RETIREMENT_CAPACITY
+    + crate::tree_rename::RETIREMENT_CAPACITY
+    + crate::find::RETIREMENT_CAPACITY;
+/// Reusable waiter tokens: the serialized intakes of operations, copies, archives,
+/// checksums, shell menu and desktop, the drag backlog drain and the clipboard
+/// rejection path.
+pub(crate) const DOMAIN_WAITERS: usize = 8;
 impl EngineLifetime {
     /// Shared cleanup for diagnostic reports retained by standalone directory trees.
     ///
@@ -48,27 +75,7 @@ impl EngineLifetime {
     }
 
     pub(crate) fn new() -> io::Result<Self> {
-        // Copy and mutation each retain 32 jobs, one intake and one service context.
-        // Drag retains state, pending drops and one serial backlog drain.
-        // The run, shared services, command receiver and snapshots each retain one slot.
-        let capacity = crate::operations::MAX_JOBS
-            + crate::copy_operations::MAX_JOBS
-            + 11
-            + crate::checksum_actor::RETIREMENT_CAPACITY
-            + crate::user_commands::MAX_JOBS
-            + 1
-            + crate::clipboard::RETIREMENT_CAPACITY
-            + crate::desktop::EDITOR_RETIREMENT_CAPACITY
-            + crate::shell_menu::RETIREMENT_CAPACITY
-            + crate::watch::RETIREMENT_CAPACITY
-            + crate::network_neighborhood::RETIREMENT_CAPACITY
-            + crate::file_list_actor::RETIREMENT_CAPACITY
-            + crate::archive_sizes::RETIREMENT_CAPACITY
-            + crate::archives::RETIREMENT_CAPACITY
-            + crate::report_arena::RETIREMENT_CAPACITY
-            + crate::tree_rename::RETIREMENT_CAPACITY
-            + crate::find::RETIREMENT_CAPACITY;
-        let domain = RetirementDomain::try_start(capacity, 8)?;
+        let domain = RetirementDomain::try_start(DOMAIN_CAPACITY, DOMAIN_WAITERS)?;
         // No native child exists until this separate fixed process tracker is ready.
         let user_command_processes = crate::user_command_runtime::ProcessTracker::try_start()?;
         let desktop_openers = crate::user_command_runtime::ProcessTracker::try_start_openers()?;
@@ -157,5 +164,56 @@ impl DragRetirement {
             pending: domain.try_reserve().unwrap(),
             backlog: domain.new_waiter().unwrap(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{DOMAIN_CAPACITY, DOMAIN_WAITERS};
+
+    const LIFETIME_DOC: &str = include_str!("../../../docs/developer/ENGINE_LIFETIME.md");
+
+    #[test]
+    fn lifetime_document_states_the_domain_capacity_and_its_breakdown() {
+        let words = [
+            "zero", "one", "two", "three", "four", "five", "six", "seven", "eight",
+        ];
+        let stated = format!(
+            "domain with {DOMAIN_CAPACITY} payload slots and {} reusable waiter tokens",
+            words[DOMAIN_WAITERS]
+        );
+        let text = LIFETIME_DOC
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(
+            text.contains(&stated),
+            "ENGINE_LIFETIME.md must state: {stated}"
+        );
+
+        let table = LIFETIME_DOC
+            .split("| Owners | Slots |")
+            .nth(1)
+            .expect("capacity table");
+        let rows: Vec<&str> = table
+            .lines()
+            .skip(2)
+            .take_while(|line| line.starts_with('|'))
+            .collect();
+        assert!(!rows.is_empty(), "capacity table rows");
+        let total: usize = rows
+            .iter()
+            .map(|row| {
+                let slots = row.trim_end_matches('|').rsplit('|').next().unwrap_or("");
+                slots
+                    .trim()
+                    .parse::<usize>()
+                    .unwrap_or_else(|_| panic!("slot count in {row:?}"))
+            })
+            .sum();
+        assert_eq!(
+            total, DOMAIN_CAPACITY,
+            "the ENGINE_LIFETIME.md capacity table must add up to the domain capacity"
+        );
     }
 }
