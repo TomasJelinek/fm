@@ -44,26 +44,12 @@ struct OpenWindow {
     requested_font: RefCell<Option<String>>,
     surfaces: RefCell<images::Surfaces>,
 }
+/// Inputs waiting for room in the bounded session queue.
+const MAX_PENDING: usize = 64;
+
 impl OpenWindow {
     fn send(&self, input: Input) {
-        let mut pending = self.pending.borrow_mut();
-        if let Some(old) = pending.last_mut().filter(|old| {
-            !matches!(
-                input,
-                Input::Difference { .. } | Input::DifferenceEdge { .. } | Input::Zoom(_)
-            ) && std::mem::discriminant(*old) == std::mem::discriminant(&input)
-        }) {
-            if let (Input::Scroll { x, y }, Input::Scroll { x: new_x, y: new_y }) =
-                (&mut *old, &input)
-            {
-                *x = (*x + new_x).clamp(-262144.0, 262144.0);
-                *y = (*y + new_y).clamp(-262144.0, 262144.0);
-            } else {
-                *old = input;
-            }
-        } else if pending.len() < 64 {
-            pending.push(input);
-        }
+        queue_input(&mut self.pending.borrow_mut(), input);
     }
     fn close(&self) {
         if !self.closed.replace(true) {
@@ -353,6 +339,44 @@ fn bind(open: &Rc<OpenWindow>, keys: KeyResolver) {
     });
 }
 
+/// Coalesce repeated inputs and bound the queue. The newest geometry is never dropped:
+/// it replaces any queued one, and a full queue sheds its oldest navigation input instead.
+fn queue_input(pending: &mut Vec<Input>, input: Input) {
+    if matches!(input, Input::Resize(..)) {
+        pending.retain(|old| !matches!(old, Input::Resize(..)));
+        pending.push(input);
+    } else if let Some(old) = pending.last_mut().filter(|old| {
+        !matches!(
+            input,
+            Input::Difference { .. } | Input::DifferenceEdge { .. } | Input::Zoom(_)
+        ) && std::mem::discriminant(*old) == std::mem::discriminant(&input)
+    }) {
+        match (&mut *old, input) {
+            (Input::Scroll { x, y }, Input::Scroll { x: new_x, y: new_y }) => {
+                *x = (*x + new_x).clamp(-262144.0, 262144.0);
+                *y = (*y + new_y).clamp(-262144.0, 262144.0);
+            }
+            // Key repeats accumulate; replacing them would lose steps.
+            (Input::Lines(lines), Input::Lines(more))
+            | (Input::Pages(lines), Input::Pages(more)) => {
+                *lines = lines.saturating_add(more);
+            }
+            (old, input) => *old = input,
+        }
+    } else {
+        pending.push(input);
+    }
+    while pending.len() > MAX_PENDING {
+        let Some(oldest) = pending
+            .iter()
+            .position(|old| !matches!(old, Input::Resize(..)))
+        else {
+            break;
+        };
+        pending.remove(oldest);
+    }
+}
+
 fn key(open: &OpenWindow, action: &str) -> bool {
     // File fields own editing/navigation keys, even if mapped globally for the viewer.
     if open.window.get_choosing_files() && action != "viewer.close" {
@@ -369,18 +393,12 @@ fn key(open: &OpenWindow, action: &str) -> bool {
         "compare.last-difference" => Input::DifferenceEdge { last: true },
         "viewer.first" => Input::Seek(0.0),
         "viewer.last" => Input::Seek(1.0),
-        "viewer.up" => Input::Scroll { x: 0.0, y: 24.0 },
-        "viewer.down" => Input::Scroll { x: 0.0, y: -24.0 },
+        "viewer.up" => Input::Lines(-1),
+        "viewer.down" => Input::Lines(1),
         "viewer.left" => Input::Scroll { x: 48.0, y: 0.0 },
         "viewer.right" => Input::Scroll { x: -48.0, y: 0.0 },
-        "viewer.page-up" => Input::Scroll {
-            x: 0.0,
-            y: open.window.get_content_height(),
-        },
-        "viewer.page-down" => Input::Scroll {
-            x: 0.0,
-            y: -open.window.get_content_height(),
-        },
+        "viewer.page-up" => Input::Pages(-1),
+        "viewer.page-down" => Input::Pages(1),
         "viewer.zoom-in" => Input::Zoom(1.25),
         "viewer.zoom-out" => Input::Zoom(0.8),
         "viewer.fit" => Input::Fit,
@@ -392,4 +410,52 @@ fn key(open: &OpenWindow, action: &str) -> bool {
 }
 fn color(value: [u8; 4]) -> slint::Color {
     slint::Color::from_argb_u8(value[3], value[0], value[1], value[2])
+}
+
+#[cfg(test)]
+mod queue_tests {
+    use super::*;
+
+    fn resize(width: u32, revision: u64) -> Input {
+        Input::Resize(
+            ViewerGeometry {
+                width,
+                height: 10,
+                scale: 1.0,
+            },
+            revision,
+        )
+    }
+
+    #[test]
+    fn a_full_queue_keeps_the_newest_geometry_and_accumulates_key_steps() {
+        let mut pending = Vec::new();
+        queue_input(&mut pending, resize(100, 1));
+        for _ in 0..3 {
+            queue_input(&mut pending, Input::Lines(1));
+        }
+        queue_input(&mut pending, Input::Pages(-1));
+        queue_input(&mut pending, Input::Pages(-1));
+        assert!(matches!(
+            pending[..],
+            [Input::Resize(_, 1), Input::Lines(3), Input::Pages(-2)]
+        ));
+        for _ in 0..MAX_PENDING {
+            queue_input(&mut pending, Input::Zoom(1.25));
+        }
+        assert_eq!(pending.len(), MAX_PENDING);
+        queue_input(&mut pending, resize(200, 2));
+        assert_eq!(pending.len(), MAX_PENDING);
+        assert!(
+            matches!(pending.last(), Some(Input::Resize(geometry, 2)) if geometry.width == 200),
+            "the newest geometry is never dropped"
+        );
+        assert_eq!(
+            pending
+                .iter()
+                .filter(|input| matches!(input, Input::Resize(..)))
+                .count(),
+            1
+        );
+    }
 }

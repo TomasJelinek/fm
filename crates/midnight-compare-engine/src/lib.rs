@@ -29,6 +29,10 @@ pub type NativeCapture = Arc<
         + Sync,
 >;
 
+/// Backend-only storage query: true only when the native path is positively identified
+/// as local solid-state storage. Its sources then share the process-wide I/O gate.
+pub type StorageHint = Arc<dyn Fn(&std::path::Path) -> bool + Send + Sync>;
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ImageMode {
     #[default]
@@ -47,10 +51,15 @@ pub enum Input {
         owner: PathPickerOwner,
     },
     Resize(ViewerGeometry, u64),
+    /// Logical pixels, e.g. a wheel; text converts them with its painted row height.
     Scroll {
         x: f32,
         y: f32,
     },
+    /// Keyboard line steps: exactly one text row each, or a fixed image pan.
+    Lines(i32),
+    /// Keyboard page steps: the fully visible text rows, or one viewport of an image.
+    Pages(i32),
     Seek(f64),
     Difference {
         backwards: bool,
@@ -123,10 +132,15 @@ impl Mailbox {
     }
 }
 
+/// Installed image viewers, discovered once by the first comparison worker that needs them.
+type ImageProviders = Arc<Mutex<Option<Arc<[midnight_image_viewer_host::Provider]>>>>;
+
 #[derive(Clone)]
 pub struct Service {
     handle: tokio::runtime::Handle,
     capture: NativeCapture,
+    storage: Option<StorageHint>,
+    providers: ImageProviders,
     active: Arc<AtomicUsize>,
     picker: Option<Arc<dyn PathPickerService>>,
 }
@@ -181,12 +195,19 @@ impl Service {
         Self {
             handle,
             capture,
+            storage: None,
+            providers: Arc::new(Mutex::new(None)),
             active: Arc::new(AtomicUsize::new(0)),
             picker: None,
         }
     }
     pub fn with_path_picker(mut self, picker: Arc<dyn PathPickerService>) -> Self {
         self.picker = Some(picker);
+        self
+    }
+    /// Without a hint every comparison read is admitted exclusively, like unknown storage.
+    pub fn with_storage_hint(mut self, storage: StorageHint) -> Self {
+        self.storage = Some(storage);
         self
     }
     pub fn has_path_picker(&self) -> bool {
@@ -210,21 +231,14 @@ impl Service {
         let output = mailbox.clone();
         let stop = cancelled.clone();
         let capture = self.capture.clone();
+        let storage = self.storage.clone();
+        let providers = self.providers.clone();
         let picker_cancel = Cancellation::default();
         let picker = file_choice::Picker {
             service: self.picker.clone(),
             cancel: picker_cancel.clone(),
         };
-        #[cfg(test)]
-        let worker_queued = std::time::Instant::now();
         self.handle.spawn_blocking(move || {
-            #[cfg(test)]
-            eprintln!(
-                "Comparator worker={:?} mailbox={:p} phase=worker-started queued_for={:?}",
-                std::thread::current().id(),
-                output.as_ref(),
-                worker_queued.elapsed()
-            );
             let _permit = permit;
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 worker::run(
@@ -235,6 +249,8 @@ impl Service {
                     &output,
                     worker::Capture {
                         factory: &capture,
+                        storage: storage.as_ref(),
+                        providers: &providers,
                         cancel: &stop,
                     },
                     picker,
@@ -258,15 +274,6 @@ impl Service {
     pub fn retire<T: Send + 'static>(&self, value: T) {
         self.handle.spawn_blocking(move || drop(value));
     }
-}
-
-#[cfg(test)]
-fn trace_first_frame(phase: &str, started: std::time::Instant) {
-    eprintln!(
-        "Comparator worker={:?} phase={phase} elapsed={:?}",
-        std::thread::current().id(),
-        started.elapsed()
-    );
 }
 
 fn check_cancel(cancel: &AtomicBool) -> Result<(), String> {

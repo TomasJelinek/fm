@@ -125,11 +125,6 @@ fn wait_for<T>(mut poll: impl FnMut(&mut Option<String>) -> Option<T>) -> T {
 }
 
 fn frame(session: &Session) -> Frame {
-    eprintln!(
-        "Comparator frame waiter test={:?} mailbox={:p}",
-        std::thread::current().name(),
-        session.mailbox.as_ref()
-    );
     wait_for(|last_status| match session.mailbox.take() {
         Some(Output::Frame { frame, .. }) => Some(frame),
         Some(Output::ChooseFiles(choice)) => panic!("Unexpected file choice: {choice:?}"),
@@ -142,11 +137,6 @@ fn frame(session: &Session) -> Frame {
 }
 
 fn choice(session: &Session) -> FileChoice {
-    eprintln!(
-        "Comparator choice waiter test={:?} mailbox={:p}",
-        std::thread::current().name(),
-        session.mailbox.as_ref()
-    );
     wait_for(|last_status| match session.mailbox.take() {
         Some(Output::ChooseFiles(choice)) => Some(choice),
         Some(Output::Frame { .. }) => panic!("Capture failure must not produce a frame"),
@@ -156,6 +146,58 @@ fn choice(session: &Session) -> FileChoice {
         }
         None => None,
     })
+}
+
+#[test]
+fn storage_hints_are_queried_on_the_worker_and_viewers_are_discovered_once_per_service() {
+    let root = fixture();
+    let paths = paths(root.path());
+    let reads = Arc::new(AtomicUsize::new(0));
+    let expected = paths.clone();
+    let capture: NativeCapture = Arc::new(move |path, _| {
+        if path == expected[0] {
+            memory(b"same\nold\n", &reads)
+        } else {
+            memory(b"same\nnew\n", &reads)
+        }
+    });
+    let queried = Arc::new(Mutex::new(Vec::new()));
+    let record = queried.clone();
+    let caller = std::thread::current().id();
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let service = Service::with_native_capture(runtime.handle().clone(), capture)
+        .with_storage_hint(Arc::new(move |path| {
+            assert_ne!(
+                std::thread::current().id(),
+                caller,
+                "storage queries are backend work"
+            );
+            record.lock().unwrap().push(path.to_path_buf());
+            true
+        }));
+    let first = open(&service, launch(&paths)).unwrap();
+    assert!(frame(&first).status.contains("1 difference group"));
+    let discovered = service
+        .providers
+        .lock()
+        .unwrap()
+        .clone()
+        .expect("the first comparison discovers installed image viewers");
+    let second = open(&service, launch(&paths)).unwrap();
+    frame(&second);
+    assert!(Arc::ptr_eq(
+        &discovered,
+        service.providers.lock().unwrap().as_ref().unwrap()
+    ));
+    assert_eq!(
+        *queried.lock().unwrap(),
+        [
+            paths[0].clone(),
+            paths[1].clone(),
+            paths[0].clone(),
+            paths[1].clone()
+        ]
+    );
 }
 
 #[test]

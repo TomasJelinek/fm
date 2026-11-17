@@ -2,7 +2,7 @@ use super::*;
 use midnight_core::{
     DirectoryIndex, Entry, EntryId, EntryKind, FileCompareSource, SelectionSnapshot,
 };
-use std::{path::PathBuf, sync::Arc};
+use std::{path::PathBuf, sync::Arc, time::Duration};
 
 #[cfg(unix)]
 #[path = "worker_raw_unix_tests.rs"]
@@ -251,11 +251,6 @@ fn service_reads_and_renders_real_unicode_sources_off_thread() {
             },
         )
         .unwrap();
-    eprintln!(
-        "Comparator Unicode waiter test={:?} mailbox={:p}",
-        std::thread::current().name(),
-        session.mailbox.as_ref()
-    );
     let start = std::time::Instant::now();
     let mut last_status = None;
     loop {

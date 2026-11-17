@@ -9,7 +9,9 @@ use slint::{
         PointerEventButton, WindowEvent,
         software_renderer::{MinimalSoftwareWindow, RepaintBufferType},
     },
-    private_unstable_api::re_exports::{AccessibleStringProperty, ItemRc, WindowInner},
+    private_unstable_api::re_exports::{
+        AccessibilityAction, AccessibleStringProperty, ItemRc, WindowInner,
+    },
 };
 use std::{
     cell::RefCell,
@@ -72,6 +74,59 @@ fn draw(
         }
         std::fs::write(directory.join(format!("{name}-{width}x{height}.ppm")), data).unwrap();
     }
+}
+
+#[test]
+fn swipe_slider_and_font_chooser_keep_following_shared_state_after_user_changes() {
+    let native = MinimalSoftwareWindow::new(RepaintBufferType::ReusedBuffer);
+    slint::platform::set_platform(Box::new(support::TestPlatform(native.clone()))).unwrap();
+    let window = ComparatorWindow::new().unwrap();
+    let amounts = Rc::new(RefCell::new(Vec::new()));
+    let record = amounts.clone();
+    window.on_change_amount(move |value| record.borrow_mut().push(value));
+    window.show().unwrap();
+    let value = |label: &str| {
+        find(
+            ItemRc::new_root(WindowInner::from_pub(window.window()).component()),
+            label,
+        )
+        .unwrap_or_else(|| panic!("Missing {label}"))
+        .accessible_string_property(AccessibleStringProperty::Value)
+        .unwrap()
+    };
+    window.set_image_mode(true);
+    window.set_mode(1);
+    draw(&native, &window, 1100, 740, "swipe-slider");
+    find(
+        ItemRc::new_root(WindowInner::from_pub(window.window()).component()),
+        "Swipe divider",
+    )
+    .unwrap()
+    .accessible_action(&AccessibilityAction::SetValue("0.3".into()));
+    assert!((window.get_amount() - 0.3).abs() < 1e-6);
+    assert_eq!(amounts.borrow().len(), 1);
+    assert!((amounts.borrow()[0] - 0.3).abs() < 1e-6);
+    // A canvas drag or the backend later moves the divider; the thumb must follow it.
+    window.set_amount(0.8);
+    draw(&native, &window, 1100, 740, "swipe-slider-moved");
+    let thumb: f32 = value("Swipe divider").parse().unwrap();
+    assert!((thumb - 0.8).abs() < 1e-6, "slider thumb stayed at {thumb}");
+
+    window.set_image_mode(false);
+    window.set_font_families(slint::ModelRc::new(slint::VecModel::from(vec![
+        slint::SharedString::from("System monospace"),
+        "Alpha Mono".into(),
+        "Beta Mono".into(),
+    ])));
+    window.set_fonts_ready(true);
+    window.set_font_index(1);
+    draw(&native, &window, 1100, 740, "font-chooser");
+    assert_eq!(value("Text comparison font"), "Alpha Mono");
+    // The replaced model must not detach the chooser from later backend selections.
+    window.set_font_index(2);
+    draw(&native, &window, 1100, 740, "font-chooser-reselected");
+    assert_eq!(value("Text comparison font"), "Beta Mono");
+    window.hide().unwrap();
 }
 
 #[test]

@@ -10,15 +10,10 @@ use slint::{
         software_renderer::{MinimalSoftwareWindow, RepaintBufferType},
     },
 };
-use std::{
-    cell::RefCell,
-    rc::Rc,
-    sync::Arc,
-    time::{Duration, Instant},
-};
+use std::{cell::RefCell, rc::Rc, sync::Arc};
 #[path = "support/mod.rs"]
 mod support;
-use support::TestPlatform;
+use support::{TestPlatform, wait_for};
 
 #[test]
 fn real_keys_jump_both_sides_without_wrapping_losing_repeats_or_bypassing_overrides() {
@@ -88,7 +83,9 @@ fn real_keys_jump_both_sides_without_wrapping_losing_repeats_or_bypassing_overri
     native.draw_if_needed(|renderer| {
         renderer.render(&mut pixels, 800);
     });
-    wait_for(|| window.get_status().contains("3 difference groups"));
+    wait_for(&window, "present its first frame", || {
+        window.get_status().contains("3 difference groups")
+    });
     window.invoke_focus_content();
     assert_group(&window, 0);
     chord(&window, Some(Key::Alt), Key::DownArrow.into());
@@ -113,7 +110,7 @@ fn real_keys_jump_both_sides_without_wrapping_losing_repeats_or_bypassing_overri
     chord(&window, Some(Key::Shift), Key::F7.into());
     wait_group(&window, 0);
     chord(&window, None, Key::DownArrow.into());
-    wait_for(|| {
+    wait_for(&window, "scroll one row", || {
         window
             .get_accessible_text()
             .lines()
@@ -160,7 +157,7 @@ fn chord(window: &ComparatorWindow, modifier: Option<Key>, text: slint::SharedSt
     }
 }
 fn wait_group(window: &ComparatorWindow, row: usize) {
-    wait_for(|| {
+    wait_for(window, &format!("present difference OLD-{row}"), || {
         window
             .get_accessible_text()
             .lines()
@@ -181,15 +178,4 @@ fn assert_group(window: &ComparatorWindow, row: usize) {
         right.ends_with(&format!("NEW-{row}")),
         "Right hunk is not visible: {right}"
     );
-}
-fn wait_for(done: impl Fn() -> bool) {
-    let deadline = Instant::now() + Duration::from_secs(15);
-    while !done() {
-        assert!(
-            Instant::now() < deadline,
-            "Comparator did not present the requested difference"
-        );
-        std::thread::sleep(Duration::from_millis(10));
-        slint::platform::update_timers_and_animations();
-    }
 }

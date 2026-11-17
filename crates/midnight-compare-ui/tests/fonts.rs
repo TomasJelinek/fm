@@ -4,16 +4,11 @@ use slint::{
     ComponentHandle, Model,
     platform::software_renderer::{MinimalSoftwareWindow, RepaintBufferType},
 };
-use std::{
-    cell::RefCell,
-    rc::Rc,
-    sync::Arc,
-    time::{Duration, Instant},
-};
+use std::{cell::RefCell, rc::Rc, sync::Arc};
 
 #[path = "support/mod.rs"]
 mod support;
-use support::TestPlatform;
+use support::{TestPlatform, wait_for};
 
 #[test]
 fn comparator_offers_fixed_pitch_fonts_persists_explicit_choice_and_fits_small_window() {
@@ -52,7 +47,9 @@ fn comparator_offers_fixed_pitch_fonts_persists_explicit_choice_and_fits_small_w
         .unwrap()
         .upgrade()
         .unwrap();
-    wait_for(|| window.get_fonts_ready());
+    wait_for(&window, "finish font discovery", || {
+        window.get_fonts_ready()
+    });
     let families = window.get_font_families();
     assert_eq!(families.row_data(0).unwrap(), "System monospace");
     assert!(
@@ -77,10 +74,13 @@ fn comparator_offers_fixed_pitch_fonts_persists_explicit_choice_and_fits_small_w
         window.invoke_change_font(0);
         window.invoke_change_font(1);
         window.invoke_change_font(0);
-        wait_for(|| window.get_font_index() == 0);
+        wait_for(&window, "select the requested font", || {
+            window.get_font_index() == 0
+        });
         assert_eq!(saved.borrow().last().unwrap(), "monospace");
+        // Frames still in flight for the earlier choices must not move the selection back.
         for _ in 0..10 {
-            std::thread::sleep(Duration::from_millis(20));
+            std::thread::sleep(std::time::Duration::from_millis(20));
             slint::platform::update_timers_and_animations();
         }
         assert_eq!(window.get_font_index(), 0);
@@ -102,16 +102,4 @@ fn comparator_offers_fixed_pitch_fonts_persists_explicit_choice_and_fits_small_w
     manager.close_all();
     drop(runtime);
     std::fs::remove_dir_all(&directory).unwrap();
-}
-
-fn wait_for(done: impl Fn() -> bool) {
-    let deadline = Instant::now() + Duration::from_secs(15);
-    while !done() {
-        assert!(
-            Instant::now() < deadline,
-            "Comparator did not finish font discovery/rendering"
-        );
-        std::thread::sleep(Duration::from_millis(10));
-        slint::platform::update_timers_and_animations();
-    }
 }
