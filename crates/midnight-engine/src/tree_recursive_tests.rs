@@ -1,5 +1,5 @@
 use super::*;
-use midnight_core::TreeEvent;
+use midnight_core::{TreeEvent, TreeRefreshRequest};
 
 fn row_named(session: &Session, name: &str) -> TreeRowId {
     session
@@ -164,6 +164,84 @@ fn ctrl_on_an_already_expanded_folder_still_expands_descendants() {
             .iter()
             .any(|row| row.entry.display_name == "grandchild")
     );
+}
+
+#[test]
+fn viewport_probes_queued_between_batches_never_end_the_walk() {
+    let mut fixture = wide_fixture();
+    expand_recursive(&mut fixture, "z-parent", 1);
+    assert_eq!(one_batch(&mut fixture), 128);
+    let view = fixture.session.projection().clone();
+    assert!(fixture.session.commit(&view));
+    // The presenter reports the visible rows after every Commit. Name the still
+    // unknown children in walk order, so the next batch expands the probed rows.
+    let mut unknown = view
+        .rows
+        .iter()
+        .filter(|row| row.disclosure == midnight_core::TreeDisclosure::Unknown)
+        .filter_map(|row| {
+            let index = row.entry.display_name.strip_prefix("child-")?;
+            Some((index.parse::<u64>().unwrap(), row.id))
+        })
+        .collect::<Vec<_>>();
+    unknown.sort_unstable_by_key(|(index, _)| *index);
+    let visible = unknown.iter().map(|(_, row)| *row).collect::<Vec<_>>();
+    fixture.session.viewport(&view, &visible).unwrap();
+    assert_eq!(fixture.session.queue.len(), QUEUE_CAPACITY);
+    let calls = fixture.graph.lists.load(Ordering::Relaxed);
+    one_batch(&mut fixture);
+    assert!(
+        fixture.session.queue.is_empty(),
+        "the walk answers the probes of the branches it lists"
+    );
+    // The next batch waits for Commit; a stale probe must not end the session.
+    assert!(fixture.session.take_work().unwrap().is_none());
+    assert!(fixture.session.take_recursive_notice().is_none());
+    drain(&mut fixture, 256);
+    assert_eq!(
+        fixture.graph.lists.load(Ordering::Relaxed) - calls,
+        129,
+        "the remaining 129 children are listed once; no probe duplicates the walk"
+    );
+    assert!(
+        fixture
+            .session
+            .projection()
+            .rows
+            .iter()
+            .all(|row| row.error.is_none())
+    );
+    assert!(
+        fixture
+            .session
+            .projection()
+            .rows
+            .iter()
+            .filter(|row| row.entry.display_name.starts_with("child-"))
+            .all(|row| row.disclosure == midnight_core::TreeDisclosure::Empty)
+    );
+}
+
+#[test]
+fn a_probe_answered_meanwhile_is_dropped_instead_of_failing_the_session() {
+    let mut fixture = fixture();
+    let view = fixture.session.projection().clone();
+    assert!(fixture.session.commit(&view));
+    let row = row_named(&fixture.session, "z-parent");
+    fixture.session.viewport(&view, &[row]).unwrap();
+    // A maintenance-free path that answers the queued probe: the user's own
+    // expansion of another view of the same branch, applied directly.
+    let branch = fixture.session.visible_branch(row).unwrap();
+    let work = fixture
+        .session
+        .tree
+        .request(branch, TreeRequest::Expand)
+        .unwrap();
+    assert!(fixture.session.tree.apply(work.run()));
+    assert!(fixture.session.tree.state(branch).unwrap().expanded);
+    assert!(fixture.session.take_work().unwrap().is_none());
+    assert!(fixture.session.take_branch_notice().is_none());
+    assert_eq!(fixture.session.queued(), 0);
 }
 
 #[test]
@@ -397,6 +475,76 @@ fn reordered_inserted_and_removed_children_pause_the_occurrence_cursor_after_ref
         };
         assert!(error.as_str().contains("changed"));
         assert!(Arc::ptr_eq(fixture.session.projection(), &refreshed));
+    }
+}
+
+#[test]
+fn unchanged_refresh_of_stacked_branches_keeps_the_walk_running() {
+    for maintenance in [false, true] {
+        let mut fixture = wide_fixture();
+        expand_recursive(&mut fixture, "z-parent", 1);
+        assert_eq!(one_batch(&mut fixture), 128);
+        let view = fixture.session.projection().clone();
+        assert!(fixture.session.commit(&view));
+        if maintenance {
+            // A watch event or finished transfer re-lists every loaded branch,
+            // including every frame on the walk's stack, between batches.
+            fixture
+                .session
+                .refresh_loaded(
+                    &TreeRefreshRequest {
+                        view: view.clone(),
+                        request: TreeRequestId(2),
+                    },
+                    &Cancellation::default(),
+                )
+                .unwrap();
+        } else {
+            let root = row_named(&fixture.session, "z-parent");
+            fixture
+                .session
+                .branch(&view, TreeRequestId(2), root, BranchAction::Refresh)
+                .unwrap();
+        }
+        // Maintenance and recursive jobs interleave; drive both to completion.
+        let mut jobs = 0;
+        loop {
+            let view = fixture.session.projection().clone();
+            assert!(fixture.session.commit(&view));
+            let Some(job) = fixture.session.take_work().unwrap() else {
+                break;
+            };
+            let recursive = job.recursive();
+            if recursive {
+                assert!(fixture.session.set_recursive_batch_elapsed(false));
+            }
+            fixture
+                .session
+                .apply(job.run(), &Cancellation::default())
+                .unwrap();
+            jobs += 1;
+            assert!(jobs <= 300, "the walk and the pass must not spin");
+        }
+        assert!(
+            fixture.session.take_recursive_notice().is_none(),
+            "an unchanged re-listing keeps the walk's child cursors valid"
+        );
+        if maintenance {
+            assert!(matches!(
+                fixture.session.finish_refresh(),
+                Some(TreeEvent::Refreshed { result: Ok(()), .. })
+            ));
+        }
+        assert!(
+            fixture
+                .session
+                .projection()
+                .rows
+                .iter()
+                .filter(|row| row.entry.display_name.starts_with("child-"))
+                .all(|row| row.disclosure == midnight_core::TreeDisclosure::Empty),
+            "the walk completed (maintenance {maintenance})"
+        );
     }
 }
 

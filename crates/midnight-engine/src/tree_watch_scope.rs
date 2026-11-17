@@ -36,7 +36,7 @@ impl Session {
                 && let Some(branch) = self.projection_state.branch(row.id)
                 // Empty rows hide the disclosure affordance but retain explicit
                 // expansion intent. Continue observing them for newly added children.
-                && self.tree.state(branch).is_some_and(|state| state.expanded)
+                && self.tree.expanded(branch)
                 && self.tree.loaded_native_branch(branch)
             {
                 eligible.insert(branch);

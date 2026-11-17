@@ -2,10 +2,16 @@
 use super::{CapturedTarget, Session, check_cancel};
 use crate::providers::{ArchiveTarget, MountedLocation, ProviderError, ProviderTarget};
 use midnight_core::{
-    ArchiveMount, Cancellation, NodeRef, SelectionRevision, TreeProjection, TreeRowId,
-    TreeSelectionSnapshot,
+    ArchiveMount, Cancellation, EntryKind, FsError, NodeRef, SelectionRevision, TreeProjection,
+    TreeRowId, TreeSelectionSnapshot,
 };
-use std::{mem::size_of, path::PathBuf, sync::Arc};
+use std::{
+    collections::HashSet,
+    io,
+    mem::size_of,
+    path::{Component, Path, PathBuf},
+    sync::Arc,
+};
 
 // Match existing clipboard, checksum and command capture counts. These are batch
 // admission budgets, not new panel-size or individual native path-length limits.
@@ -274,4 +280,77 @@ fn archive_charge(target: &ArchiveTarget) -> usize {
         bytes = bytes.saturating_add(node.display_name.capacity());
     }
     bytes
+}
+
+/// Shared policy for captured tree actions. Each consumer supplies its own
+/// operation label and message; the rules themselves must not diverge.
+pub(crate) fn capture_failure(operation: &'static str, error: ProviderError) -> FsError {
+    let kind = match error {
+        ProviderError::Cancelled => io::ErrorKind::Interrupted,
+        ProviderError::Unsupported => io::ErrorKind::Unsupported,
+        _ => io::ErrorKind::InvalidData,
+    };
+    FsError::from_io(operation, Path::new(""), io::Error::new(kind, error))
+}
+
+/// A captured native file or folder occurrence: absolute, NUL-free and ending
+/// in a normal name, never parent navigation or a volume root.
+pub(crate) fn validate_native_leaf(
+    path: &Path,
+    message: &'static str,
+) -> Result<(), ProviderError> {
+    if !path.is_absolute()
+        || path.as_os_str().as_encoded_bytes().contains(&0)
+        || !matches!(path.components().next_back(), Some(Component::Normal(_)))
+        || path.file_name().is_none()
+    {
+        return Err(ProviderError::InvalidResponse(message));
+    }
+    Ok(())
+}
+
+/// The nearest selected ancestor covering `row` in the captured view. Overlap
+/// through a link or another non-directory ancestor is refused with `overlap`:
+/// such roots must be handled separately, never as one mutable subtree.
+pub(crate) fn covering_ancestor(
+    view: &TreeProjection,
+    row: TreeRowId,
+    selected: &HashSet<TreeRowId>,
+    overlap: &'static str,
+) -> Result<Option<TreeRowId>, ProviderError> {
+    let lookup = |id: TreeRowId| {
+        view.index
+            .row_positions
+            .get(&id)
+            .and_then(|position| view.rows.get(*position))
+            .ok_or(ProviderError::StaleReference)
+    };
+    let parent = lookup(row)?.parent;
+    covering_chain(parent, selected, overlap, |id| {
+        let row = lookup(id)?;
+        Ok((row.entry.kind, row.parent))
+    })
+}
+
+/// Ancestor walk behind [`covering_ancestor`], over any occurrence lookup.
+pub(crate) fn covering_chain(
+    mut parent: Option<TreeRowId>,
+    selected: &HashSet<TreeRowId>,
+    overlap: &'static str,
+    mut lookup: impl FnMut(TreeRowId) -> Result<(EntryKind, Option<TreeRowId>), ProviderError>,
+) -> Result<Option<TreeRowId>, ProviderError> {
+    let mut crossed_boundary = false;
+    for _ in 0..=TreeProjection::MAX_DEPTH {
+        let Some(id) = parent else { return Ok(None) };
+        let (kind, next) = lookup(id)?;
+        crossed_boundary |= kind != EntryKind::Directory;
+        if selected.contains(&id) {
+            if crossed_boundary {
+                return Err(ProviderError::Failed(overlap.into()));
+            }
+            return Ok(Some(id));
+        }
+        parent = next;
+    }
+    Err(ProviderError::StaleReference)
 }

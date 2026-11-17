@@ -52,6 +52,14 @@ impl DirectoryService for Files {
                 EntryKind::File
             },
         ));
+        if !self.1 {
+            // A changed root listing, so maintenance publishes a new projection.
+            emit(Entry::new(
+                EntryId(2),
+                path.join("added.txt"),
+                EntryKind::File,
+            ));
+        }
         Ok(())
     }
     fn listing_metadata_complete(&self, _: &Entry) -> bool {
@@ -187,10 +195,34 @@ fn fixture_with_gate(hold_mutation: bool) -> (Fixture, Option<OwnedSemaphorePerm
     )
 }
 
+async fn next_completion(lane: &Mailbox) -> crate::tree_actor::BranchCompletion {
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if let Some(Input::Completion(completion)) = lane.pop() {
+                break completion;
+            }
+            lane.wake.notified().await;
+        }
+    })
+    .await
+    .unwrap()
+}
+
+fn tree_event(receiver: &mut mpsc::Receiver<Event>) -> TreeEvent {
+    match receiver.try_recv().unwrap() {
+        Event::Tree(event) => *event,
+        other => panic!("tree event expected: {other:?}"),
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn copy_share_blocks_explicit_expand_and_maintenance_until_release() {
+async fn explicit_expand_completes_while_maintenance_waits_for_a_copy_share() {
     let (mut fixture, held) = fixture_with_gate(true);
-    assert!(!fixture.worker.inflight);
+    assert!(!fixture.worker.inflight, "maintenance needs every share");
+    assert!(matches!(
+        fixture.worker.session.as_ref().unwrap().waiting_on(),
+        Wait::Namespace
+    ));
     fixture.receiver.try_recv().unwrap();
     fixture.worker.command(TreeCommand::Branch {
         view: fixture.view.clone(),
@@ -199,14 +231,47 @@ async fn copy_share_blocks_explicit_expand_and_maintenance_until_release() {
         action: TreeBranchAction::Expand,
     });
     fixture.worker.pump();
-    assert!(!fixture.worker.inflight);
+    assert!(
+        fixture.worker.inflight,
+        "browsing does not wait for a transfer"
+    );
     assert!(!fixture.worker.maintenance_inflight);
     assert_eq!(
         fixture.mutation.available_permits(),
         NAMESPACE_WEIGHT as usize - 1,
-        "one Copy share blocks both kinds of exclusive tree listing"
+        "explicit expansion takes no transfer share"
     );
-    assert!(fixture.lane.take_completion().is_none());
+    let TreeEvent::Published(loading) = tree_event(&mut fixture.receiver) else {
+        panic!("explicit expansion publishes its Loading row");
+    };
+    assert_eq!(loading.view.rows[0].disclosure, TreeDisclosure::Loading);
+    tokio::time::timeout(Duration::from_secs(2), fixture.gate.entered.notified())
+        .await
+        .unwrap();
+    fixture.gate.release();
+    let completion = next_completion(&fixture.lane).await;
+    let Some(TreeEvent::Published(publication)) = fixture.worker.complete(completion) else {
+        panic!("completed listing must publish");
+    };
+    assert_eq!(publication.view.rows[0].disclosure, TreeDisclosure::Empty);
+    let session = fixture.worker.session.as_mut().unwrap();
+    assert!(session.commit(&publication.view));
+    assert_eq!(
+        session.watch_scope().unwrap().unwrap().targets.len(),
+        2,
+        "confirmed empty directory retains its expansion intent and watch"
+    );
+    fixture.worker.pump();
+    assert!(
+        !fixture.worker.inflight,
+        "maintenance still waits for the copy"
+    );
+    let second_transfer = fixture.mutation.clone().try_acquire_owned();
+    assert!(
+        second_transfer.is_ok(),
+        "a waiting tree must not reserve namespace shares from later transfers"
+    );
+    drop(second_transfer);
     assert!(
         fixture
             .worker
@@ -217,67 +282,192 @@ async fn copy_share_blocks_explicit_expand_and_maintenance_until_release() {
             .is_none()
     );
     drop(held);
-    // This case checks admission, not outbox saturation. Drain normal output
-    // while both queued listings complete; the following cases retain full queues.
-    let mut receiver = fixture.receiver;
-    let output = tokio::spawn(async move {
-        let mut events = Vec::new();
-        while let Some(event) = receiver.recv().await {
-            events.push(event);
-        }
-        events
-    });
-    let mut maintenance = false;
-    let mut explicit = false;
-    for _ in 0..2 {
-        fixture.worker.pump();
-        assert!(fixture.worker.inflight);
-        let is_maintenance = fixture.worker.maintenance_inflight;
-        maintenance |= is_maintenance;
-        explicit |= !is_maintenance;
-        tokio::time::timeout(Duration::from_secs(2), fixture.gate.entered.notified())
-            .await
-            .unwrap();
-        assert_eq!(fixture.mutation.available_permits(), 0);
-        fixture.gate.release();
-        let completion = tokio::time::timeout(Duration::from_secs(2), async {
-            loop {
-                if let Some(Input::Completion(completion)) = fixture.lane.pop() {
-                    break completion;
-                }
-                fixture.lane.wake.notified().await;
-            }
-        })
-        .await
-        .unwrap();
-        let event = fixture.worker.complete(completion).unwrap();
-        let TreeEvent::Published(publication) = event else {
-            panic!("completed listing must publish");
-        };
-        let session = fixture.worker.session.as_mut().unwrap();
-        assert!(session.commit(&publication.view));
-        if !is_maintenance {
-            assert_eq!(publication.view.rows[0].disclosure, TreeDisclosure::Empty);
-            assert_eq!(
-                session.watch_scope().unwrap().unwrap().targets.len(),
-                2,
-                "confirmed empty directory retains its expansion intent and watch"
-            );
-        }
-    }
-    assert!(maintenance && explicit);
     fixture.worker.pump();
+    assert!(fixture.worker.maintenance_inflight);
+    assert_eq!(fixture.mutation.available_permits(), 0);
+    let completion = next_completion(&fixture.lane).await;
+    if let Some(event) = fixture.worker.complete(completion) {
+        assert!(matches!(event, TreeEvent::Published(_)), "{event:?}");
+    }
     assert_eq!(
         fixture.mutation.available_permits(),
         NAMESPACE_WEIGHT as usize
     );
-    drop(fixture.worker);
-    let events = tokio::time::timeout(Duration::from_secs(2), output)
-        .await
-        .unwrap()
-        .unwrap();
-    assert!(events.iter().any(|event| matches!(event, Event::Tree(event)
-            if matches!(event.as_ref(), TreeEvent::Refreshed { result: Ok(()), .. }))));
+    fixture.worker.pump();
+    assert!(matches!(
+        tree_event(&mut fixture.receiver),
+        TreeEvent::Refreshed { result: Ok(()), .. }
+    ));
+}
+
+/// Watch probes observe an empty directory; the fixture's gated provider and
+/// its `entry_metadata` guard stay private to the model worker.
+struct Unobserved;
+impl DirectoryService for Unobserved {
+    fn read_directory(
+        &self,
+        _: &Path,
+        _: &Cancellation,
+        _: &mut dyn FnMut(Entry) -> bool,
+    ) -> Result<(), FsError> {
+        Ok(())
+    }
+    fn entry_metadata(&self, _: &Path) -> Result<EntryMetadata, FsError> {
+        Ok(EntryMetadata::default())
+    }
+}
+impl VolumeService for Unobserved {
+    fn list_volumes(&self) -> Result<Vec<Volume>, FsError> {
+        Ok(vec![])
+    }
+}
+impl StorageService for Unobserved {
+    fn space_info(&self, _: &Path) -> Result<SpaceInfo, FsError> {
+        Ok(SpaceInfo {
+            total: 0,
+            available: 0,
+        })
+    }
+}
+
+/// A production watch controller (15 s polling); nobody reads its hints.
+fn watch_controller() -> (
+    crate::watch::Controller,
+    tokio::task::JoinSet<()>,
+    mpsc::Receiver<Event>,
+) {
+    let domain =
+        crate::retirement::RetirementDomain::try_start(crate::watch::RETIREMENT_CAPACITY, 0)
+            .unwrap();
+    let retirement = crate::watch::Retirement {
+        panes: std::array::from_fn(|_| domain.try_reserve().unwrap()),
+    };
+    let (sender, hints) = mpsc::channel(8);
+    let mut tasks = tokio::task::JoinSet::new();
+    let watch = crate::watch::Controller::new(
+        retirement,
+        crate::task_lifetime::TaskLifetime::testing(()),
+        Arc::new(Unobserved),
+        None,
+        Outbox {
+            sender,
+            wakeup: Arc::new(|| {}),
+        },
+        &mut tasks,
+    );
+    (watch, tasks, hints)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn unchanged_refresh_loaded_publishes_nothing_and_settles_the_watch_without_commit() {
+    // The held share parks the fixture's pass; the root lists unchanged.
+    let (mut fixture, held) = fixture_with_gate(true);
+    fixture.receiver.try_recv().unwrap(); // Output filler.
+    fixture.gate.release();
+    drop(held);
+    // Finish the fixture's own pass, which started without a size swap.
+    fixture.worker.pump();
+    assert!(fixture.worker.maintenance_inflight);
+    let completion = next_completion(&fixture.lane).await;
+    assert!(fixture.worker.complete(completion).is_none());
+    fixture.worker.pump();
+    assert!(matches!(
+        tree_event(&mut fixture.receiver),
+        TreeEvent::Refreshed { result: Ok(()), .. }
+    ));
+    let (watch, mut tasks, _hints) = watch_controller();
+    let handle = watch.handle();
+    fixture.worker.watch = Some(handle.clone());
+    // The exact Commit installs watch authority for the acknowledged view.
+    fixture
+        .worker
+        .command(TreeCommand::Commit(fixture.view.clone()));
+    let session = fixture.worker.session.as_ref().unwrap();
+    let (stamp, eligible) = (session.projection().stamp, session.watch_eligibility());
+    // A scope diagnostic persists until a complete scope is installed again.
+    let failure = TreeDiagnostic::new("fixture scope failure");
+    assert!(handle.scope_failed(stamp, eligible.clone(), failure.clone()));
+    assert!(!handle.scope_failed(stamp, eligible.clone(), failure.clone()));
+    // The production command also installs a new, still empty, size lookup.
+    fixture
+        .worker
+        .command(TreeCommand::RefreshLoaded(TreeRefreshRequest {
+            view: fixture.view.clone(),
+            request: TreeRequestId(2),
+        }));
+    fixture.worker.pump();
+    assert!(fixture.worker.maintenance_inflight);
+    let completion = next_completion(&fixture.lane).await;
+    assert!(
+        fixture.worker.complete(completion).is_none(),
+        "an unchanged listing neither rebuilds nor publishes"
+    );
+    fixture.worker.pump();
+    assert!(matches!(
+        tree_event(&mut fixture.receiver),
+        TreeEvent::Refreshed { result: Ok(()), .. }
+    ));
+    assert!(
+        fixture.receiver.try_recv().is_err(),
+        "neither a publication nor a watch failure follows"
+    );
+    assert!(Arc::ptr_eq(
+        fixture.worker.session.as_ref().unwrap().projection(),
+        &fixture.view
+    ));
+    // No Commit followed, yet the finished pass installed a complete scope for
+    // the acknowledged view after closing its ticket: that installation settles
+    // the refresh fence, and it also cleared the diagnostic.
+    assert!(
+        handle.scope_failed(stamp, eligible, failure),
+        "the finished pass reinstalled the complete watch scope"
+    );
+    watch.shutdown();
+    tokio::time::timeout(Duration::from_secs(3), async {
+        while let Some(result) = tasks.join_next().await {
+            result.unwrap();
+        }
+    })
+    .await
+    .expect("watch workers stop");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn observations_after_terminal_session_failure_are_ignored() {
+    let mut fixture = fixture();
+    fixture.gate.release();
+    fixture.receiver.try_recv().unwrap();
+    fixture
+        .worker
+        .fail_session(ProviderError::Failed("fixture failure".into()));
+    assert!(matches!(
+        tree_event(&mut fixture.receiver),
+        TreeEvent::Unavailable { .. }
+    ));
+    // The UI may still observe the last adopted publication. Answering with a
+    // retryable rejection made it commit again in an endless loop.
+    for _ in 0..3 {
+        let rows = TreeViewport::new(&fixture.view, vec![fixture.view.rows[0].id]).unwrap();
+        for observation in [
+            TreeCommand::Commit(fixture.view.clone()),
+            TreeCommand::Viewport {
+                view: fixture.view.clone(),
+                rows,
+            },
+        ] {
+            fixture.worker.command(observation);
+            assert!(matches!(
+                fixture.receiver.try_recv(),
+                Err(mpsc::error::TryRecvError::Empty)
+            ));
+        }
+    }
+    // Explicit actions still get their terminal, non-retryable answer.
+    fixture.worker.command(selection(fixture.view.clone()));
+    assert!(matches!(
+        tree_event(&mut fixture.receiver),
+        TreeEvent::SelectionFailed { .. }
+    ));
 }
 
 fn selection(view: Arc<TreeProjection>) -> TreeCommand {
@@ -485,4 +675,68 @@ async fn queued_observations_superseded_by_completion_do_not_report_errors() {
         fixture.receiver.try_recv(),
         Err(mpsc::error::TryRecvError::Empty)
     ));
+}
+
+/// Closes the lane even when an assertion fails, so a running worker returns
+/// and the test runtime can shut down.
+struct CloseOnDrop(Arc<Mailbox>);
+impl Drop for CloseOnDrop {
+    fn drop(&mut self) {
+        self.0.close();
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_running_worker_retries_maintenance_without_reserving_transfer_shares() {
+    // A transfer holds one namespace share while the fixture's pass is pending.
+    let (mut fixture, held) = fixture_with_gate(true);
+    fixture.receiver.try_recv().unwrap(); // Output filler.
+    fixture.gate.release();
+    let retries = Arc::new(Notify::new());
+    fixture.worker.namespace_retries = Some(retries.clone());
+    let Fixture {
+        worker,
+        lane,
+        mutation,
+        mut receiver,
+        ..
+    } = fixture;
+    let closing = CloseOnDrop(lane);
+    let running = tokio::task::spawn_blocking(move || worker.run());
+    // Without any input the worker keeps retrying admission after bounded waits.
+    // A waiter queued on the fair gate would block (after at most one stored
+    // lane wakeup) until this very share is released, holding every other share
+    // meanwhile.
+    for _ in 0..3 {
+        tokio::time::timeout(Duration::from_secs(2), retries.notified())
+            .await
+            .expect("the waiting worker retries namespace admission");
+    }
+    assert_eq!(
+        mutation.available_permits(),
+        NAMESPACE_WEIGHT as usize - 1,
+        "a waiting tree holds no namespace share"
+    );
+    let later = mutation.clone().try_acquire_owned();
+    assert!(
+        later.is_ok(),
+        "a later transfer starts while maintenance waits"
+    );
+    drop(later);
+    drop(held);
+    let event = tokio::time::timeout(Duration::from_secs(2), receiver.recv())
+        .await
+        .expect("maintenance runs once every share is free")
+        .unwrap();
+    assert!(
+        matches!(&event, Event::Tree(tree)
+            if matches!(**tree, TreeEvent::Refreshed { result: Ok(()), .. })),
+        "{event:?}"
+    );
+    assert_eq!(mutation.available_permits(), NAMESPACE_WEIGHT as usize);
+    drop(closing);
+    tokio::time::timeout(Duration::from_secs(2), running)
+        .await
+        .unwrap()
+        .unwrap();
 }

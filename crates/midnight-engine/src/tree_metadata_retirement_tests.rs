@@ -102,11 +102,3 @@ fn tree_metadata_queued_capture_retires_native_owner_and_holds_permit_until_actu
     );
     wait_released(&capacity);
 }
-
-fn wait_released(capacity: &Semaphore) {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-    while capacity.available_permits() == 0 && std::time::Instant::now() < deadline {
-        std::thread::yield_now();
-    }
-    assert_eq!(capacity.available_permits(), 1);
-}

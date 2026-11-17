@@ -20,16 +20,42 @@ use std::{
 };
 use tokio::sync::mpsc;
 
-#[path = "support/checksum_verify_links_windows.rs"]
-mod links;
+mod links {
+    /// Create a real junction with the shell built-in. Junctions need no symlink
+    /// privilege, and `cmd.exe` starts far faster than a PowerShell host.
+    pub fn create(link: &std::path::Path, target: &std::path::Path) {
+        use std::os::windows::process::CommandExt;
+        // Quote every path for cmd.exe: fixture names contain `&` and spaces.
+        // Windows paths cannot contain `"`.
+        let quoted = |path: &std::path::Path| {
+            let mut quoted = std::ffi::OsString::from("\"");
+            quoted.push(super::ordinary_path(path.to_owned()));
+            quoted.push("\"");
+            quoted
+        };
+        let output = std::process::Command::new("cmd.exe")
+            .args(["/d", "/c", "mklink", "/J"])
+            .raw_arg(quoted(link))
+            .raw_arg(quoted(target))
+            .creation_flags(0x0800_0000) // CREATE_NO_WINDOW; the fixture needs no visible shell.
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success() && link.is_dir(),
+            "mklink /J failed: {}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}
 
 const WAIT: Duration = Duration::from_secs(10);
 const LOOP: &str = "00-ancestor-loop";
 const READABLE: &str = "10-readable 文档";
 
 fn ordinary_path(path: PathBuf) -> PathBuf {
-    // Match the established native junction fixture: PowerShell's constructor
-    // needs ordinary raw UTF-16 rather than a verbatim disk target spelling.
+    // Junction creation and fixture containment use the ordinary raw UTF-16
+    // spelling rather than a verbatim disk prefix.
     if matches!(path.components().next(), Some(Component::Prefix(prefix))
         if matches!(prefix.kind(), Prefix::VerbatimDisk(_)))
     {
@@ -44,12 +70,9 @@ fn owned_fixture() -> tempfile::TempDir {
     let build = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../_build");
     let fixtures = build.join("tmp/tree-link-native/windows");
     fs::create_dir_all(&fixtures).unwrap();
+    // The fixture is self-contained under _build. Engine diagnostic spool files
+    // follow TEMP/TMP, which CI points under _build too; the test does not need it.
     let build = ordinary_path(build.canonicalize().unwrap());
-    let runtime_temp = ordinary_path(std::env::temp_dir().canonicalize().unwrap());
-    assert!(
-        runtime_temp.is_absolute() && runtime_temp.starts_with(&build),
-        "Set TEMP and TMP to an owned directory under {build:?} before this test"
-    );
     let fixtures = ordinary_path(fixtures.canonicalize().unwrap());
     assert!(
         fixtures.starts_with(&build),

@@ -251,11 +251,15 @@ async fn archive_size_result(
     row: TreeRowId,
 ) -> midnight_core::FolderSize {
     let stamp = captured.view.stamp;
+    // Publication pacing is not under test here; the 250 ms default only slows it.
+    let pacing = std::time::Duration::from_millis(5);
+    let wake = Arc::new(tokio::sync::Notify::new());
     let mut state = crate::tree_sizes::State::new(
         Arc::new(NoNativeIo),
-        Arc::new(tokio::sync::Notify::new()),
+        wake.clone(),
         crate::ReportArena::testing(),
-    );
+    )
+    .with_interval(pacing);
     state.enqueue(request, captured, &Cancellation::default());
     tokio::time::timeout(std::time::Duration::from_secs(3), async {
         loop {
@@ -270,7 +274,8 @@ async fn archive_size_result(
                     }
                 }
             }
-            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            // Scan progress and completion notify `wake`; pacing is the only timer.
+            let _ = tokio::time::timeout(pacing, wake.notified()).await;
         }
     })
     .await

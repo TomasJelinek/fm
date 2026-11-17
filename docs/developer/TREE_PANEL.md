@@ -81,7 +81,14 @@ and never include more than the backend's 256-row probe budget.
 Those hints are scheduled in batches within the eight-request branch queue.
 Showing more than eight folders is not a resource error. Completed publications
 request the visible range again, so deferred folders are checked progressively;
-an explicit expansion takes priority over queued background probes.
+an explicit expansion takes priority over queued background probes. A probe
+publishes only its result, without a separate Loading publication. A probe whose
+row was meanwhile expanded, refreshed or listed by a recursive walk is dropped.
+Branch work that cannot start, for example at the 64-level depth limit, never
+ends the session: a probe is skipped silently and an explicit expansion or
+refresh reports a row diagnostic. An explicit expansion whose display projection
+would exceed the 16 MiB budget restores that branch with an error and keeps the
+published rows.
 
 ## Prefix search and tree options
 
@@ -212,9 +219,12 @@ model/continuation state; allocated branch/work IDs and row/alias high-water val
 remain consumed and monotonic.
 
 Collapse or navigation cancels obsolete traversal without releasing an in-flight
-provider permit early. Ancestor listing-version checks precede dispatch of an
+provider permit early. Ancestor child-sequence checks precede dispatch of an
 already-stacked child: a Refresh that reorders, inserts or removes children pauses
-the walk instead of resuming a stale DFS cursor. Backend compares physical target
+the walk instead of resuming a stale DFS cursor. Re-listing an unchanged branch,
+such as a maintenance pass after a watch event or a finished transfer, keeps the
+walk running. Viewport probes queued for rows that the walk lists are answered by
+the walk itself. Backend compares physical target
 identities along the ancestor chain for browse-only cycle detection. Logical paths
 and captured-occurrence checks remain in force for operations; a cycle-probe
 identity grants no operation authority. Cycles, denied children and other errors
@@ -255,7 +265,9 @@ no native performance or UI input-to-paint qualification.
 Ctrl+Shift+S uses the exact acknowledged tree selection: selected directories
 and native directory links, or every selectable folder in the current projection
 when there are no marks, including descendants in expanded branches. This means
-all projected rows, not just those inside the scroll viewport. Hidden/collapsed
+all projected rows, not just those inside the scroll viewport. One request admits
+at most 4,096 target folders; a larger request is refused with a resource-limit
+message, and the user can mark fewer folders. Hidden/collapsed
 descendants and context-only filter ancestors are excluded. A
 files-only selection does not fall back to all folders. Space captures the focused
 directory before its selection toggle, then advances the visible caret while the
@@ -290,14 +302,15 @@ The latest modal-only gate does not rerun that entire scope. These
 software UI tests do not establish full native/layout qualification. A completed
 scan with warnings is not a complete count of inaccessible contents.
 
-Native size scans follow directory junction/link targets using native final-path
-resolution and stable
-directory identities. The active ancestry set stops self/ancestor cycles before
-recounting contents; separate noncyclic aliases and separately selected roots keep
-independent logical totals. Cycle/file-link omissions appear as skipped counts in
-the size tooltip, without an access-error marker. Failed target resolution keeps
-partial bytes and the existing detailed warning report. Providers without the
-identity service retain ordinary-directory sizing and report unsupported links.
+Native size scans never follow links met inside the measured folder: file
+links, directory links and junctions appear as skipped counts in the size
+tooltip, without an access-error marker, and their targets are not resolved.
+Only a selected row that is itself a directory link is measured through its
+native final-path target. Stable directory identities and the active ancestry
+set still stop non-link cycles such as bind mounts. Failed resolution of a
+selected link keeps the existing detailed warning report. Providers without
+the identity service retain ordinary-directory sizing and report an
+unsupported selected link.
 The cycle-detection state grows with active traversal depth and is released as
 each branch unwinds. It has no arbitrary directory/depth cutoff; the existing
 pending-path memory budget and bounded worker/I/O capacity remain in force.
@@ -541,9 +554,29 @@ Failed listings retain known rows and report a diagnostic.
 Navigation or terminal session failure invalidates that generation immediately;
 the backend releases native/provider resources after any outstanding call returns.
 Late callbacks, sweep receipts and fatal errors cannot cancel a newer navigation.
-Watch diagnostics do not turn into Commit retries. The mutation gate remains held
-through each maintenance list/apply step, while explicit expansion can proceed
-when maintenance is waiting for a transfer.
+After a terminal session failure the UI receives `Unavailable`; Commit and
+viewport observations of the session's last publication are then ignored rather
+than answered with a retryable rejection. Watch diagnostics do not turn into
+Commit retries.
+
+Each maintenance list/apply step holds every transfer-namespace share, so no
+transfer runs during it and maintenance waits for running transfers. While it
+waits, the model worker retries that admission every 25 ms instead of queueing
+on the fair gate, so a waiting tree never reserves shares that a new transfer
+needs. Explicit, recursive and probe listings take no namespace share; they show
+the live namespace and proceed while maintenance waits for a transfer.
+
+A refresh request is never refused because branch work is running: a pass
+accepted while a listing is in flight starts after that listing is installed,
+so it reconciles that branch too. Each loaded branch is listed separately. A
+listing that changes no child, entry, disclosure or error publishes nothing and
+needs no projection rebuild. A refresh also discards measured folder sizes, so a
+projection built while sizes were known is rebuilt once. Each changed branch
+still costs one full projection build and one publication that the UI adopts
+and acknowledges; a pass lists at most one branch ahead of those
+acknowledgements, so changing many loaded branches costs that many round trips.
+When a pass ends without a newer publication, its watch fence settles against
+the already acknowledged projection.
 
 See the [watch design](../superpowers/specs/2026-11-10-tree-watch-design.md).
 The earlier [verification record](../verification/2026-11-10-tree-watch.md) retains

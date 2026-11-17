@@ -1,7 +1,7 @@
 //! Retained native Delete roots; preparation and final ownership release run on workers.
 use crate::{
     providers::{ProviderError, ProviderTarget},
-    tree_actor::{CapturedSelection, Session},
+    tree_actor::{CapturedSelection, Session, covering_ancestor},
 };
 use midnight_core::*;
 use std::{collections::HashSet, io, path::Path, sync::Arc};
@@ -67,7 +67,7 @@ impl Session {
         let mut covering = HashSet::new();
         let mut keep = Vec::with_capacity(capture.targets.len());
         for target in &capture.targets {
-            let ancestor = covering_ancestor(&capture.view, target.row, &selected)?;
+            let ancestor = covering_ancestor(&capture.view, target.row, &selected, OVERLAP)?;
             if let Some(ancestor) = ancestor {
                 covering.insert(ancestor);
             }
@@ -95,58 +95,8 @@ impl Session {
     }
 }
 
-fn covering_ancestor(
-    view: &TreeProjection,
-    row: TreeRowId,
-    selected: &HashSet<TreeRowId>,
-) -> Result<Option<TreeRowId>, ProviderError> {
-    let position = view
-        .index
-        .row_positions
-        .get(&row)
-        .ok_or(ProviderError::StaleReference)?;
-    let parent = view
-        .rows
-        .get(*position)
-        .ok_or(ProviderError::StaleReference)?
-        .parent;
-    covering_chain(parent, selected, |id| {
-        let position = view
-            .index
-            .row_positions
-            .get(&id)
-            .ok_or(ProviderError::StaleReference)?;
-        let row = view
-            .rows
-            .get(*position)
-            .ok_or(ProviderError::StaleReference)?;
-        Ok((row.entry.kind, row.parent))
-    })
-}
-
-fn covering_chain(
-    mut parent: Option<TreeRowId>,
-    selected: &HashSet<TreeRowId>,
-    mut lookup: impl FnMut(TreeRowId) -> Result<(EntryKind, Option<TreeRowId>), ProviderError>,
-) -> Result<Option<TreeRowId>, ProviderError> {
-    let mut crossed_boundary = false;
-    for _ in 0..=TreeProjection::MAX_DEPTH {
-        let Some(id) = parent else { return Ok(None) };
-        let (kind, next) = lookup(id)?;
-        crossed_boundary |= kind != EntryKind::Directory;
-        if selected.contains(&id) {
-            if crossed_boundary {
-                return Err(ProviderError::Failed(
-                    "Selected targets overlap through a link or non-directory. Delete them separately."
-                        .into(),
-                ));
-            }
-            return Ok(Some(id));
-        }
-        parent = next;
-    }
-    Err(ProviderError::StaleReference)
-}
+const OVERLAP: &str =
+    "Selected targets overlap through a link or non-directory. Delete them separately.";
 
 #[cfg(test)]
 #[path = "tree_delete_ancestry_tests.rs"]

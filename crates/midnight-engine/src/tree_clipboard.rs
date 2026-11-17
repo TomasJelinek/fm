@@ -1,18 +1,16 @@
 //! Exact native clipboard admission and backend-only provider validation.
 use crate::{
     providers::{ProviderError, ProviderTarget},
-    tree_actor::{CapturedSelection, CapturedTarget, Session},
+    tree_actor::{
+        CapturedSelection, CapturedTarget, Session, capture_failure, validate_native_leaf,
+    },
 };
 use midnight_core::{
     Cancellation, CapturedClipboardFiles, CapturedDropDirectory, EntryKind, FileClipboard,
     FileClipboardIntent, FsError, TreeClipboardRequest, TreeProjection, TreeRequestId, TreeRowId,
     TreeViewStamp,
 };
-use std::{
-    io,
-    path::{Component, Path, PathBuf},
-    sync::Arc,
-};
+use std::{path::PathBuf, sync::Arc};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 struct Sources {
@@ -225,11 +223,8 @@ impl CapturedClipboardFiles for Sources {
             let ProviderTarget::Native(path) = target else {
                 return Err(failure(ProviderError::Unsupported));
             };
-            if path.components().next_back() == Some(Component::ParentDir) {
-                return Err(failure(ProviderError::InvalidResponse(
-                    "Parent navigation is not a clipboard target.",
-                )));
-            }
+            validate_native_leaf(path, "Parent navigation is not a clipboard target.")
+                .map_err(failure)?;
             paths.push(path.clone());
         }
         // A later provider validation may revoke an earlier captured context.
@@ -248,10 +243,5 @@ impl CapturedClipboardFiles for Sources {
 }
 
 fn failure(error: ProviderError) -> FsError {
-    let kind = match error {
-        ProviderError::Cancelled => io::ErrorKind::Interrupted,
-        ProviderError::Unsupported => io::ErrorKind::Unsupported,
-        _ => io::ErrorKind::InvalidData,
-    };
-    FsError::from_io("file clipboard", Path::new(""), io::Error::new(kind, error))
+    capture_failure("file clipboard", error)
 }

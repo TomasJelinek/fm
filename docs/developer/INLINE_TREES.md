@@ -7,10 +7,11 @@ projection/selection adoption and typed directory navigation. Persistent filters
 prefix/quick search and sibling sorting use acknowledged backend reprojection.
 Viewers accept immutable root-file aliases from expanded panels and prepare their
 visible file order on the viewer worker; folder descendants grant no file authority.
-Native Copy/Cut clipboard publication now consumes exact captured occurrences;
-archive/mixed exports remain unsupported. Other operation consumers and remaining
-native workflow qualification stay open; this
-is not full TREE-01. See the [panel contract and dated evidence](TREE_PANEL.md).
+Copy/Move, Delete, Rename, metadata, external editor, checksums, custom commands,
+directory sizes, dragging and native Copy/Cut clipboard publication consume exact
+captured occurrences; archive/mixed clipboard exports remain unsupported.
+Remaining native workflow qualification stays open; this is not full TREE-01.
+See the [panel contract and dated evidence](TREE_PANEL.md).
 
 ## Identity and work ownership
 
@@ -115,12 +116,14 @@ attempt atomically; it does not silently truncate children or label them empty.
 These are admission budgets, not an exact process RSS guarantee. Old presentation
 snapshots and provider caches have separate lifecycle/shared-budget requirements.
 
-The current scaling candidate passes 95 targeted functional checks and Clippy,
-but its [debug controller gate](../ACTIVE_WORK.md#tree-scaling-candidate-gate)
-**fails**. This opt-level 0 synthetic-provider fixture measures no filesystem I/O
-or UI paint. Wide 10k cases take about 50 seconds and the depth-32 broom is
-censored at the 60-second cutoff. Retained model bounds do not establish fast large-tree
-expansion. The qualified `fd94d85` application runtime predates this candidate.
+Recursive expansion batches at most 128 returned results or 50 ms per
+publication. The historical cap16 candidate failed its
+[debug controller gate](../ACTIVE_WORK.md#tree-scaling-candidate-gate); the later
+integrated [cap128 increment](../ACTIVE_WORK.md#recursive-tree-cap128-gate) passed
+its single debug synthetic aggregate. These opt-level 0 synthetic-provider
+fixtures measure no filesystem I/O or UI paint, and retained model bounds do not
+establish fast large-tree expansion. See
+[recursive expansion](TREE_PANEL.md#retry-diagnostics-and-recursive-expansion).
 
 Folder-only listing does not spend its retained-row quota on regular files, but
 still validates every observed token before filtering. A separate 32 MiB token
@@ -161,10 +164,13 @@ and retains both folder and directory-link selection.
 The production controller owns these sessions on one persistent blocking worker
 per pane. Completed-root notifications, bounded command admission, loading and
 collapse publications, selection and typed navigation use the real Engine
-command/event boundary. Every new projection requires its exact `Commit` before
-branch, viewport, selection or navigation requests. A shared listing permit and
-the persistent branch budget remain held through actual provider return and
-completion retirement, including after cancellation or pane replacement.
+command/event boundary. Selection, viewport, reprojection and operation captures
+require the exact `Commit` of the current projection. Branch and navigation
+gestures may still name the previously acknowledged view while a newer
+publication travels to the UI; the actor revalidates that the occurrence is
+still visible and unchanged. A shared listing permit and the persistent branch
+budget remain held through actual provider return and completion retirement,
+including after cancellation or pane replacement.
 
 Native, archive and Network navigation cancel the previous tree generation. A
 pending or current Network generation cannot admit an earlier native/archive
@@ -175,8 +181,7 @@ filter/sort routing has 9 November Windows debug Engine/Slint evidence in
 [TREE_PANEL.md](TREE_PANEL.md#filter-and-sort-evidence). Prefix integration and its
 current qualification scope are recorded in the
 [10 November report](../verification/2026-11-10-tree-prefix-search.md).
-Installed native workflow qualification and operation consumers remain separate
-work.
+Installed native workflow qualification remains separate work.
 
 ### Completed roots and typed action admission
 
@@ -214,16 +219,17 @@ immediate-parent, identity and source-revision checks remain required.
 Keep the existing complete root listing visible if tree admission fails; tree
 limits must not become new file-panel navigation or OS path-length limits.
 Production selection uses occurrence identities and exact acknowledged projection
-and selection snapshots. [Directory sizes](TREE_PANEL.md#directory-sizes) now consume
-captured native/archive targets; other operation consumers remain unfinished.
+and selection snapshots. [Directory sizes](TREE_PANEL.md#directory-sizes) and the
+operation consumers listed above consume captured native/archive targets.
 Do not weaken native mutation's immediate-parent and captured-snapshot checks to accept arbitrary
 descendants. The adapters now provide complete typed native/archive ancestry;
 the production actor must consume it instead of reconstructing a display path.
 
 Preserve provider locale enrichment, native-plugin content capture, raw path
 identity, queued-operation ownership and virtualization. Persistent filtering,
-prefix search, sibling sorting and rectangle selection are integrated; expanded
-branch watches and file dragging still require their production connections.
+prefix search, sibling sorting, rectangle selection, expanded native branch
+watches ([watch scope](TREE_PANEL.md#native-watches-and-reconciliation)) and file
+dragging are integrated.
 The transitional registry native adapter requires explicit capture injection and has no implicit native read
 fallback. Production must supply the mandatory native plugin's capture seam.
 

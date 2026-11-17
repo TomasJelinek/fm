@@ -2,17 +2,16 @@
 use crate::{
     providers::{ProviderError, ProviderTarget},
     retirement::WorkerOwned,
-    tree_actor::{CapturedSelection, Session},
+    tree_actor::{
+        CapturedSelection, Session, capture_failure, covering_ancestor, validate_native_leaf,
+    },
     tree_rename::Retirement,
 };
 use midnight_core::*;
-use std::{
-    cmp::Reverse,
-    collections::HashSet,
-    io,
-    path::{Component, Path},
-    sync::Arc,
-};
+use std::{cmp::Reverse, collections::HashSet, path::Path, sync::Arc};
+
+const OVERLAP: &str =
+    "Selected metadata roots overlap through a link or non-directory. Edit them separately.";
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 struct Payload {
@@ -85,7 +84,9 @@ impl Session {
         let mut covering = HashSet::new();
         let mut covered_rows = HashSet::new();
         for target in &capture.targets {
-            if let Some(ancestor) = covering_ancestor(&capture.view, target.row, &selected)? {
+            if let Some(ancestor) =
+                covering_ancestor(&capture.view, target.row, &selected, OVERLAP)?
+            {
                 covering.insert(ancestor);
                 covered_rows.insert(target.row);
             }
@@ -125,40 +126,7 @@ fn target_failure(error: ProviderError) -> ProviderError {
         error
     }
 }
-fn covering_ancestor(
-    view: &TreeProjection,
-    row: TreeRowId,
-    selected: &HashSet<TreeRowId>,
-) -> Result<Option<TreeRowId>, ProviderError> {
-    let mut row = row;
-    let mut crossed_boundary = false;
-    for _ in 0..=TreeProjection::MAX_DEPTH {
-        let position = view
-            .index
-            .row_positions
-            .get(&row)
-            .ok_or(ProviderError::StaleReference)?;
-        let Some(parent) = view.rows[*position].parent else {
-            return Ok(None);
-        };
-        let position = view
-            .index
-            .row_positions
-            .get(&parent)
-            .ok_or(ProviderError::StaleReference)?;
-        crossed_boundary |= view.rows[*position].entry.kind != EntryKind::Directory;
-        if selected.contains(&parent) {
-            if crossed_boundary {
-                return Err(ProviderError::Failed(
-                    "Selected metadata roots overlap through a link or non-directory. Edit them separately.".into(),
-                ));
-            }
-            return Ok(Some(parent));
-        }
-        row = parent;
-    }
-    Err(ProviderError::StaleReference)
-}
+
 impl CapturedMetadataSources for Sources {
     fn stamp(&self) -> TreeViewStamp {
         self.owner.capture.view.stamp
@@ -207,16 +175,10 @@ impl CapturedMetadataSources for Sources {
     }
 }
 fn validate_path(path: &Path) -> Result<(), ProviderError> {
-    if !path.is_absolute()
-        || path.as_os_str().as_encoded_bytes().contains(&0)
-        || !matches!(path.components().next_back(), Some(Component::Normal(_)))
-        || path.file_name().is_none()
-    {
-        return Err(ProviderError::InvalidResponse(
-            "Metadata requires a native leaf, not parent navigation.",
-        ));
-    }
-    Ok(())
+    validate_native_leaf(
+        path,
+        "Metadata requires a native leaf, not parent navigation.",
+    )
 }
 fn check_cancel(cancel: &Cancellation) -> Result<(), FsError> {
     if cancel.wait_if_paused() {
@@ -226,14 +188,5 @@ fn check_cancel(cancel: &Cancellation) -> Result<(), FsError> {
     }
 }
 fn failure(error: ProviderError) -> FsError {
-    let kind = match error {
-        ProviderError::Cancelled => io::ErrorKind::Interrupted,
-        ProviderError::Unsupported => io::ErrorKind::Unsupported,
-        _ => io::ErrorKind::InvalidData,
-    };
-    FsError::from_io(
-        "prepare tree metadata",
-        Path::new(""),
-        io::Error::new(kind, error),
-    )
+    capture_failure("prepare tree metadata", error)
 }

@@ -31,12 +31,9 @@ fn owned_fixture() -> tempfile::TempDir {
     let build = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../_build");
     let fixtures = build.join("tmp/tree-link-native/linux");
     fs::create_dir_all(&fixtures).unwrap();
+    // The fixture is self-contained under _build. Engine diagnostic spool files
+    // follow TMPDIR, which CI points under _build too; the test does not need it.
     let build = build.canonicalize().unwrap();
-    let runtime_temp = std::env::temp_dir().canonicalize().unwrap();
-    assert!(
-        runtime_temp.is_absolute() && runtime_temp.starts_with(&build),
-        "Set TMPDIR to an owned directory under {build:?} before this test"
-    );
     let fixtures = fixtures.canonicalize().unwrap();
     assert!(
         fixtures.starts_with(&build),

@@ -132,14 +132,22 @@ fn unchanged_watch_failure_diagnostic_retains_snapshot_identity_for_coalescing()
     branch(&mut fixture, "z-parent", BranchAction::Expand);
     let view = fixture.session.projection().clone();
     fixture.session.commit(&view);
+    // Provider failure text gets a spool report. The watch coalesces an
+    // unchanged failure by its details identity, so it must be reused.
+    *fixture.graph.target_error.lock().unwrap() =
+        Some(ProviderError::Failed("fixture target unavailable".into()));
     *fixture.graph.target_failure.lock().unwrap() = Some(4);
     let error = fixture
         .session
         .watch_scope()
         .err()
         .expect("scope resolution must fail");
+    assert!(matches!(error, ProviderError::Failed(_)), "{error:?}");
     let diagnostic = fixture.session.watch_failure_diagnostic(&error);
-    assert!(diagnostic.details().is_some());
+    let details = diagnostic
+        .details()
+        .expect("provider failure text has a details report")
+        .clone();
     let calls = fixture.graph.target_calls.load(Ordering::SeqCst);
     for _ in 0..5 {
         fixture.session.commit(&view);
@@ -149,12 +157,38 @@ fn unchanged_watch_failure_diagnostic_retains_snapshot_identity_for_coalescing()
             .err()
             .expect("scope resolution must fail");
         let repeated = fixture.session.watch_failure_diagnostic(&error);
-        assert_eq!(
-            diagnostic, repeated,
+        assert!(
+            repeated
+                .details()
+                .is_some_and(|repeated| Arc::ptr_eq(repeated, &details)),
             "unchanged cached failure must not dirty the watch again"
         );
+        assert_eq!(diagnostic, repeated);
     }
     assert_eq!(fixture.graph.target_calls.load(Ordering::SeqCst), calls);
+}
+
+#[test]
+fn capacity_watch_failure_carries_only_its_fixed_message() {
+    let mut fixture = fixture();
+    branch(&mut fixture, "z-parent", BranchAction::Expand);
+    let view = fixture.session.projection().clone();
+    fixture.session.commit(&view);
+    *fixture.graph.target_failure.lock().unwrap() = Some(4);
+    let error = fixture
+        .session
+        .watch_scope()
+        .err()
+        .expect("scope resolution must fail");
+    assert_eq!(error, ProviderError::ResourceLimited);
+    assert!(
+        fixture
+            .session
+            .watch_failure_diagnostic(&error)
+            .details()
+            .is_none(),
+        "a fixed capacity message needs no spool report"
+    );
 }
 
 #[test]
@@ -301,11 +335,16 @@ fn watch_scope_keeps_filter_context_ancestors_but_removes_hidden_branches() {
 }
 
 #[test]
-fn copy_namespace_share_blocks_maintenance_and_explicit_branch_until_release() {
+fn copy_namespace_share_blocks_only_maintenance_while_browsing_proceeds() {
     let mut fixture = fixture();
     let mutation = fixture.session.budget.mutation.clone();
     let held = mutation.clone().try_acquire_owned().unwrap();
     refresh(&mut fixture);
+    assert!(fixture.session.take_work().unwrap().is_none());
+    assert!(
+        matches!(fixture.session.waiting_on(), Wait::Namespace),
+        "maintenance retries exclusive admission instead of queueing on the gate"
+    );
     let view = fixture.session.projection().clone();
     let row = view
         .rows
@@ -318,35 +357,20 @@ fn copy_namespace_share_blocks_maintenance_and_explicit_branch_until_release() {
         .session
         .branch(&view, request, row, BranchAction::Expand)
         .unwrap();
-    assert!(fixture.session.take_work().unwrap().is_none());
+    let job = fixture.session.take_work().unwrap().unwrap();
+    assert!(
+        !job.maintenance(),
+        "explicit expansion is not blocked by a transfer"
+    );
     assert_eq!(
         mutation.available_permits(),
-        crate::transfer_leases::NAMESPACE_WEIGHT as usize - 1
+        crate::transfer_leases::NAMESPACE_WEIGHT as usize - 1,
+        "browsing takes no namespace share"
     );
-    assert!(Arc::ptr_eq(&fixture.session.waiting_on().0, &mutation));
-    assert!(fixture.session.finish_refresh().is_none());
-    drop(held);
-    let mut maintenance = false;
-    let mut explicit = false;
-    // Releasing Copy admits both queued kinds; their relative priority is not
-    // part of namespace exclusion. Both listings require the exclusive gate.
-    for _ in 0..2 {
-        let job = fixture.session.take_work().unwrap().unwrap();
-        maintenance |= job.maintenance();
-        explicit |= !job.maintenance();
-        assert_eq!(mutation.available_permits(), 0);
-        let completion = job.run();
-        assert_eq!(mutation.available_permits(), 0);
-        fixture
-            .session
-            .apply(completion, &Cancellation::default())
-            .unwrap();
-        assert_eq!(
-            mutation.available_permits(),
-            crate::transfer_leases::NAMESPACE_WEIGHT as usize
-        );
-    }
-    assert!(maintenance && explicit);
+    fixture
+        .session
+        .apply(job.run(), &Cancellation::default())
+        .unwrap();
     assert!(
         fixture
             .session
@@ -354,6 +378,25 @@ fn copy_namespace_share_blocks_maintenance_and_explicit_branch_until_release() {
             .rows
             .iter()
             .any(|row| row.entry.display_name == "child")
+    );
+    assert!(fixture.session.take_work().unwrap().is_none());
+    assert!(matches!(fixture.session.waiting_on(), Wait::Namespace));
+    assert!(fixture.session.finish_refresh().is_none());
+    drop(held);
+    let job = fixture.session.take_work().unwrap().unwrap();
+    assert!(job.maintenance());
+    assert_eq!(
+        mutation.available_permits(),
+        0,
+        "maintenance excludes transfers"
+    );
+    fixture
+        .session
+        .apply(job.run(), &Cancellation::default())
+        .unwrap();
+    assert_eq!(
+        mutation.available_permits(),
+        crate::transfer_leases::NAMESPACE_WEIGHT as usize
     );
     assert!(matches!(
         finish(&mut fixture),
@@ -601,7 +644,7 @@ fn maintenance_waits_for_mutation_gate_and_retains_it_through_apply() {
         .retain(|row| row.token != token(3));
     refresh(&mut fixture);
     assert!(fixture.session.take_work().unwrap().is_none());
-    assert!(Arc::ptr_eq(&fixture.session.waiting_on().0, &gate));
+    assert!(matches!(fixture.session.waiting_on(), Wait::Namespace));
     assert_eq!(fixture.session.budget.listing.available_permits(), 2);
     fixture.graph.rows.lock().unwrap().insert(0, original);
     drop(permit);
@@ -649,7 +692,9 @@ fn maintenance_holds_no_mutation_gate_while_listing_capacity_is_unavailable() {
             .try_acquire_many_owned(crate::transfer_leases::NAMESPACE_WEIGHT)
             .is_ok()
     );
-    assert!(Arc::ptr_eq(&fixture.session.waiting_on().0, &listing));
+    assert!(
+        matches!(fixture.session.waiting_on(), Wait::Permit(waiting) if Arc::ptr_eq(&waiting, &listing))
+    );
     drop(permits);
     assert!(matches!(
         finish(&mut fixture),
@@ -756,13 +801,178 @@ fn stale_forged_and_duplicate_refresh_requests_are_rejected_without_listing() {
             .refresh_loaded(&busy, &Cancellation::default()),
         Err(ProviderError::ResourceLimited)
     ));
+    let listed = fixture.graph.lists.load(Ordering::Relaxed);
     finish(&mut fixture);
+    // The unchanged pass keeps the accepted view, but its request identity is spent.
+    assert!(Arc::ptr_eq(fixture.session.projection(), &request.view));
+    let lists = fixture.graph.lists.load(Ordering::Relaxed);
+    assert!(lists > listed);
     assert!(matches!(
         fixture
             .session
             .refresh_loaded(&request, &Cancellation::default()),
-        Err(ProviderError::StaleReference)
+        Err(ProviderError::InvalidResponse(_))
     ));
+    assert_eq!(fixture.graph.lists.load(Ordering::Relaxed), lists);
+    assert!(fixture.session.take_work().unwrap().is_none());
+}
+
+#[test]
+fn unchanged_refresh_publishes_nothing_and_changed_branch_publishes_once() {
+    let mut fixture = fixture();
+    branch(&mut fixture, "z-parent", BranchAction::Expand);
+    branch(&mut fixture, "a-parent", BranchAction::Expand);
+    let before = fixture.session.projection().clone();
+    refresh(&mut fixture);
+    let mut published = 0;
+    while let Some(job) = fixture.session.take_work().unwrap() {
+        published += usize::from(
+            fixture
+                .session
+                .apply(job.run(), &Cancellation::default())
+                .unwrap(),
+        );
+    }
+    assert!(matches!(
+        fixture.session.finish_refresh(),
+        Some(TreeEvent::Refreshed { result: Ok(()), .. })
+    ));
+    assert_eq!(published, 0, "three unchanged listings need no projection");
+    assert!(Arc::ptr_eq(fixture.session.projection(), &before));
+    fixture
+        .graph
+        .rows
+        .lock()
+        .unwrap()
+        .insert(1, vec![directory(4, "child"), directory(7, "keep")]);
+    refresh(&mut fixture);
+    let mut published = 0;
+    while let Some(job) = fixture.session.take_work().unwrap() {
+        published += usize::from(
+            fixture
+                .session
+                .apply(job.run(), &Cancellation::default())
+                .unwrap(),
+        );
+    }
+    assert!(fixture.session.finish_refresh().is_some());
+    assert_eq!(published, 1, "only the changed branch rebuilds");
+    assert!(
+        fixture
+            .session
+            .projection()
+            .rows
+            .iter()
+            .any(|row| row.entry.display_name == "keep")
+    );
+}
+
+#[test]
+fn replacing_an_empty_size_lookup_keeps_an_unchanged_refresh_free() {
+    let mut fixture = fixture();
+    branch(&mut fixture, "z-parent", BranchAction::Expand);
+    let before = fixture.session.projection().clone();
+    // Each RefreshLoaded command installs a new, still empty, size lookup.
+    fixture.session.size_sort(Arc::default());
+    refresh(&mut fixture);
+    while let Some(job) = fixture.session.take_work().unwrap() {
+        assert!(
+            !fixture
+                .session
+                .apply(job.run(), &Cancellation::default())
+                .unwrap(),
+            "an empty lookup orders nothing; unchanged listings need no projection"
+        );
+    }
+    assert!(matches!(
+        fixture.session.finish_refresh(),
+        Some(TreeEvent::Refreshed { result: Ok(()), .. })
+    ));
+    assert!(Arc::ptr_eq(fixture.session.projection(), &before));
+}
+
+#[test]
+fn refresh_after_size_invalidation_rebuilds_even_when_listings_are_unchanged() {
+    let mut fixture = fixture();
+    let before = fixture.session.projection().clone();
+    let row = before.rows[0].id;
+    fixture.session.size_sort(Arc::new(HashMap::from([(
+        row,
+        midnight_core::FolderSize {
+            bytes: 9,
+            finished: true,
+            ..Default::default()
+        },
+    )])));
+    fixture
+        .session
+        .update_projection(&Cancellation::default())
+        .unwrap();
+    // Refresh invalidates the frozen size lookup; the next projection drops it.
+    fixture.session.size_sort(Arc::default());
+    refresh(&mut fixture);
+    let job = fixture.session.take_work().unwrap().unwrap();
+    assert!(
+        fixture
+            .session
+            .apply(job.run(), &Cancellation::default())
+            .unwrap()
+    );
+}
+
+#[test]
+fn refresh_requested_during_a_branch_listing_starts_after_it_without_rejection() {
+    let mut fixture = fixture();
+    let view = fixture.session.projection().clone();
+    fixture.session.commit(&view);
+    let row = view
+        .rows
+        .iter()
+        .find(|row| row.entry.display_name == "z-parent")
+        .unwrap()
+        .id;
+    fixture
+        .session
+        .branch(&view, TreeRequestId(1), row, BranchAction::Expand)
+        .unwrap();
+    let expand = fixture.session.take_work().unwrap().unwrap();
+    // The in-flight listing holds the pane's branch permit, as in production.
+    let request = TreeRefreshRequest {
+        view: view.clone(),
+        request: TreeRequestId(2),
+    };
+    fixture
+        .session
+        .refresh_loaded(&request, &Cancellation::default())
+        .unwrap();
+    assert!(fixture.session.maintenance.is_none(), "the pass waits");
+    fixture
+        .session
+        .apply(expand.run(), &Cancellation::default())
+        .unwrap();
+    fixture.graph.listed.lock().unwrap().clear();
+    let Some(TreeEvent::Refreshed {
+        request: id,
+        result: Ok(()),
+        ..
+    }) = (0..8).find_map(|_| {
+        if let Some(job) = fixture.session.take_work().unwrap() {
+            fixture
+                .session
+                .apply(job.run(), &Cancellation::default())
+                .unwrap();
+        }
+        fixture.session.finish_refresh()
+    })
+    else {
+        panic!("the deferred pass must finish");
+    };
+    assert_eq!(id, request.request);
+    assert_eq!(
+        *fixture.graph.listed.lock().unwrap(),
+        [0, 1],
+        "the pass also reconciles the branch that was being listed"
+    );
 }
 
 #[test]
@@ -811,7 +1021,7 @@ fn later_mutation_job_blocks_the_next_loaded_branch_step() {
         .unwrap();
     fixture.graph.rows.lock().unwrap().insert(1, vec![]);
     assert!(fixture.session.take_work().unwrap().is_none());
-    assert!(Arc::ptr_eq(&fixture.session.waiting_on().0, &gate));
+    assert!(matches!(fixture.session.waiting_on(), Wait::Namespace));
     fixture
         .graph
         .rows

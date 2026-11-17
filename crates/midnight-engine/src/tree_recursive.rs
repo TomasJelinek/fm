@@ -11,7 +11,8 @@ struct Frame {
     branch: BranchId,
     next_child: usize,
     entered: bool,
-    listing_version: Option<u64>,
+    // Version of the ordered child sequence the numeric cursor indexes.
+    children_version: Option<u64>,
 }
 
 #[derive(Clone)]
@@ -56,9 +57,11 @@ impl Walk {
             // every ancestor cursor before dispatching it after a refresh.
             for frame in &self.frames {
                 if frame.entered
-                    && frame.listing_version.is_some()
-                    && tree.watch_listing(frame.branch).map(|(version, _)| version)
-                        != frame.listing_version
+                    && frame.children_version.is_some()
+                    && tree
+                        .listed_children(frame.branch)
+                        .map(|(version, _)| version)
+                        != frame.children_version
                 {
                     return Err(Pause::Changed);
                 }
@@ -88,12 +91,13 @@ impl Walk {
                 self.frames.pop();
                 continue;
             }
-            let Some((version, children)) = tree.watch_listing(frame.branch) else {
+            let Some((version, children)) = tree.listed_children(frame.branch) else {
                 return Err(Pause::Changed);
             };
             // A refresh may reorder, insert or remove child occurrences. A numeric
-            // cursor is valid only for the exact listing from which it was taken.
-            if frame.listing_version != Some(version) {
+            // cursor is valid only for the exact child sequence it was taken from;
+            // an unchanged re-listing keeps that sequence and its version.
+            if frame.children_version != Some(version) {
                 return Err(Pause::Changed);
             }
             let Some(child) = children.get(frame.next_child).copied() else {
@@ -118,7 +122,7 @@ impl Walk {
                 branch: child,
                 next_child: 0,
                 entered: false,
-                listing_version: None,
+                children_version: None,
             });
         }
     }
@@ -142,7 +146,7 @@ impl Session {
             branch: root,
             next_child: 0,
             entered: false,
-            listing_version: None,
+            children_version: None,
         });
         self.recursive = Some(Walk {
             root,
@@ -184,10 +188,7 @@ impl Session {
                 .recursive
                 .as_ref()
                 .is_some_and(|walk| walk.active.is_none())
-            && self
-                .accepted
-                .as_ref()
-                .is_some_and(|view| Arc::ptr_eq(view, &self.projection))
+            && self.projection_accepted()
     }
 
     pub(super) fn explicit_work_ready(&self) -> bool {
@@ -227,8 +228,10 @@ impl Session {
             let Some(walk) = self.recursive.clone() else {
                 return Ok(None);
             };
+            // A batch only lists descendants of its walk root; nothing else runs
+            // until the batch is published or rolled back.
             self.recursive_batch = Some(Batch {
-                checkpoint: self.tree.checkpoint(),
+                checkpoint: self.tree.checkpoint(walk.root),
                 walk,
                 started: Instant::now(),
                 results: 0,
@@ -270,6 +273,10 @@ impl Session {
         walk.active = Some(branch);
         self.next_work = next;
         self.versions.insert(branch, version);
+        // The walk lists this branch itself. A viewport probe queued while it was
+        // still unknown would otherwise later target an expanded node.
+        self.queue
+            .retain(|pending| pending.branch != branch || pending.kind != TreeRequest::Probe);
         Ok(Some(PendingBranch {
             branch,
             origin: WorkOrigin::Recursive {
@@ -344,7 +351,10 @@ impl Session {
                 .last_mut()
                 .filter(|frame| frame.branch == branch)
             {
-                frame.listing_version = self.tree.watch_listing(branch).map(|(version, _)| version);
+                frame.children_version = self
+                    .tree
+                    .listed_children(branch)
+                    .map(|(version, _)| version);
             }
             match walk.pending(&self.tree) {
                 Ok(Some(_)) => {}
@@ -395,11 +405,7 @@ impl Session {
         }
     }
 
-    pub(crate) fn pause_recursive(
-        &mut self,
-        error: &ProviderError,
-        _cancel: &Cancellation,
-    ) -> bool {
+    pub(crate) fn pause_recursive(&mut self, error: &ProviderError) -> bool {
         let reason = if *error == ProviderError::ResourceLimited {
             Pause::Capacity
         } else {

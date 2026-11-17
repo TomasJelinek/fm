@@ -3,7 +3,7 @@ use super::{Generation, Mailbox, command_navigation, diagnostic_rejection, rejec
 use crate::{
     Outbox, Snapshots,
     providers::{NativeProvider, ProviderError, ProviderRegistry},
-    tree_actor::{Session, WorkerBudget},
+    tree_actor::{NAMESPACE_POLL, Session, Wait, WorkerBudget},
     tree_projection::ProjectionOptions,
     tree_roots::ReadyRoot,
 };
@@ -25,6 +25,25 @@ struct Pending {
     revision: SelectionRevision,
     selected: TreeRootSelection,
     ready: Option<Arc<ReadyRoot>>,
+}
+
+/// Install watch authority from the session's exactly acknowledged current
+/// projection. Returns a watch failure the UI has not seen yet.
+fn update_watch_scope(watch: &crate::watch::Handle, session: &mut Session) -> Option<TreeEvent> {
+    match session.watch_scope() {
+        Ok(Some(scope)) => {
+            watch.set_tree_scope(scope);
+            None
+        }
+        Ok(None) => None,
+        Err(error) => {
+            let stamp = session.projection().stamp;
+            let error = session.watch_failure_diagnostic(&error);
+            watch
+                .scope_failed(stamp, session.watch_eligibility(), error.clone())
+                .then_some(TreeEvent::WatchFailed { stamp, error })
+        }
+    }
 }
 pub(super) struct Services {
     pub rename: crate::tree_rename::Retirement,
@@ -57,6 +76,9 @@ pub(super) struct Worker {
     copy_capacity: Arc<Semaphore>,
     pub(super) watch: Option<crate::watch::Handle>,
     refresh_ticket: Option<crate::watch::RefreshTicket>,
+    /// Test observer, notified each time `run` waits to retry namespace admission.
+    #[cfg(test)]
+    namespace_retries: Option<Arc<tokio::sync::Notify>>,
 }
 impl Worker {
     pub fn new(
@@ -101,6 +123,8 @@ impl Worker {
             pending_publication: None,
             inflight: false,
             maintenance_inflight: false,
+            #[cfg(test)]
+            namespace_retries: None,
         }
     }
     pub fn run(mut self) {
@@ -148,17 +172,29 @@ impl Worker {
                 }
             } else if !self.inflight
                 && self.pending_publication.is_none()
-                && self
-                    .session
-                    .as_ref()
-                    .is_some_and(|session| session.queued() > 0)
+                && let Some(session) = self.session.as_ref()
+                && session.queued() > 0
             {
-                // Wait on the semaphore, never poll for native workers to return.
-                let (listing, permits) =
-                    self.session.as_ref().expect("queued session").waiting_on();
-                runtime.block_on(async {
-                    tokio::select! { _ = notified => {}, permit = listing.acquire_many_owned(permits) => { drop(permit); } }
-                });
+                match session.waiting_on() {
+                    // Wait on the pane semaphore, never poll for native workers to return.
+                    Wait::Permit(semaphore) => runtime.block_on(async {
+                        tokio::select! {
+                            _ = notified => {},
+                            permit = semaphore.acquire_owned() => drop(permit),
+                        }
+                    }),
+                    // Queueing on the fair transfer-namespace semaphore would reserve
+                    // released transfer shares and block new transfers. Retry admission.
+                    Wait::Namespace => {
+                        #[cfg(test)]
+                        if let Some(retries) = &self.namespace_retries {
+                            retries.notify_one();
+                        }
+                        runtime.block_on(async {
+                            let _ = tokio::time::timeout(NAMESPACE_POLL, notified).await;
+                        });
+                    }
+                }
                 self.pump();
             } else {
                 runtime.block_on(notified);
@@ -194,16 +230,7 @@ impl Worker {
         });
         match result {
             Some(Ok(Some(publication))) => Some(TreeEvent::Published(publication)),
-            Some(Err(error)) => {
-                self.awaiting_commit = None;
-                self.pending_publication = None;
-                self.finish_watch_ticket(false);
-                self.retire_watch();
-                self.session.take().map(|session| TreeEvent::Unavailable {
-                    root: session.projection().root.clone(),
-                    error: crate::tree_diagnostics::diagnostic(&self.reports, &error),
-                })
-            }
+            Some(Err(error)) => self.end_session(error),
             _ => None,
         }
     }
@@ -244,6 +271,17 @@ impl Worker {
         }
     }
     fn command(&mut self, command: TreeCommand) {
+        if self.session.is_none()
+            && matches!(
+                &command,
+                TreeCommand::Commit(_) | TreeCommand::Viewport { .. }
+            )
+        {
+            // A failed session already reported its terminal Unavailable event.
+            // Observing its last publication has no effect; a Rejected reply would
+            // make the UI commit again and loop until navigation.
+            return;
+        }
         // A completion can overtake a command already admitted by the mailbox.
         // Retire obsolete observations here as well, on the model worker.
         let emitted_commit = matches!(&command, TreeCommand::Commit(view)
@@ -415,26 +453,7 @@ impl Worker {
                     if Arc::ptr_eq(session.projection(), view)
                         && let Some(watch) = &self.watch
                     {
-                        match session.watch_scope() {
-                            Ok(Some(scope)) => {
-                                watch.set_tree_scope(scope);
-                                Ok(None)
-                            }
-                            Ok(None) => Ok(None),
-                            Err(error) => {
-                                let error = session.watch_failure_diagnostic(&error);
-                                Ok(watch
-                                    .scope_failed(
-                                        view.stamp,
-                                        session.watch_eligibility(),
-                                        error.clone(),
-                                    )
-                                    .then_some(TreeEvent::WatchFailed {
-                                        stamp: view.stamp,
-                                        error,
-                                    }))
-                            }
-                        }
+                        Ok(update_watch_scope(watch, session))
                     } else {
                         Ok(None)
                     }
@@ -650,19 +669,17 @@ impl Worker {
         match session.take_work() {
             Ok(Some(job)) => {
                 let maintenance = job.maintenance();
-                let recursive = job.recursive();
-                if !maintenance && !recursive {
+                // An explicit Expand/Refresh shows its Loading row. Probes are
+                // optional read-ahead and publish only their result.
+                if !maintenance && !job.recursive() && !job.probe() {
                     let generation = self.generation.as_ref().expect("active generation");
-                    let publication = session
+                    // The Loading marker is cosmetic: if it cannot be projected, the
+                    // completion still installs and publishes the listing.
+                    if let Ok(publication) = session
                         .update_projection(&generation.cancel)
-                        .and_then(|()| session.publication());
-                    match publication {
-                        Ok(publication) => self.emit(TreeEvent::Published(publication)),
-                        Err(error) => {
-                            drop(job);
-                            self.fail_session(error);
-                            return;
-                        }
+                        .and_then(|()| session.publication())
+                    {
+                        self.emit(TreeEvent::Published(publication));
                     }
                 }
                 self.inflight = true;
@@ -675,21 +692,26 @@ impl Worker {
                     .as_mut()
                     .and_then(|session| session.abort_refresh(&error))
                 {
-                    self.finish_watch_refresh(&event);
-                    self.emit(event);
+                    self.emit_refreshed(event);
                 } else {
                     self.fail_session(error);
                 }
             }
             Ok(None) => {}
         }
-        self.flush_recursive_notice();
+        self.flush_notices();
         if let Some(event) = self.session.as_mut().and_then(Session::finish_refresh) {
-            self.finish_watch_refresh(&event);
-            self.emit(event);
+            self.emit_refreshed(event);
         }
     }
-    fn flush_recursive_notice(&mut self) {
+    fn emit_refreshed(&mut self, event: TreeEvent) {
+        let watch_failure = self.finish_watch_refresh(&event);
+        self.emit(event);
+        if let Some(failure) = watch_failure {
+            self.emit(failure);
+        }
+    }
+    fn flush_notices(&mut self) {
         if let Some(publication) = self
             .session
             .as_mut()
@@ -697,11 +719,14 @@ impl Worker {
         {
             self.emit(TreeEvent::Published(publication));
         }
-        if let Some(mut event) = self
-            .session
-            .as_mut()
-            .and_then(Session::take_recursive_notice)
-        {
+        // Bounded: emitting can apply only a maintenance completion, which adds no
+        // notice, and a failed session ends the loop.
+        let take = |session: &mut Session| {
+            session
+                .take_recursive_notice()
+                .or_else(|| session.take_branch_notice())
+        };
+        while let Some(mut event) = self.session.as_mut().and_then(take) {
             // The UI accepts row diagnostics only for the exact emitted view.
             // A newer private projection may still be coalesced behind its Commit.
             if let TreeEvent::Rejected { stamp, .. } = &mut event
@@ -712,10 +737,22 @@ impl Worker {
             self.emit(event);
         }
     }
-    fn finish_watch_refresh(&mut self, event: &TreeEvent) {
-        if let TreeEvent::Refreshed { result, .. } = event {
-            self.finish_watch_ticket(result.is_ok());
+    /// Returns a watch failure to emit after the refresh reply.
+    fn finish_watch_refresh(&mut self, event: &TreeEvent) -> Option<TreeEvent> {
+        let TreeEvent::Refreshed { result, .. } = event else {
+            return None;
+        };
+        self.finish_watch_ticket(result.is_ok());
+        // A pass whose listings changed nothing visible publishes nothing, so no
+        // later Commit would settle its fence. The current projection is already
+        // exactly acknowledged: install the refreshed scope from it now.
+        if result.is_ok()
+            && let (Some(watch), Some(session)) = (&self.watch, self.session.as_mut())
+            && session.projection_accepted()
+        {
+            return update_watch_scope(watch, session);
         }
+        None
     }
     fn finish_watch_ticket(&mut self, success: bool) {
         if let Some(ticket) = self.refresh_ticket.take()
@@ -731,16 +768,21 @@ impl Worker {
         }
     }
     fn fail_session(&mut self, error: ProviderError) {
+        if let Some(event) = self.end_session(error) {
+            self.emit(event);
+        }
+    }
+    /// Drop the session and return its terminal event. Later Commit/Viewport
+    /// observations of its last publication are ignored (see `command`).
+    fn end_session(&mut self, error: ProviderError) -> Option<TreeEvent> {
         self.awaiting_commit = None;
         self.pending_publication = None;
         self.finish_watch_ticket(false);
         self.retire_watch();
-        if let Some(session) = self.session.take() {
-            self.emit(TreeEvent::Unavailable {
-                root: session.projection().root.clone(),
-                error: crate::tree_diagnostics::diagnostic(&self.reports, &error),
-            });
-        }
+        self.session.take().map(|session| TreeEvent::Unavailable {
+            root: session.projection().root.clone(),
+            error: crate::tree_diagnostics::diagnostic(&self.reports, &error),
+        })
     }
     fn retire_watch(&self) {
         if let (Some(watch), Some(session)) = (&self.watch, &self.session) {

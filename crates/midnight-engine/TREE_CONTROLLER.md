@@ -15,11 +15,28 @@ exact completed root through `SnapshotState::capture_tree_root`. Equal contents,
 restored paths and foreign index allocations are insufficient.
 
 An accepted session publishes its projection and selection together. A later
-Enable may update the root selection before Commit. Branch, viewport, selection
-and typed navigation require the exact acknowledged projection. The mailbox
-also rejects allocations other than its last published view before queueing
-them. Every worker publication checks the current navigation cancellation;
-session application checks the pane, navigation, session and branch version.
+Enable may update the root selection before Commit. Viewport, selection,
+reprojection and operation captures require the exact acknowledged current
+projection. Branch and typed navigation may also name the previously
+acknowledged view while a newer publication is in transit; the actor revalidates
+that occurrence. The mailbox rejects other allocations before queueing them.
+Every worker publication checks the current navigation cancellation; session
+application checks the pane, navigation, session and branch version.
+
+Branch work that cannot start never ends the session: an optional probe is
+dropped, an explicit expansion or refresh is answered with a row `Rejected`. A
+probe whose row was meanwhile expanded or listed is dropped before dispatch. An
+explicit expansion whose display projection exceeds its budget restores that
+branch with an error, like a failed maintenance step. A session still ends with
+`Unavailable` when a recursive batch cannot be projected for a reason other than
+the resource budget (for example malformed provider data; the batch is rolled
+back first), when a completed listing cannot be turned into a publication, when
+an admission semaphore reports that it is closed, or when an internal invariant
+fails. If such an error occurs while the next branch job is being chosen during
+a refresh pass, it ends that pass with the error instead, and the session
+continues. After `Unavailable`, Commit and viewport observations of the last
+publication are ignored, because answering them with a retryable rejection would
+make the UI commit again in a loop.
 
 Typed navigation preserves full native paths or archive locations and raw node
 identities. An archive target retains the source registration after pane changes
@@ -74,13 +91,39 @@ generation cancellation rules and prevent canceled option publications.
   branch job per pane can be outstanding. Its persistent budget survives session
   replacement and shares the pane's existing two listing permits.
   Viewport probes are best-effort read-ahead: excess probes wait for a later
-  publication/viewport update rather than reporting resource exhaustion. Explicit
-  expansion or refresh can replace a queued probe and runs before background
-  probes. A queue containing eight explicit requests retains normal backpressure.
+  publication/viewport update rather than reporting resource exhaustion. A probe
+  publishes only its result. Explicit expansion or refresh can replace a queued
+  probe and runs before background probes. A queue containing eight explicit
+  requests retains normal backpressure.
 - Root construction and typed navigation validation hold a common listing
-  permit. Branch work retains both its branch and common permits through actual
-  provider return, completion application/projection and stale-result cleanup.
+  permit. Explicit, probe and maintenance branch work retains both its branch
+  and common permits through actual provider return, completion application,
+  projection and stale-result cleanup. A recursive result releases them right
+  after installation; its batch is projected once when the batch finishes.
   A saturated typed navigation request is rejected explicitly and may be retried.
+- Maintenance listings (refresh of loaded native branches) hold every share of
+  the engine's transfer-namespace gate through each list/apply step, so they
+  never observe a running transfer. While transfers run, the model worker
+  retries that admission every 25 ms; it never queues on the fair gate, where it
+  would reserve shares that new transfers need. Explicit, recursive and probe
+  listings take no namespace share and proceed during transfers.
+- One refresh pass runs or waits per session. A `RefreshLoaded` accepted while a
+  branch listing is in flight starts after that listing is installed instead of
+  being refused as busy. A branch whose re-listing changes nothing displayed
+  publishes nothing and needs no projection build; the size lookup counts as
+  unchanged when it is equal, so the new empty lookup a refresh installs forces a
+  rebuild only if the projection was built with measured sizes. Each changed
+  branch still costs one full projection build and one publication round trip;
+  changed branches are not batched. A pass that ends without a newer
+  publication settles its watch fence against the already acknowledged
+  projection.
+- Only provider-supplied failure text gets a details report. Admission,
+  staleness, capacity and cancellation outcomes carry just their bounded
+  message, so routine command races create no spool files. Reports live in a
+  per-user private spool root: under `%TEMP%` on Windows; on Linux under the
+  session's `XDG_RUNTIME_DIR` unless `TMPDIR` is set explicitly, and otherwise
+  under the temporary directory with a user-specific name. The root is created
+  owner-only; a foreign, linked or permissive root is refused.
 - Queue or payload saturation returns `Unavailable`, `Rejected` or
   `SelectionFailed` as appropriate; options use `ReprojectFailed`.
   Reprojection retains at most 4,096 UTF-8 expression bytes per queued command;

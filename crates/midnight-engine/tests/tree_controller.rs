@@ -763,6 +763,8 @@ struct ValidationGate {
     entered: tokio::sync::Notify,
     released: std::sync::Mutex<bool>,
     changed: std::sync::Condvar,
+    // Signalled whenever a mount value is destroyed; waiters re-check their Weak.
+    dropped: tokio::sync::Notify,
 }
 impl ValidationGate {
     fn release(&self) {
@@ -772,6 +774,11 @@ impl ValidationGate {
 }
 #[derive(Debug)]
 struct GatedArchive(Arc<ValidationGate>);
+impl Drop for GatedArchive {
+    fn drop(&mut self) {
+        self.0.dropped.notify_one();
+    }
+}
 impl std::fmt::Debug for ValidationGate {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("ValidationGate")
@@ -866,57 +873,8 @@ async fn archive_root_in_pane_at(
     }
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn retained_navigation_targets_share_one_pane_mount_budget_across_sessions() {
-    let (send, mut events) = mpsc::channel(32);
-    let mut command_engine_7 = Engine::new(
-        Engine::lifetime().expect("engine cleanup worker"),
-        Arc::new(Files),
-        send,
-    );
-    let (commands, receive) = command_engine_7.command_channel(16).unwrap();
-    let engine = tokio::spawn(command_engine_7.run(receive));
-    let mut retained = Vec::new();
-    for generation in 1..=64 {
-        let root = archive_root_at(&commands, &mut events, Arc::new(Archive), generation).await;
-        let publication = enable(&commands, &mut events, root).await;
-        tree(&commands, TreeCommand::Commit(publication.view.clone())).await;
-        tree(
-            &commands,
-            TreeCommand::Navigate {
-                view: publication.view.clone(),
-                request: TreeRequestId(1),
-                row: publication.view.rows[0].id,
-                navigation: NavigationId(generation + 1),
-            },
-        )
-        .await;
-        let TreeEvent::Navigated { target, .. } = next_tree(&mut events).await else {
-            panic!("navigation target expected")
-        };
-        retained.push(target);
-    }
-    let root = archive_root_at(&commands, &mut events, Arc::new(Archive), 65).await;
-    tree(
-        &commands,
-        TreeCommand::Enable {
-            root: root.clone(),
-            selection_revision: SelectionRevision(0),
-            selected: TreeRootSelection::Empty,
-        },
-    )
-    .await;
-    let limited = next_tree(&mut events).await;
-    assert!(
-        matches!(limited, TreeEvent::Unavailable { .. }),
-        "retained targets must share a bounded registry: {limited:?}"
-    );
-    drop(retained);
-    let publication = enable(&commands, &mut events, root).await;
-    assert_eq!(publication.view.stamp.navigation, NavigationId(65));
-    commands.send(Command::Shutdown).await.unwrap();
-    engine.await.unwrap();
-}
+// The per-pane 64-mount registry bound across sessions is covered for both panes by
+// `retained_archive_tests::both_panes_retain_full_archive_registries_and_admit_replacement_roots`.
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn oversized_root_payload_is_refused_before_it_enters_the_model_queue() {
@@ -1280,9 +1238,7 @@ async fn viewport_probes_only_directories_and_unsupported_file_requests_keep_the
         },
     )
     .await;
-    let loading = published(&mut events).await;
-    assert_eq!(loading.view.rows[0].disclosure, TreeDisclosure::Loading);
-    tree(&commands, TreeCommand::Commit(loading.view.clone())).await;
+    // An optional probe publishes only its result, never a Loading marker.
     let probed = published(&mut events).await;
     assert_eq!(probed.view.rows.len(), 2);
     assert_eq!(probed.view.rows[0].disclosure, TreeDisclosure::Collapsed);
@@ -1436,8 +1392,12 @@ async fn disconnected_engine_releases_blocked_model_resources_after_the_callback
     );
     gate.release();
     tokio::time::timeout(Duration::from_secs(2), async {
-        while retained.upgrade().is_some() {
-            tokio::task::yield_now().await;
+        loop {
+            let dropped = gate.dropped.notified();
+            if retained.upgrade().is_none() {
+                break;
+            }
+            dropped.await;
         }
     })
     .await

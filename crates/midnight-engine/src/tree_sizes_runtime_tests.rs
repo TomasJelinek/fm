@@ -16,6 +16,7 @@ struct Files {
     blocked: std::sync::atomic::AtomicBool,
     partial_root: bool,
     fail_metadata: bool,
+    panic_name: Option<&'static str>,
 }
 impl DirectoryService for Files {
     fn read_directory(
@@ -25,6 +26,11 @@ impl DirectoryService for Files {
         emit: &mut dyn FnMut(Entry) -> bool,
     ) -> Result<(), FsError> {
         self.calls.fetch_add(1, Ordering::SeqCst);
+        if let Some(name) = self.panic_name
+            && path.file_name() == Some(std::ffi::OsStr::new(name))
+        {
+            panic!("fixture scan panic");
+        }
         if self.partial_root && path.file_name() == Some(std::ffi::OsStr::new("z-parent")) {
             emit(Entry::new(EntryId(55), path.join("leaf"), EntryKind::File));
             if self.fail_metadata {
@@ -103,6 +109,7 @@ fn filesystem(blocked: bool) -> (Arc<Files>, mpsc::Receiver<()>, mpsc::SyncSende
             blocked: std::sync::atomic::AtomicBool::new(blocked),
             partial_root: false,
             fail_metadata: false,
+            panic_name: None,
         }),
         enter,
         release,
@@ -142,8 +149,21 @@ fn capture(session: &mut Session, request: u64, row: TreeRowId) -> CapturedSelec
         )
         .unwrap()
 }
+/// Publication pacing for cases that do not measure the 250 ms production pacing.
+const TEST_INTERVAL: Duration = Duration::from_millis(5);
+
+fn paced_state(files: Arc<Files>) -> (State, Arc<Notify>) {
+    let wake = Arc::new(Notify::new());
+    let state =
+        State::new(files, wake.clone(), crate::ReportArena::testing()).with_interval(TEST_INTERVAL);
+    (state, wake)
+}
+
+/// Drive the scheduler like the model worker: tick on every scan wake-up, or
+/// after one pacing interval when only a delayed publication is due.
 async fn until(
     state: &mut State,
+    wake: &Notify,
     stamp: TreeViewStamp,
     mut accept: impl FnMut(&[TreeSizeEvent]) -> bool,
 ) -> Vec<TreeSizeEvent> {
@@ -156,7 +176,7 @@ async fn until(
             // A consumer still acknowledges maps while waiting for another
             // event; otherwise a slow worker can leave the publication slot held.
             acknowledge(state, &events);
-            tokio::time::sleep(Duration::from_millis(5)).await;
+            let _ = tokio::time::timeout(TEST_INTERVAL, wake.notified()).await;
         }
     })
     .await
@@ -184,11 +204,7 @@ async fn retention_checks_only_cached_sizes_and_preserves_collapsed_rows() {
         .id;
     let stamp = expanded.view.stamp;
     let (files, _, _) = filesystem(false);
-    let mut state = State::new(
-        files,
-        Arc::new(Notify::new()),
-        crate::ReportArena::testing(),
-    );
+    let (mut state, wake) = paced_state(files);
     state.retain(|_| panic!("an empty cache needs no row membership checks"));
     state.enqueue(
         TreeRequestId(2),
@@ -197,7 +213,7 @@ async fn retention_checks_only_cached_sizes_and_preserves_collapsed_rows() {
     );
     let first = state.tick(Some(stamp));
     acknowledge(&mut state, &first);
-    let complete = until(&mut state, stamp, |events| {
+    let complete = until(&mut state, &wake, stamp, |events| {
         events.iter().any(|event| {
             matches!(event, TreeSizeEvent::Snapshot { sizes }
                 if sizes.get(child).is_some_and(|size| size.finished) && !sizes.running(child))
@@ -237,7 +253,7 @@ async fn retention_checks_only_cached_sizes_and_preserves_collapsed_rows() {
         "the outstanding map still needs ACK"
     );
     acknowledge(&mut state, &complete);
-    let cleared = until(&mut state, stamp, |events| {
+    let cleared = until(&mut state, &wake, stamp, |events| {
         events
             .iter()
             .any(|event| matches!(event, TreeSizeEvent::Snapshot { .. }))
@@ -278,16 +294,12 @@ async fn cancelled_partial_scan(fail_metadata: bool) {
     let fixture = Arc::get_mut(&mut files).unwrap();
     fixture.partial_root = true;
     fixture.fail_metadata = fail_metadata;
-    let mut state = State::new(
-        files,
-        Arc::new(Notify::new()),
-        crate::ReportArena::testing(),
-    );
+    let (mut state, wake) = paced_state(files);
     state.enqueue(TreeRequestId(1), captured, &Cancellation::default());
     let first = state.tick(Some(stamp));
     acknowledge(&mut state, &first);
     entered.recv_timeout(Duration::from_secs(2)).unwrap();
-    let before = until(&mut state, stamp, |events| {
+    let before = until(&mut state, &wake, stamp, |events| {
         events.iter().any(|event| {
             matches!(event, TreeSizeEvent::Snapshot { sizes }
             if sizes.get(complete_row).is_some_and(|size| size.finished)
@@ -305,7 +317,7 @@ async fn cancelled_partial_scan(fail_metadata: bool) {
     acknowledge(&mut state, &before);
     assert!(state.cancel(stamp, TreeRequestId(1)).is_empty());
     release.send(()).unwrap();
-    let finished = until(&mut state, stamp, |events| {
+    let finished = until(&mut state, &wake, stamp, |events| {
         events.iter().any(|event| {
             matches!(
                 event,
@@ -324,7 +336,7 @@ async fn cancelled_partial_scan(fail_metadata: bool) {
     {
         finished
     } else {
-        until(&mut state, stamp, |events| {
+        until(&mut state, &wake, stamp, |events| {
             events
                 .iter()
                 .any(|event| matches!(event, TreeSizeEvent::Snapshot { .. }))
@@ -415,11 +427,7 @@ async fn final_snapshot_waits_for_ack_then_timer_without_more_input() {
     let row = f.session.projection().rows[0].id;
     let stamp = f.session.projection().stamp;
     let (files, _, _) = filesystem(false);
-    let mut state = State::new(
-        files,
-        Arc::new(Notify::new()),
-        crate::ReportArena::testing(),
-    );
+    let (mut state, wake) = paced_state(files);
     state.enqueue(
         TreeRequestId(1),
         capture(&mut f.session, 1, row),
@@ -431,7 +439,7 @@ async fn final_snapshot_waits_for_ack_then_timer_without_more_input() {
             .iter()
             .any(|e| matches!(e, TreeSizeEvent::Snapshot { .. }))
     );
-    let finished = until(&mut state, stamp, |events| {
+    let finished = until(&mut state, &wake, stamp, |events| {
         events
             .iter()
             .any(|e| matches!(e, TreeSizeEvent::Finished { .. }))
@@ -444,7 +452,7 @@ async fn final_snapshot_waits_for_ack_then_timer_without_more_input() {
         "unacknowledged first map retains publication slot"
     );
     acknowledge(&mut state, &first);
-    let final_map=until(&mut state,stamp,|events|events.iter().any(|e|matches!(e,TreeSizeEvent::Snapshot{sizes} if sizes.get(row).is_some_and(|size|size.finished)))).await;
+    let final_map=until(&mut state,&wake,stamp,|events|events.iter().any(|e|matches!(e,TreeSizeEvent::Snapshot{sizes} if sizes.get(row).is_some_and(|size|size.finished)))).await;
     let TreeSizeEvent::Snapshot { sizes } = final_map
         .iter()
         .find(|e| matches!(e, TreeSizeEvent::Snapshot { .. }))
@@ -462,11 +470,7 @@ async fn cancel_and_reset_keep_blocked_scan_capacity_until_real_return() {
     let row = f.session.projection().rows[0].id;
     let stamp = f.session.projection().stamp;
     let (files, entered, release) = filesystem(true);
-    let mut state = State::new(
-        files.clone(),
-        Arc::new(Notify::new()),
-        crate::ReportArena::testing(),
-    );
+    let (mut state, wake) = paced_state(files.clone());
     state.enqueue(
         TreeRequestId(1),
         capture(&mut f.session, 1, row),
@@ -492,7 +496,7 @@ async fn cancel_and_reset_keep_blocked_scan_capacity_until_real_return() {
     );
     files.blocked.store(false, Ordering::SeqCst);
     release.send(()).unwrap();
-    until(&mut state, stamp, |events| {
+    until(&mut state, &wake, stamp, |events| {
         events.iter().any(|e| {
             matches!(
                 e,
@@ -513,11 +517,7 @@ async fn overlapping_queued_root_keeps_running_after_first_finishes() {
     let row = f.session.projection().rows[0].id;
     let stamp = f.session.projection().stamp;
     let (files, entered, release) = filesystem(true);
-    let mut state = State::new(
-        files,
-        Arc::new(Notify::new()),
-        crate::ReportArena::testing(),
-    );
+    let (mut state, wake) = paced_state(files);
     state.enqueue(
         TreeRequestId(1),
         capture(&mut f.session, 1, row),
@@ -532,7 +532,7 @@ async fn overlapping_queued_root_keeps_running_after_first_finishes() {
         &Cancellation::default(),
     );
     release.send(()).unwrap();
-    let first_finished = until(&mut state, stamp, |events| {
+    let first_finished = until(&mut state, &wake, stamp, |events| {
         events.iter().any(|e| {
             matches!(
                 e,
@@ -552,7 +552,7 @@ async fn overlapping_queued_root_keeps_running_after_first_finishes() {
         first_finished
     } else {
         acknowledge(&mut state, &first_finished);
-        until(&mut state, stamp, |events| {
+        until(&mut state, &wake, stamp, |events| {
             events
                 .iter()
                 .any(|e| matches!(e,TreeSizeEvent::Snapshot{sizes} if sizes.running(row)))
@@ -561,7 +561,7 @@ async fn overlapping_queued_root_keeps_running_after_first_finishes() {
     };
     acknowledge(&mut state, &running);
     release.send(()).unwrap();
-    until(&mut state, stamp, |events| {
+    until(&mut state, &wake, stamp, |events| {
         events.iter().any(|e| {
             matches!(
                 e,
@@ -576,11 +576,49 @@ async fn overlapping_queued_root_keeps_running_after_first_finishes() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_panicking_scan_still_finishes_and_releases_the_pane_queue() {
+    let mut f = tests::fixture();
+    let rows = f.session.projection().rows.clone();
+    let stamp = f.session.projection().stamp;
+    let (mut files, _, _) = filesystem(false);
+    Arc::get_mut(&mut files).unwrap().panic_name = Some("a-parent");
+    let (mut state, wake) = paced_state(files.clone());
+    assert_eq!(rows[0].entry.display_name, "a-parent");
+    state.enqueue(
+        TreeRequestId(1),
+        capture(&mut f.session, 1, rows[0].id),
+        &Cancellation::default(),
+    );
+    state.enqueue(
+        TreeRequestId(2),
+        capture(&mut f.session, 2, rows[1].id),
+        &Cancellation::default(),
+    );
+    let first = state.tick(Some(stamp));
+    acknowledge(&mut state, &first);
+    let mut finished = Vec::new();
+    until(&mut state, &wake, stamp, |events| {
+        finished.extend(events.iter().filter_map(|event| match event {
+            TreeSizeEvent::Finished { request, .. } => Some(*request),
+            _ => None,
+        }));
+        finished.contains(&TreeRequestId(2))
+    })
+    .await;
+    assert_eq!(
+        finished,
+        [TreeRequestId(1), TreeRequestId(2)],
+        "the panicked scan ends and the queued scan still runs"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn repeated_fast_scans_respect_one_map_per_quarter_second() {
     let mut f = tests::fixture();
     let row = f.session.projection().rows[0].id;
     let stamp = f.session.projection().stamp;
     let (files, _, _) = filesystem(false);
+    // The only case that measures the production publication pacing.
     let mut state = State::new(
         files,
         Arc::new(Notify::new()),
@@ -620,11 +658,7 @@ async fn selected_totals_use_exact_current_arcs_and_known_completed_bytes() {
     let row = f.session.projection().rows[0].id;
     let stamp = f.session.projection().stamp;
     let (files, _, _) = filesystem(false);
-    let mut state = State::new(
-        files,
-        Arc::new(Notify::new()),
-        crate::ReportArena::testing(),
-    );
+    let (mut state, wake) = paced_state(files);
     state.enqueue(
         TreeRequestId(1),
         capture(&mut f.session, 1, row),
@@ -632,7 +666,7 @@ async fn selected_totals_use_exact_current_arcs_and_known_completed_bytes() {
     );
     let first = state.tick(Some(stamp));
     acknowledge(&mut state, &first);
-    until(&mut state, stamp, |events| {
+    until(&mut state, &wake, stamp, |events| {
         events
             .iter()
             .any(|e| matches!(e, TreeSizeEvent::Finished { .. }))
@@ -675,11 +709,7 @@ async fn refresh_invalidation_preserves_ack_slot_and_increasing_snapshot_version
     let row = f.session.projection().rows[0].id;
     let stamp = f.session.projection().stamp;
     let (files, _, _) = filesystem(false);
-    let mut state = State::new(
-        files,
-        Arc::new(Notify::new()),
-        crate::ReportArena::testing(),
-    );
+    let (mut state, wake) = paced_state(files);
     state.enqueue(
         TreeRequestId(1),
         capture(&mut f.session, 1, row),
@@ -693,7 +723,7 @@ async fn refresh_invalidation_preserves_ack_slot_and_increasing_snapshot_version
     else {
         unreachable!()
     };
-    until(&mut state, stamp, |events| {
+    until(&mut state, &wake, stamp, |events| {
         events
             .iter()
             .any(|e| matches!(e, TreeSizeEvent::Finished { .. }))
@@ -709,7 +739,7 @@ async fn refresh_invalidation_preserves_ack_slot_and_increasing_snapshot_version
         "refresh cannot steal the outstanding ACK"
     );
     acknowledge(&mut state, &first);
-    let cleared = until(&mut state, stamp, |events| {
+    let cleared = until(&mut state, &wake, stamp, |events| {
         events
             .iter()
             .any(|e| matches!(e, TreeSizeEvent::Snapshot { .. }))

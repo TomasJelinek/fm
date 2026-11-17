@@ -233,14 +233,8 @@ impl CapturedTransferSources for Sources {
                 ));
             }
         }
-        for (id, kind, _) in &archive_roots {
-            if *kind == EntryKind::Directory
-                && archive_roots.iter().any(|(other, _, trail)| {
-                    other != id && other.mount == id.mount && trail.contains(&id.entry)
-                })
-            {
-                return Err(failure("Overlapping archive Copy roots."));
-            }
+        if overlapping_archive_roots(&archive_roots) {
+            return Err(failure("Overlapping archive Copy roots."));
         }
         let traversal = crate::copy_operations::archive_source::traversal();
         let mut roots = VecDeque::new();
@@ -340,6 +334,67 @@ fn failure(message: &str) -> FsError {
         message: message.into(),
     }
 }
+
+/// A root whose captured provider trail passes through another selected directory
+/// root lies inside it. One set lookup per trail step: O(roots x depth).
+fn overlapping_archive_roots(roots: &[(VirtualEntryId, EntryKind, Vec<u64>)]) -> bool {
+    let directories = roots
+        .iter()
+        .filter(|(_, kind, _)| *kind == EntryKind::Directory)
+        .map(|(id, _, _)| *id)
+        .collect::<HashSet<_>>();
+    roots.iter().any(|(id, _, trail)| {
+        trail.iter().any(|entry| {
+            *entry != id.entry
+                && directories.contains(&VirtualEntryId {
+                    mount: id.mount,
+                    entry: *entry,
+                })
+        })
+    })
+}
+
+#[cfg(test)]
+#[test]
+fn archive_root_overlap_uses_provider_trails_within_one_mount() {
+    // Trails run from the archive root directory to the occurrence itself.
+    let root =
+        |mount, entry, kind, trail: &[u64]| (VirtualEntryId { mount, entry }, kind, trail.to_vec());
+    let (directory, file) = (EntryKind::Directory, EntryKind::File);
+    assert!(!overlapping_archive_roots(&[root(
+        1,
+        2,
+        directory,
+        &[1, 2]
+    )]));
+    assert!(!overlapping_archive_roots(&[
+        root(1, 2, directory, &[1, 2]),
+        root(1, 3, directory, &[1, 3]),
+    ]));
+    assert!(overlapping_archive_roots(&[
+        root(1, 2, directory, &[1, 2]),
+        root(1, 3, directory, &[1, 3]),
+        root(1, 4, file, &[1, 3, 4]),
+    ]));
+    assert!(
+        overlapping_archive_roots(&[
+            root(1, 9, directory, &[1, 2, 7, 9]),
+            root(1, 2, directory, &[1, 2]),
+        ]),
+        "a deep descendant is found whatever the selection order"
+    );
+    assert!(
+        !overlapping_archive_roots(
+            &[root(1, 2, directory, &[1, 2]), root(9, 5, file, &[1, 2, 5]),]
+        ),
+        "equal entry numbers in another mount are unrelated"
+    );
+    assert!(
+        !overlapping_archive_roots(&[root(1, 2, file, &[1, 2]), root(1, 5, file, &[1, 2, 5])]),
+        "only a directory root can contain another root"
+    );
+}
+
 struct LeasedSource {
     source: NativeAuthority<Box<dyn TransferSource>>,
     lease: LeaseReference,
