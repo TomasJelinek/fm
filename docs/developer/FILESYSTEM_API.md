@@ -164,9 +164,12 @@ cancellation); default helpers retain exact protocol-1 bytes. See the wire refer
 for all fields. No native path or file handle crosses this interface.
 
 Root ID is `1`; member IDs start at `2` and are opaque within that mount. Listing
-IDs strictly increase, each node's parent matches the requested directory, and
+IDs strictly increase, each node's parent matches the requested directory, no node
+is that directory itself, only the final page (`more` false) may be empty, and
 each batch has at most 128 nodes. Name and display fields each have a 64 KiB bound;
-the entire batch must fit the frame limit. Duplicate filenames and names that
+the entire batch must fit the frame limit. A listing page that breaks these rules,
+or protocol-1 `Content` longer than the requested length, ends the session, even
+when its request was cancelled meanwhile. Duplicate filenames and names that
 display identically retain distinct IDs. Do not use a display string, hash of a
 name, index in a sorted list or native `PathBuf` as member identity.
 
@@ -229,9 +232,9 @@ diagnostic bytes. Report unsupported/encrypted codecs explicitly; never retry
 through an external utility or a host path. The host ends the mount on a failed exchange, except the explicitly negotiated
 protocol-3 cooperative cancellation acknowledgement described below. Protocol violations, truncated frames and unexpected replies
 also fail closed. Cancelling one request never ends a mount that other tabs,
-viewers and jobs share: a listing stops between pages and discards an in-flight
-page; protocol-3 member reads cancel cooperatively through both the ordinary and
-the preview read entry points; a protocol-1/2 member read cannot be interrupted,
+viewers and jobs share: a listing stops between pages and discards a conforming
+in-flight page; protocol-3 member reads cancel cooperatively through both the ordinary
+and the preview read entry points; a protocol-1/2 member read cannot be interrupted,
 so a cancelled one finishes its exchange under the idle-progress watchdog and the
 host discards its result. Such a legacy read can therefore delay its caller's
 cancellation until the member is staged. Only the startup exchange, whose caller
@@ -247,6 +250,8 @@ byte I/O and monotonic decoded work renew the watchdog. Protocol 1 retains its
 legacy limits. Shared tab/viewer leases count as the same mount. Source reads may
 revisit captured ranges and are bounded to 256 KiB. Host listing validation
 also limits a directory to 100,000 nodes and 8 MiB aggregate raw/display names.
+These are host limits, not protocol violations: a legitimate large directory can
+reach them, so reaching one fails only that listing and keeps the worker.
 The idle supervisor waits without polling; it observes startup cancellation every
 10 ms only while that exchange is active. A failed `release_on_worker` retains its
 host reference instead of dropping it. Once every host reference of a session whose

@@ -691,3 +691,237 @@ fn cooperative_terminal_cancellation_never_hides_bad_content_identity_or_range()
         );
     }
 }
+
+fn member(id: u64, parent: u64) -> api::Node {
+    api::Node {
+        id,
+        parent,
+        name: b"m".to_vec(),
+        display: "m".into(),
+        kind: api::Kind::File,
+        size: None,
+        readable: true,
+        modified: None,
+    }
+}
+/// The conforming root page that a worker which kept running would serve to `request`.
+fn next_page(request: u64) -> Message {
+    Message::Entries {
+        request,
+        entries: vec![member(2, 1)],
+        more: false,
+    }
+}
+/// Replies to one listing of these pages, then to the next request.
+fn listing_then_next(pages: Vec<(Vec<api::Node>, bool)>) -> Vec<Message> {
+    let mut replies: Vec<Message> = (1..)
+        .zip(pages)
+        .map(|(request, (entries, more))| Message::Entries {
+            request,
+            entries,
+            more,
+        })
+        .collect();
+    replies.push(next_page(replies.len() as u64 + 1));
+    replies
+}
+/// A protocol violation ends the worker: later requests fail without an exchange, as
+/// after any other failed exchange.
+fn assert_worker_ended(fixture: &Fixture, context: &str) {
+    assert!(
+        fixture.mount.supervision.stopped(),
+        "{context}: the violating worker kept serving the mount"
+    );
+    assert_eq!(
+        fixture
+            .mount
+            .list(1, &Cancellation::default())
+            .unwrap_err()
+            .kind,
+        io::ErrorKind::Interrupted,
+        "{context}"
+    );
+}
+
+#[test]
+fn listing_pages_that_break_wire_rules_end_the_shared_worker() {
+    let every = [Protocol::V1, Protocol::V2, Protocol::V3];
+    // Protocols 2 and 3 reject a member ID below 2 or a member that is its own parent
+    // when they decode the frame, which already fails the exchange.
+    let legacy = [Protocol::V1];
+    // Each case breaks one rule: (case, protocols, listed directory, worker pages).
+    type Case<'a> = (&'a str, &'a [Protocol], u64, Vec<(Vec<api::Node>, bool)>);
+    let cases: [Case; 6] = [
+        // Only a final page may be empty; this one would never advance the cursor.
+        (
+            "empty page announcing more",
+            &every,
+            1,
+            vec![(vec![], true)],
+        ),
+        // The root is 1; member IDs begin at 2.
+        (
+            "member ID below 2",
+            &legacy,
+            5,
+            vec![(vec![member(1, 5)], false)],
+        ),
+        (
+            "repeated member ID",
+            &every,
+            1,
+            vec![(vec![member(3, 1), member(3, 1)], false)],
+        ),
+        // IDs also increase past the cursor that the next page request carries.
+        (
+            "member ID at the page cursor",
+            &every,
+            1,
+            vec![(vec![member(4, 1)], true), (vec![member(4, 1)], false)],
+        ),
+        (
+            "directory listing itself",
+            &legacy,
+            5,
+            vec![(vec![member(5, 5)], false)],
+        ),
+        (
+            "member of another parent",
+            &every,
+            1,
+            vec![(vec![member(2, 3)], false)],
+        ),
+    ];
+    for (case, protocols, directory, pages) in cases {
+        for &protocol in protocols {
+            let context = format!("{protocol:?}, {case}");
+            let fixture = Fixture::new(protocol, listing_then_next(pages.clone()));
+            assert_eq!(
+                fixture
+                    .mount
+                    .list(directory, &Cancellation::default())
+                    .unwrap_err()
+                    .kind,
+                io::ErrorKind::InvalidData,
+                "{context}"
+            );
+            assert_worker_ended(&fixture, &context);
+        }
+    }
+}
+
+#[test]
+fn cancelling_a_listing_does_not_hide_a_page_that_breaks_wire_rules() {
+    for protocol in [Protocol::V1, Protocol::V2, Protocol::V3] {
+        let fixture = Fixture::new(
+            protocol,
+            listing_then_next(vec![(vec![member(2, 3)], false)]),
+        );
+        // The request token is cancelled while the page exchange is in flight. The
+        // violation, not the cancellation, decides the result.
+        fixture
+            .source
+            .cancel_on_validation
+            .store(1, Ordering::SeqCst);
+        assert_eq!(
+            fixture
+                .mount
+                .list(1, &fixture.source.token)
+                .unwrap_err()
+                .kind,
+            io::ErrorKind::InvalidData,
+            "{protocol:?}"
+        );
+        assert!(fixture.source.token.is_cancelled(), "{protocol:?}");
+        assert_worker_ended(&fixture, &format!("{protocol:?}"));
+    }
+}
+
+#[test]
+fn protocol_one_content_longer_than_requested_ends_the_shared_worker() {
+    let oversized = Message::Content {
+        request: 1,
+        eof: true,
+        bytes: b"data!".to_vec(),
+    };
+    let fixture = Fixture::new(Protocol::V1, vec![oversized.clone(), next_page(2)]);
+    assert_eq!(
+        fixture
+            .mount
+            .read(2, 0, 4, &Cancellation::default())
+            .unwrap_err()
+            .kind,
+        io::ErrorKind::InvalidData
+    );
+    assert_worker_ended(&fixture, "read");
+    // The brokered source read cancels this read mid-exchange, which hides nothing.
+    let fixture = Fixture::new(Protocol::V1, vec![source_read(), oversized, next_page(2)]);
+    assert_eq!(
+        fixture.read().unwrap_err().kind,
+        io::ErrorKind::InvalidData,
+        "cancelled read"
+    );
+    assert!(fixture.source.cancelled.load(Ordering::Acquire));
+    assert_worker_ended(&fixture, "cancelled read");
+}
+
+#[test]
+fn host_listing_limits_fail_only_that_listing_and_keep_the_shared_worker() {
+    // The host applies its limits after each page exchange, the same way for every
+    // protocol, so the costly member count case (hundreds of pages) runs on protocol 3
+    // only.
+    for (limit, protocols, count, name_bytes, per_page) in [
+        (
+            "members",
+            &[Protocol::V3][..],
+            MAX_LISTED_NODES + 1,
+            1,
+            api::MAX_BATCH,
+        ),
+        // Maximal raw and display names fit the 1 MiB frame budget seven to a page.
+        (
+            "name bytes",
+            &[Protocol::V1, Protocol::V2, Protocol::V3][..],
+            MAX_LISTED_NAME_BYTES / (2 * api::MAX_NAME) + 1,
+            api::MAX_NAME,
+            7,
+        ),
+    ] {
+        let members: Vec<api::Node> = (2..)
+            .take(count)
+            .map(|id| api::Node {
+                name: vec![b'n'; name_bytes],
+                display: "d".repeat(name_bytes),
+                ..member(id, 1)
+            })
+            .collect();
+        for &protocol in protocols {
+            let context = format!("{protocol:?}, {limit}");
+            let pages = members
+                .chunks(per_page)
+                .map(|chunk| (chunk.to_vec(), true))
+                .collect();
+            let fixture = Fixture::new(protocol, listing_then_next(pages));
+            assert_eq!(
+                fixture
+                    .mount
+                    .list(1, &Cancellation::default())
+                    .unwrap_err()
+                    .kind,
+                io::ErrorKind::InvalidData,
+                "{context}"
+            );
+            // A legitimate large directory reaches these limits, so the worker stays.
+            assert!(!fixture.mount.supervision.stopped(), "{context}");
+            assert_eq!(
+                fixture
+                    .mount
+                    .list(1, &Cancellation::default())
+                    .unwrap()
+                    .len(),
+                1,
+                "{context}"
+            );
+        }
+    }
+}
