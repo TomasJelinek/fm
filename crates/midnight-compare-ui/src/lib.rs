@@ -3,15 +3,18 @@
 mod file_choice;
 mod fonts;
 mod images;
+#[cfg(test)]
+mod wake_tests;
 use midnight_compare_engine::{ImageMode, Input, Output, Service, Session};
 use midnight_core::{FileCompareLaunch, ShortcutChord, ViewerAppearance, ViewerGeometry};
 use slint::{
-    ComponentHandle, Timer, TimerMode,
+    ComponentHandle, EventLoopError, Timer, TimerMode,
     winit_030::{EventResult, WinitWindowAccessor},
 };
 use std::{
     cell::{Cell, RefCell},
     rc::Rc,
+    sync::Arc,
     time::Duration,
 };
 
@@ -31,10 +34,17 @@ pub struct ComparatorWindows {
     picker_owner: file_choice::PickerOwner,
     font_listener: Rc<RefCell<Option<FontListener>>>,
 }
+/// One comparison window. Nothing runs while it is idle: the worker's outputs arrive
+/// through `output-ready`, geometry through `geometry-changed`, and the batch timer runs
+/// only while inputs arrive or wait for room in the session queue.
 struct OpenWindow {
     window: ComparatorWindow,
     session: Session,
-    timer: Timer,
+    me: std::rc::Weak<OpenWindow>,
+    /// Paces input batches and retries inputs the full session queue refused.
+    batch: Timer,
+    /// Polls the mailbox, only on a platform whose event loop the worker cannot wake.
+    poll: Timer,
     closed: Cell<bool>,
     geometry: Cell<(u32, u32, u32)>,
     geometry_revision: Cell<u64>,
@@ -46,15 +56,125 @@ struct OpenWindow {
 }
 /// Inputs waiting for room in the bounded session queue.
 const MAX_PENDING: usize = 64;
+/// Inputs that arrive within this interval after a sent batch wait for the next batch, so
+/// continuous input reaches the worker at most about once per display frame. An input
+/// after a quiet interval is sent at once.
+const BATCH_INTERVAL: Duration = Duration::from_millis(16);
 
 impl OpenWindow {
     fn send(&self, input: Input) {
+        if self.closed.get() {
+            return;
+        }
         queue_input(&mut self.pending.borrow_mut(), input);
+        if !self.batch.running() {
+            self.flush();
+        }
+    }
+    /// Send queued inputs while the session accepts them, then hold later inputs for one
+    /// interval. The timer sends what arrived meanwhile or retries what the full queue
+    /// refused; once nothing waits it is not rearmed.
+    fn flush(&self) {
+        let mut pending = self.pending.borrow_mut();
+        let sent = pending
+            .iter()
+            .take_while(|input| self.session.send((*input).clone()))
+            .count();
+        pending.drain(..sent);
+        drop(pending);
+        let open = self.me.clone();
+        self.batch
+            .start(TimerMode::SingleShot, BATCH_INTERVAL, move || {
+                if let Some(open) = open.upgrade()
+                    && !open.closed.get()
+                    && !open.pending.borrow().is_empty()
+                {
+                    open.flush();
+                }
+            });
+    }
+    /// Send the content geometry if it changed: on `geometry-changed` and once after `show`.
+    fn sync_geometry(&self) {
+        if self.closed.get() {
+            return;
+        }
+        let window = &self.window;
+        let scale = window.window().scale_factor();
+        window.set_compact(window.window().size().to_logical(scale).width < 500.0);
+        let geometry = (
+            (window.get_content_width() * scale).max(2.0) as u32,
+            (window.get_content_height() * scale).max(1.0) as u32,
+            scale.to_bits(),
+        );
+        if self.geometry.replace(geometry) != geometry {
+            let revision = self.geometry_revision.get().saturating_add(1);
+            self.geometry_revision.set(revision);
+            window.set_geometry_revision(revision as i32);
+            self.send(Input::Resize(
+                ViewerGeometry {
+                    width: geometry.0,
+                    height: geometry.1,
+                    scale,
+                },
+                revision,
+            ));
+        }
+    }
+    /// Present the worker's latest output, if any.
+    fn present(&self, service: &Service) {
+        if self.closed.get() {
+            return;
+        }
+        let Some(output) = self.session.mailbox.take() else {
+            return;
+        };
+        let window = &self.window;
+        match &output {
+            Output::Frame { frame, names } => {
+                fonts::present(self, frame.fonts.as_ref());
+                if window.get_choosing_files() {
+                    window.set_choosing_files(false);
+                    window.set_choice_busy(false);
+                    window.invoke_focus_content();
+                }
+                window.set_frame_revision(frame.geometry_revision as i32);
+                window.set_rendered_mode(match frame.mode {
+                    Some(ImageMode::SideBySide) => 0,
+                    Some(ImageMode::Swipe) => 1,
+                    Some(ImageMode::OnionSkin) => 2,
+                    None => -1,
+                });
+                window.set_left_name(names[0].as_str().into());
+                window.set_right_name(names[1].as_str().into());
+                window.set_image_mode(frame.image);
+                window.set_position(frame.position as f32);
+                window.set_status(frame.status.as_str().into());
+                window.set_accessible_text(frame.accessible_text.as_str().into());
+                if let Some(layers) = &frame.layers {
+                    self.surfaces.borrow_mut().present(
+                        window,
+                        layers,
+                        frame.mode == Some(ImageMode::SideBySide),
+                    );
+                } else {
+                    let pixels = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(
+                        &frame.pixels,
+                        frame.width,
+                        frame.height,
+                    );
+                    window.set_surface(slint::Image::from_rgba8_premultiplied(pixels));
+                }
+            }
+            Output::Status(message) => window.set_status(message.as_str().into()),
+            Output::ChooseFiles(choice) => self.show_file_choice(choice),
+        }
+        service.retire(output);
     }
     fn close(&self) {
         if !self.closed.replace(true) {
             self.session.close();
-            self.timer.stop();
+            self.batch.stop();
+            self.poll.stop();
             self.window.set_surface(slint::Image::default());
             self.window.set_left_surface(slint::Image::default());
             self.window.set_right_surface(slint::Image::default());
@@ -115,7 +235,11 @@ impl ComparatorWindows {
                 .sum::<u16>()
                 > 384,
         );
-        let session = self.service.open(
+        // Runs on the worker: schedules one `output-ready` pass per burst of outputs. It
+        // holds only a weak handle, so the worker never keeps the window alive, and a pass
+        // that runs after the window is gone does nothing.
+        let ready = window.as_weak();
+        let session = self.service.open_with_wake(
             launch,
             appearance,
             ViewerGeometry {
@@ -123,11 +247,18 @@ impl ComparatorWindows {
                 height: (size.height - 100.0).max(1.0) as u32,
                 scale: window.window().scale_factor(),
             },
+            Arc::new(move || {
+                ready
+                    .upgrade_in_event_loop(|window| window.invoke_output_ready())
+                    .is_ok()
+            }),
         )?;
-        let open = Rc::new(OpenWindow {
+        let open = Rc::new_cyclic(|me| OpenWindow {
             window,
             session,
-            timer: Timer::default(),
+            me: me.clone(),
+            batch: Timer::default(),
+            poll: Timer::default(),
             closed: Cell::new(false),
             geometry: Cell::new((0, 0, 0)),
             geometry_revision: Cell::new(0),
@@ -137,94 +268,30 @@ impl ComparatorWindows {
             requested_font: RefCell::new(None),
             surfaces: RefCell::new(images::Surfaces::default()),
         });
-        bind(&open, keys);
+        bind(&open, keys, self.service.clone());
         fonts::bind(&open, self.font_listener.clone());
         file_choice::bind(&open, self.picker_owner);
-        let weak = Rc::downgrade(&open);
-        let service = self.service.clone();
-        open.timer
-            .start(TimerMode::Repeated, Duration::from_millis(16), move || {
-                let Some(open) = weak.upgrade() else {
-                    return;
-                };
-                if open.closed.get() {
-                    return;
-                }
-                let window = &open.window;
-                let scale = window.window().scale_factor();
-                window.set_compact(window.window().size().to_logical(scale).width < 500.0);
-                let geometry = (
-                    (window.get_content_width() * scale).max(2.0) as u32,
-                    (window.get_content_height() * scale).max(1.0) as u32,
-                    scale.to_bits(),
-                );
-                if open.geometry.replace(geometry) != geometry {
-                    let revision = open.geometry_revision.get().saturating_add(1);
-                    open.geometry_revision.set(revision);
-                    window.set_geometry_revision(revision as i32);
-                    open.send(Input::Resize(
-                        ViewerGeometry {
-                            width: geometry.0,
-                            height: geometry.1,
-                            scale,
-                        },
-                        revision,
-                    ));
-                }
-                let mut pending = open.pending.borrow_mut();
-                let sent = pending
-                    .iter()
-                    .take_while(|input| open.session.send((*input).clone()))
-                    .count();
-                pending.drain(..sent);
-                drop(pending);
-                if let Some(output) = open.session.mailbox.take() {
-                    match &output {
-                        Output::Frame { frame, names } => {
-                            fonts::present(&open, frame.fonts.as_ref());
-                            if window.get_choosing_files() {
-                                window.set_choosing_files(false);
-                                window.set_choice_busy(false);
-                                window.invoke_focus_content();
-                            }
-                            window.set_frame_revision(frame.geometry_revision as i32);
-                            window.set_rendered_mode(match frame.mode {
-                                Some(ImageMode::SideBySide) => 0,
-                                Some(ImageMode::Swipe) => 1,
-                                Some(ImageMode::OnionSkin) => 2,
-                                None => -1,
-                            });
-                            window.set_left_name(names[0].as_str().into());
-                            window.set_right_name(names[1].as_str().into());
-                            window.set_image_mode(frame.image);
-                            window.set_position(frame.position as f32);
-                            window.set_status(frame.status.as_str().into());
-                            window.set_accessible_text(frame.accessible_text.as_str().into());
-                            if let Some(layers) = &frame.layers {
-                                open.surfaces.borrow_mut().present(
-                                    window,
-                                    layers,
-                                    frame.mode == Some(ImageMode::SideBySide),
-                                );
-                            } else {
-                                let pixels =
-                                    slint::SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(
-                                        &frame.pixels,
-                                        frame.width,
-                                        frame.height,
-                                    );
-                                window.set_surface(slint::Image::from_rgba8_premultiplied(pixels));
-                            }
-                        }
-                        Output::Status(message) => window.set_status(message.as_str().into()),
-                        Output::ChooseFiles(choice) => open.show_file_choice(choice),
-                    }
-                    service.retire(output);
-                }
-            });
         open.window.show().map_err(|error| error.to_string())?;
-        open.window.invoke_focus_content();
+        // The size after `show` may equal the size the layout started with, which raises
+        // no change; the worker started from an estimate.
+        open.sync_geometry();
         let weak = open.window.as_weak();
+        // The first presentation pass also shows whether the worker can wake this event
+        // loop. A platform without a cross-thread event-loop proxy (a headless test
+        // platform) cannot be woken, so there the window polls its mailbox instead.
+        if let Err(EventLoopError::NoEventLoopProvider) =
+            weak.upgrade_in_event_loop(|window| window.invoke_output_ready())
+        {
+            let poll = Rc::downgrade(&open);
+            let service = self.service.clone();
+            open.poll
+                .start(TimerMode::Repeated, BATCH_INTERVAL, move || {
+                    if let Some(open) = poll.upgrade() {
+                        open.present(&service);
+                    }
+                });
+        }
+        open.window.invoke_focus_content();
         self.windows.borrow_mut().push(open);
         Ok(weak)
     }
@@ -236,7 +303,19 @@ impl ComparatorWindows {
     }
 }
 
-fn bind(open: &Rc<OpenWindow>, keys: KeyResolver) {
+fn bind(open: &Rc<OpenWindow>, keys: KeyResolver, service: Service) {
+    let weak = Rc::downgrade(open);
+    open.window.on_output_ready(move || {
+        if let Some(open) = weak.upgrade() {
+            open.present(&service);
+        }
+    });
+    let weak = Rc::downgrade(open);
+    open.window.on_geometry_changed(move || {
+        if let Some(open) = weak.upgrade() {
+            open.sync_geometry();
+        }
+    });
     let weak = Rc::downgrade(open);
     open.window.on_close_comparator(move || {
         if let Some(open) = weak.upgrade() {
