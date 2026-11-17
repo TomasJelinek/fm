@@ -1,4 +1,5 @@
 """Normal thumbnail builds prepare both independent providers or fail as a unit."""
+import ctypes
 import json
 import os
 from pathlib import Path
@@ -7,6 +8,13 @@ import subprocess
 import sys
 import tempfile
 import unittest
+
+# Sibling fixture module, also when run as scripts.tests.<module> from the checkout.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from pe_image import unsigned_pe  # noqa: E402
+
+if os.name == "nt":
+    from ctypes import wintypes
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -248,6 +256,105 @@ class ThumbnailerInputTests(unittest.TestCase):
             self.assertTrue((destination / "notices/midnight-thumbnail-image/dav1d-LICENSE").is_file())
             self.assertTrue((destination / "notices/ffmpeg-9.0.2/ffmpeg-9.0.2.tar.xz").is_file())
             self.assertEqual(list((fixture / "app").glob(".thumbnailers-build.*")), [])
+
+
+@unittest.skipUnless(os.name == "nt", "Windows thumbnail build swap")
+class WindowsThumbnailerSwapTests(unittest.TestCase):
+    LIBRARIES = ("avcodec-63.dll", "avformat-63.dll", "avutil-61.dll", "swscale-10.dll")
+
+    def setUp(self):
+        temporary = ROOT / "_build/tmp"
+        temporary.mkdir(parents=True, exist_ok=True)
+        owner = tempfile.TemporaryDirectory(prefix="thumbnail swap ", dir=temporary)
+        self.addCleanup(owner.cleanup)
+        self.fixture = Path(owner.name) / "_build/fixture"
+        (self.fixture / "scripts").mkdir(parents=True)
+        shutil.copyfile(ROOT / "scripts/build-thumbnailers.ps1", self.fixture / "scripts/build-thumbnailers.ps1")
+        native = self.fixture / "plugins/image-decoder/native"
+        native.mkdir(parents=True)
+        (native / "bootstrap-windows.ps1").write_text("param($BuildRoot, [switch]$Offline)\n")
+        (native / "build-windows.ps1").write_text("param($BuildRoot, $Jobs, [switch]$Offline)\n")
+        (self.fixture / "plugins/image-decoder/notices").mkdir()
+        (self.fixture / "plugins/image-decoder/notices/dav1d-LICENSE").write_text("dav1d terms\n")
+        for name in ("midnight-thumbnail-image", "midnight-thumbnail-video"):
+            (self.fixture / "plugins" / name).mkdir()
+            (self.fixture / "plugins" / name / "thumbnailer.json").write_text('{"executable": "fixture"}\n')
+            (self.fixture / "notices" / name).mkdir(parents=True)
+            (self.fixture / "notices" / name / "THIRD-PARTY.json").write_text("[]\n")
+        prefix = self.fixture / "ffmpeg"
+        (prefix / "bin").mkdir(parents=True)
+        (prefix / "share/midnight-ffmpeg").mkdir(parents=True)
+        (prefix / "share/midnight-ffmpeg/COPYING.LGPLv2.1").write_text("LGPL\n")
+        for name in self.LIBRARIES:
+            (prefix / "bin" / name).write_bytes(unsigned_pe(True, b"new " + name.encode()))
+        (self.fixture / "ffmpeg-9.0.2.tar.xz").write_bytes(b"source fixture")
+        (self.fixture / "registry.toml").write_text("# fixture\n")
+        tools = self.fixture / "bin"
+        tools.mkdir()
+        (tools / "cargo.py").write_text(
+            "import os, pathlib, sys\n"
+            "name = pathlib.Path(sys.argv[sys.argv.index('--manifest-path') + 1]).parent.name\n"
+            "output = pathlib.Path(os.environ['CARGO_TARGET_DIR']) / 'debug'\n"
+            "output.mkdir(parents=True, exist_ok=True)\n"
+            "(output / (name + '.exe')).write_text('new ' + name)\n")
+        (tools / "cargo.cmd").write_text(f'@"{sys.executable}" "{tools / "cargo.py"}" %*\n')
+        self.environment = dict(os.environ, PATH=str(tools) + os.pathsep + os.environ["PATH"])
+        self.environment.pop("CARGO_TARGET_DIR", None)
+        self.destination = self.fixture / "app/thumbnailers"
+
+    def build(self):
+        def literal(path):
+            return "'" + str(path).replace("'", "''") + "'"
+        # The pinned FFmpeg source digest is checked elsewhere; only the swap is tested.
+        driver = self.fixture / "driver.ps1"
+        driver.write_text(
+            "function Get-FileHash([string]$LiteralPath, [string]$Algorithm) {\n"
+            "    [pscustomobject]@{ Hash = '8C3850283EB25FA026482078A04051E0BE17347B09EF81A0849BEC15A96E002E' }\n"
+            "}\n"
+            f"& {literal(self.fixture / 'scripts/build-thumbnailers.ps1')} -ApiConfig {literal(self.fixture / 'registry.toml')} "
+            f"-Destination {literal(self.destination)} -BuildRoot {literal(self.fixture / 'targets')} "
+            f"-NoticesRoot {literal(self.fixture / 'notices')} -FfmpegPrefix {literal(self.fixture / 'ffmpeg')} "
+            f"-FfmpegSourceArchive {literal(self.fixture / 'ffmpeg-9.0.2.tar.xz')} -LibclangPath {literal(self.fixture)} "
+            "-Profile debug\n", encoding="utf-8-sig")
+        result = subprocess.run([shutil.which("pwsh") or "powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass",
+                                 "-File", str(driver)], env=self.environment, capture_output=True, text=True,
+                                timeout=120)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        return result.stdout + result.stderr
+
+    def assert_current_package(self):
+        self.assertFalse((self.destination / "avcodec-62.dll").exists())
+        self.assertFalse((self.destination / "notices/removed-provider").exists())
+        self.assertEqual((self.destination / "avcodec-63.dll").read_bytes(), unsigned_pe(True, b"new avcodec-63.dll"))
+        self.assertEqual((self.destination / "midnight-thumbnail-video.exe").read_text(), "new midnight-thumbnail-video")
+        self.assertTrue((self.destination / "notices/midnight-thumbnail-image/dav1d-LICENSE").is_file())
+        self.assertTrue((self.destination / "notices/ffmpeg-9.0.2/ffmpeg-9.0.2.tar.xz").is_file())
+
+    def test_rebuild_swaps_in_a_fresh_package_and_keeps_a_mapped_library_intact(self):
+        (self.destination / "notices/removed-provider").mkdir(parents=True)
+        (self.destination / "notices/removed-provider/LICENSE").write_text("stale notice\n")
+        (self.destination / "avcodec-62.dll").write_bytes(b"stale library")
+        (self.destination / "avcodec-63.dll").write_bytes(b"previous library")
+        self.build()
+        self.assert_current_package()
+        self.assertEqual(list(self.destination.parent.glob(".thumbnailers-build.*")), [])
+        # A running worker maps its libraries as images: they cannot be deleted, but
+        # their directory can be renamed, so the rebuild still swaps in a new package.
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.LoadLibraryExW.restype = wintypes.HMODULE
+        kernel32.LoadLibraryExW.argtypes = (wintypes.LPCWSTR, wintypes.HANDLE, wintypes.DWORD)
+        kernel32.FreeLibrary.argtypes = (wintypes.HMODULE,)
+        module = kernel32.LoadLibraryExW(str(self.destination / "avcodec-63.dll"), None, 0x20)
+        self.assertTrue(module, ctypes.get_last_error())
+        try:
+            output = self.build()
+            self.assert_current_package()
+            retained = list(self.destination.parent.glob(".thumbnailers-build.*/previous/avcodec-63.dll"))
+            self.assertEqual(len(retained), 1, output)
+            self.assertEqual(retained[0].read_bytes(), unsigned_pe(True, b"new avcodec-63.dll"))
+            self.assertIn("Superseded thumbnail staging was retained", output)
+        finally:
+            kernel32.FreeLibrary(module)
 
 
 if __name__ == "__main__":
