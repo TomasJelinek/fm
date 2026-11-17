@@ -1,3 +1,4 @@
+#[allow(dead_code)]
 mod harness;
 use harness::Host;
 use midnight_plugin_sdk::api::{abi, codec, messages, viewer};
@@ -332,4 +333,163 @@ fn backward_search_cut_inside_valid_utf8_never_creates_invalid_byte_matches() {
             .iter()
             .any(|e| e.id == 2 && e.kind == abi::EVENT_SEARCH_MATCH)
     );
+}
+
+fn text_page(h: &Host, id: u64) -> viewer::TextPage {
+    codec::decode(&h.event(id, abi::EVENT_TEXT_PAGE).payload).unwrap()
+}
+
+fn host_viewport(anchor: u64, backwards: bool) -> messages::Viewport {
+    // The application requests text pages with a 12 KiB byte budget.
+    messages::Viewport {
+        source_anchor: anchor,
+        backwards,
+        max_bytes: 12288,
+        max_lines: 40,
+    }
+}
+
+#[test]
+fn backward_utf8_pages_start_at_scalar_boundaries_and_stay_contiguous() {
+    // Long lines: anchor - 8180 lands inside a three-byte scalar on every page.
+    let text = "中".repeat(100_000);
+    let mut h = Host::new(text.as_bytes().to_vec());
+    h.open(viewer::MODE_TEXT);
+    let mut anchor = 60_000;
+    for id in 2..7 {
+        h.submit(
+            id,
+            1,
+            1,
+            abi::REQUEST_VIEWPORT,
+            &host_viewport(anchor, true),
+        );
+        h.pump();
+        let p = text_page(&h, id);
+        let start = p.source.offset as usize;
+        assert_eq!(p.source.end().unwrap(), anchor, "page {id}");
+        assert_eq!(start % 3, 0, "page {id} starts inside a scalar");
+        assert_eq!(p.text, text[start..anchor as usize], "page {id}");
+        assert!(p.has_before);
+        anchor = p.source.offset;
+    }
+}
+
+#[test]
+fn backward_utf16_pages_never_start_inside_a_surrogate_pair() {
+    // BOM, 5000 pairs, one BMP unit, 5000 pairs: reads from the second run reach
+    // back to an offset at a low surrogate of the first run.
+    let units: Vec<u16> = "😀"
+        .repeat(5000)
+        .encode_utf16()
+        .chain("a".encode_utf16())
+        .chain("😀".repeat(5000).encode_utf16())
+        .collect();
+    let mut bytes = vec![255, 254];
+    bytes.extend(units.iter().flat_map(|unit| unit.to_le_bytes()));
+    let mut h = Host::new(bytes);
+    h.open(viewer::MODE_TEXT);
+    let mut anchor = 20_004 + 4 * 1000;
+    for id in 2..6 {
+        h.submit(
+            id,
+            1,
+            1,
+            abi::REQUEST_VIEWPORT,
+            &host_viewport(anchor, true),
+        );
+        h.pump();
+        let p = text_page(&h, id);
+        assert_eq!(p.source.end().unwrap(), anchor, "page {id}");
+        let start = (p.source.offset as usize - 2) / 2;
+        let expected = char::decode_utf16(units[start..(anchor as usize - 2) / 2].iter().copied())
+            .collect::<Result<String, _>>()
+            .unwrap_or_else(|_| panic!("page {id} starts inside a surrogate pair"));
+        assert_eq!(p.text, expected, "page {id}");
+        anchor = p.source.offset;
+    }
+}
+
+#[test]
+fn backward_viewport_inside_the_first_unit_returns_an_empty_page() {
+    for (data, anchor) in [
+        ("é and more".as_bytes().to_vec(), 1),
+        (b"\r\nabc".to_vec(), 1),
+        (vec![255, 254, 61, 216, 0, 222, 65, 0], 4),
+    ] {
+        let mut h = Host::new(data);
+        h.open(viewer::MODE_TEXT);
+        h.submit(2, 1, 1, abi::REQUEST_VIEWPORT, &host_viewport(anchor, true));
+        h.pump();
+        let p = text_page(&h, 2);
+        assert!(p.text.is_empty() && p.source.length == 0 && !p.has_before);
+    }
+}
+
+#[test]
+fn utf16_carriage_return_waits_for_a_split_line_feed_at_the_read_end() {
+    // An odd anchor aligns the read to anchor - 5, so the 8185-byte read ends with
+    // CR plus the first byte of its LF.
+    let mut units: Vec<u16> = vec![u16::from(b'x'); 4138];
+    units.extend([13, 10]);
+    units.extend(vec![u16::from(b'y'); 100]);
+    let mut bytes = vec![255, 254];
+    bytes.extend(units.iter().flat_map(|unit| unit.to_le_bytes()));
+    let mut h = Host::new(bytes);
+    h.open(viewer::MODE_TEXT);
+    h.submit(2, 1, 1, abi::REQUEST_VIEWPORT, &host_viewport(101, false));
+    h.pump();
+    let first = text_page(&h, 2);
+    let end = first.source.end().unwrap();
+    h.submit(3, 1, 1, abi::REQUEST_VIEWPORT, &host_viewport(end, false));
+    h.pump();
+    let second = text_page(&h, 3);
+    assert_eq!(second.source.offset, end);
+    assert_eq!(
+        format!("{}{}", first.text, second.text),
+        format!("{}\n{}", "x".repeat(4089), "y".repeat(100))
+    );
+}
+
+#[test]
+fn escaped_bytes_and_controls_are_marked_invalid_unlike_literal_backslash_text() {
+    let mut h = Host::new(b"a\x1b[31m\xff\x00\\x1B".to_vec());
+    h.open(viewer::MODE_TEXT);
+    h.submit(2, 1, 1, abi::REQUEST_VIEWPORT, &viewport(0));
+    h.pump();
+    let p = text_page(&h, 2);
+    assert_eq!(p.text, "a\\x1B[31m\\xFF\\x00\\x1B");
+    let marked: Vec<(&str, u16)> = p
+        .spans
+        .iter()
+        .map(|span| (&p.text[span.start as usize..span.end as usize], span.role))
+        .collect();
+    // Adjacent escapes merge; the literal `\x1B` text at the end stays unmarked.
+    assert_eq!(
+        marked,
+        vec![
+            ("\\x1B", viewer::STYLE_INVALID),
+            ("\\xFF\\x00", viewer::STYLE_INVALID)
+        ]
+    );
+}
+
+#[test]
+fn dense_escapes_stay_within_wire_budgets_in_both_directions() {
+    let data = [0u8, b'a'].repeat(9000);
+    let length = data.len() as u64;
+    let mut h = Host::new(data);
+    h.open(viewer::MODE_TEXT);
+    h.submit(2, 1, 1, abi::REQUEST_VIEWPORT, &viewport(0));
+    let mut backwards = viewport(length);
+    backwards.backwards = true;
+    h.submit(3, 1, 1, abi::REQUEST_VIEWPORT, &backwards);
+    h.pump();
+    for id in [2, 3] {
+        let p = text_page(&h, id);
+        assert!(!p.spans.is_empty() && p.source.length > 0, "page {id}");
+        for span in &p.spans {
+            assert_eq!(&p.text[span.start as usize..span.end as usize], "\\x00");
+        }
+    }
 }

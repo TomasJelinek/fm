@@ -15,25 +15,40 @@ pub struct Layers {
 }
 
 impl Layers {
-    pub fn base(&mut self, width: u32, height: u32, pixels: Vec<u8>) {
-        if u64::from(width) * u64::from(height) <= 16 * 1024 * 1024
-            && pixels.len() == width as usize * height as usize * 4
+    /// Publishes a converted view paint. Without a visible popup the pixels move
+    /// straight into the returned frame and no base copy is retained; while a popup is
+    /// visible the paint is kept as the composition base and the composed frame is
+    /// returned. Invalid dimensions return None.
+    pub fn view(&mut self, width: u32, height: u32, pixels: Vec<u8>) -> Option<Vec<u8>> {
+        if u64::from(width) * u64::from(height) > 16 * 1024 * 1024
+            || pixels.len() != width as usize * height as usize * 4
         {
-            self.width = width;
-            self.height = height;
-            self.base = pixels;
+            return None;
         }
+        self.width = width;
+        self.height = height;
+        if !self.visible {
+            self.base = Vec::new();
+            return Some(pixels);
+        }
+        self.base = pixels;
+        self.frame()
     }
     pub fn popup_rect(&mut self, x: i32, y: i32) {
         self.x = x;
         self.y = y;
         self.popup.clear();
     }
-    pub fn show(&mut self, visible: bool) {
+    /// Shows or hides the popup. Hiding returns the retained base as the next frame
+    /// (moved, not copied). Showing returns None: no base is retained while no popup
+    /// is visible, so the caller must request a fresh view paint to compose onto.
+    pub fn show(&mut self, visible: bool) -> Option<Vec<u8>> {
         self.visible = visible;
-        if !visible {
-            self.popup.clear();
+        if visible {
+            return None;
         }
+        self.popup.clear();
+        (!self.base.is_empty()).then(|| std::mem::take(&mut self.base))
     }
     pub fn popup(&mut self, width: u32, height: u32, bgra: &[u8]) -> bool {
         if width == 0
@@ -53,6 +68,7 @@ impl Layers {
         }
         true
     }
+    /// Composes the retained base with the visible popup; None without a base.
     pub fn frame(&self) -> Option<Vec<u8>> {
         if self.base.is_empty() {
             return None;
@@ -108,26 +124,6 @@ impl Surface {
     pub fn resize(&mut self, revision: u64, width: u32, height: u32) -> Result<(), &'static str> {
         *self = Self::new(revision, width, height)?;
         Ok(())
-    }
-    pub fn paint(
-        &mut self,
-        revision: u64,
-        width: u32,
-        height: u32,
-        bgra: &[u8],
-    ) -> Option<Vec<u8>> {
-        if revision != self.revision
-            || width != self.width
-            || height != self.height
-            || bgra.len() != width as usize * height as usize * 4
-        {
-            return None;
-        }
-        let mut rgba = Vec::with_capacity(bgra.len());
-        for p in bgra.as_chunks::<4>().0 {
-            rgba.extend_from_slice(&[p[2], p[1], p[0], p[3]]);
-        }
-        Some(rgba)
     }
     pub fn paint_cropped(
         &mut self,

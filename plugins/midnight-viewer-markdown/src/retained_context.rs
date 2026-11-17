@@ -15,6 +15,8 @@ pub(crate) struct Retained {
     /// Original parse coverage, before trimming for retained memory.
     pub source: SourceRange,
     pub has_after: bool,
+    /// The parse's last proven complete top-level boundary.
+    proven_end: u64,
     page: DocumentPage,
     boundaries: Option<Box<[u8]>>,
 }
@@ -26,6 +28,7 @@ mod tests;
 impl Retained {
     pub fn new(
         raw: &DocumentPage,
+        proven_end: u64,
         window: &Window,
         source_anchors: &[Anchor],
         cancelled: impl Fn() -> bool,
@@ -38,7 +41,7 @@ impl Retained {
             (raw.clone(), None)
         } else {
             let boundaries = source_boundaries(&raw.source, source_anchors, &cancelled)?;
-            let selected = semantic_window::select(raw, window)?;
+            let selected = semantic_window::select(raw, window, proven_end)?;
             let groups = semantic_window::groups(raw);
             let first = groups
                 .iter()
@@ -100,6 +103,7 @@ impl Retained {
         Some(Self {
             source: raw.source.clone(),
             has_after: raw.has_after,
+            proven_end,
             page,
             boundaries,
         })
@@ -129,7 +133,8 @@ impl Retained {
             if boundaries.get(offset / 8)? & (1 << (offset % 8)) == 0 {
                 return None;
             }
-            let selected: Range<usize> = semantic_window::select(&self.page, window)?;
+            let selected: Range<usize> =
+                semantic_window::select(&self.page, window, self.proven_end)?;
             if (window.backwards && trimmed_before && selected.start == 0)
                 || (!window.backwards && trimmed_after && selected.end == self.page.blocks.len())
             {
@@ -138,7 +143,7 @@ impl Retained {
                 return None;
             }
         }
-        markdown::crop_context(&self.page, window)
+        markdown::crop_context(&self.page, self.proven_end, window)
     }
 }
 

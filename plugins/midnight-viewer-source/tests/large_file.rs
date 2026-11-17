@@ -4,9 +4,18 @@ mod meter;
 mod support;
 use midnight_plugin_sdk::api::{abi, codec, messages::*, viewer::*};
 use midnight_viewer_source::midnight_plugin_entry_v1 as entry;
+use std::sync::{Mutex, MutexGuard};
 use support::Host;
 
 const LENGTH: u64 = 10_000_000_000;
+
+// The allocator meter is process-global; serialize this binary's tests so the
+// metered heap peak only contains the measured test's allocations.
+static SERIAL: Mutex<()> = Mutex::new(());
+
+fn serial() -> MutexGuard<'static, ()> {
+    SERIAL.lock().unwrap_or_else(|poison| poison.into_inner())
+}
 
 fn host(mode: u16) -> Host {
     // Only four physical fixture bytes. Every earlier byte is virtual zero data.
@@ -32,6 +41,7 @@ fn host(mode: u16) -> Host {
 
 #[test]
 fn ten_gigabyte_first_view_and_distant_seek_only_read_bounded_windows() {
+    let _serial = serial();
     for mode in [MODE_TEXT, MODE_SOURCE] {
         let baseline = meter::start();
         let started = std::time::Instant::now();
@@ -92,6 +102,7 @@ fn ten_gigabyte_first_view_and_distant_seek_only_read_bounded_windows() {
 
 #[test]
 fn distant_optional_coordinates_do_not_scan_and_near_coordinates_still_recover() {
+    let _serial = serial();
     let mut host = host(MODE_SOURCE);
     let before = host.reads().len();
     let id = host.submit(
@@ -145,6 +156,7 @@ fn distant_optional_coordinates_do_not_scan_and_near_coordinates_still_recover()
 
 #[test]
 fn coordinate_budget_counts_decoding_overlap_and_short_read_delivery() {
+    let _serial = serial();
     const BUDGET: u64 = 256 * 1024;
     for short in [65536, 127] {
         let mut host = host(MODE_SOURCE);

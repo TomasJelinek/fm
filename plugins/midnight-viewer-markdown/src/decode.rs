@@ -1,5 +1,6 @@
 //! Bounded decoder with an exact source boundary for each displayed scalar.
 use midnight_plugin_sdk::api::viewer::{Anchor, SourceRange, TextPage};
+use std::borrow::Cow;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Encoding {
@@ -27,7 +28,8 @@ pub struct Decoded {
     pub consumed: usize,
 }
 
-/// Incomplete scalars and CR are left unread unless EOF is known.
+/// Incomplete scalars, and a CR whose next unit is still incomplete, are left
+/// unread unless EOF is known.
 pub fn decode(
     bytes: &[u8],
     offset: u64,
@@ -42,17 +44,21 @@ pub fn decode(
         return None;
     }
     let limit = max_bytes.min(64 * 1024);
+    // At most one anchor per consumed scalar: reserve once instead of growing.
+    let mut anchors = Vec::with_capacity(limit.min(bytes.len()) + 1);
+    anchors.push(Anchor {
+        text_offset: 0,
+        source_offset: offset,
+    });
     let mut decoded = Decoded {
         text: String::with_capacity(limit.min(bytes.len())),
-        anchors: vec![Anchor {
-            text_offset: 0,
-            source_offset: offset,
-        }],
+        anchors,
         consumed: 0,
     };
     let mut lines = 0;
     while decoded.consumed < bytes.len() && lines < max_lines {
-        if decoded.anchors.len().is_multiple_of(128) && cancelled() {
+        // Each poll may call into the host; 1024 scalars take microseconds.
+        if decoded.anchors.len().is_multiple_of(1024) && cancelled() {
             return None;
         }
         let at = decoded.consumed;
@@ -60,21 +66,15 @@ pub fn decode(
             break;
         };
         if ch == '\r' {
-            if at + size == bytes.len() && !eof {
-                break;
-            }
-            if let Some(('\n', next)) = scalar(&bytes[at + size..], encoding, eof) {
-                size += next;
+            match scalar(&bytes[at + size..], encoding, eof) {
+                // An incomplete look-ahead may still be the LF of this CRLF.
+                None if !eof => break,
+                Some(('\n', next)) => size += next,
+                _ => {}
             }
             ch = '\n';
-        } else if ch.is_control() && ch != '\n' && ch != '\t' {
-            ch = if ch <= '\u{1f}' {
-                char::from_u32(0x2400 + ch as u32).unwrap()
-            } else if ch == '\u{7f}' {
-                '\u{2421}'
-            } else {
-                '\u{fffd}'
-            };
+        } else {
+            ch = visible(ch);
         }
         if decoded.text.len() + ch.len_utf8() > limit {
             break;
@@ -90,6 +90,31 @@ pub fn decode(
         }
     }
     Some(decoded)
+}
+
+/// The displayed form of one scalar. C0 controls except tab/newline become
+/// control pictures, DEL `␡`, C1 controls and the explicit bidirectional
+/// embedding/override/isolate controls U+FFFD, so neither terminal escapes nor
+/// display reordering ("Trojan Source") can reach displayed or copied text.
+/// Implicit direction marks (LRM, RLM, ALM) remain for ordinary RTL text.
+pub fn visible(ch: char) -> char {
+    match ch {
+        '\n' | '\t' => ch,
+        '\u{0}'..='\u{1f}' => char::from_u32(0x2400 + ch as u32).unwrap_or('\u{fffd}'),
+        '\u{7f}' => '\u{2421}',
+        '\u{80}'..='\u{9f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}' => '\u{fffd}',
+        _ => ch,
+    }
+}
+
+/// [`visible`] applied to text produced after decoding, such as numeric
+/// character references; borrowed unchanged in the common case.
+pub fn visible_text(text: &str) -> Cow<'_, str> {
+    if text.chars().all(|ch| visible(ch) == ch) {
+        Cow::Borrowed(text)
+    } else {
+        Cow::Owned(text.chars().map(visible).collect())
+    }
 }
 
 fn scalar(bytes: &[u8], encoding: Encoding, eof: bool) -> Option<(char, usize)> {

@@ -42,7 +42,9 @@ fn xml_and_project_extensions_route_to_one_profile_without_claiming_html_or_svg(
 #[test]
 fn xml_tags_attributes_literals_comments_cdata_and_processing_instructions_have_real_styles() {
     let text = "<?xml version=\"1.0\"?>\n<文:根 xml:lang=\"čeština\" n='42'>if true &amp; &#x1F600;<![CDATA[<literal>&x;]]><!-- note --></文:根>";
-    let spans = syntax::highlight(text, xml(), &mut State::default(), || false).unwrap();
+    let spans = syntax::highlight(text, xml(), &mut State::default(), || false)
+        .unwrap()
+        .spans;
     for (needle, expected) in [
         ("xml", STYLE_KEYWORD),
         ("version", STYLE_TYPE),
@@ -102,7 +104,9 @@ fn xml_multiline_lexical_context_recovers_after_each_delimited_construct() {
     ] {
         let mut state = State::default();
         syntax::highlight(first, xml(), &mut state, || false).unwrap();
-        let spans = syntax::highlight(second, xml(), &mut state, || false).unwrap();
+        let spans = syntax::highlight(second, xml(), &mut state, || false)
+            .unwrap()
+            .spans;
         role(second, &spans, carried, expected);
         role(second, &spans, "root", STYLE_KEYWORD);
     }
@@ -110,7 +114,9 @@ fn xml_multiline_lexical_context_recovers_after_each_delimited_construct() {
 #[test]
 fn xml_attribute_backslash_is_literal_and_unicode_names_keep_combining_marks() {
     let text = "<e\u{301}:文 a='back\\' other=\"quote'\"/>tail";
-    let spans = syntax::highlight(text, xml(), &mut State::default(), || false).unwrap();
+    let spans = syntax::highlight(text, xml(), &mut State::default(), || false)
+        .unwrap()
+        .spans;
     role(text, &spans, "e\u{301}:文", STYLE_KEYWORD);
     role(text, &spans, "'back\\'", STYLE_STRING);
     role(text, &spans, "other", STYLE_TYPE);
@@ -132,15 +138,22 @@ fn xml_limits_and_cancellation_preserve_the_last_valid_checkpoint() {
     assert_eq!(state, before);
     assert!(syntax::highlight(&"x".repeat(65_537), xml(), &mut state, || false).is_none());
     assert_eq!(state, before);
+    // Too many styled tokens truncate the styles; the lexical state still
+    // follows the text so later lines keep their exact context.
     let mut state = State::default();
-    let before = state;
-    assert!(syntax::highlight(&"<a b='x'/>".repeat(2000), xml(), &mut state, || false).is_none());
-    assert_eq!(state, before);
+    let dense = format!("{}<!-- open\n", "<a b='x'/>".repeat(2000));
+    let lexed = syntax::highlight(&dense, xml(), &mut state, || false).unwrap();
+    assert!(lexed.truncated);
+    assert_eq!(lexed.spans.len(), MAX_SPANS);
+    let next = syntax::highlight("close --><b/>", xml(), &mut state, || false).unwrap();
+    role("close --><b/>", &next.spans, "close -->", STYLE_COMMENT);
 }
 #[test]
 fn xml_declarations_are_inert_and_bounded_without_confusing_nested_quotes_or_comments() {
     let text = "<!DOCTYPE root [<!-- ] > -->\n<!ENTITY x SYSTEM 'file:///missing.xml'>\n<!ENTITY y ']> value'>]><root/>";
-    let spans = syntax::highlight(text, xml(), &mut State::default(), || false).unwrap();
+    let spans = syntax::highlight(text, xml(), &mut State::default(), || false)
+        .unwrap()
+        .spans;
     role(text, &spans, "<!-- ] > -->", STYLE_COMMENT);
     let last_root = text.rfind("root").unwrap();
     assert!(spans.iter().any(|span| span.role == STYLE_KEYWORD
@@ -176,7 +189,9 @@ fn xml_delimiters_at_eof_finish_or_retain_the_exact_lexical_context() {
         let mut state = State::default();
         syntax::highlight(first, xml(), &mut state, || false).unwrap();
         assert_ne!(state, State::default());
-        let spans = syntax::highlight(end, xml(), &mut state, || false).unwrap();
+        let spans = syntax::highlight(end, xml(), &mut state, || false)
+            .unwrap()
+            .spans;
         assert_eq!(spans[0].role, role_id);
         assert_eq!(state, State::default());
     }

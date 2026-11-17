@@ -16,7 +16,7 @@ fn parse(input: &str) -> (DocumentPage, Vec<Anchor>) {
     .unwrap();
     let page = markdown::render_context(&decoded, 3, true, || false)
         .unwrap()
-        .0;
+        .page;
     (page, decoded.anchors)
 }
 
@@ -42,7 +42,8 @@ fn window(anchor: u64, backwards: bool, max_lines: usize) -> Window {
 #[test]
 fn trimmed_context_keeps_complete_groups_and_original_parse_coverage_within_budget() {
     let (raw, anchors) = paragraphs();
-    let retained = Retained::new(&raw, &window(16302, false, 1), &anchors, || false).unwrap();
+    let retained =
+        Retained::new(&raw, u64::MAX, &window(16302, false, 1), &anchors, || false).unwrap();
     assert!(retained.bytes() <= MAX_BYTES);
     assert_eq!(retained.boundaries.as_ref().unwrap().len(), 8152);
     assert_eq!(retained.source, raw.source);
@@ -59,7 +60,7 @@ fn trimmed_context_keeps_complete_groups_and_original_parse_coverage_within_budg
     }
     let request = window(16302, false, 1);
     let page = retained.crop(&request).unwrap();
-    let uncached = markdown::crop_context(&raw, &request).unwrap();
+    let uncached = markdown::crop_context(&raw, u64::MAX, &request).unwrap();
     assert!(
         page == uncached,
         "retention must preserve the uncached wire fallback"
@@ -79,13 +80,27 @@ fn trimmed_context_keeps_complete_groups_and_original_parse_coverage_within_budg
     assert!(page.has_before && page.has_after);
 }
 
+/// Ten 6,400-byte paragraphs: two adjacent ones fit one public page, while the
+/// whole parse exceeds the 1 MiB retention budget by one paragraph.
+fn narrow_paragraphs() -> (DocumentPage, Vec<Anchor>) {
+    let input: String = ('a'..='j')
+        .map(|letter| format!("{}\n\n", letter.to_string().repeat(6400)))
+        .collect();
+    let page = parse(&input);
+    assert!(page_cache::size(&page.0) > MAX_BYTES);
+    page
+}
+
 #[test]
 fn forward_demand_past_a_retained_edge_requires_normal_reconstruction() {
-    let (raw, anchors) = paragraphs();
-    let retained = Retained::new(&raw, &window(16302, false, 1), &anchors, || false).unwrap();
-    let request = window(32604, false, 2);
+    let (raw, anchors) = narrow_paragraphs();
+    let retained =
+        Retained::new(&raw, u64::MAX, &window(6402, false, 1), &anchors, || false).unwrap();
+    assert_eq!(retained.page().blocks.len(), 9);
+    assert!(retained.page().source.end().unwrap() < raw.source.end().unwrap());
+    let request = window(8 * 6402, false, 2);
     assert_eq!(
-        semantic_window::crop_ref(&raw, &request)
+        semantic_window::crop_ref(&raw, &request, u64::MAX)
             .unwrap()
             .blocks
             .len(),
@@ -99,12 +114,19 @@ fn forward_demand_past_a_retained_edge_requires_normal_reconstruction() {
 
 #[test]
 fn backward_demand_past_a_retained_edge_requires_normal_reconstruction() {
-    let (raw, anchors) = paragraphs();
-    let retained = Retained::new(&raw, &window(48906, false, 1), &anchors, || false).unwrap();
+    let (raw, anchors) = narrow_paragraphs();
+    let retained = Retained::new(
+        &raw,
+        u64::MAX,
+        &window(8 * 6402, false, 1),
+        &anchors,
+        || false,
+    )
+    .unwrap();
     assert!(retained.page().source.offset > raw.source.offset);
-    let request = window(32604, true, 2);
+    let request = window(2 * 6402, true, 2);
     assert_eq!(
-        semantic_window::crop_ref(&raw, &request)
+        semantic_window::crop_ref(&raw, &request, u64::MAX)
             .unwrap()
             .blocks
             .len(),
@@ -125,7 +147,7 @@ fn table_above_retained_budget_is_not_split_to_make_it_cacheable() {
     let (raw, anchors) = parse(&input);
     assert!(raw.blocks.iter().all(|block| block.table.is_some()));
     assert!(page_cache::size(&raw) > MAX_BYTES);
-    assert!(Retained::new(&raw, &window(100, false, 1), &anchors, || false).is_none());
+    assert!(Retained::new(&raw, u64::MAX, &window(100, false, 1), &anchors, || false).is_none());
 }
 
 #[test]
@@ -133,7 +155,7 @@ fn cancellation_during_retention_does_not_publish_a_partial_context() {
     let (raw, anchors) = paragraphs();
     let polls = Cell::new(0);
     assert!(
-        Retained::new(&raw, &window(16302, false, 1), &anchors, || {
+        Retained::new(&raw, u64::MAX, &window(16302, false, 1), &anchors, || {
             polls.set(polls.get() + 1);
             polls.get() > 2
         })

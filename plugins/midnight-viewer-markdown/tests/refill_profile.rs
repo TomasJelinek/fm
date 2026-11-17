@@ -30,6 +30,7 @@ fn viewport(host: &mut Host, anchor: u64, backwards: bool) -> Vec<u8> {
 #[test]
 #[ignore = "manual measurement; set ME_MARKDOWN_PROFILE_FIXTURE and ME_MARKDOWN_PROFILE_OUTPUT"]
 fn exact_fixture_refill_profile() {
+    let _exclusive = meter::exclusive();
     let fixture = std::env::var_os("ME_MARKDOWN_PROFILE_FIXTURE").expect("fixture path");
     let output = std::env::var_os("ME_MARKDOWN_PROFILE_OUTPUT").expect("wire output path");
     let nearby = std::env::var("ME_MARKDOWN_PROFILE_PATTERN").as_deref() == Ok("nearby");

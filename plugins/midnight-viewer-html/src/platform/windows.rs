@@ -58,3 +58,9 @@ pub(crate) fn native_key_code(key: &midnight_web_viewer_api::Key) -> i32 {
     // Chromium accepts Win32 virtual keys; non-layout text is delivered separately as UTF-16.
     super::key_code(key)
 }
+
+/// MWV1 event output. Child-process stdout inheritance is a POSIX launch concern
+/// (see the Linux adapter); Windows keeps writing the process standard output.
+pub(crate) fn protocol_output() -> std::io::Result<impl std::io::Write + Send + 'static> {
+    Ok(std::io::stdout())
+}

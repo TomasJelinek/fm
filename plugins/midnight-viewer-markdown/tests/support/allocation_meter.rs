@@ -1,9 +1,14 @@
 #![allow(unsafe_code)]
+//! Process-global heap meter for one test binary. Every test of a metered
+//! binary must hold [`exclusive`] for its whole body, so parallel test threads
+//! cannot add their allocations to another test's peak.
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Mutex, MutexGuard};
 struct Meter;
 static LIVE: AtomicUsize = AtomicUsize::new(0);
 static PEAK: AtomicUsize = AtomicUsize::new(0);
+static EXCLUSIVE: Mutex<()> = Mutex::new(());
 #[global_allocator]
 static ALLOCATOR: Meter = Meter;
 fn added(size: usize) {
@@ -28,11 +33,19 @@ unsafe impl GlobalAlloc for Meter {
     unsafe fn realloc(&self, pointer: *mut u8, old: Layout, size: usize) -> *mut u8 {
         let next = unsafe { System.realloc(pointer, old, size) };
         if !next.is_null() {
-            LIVE.fetch_sub(old.size(), Ordering::Relaxed);
+            // A moving reallocation briefly holds both blocks: count the new
+            // one before releasing the old one so that peak is observed.
             added(size);
+            LIVE.fetch_sub(old.size(), Ordering::Relaxed);
         }
         next
     }
+}
+/// Serialize the tests of one metered binary.
+pub fn exclusive() -> MutexGuard<'static, ()> {
+    EXCLUSIVE
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner())
 }
 pub fn start() -> usize {
     let live = LIVE.load(Ordering::Relaxed);

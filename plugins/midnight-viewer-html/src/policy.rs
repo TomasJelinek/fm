@@ -11,9 +11,19 @@ pub struct DocumentPolicy {
     pub network: bool,
     pub scripts: bool,
 }
+
+/// First path segment of the synthetic document directory. Serving the document
+/// below the origin root makes a `../` reference that climbs above the document
+/// directory lose this prefix, so it is denied instead of being clamped by URL
+/// resolution into a different, same-named file of the document directory.
+const DOCUMENT_ROOT: &str = "mewv-document";
+
 impl DocumentPolicy {
     pub fn new(generation: u64, network: bool, scripts: bool) -> Result<Self, &'static str> {
-        if generation == 0 || scripts && !network {
+        if generation == 0 {
+            return Err("document generation must be nonzero");
+        }
+        if scripts && !network {
             return Err("scripts require explicit network permission");
         }
         Ok(Self {
@@ -25,16 +35,17 @@ impl DocumentPolicy {
     pub fn origin(&self) -> String {
         format!("https://mewv-{}.invalid", self.generation)
     }
+    /// Synthetic document URL; relative captured assets resolve below it.
     pub fn main_url(&self) -> String {
-        format!("{}/", self.origin())
+        format!("{}/{DOCUMENT_ROOT}/", self.origin())
     }
     pub fn access(&self, url: &str) -> Access {
         // CEF provides canonical URLs; compare the full authority boundary, never a prefix host.
         let prefix = format!("{}/", self.origin());
         if url.starts_with(&prefix) {
-            return if !self.network
-                || url.split(['?', '#']).next() == Some(self.main_url().as_str())
-            {
+            let main = self.main_url();
+            let path = url.split(['?', '#']).next();
+            return if path == Some(main.as_str()) || (!self.network && url.starts_with(&main)) {
                 Access::Captured
             } else {
                 Access::Deny

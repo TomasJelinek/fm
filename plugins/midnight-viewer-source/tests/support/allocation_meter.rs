@@ -28,8 +28,9 @@ unsafe impl GlobalAlloc for Meter {
     unsafe fn realloc(&self, pointer: *mut u8, old: Layout, size: usize) -> *mut u8 {
         let next = unsafe { System.realloc(pointer, old, size) };
         if !next.is_null() {
-            LIVE.fetch_sub(old.size(), Ordering::Relaxed);
+            // A moving realloc briefly holds both blocks; count that peak.
             added(size);
+            LIVE.fetch_sub(old.size(), Ordering::Relaxed);
         }
         next
     }

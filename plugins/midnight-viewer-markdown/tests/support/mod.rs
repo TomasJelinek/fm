@@ -1,10 +1,55 @@
 #![allow(unsafe_code)]
 use midnight_plugin_sdk::api::{abi, codec, messages};
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     mem::MaybeUninit,
-    sync::Mutex,
+    sync::{Condvar, Mutex, PoisonError},
+    time::{Duration, Instant},
 };
+
+/// The SDK admits at most 16 live plugin instances per loaded library and
+/// rejects further `create` calls with `QUEUE_FULL` (ABI_AND_LIFECYCLE.md),
+/// while libtest runs one test per hardware thread. Each `Host` holds one of
+/// these slots from before `create` until after `destroy`, so surplus tests
+/// queue here instead of failing.
+const INSTANCE_SLOTS: usize = 16;
+/// Elapses only when slots leak or a test that holds one hangs.
+const SLOT_WAIT: Duration = Duration::from_secs(120);
+static SLOTS_USED: Mutex<usize> = Mutex::new(0);
+static SLOT_FREED: Condvar = Condvar::new();
+
+/// One SDK instance slot, returned on drop while `release` is set, also when
+/// a test panics. It stays taken while the plugin instance outlives its host.
+struct Slot {
+    release: bool,
+}
+impl Slot {
+    fn acquire() -> Self {
+        let deadline = Instant::now() + SLOT_WAIT;
+        let mut used = SLOTS_USED.lock().unwrap_or_else(PoisonError::into_inner);
+        while *used >= INSTANCE_SLOTS {
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                drop(used);
+                panic!("No plugin instance slot became free within {SLOT_WAIT:?}");
+            }
+            used = SLOT_FREED
+                .wait_timeout(used, left)
+                .unwrap_or_else(PoisonError::into_inner)
+                .0;
+        }
+        *used += 1;
+        Self { release: true }
+    }
+}
+impl Drop for Slot {
+    fn drop(&mut self) {
+        if self.release {
+            *SLOTS_USED.lock().unwrap_or_else(PoisonError::into_inner) -= 1;
+            SLOT_FREED.notify_one();
+        }
+    }
+}
 
 #[derive(Clone, Debug)]
 pub struct Event {
@@ -28,12 +73,17 @@ struct State {
     pub base: u64,
     pub max_read: usize,
     pub reads: Vec<messages::ReadAt>,
+    /// Host-side cancellation, observed only through the `cancelled` callback.
+    cancelled: HashSet<u64>,
+    polls: usize,
 }
 pub struct Host {
     state: Box<Mutex<State>>,
     api: abi::PluginApi,
     instance: u64,
     next: u64,
+    // Fields drop after `Drop::drop`, so the slot outlives `destroy`.
+    slot: Slot,
 }
 unsafe fn state<'a>(id: u64) -> &'a Mutex<State> {
     unsafe { &*(id as *const Mutex<State>) }
@@ -46,8 +96,11 @@ unsafe extern "C" fn schedule(id: u64, work: *const abi::Work) -> u32 {
         .push_back(unsafe { *work });
     abi::OK
 }
-unsafe extern "C" fn cancelled(_: u64, _: u64) -> u32 {
-    0
+/// Like the real host, every poll takes the host state lock.
+unsafe extern "C" fn cancelled(id: u64, request: u64) -> u32 {
+    let mut state = unsafe { state(id) }.lock().unwrap();
+    state.polls += 1;
+    u32::from(state.cancelled.contains(&request))
 }
 unsafe extern "C" fn notify(_: u64) {}
 unsafe extern "C" fn diagnostic(_: u64, _: u32, _: abi::ByteSlice) {}
@@ -112,6 +165,8 @@ impl Host {
             base: 0,
             max_read: 65536,
             reads: Vec::new(),
+            cancelled: HashSet::new(),
+            polls: 0,
         }));
         let host = abi::HostApi {
             header: abi::Header {
@@ -138,6 +193,7 @@ impl Host {
         );
         let api: abi::PluginApi = unsafe { api.assume_init() };
         let mut instance = 0;
+        let slot = Slot::acquire();
         assert_eq!(
             unsafe { api.create.unwrap()(&host, slice(&[]), &mut instance) },
             abi::OK
@@ -147,6 +203,7 @@ impl Host {
             api,
             instance,
             next: 1,
+            slot,
         }
     }
     pub fn short_reads(&self, maximum: usize) {
@@ -158,16 +215,40 @@ impl Host {
     pub fn reads(&self) -> Vec<messages::ReadAt> {
         self.state.lock().unwrap().reads.clone()
     }
+    /// Number of host cancellation polls so far.
+    pub fn polls(&self) -> usize {
+        self.state.lock().unwrap().polls
+    }
+    /// Report a request as cancelled through the host callback only, without
+    /// the plugin's `cancel` export.
+    pub fn cancel_in_host(&self, id: u64) {
+        self.state.lock().unwrap().cancelled.insert(id);
+    }
+    /// Run until at most `steps` jobs or service replies have been processed.
+    pub fn run_steps(&mut self, steps: usize) -> Vec<Event> {
+        let mut events = Vec::new();
+        for _ in 0..steps {
+            if !self.run_one() {
+                break;
+            }
+            self.drain(&mut events);
+        }
+        events
+    }
     pub fn submit<T: codec::Model>(&mut self, kind: u32, value: &T) -> u64 {
         self.submit_bytes(kind, &codec::encode(value).unwrap())
     }
     pub fn submit_bytes(&mut self, kind: u32, payload: &[u8]) -> u64 {
+        self.submit_generation(kind, payload, 2)
+    }
+    /// Submit within session 7 under an explicit envelope generation.
+    pub fn submit_generation(&mut self, kind: u32, payload: &[u8], generation: u64) -> u64 {
         let id = self.next;
         self.next += 1;
         let request = abi::Request {
             id,
             session: 7,
-            generation: 2,
+            generation,
             kind,
             flags: 0,
             payload: slice(payload),
@@ -303,11 +384,15 @@ impl Host {
 }
 impl Drop for Host {
     fn drop(&mut self) {
+        // The instance occupies its SDK slot until `destroy` succeeds.
+        self.slot.release = false;
         unsafe {
             self.api.begin_shutdown.unwrap()(self.instance);
         }
         self.finish();
         assert!(self.state.lock().unwrap().buffers.is_empty());
-        assert_eq!(unsafe { self.api.destroy.unwrap()(self.instance) }, abi::OK);
+        let destroyed = unsafe { self.api.destroy.unwrap()(self.instance) };
+        self.slot.release = destroyed == abi::OK;
+        assert_eq!(destroyed, abi::OK);
     }
 }

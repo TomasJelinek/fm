@@ -85,6 +85,11 @@ fn nesting_and_cancellation_are_bounded() {
     let input = format!("{}text", "> ".repeat(100));
     let page = page(&input);
     assert!(page.blocks.iter().all(|b| b.depth <= 16));
+    assert_eq!(page.blocks.len(), 1);
+    assert!(
+        page.blocks[0].text.text.ends_with("> text"),
+        "literal fallback"
+    );
     let decoded = decode(b"hello", 0, Encoding::Utf8, true, 8192, 10, || false).unwrap();
     assert!(render(&decoded, 1, true, || true).is_none());
 }
@@ -202,6 +207,121 @@ fn table_fragments_and_strikethrough_keep_valid_ranges_in_both_directions() {
 }
 
 #[test]
+fn ordered_lists_keep_their_numbers_and_loose_items_have_one_marker() {
+    let ordered = page("7. Download\n8. Unpack\n9) wrong delimiter starts a new list\n");
+    let texts: Vec<_> = ordered
+        .blocks
+        .iter()
+        .map(|b| b.text.text.as_str())
+        .collect();
+    assert_eq!(
+        texts,
+        [
+            "7. Download",
+            "8. Unpack",
+            "9) wrong delimiter starts a new list"
+        ]
+    );
+    assert!(
+        ordered
+            .blocks
+            .iter()
+            .all(|b| b.kind == BLOCK_PARAGRAPH && b.depth == 1),
+        "numbers replace the host bullet"
+    );
+    // The number maps to its source marker; the text keeps exact anchors.
+    let first = &ordered.blocks[0].text;
+    assert_eq!(first.anchors[0].source_offset, 100);
+    assert_eq!(first.anchors[1].text_offset, 3);
+    assert_eq!(first.anchors[1].source_offset, 102);
+    let download = first.anchors.iter().find(|a| a.text_offset == 4).unwrap();
+    assert_eq!(download.source_offset, 104);
+
+    let loose = page(
+        "1. First paragraph\n\n   Second paragraph\n\n2. Next\n\n- bullet\n\n  more of the bullet\n",
+    );
+    let blocks: Vec<_> = loose
+        .blocks
+        .iter()
+        .map(|b| (b.kind, b.depth, b.text.text.as_str()))
+        .collect();
+    assert_eq!(
+        blocks,
+        [
+            (BLOCK_PARAGRAPH, 1, "1. First paragraph"),
+            (BLOCK_PARAGRAPH, 1, "Second paragraph"),
+            (BLOCK_PARAGRAPH, 1, "2. Next"),
+            (BLOCK_LIST_ITEM, 1, "bullet"),
+            (BLOCK_PARAGRAPH, 1, "more of the bullet"),
+        ]
+    );
+    let tasks = page("1. [x] done\n2. [ ] open\n");
+    assert_eq!(tasks.blocks[0].text.text, "1. [x] done");
+    assert_eq!(tasks.blocks[1].text.text, "2. [ ] open");
+}
+
+#[test]
+fn character_references_and_bidi_overrides_cannot_inject_controls() {
+    let page = page(
+        "Run &#x202E;exe.dab&#x202C; then &#27;]52;c;x&#7; or \u{202E}raw\u{202C}, \
+         &#x9B;&#127;&#13;! [x](https://a.example/&#x202E;) \u{200F}rtl\n",
+    );
+    let text: String = page.blocks.iter().map(|b| b.text.text.as_str()).collect();
+    assert!(
+        !text
+            .chars()
+            .any(|c| c.is_control() || ('\u{202a}'..='\u{202e}').contains(&c)),
+        "{text:?}"
+    );
+    for visible in ['\u{241b}', '\u{2407}', '\u{2421}', '\u{240d}', '\u{fffd}'] {
+        assert!(text.contains(visible), "{visible:?} in {text:?}");
+    }
+    assert!(text.contains("exe.dab"), "logical order stays visible");
+    assert!(text.contains('\u{200f}'), "implicit direction marks remain");
+    assert!(page.blocks.iter().all(|b| b.links.is_empty()));
+}
+
+#[test]
+#[ignore = "manual timing: cargo test --test markdown -- --ignored --nocapture"]
+fn render_throughput() {
+    let input: String = (0..200)
+        .map(|index| {
+            format!(
+                "## Part {index}\n\nSome **styled** prose with `code` and a \
+                 [link](https://example.org/{index}) {}\n\n",
+                "words ".repeat(40)
+            )
+        })
+        .collect();
+    let input = &input[..input.floor_char_boundary(65536)];
+    let decoded = decode(
+        input.as_bytes(),
+        0,
+        Encoding::Utf8,
+        false,
+        65536,
+        usize::MAX,
+        || false,
+    )
+    .unwrap();
+    // The minimum and median resist unrelated load on shared machines.
+    let mut times: Vec<u128> = (0..60)
+        .map(|_| {
+            let started = std::time::Instant::now();
+            assert!(render(&decoded, 3, false, || false).is_some());
+            started.elapsed().as_micros()
+        })
+        .collect();
+    times.sort_unstable();
+    println!(
+        "markdown_render bytes={} min_us={} median_us={}",
+        decoded.text.len(),
+        times[0],
+        times[times.len() / 2]
+    );
+}
+
+#[test]
 fn excessive_columns_fall_back_to_bounded_readable_text() {
     let row = std::iter::repeat_n(" value ", 65)
         .collect::<Vec<_>>()
@@ -213,4 +333,46 @@ fn excessive_columns_fall_back_to_bounded_readable_text() {
     let page = page(&input);
     assert!(page.blocks.iter().all(|block| block.table.is_none()));
     assert!(page.blocks[0].text.text.starts_with("| value |"));
+}
+
+#[test]
+fn an_over_budget_unit_is_literal_without_downgrading_its_neighbours() {
+    let row = std::iter::repeat_n(" v ", 65).collect::<Vec<_>>().join("|");
+    let delimiter = std::iter::repeat_n("---", 65).collect::<Vec<_>>().join("|");
+    let nested = format!("{}deep", "> ".repeat(20));
+    let input = format!(
+        "# Title\n\n|{row}|\n|{delimiter}|\n|{row}|\n\nMiddle **bold**\n\n{nested}\n\nAfter `code`\n"
+    );
+    let page = page(&input);
+    let kinds: Vec<_> = page.blocks.iter().map(|b| b.kind).collect();
+    assert_eq!(
+        kinds,
+        [
+            BLOCK_HEADING,
+            BLOCK_PARAGRAPH,
+            BLOCK_PARAGRAPH,
+            BLOCK_PARAGRAPH,
+            BLOCK_PARAGRAPH
+        ]
+    );
+    assert_eq!(page.blocks[0].text.text, "Title");
+    assert!(
+        page.blocks[1].text.text.starts_with("| v |"),
+        "literal table"
+    );
+    assert!(
+        page.blocks[1].text.text.ends_with("| v |"),
+        "no trailing break"
+    );
+    assert_eq!(page.blocks[2].text.text, "Middle bold");
+    assert!(page.blocks[2].text.spans.iter().any(|s| s.flags & 1 != 0));
+    assert_eq!(page.blocks[3].text.text, nested, "literal nesting");
+    assert_eq!(page.blocks[4].text.text, "After code");
+    // Literal text keeps one exact anchor per source scalar.
+    let literal = &page.blocks[1].text;
+    assert_eq!(literal.anchors.len(), literal.text.chars().count() + 1);
+    assert_eq!(
+        literal.anchors[0].source_offset,
+        100 + input.find("|").unwrap() as u64
+    );
 }

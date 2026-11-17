@@ -312,3 +312,65 @@ fn eof_text_viewport_publishes_a_page() {
         assert_empty_text_page(data, end, false, end, true);
     }
 }
+
+fn text_page(host: &mut Host, anchor: u64, backwards: bool, bytes: u32, lines: u32) -> TextPage {
+    let request = host.submit(
+        abi::REQUEST_VIEWPORT,
+        &Viewport {
+            source_anchor: anchor,
+            backwards,
+            max_bytes: bytes,
+            max_lines: lines,
+        },
+    );
+    let events = host.finish();
+    codec::decode(
+        &events
+            .iter()
+            .find(|e| e.id == request && e.kind == abi::EVENT_TEXT_PAGE)
+            .unwrap_or_else(|| panic!("text page missing: {events:?}"))
+            .payload,
+    )
+    .unwrap()
+}
+
+#[test]
+fn text_mode_pages_a_cropped_read_through_to_eof() {
+    // 500 lines, about 20 KiB: one read reaches EOF, but each cropped page
+    // holds only 50 lines and must still report the following content.
+    let input: String = (0..500)
+        .map(|i| format!("line {i:04} {}\n", "x".repeat(30)))
+        .collect();
+    let mut host = opened(input.as_bytes(), MODE_TEXT);
+    let mut anchor = 0;
+    let mut text = String::new();
+    for _ in 0..100 {
+        let page = text_page(&mut host, anchor, false, 12288, 50);
+        assert_eq!(page.source.offset, anchor, "pages must be contiguous");
+        assert!(page.text.lines().count() <= 50);
+        text.push_str(&page.text);
+        anchor = page.source.end().unwrap();
+        assert_eq!(
+            page.partial_line,
+            page.has_after && !page.text.ends_with('\n')
+        );
+        if !page.has_after {
+            break;
+        }
+    }
+    assert_eq!(
+        anchor,
+        input.len() as u64,
+        "the host must be able to scroll to EOF"
+    );
+    assert_eq!(text, input);
+    // Backward pages from EOF also report the earlier content they cropped.
+    let last = text_page(&mut host, input.len() as u64, true, 12288, 50);
+    assert!(last.has_before && !last.has_after);
+    let first = text_page(&mut host, 2000, true, 12288, 50);
+    assert_eq!(first.source.offset, 0);
+    assert!(
+        first.has_after,
+        "a backward crop before EOF has following content"
+    );
+}

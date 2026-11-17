@@ -21,11 +21,12 @@ pub(crate) enum Event {
     CommandReceived,
     /// Dequeued for dispatch, before lifecycle validation; document and sequence.
     CommandDispatch,
-    /// One-command turn and CEF pump returned, before sleep; document and sequence.
+    /// Command batch and CEF pump returned; last command's document and sequence.
     CommandTurnComplete,
     Wheel,
     PaintBegin,
     PaintConverted,
+    /// Frame pixels ready to queue: the moved paint, or a popup composition copy.
     LayersCopied,
     FrameQueued,
     WireBegin,
@@ -70,8 +71,15 @@ impl<W: Write> Recorder<W> {
             return;
         }
         let elapsed = self.started.elapsed().as_micros().min(u128::from(u64::MAX)) as u64;
+        // Format outside the lock and issue a single write: an unbuffered File would
+        // otherwise make one syscall per formatted piece inside the measured interval.
+        let mut line = std::io::Cursor::new([0u8; 128]);
+        if writeln!(line, "{elapsed},{},{first},{second}", event.label()).is_err() {
+            return;
+        }
+        let length = line.position() as usize;
         if let Ok(mut writer) = self.writer.lock() {
-            let _ = writeln!(writer, "{elapsed},{},{first},{second}", event.label());
+            let _ = writer.write_all(&line.get_ref()[..length]);
         }
     }
 }
@@ -162,6 +170,48 @@ mod tests {
             .map(|line| line.split_once(',').unwrap().1)
             .collect();
         assert_eq!(fields, ["command_received,7,11", "command_dispatch,7,11"]);
+    }
+
+    #[test]
+    fn each_record_is_a_single_write_outside_the_measured_paint_path() {
+        struct Counting {
+            writes: usize,
+            bytes: Vec<u8>,
+        }
+        impl Write for Counting {
+            fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
+                self.writes += 1;
+                self.bytes.extend_from_slice(buffer);
+                Ok(buffer.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let trace = Recorder {
+            writer: Mutex::new(Counting {
+                writes: 0,
+                bytes: Vec::new(),
+            }),
+            started: Instant::now(),
+            remaining: AtomicUsize::new(MAX_EVENTS),
+        };
+        trace.record(Event::CommandTurnComplete, u64::MAX, u64::MAX);
+        trace.record(Event::WireEnd, 7, 33_177_600);
+        let counting = trace.writer.into_inner().unwrap();
+        assert_eq!(counting.writes, 2);
+        let text = String::from_utf8(counting.bytes).unwrap();
+        let fields: Vec<_> = text
+            .lines()
+            .map(|line| line.split_once(',').unwrap().1)
+            .collect();
+        assert_eq!(
+            fields,
+            [
+                "command_turn_complete,18446744073709551615,18446744073709551615",
+                "wire_end,7,33177600"
+            ]
+        );
     }
 
     #[test]

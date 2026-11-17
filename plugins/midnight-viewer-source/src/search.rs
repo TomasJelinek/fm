@@ -1,6 +1,6 @@
 //! Streaming KMP search, preserving source positions through case folding.
 use crate::{
-    decode, paging,
+    decode,
     plugin::{self, Session, lock},
 };
 use midnight_plugin_sdk::{
@@ -8,10 +8,20 @@ use midnight_plugin_sdk::{
     api::{abi, messages, viewer::*},
 };
 use std::{
+    char::ToLowercase,
     collections::VecDeque,
+    iter::Once,
     sync::Arc,
     time::{Duration, Instant},
 };
+
+/// Source bytes requested per step. The whole read is decoded and scanned, so
+/// each byte is requested once (plus at most an incomplete trailing scalar).
+const READ_BYTES: u64 = 32768;
+/// Decoded text per step; only control/malformed expansion can reach it.
+const MAX_TEXT: usize = 64 * 1024;
+/// The host cancellation callback is polled once per this many scalars.
+const POLL_SCALARS: usize = 4096;
 
 struct Scan {
     session: Arc<Session>,
@@ -74,13 +84,32 @@ pub fn start(
         },
     );
 }
-fn fold(ch: char, sensitive: bool) -> Vec<char> {
-    if sensitive {
-        vec![ch]
-    } else {
-        ch.to_lowercase().collect()
+
+/// Case-folded scalars of `ch`, without allocating.
+enum Folded {
+    Exact(Once<char>),
+    Lower(ToLowercase),
+}
+
+impl Iterator for Folded {
+    type Item = char;
+
+    fn next(&mut self) -> Option<char> {
+        match self {
+            Self::Exact(ch) => ch.next(),
+            Self::Lower(lower) => lower.next(),
+        }
     }
 }
+
+fn fold(ch: char, sensitive: bool) -> Folded {
+    if sensitive {
+        Folded::Exact(std::iter::once(ch))
+    } else {
+        Folded::Lower(ch.to_lowercase())
+    }
+}
+
 fn step(context: Context, mut scan: Scan) {
     if context.is_cancelled() {
         return;
@@ -89,7 +118,7 @@ fn step(context: Context, mut scan: Scan) {
         finish(context, scan.last);
         return;
     }
-    let count = (u64::MAX - scan.offset).min(32768) as u32;
+    let count = (u64::MAX - scan.offset).min(READ_BYTES) as u32;
     if count == 0 {
         finish(context, scan.last);
         return;
@@ -105,7 +134,8 @@ fn step(context: Context, mut scan: Scan) {
                 &data,
                 (scan.offset, encoding, scan.known_boundary),
                 eof,
-                8192,
+                MAX_TEXT,
+                None,
                 || context.is_cancelled(),
             ) else {
                 return;
@@ -119,24 +149,14 @@ fn step(context: Context, mut scan: Scan) {
                 }
                 return;
             }
-            let page = paging::search_text(
-                &decoded,
-                scan.session.revision,
-                eof && consumed == data.len(),
-            );
-            for (at, ch) in page.text.char_indices() {
-                if context.is_cancelled() {
+            // The decoder records exactly one boundary per displayed scalar.
+            let scalars = decoded.text.chars().zip(decoded.anchors.windows(2));
+            for (index, (ch, boundary)) in scalars.enumerate() {
+                if index % POLL_SCALARS == POLL_SCALARS - 1 && context.is_cancelled() {
                     return;
                 }
-                let left = page
-                    .anchors
-                    .partition_point(|a| a.text_offset as usize <= at)
-                    - 1;
-                let right = page
-                    .anchors
-                    .partition_point(|a| (a.text_offset as usize) < at + ch.len_utf8());
-                let start = page.anchors[left].source_offset;
-                let end = page.anchors[right].source_offset;
+                let start = boundary[0].source_offset;
+                let end = boundary[1].source_offset;
                 for value in fold(ch, scan.request.case_sensitive) {
                     scan.positions.push_back((start, end));
                     if scan.positions.len() > scan.query.len() {
