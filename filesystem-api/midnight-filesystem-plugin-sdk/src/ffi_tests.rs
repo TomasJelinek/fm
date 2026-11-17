@@ -1,8 +1,11 @@
 use crate::*;
 use api::{abi::*, *};
 use std::{
-    sync::atomic::{AtomicBool, AtomicUsize, Ordering},
-    time::{Duration, Instant},
+    sync::{
+        Condvar, Mutex, MutexGuard, PoisonError,
+        atomic::{AtomicUsize, Ordering},
+    },
+    time::Duration,
 };
 
 struct Fake {
@@ -399,32 +402,63 @@ fn author_panic_does_not_unwind_the_abi_and_poisoned_instance_can_be_destroyed()
     assert_eq!(destroy(&api, instance), OK);
 }
 
-static STARTED: AtomicBool = AtomicBool::new(false);
-static FINISH: AtomicBool = AtomicBool::new(false);
+/// Holds `Blocking::handle` until the test opens it: (entered, opened).
+struct Gate {
+    state: Mutex<(bool, bool)>,
+    changed: Condvar,
+}
+impl Gate {
+    fn state(&self) -> MutexGuard<'_, (bool, bool)> {
+        self.state.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+    fn enter(&self) {
+        let mut state = self.state();
+        state.0 = true;
+        self.changed.notify_all();
+        while !state.1 {
+            state = self
+                .changed
+                .wait(state)
+                .unwrap_or_else(PoisonError::into_inner);
+        }
+    }
+    fn wait_entered(&self) {
+        let (state, _) = self
+            .changed
+            .wait_timeout_while(self.state(), Duration::from_secs(5), |state| !state.0)
+            .unwrap_or_else(PoisonError::into_inner);
+        assert!(state.0, "the handler did not start");
+    }
+    fn open(&self) {
+        self.state().1 = true;
+        self.changed.notify_all();
+    }
+}
+static BLOCKING: Gate = Gate {
+    state: Mutex::new((false, false)),
+    changed: Condvar::new(),
+};
 struct Blocking;
 impl Filesystem for Blocking {
     fn create(_: Config) -> Result<Self, Failure> {
         Ok(Self)
     }
     fn handle(&self, _: Request, _: &CallContext<'_>) -> Result<Reply, Failure> {
-        STARTED.store(true, Ordering::Release);
-        while !FINISH.load(Ordering::Acquire) {
-            std::thread::sleep(Duration::from_millis(1));
-        }
+        BLOCKING.enter();
         Reply::stateless(Response::Unit)
     }
 }
 #[test]
 fn active_call_keeps_owner_alive_and_holds_admission_until_actual_return() {
-    STARTED.store(false, Ordering::Release);
-    FINISH.store(false, Ordering::Release);
-    struct Finish;
-    impl Drop for Finish {
+    *BLOCKING.state() = (false, false);
+    struct Open;
+    impl Drop for Open {
         fn drop(&mut self) {
-            FINISH.store(true, Ordering::Release);
+            // A failed assertion must not leave the worker blocked.
+            BLOCKING.open();
         }
     }
-    let _finish = Finish;
+    let _open = Open;
     let api = descriptor::<Blocking>();
     let instance = create_instance(
         &api,
@@ -454,17 +488,13 @@ fn active_call_keeps_owner_alive_and_holds_admission_until_actual_return() {
         }
         status
     });
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while !STARTED.load(Ordering::Acquire) {
-        assert!(Instant::now() < deadline);
-        std::thread::yield_now();
-    }
+    BLOCKING.wait_entered();
     assert_eq!(destroy(&api, instance), BUSY);
     assert_eq!(
         invoke(&api, instance, Request::Volumes, Cancellation::default()).0,
         BUSY
     );
-    FINISH.store(true, Ordering::Release);
+    BLOCKING.open();
     assert_eq!(worker.join().unwrap(), OK);
     assert_eq!(destroy(&api, instance), OK);
 }
