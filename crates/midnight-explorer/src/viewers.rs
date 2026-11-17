@@ -29,6 +29,106 @@ pub(crate) fn finish_after_image_spare<T>(
     crate::startup_recovery::finish(result, || shutdown_runtime(runtime), retry)
 }
 
+#[cfg(test)]
+mod image_spare_ordering_tests {
+    use super::*;
+    use crate::startup_recovery::Attempt;
+    use std::{
+        cell::Cell,
+        sync::{Arc, Mutex, mpsc},
+        time::Duration,
+    };
+
+    #[test]
+    fn image_spare_acknowledgement_precedes_runtime_shutdown_and_software_retry() {
+        let phases = Arc::new(Mutex::new(Vec::new()));
+        let recorded = phases.clone();
+        let (stopping, stopped) = mpsc::sync_channel(1);
+        let (release, reaped) = mpsc::sync_channel(1);
+        let (finished, completion) = mpsc::sync_channel(1);
+        let task = std::thread::spawn(move || {
+            let result = finish_after_image_spare(
+                Ok(Attempt::NativeStartupFailed("renderer unavailable".into())),
+                || {
+                    recorded.lock().unwrap().push("spare stop");
+                    stopping.send(()).unwrap();
+                    reaped.recv_timeout(Duration::from_secs(5)).unwrap();
+                    recorded.lock().unwrap().push("spare reaped");
+                    (41u8, Ok(()))
+                },
+                |owned_runtime| {
+                    assert_eq!(owned_runtime, 41);
+                    recorded.lock().unwrap().push("runtime shutdown");
+                },
+                || {
+                    recorded.lock().unwrap().push("software retry");
+                    Ok(())
+                },
+            );
+            finished.send(result).unwrap();
+        });
+        stopped.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_eq!(*phases.lock().unwrap(), ["spare stop"]);
+        assert!(completion.try_recv().is_err());
+        release.send(()).unwrap();
+        completion
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap()
+            .unwrap();
+        task.join().unwrap();
+        assert_eq!(
+            *phases.lock().unwrap(),
+            [
+                "spare stop",
+                "spare reaped",
+                "runtime shutdown",
+                "software retry"
+            ]
+        );
+    }
+
+    #[test]
+    fn image_spare_failure_preserves_ownership_through_runtime_shutdown_and_blocks_retry() {
+        struct HeldSpare<'a>(&'a Cell<bool>);
+        impl Drop for HeldSpare<'_> {
+            fn drop(&mut self) {
+                self.0.set(true);
+            }
+        }
+
+        for outcome in [
+            Ok(Attempt::NativeStartupFailed("renderer unavailable".into())),
+            Ok(Attempt::Finished),
+            Err("startup failed after registration".into()),
+        ] {
+            let released = Cell::new(false);
+            let held = HeldSpare(&released);
+            let phases = RefCell::new(Vec::new());
+            let result = finish_after_image_spare(
+                outcome,
+                || {
+                    let _retained = &held;
+                    phases.borrow_mut().push("spare owner failed");
+                    (41u8, Err("OwnerFailed; cleanup unconfirmed".into()))
+                },
+                |owned_runtime| {
+                    assert_eq!(owned_runtime, 41);
+                    assert!(!released.get());
+                    phases.borrow_mut().push("runtime shutdown");
+                },
+                || panic!("failed retirement must suppress a renderer-qualified retry"),
+            );
+            let error = result.unwrap_err();
+            assert!(error.contains("OwnerFailed"));
+            assert!(error.contains("cleanup unconfirmed"));
+            assert_eq!(*phases.borrow(), ["spare owner failed", "runtime shutdown"]);
+            assert!(!released.get(), "ownership must survive the fatal result");
+            drop(held);
+            assert!(released.get());
+        }
+    }
+}
+
 pub(crate) fn install(
     window: &MainWindow,
     presenter: Rc<RefCell<Presenter>>,
@@ -40,7 +140,7 @@ pub(crate) fn install(
 ) -> (Rc<ViewerWindows>, slint::Timer) {
     let service = midnight_viewer_engine::Service::with_native_capture(
         runtime.clone(),
-        crate::native_content::factory_with_resources(filesystem, resources),
+        crate::native_content::factory_with_resources(filesystem, resources, runtime),
     );
     // The outer run owns this ticket on every later Result/early-return path.
     // Register before timers or ViewerWindows can start catalog preparation.

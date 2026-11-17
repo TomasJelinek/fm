@@ -156,8 +156,15 @@ fn actual_text_and_image_comparison_use_installed_native_content() {
 #[test]
 #[ignore = "requires protected native and thumbnail packages and owned BMP/AVI fixtures"]
 fn actual_thumbnail_service_decodes_image_and_video_from_native_plugin() {
-    let cache = fixtures().join(format!("cache-{}", std::process::id()));
-    let service = service::Service::start(installation().join("me.exe"), cache);
+    /// The per-run cache lives in the owned fixture tree; remove it after the run.
+    struct RemoveOnDrop(PathBuf);
+    impl Drop for RemoveOnDrop {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let cache = RemoveOnDrop(fixtures().join(format!("cache-{}", std::process::id())));
+    let service = service::Service::start(installation().join("me.exe"), cache.0.clone());
     let capture = factory(provider());
     let targets = [(1, "picture 文档.bmp", "bmp"), (2, "video.avi", "avi")]
         .into_iter()
@@ -170,6 +177,7 @@ fn actual_thumbnail_service_decodes_image_and_video_from_native_plugin() {
                 extension: extension.into(),
                 selected: token == 2,
                 hovered: false,
+                confirmed_ssd: false,
                 capture: thumbnail(capture.clone(), path, false),
             }
         })
@@ -201,6 +209,8 @@ fn actual_thumbnail_service_decodes_image_and_video_from_native_plugin() {
         std::thread::sleep(Duration::from_millis(5));
     }
     service.stop();
+    drop(service);
+    drop(cache);
 }
 
 struct GatedResourceDirectories {
@@ -264,7 +274,8 @@ fn viewer_close_interrupts_a_blocked_resource_directory_capture() {
         entered,
         release: Mutex::new(released),
     });
-    let capture = factory_with_resources(provider(), directories);
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let capture = factory_with_resources(provider(), directories, runtime.handle());
     let closed = Arc::new(AtomicBool::new(false));
     let worker_closed = closed.clone();
     let (finished, completion) = std::sync::mpsc::sync_channel(1);

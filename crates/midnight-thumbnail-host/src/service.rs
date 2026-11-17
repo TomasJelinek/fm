@@ -1,22 +1,22 @@
 //! Bounded backend orchestration. UI snapshots contain identities and source factories, never I/O.
 use crate::{
-    cache::{Cache, CachedFrame, DEFAULT_DISK_BYTES, Key, resolution_edge},
+    cache::{Cache, CachedFrame, DEFAULT_DISK_BYTES, DEFAULT_MEMORY_BYTES, Key, resolution_edge},
     decode::{self, Source},
     providers::{self, Provider},
     scheduler::{Item, Scheduler, Work},
 };
 use midnight_thumbnail_api::{Frame, Request};
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     io,
     path::PathBuf,
     sync::{
-        Arc, Mutex,
+        Arc, Condvar, Mutex, MutexGuard,
         atomic::{AtomicBool, Ordering},
         mpsc,
     },
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 /// Invoked only by an admitted backend job, with that job's live cancellation flag.
@@ -108,6 +108,9 @@ pub struct Target {
     pub extension: String,
     pub selected: bool,
     pub hovered: bool,
+    /// Only a positively established local-SSD hint admits the capture as shared I/O.
+    /// Unknown, rotational, network and archive sources keep exclusive admission.
+    pub confirmed_ssd: bool,
     pub capture: Capture,
 }
 pub struct View {
@@ -121,6 +124,8 @@ pub struct Ready {
     pub edge: u32,
     pub frame: Arc<Frame>,
 }
+/// Invoked on a backend thread after a frame enters the bounded delivery queue.
+pub type ReadyNotifier = Arc<dyn Fn() + Send + Sync>;
 struct Mailbox {
     next: Option<View>,
     retries: HashMap<(u64, u64, u8), (Work, u32)>,
@@ -128,9 +133,99 @@ struct Mailbox {
     clear_cache: bool,
     cache_location: Option<PathBuf>,
     notice: Option<String>,
+    ready_notifier: Option<ReadyNotifier>,
+    /// Bumped by every producer: requests, worker completions and freed delivery slots.
+    /// The backend blocks only while it is unchanged, so an idle service does no work
+    /// and no wakeup can be lost between its last inspection and its wait.
+    signals: u64,
+    /// Completions the backend has fully processed; lets tests order requests after them.
+    #[cfg(test)]
+    processed: u64,
+}
+struct Shared {
+    mailbox: Mutex<Mailbox>,
+    changed: Condvar,
+}
+impl Shared {
+    fn new() -> Arc<Self> {
+        Arc::new(Self {
+            mailbox: Mutex::new(Mailbox {
+                next: None,
+                retries: HashMap::new(),
+                stopped: false,
+                clear_cache: false,
+                cache_location: None,
+                notice: None,
+                ready_notifier: None,
+                signals: 0,
+                #[cfg(test)]
+                processed: 0,
+            }),
+            changed: Condvar::new(),
+        })
+    }
+    fn lock(&self) -> MutexGuard<'_, Mailbox> {
+        self.mailbox
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+    }
+    /// Publish a producer change and wake the backend.
+    fn notify(&self, mut mailbox: MutexGuard<'_, Mailbox>) {
+        mailbox.signals = mailbox.signals.wrapping_add(1);
+        drop(mailbox);
+        self.changed.notify_all();
+    }
+    fn signal(&self, update: impl FnOnce(&mut Mailbox)) {
+        let mut mailbox = self.lock();
+        update(&mut mailbox);
+        self.notify(mailbox);
+    }
+    /// Block until a producer signals after `seen`, or until the optional deadline.
+    fn wait(&self, seen: u64, deadline: Option<Instant>) {
+        let mut mailbox = self.lock();
+        while mailbox.signals == seen {
+            mailbox = match deadline {
+                None => self
+                    .changed
+                    .wait(mailbox)
+                    .unwrap_or_else(|error| error.into_inner()),
+                Some(deadline) => {
+                    let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+                        return;
+                    };
+                    self.changed
+                        .wait_timeout(mailbox, remaining)
+                        .unwrap_or_else(|error| error.into_inner())
+                        .0
+                }
+            };
+        }
+    }
+    /// Providers and the cache inventory are needed only once a non-empty view or a cache
+    /// clear arrives. Returns false when the service stops first.
+    fn wait_for_demand(&self) -> bool {
+        let mut mailbox = self.lock();
+        loop {
+            if mailbox.stopped {
+                return false;
+            }
+            if mailbox.clear_cache
+                || mailbox
+                    .next
+                    .as_ref()
+                    .is_some_and(|view| !view.targets.is_empty())
+            {
+                return true;
+            }
+            mailbox = self
+                .changed
+                .wait(mailbox)
+                .unwrap_or_else(|error| error.into_inner());
+        }
+    }
 }
 pub struct Service {
-    mailbox: Arc<Mutex<Mailbox>>,
+    shared: Arc<Shared>,
     ready: mpsc::Receiver<Ready>,
     thread: Option<thread::JoinHandle<()>>,
 }
@@ -150,37 +245,30 @@ impl Service {
     fn initialize(
         locations: impl FnOnce() -> io::Result<(PathBuf, PathBuf)> + Send + 'static,
     ) -> Self {
-        let mailbox = Arc::new(Mutex::new(Mailbox {
-            next: None,
-            retries: HashMap::new(),
-            stopped: false,
-            clear_cache: false,
-            cache_location: None,
-            notice: None,
-        }));
+        let shared = Shared::new();
         let (ready_tx, ready) = mpsc::sync_channel(4);
-        let input = mailbox.clone();
+        let input = shared.clone();
         let thread = thread::spawn(move || {
             // Presentation enforces its 54 MiB pixel budget independently of resolution.
-            // Four replies at the protocol's 512² RGBA bound and this 4 MiB warm cache
+            // Four replies at the protocol's 512² RGBA bound and the 4 MiB warm cache
             // leave bounded headroom; source captures remain owned by admitted workers.
             let initialized = (|| {
                 let (executable, cache) = locations()?;
-                input
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner())
-                    .cache_location = Some(cache.clone());
+                input.lock().cache_location = Some(cache.clone());
+                // Do not discover decoders or scan the cache inventory for a session that
+                // never shows previews.
+                if !input.wait_for_demand() {
+                    return Ok(None);
+                }
                 let providers = providers::discover(&executable)?;
-                let cache = Cache::open(&cache, DEFAULT_DISK_BYTES, 4 * 1024 * 1024)?;
-                Ok::<_, io::Error>((providers, cache))
+                let cache = Cache::open(&cache, DEFAULT_DISK_BYTES, DEFAULT_MEMORY_BYTES)?;
+                Ok::<_, io::Error>(Some((providers, cache)))
             })();
             let (providers, cache) = match initialized {
-                Ok(value) => value,
+                Ok(Some(value)) => value,
+                Ok(None) => return,
                 Err(error) => {
-                    input
-                        .lock()
-                        .unwrap_or_else(|error| error.into_inner())
-                        .notice = Some(format!("Previews are unavailable: {error}"));
+                    input.lock().notice = Some(format!("Previews are unavailable: {error}"));
                     return;
                 }
             };
@@ -193,10 +281,15 @@ impl Service {
             );
         });
         Self {
-            mailbox,
+            shared,
             ready,
             thread: Some(thread),
         }
+    }
+    /// Notify the presentation as soon as a frame can be polled. The callback runs on a
+    /// backend thread and must only schedule UI work.
+    pub fn set_ready_notifier(&self, notifier: ReadyNotifier) {
+        self.shared.lock().ready_notifier = Some(notifier);
     }
     pub fn set_view(&self, view: View) -> bool {
         if view.targets.len() > 256
@@ -207,18 +300,21 @@ impl Service {
         {
             return false;
         }
-        let mut mailbox = self
-            .mailbox
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
+        let mut mailbox = self.shared.lock();
         if mailbox.stopped {
             return false;
         }
         mailbox.next = Some(view);
+        self.shared.notify(mailbox);
         true
     }
     pub fn poll(&self) -> Option<Ready> {
-        self.ready.try_recv().ok()
+        let ready = self.ready.try_recv().ok();
+        if ready.is_some() {
+            // A delivery slot was freed; let a backend holding accepted frames continue.
+            self.shared.signal(|_| {});
+        }
+        ready
     }
     /// Requeue a rejected upload only after presentation capacity or the view changes.
     /// No pixels are retained here; the worker reuses its validated cache entry.
@@ -230,10 +326,7 @@ impl Service {
         {
             return false;
         }
-        let mut mailbox = self
-            .mailbox
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
+        let mut mailbox = self.shared.lock();
         let key = (work.generation, work.token, work.frame);
         if mailbox.stopped
             || (mailbox.retries.len()
@@ -243,34 +336,21 @@ impl Service {
             return false;
         }
         mailbox.retries.insert(key, (work, retained_edge));
+        self.shared.notify(mailbox);
         true
     }
     pub fn clear_cache(&self) {
-        self.mailbox
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .clear_cache = true;
+        self.shared.signal(|mailbox| mailbox.clear_cache = true);
     }
     /// Native cache location resolved by the backend initialization worker.
     pub fn take_cache_location(&self) -> Option<PathBuf> {
-        self.mailbox
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .cache_location
-            .take()
+        self.shared.lock().cache_location.take()
     }
     pub fn take_notice(&self) -> Option<String> {
-        self.mailbox
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .notice
-            .take()
+        self.shared.lock().notice.take()
     }
     pub fn stop(&self) {
-        self.mailbox
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .stopped = true;
+        self.shared.signal(|mailbox| mailbox.stopped = true);
     }
 }
 
@@ -319,7 +399,7 @@ struct Completion {
     result: io::Result<CachedFrame>,
 }
 fn run(
-    input: Arc<Mutex<Mailbox>>,
+    shared: Arc<Shared>,
     output: mpsc::SyncSender<Ready>,
     providers: Vec<Provider>,
     cache: Arc<Mutex<Cache>>,
@@ -330,22 +410,39 @@ fn run(
     let mut captures: HashMap<u64, Capture> = HashMap::new();
     let mut active: HashMap<u64, (Work, Arc<AtomicBool>, thread::JoinHandle<()>)> = HashMap::new();
     let (sender, receiver) = mpsc::sync_channel::<Completion>(2);
+    // Accepted frames waiting for a free presentation slot. No new work starts while any
+    // waits, so this holds at most the completions of already running jobs.
+    let mut deliveries: VecDeque<Ready> = VecDeque::new();
     let mut stopped = false;
     let mut clearing = false;
     let mut generation = 0;
     let mut cache_error_reported = false;
     loop {
-        let (view, retries) = {
-            let mut mailbox = input.lock().unwrap_or_else(|error| error.into_inner());
+        let (seen, view, retries, notifier) = {
+            let mut mailbox = shared.lock();
             stopped |= mailbox.stopped;
             clearing |= std::mem::take(&mut mailbox.clear_cache);
-            (mailbox.next.take(), std::mem::take(&mut mailbox.retries))
+            (
+                mailbox.signals,
+                mailbox.next.take(),
+                std::mem::take(&mut mailbox.retries),
+                mailbox.ready_notifier.clone(),
+            )
         };
         if let Some(view) = view {
             if generation != view.generation {
                 captures.clear();
             }
             captures.retain(|token, _| view.targets.iter().any(|target| target.token == *token));
+            // Frames of a previous generation or of rows that left the view are rejected by
+            // presentation; the scheduler forgets their coverage too, so drop them here.
+            deliveries.retain(|ready| {
+                ready.generation == view.generation
+                    && view
+                        .targets
+                        .iter()
+                        .any(|target| target.token == ready.token)
+            });
             generation = view.generation;
             targets.clear();
             let mut items = Vec::new();
@@ -387,11 +484,6 @@ fn run(
         for (_, (work, retained_edge)) in retries {
             scheduler.retry_delivery(work, retained_edge);
         }
-        if stopped || clearing {
-            for (_, cancel, _) in active.values() {
-                cancel.store(true, Ordering::Release);
-            }
-        }
         while let Ok(completion) = receiver.try_recv() {
             if !cache_error_reported
                 && !clearing
@@ -401,23 +493,29 @@ fn run(
                     .get_ref()
                     .is_some_and(|error| error.is::<CacheFailure>())
             {
-                input
-                    .lock()
-                    .unwrap_or_else(|error| error.into_inner())
-                    .notice = Some(format!("Could not store or read preview cache: {error}"));
+                shared.lock().notice =
+                    Some(format!("Could not store or read preview cache: {error}"));
                 cache_error_reported = true;
             }
-            if let Some((_, _, worker)) = active.remove(&completion.work.token) {
-                let _ = worker.join();
-            }
-            let accepted = if completion
-                .result
-                .as_ref()
-                .is_err_and(|error| error.kind() == io::ErrorKind::Interrupted)
+            let cancelled =
+                active
+                    .remove(&completion.work.token)
+                    .is_none_or(|(_, cancel, worker)| {
+                        let _ = worker.join();
+                        cancel.load(Ordering::Acquire)
+                    });
+            let accepted = if cancelled
+                && completion
+                    .result
+                    .as_ref()
+                    .is_err_and(|error| error.kind() == io::ErrorKind::Interrupted)
             {
+                // A changed view, clear or stop cancelled the job: no failure backoff.
                 scheduler.abandon(completion.work);
                 false
             } else {
+                // An interruption nobody requested (e.g. a stopped archive mount) is a
+                // failure; its backoff prevents an immediate decoder respawn loop.
                 scheduler.complete_with_coverage(
                     completion.work,
                     completion.result.as_ref().ok().map(|frame| frame.edge),
@@ -428,32 +526,43 @@ fn run(
                 && !clearing
                 && let Ok(result) = completion.result
             {
-                let mut ready = Ready {
+                deliveries.push_back(Ready {
                     generation: completion.work.generation,
                     token: completion.work.token,
                     edge: result.edge,
                     frame: result.frame,
-                };
-                loop {
-                    match output.try_send(ready) {
-                        Ok(()) => break,
-                        Err(mpsc::TrySendError::Disconnected(_)) => {
-                            stopped = true;
-                            break;
-                        }
-                        Err(mpsc::TrySendError::Full(value)) => ready = value,
+                });
+            }
+            #[cfg(test)]
+            {
+                shared.lock().processed += 1;
+            }
+        }
+        if stopped || clearing {
+            deliveries.clear();
+        }
+        // Deliver in completion order while presentation has capacity. A full queue no
+        // longer blocks this loop: view changes and cancellations are still processed.
+        while let Some(ready) = deliveries.pop_front() {
+            match output.try_send(ready) {
+                Ok(()) => {
+                    if let Some(notifier) = &notifier {
+                        notifier();
                     }
-                    let mailbox = input.lock().unwrap_or_else(|error| error.into_inner());
-                    if mailbox.stopped {
-                        stopped = true;
-                        break;
-                    }
-                    if mailbox.clear_cache {
-                        break;
-                    }
-                    drop(mailbox);
-                    thread::sleep(Duration::from_millis(10));
                 }
+                Err(mpsc::TrySendError::Full(ready)) => {
+                    deliveries.push_front(ready);
+                    break;
+                }
+                Err(mpsc::TrySendError::Disconnected(_)) => {
+                    stopped = true;
+                    deliveries.clear();
+                }
+            }
+        }
+        if stopped || clearing {
+            for (_, cancel, _) in active.values() {
+                cancel.store(true, Ordering::Release);
             }
         }
         if stopped && active.is_empty() {
@@ -465,10 +574,7 @@ fn run(
                 .unwrap_or_else(|error| error.into_inner())
                 .clear();
             if let Err(error) = result {
-                input
-                    .lock()
-                    .unwrap_or_else(|error| error.into_inner())
-                    .notice = Some(format!("Could not clear preview cache: {error}"));
+                shared.lock().notice = Some(format!("Could not clear preview cache: {error}"));
             }
             scheduler = Scheduler::default();
             scheduler.set_view(
@@ -487,7 +593,9 @@ fn run(
             clearing = false;
             cache_error_reported = false;
         }
-        if !stopped && !clearing {
+        // Saturated presentation pauses new work until its frames have been taken.
+        let can_start = !stopped && !clearing && deliveries.is_empty();
+        if can_start {
             while let Some(work) = scheduler.next_work() {
                 let Some((target, provider)) = targets.get(&work.token).cloned() else {
                     scheduler.complete(work, false);
@@ -498,14 +606,18 @@ fn run(
                 let sender = sender.clone();
                 let cache = cache.clone();
                 let render = render.clone();
+                let completed = shared.clone();
                 let worker = thread::spawn(move || {
                     let result = render(&target, &provider, work, &cache, &job_cancel);
                     let _ = sender.send(Completion { work, result });
+                    completed.signal(|_| {});
                 });
                 active.insert(work.token, (work, cancel, worker));
             }
         }
-        thread::sleep(Duration::from_millis(10));
+        // Sleep until a request, a completion or a freed delivery slot arrives; only a
+        // failure backoff that can actually start new work sets a deadline.
+        shared.wait(seen, can_start.then(|| scheduler.next_retry_at()).flatten());
     }
 }
 fn render(
@@ -516,11 +628,14 @@ fn render(
     cancel: &AtomicBool,
 ) -> io::Result<CachedFrame> {
     let source = {
+        // A confirmed SSD capture shares the process-wide gate like the decoder's reads;
+        // an unknown source keeps exclusive admission.
         let budget = midnight_work_budget::shared_io();
         let _permit = budget
-            .acquire(midnight_work_budget::Admission::Exclusive, || {
-                cancel.load(Ordering::Acquire)
-            })
+            .acquire(
+                midnight_work_budget::storage_admission(target.confirmed_ssd),
+                || cancel.load(Ordering::Acquire),
+            )
             .ok_or_else(|| io::Error::from(io::ErrorKind::Interrupted))?;
         (target.capture)(cancel)?
     };

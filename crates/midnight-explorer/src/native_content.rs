@@ -4,10 +4,17 @@ use midnight_thumbnail_host::service;
 use std::{
     collections::VecDeque,
     io,
-    path::PathBuf,
-    sync::atomic::Ordering,
-    sync::{Arc, Mutex},
+    path::{Path, PathBuf},
+    sync::{
+        Arc, Mutex, Weak,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::{Duration, Instant},
 };
+
+const MAX_PINS: usize = 16;
+/// An unused parent pin is released after this delay, so a viewed volume can be ejected.
+const PIN_IDLE: Duration = Duration::from_secs(30);
 
 // Thumbnails and comparison need only the borrowed main-content cancellation flag.
 pub(crate) type Capture = midnight_compare_engine::NativeCapture;
@@ -35,14 +42,135 @@ pub(crate) fn factory(filesystem: Arc<InstalledProvider>) -> Capture {
     })
 }
 
+/// Parent-directory pins shared by sibling viewer files: at most `MAX_PINS`, each released
+/// after `PIN_IDLE` without use. Pins are dropped only on backend workers, never on the UI.
+pub(crate) struct DirectoryPins<T> {
+    entries: Mutex<VecDeque<(PathBuf, T, Instant)>>,
+    reaper: AtomicBool,
+    runtime: tokio::runtime::Handle,
+    idle: Duration,
+}
+
+impl<T: Clone + Send + Sync + 'static> DirectoryPins<T> {
+    pub(crate) fn new(runtime: tokio::runtime::Handle) -> Arc<Self> {
+        Self::with_idle(runtime, PIN_IDLE)
+    }
+
+    fn with_idle(runtime: tokio::runtime::Handle, idle: Duration) -> Arc<Self> {
+        Arc::new(Self {
+            entries: Mutex::new(VecDeque::new()),
+            reaper: AtomicBool::new(false),
+            runtime,
+            idle,
+        })
+    }
+
+    /// Reuse a cached pin that `valid` accepts, or keep a freshly `prepare`d one.
+    /// Call on a backend worker: expired pins are released here.
+    pub(crate) fn pin(
+        self: &Arc<Self>,
+        parent: &Path,
+        valid: impl FnOnce(&T) -> bool,
+        prepare: impl FnOnce() -> Option<T>,
+    ) -> Option<T> {
+        let now = Instant::now();
+        let (cached, expired) = {
+            let mut entries = self.lock();
+            let expired = take_expired(&mut entries, now, self.idle);
+            let cached =
+                entries
+                    .iter_mut()
+                    .find(|(key, _, _)| key == parent)
+                    .map(|(_, pin, used)| {
+                        *used = now;
+                        pin.clone()
+                    });
+            (cached, expired)
+        };
+        drop(expired);
+        if let Some(pin) = cached.filter(|pin| valid(pin)) {
+            self.schedule_reaper();
+            return Some(pin);
+        }
+        let prepared = prepare()?;
+        let evicted = {
+            let mut entries = self.lock();
+            let mut evicted = Vec::new();
+            if let Some(index) = entries.iter().position(|(key, _, _)| key == parent) {
+                evicted.extend(entries.remove(index));
+            }
+            entries.push_back((parent.to_path_buf(), prepared.clone(), now));
+            while entries.len() > MAX_PINS {
+                evicted.extend(entries.pop_front());
+            }
+            evicted
+        };
+        drop(evicted);
+        self.schedule_reaper();
+        Some(prepared)
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, VecDeque<(PathBuf, T, Instant)>> {
+        self.entries
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+    }
+
+    /// Release idle pins even when no further file is viewed. The task holds no pin.
+    fn schedule_reaper(self: &Arc<Self>) {
+        if self.reaper.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        let pins: Weak<Self> = Arc::downgrade(self);
+        let idle = self.idle;
+        self.runtime.spawn(async move {
+            tokio::time::sleep(idle).await;
+            let _ = tokio::task::spawn_blocking(move || {
+                let Some(pins) = pins.upgrade() else {
+                    return;
+                };
+                pins.reaper.store(false, Ordering::Release);
+                let (expired, remaining) = {
+                    let mut entries = pins.lock();
+                    let expired = take_expired(&mut entries, Instant::now(), pins.idle);
+                    (expired, !entries.is_empty())
+                };
+                drop(expired);
+                if remaining {
+                    pins.schedule_reaper();
+                }
+            })
+            .await;
+        });
+    }
+}
+
+fn take_expired<T>(
+    entries: &mut VecDeque<(PathBuf, T, Instant)>,
+    now: Instant,
+    idle: Duration,
+) -> Vec<T> {
+    let mut expired = Vec::new();
+    let mut index = 0;
+    while index < entries.len() {
+        if now.saturating_duration_since(entries[index].2) >= idle {
+            expired.extend(entries.remove(index).map(|(_, pin, _)| pin));
+        } else {
+            index += 1;
+        }
+    }
+    expired
+}
+
 /// Viewer-only asset authority. Main content always comes from the installed filesystem plugin.
-/// Parent directory pins are shared across prefetched panel files, at most sixteen cache entries.
+/// Parent directory pins are shared across prefetched panel files (see `DirectoryPins`).
 pub(crate) fn factory_with_resources(
     filesystem: Arc<InstalledProvider>,
     directories: Arc<dyn midnight_core::TransferService>,
+    runtime: &tokio::runtime::Handle,
 ) -> midnight_viewer_engine::NativeCapture {
     type Directory = Arc<dyn midnight_core::TransferDirectory>;
-    let cache = Mutex::new(VecDeque::<(PathBuf, Directory)>::new());
+    let pins = DirectoryPins::<Directory>::new(runtime.clone());
     Arc::new(move |path, cancel| {
         let main = filesystem
             .capture(path, &|| cancel.load(Ordering::Acquire))
@@ -54,32 +182,16 @@ pub(crate) fn factory_with_resources(
             return Ok(main);
         };
         // This is the original selected native parent, never CapturedFile.path() or a display name.
-        let cached = cache.lock().ok().and_then(|entries| {
-            entries
-                .iter()
-                .find(|(key, _)| key == parent)
-                .map(|(_, directory)| directory.clone())
-        });
         let cancelled = midnight_core::Cancellation::observing(cancel.clone());
-        let directory = if let Some(directory) = cached
-            && directory.revalidate(&cancelled).is_ok()
-        {
-            Some(directory)
-        } else {
-            let prepared = directories
-                .prepare_checksum_directory(parent, &cancelled)
-                .ok();
-            if let Some(directory) = &prepared
-                && let Ok(mut entries) = cache.lock()
-            {
-                entries.retain(|(key, _)| key != parent);
-                entries.push_back((parent.to_path_buf(), directory.clone()));
-                while entries.len() > 16 {
-                    entries.pop_front();
-                }
-            }
-            prepared
-        };
+        let directory = pins.pin(
+            parent,
+            |directory| directory.revalidate(&cancelled).is_ok(),
+            || {
+                directories
+                    .prepare_checksum_directory(parent, &cancelled)
+                    .ok()
+            },
+        );
         if cancel.load(Ordering::Acquire) {
             return Err("Viewer closed".into());
         }
@@ -110,6 +222,10 @@ pub(crate) fn thumbnail(capture: Capture, path: PathBuf, confirmed_ssd: bool) ->
 #[cfg(test)]
 #[path = "native_content_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "native_pin_tests.rs"]
+mod pin_tests;
 
 #[cfg(test)]
 #[path = "native_archive_tests.rs"]

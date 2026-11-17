@@ -352,23 +352,8 @@ fn clear_removes_legacy_and_sharded_duplicates_and_corruption_never_falls_back()
     );
 }
 
-#[test]
-fn duplicate_files_are_counted_toward_the_global_record_limit() {
-    let root = directory();
-    let path = root.path().join("cache");
-    let flat = midnight_worker_platform::store::PrivateStore::open(&path).unwrap();
-    let bucket = flat.bucket("00", true).unwrap().unwrap();
-    for index in 0..4097 {
-        let name = format!("{index:064x}.mtc");
-        flat.write(&name, b"").unwrap();
-        bucket.write(&name, b"").unwrap();
-    }
-    assert_eq!(disk_records(&path).len(), 8194);
-    let mut cache = Cache::open(&path, 1024 * 1024, 0).unwrap();
-    assert_eq!(disk_records(&path).len(), 8192);
-    cache.clear().unwrap();
-    assert!(disk_records(&path).is_empty());
-}
+// Duplicate legacy/sharded copies counting toward the record limit is proven in the
+// crate's unit tests (cache_tests.rs) with an injected limit instead of 8194 files.
 
 #[test]
 #[ignore = "full-cache metadata benchmark; creates 8192 bounded fixture records"]

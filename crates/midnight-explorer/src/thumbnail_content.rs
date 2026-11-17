@@ -35,7 +35,7 @@ impl Factory {
         token: u64,
         edge: u32,
     ) -> Option<service::Target> {
-        let (identity, extension, capture) = match &row.content {
+        let (identity, extension, confirmed_ssd, capture) = match &row.content {
             ThumbnailContent::ExecutableIcon(_) => return None,
             ThumbnailContent::Native(path) => (
                 path.as_os_str().as_encoded_bytes().to_vec(),
@@ -43,6 +43,7 @@ impl Factory {
                     .and_then(|suffix| suffix.to_str())
                     .unwrap_or("")
                     .to_ascii_lowercase(),
+                row.confirmed_ssd,
                 crate::native_content::thumbnail(
                     self.native.clone(),
                     path.clone(),
@@ -90,6 +91,8 @@ impl Factory {
                     // including provider implementation, container revision and member ID.
                     b"archive-preview-v1".to_vec(),
                     raw_extension(&node.raw_name),
+                    // Member captures consult the archive provider: never shared admission.
+                    false,
                     capture,
                 )
             }
@@ -101,6 +104,7 @@ impl Factory {
             extension,
             selected: row.selected,
             hovered: row.hovered,
+            confirmed_ssd,
             capture,
         })
     }

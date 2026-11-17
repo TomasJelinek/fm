@@ -38,12 +38,9 @@ fn service() -> (Service, tempfile::TempDir) {
         cache,
     )
 }
-#[test]
-#[ignore = "Run after deploy-private.ps1 with MIDNIGHT_DEPLOYMENT_TEST_ROOT"]
-fn private_installed_runtime_passes_discovery_and_decodes_through_the_service() {
-    let (service, _cache) = service();
+fn video_view() -> View {
     let source: Arc<dyn Source> = Arc::new(Bytes(avi::video()));
-    service.set_view(View {
+    View {
         generation: 1,
         targets: vec![Target {
             token: 1,
@@ -52,9 +49,16 @@ fn private_installed_runtime_passes_discovery_and_decodes_through_the_service() 
             extension: "avi".into(),
             selected: false,
             hovered: false,
+            confirmed_ssd: false,
             capture: Arc::new(move |_| Ok(source.clone())),
         }],
-    });
+    }
+}
+#[test]
+#[ignore = "Run after deploy-private.ps1 with MIDNIGHT_DEPLOYMENT_TEST_ROOT"]
+fn private_installed_runtime_passes_discovery_and_decodes_through_the_service() {
+    let (service, _cache) = service();
+    service.set_view(video_view());
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
         if let Some(notice) = service.take_notice() {
@@ -76,6 +80,8 @@ fn private_installed_runtime_passes_discovery_and_decodes_through_the_service() 
 #[ignore = "Run with a deliberately writable mixed-case DLL in a disposable private fixture"]
 fn mixed_case_runtime_with_weak_write_acl_is_rejected_during_discovery() {
     let (service, _cache) = service();
+    // Discovery starts with the first non-empty preview request.
+    service.set_view(video_view());
     let deadline = Instant::now() + Duration::from_secs(3);
     while service.take_notice().is_none() {
         assert!(

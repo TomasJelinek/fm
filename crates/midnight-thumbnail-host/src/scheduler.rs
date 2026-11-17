@@ -84,6 +84,12 @@ impl Scheduler {
         self.next_work_at(Instant::now())
     }
 
+    /// The earliest moment a visible item leaves its failure backoff. An idle backend
+    /// needs no wakeup before then unless a request or completion arrives.
+    pub(crate) fn next_retry_at(&self) -> Option<Instant> {
+        self.failed_until.values().min().copied()
+    }
+
     fn next_work_at(&mut self, now: Instant) -> Option<Work> {
         self.failed_until.retain(|_, deadline| *deadline > now);
         if self.active.len() >= 2 || self.items.is_empty() {
@@ -194,9 +200,15 @@ mod tests {
         let failed = scheduler.next_work().unwrap();
         scheduler.complete(failed, false);
         assert!(scheduler.next_work().is_none());
+        let retry_at = scheduler.next_retry_at().unwrap();
+        assert!(retry_at > Instant::now() + Duration::from_secs(29));
         let retry = scheduler
             .next_work_at(Instant::now() + Duration::from_secs(31))
             .unwrap();
         assert_eq!(retry.frame, 1);
+        assert!(
+            scheduler.next_retry_at().is_none(),
+            "expired backoff is retired"
+        );
     }
 }

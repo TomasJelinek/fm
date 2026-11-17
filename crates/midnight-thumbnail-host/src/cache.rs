@@ -4,10 +4,18 @@ use crate::{
     decode::Source,
 };
 use midnight_thumbnail_api::{self as api, Frame, Message};
-use std::{collections::HashMap, io, path::Path, sync::Arc, time::SystemTime};
+use midnight_worker_platform::store::Transaction;
+use std::{
+    collections::{BTreeMap, BTreeSet, HashMap},
+    io,
+    path::Path,
+    sync::Arc,
+    time::{Duration, SystemTime},
+};
 
 pub const DEFAULT_DISK_BYTES: u64 = 512 * 1024 * 1024;
-pub const DEFAULT_MEMORY_BYTES: usize = 64 * 1024 * 1024;
+/// Warm decoded frames kept by the backend service. Presentation keeps its own pixel budget.
+pub const DEFAULT_MEMORY_BYTES: usize = 4 * 1024 * 1024;
 /// Bounded physical decode sizes, retaining the original 96-pixel cache variant.
 pub const RESOLUTION_EDGES: [u32; 6] = [96, 128, 192, 256, 384, api::MAX_EDGE];
 
@@ -27,6 +35,9 @@ pub struct CachedFrame {
 const MAX_KEY_BYTES: usize = 16 * 1024;
 const MAX_RECORDS: usize = 8192;
 const MAX_RECORD_BYTES: usize = api::MAX_FRAME_BYTES + MAX_KEY_BYTES + 128;
+/// While no other instance changed the shared inventory, a warm hit refreshes its
+/// record's on-disk recency at most this often instead of writing on every lookup.
+const TOUCH_INTERVAL: Duration = Duration::from_secs(60);
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Key {
@@ -110,41 +121,184 @@ impl Key {
     }
 }
 
+/// Persistent records with running totals and an oldest-first index, so budget checks
+/// are constant time and each eviction is logarithmic in the record count.
+#[derive(Default)]
+struct Inventory {
+    records: HashMap<String, Record>,
+    by_age: BTreeSet<(SystemTime, String)>,
+    bytes: u64,
+    copies: usize,
+}
+impl Inventory {
+    fn from_records(records: Vec<Record>) -> io::Result<Self> {
+        let mut inventory = Self::default();
+        for record in records {
+            inventory.insert(record)?;
+        }
+        Ok(inventory)
+    }
+    fn insert(&mut self, record: Record) -> io::Result<()> {
+        self.remove(&record.name);
+        self.bytes = self
+            .bytes
+            .checked_add(record.bytes)
+            .ok_or_else(|| invalid("Thumbnail cache byte total overflow"))?;
+        self.copies += record.copies;
+        self.by_age.insert((record.modified, record.name.clone()));
+        self.records.insert(record.name.clone(), record);
+        Ok(())
+    }
+    fn remove(&mut self, name: &str) {
+        if let Some(record) = self.records.remove(name) {
+            self.by_age.remove(&(record.modified, record.name));
+            self.bytes -= record.bytes;
+            self.copies -= record.copies;
+        }
+    }
+    fn touch(&mut self, name: &str, modified: SystemTime) {
+        if let Some(record) = self.records.get_mut(name) {
+            self.by_age.remove(&(record.modified, name.to_owned()));
+            record.modified = modified;
+            self.by_age.insert((modified, name.to_owned()));
+        }
+    }
+    fn modified(&self, name: &str) -> Option<SystemTime> {
+        self.records.get(name).map(|record| record.modified)
+    }
+    fn contains(&self, name: &str) -> bool {
+        self.records.contains_key(name)
+    }
+    fn oldest(&self) -> Option<String> {
+        self.by_age.first().map(|(_, name)| name.clone())
+    }
+    fn names(&self) -> Vec<String> {
+        self.records.keys().cloned().collect()
+    }
+}
+
 struct MemoryRecord {
+    key: Key,
     frame: Arc<Frame>,
     used: u64,
     bytes: usize,
 }
+/// Warm frames by record name with a least-recently-used index. The name is the hash of
+/// the complete key, and the key itself is compared on every hit.
+#[derive(Default)]
+struct Memory {
+    records: HashMap<String, MemoryRecord>,
+    by_use: BTreeMap<u64, String>,
+    bytes: usize,
+    limit: usize,
+    tick: u64,
+}
+impl Memory {
+    fn new(limit: usize) -> Self {
+        Self {
+            limit,
+            ..Self::default()
+        }
+    }
+    fn contains(&self, name: &str, key: &Key) -> bool {
+        self.records
+            .get(name)
+            .is_some_and(|record| record.key == *key)
+    }
+    fn get(&mut self, name: &str, key: &Key) -> Option<Arc<Frame>> {
+        let record = self
+            .records
+            .get_mut(name)
+            .filter(|record| record.key == *key)?;
+        self.tick = self.tick.wrapping_add(1);
+        self.by_use.remove(&record.used);
+        record.used = self.tick;
+        self.by_use.insert(self.tick, name.to_owned());
+        Some(record.frame.clone())
+    }
+    fn remove(&mut self, name: &str) {
+        if let Some(record) = self.records.remove(name) {
+            self.by_use.remove(&record.used);
+            self.bytes -= record.bytes;
+        }
+    }
+    fn insert(&mut self, name: String, key: Key, frame: Arc<Frame>) {
+        let bytes = frame.rgba.len()
+            + key.encoded.len()
+            + key.version.len()
+            + std::mem::size_of::<MemoryRecord>();
+        self.remove(&name);
+        if bytes > self.limit {
+            return;
+        }
+        while self.bytes + bytes > self.limit {
+            let Some((_, oldest)) = self.by_use.pop_first() else {
+                break;
+            };
+            if let Some(record) = self.records.remove(&oldest) {
+                self.bytes -= record.bytes;
+            }
+        }
+        self.tick = self.tick.wrapping_add(1);
+        self.bytes += bytes;
+        self.by_use.insert(self.tick, name.clone());
+        self.records.insert(
+            name,
+            MemoryRecord {
+                key,
+                frame,
+                used: self.tick,
+                bytes,
+            },
+        );
+    }
+    fn retain(&mut self, keep: impl Fn(&str) -> bool) {
+        let removed: Vec<String> = self
+            .records
+            .keys()
+            .filter(|name| !keep(name))
+            .cloned()
+            .collect();
+        for name in removed {
+            self.remove(&name);
+        }
+    }
+    fn clear(&mut self) {
+        self.records.clear();
+        self.by_use.clear();
+        self.bytes = 0;
+    }
+}
+
 pub struct Cache {
     store: Store,
-    disk: HashMap<String, Record>,
-    disk_bytes: u64,
+    disk: Inventory,
     disk_limit: u64,
+    record_limit: usize,
     disk_generation: Option<u64>,
-    memory: HashMap<Key, MemoryRecord>,
-    memory_bytes: usize,
-    memory_limit: usize,
-    tick: u64,
+    memory: Memory,
 }
 impl Cache {
     pub fn open(root: &Path, disk_limit: u64, memory_limit: usize) -> io::Result<Self> {
+        Self::open_bounded(root, disk_limit, memory_limit, MAX_RECORDS)
+    }
+    /// `record_limit` counts physical files, including duplicate legacy copies.
+    fn open_bounded(
+        root: &Path,
+        disk_limit: u64,
+        memory_limit: usize,
+        record_limit: usize,
+    ) -> io::Result<Self> {
         let store = Store::open(root)?;
         let mut transaction = store.transaction()?;
-        let records = store.records()?;
-        let disk_bytes = sum_record_bytes(&records)?;
+        let disk = Inventory::from_records(store.records()?)?;
         let mut cache = Self {
             store,
-            disk: records
-                .into_iter()
-                .map(|record| (record.name.clone(), record))
-                .collect(),
-            disk_bytes,
+            disk,
             disk_limit,
+            record_limit,
             disk_generation: None,
-            memory: HashMap::new(),
-            memory_bytes: 0,
-            memory_limit,
-            tick: 0,
+            memory: Memory::new(memory_limit),
         };
         transaction.advance()?;
         cache.evict_disk(0, 0)?;
@@ -173,9 +327,15 @@ impl Cache {
         let mut transaction = self.store.transaction()?;
         let synchronized =
             transaction.generation().is_some() && transaction.generation() == self.disk_generation;
-        transaction.advance()?;
+        // Read-only hits leave the shared generation alone, so other instances keep their
+        // inventories; removing a damaged record publishes a new generation first.
+        let mut lookup = Lookup {
+            synchronized,
+            transaction: &mut transaction,
+            advanced: false,
+        };
         let result = (|| {
-            if let Some(frame) = self.get_locked(key)? {
+            if let Some(frame) = self.get_locked(key, &mut lookup)? {
                 return Ok(Some(CachedFrame {
                     frame,
                     edge: key.dimensions.0.max(key.dimensions.1),
@@ -186,7 +346,7 @@ impl Cache {
                     .into_iter()
                     .filter(|edge| *edge > key.dimensions.0)
                 {
-                    if let Some(frame) = self.get_locked(&key.with_edge(edge))? {
+                    if let Some(frame) = self.get_locked(&key.with_edge(edge), &mut lookup)? {
                         return Ok(Some(CachedFrame { frame, edge }));
                     }
                 }
@@ -200,52 +360,67 @@ impl Cache {
         key.validate(source)?;
         result
     }
-    fn get_locked(&mut self, key: &Key) -> io::Result<Option<Arc<Frame>>> {
-        self.tick = self.tick.wrapping_add(1);
+    fn get_locked(&mut self, key: &Key, lookup: &mut Lookup<'_>) -> io::Result<Option<Arc<Frame>>> {
         let name = key.filename();
-        if let Some(record) = self.memory.get_mut(key) {
-            match self.store.touch(&name) {
-                Ok(()) => {}
-                Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                    if let Some(removed) = self.memory.remove(key) {
-                        self.memory_bytes -= removed.bytes;
+        if self.memory.contains(&name, key) {
+            // An unchanged generation proves the record still exists; only refresh its
+            // on-disk recency occasionally. After another instance's change, touching
+            // verifies that it was not evicted or cleared meanwhile.
+            let now = SystemTime::now();
+            let recent = lookup.synchronized
+                && self.disk.modified(&name).is_some_and(|modified| {
+                    now.duration_since(modified)
+                        .is_ok_and(|age| age < TOUCH_INTERVAL)
+                });
+            if !recent {
+                match self.store.touch(&name) {
+                    Ok(()) => self.disk.touch(&name, now),
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                        self.memory.remove(&name);
+                        self.disk.remove(&name);
+                        return Ok(None);
                     }
-                    self.forget_disk(&name);
-                    return Ok(None);
+                    Err(error) => return Err(error),
                 }
-                Err(error) => return Err(error),
             }
-            if let Some(record) = self.disk.get_mut(&name) {
-                record.modified = SystemTime::now();
-            }
-            record.used = self.tick;
-            return Ok(Some(record.frame.clone()));
+            return Ok(self.memory.get(&name, key));
+        }
+        // A synchronized inventory is exact, so absent records need no file probes.
+        if lookup.synchronized && !self.disk.contains(&name) {
+            return Ok(None);
         }
         let bytes = match self.store.read(&name, MAX_RECORD_BYTES) {
             Ok(bytes) => bytes,
             Err(error) if error.kind() == io::ErrorKind::InvalidData => {
-                self.remove_record(&name)?;
-                self.forget_disk(&name);
+                self.remove_damaged(&name, lookup)?;
                 return Ok(None);
             }
             Err(error) => return Err(error),
         };
         let Some(bytes) = bytes else {
-            self.forget_disk(&name);
+            self.disk.remove(&name);
             return Ok(None);
         };
         let frame = match decode_record(key, &bytes) {
             Ok(frame) => frame,
             Err(_) => {
-                self.remove_record(&name)?;
-                self.forget_disk(&name);
+                self.remove_damaged(&name, lookup)?;
                 return Ok(None);
             }
         };
         self.remember_disk(&name)?;
         let frame = Arc::new(frame);
-        self.remember(key.clone(), frame.clone());
+        self.memory.insert(name, key.clone(), frame.clone());
         Ok(Some(frame))
+    }
+    fn remove_damaged(&mut self, name: &str, lookup: &mut Lookup<'_>) -> io::Result<()> {
+        if !lookup.advanced {
+            lookup.transaction.advance()?;
+            lookup.advanced = true;
+        }
+        self.remove_record(name)?;
+        self.disk.remove(name);
+        Ok(())
     }
     pub fn put(&mut self, key: &Key, source: &dyn Source, frame: Frame) -> io::Result<Arc<Frame>> {
         key.validate(source)?;
@@ -280,36 +455,28 @@ impl Cache {
         self.store.write(&name, &bytes)?;
         self.remember_disk(&name)?;
         let frame = Arc::new(frame);
-        self.remember(key.clone(), frame.clone());
+        self.memory.insert(name, key.clone(), frame.clone());
         Ok(frame)
     }
     pub fn memory_bytes(&self) -> usize {
-        self.memory_bytes
+        self.memory.bytes
     }
     pub fn clear(&mut self) -> io::Result<()> {
         let mut transaction = self.store.transaction()?;
         self.refresh_disk()?;
         transaction.advance()?;
         self.memory.clear();
-        self.memory_bytes = 0;
-        let names: Vec<_> = self.disk.keys().cloned().collect();
-        for name in names {
+        for name in self.disk.names() {
             self.remove_record(&name)?;
-            self.forget_disk(&name);
+            self.disk.remove(&name);
         }
         self.disk_generation = transaction.generation();
         Ok(())
     }
     fn refresh_disk(&mut self) -> io::Result<()> {
-        let records = self.store.records()?;
-        self.disk_bytes = sum_record_bytes(&records)?;
-        self.disk = records
-            .into_iter()
-            .map(|record| (record.name.clone(), record))
-            .collect();
-        self.memory
-            .retain(|key, _| self.disk.contains_key(&key.filename()));
-        self.memory_bytes = self.memory.values().map(|record| record.bytes).sum();
+        self.disk = Inventory::from_records(self.store.records()?)?;
+        let disk = &self.disk;
+        self.memory.retain(|name| disk.contains(name));
         Ok(())
     }
     fn remove_record(&self, name: &str) -> io::Result<()> {
@@ -318,105 +485,34 @@ impl Cache {
             result => result,
         }
     }
-    fn forget_disk(&mut self, name: &str) {
-        if let Some(record) = self.disk.remove(name) {
-            self.disk_bytes -= record.bytes;
-        }
-    }
     fn remember_disk(&mut self, name: &str) -> io::Result<()> {
         let record = self
             .store
             .record(name)?
             .ok_or_else(|| invalid("Thumbnail cache record disappeared"))?;
-        self.forget_disk(name);
-        self.disk_bytes = self
-            .disk_bytes
-            .checked_add(record.bytes)
-            .ok_or_else(|| invalid("Thumbnail cache byte total overflow"))?;
-        self.disk.insert(name.into(), record);
-        Ok(())
+        self.disk.insert(record)
     }
     fn evict_disk(&mut self, extra: u64, count: usize) -> io::Result<()> {
-        while self.disk_bytes.saturating_add(extra) > self.disk_limit
-            || self
-                .disk
-                .values()
-                .map(|record| record.copies)
-                .sum::<usize>()
-                + count
-                > MAX_RECORDS
+        while self.disk.bytes.saturating_add(extra) > self.disk_limit
+            || self.disk.copies + count > self.record_limit
         {
-            let Some(name) = self
-                .disk
-                .values()
-                .min_by_key(|record| record.modified)
-                .map(|record| record.name.clone())
-            else {
+            let Some(name) = self.disk.oldest() else {
                 break;
             };
             self.remove_record(&name)?;
-            self.forget_disk(&name);
+            self.disk.remove(&name);
             // Memory must not keep an artifact that was evicted from persistent storage.
-            if let Some(key) = self
-                .memory
-                .keys()
-                .find(|key| key.filename() == name)
-                .cloned()
-            {
-                self.memory_bytes -= self
-                    .memory
-                    .remove(&key)
-                    .expect("existing memory record")
-                    .bytes;
-            }
+            self.memory.remove(&name);
         }
         Ok(())
     }
-    fn remember(&mut self, key: Key, frame: Arc<Frame>) {
-        let bytes = frame.rgba.len()
-            + key.encoded.len()
-            + key.version.len()
-            + std::mem::size_of::<MemoryRecord>();
-        if let Some(previous) = self.memory.remove(&key) {
-            self.memory_bytes -= previous.bytes;
-        }
-        if bytes > self.memory_limit {
-            return;
-        }
-        while self.memory_bytes + bytes > self.memory_limit {
-            let Some(oldest) = self
-                .memory
-                .iter()
-                .min_by_key(|(_, record)| record.used)
-                .map(|(key, _)| key.clone())
-            else {
-                break;
-            };
-            self.memory_bytes -= self
-                .memory
-                .remove(&oldest)
-                .expect("existing memory record")
-                .bytes;
-        }
-        self.tick = self.tick.wrapping_add(1);
-        self.memory_bytes += bytes;
-        self.memory.insert(
-            key,
-            MemoryRecord {
-                frame,
-                used: self.tick,
-                bytes,
-            },
-        );
-    }
 }
 
-fn sum_record_bytes(records: &[Record]) -> io::Result<u64> {
-    records.iter().try_fold(0u64, |total, record| {
-        total
-            .checked_add(record.bytes)
-            .ok_or_else(|| invalid("Thumbnail cache byte total overflow"))
-    })
+/// One lookup's view of the shared transaction.
+struct Lookup<'a> {
+    synchronized: bool,
+    transaction: &'a mut Transaction,
+    advanced: bool,
 }
 
 fn decode_record(key: &Key, bytes: &[u8]) -> io::Result<Frame> {
@@ -446,3 +542,7 @@ fn decode_record(key: &Key, bytes: &[u8]) -> io::Result<Frame> {
 fn invalid(message: &str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)
 }
+
+#[cfg(test)]
+#[path = "cache_tests.rs"]
+mod tests;
