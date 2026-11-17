@@ -1,7 +1,7 @@
 #![allow(unsafe_code)]
 use midnight_plugin_sdk::api::{abi, codec, messages};
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     mem::MaybeUninit,
     sync::Mutex,
 };
@@ -28,6 +28,9 @@ struct State {
     pub base: u64,
     pub max_read: usize,
     pub reads: Vec<messages::ReadAt>,
+    /// Host-side cancellation, observed only through the `cancelled` callback.
+    cancelled: HashSet<u64>,
+    polls: usize,
 }
 pub struct Host {
     state: Box<Mutex<State>>,
@@ -46,8 +49,11 @@ unsafe extern "C" fn schedule(id: u64, work: *const abi::Work) -> u32 {
         .push_back(unsafe { *work });
     abi::OK
 }
-unsafe extern "C" fn cancelled(_: u64, _: u64) -> u32 {
-    0
+/// Like the real host, every poll takes the host state lock.
+unsafe extern "C" fn cancelled(id: u64, request: u64) -> u32 {
+    let mut state = unsafe { state(id) }.lock().unwrap();
+    state.polls += 1;
+    u32::from(state.cancelled.contains(&request))
 }
 unsafe extern "C" fn notify(_: u64) {}
 unsafe extern "C" fn diagnostic(_: u64, _: u32, _: abi::ByteSlice) {}
@@ -112,6 +118,8 @@ impl Host {
             base: 0,
             max_read: 65536,
             reads: Vec::new(),
+            cancelled: HashSet::new(),
+            polls: 0,
         }));
         let host = abi::HostApi {
             header: abi::Header {
@@ -158,16 +166,40 @@ impl Host {
     pub fn reads(&self) -> Vec<messages::ReadAt> {
         self.state.lock().unwrap().reads.clone()
     }
+    /// Number of host cancellation polls so far.
+    pub fn polls(&self) -> usize {
+        self.state.lock().unwrap().polls
+    }
+    /// Report a request as cancelled through the host callback only, without
+    /// the plugin's `cancel` export.
+    pub fn cancel_in_host(&self, id: u64) {
+        self.state.lock().unwrap().cancelled.insert(id);
+    }
+    /// Run until at most `steps` jobs or service replies have been processed.
+    pub fn run_steps(&mut self, steps: usize) -> Vec<Event> {
+        let mut events = Vec::new();
+        for _ in 0..steps {
+            if !self.run_one() {
+                break;
+            }
+            self.drain(&mut events);
+        }
+        events
+    }
     pub fn submit<T: codec::Model>(&mut self, kind: u32, value: &T) -> u64 {
         self.submit_bytes(kind, &codec::encode(value).unwrap())
     }
     pub fn submit_bytes(&mut self, kind: u32, payload: &[u8]) -> u64 {
+        self.submit_generation(kind, payload, 2)
+    }
+    /// Submit within session 7 under an explicit envelope generation.
+    pub fn submit_generation(&mut self, kind: u32, payload: &[u8], generation: u64) -> u64 {
         let id = self.next;
         self.next += 1;
         let request = abi::Request {
             id,
             session: 7,
-            generation: 2,
+            generation,
             kind,
             flags: 0,
             payload: slice(payload),

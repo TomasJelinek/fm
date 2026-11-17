@@ -32,16 +32,18 @@ fn host(mode: u16) -> Host {
 
 #[test]
 fn ten_gigabyte_first_view_and_distant_seek_only_read_bounded_windows() {
+    let _exclusive = meter::exclusive();
     for mode in [MODE_TEXT, MODE_DOCUMENT] {
         let baseline = meter::start();
         let started = std::time::Instant::now();
         let mut host = host(mode);
+        // Open reads only enough bytes to recognize a byte order mark.
         assert_eq!(
             host.reads()
                 .iter()
                 .map(|read| u64::from(read.length))
                 .sum::<u64>(),
-            512
+            4
         );
         for anchor in [0, 9_000_000_000, 4096, LENGTH - 8192] {
             let before = host.reads().len();
