@@ -76,15 +76,16 @@ impl Directory {
             ));
         }
         // Native rename needs no DACL-query rights. Acquire them only for the
-        // cross-volume recovery path. ReOpenFile cannot reopen directories;
-        // compare the new handle to the retained identity before trusting its DACL.
-        use std::os::windows::fs::OpenOptionsExt;
-        let held = std::fs::OpenOptions::new()
-            .access_mode(READ_CONTROL | FILE_READ_ATTRIBUTES)
-            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
-            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
-            .open(&self.path)
-            .map_err(|e| error(&self.path, e))?;
+        // cross-volume recovery path. ReOpenFile cannot reopen directories, so reopen
+        // the retained object through an empty handle-relative name: never the display
+        // path, which may end in a junction or symbolic link to this directory. Compare
+        // the new handle to the retained identity before trusting its DACL.
+        let held = native::reopen(
+            &self.file,
+            READ_CONTROL | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        )
+        .map_err(|e| error(&self.path, e))?;
         if identity(&held, &self.path)? != self.identity {
             return Err(invalid(
                 &self.path,

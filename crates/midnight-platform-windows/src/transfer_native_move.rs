@@ -38,10 +38,13 @@ pub(super) fn attempt_with(
     checked(cancel, &capture.entry.item.path)?;
     validate_name(name).map_err(|e| error(target.path(), e))?;
     capture.expected.revalidate(cancel)?;
-    let directory = pin_destination(target, cancel)?;
-    if capture.entry.identity.device != directory.identity().device {
+    // A destination reached through a volume mount point or a junction to another volume
+    // is decided before pinning, so it enters the verified cross-device route.
+    target.revalidate(cancel)?;
+    if capture.entry.identity.device != target.identity().device {
         return Ok(Outcome::CrossDevice);
     }
+    let directory = pin_destination(target, cancel)?;
     let same_parent = capture.parent.identity() == directory.identity();
     if same_parent && name == capture.name {
         return Ok(Outcome::SameEntry);
@@ -113,20 +116,16 @@ fn pin_destination(
 ) -> Result<destination::Directory, FsError> {
     target.revalidate(cancel)?;
     let path = target.path();
+    // The prepared destination identity was captured through a following open (a panel
+    // may sit inside a junction or mount point). Open the same way; the identity match
+    // proves this is exactly the prepared directory object, never a substituted target.
     let file = OpenOptions::new()
         .access_mode(FILE_READ_ATTRIBUTES | FILE_TRAVERSE)
         .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
-        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
         .open(path)
         .map_err(|e| error(path, e))?;
-    if identity(&file, path)? != target.identity()
-        || file
-            .metadata()
-            .map_err(|e| error(path, e))?
-            .file_attributes()
-            & FILE_ATTRIBUTE_REPARSE_POINT
-            != 0
-    {
+    if identity(&file, path)? != target.identity() {
         return Err(invalid(path, "destination authority changed while pinning"));
     }
     target.revalidate(cancel)?;
@@ -156,13 +155,14 @@ fn exact_alias(
         return Ok(false);
     }
     // A file ID identifies the object, not its individual hard-link names. Only
-    // this ambiguous case needs directory-name enumeration, never file content.
-    let held = OpenOptions::new()
-        .access_mode(FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES)
-        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
-        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
-        .open(directory.path())
-        .map_err(|e| error(directory.path(), e))?;
+    // this ambiguous case needs directory-name enumeration, never file content. Reopen
+    // the pinned directory object itself, never its (possibly junction) display path.
+    let held = native::reopen(
+        directory.native_file(),
+        FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+    )
+    .map_err(|e| error(directory.path(), e))?;
     if identity(&held, directory.path())? != directory.identity() {
         return Err(invalid(
             directory.path(),

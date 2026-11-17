@@ -504,6 +504,55 @@ fn retained_validation_survives_source_capture_and_proves_published_binding() {
     guard.revalidate(&cancel).unwrap();
 }
 
+#[test]
+fn native_move_and_recovery_checks_accept_directories_reached_through_a_junction() {
+    use midnight_core::{TransferNativeMoveOutcome, TransferSource};
+    let (_temp, parent) = fixture();
+    let real = parent.join("real target 文档");
+    fs::create_dir(&real).unwrap();
+    let junction = parent.join("junction to target");
+    fs::create_dir(&junction).unwrap();
+    crate::test_fixtures::create_junction(&junction, &real).unwrap();
+    let source_path = parent.join("source");
+    fs::write(&source_path, b"moved through a junction").unwrap();
+    let cancel = Cancellation::default();
+    let filesystem = crate::WindowsFileSystem::new(None);
+    // The panel sits inside the junction: the destination resolves to its target.
+    let destination = filesystem
+        .prepare_transfer_destination(&junction, &cancel)
+        .unwrap();
+    let (source, capture) = prepare_native(&source_path, &cancel).unwrap();
+    let expected = source.entry().identity;
+    let outcome = capture
+        .try_native_move(
+            destination.as_ref(),
+            std::ffi::OsStr::new("moved"),
+            None,
+            &cancel,
+        )
+        .unwrap();
+    assert!(matches!(outcome, TransferNativeMoveOutcome::Moved { .. }));
+    drop(source);
+    drop(capture);
+    assert_eq!(
+        fs::read(real.join("moved")).unwrap(),
+        b"moved through a junction"
+    );
+    // A source whose displayed parent is the junction keeps its recovery checks: the
+    // parent DACL is read from the retained target object, not the junction itself.
+    let (source, capture) = prepare_native(&junction.join("moved"), &cancel).unwrap();
+    assert_eq!(source.entry().identity, expected);
+    capture.preflight_finalization(&cancel).unwrap();
+    drop(source);
+    drop(capture);
+    assert_eq!(fs::read_dir(&real).unwrap().count(), 1);
+    fs::remove_dir(&junction).unwrap();
+    assert!(
+        real.join("moved").exists(),
+        "removing the link keeps its target"
+    );
+}
+
 fn fixture() -> (tempfile::TempDir, PathBuf) {
     use midnight_core::{TransferPublication, TransferReplacementPolicy};
     use std::io::Write;
