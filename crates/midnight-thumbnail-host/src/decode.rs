@@ -193,14 +193,7 @@ pub fn decode_cooperative(
         broker
             .join()
             .map_err(|_| io::Error::other("Thumbnail broker panicked"))?;
-        match (result, exited) {
-            (Err(error), Err(exit)) if error.kind() == io::ErrorKind::UnexpectedEof => {
-                Err(io::Error::other(format!(
-                    "Thumbnail worker closed its protocol stream: {exit}"
-                )))
-            }
-            (result, _) => result,
-        }
+        explain_closed_stream(result, exited)
     })?;
     source.validate()?;
     if source.version() != version {
@@ -211,6 +204,26 @@ pub fn decode_cooperative(
 
 fn cancellation_error() -> io::Error {
     io::Error::new(io::ErrorKind::Interrupted, "Thumbnail request cancelled")
+}
+
+/// A protocol stream that ended early is reported with the worker's exit, as `Process::wait`
+/// reports it on every platform: `Ok(false)` is a nonzero exit status (also after the kill
+/// above), `Err` a wait that could not confirm the exit. A clean exit keeps the stream error.
+fn explain_closed_stream<T>(result: io::Result<T>, exited: io::Result<bool>) -> io::Result<T> {
+    match (result, exited) {
+        (Err(error), exited)
+            if error.kind() == io::ErrorKind::UnexpectedEof && !matches!(exited, Ok(true)) =>
+        {
+            let exit = match exited {
+                Ok(_) => "it exited with a nonzero status".to_owned(),
+                Err(wait) => format!("its exit could not be confirmed: {wait}"),
+            };
+            Err(io::Error::other(format!(
+                "Thumbnail worker closed its protocol stream; {exit}"
+            )))
+        }
+        (result, _) => result,
+    }
 }
 
 #[cfg(test)]
@@ -251,5 +264,37 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::Interrupted);
+    }
+
+    fn closed_stream() -> io::Result<()> {
+        Err(io::ErrorKind::UnexpectedEof.into())
+    }
+
+    #[test]
+    fn a_closed_stream_is_explained_by_a_nonzero_exit_or_an_unconfirmed_wait() {
+        // Process::wait reports a nonzero exit as Ok(false) on Windows and Linux alike.
+        let error = explain_closed_stream(closed_stream(), Ok(false)).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "Thumbnail worker closed its protocol stream; it exited with a nonzero status"
+        );
+        let wait = io::Error::other("wait failed");
+        let error = explain_closed_stream(closed_stream(), Err(wait)).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "Thumbnail worker closed its protocol stream; its exit could not be confirmed: \
+             wait failed"
+        );
+    }
+
+    #[test]
+    fn other_outcomes_are_not_rewritten_by_the_exit() {
+        // A clean exit leaves the stream error itself.
+        let error = explain_closed_stream(closed_stream(), Ok(true)).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::UnexpectedEof);
+        // Cancellation keeps its kind: the service uses it to skip the failure backoff.
+        let cancelled = explain_closed_stream::<()>(Err(cancellation_error()), Ok(false));
+        assert_eq!(cancelled.unwrap_err().kind(), io::ErrorKind::Interrupted);
+        assert_eq!(explain_closed_stream(Ok(7), Ok(false)).unwrap(), 7);
     }
 }
