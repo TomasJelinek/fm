@@ -37,6 +37,14 @@ impl Wire {
     }
 }
 
+/// Why the actor stopped when no error stopped it.
+pub(super) enum End {
+    /// The session was closed, or the consumer sent Close.
+    Requested,
+    /// The browser ended the session with the protocol's Closed event.
+    Browser,
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn run(
     provider: Provider,
@@ -48,7 +56,7 @@ pub(super) fn run(
     closed: &Arc<AtomicBool>,
     requested_document: &Arc<AtomicU64>,
     wake: &Arc<dyn Fn() -> bool + Send + Sync>,
-) -> Result<(), String> {
+) -> Result<End, String> {
     provider.validate().map_err(|error| error.to_string())?;
     let browser =
         midnight_worker_platform::browser::spawn_with_host_shortcuts(&provider.executable)
@@ -143,7 +151,7 @@ pub(super) fn run(
                             viewport = next;
                             wire.send(api::CommandKind::Resize(next))?;
                         }
-                        api::CommandKind::Close => return Ok(()),
+                        api::CommandKind::Close => return Ok(End::Requested),
                         other => wire.send(other)?,
                     }
                 }
@@ -207,7 +215,7 @@ pub(super) fn run(
                         }
                     }
                     api::EventKind::Ready => ready.store(true, Ordering::Release),
-                    api::EventKind::Closed => return Ok(()),
+                    api::EventKind::Closed => return Ok(End::Browser),
                     _ => {}
                 }
                 output
@@ -216,7 +224,7 @@ pub(super) fn run(
                     .put(event)?;
                 wake();
             }
-            Ok(())
+            Ok(End::Requested)
         })();
         // Closing the broker's entire process tree releases blocked pipe reads/writes.
         stopping.store(true, Ordering::Release);

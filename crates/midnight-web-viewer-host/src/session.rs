@@ -49,6 +49,46 @@ impl Output {
             },
         });
     }
+    /// End the output of a session the browser closed: the queued events (an error among
+    /// them stays ahead), then the newest pending frame, then the protocol's Closed event.
+    /// That is the session's last output, so it needs no room in the queue's bound.
+    fn closed(&mut self, document: u64) {
+        self.events.extend(self.frame.take());
+        self.events.push_back(api::Event {
+            header: api::Header {
+                session: 1,
+                document,
+                sequence: 1,
+            },
+            kind: api::EventKind::Closed,
+        });
+    }
+}
+
+/// Publish how the actor stopped and wake the consumer before marking the session stopped,
+/// so the end is drainable once `send` refuses commands. A close the consumer requested
+/// publishes nothing, and neither does a stop after a failed send, which already published
+/// its reason.
+fn finish(
+    result: Result<actor::End, String>,
+    output: &Mutex<Output>,
+    stopped: &AtomicBool,
+    document: &AtomicU64,
+    wake: &dyn Fn() -> bool,
+) {
+    if !matches!(result, Ok(actor::End::Requested)) && !stopped.load(Ordering::Acquire) {
+        if let Ok(mut output) = output.lock() {
+            let document = document.load(Ordering::Acquire);
+            match result {
+                // Only diagnostics, never document contents or URLs, reach presentation.
+                Err(message) => output.terminal(document, message),
+                // An idle consumer learns of the closure without sending another command.
+                Ok(_) => output.closed(document),
+            }
+        }
+        wake();
+    }
+    stopped.store(true, Ordering::Release);
 }
 
 /// Bounded nonblocking command endpoint. Construction, destruction and drain belong on the
@@ -101,30 +141,7 @@ impl Session {
                     &requested_document,
                     &actor_wake,
                 );
-                // A requested close needs no diagnostic, and a failed send already published
-                // the reason; a transport error caused by that stop must not replace it.
-                if let Err(message) = result
-                    && !stopped.load(Ordering::Acquire)
-                {
-                    // Only diagnostics, never document contents or URLs, are sent to presentation.
-                    if let Ok(mut output) = events.lock() {
-                        output.frame = None;
-                        output.events.clear();
-                        let _ = output.put(api::Event {
-                            header: api::Header {
-                                session: 1,
-                                document: 1,
-                                sequence: 1,
-                            },
-                            kind: api::EventKind::Error {
-                                code: api::ErrorCode::Runtime,
-                                message,
-                            },
-                        });
-                    }
-                    actor_wake();
-                }
-                stopped.store(true, Ordering::Release);
+                finish(result, &events, &stopped, &requested_document, &*actor_wake);
             })
             .map_err(|error| error.to_string())?;
         Ok(Self {
@@ -162,7 +179,11 @@ impl Session {
             }
             if let Ok(mut output) = self.output.lock() {
                 output.frame = None;
-                output.events.clear();
+                // A browser that closed since the check above ended the session, not only
+                // the replaced document: its Closed event stays.
+                output
+                    .events
+                    .retain(|event| matches!(event.kind, api::EventKind::Closed));
             }
         }
         let sequence = self
@@ -204,13 +225,23 @@ impl Session {
         (self.wake)();
     }
 
+    /// Take queued output in order, then the newest frame. When the session stops for a
+    /// failure, one terminal error replaces its pending output; when the browser closes it,
+    /// the protocol's Closed event follows that output. Either is published, and the wake
+    /// called, before `send` refuses commands. A close the consumer requests publishes
+    /// nothing.
     pub fn drain(&self, maximum: usize) -> Vec<api::Event> {
         let Ok(mut output) = self.output.lock() else {
             return Vec::new();
         };
         let document = self.document.load(Ordering::Acquire);
+        // The session's end, like an error, outlives a replaced document.
         output.events.retain(|event| {
-            event.header.document == document || matches!(event.kind, api::EventKind::Error { .. })
+            event.header.document == document
+                || matches!(
+                    event.kind,
+                    api::EventKind::Error { .. } | api::EventKind::Closed
+                )
         });
         if output
             .frame
@@ -265,42 +296,28 @@ mod tests {
             kind,
         }
     }
-    #[test]
-    fn frame_mailbox_retains_only_latest_owned_pixels() {
-        let mut output = Output::default();
-        for sequence in 1..=300 {
-            output
-                .put(event(
-                    sequence,
-                    api::EventKind::Frame(api::Frame {
-                        viewport_revision: 1,
-                        acknowledged_input: 1,
-                        width: 1,
-                        height: 1,
-                        rgba: vec![0; 4],
-                    }),
-                ))
-                .unwrap();
-        }
-        assert_eq!(output.frame.as_ref().unwrap().header.sequence, 300);
-        assert!(output.events.is_empty());
+    fn frame(sequence: u64) -> api::Event {
+        event(
+            sequence,
+            api::EventKind::Frame(api::Frame {
+                viewport_revision: 1,
+                acknowledged_input: 1,
+                width: 1,
+                height: 1,
+                rgba: vec![0; 4],
+            }),
+        )
     }
-    #[test]
-    fn input_overflow_stops_the_session_with_a_drained_terminal_error() {
-        let woken = Arc::new(AtomicU64::new(0));
+    /// A session without an actor thread: `end` plays how its actor stops, and `woken`
+    /// counts its wakes.
+    fn idle(woken: &Arc<AtomicU64>, capacity: usize) -> Session {
         let count = woken.clone();
-        let output = Arc::new(Mutex::new(Output::default()));
-        output
-            .lock()
-            .unwrap()
-            .put(event(1, api::EventKind::Ready))
-            .unwrap();
-        let session = Session {
+        Session {
             input: Arc::new(Mutex::new(
-                midnight_web_viewer_sdk::CommandQueue::new(2).unwrap(),
+                midnight_web_viewer_sdk::CommandQueue::new(capacity).unwrap(),
             )),
             sequence: AtomicU64::new(1),
-            output,
+            output: Arc::new(Mutex::new(Output::default())),
             closed: Arc::new(AtomicBool::new(false)),
             document: Arc::new(AtomicU64::new(1)),
             wake: Arc::new(move || {
@@ -308,7 +325,126 @@ mod tests {
                 true
             }),
             thread: None,
-        };
+        }
+    }
+    fn end(session: &Session, result: Result<actor::End, String>) {
+        finish(
+            result,
+            &session.output,
+            &session.closed,
+            &session.document,
+            &*session.wake,
+        );
+    }
+    fn pending(session: &Session, events: impl IntoIterator<Item = api::Event>) {
+        let mut output = session.output.lock().unwrap();
+        for event in events {
+            output.put(event).unwrap();
+        }
+    }
+    fn kinds(session: &Session) -> Vec<api::EventKind> {
+        session
+            .drain(64)
+            .into_iter()
+            .map(|event| event.kind)
+            .collect()
+    }
+    fn runtime(message: &str) -> api::EventKind {
+        api::EventKind::Error {
+            code: api::ErrorCode::Runtime,
+            message: message.into(),
+        }
+    }
+    #[test]
+    fn frame_mailbox_retains_only_latest_owned_pixels() {
+        let mut output = Output::default();
+        for sequence in 1..=300 {
+            output.put(frame(sequence)).unwrap();
+        }
+        assert_eq!(output.frame.as_ref().unwrap().header.sequence, 300);
+        assert!(output.events.is_empty());
+    }
+    #[test]
+    fn a_browser_that_closes_itself_ends_the_output_once_and_wakes_the_consumer() {
+        let woken = Arc::new(AtomicU64::new(0));
+        let session = idle(&woken, 64);
+        pending(&session, [event(1, api::EventKind::Ready), frame(2)]);
+        end(&session, Ok(actor::End::Browser));
+        assert_eq!(
+            woken.load(Ordering::SeqCst),
+            1,
+            "an idle consumer learns of it"
+        );
+        assert!(!session.send(api::CommandKind::Copy), "the session stopped");
+        assert_eq!(
+            kinds(&session),
+            [api::EventKind::Ready, frame(2).kind, api::EventKind::Closed],
+            "pending output, its newest frame included, precedes the end"
+        );
+        assert!(kinds(&session).is_empty(), "the end is published once");
+        assert_eq!(woken.load(Ordering::SeqCst), 1);
+    }
+    #[test]
+    fn a_browser_error_stays_ahead_of_the_closure_it_caused() {
+        let woken = Arc::new(AtomicU64::new(0));
+        let session = idle(&woken, 64);
+        let error = runtime("The document could not be opened");
+        pending(&session, [event(1, error.clone())]);
+        end(&session, Ok(actor::End::Browser));
+        assert_eq!(kinds(&session), [error, api::EventKind::Closed]);
+    }
+    #[test]
+    fn a_session_the_consumer_ends_publishes_no_closed_event() {
+        for (close, result) in [
+            (true, Ok(actor::End::Requested)),
+            // The consumer sent Close instead.
+            (false, Ok(actor::End::Requested)),
+            // The browser closed itself, or failed, while the consumer closed the session.
+            (true, Ok(actor::End::Browser)),
+            (true, Err("Chromium transport stopped".to_string())),
+        ] {
+            let woken = Arc::new(AtomicU64::new(0));
+            let session = idle(&woken, 64);
+            pending(&session, [event(1, api::EventKind::Ready)]);
+            if close {
+                session.close();
+            } else {
+                assert!(session.send(api::CommandKind::Close));
+            }
+            end(&session, result);
+            assert_eq!(woken.load(Ordering::SeqCst), 0, "nothing new to drain");
+            assert_eq!(kinds(&session), [api::EventKind::Ready]);
+            assert!(!session.send(api::CommandKind::Copy));
+        }
+    }
+    #[test]
+    fn a_policy_sent_while_the_browser_closes_keeps_the_end() {
+        let woken = Arc::new(AtomicU64::new(0));
+        let session = idle(&woken, 64);
+        // The actor published the end but has not marked the session stopped yet.
+        session.output.lock().unwrap().closed(1);
+        assert!(session.send(api::CommandKind::Policy(api::Policy::default())));
+        assert_eq!(
+            kinds(&session),
+            [api::EventKind::Closed],
+            "the replacement document's consumer still learns of the end"
+        );
+    }
+    #[test]
+    fn an_actor_failure_replaces_pending_output_with_its_reason() {
+        let woken = Arc::new(AtomicU64::new(0));
+        let session = idle(&woken, 64);
+        pending(&session, [event(1, api::EventKind::Ready), frame(2)]);
+        end(&session, Err("Chromium disconnected".into()));
+        assert_eq!(woken.load(Ordering::SeqCst), 1);
+        assert!(!session.send(api::CommandKind::Copy));
+        assert_eq!(kinds(&session), [runtime("Chromium disconnected")]);
+    }
+    #[test]
+    fn input_overflow_stops_the_session_with_a_drained_terminal_error() {
+        let woken = Arc::new(AtomicU64::new(0));
+        let session = idle(&woken, 2);
+        pending(&session, [event(1, api::EventKind::Ready)]);
         assert!(session.send(api::CommandKind::Copy));
         assert!(session.send(api::CommandKind::Copy));
         assert!(!session.send(api::CommandKind::Copy), "the queue is full");
@@ -321,6 +457,9 @@ mod tests {
             "a silently closed browser would keep reporting a transient busy queue"
         );
         assert!(!session.send(api::CommandKind::Copy));
+        // The actor stops after the failure, even if its browser closed itself meanwhile.
+        end(&session, Ok(actor::End::Browser));
+        assert!(kinds(&session).is_empty(), "no Closed follows the reason");
         assert_eq!(
             woken.load(Ordering::SeqCst),
             1,
