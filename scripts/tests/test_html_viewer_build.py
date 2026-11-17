@@ -321,12 +321,31 @@ class HtmlViewerBuildWindows(unittest.TestCase):
         self.assertIn("differs from its SDK receipt: libcef.dll", output)
 
     def test_target_override_must_be_an_absolute_plain_path_outside_the_sources(self):
-        for value in ("mh", r"D:\mh\..\other", r"D:\name with dot.", str(self.root / "plugins/target")):
+        values = ["mh", r"D:\mh\..\other", r"D:\name with dot.", str(self.root / "plugins/target")]
+        # One PowerShell process tries every value; the wrapper restores its environment.
+        (self.root / "values.json").write_text(json.dumps(values))
+        (self.root / "refusals.ps1").write_text(
+            "param([string]$Values, [string]$Results)\n"
+            "$messages = @()\n"
+            "foreach ($value in (Get-Content -LiteralPath $Values -Raw | ConvertFrom-Json)) {\n"
+            "    $env:MIDNIGHT_HTML_TARGET_DIR = $value\n"
+            "    try { & (Join-Path $PSScriptRoot 'scripts/build-html-viewer.ps1') -SdkConfig $env:HTML_TEST_CONFIG "
+            "-AppDirectory (Join-Path $PSScriptRoot '_build/debug') | Out-Null; $messages += $null }\n"
+            "    catch { $messages += $_.Exception.Message }\n"
+            "}\n"
+            "[IO.File]::WriteAllText($Results, (ConvertTo-Json @($messages) -Compress))\n")
+        result = subprocess.run(
+            [shutil.which("pwsh") or "powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
+             str(self.root / "refusals.ps1"), "-Values", str(self.root / "values.json"),
+             "-Results", str(self.root / "refusals.json")],
+            cwd=self.root, env=dict(self.environment, HTML_TEST_CONFIG=str(self.config)),
+            capture_output=True, text=True, timeout=120)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        messages = json.loads((self.root / "refusals.json").read_text(encoding="utf-8-sig"))
+        for value, message in zip(values, messages, strict=True):
             with self.subTest(value=value):
-                code, output, calls = self.build(MIDNIGHT_HTML_TARGET_DIR=value)
-                self.assertNotEqual(code, 0)
-                self.assertIn("MIDNIGHT_HTML_TARGET_DIR", output)
-                self.assertFalse(any("build" in call["arguments"] for call in calls))
+                self.assertIn("MIDNIGHT_HTML_TARGET_DIR", message or "")
+        self.assertFalse(self.log.exists(), "A refused target reached Cargo")
 
 
 class LinuxHtmlManifest(unittest.TestCase):
