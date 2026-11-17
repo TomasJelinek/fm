@@ -761,6 +761,20 @@ fn rename_and_permanent_delete_accept_a_stage_as_open_as_its_unprotected_parent(
     crate::ownership::simulation::with_mount_mode(0o777, || rename_and_delete_in(fixture.path()));
 }
 
+/// A refused staging directory is reported for the selected item, never for the
+/// hidden staging directory, which is gone.
+fn assert_refused_for(item: &Path, refused: midnight_core::FsError, kind: ErrorKind) {
+    assert_eq!(refused.kind, kind, "{refused}");
+    assert_eq!(refused.path, item, "{refused}");
+    assert!(
+        refused.message.starts_with(
+            "a private staging folder is needed beside the item, but it cannot be used: "
+        ),
+        "{refused}"
+    );
+    assert!(!refused.message.contains(".midnight-mutation"), "{refused}");
+}
+
 #[test]
 fn a_stage_wider_than_its_parent_is_refused_and_removed() {
     use std::os::unix::fs::PermissionsExt;
@@ -777,14 +791,46 @@ fn a_stage_wider_than_its_parent_is_refused_and_removed() {
     crate::ownership::simulation::with_mount_mode(0o777, || {
         for _ in 0..3 {
             let refused = prepared.rename(OsStr::new("renamed.jpg"), &cancel);
-            assert_eq!(refused.unwrap_err().kind, ErrorKind::Unsupported);
+            assert_refused_for(&original, refused.unwrap_err(), ErrorKind::Unsupported);
             let refused = prepared.delete(DeleteMode::Permanent, &cancel, &mut |_| {});
-            assert_eq!(refused.unwrap_err().kind, ErrorKind::Unsupported);
+            assert_refused_for(&original, refused.unwrap_err(), ErrorKind::Unsupported);
         }
     });
     assert_eq!(fs::read(&original).unwrap(), b"pixels");
     assert!(staging_residue(fixture.path()).is_empty());
     assert_eq!(fs::read_dir(fixture.path()).unwrap().count(), 1);
+}
+
+#[test]
+fn a_staging_folder_that_cannot_be_created_is_reported_for_the_item() {
+    use std::os::unix::fs::PermissionsExt;
+    let fixture = tempfile::tempdir().unwrap();
+    let original = fixture.path().join("photo.jpg");
+    fs::write(&original, b"pixels").unwrap();
+    let cancel = Cancellation::default();
+    let prepared = LinuxFileSystem::new(None)
+        .prepare(&original, &cancel)
+        .unwrap();
+    fs::set_permissions(fixture.path(), fs::Permissions::from_mode(0o500)).unwrap();
+    // Root and CAP_DAC_OVERRIDE write to read-only folders anyway.
+    if fs::create_dir(fixture.path().join("probe")).is_ok() {
+        fs::remove_dir(fixture.path().join("probe")).unwrap();
+        fs::set_permissions(fixture.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        eprintln!("SKIP staging creation failures: this process writes to read-only folders");
+        return;
+    }
+    let refused = prepared.rename(OsStr::new("renamed.jpg"), &cancel);
+    fs::set_permissions(fixture.path(), fs::Permissions::from_mode(0o700)).unwrap();
+    let refused = refused.unwrap_err();
+    assert_eq!(refused.kind, ErrorKind::PermissionDenied, "{refused}");
+    assert_eq!(refused.path, original, "{refused}");
+    assert!(
+        refused.message.starts_with(
+            "a private staging folder is needed beside the item, but it could not be created: "
+        ),
+        "{refused}"
+    );
+    assert_eq!(fs::read(&original).unwrap(), b"pixels");
 }
 
 #[test]
@@ -863,6 +909,7 @@ fn an_item_moved_by_a_capture_that_reported_failure_is_restored() {
 
 #[test]
 fn refused_staging_directories_are_removed_and_the_source_is_untouched() {
+    use crate::ownership::simulation::with_foreign_owner;
     let fixture = tempfile::tempdir().unwrap();
     let original = fixture.path().join("photo.jpg");
     fs::write(&original, b"pixels").unwrap();
@@ -871,14 +918,11 @@ fn refused_staging_directories_are_removed_and_the_source_is_untouched() {
         .prepare(&original, &cancel)
         .unwrap();
     for _ in 0..3 {
-        let refused = crate::ownership::simulation::with_foreign_owner(|| {
-            prepared.rename(OsStr::new("renamed.jpg"), &cancel)
-        });
-        assert_eq!(refused.unwrap_err().kind, ErrorKind::PermissionDenied);
-        let refused = crate::ownership::simulation::with_foreign_owner(|| {
-            prepared.delete(DeleteMode::Permanent, &cancel, &mut |_| {})
-        });
-        assert_eq!(refused.unwrap_err().kind, ErrorKind::PermissionDenied);
+        let refused = with_foreign_owner(|| prepared.rename(OsStr::new("renamed.jpg"), &cancel));
+        assert_refused_for(&original, refused.unwrap_err(), ErrorKind::PermissionDenied);
+        let refused =
+            with_foreign_owner(|| prepared.delete(DeleteMode::Permanent, &cancel, &mut |_| {}));
+        assert_refused_for(&original, refused.unwrap_err(), ErrorKind::PermissionDenied);
     }
     assert_eq!(fs::read(&original).unwrap(), b"pixels");
     assert!(staging_residue(fixture.path()).is_empty());

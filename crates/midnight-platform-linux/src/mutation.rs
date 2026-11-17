@@ -409,6 +409,20 @@ impl PreparedMutation for Prepared {
     }
 }
 
+/// Rename, permanent Delete and Trash move the item through a private staging
+/// directory beside it. The error for a staging directory that `problem`
+/// prevents names the item, not the hidden staging directory.
+fn staging_unavailable(prepared: &Prepared, problem: &str, cause: io::Error) -> FsError {
+    FsError {
+        operation: OPERATION,
+        path: prepared.item.path.clone(),
+        message: format!(
+            "a private staging folder is needed beside the item, but it {problem}: {cause}"
+        ),
+        kind: cause.kind(),
+    }
+}
+
 /// The mutation itself completed; only removing its empty private staging
 /// directory failed. The error states both facts and the residual path.
 fn completed_with_residue(completed: &str, mut cleanup: FsError) -> FsError {
@@ -432,12 +446,18 @@ impl Staged {
     fn create(prepared: &Prepared) -> Result<Self, FsError> {
         loop {
             let name = OsString::from(unique_name(".midnight-mutation"));
-            let path = prepared.parent_path.join(&name);
             match mkdirat(&*prepared.parent, &name, Mode::RWXU) {
                 Ok(()) => {}
                 Err(rustix::io::Errno::EXIST) => continue,
-                Err(e) => return Err(native_error(&path, e)),
+                Err(e) => {
+                    return Err(staging_unavailable(
+                        prepared,
+                        "could not be created",
+                        e.into(),
+                    ));
+                }
             }
+            let path = prepared.parent_path.join(&name);
             return Self::adopt(prepared, name, path);
         }
     }
@@ -445,24 +465,20 @@ impl Staged {
     /// Pins the staging directory just created. Where the filesystem cannot store
     /// 0700, mount-provided permissions are accepted only as
     /// `crate::ownership::check_created_directory` allows (never wider than the
-    /// parent); a directory refused after creation is removed rather than left
-    /// behind, or reported with its path.
+    /// parent). A refusal names the item; the directory is removed rather than
+    /// left behind, or reported with its path.
     fn adopt(prepared: &Prepared, name: OsString, path: PathBuf) -> Result<Self, FsError> {
         let mut pinned = None;
-        let adopted = (|| -> Result<(File, Identity), FsError> {
-            let directory = File::from(
-                openat(
-                    &*prepared.parent,
-                    &name,
-                    DIRECTORY_FLAGS | OFlags::NOFOLLOW,
-                    Mode::empty(),
-                )
-                .map_err(|e| native_error(&path, e))?,
-            );
-            let identity = Identity::of(&directory, &path)?;
+        let adopted = (|| -> io::Result<(File, Identity)> {
+            let directory = File::from(openat(
+                &*prepared.parent,
+                &name,
+                DIRECTORY_FLAGS | OFlags::NOFOLLOW,
+                Mode::empty(),
+            )?);
+            let identity = Identity::from_stat(&fstat(&directory)?);
             pinned = Some((identity.device, identity.inode));
-            crate::ownership::check_created_directory(&*prepared.parent, &directory)
-                .map_err(|e| FsError::from_io(OPERATION, &path, e))?;
+            crate::ownership::check_created_directory(&*prepared.parent, &directory)?;
             Ok((directory, identity))
         })();
         match adopted {
@@ -473,7 +489,8 @@ impl Staged {
                 path,
                 identity,
             }),
-            Err(mut failure) => {
+            Err(refusal) => {
+                let mut failure = staging_unavailable(prepared, "cannot be used", refusal);
                 if let Err(cleanup) =
                     crate::ownership::remove_refused_directory(&*prepared.parent, &name, pinned)
                 {
