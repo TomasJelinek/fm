@@ -616,7 +616,8 @@ impl Mount {
         if cancelled() {
             return Err(interrupted());
         }
-        // The exchange never returns content longer than requested (keeps_wire_rules).
+        // The exchange never returns content longer than requested: keeps_wire_rules
+        // checks protocol 1, and protocols 2/3 read through a host-bounded lease.
         match self.exchange_read(None, Some(cancelled), |request| Message::Read {
             request,
             entry,
@@ -633,11 +634,13 @@ impl Mount {
         }
     }
 }
-/// Wire rules (PROTOCOL.md) that a terminal reply keeps for its own request. A listing
-/// page holds members of the listed directory in increasing ID order after the
-/// request's cursor, member IDs begin at 2, and only a final page may be empty.
-/// Content never exceeds the requested length; staged protocols receive content
-/// through a lease that the host bounds instead.
+/// Whether a terminal reply keeps the wire rules of its own request. The wire
+/// reference (filesystem-api/PROTOCOL.md) requires member IDs from 2 in increasing
+/// order, past the request's cursor, and content no longer than requested. The host
+/// listing contract (docs/developer/FILESYSTEM_API.md) adds that each member belongs
+/// to the listed directory and is not that directory, and that only a final page may
+/// be empty. Staged protocols receive content through a lease that the host bounds
+/// instead.
 fn keeps_wire_rules(operation: &Message, reply: &Message) -> bool {
     match (operation, reply) {
         (
@@ -730,9 +733,10 @@ impl ArchiveMount for Mount {
         })
     }
     /// Each page is one bounded exchange. Cancellation ends the listing between pages
-    /// and discards an in-flight page, rather than terminating a worker that other tabs,
-    /// viewers and jobs share. The idle-progress watchdog still ends a stuck worker, and
-    /// a page that breaks a wire rule fails its exchange, which ends the worker too.
+    /// and discards a conforming in-flight page, rather than terminating a worker that
+    /// other tabs, viewers and jobs share. The idle-progress watchdog still ends a stuck
+    /// worker, and a page that breaks a wire rule fails its exchange, which ends the
+    /// worker too.
     fn list(&self, directory: u64, cancel: &Cancellation) -> Result<Vec<ArchiveNode>, FsError> {
         let interrupted = || {
             FsError::from_io(
@@ -763,6 +767,8 @@ impl ArchiveMount for Mount {
                     io::ErrorKind::InvalidData.into(),
                 ));
             };
+            // exchange_read rejects an empty page that announces more, so every page
+            // that continues the listing advances the cursor.
             for node in entries {
                 names = names
                     .saturating_add(node.name.len())

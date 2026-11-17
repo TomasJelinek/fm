@@ -817,12 +817,22 @@ fn cancelling_a_listing_does_not_hide_a_page_that_breaks_wire_rules() {
             protocol,
             listing_then_next(vec![(vec![member(2, 3)], false)]),
         );
-        // The request token is cancelled while the page exchange is in flight.
+        // The request token is cancelled while the page exchange is in flight. The
+        // violation, not the cancellation, decides the result.
         fixture
             .source
             .cancel_on_validation
             .store(1, Ordering::SeqCst);
-        assert!(fixture.mount.list(1, &fixture.source.token).is_err());
+        assert_eq!(
+            fixture
+                .mount
+                .list(1, &fixture.source.token)
+                .unwrap_err()
+                .kind,
+            io::ErrorKind::InvalidData,
+            "{protocol:?}"
+        );
+        assert!(fixture.source.token.is_cancelled(), "{protocol:?}");
         assert_worker_ended(&fixture, &format!("{protocol:?}"));
     }
 }
@@ -846,7 +856,11 @@ fn protocol_one_content_longer_than_requested_ends_the_shared_worker() {
     assert_worker_ended(&fixture, "read");
     // The brokered source read cancels this read mid-exchange, which hides nothing.
     let fixture = Fixture::new(Protocol::V1, vec![source_read(), oversized, next_page(2)]);
-    assert!(fixture.read().is_err());
+    assert_eq!(
+        fixture.read().unwrap_err().kind,
+        io::ErrorKind::InvalidData,
+        "cancelled read"
+    );
     assert!(fixture.source.cancelled.load(Ordering::Acquire));
     assert_worker_ended(&fixture, "cancelled read");
 }
