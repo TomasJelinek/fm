@@ -708,10 +708,14 @@ impl Worker {
         {
             self.emit(TreeEvent::Published(publication));
         }
-        for notice in [Session::take_recursive_notice, Session::take_branch_notice] {
-            let Some(mut event) = self.session.as_mut().and_then(notice) else {
-                continue;
-            };
+        // Bounded: emitting can apply only a maintenance completion, which adds no
+        // notice, and a failed session ends the loop.
+        let take = |session: &mut Session| {
+            session
+                .take_recursive_notice()
+                .or_else(|| session.take_branch_notice())
+        };
+        while let Some(mut event) = self.session.as_mut().and_then(take) {
             // The UI accepts row diagnostics only for the exact emitted view.
             // A newer private projection may still be coalesced behind its Commit.
             if let TreeEvent::Rejected { stamp, .. } = &mut event

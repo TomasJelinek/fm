@@ -90,9 +90,10 @@ pub(crate) struct Session {
     recursive: Option<recursive::Walk>,
     recursive_batch: Option<recursive::Batch>,
     recursive_notice: Option<midnight_core::TreeEvent>,
-    // An explicit branch request that could not be admitted. It is a row
-    // diagnostic, never a session failure.
-    branch_notice: Option<midnight_core::TreeEvent>,
+    // Explicit branch requests that could not start or be installed, oldest
+    // first. Row diagnostics, never session failures. A completion and the next
+    // request can both add one before the worker flushes them.
+    branch_notices: VecDeque<midnight_core::TreeEvent>,
     recursive_publication: bool,
     watch_cache: HashMap<BranchId, (u64, Arc<crate::watch::tree::ScopeTarget>)>,
     watch_failure: Option<watch_scope::Failure>,
@@ -460,7 +461,7 @@ impl Session {
             recursive: None,
             recursive_batch: None,
             recursive_notice: None,
-            branch_notice: None,
+            branch_notices: VecDeque::new(),
             recursive_publication: false,
             watch_cache: HashMap::new(),
             watch_failure: None,
@@ -849,17 +850,23 @@ impl Session {
             self.versions.remove(&pending.branch);
         }
         if pending.kind != TreeRequest::Probe {
-            self.branch_notice = Some(midnight_core::TreeEvent::Rejected {
-                stamp: self.projection.stamp,
-                request: pending.request,
-                row,
-                error: crate::tree_diagnostics::diagnostic(&self.reports, error),
-            });
+            // Bounded like the request queue; the worker drains it after every pump.
+            if self.branch_notices.len() >= QUEUE_CAPACITY {
+                self.branch_notices.pop_front();
+            }
+            self.branch_notices
+                .push_back(midnight_core::TreeEvent::Rejected {
+                    stamp: self.projection.stamp,
+                    request: pending.request,
+                    row,
+                    error: crate::tree_diagnostics::diagnostic(&self.reports, error),
+                });
         }
     }
 
+    /// The oldest unreported row rejection.
     pub(crate) fn take_branch_notice(&mut self) -> Option<midnight_core::TreeEvent> {
-        self.branch_notice.take()
+        self.branch_notices.pop_front()
     }
 
     pub(crate) fn apply(

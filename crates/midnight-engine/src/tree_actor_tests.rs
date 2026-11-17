@@ -444,10 +444,10 @@ fn viewport_checks_do_not_displace_explicit_work_or_expand_the_queue_limit() {
     );
 }
 
-#[test]
-fn branch_requests_at_the_depth_limit_stay_local_to_their_row() {
-    let mut fixture = fixture();
-    // z-parent is at model depth 1; deep-362 ends the chain at depth 64.
+/// Expand z-parent (model depth 1) and its only descendants down to deep-362 at
+/// model depth 64, where no listing may start. Returns the acknowledged view and
+/// that deepest row.
+fn expand_to_depth_limit(fixture: &mut Fixture) -> (Arc<TreeProjection>, TreeRowId) {
     let mut parent = 1;
     for value in 300..363 {
         fixture
@@ -490,6 +490,13 @@ fn branch_requests_at_the_depth_limit_stay_local_to_their_row() {
         .unwrap();
     assert_eq!(deepest.depth, 63);
     let deepest = deepest.id;
+    (view, deepest)
+}
+
+#[test]
+fn branch_requests_at_the_depth_limit_stay_local_to_their_row() {
+    let mut fixture = fixture();
+    let (view, deepest) = expand_to_depth_limit(&mut fixture);
     // An optional probe of that row is dropped silently.
     fixture.session.viewport(&view, &[deepest]).unwrap();
     assert!(fixture.session.take_work().unwrap().is_none());
@@ -516,6 +523,45 @@ fn branch_requests_at_the_depth_limit_stay_local_to_their_row() {
     assert!(error.as_str().contains("resource budget"), "{error:?}");
     assert_eq!(fixture.session.queued(), 0);
     assert!(Arc::ptr_eq(fixture.session.projection(), &view));
+}
+
+#[test]
+fn row_rejections_of_a_completion_and_the_next_request_are_both_kept() {
+    let mut fixture = fixture();
+    let (view, deepest) = expand_to_depth_limit(&mut fixture);
+    let other = view
+        .rows
+        .iter()
+        .find(|row| row.entry.display_name == "a-parent")
+        .unwrap()
+        .id;
+    fixture
+        .session
+        .branch(&view, TreeRequestId(100), other, BranchAction::Expand)
+        .unwrap();
+    let job = fixture.session.take_work().unwrap().unwrap();
+    fixture
+        .session
+        .branch(&view, TreeRequestId(101), deepest, BranchAction::Expand)
+        .unwrap();
+    // A cancelled build stands in for a display projection that fails even
+    // after the branch is restored with its error: the row is rejected.
+    let cancelled = Cancellation::default();
+    cancelled.cancel();
+    assert!(!fixture.session.apply(job.run(), &cancelled).unwrap());
+    // The worker flushes notices only after its next pump has taken work,
+    // and that request cannot start at the depth limit.
+    assert!(fixture.session.take_work().unwrap().is_none());
+    let rejected = std::iter::from_fn(|| fixture.session.take_branch_notice())
+        .map(|event| match event {
+            midnight_core::TreeEvent::Rejected { request, row, .. } => (request, row),
+            other => panic!("row rejection expected: {other:?}"),
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        rejected,
+        [(TreeRequestId(100), other), (TreeRequestId(101), deepest)]
+    );
 }
 
 #[test]
