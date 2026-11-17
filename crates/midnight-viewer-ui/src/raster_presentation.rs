@@ -193,9 +193,10 @@ fn request(open: &OpenWindow) {
     }
 }
 
-/// A partial page has its own byte/height mapping. Never guess a global row or
-/// clamp an uncovered normalized target into the last cached pixel.
-pub(super) fn seek(open: &OpenWindow, horizontal: bool, position: f64, dragging: bool) -> bool {
+/// A scrollbar drag step. A partial page has its own byte/height mapping. Never
+/// guess a global row or clamp an uncovered normalized target into the last
+/// cached pixel. The drag's end settles the camera (see `end_seek`).
+pub(super) fn seek(open: &OpenWindow, horizontal: bool, position: f64) -> bool {
     if !open.window.get_retained_raster()
         || raster_rebase::waiting(open)
         || open.text_position.borrow().has_pending()
@@ -217,7 +218,7 @@ pub(super) fn seek(open: &OpenWindow, horizontal: bool, position: f64, dragging:
         let mut state = open.retained_raster.borrow_mut();
         let axis = usize::from(!horizontal);
         let baseline = state.positions[axis];
-        state.camera.seek(axis, position, baseline, dragging)
+        state.camera.seek(axis, position, baseline)
     };
     if !accepted {
         return false;

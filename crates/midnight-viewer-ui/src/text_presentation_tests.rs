@@ -73,7 +73,7 @@ fn same_mode_selection_keeps_current_position_context_usable() {
     let (_runtime, manager, open, service) = image_presentation_tests::open();
     present_outputs(&open, &service, &|_| {}, vec![frame(10, 0, 0.2)]);
     open.window.invoke_change_mode(0);
-    open.window.invoke_seek(0.7);
+    image_presentation_tests::drag_seek(&open.window, false, 0.7);
     assert!((open.window.get_position() - 0.7).abs() < 0.0001);
     present_outputs(&open, &service, &|_| {}, vec![frame(11, 1, 0.701)]);
     assert!((open.window.get_displayed_position() - 0.701).abs() < 0.0001);
@@ -90,8 +90,8 @@ fn newer_completed_content_is_presented_during_drag_without_clearing_latest_thum
         true
     });
     present_outputs(&open, &service, &|_| {}, vec![frame(10, 0, 0.2)]);
-    open.window.invoke_seek(0.5);
-    open.window.invoke_seek(0.8);
+    image_presentation_tests::drag_seek(&open.window, false, 0.5);
+    image_presentation_tests::drag_seek(&open.window, false, 0.8);
     assert_eq!(submitted.borrow().len(), 2);
     present_outputs(&open, &service, &|_| {}, vec![frame(11, 1, 0.501)]);
     assert!((open.window.get_position() - 0.8).abs() < 0.0001);
@@ -114,7 +114,7 @@ fn refused_file_and_mode_changes_do_not_fence_the_current_text_context() {
     present_outputs(&open, &service, &|_| {}, vec![initial]);
     // Closed input deterministically exercises refusal without racing a real worker.
     open.session.close();
-    open.window.invoke_seek(0.7);
+    image_presentation_tests::drag_seek(&open.window, false, 0.7);
     let context = open.window.get_position_context();
     open.window.invoke_change_mode(1);
     assert!(!dispatch_key(&open, "viewer.next-file"));
@@ -303,7 +303,7 @@ fn raster_pixel_input_and_scrollbar_cancel_the_previous_wheel_tail() {
 
     assert!(native_raster_notch(&open, -1.0));
     raster_ticks(&open, 2);
-    open.window.invoke_seek(0.7);
+    image_presentation_tests::drag_seek(&open.window, false, 0.7);
     let count = submitted.borrow().len();
     raster_ticks(&open, 30);
     assert_eq!(

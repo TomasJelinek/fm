@@ -226,20 +226,42 @@ fn retained_scrollbar_partial_page_seek_and_pan_present_immediately_without_uplo
     let received = scrollbar_capture(&open);
     present_outputs(&open, &service, &|_| {}, vec![frame(10)]);
     let uploads = open.window.get_raster_upload_count();
-    open.window.invoke_seek(0.2075);
-    assert!((open.retained_raster.borrow().camera.origin[1] - 275.0).abs() < 0.001);
-    open.window.invoke_pan(0.05);
-    assert!((open.retained_raster.borrow().camera.origin[0] - 150.0).abs() < 0.001);
+    let settled_at = |received: &[ViewerInput]| match received.last() {
+        Some(ViewerInput::Raster {
+            input:
+                ViewerRasterInput::PanTo {
+                    origin,
+                    settled: true,
+                    ..
+                },
+            ..
+        }) => Some(*origin),
+        _ => None,
+    };
+    image_presentation_tests::drag_seek(&open.window, false, 0.2075);
+    let origin = open.retained_raster.borrow().camera.origin;
+    assert!((origin[1] - 275.0).abs() < 0.001);
+    assert_eq!(
+        settled_at(&received.borrow()),
+        Some(origin),
+        "the release settles the camera"
+    );
+    image_presentation_tests::drag_seek(&open.window, true, 0.05);
+    let origin = open.retained_raster.borrow().camera.origin;
+    assert!((origin[0] - 150.0).abs() < 0.001);
+    assert_eq!(settled_at(&received.borrow()), Some(origin));
     assert!(!open.text_position.borrow().has_pending());
     assert_eq!(open.window.get_raster_upload_count(), uploads);
-    assert!(received.borrow().iter().all(|input| matches!(
-        input,
-        ViewerInput::Raster {
-            input: ViewerRasterInput::PanTo { settled: true, .. },
-            ..
-        }
-    )));
-    assert!(received.borrow().len() >= 2);
+    assert!(
+        received.borrow().iter().all(|input| matches!(
+            input,
+            ViewerInput::Raster {
+                input: ViewerRasterInput::PanTo { .. },
+                ..
+            }
+        )),
+        "covered targets need no position read"
+    );
     assert!((open.window.get_displayed_position() - 0.2075).abs() < 0.00001);
     manager.close_all();
 }
@@ -249,16 +271,22 @@ fn retained_scrollbar_uncovered_target_keeps_the_exact_position_fallback_without
     let (_runtime, manager, open, service) = image_presentation_tests::open();
     let received = scrollbar_capture(&open);
     present_outputs(&open, &service, &|_| {}, vec![frame(10)]);
-    open.window.invoke_seek(0.9);
+    image_presentation_tests::drag_seek(&open.window, false, 0.9);
     assert_eq!(open.retained_raster.borrow().camera.origin, [100.0, 200.0]);
     assert!(received.borrow().iter().any(|input| matches!(input,
         ViewerInput::Position { horizontal: false, position, .. } if (*position - 0.9).abs() < 0.000001)));
     assert!(open.text_position.borrow().has_pending());
+    // The grab and release only re-request the displayed pixels.
     assert!(
-        received
-            .borrow()
-            .iter()
-            .all(|input| !matches!(input, ViewerInput::Raster { .. }))
+        received.borrow().iter().all(|input| match input {
+            ViewerInput::Raster {
+                input: ViewerRasterInput::PanTo { origin, .. },
+                ..
+            } => *origin == [100.0, 200.0],
+            ViewerInput::Raster { .. } => false,
+            _ => true,
+        }),
+        "an uncovered target is never clamped into the cached pixels"
     );
     manager.close_all();
 }
@@ -269,7 +297,7 @@ fn retained_scrollbar_pending_position_or_rebase_never_reuses_the_old_mapping() 
     let received = scrollbar_capture(&open);
     present_outputs(&open, &service, &|_| {}, vec![frame(10)]);
     open.text_position.borrow_mut().request(false, 0.8);
-    open.window.invoke_seek(0.205);
+    image_presentation_tests::drag_seek(&open.window, false, 0.205);
     assert_eq!(open.retained_raster.borrow().camera.origin, [100.0, 200.0]);
     assert!(
         received
@@ -296,7 +324,7 @@ fn retained_scrollbar_pending_position_or_rebase_never_reuses_the_old_mapping() 
     );
     assert!(raster_rebase::waiting(&open));
     received.borrow_mut().clear();
-    open.window.invoke_seek(0.205);
+    image_presentation_tests::drag_seek(&open.window, false, 0.205);
     assert!(
         !raster_rebase::waiting(&open),
         "absolute fallback cancels the obsolete handoff"
@@ -333,9 +361,9 @@ fn retained_scrollbar_latest_reversal_survives_backpressure_and_stale_ack_withou
     });
     present_outputs(&open, &service, &|_| {}, vec![frame(10)]);
     let uploads = open.window.get_raster_upload_count();
-    open.window.invoke_seek(0.205);
+    image_presentation_tests::drag_seek(&open.window, false, 0.205);
     assert!((open.retained_raster.borrow().camera.origin[1] - 250.0).abs() < 0.001);
-    open.window.invoke_seek(0.195);
+    image_presentation_tests::drag_seek(&open.window, false, 0.195);
     assert!((open.retained_raster.borrow().camera.origin[1] - 150.0).abs() < 0.001);
     allowed.set(true);
     raster_motion::step(&open);
@@ -517,8 +545,8 @@ fn retained_scrollbar_moves_real_body_and_gutter_pixels_before_any_worker_reply(
     let body_before = bounds([253, 27, 15]);
     let gutter_before = bounds([17, 241, 253]);
     let uploads = open.window.get_raster_upload_count();
-    open.window.invoke_seek(0.202);
-    open.window.invoke_pan(0.01);
+    image_presentation_tests::drag_seek(&open.window, false, 0.202);
+    image_presentation_tests::drag_seek(&open.window, true, 0.01);
     let body_after = bounds([253, 27, 15]);
     let gutter_after = bounds([17, 241, 253]);
     let scale = open.window.window().scale_factor();

@@ -353,7 +353,10 @@ impl Probe {
             if self.options.tail || start.is_some() {
                 let Some(sent) = self.tail_sent else {
                     self.tail_sent = Some(Instant::now());
-                    window.invoke_seek(start.unwrap_or(1.0));
+                    // A complete scrollbar gesture: grab, move, release.
+                    window.invoke_position_drag_began(false);
+                    window.invoke_drag_seek(false, start.unwrap_or(1.0));
+                    window.invoke_position_drag_ended(false);
                     self.timeline
                         .record("tail_seek", f64::from(start.unwrap_or(1.0)));
                     return Ok(None);

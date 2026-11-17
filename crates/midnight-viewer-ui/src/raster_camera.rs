@@ -101,15 +101,11 @@ impl Camera {
         self.pending_seek
     }
 
-    /// Invert this frame's mapping within known bounds. Uncovered complete-page
-    /// intent waits for matching pixels; a partial page never invents coordinates.
-    pub fn seek(
-        &mut self,
-        axis: usize,
-        position: f64,
-        frame_position: f64,
-        dragging: bool,
-    ) -> bool {
+    /// One scrollbar drag step: invert this frame's mapping within known bounds.
+    /// Uncovered complete-page intent waits for matching pixels; a partial page
+    /// never invents coordinates. Drag frames reuse their raster phase until
+    /// `end_seek` (or a cancellation) requests the settled position.
+    pub fn seek(&mut self, axis: usize, position: f64, frame_position: f64) -> bool {
         if axis > 1
             || !position.is_finite()
             || !(0.0..=1.0).contains(&position)
@@ -154,14 +150,14 @@ impl Camera {
         self.motion.cancel();
         self.resume = false;
         self.direct = true;
-        self.seeking = dragging;
+        self.seeking = true;
         if target_covered {
             self.origin = target;
             self.pending_seek = None;
         } else {
             self.pending_seek = Some(target);
         }
-        self.retry_pending = self.last_request != Some((target, !dragging));
+        self.retry_pending = self.last_request != Some((target, false));
         true
     }
     pub fn begin_seek(&mut self) -> bool {

@@ -1378,8 +1378,8 @@ fn bind_pointer(open: &Rc<OpenWindow>) {
             }
         }
     });
-    fn position(open: &OpenWindow, horizontal: bool, value: f32, dragging: bool) {
-        if raster_presentation::seek(open, horizontal, f64::from(value), dragging) {
+    fn position(open: &OpenWindow, horizontal: bool, value: f32) {
+        if raster_presentation::seek(open, horizontal, f64::from(value)) {
             return;
         }
         raster_rebase::cancel_context(open);
@@ -1410,21 +1410,9 @@ fn bind_pointer(open: &Rc<OpenWindow>) {
         flush_position(open);
     }
     let weak = Rc::downgrade(open);
-    open.window.on_seek(move |value| {
-        if let Some(open) = weak.upgrade() {
-            position(&open, false, value, false);
-        }
-    });
-    let weak = Rc::downgrade(open);
-    open.window.on_pan(move |value| {
-        if let Some(open) = weak.upgrade() {
-            position(&open, true, value, false);
-        }
-    });
-    let weak = Rc::downgrade(open);
     open.window.on_drag_seek(move |horizontal, value| {
         if let Some(open) = weak.upgrade() {
-            position(&open, horizontal, value, true);
+            position(&open, horizontal, value);
         }
     });
     let weak = Rc::downgrade(open);

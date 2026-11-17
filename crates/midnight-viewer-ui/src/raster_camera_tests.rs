@@ -301,15 +301,17 @@ fn short_retained_coverage_limits_prefetch_without_losing_forward_or_backward_in
 fn retained_scrollbar_maps_partial_page_positions_and_preserves_the_other_axis() {
     let mut camera = Camera::default();
     camera.receive(&info(), [2.25; 2]);
-    assert!(camera.seek(1, 0.30125, 0.3, false));
+    camera.begin_seek();
+    assert!(camera.seek(1, 0.30125, 0.3));
     assert!((camera.origin[1] - 525.0).abs() < 1e-8);
     assert_eq!(camera.origin[0], 100.0);
-    assert!(camera.seek(0, 0.175, 0.1, false));
+    assert!(camera.seek(0, 0.175, 0.1));
     assert!((camera.origin[0] - 250.0).abs() < 1e-8);
     assert!((camera.origin[1] - 525.0).abs() < 1e-8);
+    assert!(camera.end_seek());
     let (_, _, target, settled) = camera.request().unwrap();
     assert_eq!(target, camera.origin);
-    assert!(settled);
+    assert!(settled, "the release requests the settled camera");
 }
 
 #[test]
@@ -317,21 +319,21 @@ fn retained_scrollbar_refuses_uncovered_nonfinite_and_known_edge_targets() {
     let mut camera = Camera::default();
     camera.receive(&info(), [1.0; 2]);
     for target in [0.0, 1.0, -0.1, 1.1, f64::NAN, f64::INFINITY] {
-        assert!(!camera.seek(1, target, 0.3, false));
+        assert!(!camera.seek(1, target, 0.3));
         assert_eq!(camera.origin, info().origin);
     }
     let mut limited = info();
     limited.limit_max[1] = Some(450.0);
     camera.receive(&limited, [1.0; 2]);
     assert!(
-        !camera.seek(1, 0.301, 0.3, false),
+        !camera.seek(1, 0.301, 0.3),
         "covered pixels beyond a known edge are not a valid target"
     );
-    assert!(!camera.seek(2, 0.3, 0.3, false));
+    assert!(!camera.seek(2, 0.3, 0.3));
     limited.scroll_per_pixel[1] = 0.0;
     camera.receive(&limited, [1.0; 2]);
     assert!(
-        !camera.seek(1, 0.3, 0.3, false),
+        !camera.seek(1, 0.3, 0.3),
         "zero slope does not define a normalized inverse"
     );
 }
@@ -341,13 +343,17 @@ fn retained_scrollbar_reversal_replaces_backpressured_target_and_cancels_old_coa
     let mut camera = Camera::default();
     camera.receive(&info(), [1.0; 2]);
     camera.push(0.0, 60.0, Duration::ZERO, false);
-    assert!(camera.seek(1, 0.301, 0.3, false));
+    assert!(camera.seek(1, 0.301, 0.3));
     let first = camera.request().unwrap();
     camera.retry();
-    assert!(camera.seek(1, 0.2995, 0.3, false));
+    assert!(camera.seek(1, 0.2995, 0.3));
     let last = camera.request().unwrap();
     assert!(last.1 > first.1);
     assert!((last.2[1] - 350.0).abs() < 1e-8);
+    assert!(camera.end_seek());
+    let release = camera.request().unwrap();
+    assert_eq!(release.2, last.2);
+    assert!(release.3, "the release settles the latest target");
     assert!(
         !camera.tick(Duration::from_secs(1)),
         "old coast must not resume after the drag"
@@ -360,7 +366,7 @@ fn retained_scrollbar_drag_finishes_exactly_even_when_release_position_is_unchan
     let mut camera = Camera::default();
     camera.receive(&info(), [1.0; 2]);
     camera.begin_seek();
-    assert!(camera.seek(1, 0.300125, 0.3, true));
+    assert!(camera.seek(1, 0.300125, 0.3));
     let drag = camera.request().unwrap();
     assert!(
         !drag.3,
@@ -373,7 +379,7 @@ fn retained_scrollbar_drag_finishes_exactly_even_when_release_position_is_unchan
     assert!(!camera.end_seek());
     assert!(camera.request().is_none());
     camera.begin_seek();
-    assert!(camera.seek(1, 0.30025, 0.3, true));
+    assert!(camera.seek(1, 0.30025, 0.3));
     assert!(!camera.request().unwrap().3);
     camera.cancel();
     assert!(
@@ -409,7 +415,7 @@ fn source_map_seek_reverses_and_survives_a_changed_page_density() {
             .metrics(y, 600.0)
             .unwrap()
             .0;
-        assert!(camera.seek(1, target, 0.99, true));
+        assert!(camera.seek(1, target, 0.99));
         assert!((camera.origin[1] - y).abs() < 1e-8);
         assert_eq!(camera.origin[0], 100.0);
         // A stale/changed affine page estimate cannot change the shared inverse.
@@ -419,7 +425,7 @@ fn source_map_seek_reverses_and_survives_a_changed_page_density() {
         assert!((camera.origin[1] - y).abs() < 1e-8);
     }
     assert!(
-        !camera.seek(1, 1.0, 0.99, false),
+        !camera.seek(1, 1.0, 0.99),
         "uncovered endpoint needs the worker"
     );
 }
@@ -439,7 +445,7 @@ fn unchanged_thumb_seek_on_generated_visual_space_preserves_the_camera() {
         .unwrap(),
     );
     assert!(camera.receive(&frame, [1.0; 2]));
-    assert!(camera.seek(1, f64::from(0.2_f32), 0.2, true));
+    assert!(camera.seek(1, f64::from(0.2_f32), 0.2));
     assert_eq!(camera.origin, frame.origin);
 }
 
@@ -451,7 +457,7 @@ fn complete_page_seek_waits_for_coverage_without_resetting_its_surface() {
     full.scroll_per_pixel[1] = 0.0005;
     assert!(camera.receive(&full, [2.25; 2]));
     assert!(
-        camera.seek(1, 0.6, 0.2, true),
+        camera.seek(1, 0.6, 0.2),
         "known complete-page intent must stay retained"
     );
     assert_eq!(
@@ -471,7 +477,7 @@ fn complete_page_seek_waits_for_coverage_without_resetting_its_surface() {
     full.settled = false;
     assert!(camera.receive(&full, [2.25; 2]));
     assert_eq!(camera.origin, target);
-    assert!(camera.seek(1, 0.62, 0.6, true));
+    assert!(camera.seek(1, 0.62, 0.6));
     assert!((camera.origin[1] - 1240.0).abs() < 1e-9);
     assert_eq!(
         camera.info().unwrap().pixel_id,
@@ -487,9 +493,9 @@ fn pending_complete_page_seek_rejects_superseded_coverage_and_settles_latest_tar
     full.limit_max[1] = Some(2000.0);
     full.scroll_per_pixel[1] = 0.0005;
     assert!(camera.receive(&full, [1.0; 2]));
-    assert!(camera.seek(1, 0.6, 0.2, true));
+    assert!(camera.seek(1, 0.6, 0.2));
     let first = camera.request().unwrap();
-    assert!(camera.seek(1, 0.8, 0.2, true));
+    assert!(camera.seek(1, 0.8, 0.2));
     let latest = camera.request().unwrap();
     full.origin = first.2;
     full.raster_origin[1] = 900.0;
@@ -524,17 +530,17 @@ fn cancelled_pending_seek_cannot_jump_to_a_late_frame_and_unknown_page_stays_fal
     let mut full = info();
     assert!(camera.receive(&full, [1.0; 2]));
     assert!(
-        !camera.seek(0, 0.5, 0.05, true),
+        !camera.seek(0, 0.5, 0.05),
         "a partial page may change width on refill"
     );
     assert!(
-        !camera.seek(1, 0.6, 0.2, true),
+        !camera.seek(1, 0.6, 0.2),
         "partial-page mapping stays bounded by covered pixels"
     );
     full.limit_max[1] = Some(2000.0);
     full.scroll_per_pixel[1] = 0.0005;
     assert!(camera.receive(&full, [1.0; 2]));
-    assert!(camera.seek(1, 0.6, 0.2, true));
+    assert!(camera.seek(1, 0.6, 0.2));
     let pending = camera.request().unwrap();
     camera.cancel();
     let cancel = camera.request().unwrap();
@@ -556,9 +562,9 @@ fn older_complete_page_reply_can_cover_the_latest_drag_without_presenting_its_ol
     full.limit_max[1] = Some(2000.0);
     full.scroll_per_pixel[1] = 0.0005;
     camera.receive(&full, [1.0; 2]);
-    assert!(camera.seek(1, 0.6, 0.2, true));
+    assert!(camera.seek(1, 0.6, 0.2));
     let first = camera.request().unwrap();
-    assert!(camera.seek(1, 0.65, 0.2, true));
+    assert!(camera.seek(1, 0.65, 0.2));
     let latest = camera.request().unwrap();
     full.origin = first.2;
     full.raster_origin[1] = 944.0;
@@ -597,8 +603,8 @@ fn mapped_complete_page_and_other_axis_keep_only_the_latest_pending_coordinates(
         .metrics(1200.0, 600.0)
         .unwrap()
         .0;
-    assert!(camera.seek(1, position, 0.99, true));
-    assert!(camera.seek(0, 0.5, 0.05, true));
+    assert!(camera.seek(1, position, 0.99));
+    assert!(camera.seek(0, 0.5, 0.05));
     let request = camera.request().unwrap();
     assert!((request.2[0] - 1000.0).abs() < 1e-9);
     assert!((request.2[1] - 1200.0).abs() < 1e-9);
@@ -621,8 +627,8 @@ fn pending_two_axis_seek_cancels_and_a_new_surface_cannot_inherit_the_old_target
     full.scroll_per_pixel[1] = 0.0005;
     camera.receive(&full, [1.0; 2]);
     for change_surface in [false, true] {
-        assert!(camera.seek(1, 0.6, 0.2, true));
-        assert!(camera.seek(0, 0.5, 0.05, true));
+        assert!(camera.seek(1, 0.6, 0.2));
+        assert!(camera.seek(0, 0.5, 0.05));
         let pending = camera.request().unwrap();
         assert!((pending.2[0] - 1000.0).abs() < 1e-9);
         assert!((pending.2[1] - 1200.0).abs() < 1e-9);
@@ -653,7 +659,8 @@ fn rounded_final_pending_seek_clears_loading_at_either_coverage_boundary() {
         ack.limit_max[1] = Some(2000.0);
         ack.scroll_per_pixel[1] = 0.0005;
         assert!(camera.receive(&ack, [1.0; 2]));
-        assert!(camera.seek(1, 0.6, 0.2, false));
+        assert!(camera.seek(1, 0.6, 0.2));
+        assert!(camera.end_seek());
         let (_, sequence, target, settled) = camera.request().unwrap();
         assert!(settled);
         assert!(camera.pending_seek().is_some());
