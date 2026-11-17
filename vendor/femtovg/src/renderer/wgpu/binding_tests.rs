@@ -12,20 +12,9 @@ struct Scene {
 
 impl Scene {
     fn new() -> Self {
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::from_env().unwrap_or(wgpu::Backends::PRIMARY),
-            flags: wgpu::InstanceFlags::VALIDATION_INDIRECT_CALL,
-            ..wgpu::InstanceDescriptor::new_without_display_handle()
-        });
-        let adapter = pollster::block_on(instance.request_adapter(&Default::default()))
-            .expect("this explicit GPU test requires an adapter");
-        eprintln!("binding-cache GPU adapter: {:?}", adapter.get_info());
-        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-            label: Some("binding cache regression"),
-            required_limits: wgpu::Limits::downlevel_defaults().using_resolution(adapter.limits()),
-            ..Default::default()
-        }))
-        .expect("GPU device");
+        // Cached groups across replacement, deletion and arena growth are the
+        // riskiest cases; the shared device runs under the validation layer.
+        let (device, queue) = super::super::test_gpu::device();
         let target = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("binding cache pixels"),
             size: wgpu::Extent3d {
@@ -70,6 +59,20 @@ impl Scene {
 
     fn allocations(&self) -> usize {
         self.canvas.renderer.bind_group_cache.borrow().materializations
+    }
+
+    fn uncached(&self) -> usize {
+        self.canvas.renderer.bind_group_cache.borrow().uncached
+    }
+
+    fn cached(&self, image: ImageId) -> bool {
+        self.canvas
+            .renderer
+            .bind_group_cache
+            .borrow()
+            .entries
+            .keys()
+            .any(|key| key.references(image))
     }
 
     fn center(&self) -> [u8; 4] {
@@ -193,30 +196,76 @@ fn uniform_arena_growth_rebinds_the_new_buffer_and_retains_correct_pixels() {
 
 #[test]
 #[ignore = "requires a native GPU; run explicitly with WGPU_BACKEND=dx12 or vulkan"]
-fn binding_cache_evicts_oldest_entries_and_prunes_unused_reallocated_images() {
+fn binding_cache_evicts_entries_of_earlier_frames_and_prunes_unused_reallocated_images() {
     let mut scene = Scene::new();
     let images: Vec<_> = (0..MAX_BIND_GROUPS + 1)
         .map(|_| scene.image(RGBA8::new(0, 0, 255, 255)))
         .collect();
-    scene.draw(&images);
-    {
-        let cache = scene.canvas.renderer.bind_group_cache.borrow();
-        assert_eq!(cache.entries.len(), MAX_BIND_GROUPS);
-        assert!(!cache.entries.keys().any(|key| key.references(images[0])));
-        assert!(cache.entries.keys().any(|key| key.references(*images.last().unwrap())));
-    }
-    let old = *images.last().unwrap();
+    // The clear plus these images fill the cache in one frame.
+    scene.draw(&images[1..MAX_BIND_GROUPS]);
+    assert_eq!(
+        scene.canvas.renderer.bind_group_cache.borrow().entries.len(),
+        MAX_BIND_GROUPS
+    );
+    assert!(scene.cached(images[1]));
+    // A later frame replaces the least recently used binding of an earlier one.
+    scene.draw(&[images[0]]);
+    assert_eq!(
+        scene.canvas.renderer.bind_group_cache.borrow().entries.len(),
+        MAX_BIND_GROUPS
+    );
+    assert!(scene.cached(images[0]));
+    assert!(!scene.cached(images[1]));
+    let old = images[2];
     scene
         .canvas
         .realloc_image(old, 2, 2, PixelFormat::Rgba8, ImageFlags::NEAREST)
         .unwrap();
     scene.draw(&[images[0]]);
-    let cache = scene.canvas.renderer.bind_group_cache.borrow();
-    assert!(cache.entries.len() <= MAX_BIND_GROUPS);
-    assert!(
-        !cache.entries.keys().any(|key| key.references(old)),
-        "undrawn old texture must be released"
-    );
-    drop(cache);
+    assert!(!scene.cached(old), "undrawn old texture must be released");
     assert_eq!(scene.center(), [0, 0, 255, 255]);
+}
+
+#[test]
+#[ignore = "requires a native GPU; run explicitly with WGPU_BACKEND=dx12 or vulkan"]
+fn frames_beyond_the_cap_keep_their_cached_bindings_and_leave_only_the_overflow_uncached() {
+    let mut scene = Scene::new();
+    let images: Vec<_> = (0..MAX_BIND_GROUPS + 40)
+        .map(|index| scene.image(RGBA8::new(0, (index % 200) as u8, 255, 255)))
+        .collect();
+    scene.draw(&images);
+    let cached = scene.allocations();
+    let overflow = scene.uncached();
+    assert!(overflow > 0, "the frame uses more bindings than the cap");
+    for _ in 0..2 {
+        scene.draw(&images);
+        // A global LRU would evict each binding just before its next use.
+        assert_eq!(scene.allocations(), cached, "cached bindings must stay hits");
+        assert_eq!(scene.uncached() % overflow, 0);
+    }
+    assert_eq!(scene.uncached(), 3 * overflow);
+    let last = images.last().unwrap();
+    assert_eq!(scene.center(), [0, ((images.len() - 1) % 200) as u8, 255, 255]);
+    assert!(!scene.cached(*last), "the overflow is not admitted mid-frame");
+}
+
+#[test]
+#[ignore = "requires a native GPU; run explicitly with WGPU_BACKEND=dx12 or vulkan"]
+fn images_deleted_before_flush_are_drawn_without_caching_their_ids() {
+    let mut scene = Scene::new();
+    let image = scene.image(RGBA8::new(255, 0, 0, 255));
+    scene.canvas.clear_rect(0, 0, 64, 64, Color::black());
+    let mut path = Path::new();
+    path.rect(0.0, 0.0, 64.0, 64.0);
+    scene
+        .canvas
+        .fill_path(&path, &Paint::image(image, 0.0, 0.0, 64.0, 64.0, 0.0, 1.0));
+    scene.canvas.delete_image(image);
+    scene.queue.submit(scene.canvas.flush_to_output(&scene.target));
+    scene.device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+    assert!(
+        !scene.cached(image),
+        "a binding for a deleted id can never be hit again"
+    );
+    assert!(scene.uncached() > 0);
 }
