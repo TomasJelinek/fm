@@ -578,8 +578,10 @@ jobs:
           $name = if ($IsWindows) { 'me.exe' } else { 'me' }
           $executable = Join-Path $env:HOST_TEST_INSTALL_ROOT $name
           Copy-Item -LiteralPath "_build/release/$name" -Destination $executable
+          # The Administrator/root helper is built for administrator-managed installations;
+          # a private test installation never uses it, so it is checked but not installed.
           $helper = if ($IsWindows) { 'midnight-elevated-listing.exe' } else { 'midnight-elevated-listing' }
-          Copy-Item -LiteralPath "_build/release/$helper" -Destination (Join-Path $env:HOST_TEST_INSTALL_ROOT $helper)
+          if (-not (Test-Path -LiteralPath "_build/release/$helper" -PathType Leaf)) { throw "Release build is missing $helper" }
           if ($IsWindows) {
             $process = Start-Process -FilePath $executable -ArgumentList '--smoke-test' -WindowStyle Hidden -Wait -PassThru
             if ($process.ExitCode -ne 0) { throw 'Installed native filesystem smoke failed' }

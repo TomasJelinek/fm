@@ -5,6 +5,11 @@ Keep the viewers, filesystems and thumbnailers folders beside me.exe, including
 the thumbnail helpers' adjacent runtime libraries and notices. Use a private folder in your user profile
 or an administrator-managed installation: native plugins are refused if other
 accounts can replace their files or installation directory.
+Retry with authorization (UAC) for a folder you cannot open runs the included
+midnight-elevated-listing.exe as Administrator. It is used only when an administrator
+installs the complete folder where standard users cannot change it, for example
+below C:\Program Files. From a folder in your user profile, Midnight Explorer
+explains this requirement instead.
 Rust and Visual Studio are not needed to run the application.
 Install Microsoft's Visual C++ x64 Redistributable if VCRUNTIME140.dll is missing:
 https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist

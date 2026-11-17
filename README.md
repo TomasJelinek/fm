@@ -245,6 +245,9 @@ powershell -NoProfile -File scripts/deploy-private.ps1 -SourceDirectory _build/r
 
 Use the original build EXE, the **Midnight Explorer** desktop shortcut, or the
 private installation path printed by that command. Restart after deployment.
+Private installations omit `midnight-elevated-listing.exe` and so cannot offer
+**Retry with authorization**, which needs an installation that only administrators
+can change (see the authorization helper above); the deployment says so.
 `-IncludeFilesystems` includes the filesystem packages. Keep `-IncludeThumbnailers`
 to deploy the image/video workers; normal build deployment includes both flags
 and rejects incomplete module installations. To point the desktop shortcut at an

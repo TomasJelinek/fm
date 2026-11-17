@@ -562,12 +562,9 @@ foreach ($name in @('basic', 'source', 'markdown')) {
 }
 $files = New-Object 'System.Collections.Generic.List[string]'
 $files.Add($executable)
-$authorizationHelper = Join-Path $SourceDirectory 'midnight-elevated-listing.exe'
-if (-not (Test-Path -LiteralPath $authorizationHelper -PathType Leaf)) {
-    throw 'Build input must contain the dedicated midnight-elevated-listing.exe helper'
-}
-Assert-PlainPath $authorizationHelper
-$files.Add($authorizationHelper)
+# midnight-elevated-listing.exe runs as Administrator, so Midnight Explorer accepts it
+# only from a folder that standard users cannot change. A private installation never
+# qualifies, so the helper is not deployed here; release archives still contain it.
 $pending = New-Object 'System.Collections.Generic.Stack[string]'
 $pending.Push($viewers)
 foreach ($kind in @('filesystems', 'thumbnailers')) {
@@ -699,6 +696,9 @@ try {
     if ($ReplaceBuildDeployment) {
         Remove-SupersededBuildDeployments $destinationParent $launchStamp.Key $Destination $RegistrationDirectory
     }
+    Write-Output ('Retry with authorization is not available from a private installation: it needs an ' +
+        'administrator-managed installation (me.exe with midnight-elevated-listing.exe in a folder that ' +
+        'only administrators can change, for example below C:\Program Files).')
     Write-Output "Private installation: $Destination"
     Write-Output ('Run: & "' + (Join-Path $Destination 'me.exe') + '"')
     if ($CreateDesktopShortcut) {

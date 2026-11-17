@@ -7,8 +7,10 @@ if (-not [IO.Path]::IsPathRooted($targetRoot)) {
     $targetRoot = Join-Path $projectRoot $targetRoot
 }
 $source = Join-Path ([IO.Path]::GetFullPath($targetRoot)) $Profile
-# One validator checks every viewer, filesystem and thumbnail module, the FFmpeg
-# runtime with its corresponding source/build notices and the elevation helper.
+# One validator checks that the build output is complete: every viewer, filesystem and
+# thumbnail module, the FFmpeg runtime with its corresponding source/build notices and
+# the elevation helper. The private deployment below omits that helper, which only
+# an administrator-managed installation can use.
 # Python 3.12+ runs through the documented py launcher; python may be a Store alias.
 $python = 'python'
 $pythonArguments = @('-B')
@@ -18,7 +20,7 @@ if (Get-Command py -CommandType Application -ErrorAction Ignore) {
 }
 & $python @pythonArguments (Join-Path $PSScriptRoot 'package-release.py') validate-runtime --source $source --target 'x86_64-pc-windows-msvc'
 if ($LASTEXITCODE -ne 0) {
-    throw 'Normal deployment requires all viewer, filesystem, thumbnail and elevation modules with their complete runtime notices'
+    throw 'A normal build requires all viewer, filesystem, thumbnail and elevation modules with their complete runtime notices'
 }
 # Each build replaces the previous build deployment of this output directory
 # instead of accumulating complete private installations in the user profile.

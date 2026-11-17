@@ -133,7 +133,12 @@ viewer packages under `viewers/` (or `--viewers-root`), validates their platform
 native ABI, image-worker or web-worker protocol, code entry and package paths (and
 the HTML viewer's complete CEF runtime inventory), and records their manifests, file
 sizes and SHA-256 values in `BUILD-INFO.json`. Plugin-owned notices remain inside
-each package.
+each package. The packager also requires and ships `midnight-elevated-listing`
+(`.exe` on Windows) beside the executable. **Retry with authorization** uses it only
+when an administrator (Windows, for example below `C:\Program Files`) or root (Linux,
+for example `/opt/midnight-explorer`) installs the extracted folder where standard
+users cannot change it; the bundled README explains this. Private per-user
+installations, including `build.bat`'s, do not offer it.
 The packager also requires one compatible native and one network filesystem provider
 and the `midnight.fs.archive` worker under `filesystems/` (or `--filesystems-root`).
 It validates the native protocol, ABI, target, address encoding, capabilities,
