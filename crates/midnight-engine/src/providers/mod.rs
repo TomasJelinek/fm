@@ -115,6 +115,19 @@ pub trait MountedFilesystem: Send + Sync + 'static {
         emit: &mut dyn FnMut(ProviderEntry) -> bool,
     ) -> Result<(), ProviderError>;
 
+    /// Folder-only listing for tree branches. An adapter that classifies entries
+    /// during enumeration may omit other entries before per-entry metadata,
+    /// encoding and token allocation. The default emits the complete listing, so
+    /// the registry still validates every token a generic provider returns.
+    fn list_folders(
+        &self,
+        directory: &NodeToken,
+        cancel: &Cancellation,
+        emit: &mut dyn FnMut(ProviderEntry) -> bool,
+    ) -> Result<(), ProviderError> {
+        self.list(directory, cancel, emit)
+    }
+
     /// Provider root semantics; the host never parses a caption or joins `..`.
     fn parent(
         &self,

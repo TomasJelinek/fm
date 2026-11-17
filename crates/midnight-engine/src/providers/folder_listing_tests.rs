@@ -115,3 +115,23 @@ fn overflow_and_cancel_never_publish_partial_folder_references() {
         ProviderError::Cancelled
     );
 }
+
+#[test]
+fn presence_probe_finds_a_folder_past_the_row_budget_without_issuing_references() {
+    let (_registry, mount) = fixture();
+    assert_eq!(
+        mount.has_folders(mount.root(), &Cancellation::default()),
+        Ok(true)
+    );
+    let guessed = midnight_core::NodeRef {
+        mount: mount.root().mount,
+        token: token(50_001),
+    };
+    assert_eq!(
+        mount
+            .parent(&guessed, &Cancellation::default())
+            .unwrap_err(),
+        ProviderError::StaleReference,
+        "a probe must not grant references to the folder it found"
+    );
+}

@@ -138,6 +138,55 @@ impl MountedLocation {
         self.list_selected(node, cancel, true, limit.min(MAX_LIST_ENTRIES))
     }
 
+    /// Presence-only disclosure probe: whether the directory contains a folder.
+    /// Enumeration stops at the first folder; no reference, row or row budget is
+    /// issued. Tokens inspected before it are validated like a folder listing.
+    pub fn has_folders(
+        &self,
+        node: &NodeRef,
+        cancel: &Cancellation,
+    ) -> Result<bool, ProviderError> {
+        if !matches!(
+            self.lease.check_node(node)?,
+            EntryKind::Directory | EntryKind::DirectoryLink
+        ) {
+            return Err(ProviderError::Unsupported);
+        }
+        let request = self.lease.lifetime.linked(cancel);
+        check_cancel(&request)?;
+        let mut present = false;
+        let mut seen = HashSet::new();
+        let mut failure = None;
+        let result = self
+            .lease
+            .mount
+            .list_folders(&node.token, &request, &mut |entry| {
+                let result = check_cancel(&request).and_then(|()| {
+                    if seen.len() >= 1_000_000 {
+                        return Err(ProviderError::ResourceLimited);
+                    }
+                    if entry.token == node.token || !seen.insert(entry.token.clone()) {
+                        return Err(ProviderError::InvalidResponse(
+                            "duplicate or self-referencing listing node",
+                        ));
+                    }
+                    self.lease.validate_kind(&entry.token, entry.kind)
+                });
+                if let Err(error) = result {
+                    failure = Some(error);
+                    return false;
+                }
+                present = matches!(entry.kind, EntryKind::Directory | EntryKind::DirectoryLink);
+                !present
+            });
+        if let Some(error) = failure {
+            return Err(error);
+        }
+        result?;
+        check_cancel(&request)?;
+        Ok(present)
+    }
+
     /// Complete bounded listing. Partial/failed attempts never issue new references.
     /// Production's streaming projection remains in place during this migration.
     pub fn list(
@@ -173,7 +222,7 @@ impl MountedLocation {
         let mut token_bytes = 0_usize;
         let mut inspected = 0_usize;
         let mut failure = None;
-        let result = self.lease.mount.list(&node.token, &request, &mut |entry| {
+        let mut accept = |entry: super::ProviderEntry| {
             if failure.is_some() {
                 return false;
             }
@@ -236,7 +285,14 @@ impl MountedLocation {
                 entry,
             });
             true
-        });
+        };
+        let result = if folders_only {
+            self.lease
+                .mount
+                .list_folders(&node.token, &request, &mut accept)
+        } else {
+            self.lease.mount.list(&node.token, &request, &mut accept)
+        };
         if let Some(error) = failure {
             return Err(error);
         }

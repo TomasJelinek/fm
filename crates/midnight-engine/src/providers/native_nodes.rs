@@ -20,6 +20,11 @@ pub(super) struct NativeNodes {
 }
 
 impl NativeNodes {
+    #[cfg(test)]
+    pub(super) fn node_count(&self) -> usize {
+        self.by_token.len()
+    }
+
     pub fn get(&self, token: &NodeToken) -> Result<NativeNode, ProviderError> {
         self.by_token
             .get(token)

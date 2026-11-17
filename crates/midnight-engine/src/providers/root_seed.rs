@@ -146,6 +146,19 @@ impl MountedFilesystem for RootSeed {
         super::registry::check_cancel(cancel)
     }
 
+    fn list_folders(
+        &self,
+        directory: &NodeToken,
+        cancel: &Cancellation,
+        emit: &mut dyn FnMut(ProviderEntry) -> bool,
+    ) -> Result<(), ProviderError> {
+        if directory == &self.root {
+            self.list(directory, cancel, emit)
+        } else {
+            self.source.list_folders(directory, cancel, emit)
+        }
+    }
+
     fn resolve_target(
         &self,
         node: &NodeToken,
