@@ -21,11 +21,18 @@ try {
     # Both platforms must publish identical source archives and checksums. Keep one
     # canonical tar/gzip implementation rather than a separate .NET archive format.
     # Python 3.12+ runs through the documented py launcher; python may be a Store alias.
+    # The pinned archives are classic-zlib deflate output, while Python 3.14+ on
+    # Windows bundles zlib-ng: prefer an installed Python with classic zlib.
     $python = 'python'
     $arguments = @('-B')
     if (Get-Command py -CommandType Application -ErrorAction Ignore) {
         $python = 'py'
         $arguments = @('-3', '-B')
+        $classicZlib = 'import sys,zlib; sys.exit(zlib.ZLIB_RUNTIME_VERSION.lower().find(chr(110)+chr(103)) >= 0)'
+        foreach ($version in @('-3', '-3.13', '-3.12', '-3.11')) {
+            try { & py $version -c $classicZlib 2>$null } catch { continue }
+            if ($LASTEXITCODE -eq 0) { $arguments = @($version, '-B'); break }
+        }
     }
     $arguments += Join-Path $PSScriptRoot 'package.py'
     if ($Output) { $arguments += $Output }

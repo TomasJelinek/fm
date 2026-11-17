@@ -155,7 +155,13 @@ the independent Rust modules too.
 The HTML build acquires the exact pinned CEF archive, verifies its SHA-256 and
 retains the complete runtime, license and Chromium credits. Set `CEF_PATH` to an
 already verified SDK or use the build helper cache under `.tools/cef/`.
-Chromium renderer sandboxing remains enabled.
+Chromium renderer sandboxing remains enabled. MSVC cannot compile CEF's C++ wrapper
+below a deep Windows checkout (260-character paths); set `MIDNIGHT_HTML_TARGET_DIR`
+to a short Cargo target directory (for example a junction such as `D:\mh` into the
+checkout's `_build`). The web SDK archives the HTML provider pins are classic-zlib
+output: Python 3.14+ on Windows bundles zlib-ng, so the packager prefers an installed
+`py -3.13`/`-3.12` and otherwise stops with that explanation (or set
+`MIDNIGHT_HTML_SDK_CONFIG` to an existing web SDK bundle).
 
 Linux thumbnail builds acquire and verify the pinned FFmpeg 9.0.2 source and
 signature, then build the existing restricted LGPL configuration. GPG and libclang

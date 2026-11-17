@@ -80,8 +80,20 @@ try {
         }
     }
     $SdkConfig = (Resolve-Path -LiteralPath $SdkConfig).Path
-    $target = Join-Path $buildRoot 'provider-target/windows'
-    $nativeArguments = $pythonArguments + @((Join-Path $PSScriptRoot 'prepare-html-cef.py'), '--output', (Join-Path $target 'cef-sdk'))
+    # cl.exe cannot address paths beyond 260 characters, and CEF's C++ wrapper objects
+    # lie about 170 characters below the Cargo target directory. A deep checkout can
+    # select a short target (for example a junction into its _build) instead.
+    # The verified CEF SDK itself always stays under _build (no links allowed there).
+    $defaultTarget = [IO.Path]::GetFullPath((Join-Path $buildRoot 'provider-target/windows'))
+    $target = if ($env:MIDNIGHT_HTML_TARGET_DIR) {
+        [IO.Path]::GetFullPath($ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($env:MIDNIGHT_HTML_TARGET_DIR))
+    } else { $defaultTarget }
+    if ($target.Length -gt 80) {
+        Write-Warning ("The HTML provider target directory has $($target.Length) characters; CEF wrapper " +
+            'objects may then exceed the 260-character MSVC path limit. Set MIDNIGHT_HTML_TARGET_DIR to a ' +
+            "shorter directory (for example a junction such as D:\mh to this checkout's _build\mh) if cl.exe fails.")
+    }
+    $nativeArguments = $pythonArguments + @((Join-Path $PSScriptRoot 'prepare-html-cef.py'), '--output', (Join-Path $defaultTarget 'cef-sdk'))
     if ($Offline) { $nativeArguments += '--offline' }
     $nativeOutput = & $python @nativeArguments
     if ($LASTEXITCODE -ne 0) { throw 'Required CEF SDK preparation failed' }

@@ -10,6 +10,7 @@ import sys
 import tempfile
 import tarfile
 import unittest
+import zlib
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -193,6 +194,18 @@ class WebSdkEnvironment(unittest.TestCase):
             self.assertEqual(actual["cargo_home"], environment["CARGO_HOME"])
             self.assertEqual(actual["rustup_home"], environment["RUSTUP_HOME"])
 
+    def test_zlib_ng_is_refused_before_it_can_produce_unpinned_archives(self):
+        # The canonical tar is identical on every Python, but zlib-ng (Python 3.14+ on
+        # Windows) deflates it to other bytes than the classic-zlib archives the HTML
+        # viewer pins, so packaging must stop with an actionable message instead.
+        spec = importlib.util.spec_from_file_location("web_sdk_packager", ROOT / "web-viewer-api/scripts/package.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        module.require_classic_zlib("1.3")
+        module.require_classic_zlib("1.2.13")
+        with self.assertRaisesRegex(SystemExit, "zlib-ng"):
+            module.require_classic_zlib("1.3.1.zlib-ng")
+
     def test_canonical_archive_is_independent_of_provenance_order_time_and_gzip_platform(self):
         spec = importlib.util.spec_from_file_location("web_sdk_packager", ROOT / "web-viewer-api/scripts/package.py")
         module = importlib.util.module_from_spec(spec)
@@ -231,6 +244,8 @@ class WebSdkEnvironment(unittest.TestCase):
         self.assert_packager_homes(supplied=False, local_toolchain=True)
 
     def assert_packager_homes(self, *, supplied, local_toolchain):
+        if "ng" in zlib.ZLIB_RUNTIME_VERSION.lower():
+            self.skipTest("this Python's zlib-ng cannot produce the pinned web SDK archives")
         temporary = ROOT / "_build/tmp"
         temporary.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(prefix="web SDK env ", dir=temporary) as directory:
