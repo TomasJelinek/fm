@@ -31,7 +31,9 @@ pub(super) fn move_entry(
     })?;
     check_cancel(cancel, &prepared.item.path)?;
     let trash = Trash::open(root, prepared.identity)?;
-    if Identity::of(&trash.files, root)?.device != prepared.identity.device {
+    // Directories report their filesystem's device; a non-directory may report an
+    // overlayfs layer's device instead (see `filesystem_root`).
+    if Identity::of(&trash.files, root)?.device != prepared.parent_identity.device {
         return Err(error(
             &prepared.item.path,
             ErrorKind::Unsupported,

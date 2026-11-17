@@ -662,6 +662,36 @@ fn a_failed_staging_cleanup_reports_the_completed_mutation_and_its_residue() {
     assert_eq!(reported.kind, ErrorKind::DirectoryNotEmpty);
 }
 
+#[test]
+fn only_the_parent_or_a_directory_on_another_device_is_a_filesystem_root() {
+    use rustix::fs::FileType;
+    let parent = super::Identity {
+        device: 7,
+        inode: 2,
+        kind: FileType::Directory,
+    };
+    let entry = |device, kind| super::Identity {
+        device,
+        inode: 99,
+        kind,
+    };
+    assert!(super::filesystem_root(parent, parent));
+    // A Btrfs/bcachefs subvolume root below an ordinary directory.
+    assert!(super::filesystem_root(
+        entry(8, FileType::Directory),
+        parent
+    ));
+    assert!(!super::filesystem_root(
+        entry(7, FileType::Directory),
+        parent
+    ));
+    // Overlayfs without xino reports a per-layer device for every non-directory.
+    for kind in [FileType::RegularFile, FileType::Symlink, FileType::Fifo] {
+        assert!(!super::filesystem_root(entry(8, kind), parent));
+        assert!(!super::filesystem_root(entry(7, kind), parent));
+    }
+}
+
 fn staging_residue(directory: &Path) -> Vec<OsString> {
     fs::read_dir(directory)
         .unwrap()

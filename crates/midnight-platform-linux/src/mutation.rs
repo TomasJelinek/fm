@@ -106,6 +106,15 @@ impl Identity {
     }
 }
 
+/// Whether `entry`, opened below `parent` without crossing a mount
+/// (RESOLVE_NO_XDEV), is still the root of a filesystem: the parent itself, or a
+/// directory on another device (a Btrfs or bcachefs subvolume). Overlayfs without
+/// xino reports a per-layer device for every non-directory, so a non-directory's
+/// device alone never makes it a root.
+fn filesystem_root(entry: Identity, parent: Identity) -> bool {
+    entry == parent || (entry.kind == FileType::Directory && entry.device != parent.device)
+}
+
 struct Prepared {
     item: MutationItem,
     parent_path: PathBuf,
@@ -170,7 +179,7 @@ impl Prepared {
         );
         let stat = fstat(&source).map_err(|e| native_error(&path, e))?;
         let identity = Identity::from_stat(&stat);
-        if identity == parent_identity || identity.device != parent_identity.device {
+        if filesystem_root(identity, parent_identity) {
             return Err(error(
                 &path,
                 ErrorKind::InvalidInput,
