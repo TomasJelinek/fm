@@ -117,7 +117,10 @@ fn same_name_capture_does_not_require_an_opposite_cursor_but_requires_a_ready_vi
     let mut presenter = loaded();
     presenter.panes[1].cursor = None;
     presenter.panes[1].parent_cursor = true;
-    assert!(presenter.file_compare_launch(PaneId::Left).is_ok());
+    assert!(matches!(
+        presenter.file_compare_launch(PaneId::Left).unwrap().sources[1],
+        FileCompareSource::SameName { .. }
+    ));
     presenter.panes[1].loading = true;
     assert!(matches!(
         presenter.file_compare_launch(PaneId::Left).unwrap().sources[1],

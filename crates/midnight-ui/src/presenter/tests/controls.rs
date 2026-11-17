@@ -15,11 +15,21 @@ fn parent_navigation_cannot_select_a_real_id_and_offsets_entry_opens() {
     select_row(&mut p, PaneId::Left, 0, true);
     move_cursor(&mut p, PaneId::Left, 8);
     assert!(p.panes[0].selected.is_empty());
+    let opened = RefCell::new(None);
     assert!(p.open(PaneId::Left, 0, &|command| {
-        assert!(matches!(command, Command::Navigate { path, .. } if path == test_root()));
+        let Command::Navigate {
+            path, navigation, ..
+        } = command
+        else {
+            panic!("the parent row opens through navigation")
+        };
+        assert_eq!(path, test_root());
+        *opened.borrow_mut() = Some(navigation);
         true
     }));
-    finish(&mut p, PaneId::Left, NavigationId(2), vec![]);
+    finish(&mut p, PaneId::Left, opened.into_inner().unwrap(), vec![]);
+    assert!(!p.panes[0].loading, "the parent listing committed");
+    assert_eq!(p.panes[0].display_path(), test_root());
     assert!(p.panes[0].rows().is_empty());
 
     let generation = begin(&mut p, PaneId::Left, folder.to_str().unwrap());

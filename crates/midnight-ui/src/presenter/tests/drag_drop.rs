@@ -47,12 +47,7 @@ fn loaded() -> (Presenter, PathBuf) {
 
 fn identity(presenter: &Presenter, entry: u64) -> String {
     let p = &presenter.panes[0];
-    format!(
-        "{}:{}:{}:entry:{entry}",
-        p.generation,
-        p.displayed_generation().0,
-        p.search.view_revision
-    )
+    p.row_identity(p.entry_by_id(EntryId(entry)).expect("fixture row"))
 }
 
 #[test]

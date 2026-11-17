@@ -64,15 +64,20 @@ fn entry(id: u64, name: &str) -> Entry {
     Entry::new(EntryId(id), PathBuf::from(name), EntryKind::Directory)
 }
 fn begin(p: &mut Presenter, pane: PaneId, path: &str) -> NavigationId {
-    let sent = RefCell::new(None);
+    let sent = RefCell::new(Vec::new());
     assert!(p.navigate(pane, path.into(), None, &|c| {
-        *sent.borrow_mut() = Some(c);
+        sent.borrow_mut().push(c);
         true
     }));
-    match sent.into_inner().unwrap() {
-        Command::Navigate { navigation, .. } | Command::Refresh { navigation, .. } => navigation,
-        _ => panic!(),
-    }
+    sent.into_inner()
+        .into_iter()
+        .find_map(|command| match command {
+            Command::Navigate { navigation, .. } | Command::Refresh { navigation, .. } => {
+                Some(navigation)
+            }
+            _ => None,
+        })
+        .expect("navigation must send Navigate or Refresh")
 }
 fn finish(p: &mut Presenter, pane: PaneId, id: NavigationId, entries: Vec<Entry>) {
     let index = Arc::new(DirectoryIndex::from_entries(&entries));
@@ -82,6 +87,39 @@ fn finish(p: &mut Presenter, pane: PaneId, id: NavigationId, entries: Vec<Entry>
         entries: entries.into(),
         index,
     });
+}
+
+/// A late reply for a released owner must neither reach another owner nor change
+/// the visible notice/status, and its payload must leave the UI thread retired.
+pub(super) fn assert_late_event_is_only_retired(
+    p: &mut Presenter,
+    late: impl FnOnce(&mut Presenter),
+) {
+    drop(p.take_retired());
+    let notice = p.desktop.notice_generation;
+    let status = p.desktop.status.clone();
+    late(p);
+    assert_eq!(
+        p.take_retired().len(),
+        1,
+        "the late payload is retired, not consumed or dropped on the UI thread"
+    );
+    assert_eq!(p.desktop.notice_generation, notice);
+    assert_eq!(p.desktop.status, status);
+}
+
+/// The provider's last owner must leave the UI thread through retirement: nothing
+/// was dropped yet, and dropping the retired values on a worker drops it once.
+fn reclaim(p: &mut Presenter, drops: &std::sync::atomic::AtomicUsize) {
+    use std::sync::atomic::Ordering;
+    assert_eq!(
+        drops.load(Ordering::SeqCst),
+        0,
+        "the provider's last owner was dropped on the UI thread"
+    );
+    let retired = p.take_retired();
+    std::thread::spawn(move || drop(retired)).join().unwrap();
+    assert_eq!(drops.load(Ordering::SeqCst), 1);
 }
 
 /// Explicit small snapshots keep legacy cursor/navigation tests independent

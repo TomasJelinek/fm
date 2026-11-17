@@ -59,13 +59,6 @@ fn receipt(request: &TreeClipboardRequest, drops: Arc<AtomicUsize>) -> Event {
     }))
 }
 
-fn reclaim(p: &mut Presenter, drops: &AtomicUsize) {
-    assert_eq!(drops.load(Ordering::SeqCst), 0, "last owner dropped on UI");
-    let retired = p.take_retired();
-    std::thread::spawn(move || drop(retired)).join().unwrap();
-    assert_eq!(drops.load(Ordering::SeqCst), 1);
-}
-
 #[test]
 fn tree_drag_preserves_exact_marks_and_captures_the_unselected_dragged_row() {
     let mut p = loaded();

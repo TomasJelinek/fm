@@ -27,23 +27,6 @@ fn captured_archive_hot_path_keeps_raw_address_after_navigation_and_stays_unique
     assert_eq!(p.bookmarks()[0].path, root);
     assert_eq!(p.bookmarks()[0].slot, Some(1));
 }
-#[test]
-fn captured_hot_paths_keep_existing_numbered_slot_swap_rules() {
-    let root = std::env::temp_dir().join("hotpath-slots");
-    let mut p = Presenter::new(root.join("one"), root.join("two"));
-    p.preferences.loaded = true;
-    let first = p
-        .capture_bookmark_location(PaneId::Left, "One".into())
-        .unwrap();
-    let second = p
-        .capture_bookmark_location(PaneId::Right, "Two".into())
-        .unwrap();
-    assert!(p.add_bookmark_location(first, &|_| true));
-    assert!(p.add_bookmark_location(second, &|_| true));
-    let id = p.bookmarks()[0].id;
-    assert!(p.set_bookmark_slot(id, Some(2), &|_| true));
-    assert_eq!(p.bookmarks()[0].slot, Some(2));
-    assert_eq!(p.bookmarks()[1].slot, Some(1));
-    assert_eq!(p.bookmarks()[0].path, root.join("one"));
-    assert_eq!(p.bookmarks()[1].path, root.join("two"));
-}
+// The numbered-slot swap of captured locations (add_bookmark captures through
+// capture_bookmark_location/add_bookmark_location) is covered by
+// tests::bookmarks::moving_an_existing_hot_path_to_an_occupied_slot_keeps_both_paths.

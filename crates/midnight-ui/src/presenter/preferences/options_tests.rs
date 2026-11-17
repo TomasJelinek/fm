@@ -218,36 +218,6 @@ fn saved(commands: &[Command]) -> Vec<(PreferencesRevision, UserPreferences)> {
 }
 
 #[test]
-fn archive_preview_draft_stays_out_of_session_saves_and_cancel_restores_it() {
-    let mut p = loaded();
-    let commands = RefCell::new(Vec::new());
-    let send = |command| {
-        commands.borrow_mut().push(command);
-        true
-    };
-    p.begin_options();
-    let mut draft = p.preferences.values.clone();
-    draft.thumbnails_archives = false;
-    p.update_preferences(draft, &send);
-    assert!(!p.preferences.values.thumbnails_archives);
-    assert!(
-        saved(&commands.borrow()).is_empty(),
-        "archive preview is an Options draft"
-    );
-    p.change_panel_view_mode(PaneId::Left, 1, &send);
-    let writes = saved(&commands.borrow());
-    assert_eq!(writes.len(), 1);
-    assert!(
-        writes[0].1.thumbnails_archives,
-        "unrelated session saves retain the committed archive policy"
-    );
-    p.preferences_saved(writes[0].0, Ok(()));
-    p.cancel_options(&send);
-    assert!(p.preferences.values.thumbnails_archives);
-    assert_eq!(saved(&commands.borrow()).len(), 1, "Cancel must not save");
-}
-
-#[test]
 fn cancelling_restores_all_options_and_runtime_shortcuts_without_saving() {
     let mut p = loaded();
     let baseline = p.preferences.values.clone();
@@ -718,6 +688,7 @@ fn archive_and_disk_previews_share_rollback_without_leaking_into_session_saves()
     assert!(!writes[0].1.thumbnails_archives);
     p.preferences_saved(writes[0].0, Ok(()));
     p.cancel_options(&send);
+    assert_eq!(saved(&commands.borrow()).len(), 1, "Cancel must not save");
     assert_eq!(
         p.preferences.values.disk_io_concurrency,
         DiskIoConcurrency::Manual(7)

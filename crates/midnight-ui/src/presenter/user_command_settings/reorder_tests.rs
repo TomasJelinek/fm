@@ -1,4 +1,4 @@
-//! Ordering capture contract, shared with the standalone RED/GREEN harness.
+//! Ordering capture contract of the Custom Commands list reorder (drag and move actions).
 use super::reorder;
 use midnight_core::*;
 use std::sync::Arc;

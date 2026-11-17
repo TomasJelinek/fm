@@ -1765,10 +1765,12 @@ fn retiring_presenter_reclaims_saturated_tree_editor_capture_on_worker() {
     let retired = p.take_retired();
     std::thread::spawn(move || drop(retired)).join().unwrap();
     drop(p);
+    // Every owner is gone by now (worker joined, presenter dropped), so the drop
+    // report is already queued; waiting would only delay a leak report.
     assert_ne!(
         received
-            .recv_timeout(std::time::Duration::from_secs(2))
-            .unwrap(),
+            .try_recv()
+            .expect("the capture was dropped exactly when its last owner was"),
         std::thread::current().id()
     );
 }

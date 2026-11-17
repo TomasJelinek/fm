@@ -1,4 +1,5 @@
 use super::*;
+use crate::presenter::tests::assert_late_event_is_only_retired;
 
 fn setup(send: &dyn Fn(Command) -> bool) -> (Presenter, ChecksumJobId) {
     let root = std::env::temp_dir();
@@ -42,7 +43,7 @@ fn verification_uses_manifest_folder_and_does_not_retarget_with_panel_navigation
 }
 
 #[test]
-fn checksum_picker_returns_raw_path_without_starting_work_and_close_ignores_late_reply() {
+fn checksum_picker_returns_the_picked_path_without_starting_work_and_close_retires_late_reply() {
     let commands = std::cell::RefCell::new(Vec::new());
     let send = |command| {
         commands.borrow_mut().push(command);
@@ -93,9 +94,11 @@ fn checksum_picker_returns_raw_path_without_starting_work_and_close_ignores_late
     assert!(p.close_checksums(id, &send));
     assert!(commands.borrow().iter().any(|command| matches!(command,
         Command::CancelPathPicker { request } if *request == late)));
-    p.apply(Event::PathPicked {
-        request: late,
-        result: Ok(Some(path)),
+    assert_late_event_is_only_retired(&mut p, |p| {
+        p.apply(Event::PathPicked {
+            request: late,
+            result: Ok(Some(path)),
+        })
     });
     assert!(!p.checksums.sessions.contains_key(&id));
 }
@@ -214,9 +217,13 @@ fn checksum_queue_refusal_does_not_commit_start_stop_or_close() {
     assert!(!p.checksums.sessions[&id].stopping);
     assert!(!p.close_checksums(id, &|_| false));
     assert!(p.checksums.sessions.contains_key(&id));
+    drop(p.take_retired());
     assert!(p.close_checksums(id, &|_| true));
     assert!(!p.checksums.sessions.contains_key(&id));
-    assert!(!p.take_retired().is_empty());
+    assert!(
+        !p.take_retired().is_empty(),
+        "the admitted close retires the session off the UI thread"
+    );
 }
 
 #[test]
@@ -351,11 +358,12 @@ fn partial_checksum_save_requires_exact_current_run_acknowledgement() {
 fn late_checksum_events_do_not_reopen_released_windows() {
     let (mut p, id) = setup(&|_| true);
     assert!(p.close_checksums(id, &|_| true));
-    p.apply(Event::Checksum(Box::new(ChecksumEvent {
-        job: id,
-        generation: ChecksumGeneration(1),
-        update: ChecksumUpdate::Started,
-    })));
+    assert_late_event_is_only_retired(&mut p, |p| {
+        p.apply(Event::Checksum(Box::new(ChecksumEvent {
+            job: id,
+            generation: ChecksumGeneration(1),
+            update: ChecksumUpdate::Started,
+        })))
+    });
     assert!(p.checksums.sessions.is_empty());
-    assert!(!p.take_retired().is_empty());
 }

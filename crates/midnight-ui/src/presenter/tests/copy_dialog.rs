@@ -167,11 +167,15 @@ fn copy_dialog_cancel_and_invalid_or_stale_confirmation_never_queue_work() {
     assert!(!p.copies.draft.as_ref().unwrap().error.is_empty());
     p.cancel_copy_dialog("stale");
     assert!(p.copies.draft.is_some());
+    drop(p.take_retired());
     p.cancel_copy_dialog(&token);
+    assert!(
+        !p.take_retired().is_empty(),
+        "cancel retires the captured draft off the UI thread"
+    );
     p.confirm_copy_dialog(&token, "anything", &no_send);
     assert!(p.copies.draft.is_none());
     assert!(!p.has_live_operations());
-    assert!(!p.take_retired().is_empty());
 }
 
 #[test]

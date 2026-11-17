@@ -215,10 +215,18 @@ fn navigation_cancels_a_metadata_intent_waiting_for_selection() {
     let nav = p.panes[0].generation;
     let old = p.panes[0].selected.clone();
     p.open_metadata(PaneId::Left, true, &|_| panic!("must wait"));
+    assert!(
+        p.selection_actions[0].is_some(),
+        "the metadata intent waits for the selection"
+    );
     begin(
         &mut p,
         PaneId::Left,
         test_root().join("elsewhere").to_str().unwrap(),
+    );
+    assert!(
+        p.selection_actions[0].is_none(),
+        "navigation cancels the waiting metadata intent"
     );
     p.apply_with_sender(
         Event::SelectionChanged {

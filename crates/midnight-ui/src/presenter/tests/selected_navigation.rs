@@ -65,12 +65,14 @@ fn selected_navigation_skips_current_includes_folders_preserves_marks_and_never_
 
 #[test]
 fn selected_navigation_sparse_far_selection_uses_display_positions_not_entry_ids() {
-    let mut p = loaded(100_003);
-    select_positions(&mut p, &[1, 100_001]);
+    // `nearest_bit` has no window or size-dependent branch: 203 rows still scan
+    // several empty 64-bit words in both directions and mask a partial last word.
+    let mut p = loaded(203);
+    select_positions(&mut p, &[1, 201]);
     let offset = p.panes[0].parent_offset();
     p.focus_display_row(PaneId::Left, 1 + offset);
     p.move_cursor(PaneId::Left, 14, &|_| false);
-    assert_eq!(p.panes[0].cursor, Some(EntryId(100_002)));
+    assert_eq!(p.panes[0].cursor, Some(EntryId(202)));
     p.move_cursor(PaneId::Left, 13, &|_| false);
     assert_eq!(p.panes[0].cursor, Some(EntryId(2)));
 }

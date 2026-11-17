@@ -79,16 +79,6 @@ fn receipt(request: &TreeUserCommandRequest, drops: Arc<AtomicUsize>) -> Event {
         })),
     }))
 }
-fn reclaim(p: &mut Presenter, drops: &AtomicUsize) {
-    assert_eq!(
-        drops.load(Ordering::SeqCst),
-        0,
-        "last provider ownership dropped on UI"
-    );
-    let retired = p.take_retired();
-    std::thread::spawn(move || drop(retired)).join().unwrap();
-    assert_eq!(drops.load(Ordering::SeqCst), 1);
-}
 
 #[test]
 fn tree_user_command_capture_freezes_configuration_focus_other_directory_and_selected_marks() {

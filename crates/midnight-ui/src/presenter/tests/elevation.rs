@@ -369,7 +369,7 @@ fn refresh_errors_keep_the_inline_notice_and_do_not_open_a_message_box() {
 }
 
 #[test]
-fn a_busy_authorization_queue_reports_failure_without_consuming_a_receipt() {
+fn a_busy_authorization_queue_keeps_the_receipt_and_asks_to_reopen_the_folder() {
     let (mut p, navigation, path) = denied_notice();
     offer(&mut p, navigation, &path);
     p.retry_notice_authorized(p.desktop.notice_generation, &|_| false);
@@ -383,5 +383,12 @@ fn a_busy_authorization_queue_reports_failure_without_consuming_a_receipt() {
             .1
             .contains("queue is busy")
     );
+    assert_eq!(
+        p.panes[0].elevation_retry,
+        Some((navigation, path)),
+        "a refused retry does not consume the receipt"
+    );
+    // The busy notice replaces the offer: authorization needs the folder reopened.
     assert!(!p.notice_can_authorize());
+    assert!(!p.can_retry_directory_elevated(PaneId::Left));
 }

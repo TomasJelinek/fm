@@ -178,25 +178,15 @@ fn completion_uses_raw_paths_after_refresh_recycles_row_ids() {
     assert!(!paths.contains(&root.join("second")));
 }
 
-#[test]
-fn archive_completion_uses_mount_identity_and_waits_for_pending_selection() {
-    let mut p = super::archives::archive_pane();
-    let id = OperationId(41);
-    p.track_copy_selection(id);
-    p.panes[0].archive.as_mut().unwrap().selection_pending = true;
-    // Identical labels in this fixture have different provider entry identities.
+fn archive_root_completed(p: &mut Presenter, id: OperationId, mount: u64, entry: u64) {
     p.apply(Event::Copy(CopyEvent::RootCompleted {
         id,
-        source: CompletedCopySource::Archive(VirtualEntryId {
-            mount: 42,
-            entry: 3,
-        }),
+        source: CompletedCopySource::Archive(VirtualEntryId { mount, entry }),
     }));
-    p.flush_selection(&|command| {
-        assert!(!matches!(command, Command::ArchiveSelect { .. }));
-        true
-    });
-    p.panes[0].archive.as_mut().unwrap().selection_pending = false;
+}
+
+/// The archive selection command a flush sends, if any.
+fn flushed_archive_select(p: &mut Presenter) -> Option<Command> {
     let sent = RefCell::new(None);
     p.flush_selection(&|command| {
         if matches!(command, Command::ArchiveSelect { .. }) {
@@ -204,27 +194,77 @@ fn archive_completion_uses_mount_identity_and_waits_for_pending_selection() {
         }
         true
     });
+    sent.into_inner()
+}
+
+fn removed_archive_ids(command: &Command) -> HashSet<EntryId> {
     let Command::ArchiveSelect {
         action: ArchiveSelectionAction::Remove(ids),
         ..
-    } = sent.into_inner().unwrap()
+    } = command
     else {
-        panic!()
+        panic!("archive completion must send a removal")
     };
-    assert_eq!(ids.as_ref(), &HashSet::from([EntryId(3)]));
-    p.apply(Event::Copy(CopyEvent::RootCompleted {
-        id,
-        source: CompletedCopySource::Archive(VirtualEntryId {
-            mount: 777,
-            entry: 4,
+    ids.as_ref().clone()
+}
+
+/// An archive pane whose first completed root (entry 3) was removed from the
+/// selection and acknowledged, so the next completion can be flushed at once.
+fn archive_with_acknowledged_completion() -> (Presenter, OperationId) {
+    let mut p = super::archives::archive_pane();
+    let id = OperationId(41);
+    p.track_copy_selection(id);
+    p.panes[0].archive.as_mut().unwrap().selection_pending = true;
+    // Identical labels in this fixture have different provider entry identities.
+    archive_root_completed(&mut p, id, 42, 3);
+    assert!(
+        flushed_archive_select(&mut p).is_none(),
+        "a pending archive selection defers the removal"
+    );
+    p.panes[0].archive.as_mut().unwrap().selection_pending = false;
+    let first = flushed_archive_select(&mut p).expect("the deferred removal is sent");
+    assert_eq!(removed_archive_ids(&first), HashSet::from([EntryId(3)]));
+    let Command::ArchiveSelect {
+        navigation,
+        revision,
+        view,
+        ..
+    } = first
+    else {
+        unreachable!()
+    };
+    p.apply(Event::ArchiveSelection {
+        pane: PaneId::Left,
+        navigation,
+        revision,
+        view,
+        result: Ok(ArchiveSelectionResult {
+            selected: Arc::new(HashSet::new()),
+            totals: ArchiveSelectionTotals::default(),
         }),
-    }));
-    // Navigating away discards queued removal, even if a different location has the same IDs.
-    p.panes[0].archive.as_mut().unwrap().location.directory = 9;
-    p.flush_selection(&|command| {
-        assert!(!matches!(command, Command::ArchiveSelect { .. }));
-        true
     });
+    (p, id)
+}
+
+#[test]
+fn archive_completion_uses_mount_identity_and_waits_for_pending_selection() {
+    let (mut p, id) = archive_with_acknowledged_completion();
+    // Another mount's entry 4 is not this pane's entry 4.
+    archive_root_completed(&mut p, id, 777, 4);
+    assert!(flushed_archive_select(&mut p).is_none());
+    archive_root_completed(&mut p, id, 42, 4);
+    let next = flushed_archive_select(&mut p).expect("this mount's completion is removed");
+    assert_eq!(removed_archive_ids(&next), HashSet::from([EntryId(4)]));
+}
+
+#[test]
+fn archive_navigation_discards_a_queued_completion_removal() {
+    let (mut p, id) = archive_with_acknowledged_completion();
+    archive_root_completed(&mut p, id, 42, 4);
+    // Navigating away discards the queued removal, even if a different location
+    // has the same IDs; the positive control above sends this exact removal.
+    p.panes[0].archive.as_mut().unwrap().location.directory = 9;
+    assert!(flushed_archive_select(&mut p).is_none());
 }
 
 #[test]

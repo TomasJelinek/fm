@@ -210,6 +210,122 @@ fn only_successfully_applied_filters_enter_bounded_deduplicated_history() {
     assert_eq!(history[0], different_case);
 }
 
+/// Both panes show one committed file with a cursor (no preferences loaded).
+fn loaded_panes() -> Presenter {
+    let mut p = Presenter::new("left".into(), "right".into());
+    for pane in &mut p.panes {
+        pane.generation = 1;
+        pane.successful_generation = Some(NavigationId(1));
+        pane.selection_context = NavigationId(1);
+        pane.selection_committed_context = NavigationId(1);
+        pane.entries = vec![Entry::new(
+            EntryId(1),
+            pane.path.join("one"),
+            EntryKind::File,
+        )]
+        .into();
+        pane.index = Arc::new(DirectoryIndex::from_entries(&pane.entries));
+        pane.cursor = Some(EntryId(1));
+    }
+    p
+}
+
+#[test]
+fn cancelled_validation_cannot_change_saved_filters_and_applied_filter_waits_for_search() {
+    let mut p = loaded_panes();
+    p.open_panel_filter(PaneId::Left);
+    let commands = RefCell::new(Vec::new());
+    let filter = PanelFilter {
+        enabled: true,
+        expression: "*.txt".into(),
+        ..Default::default()
+    };
+    p.submit_panel_filter(PaneId::Left, filter.clone(), &|command| {
+        commands.borrow_mut().push(command);
+        true
+    });
+    let Command::ValidatePanelFilter(request) = commands.into_inner().pop().unwrap() else {
+        panic!("validation");
+    };
+    p.cancel_panel_filter();
+    p.apply(Event::PanelFilterValidated {
+        request,
+        result: Ok(()),
+        diagnostic: None,
+    });
+    p.flush_filters(&|_| true);
+    assert!(!p.preferences.values.panel_filters[0].enabled);
+    p.open_panel_filter(PaneId::Left);
+    let commands = RefCell::new(Vec::new());
+    p.submit_panel_filter(PaneId::Left, filter, &|command| {
+        commands.borrow_mut().push(command);
+        true
+    });
+    let Command::ValidatePanelFilter(request) = commands.into_inner().pop().unwrap() else {
+        panic!("validation");
+    };
+    p.apply(Event::PanelFilterValidated {
+        request,
+        result: Ok(()),
+        diagnostic: None,
+    });
+    p.flush_filters(&|_| true);
+    assert!(p.preferences.values.panel_filters[0].enabled);
+    assert!(
+        !p.preferences.values.panel_filters[1].enabled,
+        "the other pane's filter is untouched"
+    );
+    assert!(p.panes[0].search_view_waiting());
+    assert!(!p.panes[0].search_allows_activation());
+}
+
+#[test]
+fn persistent_empty_projection_cannot_activate_a_previously_visible_cursor() {
+    for (mode, expression) in [
+        (FilterMode::Masks, "*.none"),
+        (FilterMode::Expression, "kind = file and size > 100GiB"),
+    ] {
+        let mut p = loaded_panes();
+        p.preferences.values.panel_filters[0] = PanelFilter {
+            enabled: true,
+            mode,
+            expression: expression.into(),
+            ..Default::default()
+        };
+        p.search_filter_changed();
+        let commands = RefCell::new(Vec::new());
+        p.flush_search(&|command| {
+            commands.borrow_mut().push(command);
+            true
+        });
+        let request = commands
+            .into_inner()
+            .into_iter()
+            .find_map(|command| match command {
+                Command::Search(request) => Some(request),
+                _ => None,
+            })
+            .unwrap();
+        p.apply(Event::SearchReady {
+            pane: PaneId::Left,
+            navigation: NavigationId(1),
+            revision: request.revision,
+            result: Arc::new(SearchResult {
+                source: request.source,
+                matches: Arc::default(),
+                index: Arc::default(),
+                filtered: Arc::default(),
+                filtered_index: Arc::default(),
+            }),
+        });
+        assert_eq!(p.panes[0].display_len(), 0);
+        assert!(
+            !p.panes[0].search_allows_activation(),
+            "hidden cursor must not become a fallback operation target"
+        );
+    }
+}
+
 fn commit_listing(p: &mut Presenter, navigation: NavigationId) {
     let entries = vec![Entry::new(
         EntryId(navigation.0),

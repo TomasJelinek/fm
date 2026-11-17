@@ -162,12 +162,17 @@ fn preview_and_cancel_are_explicit_and_duplicate_rejection_does_not_finish_accep
     })));
     assert!(p.command_launches.jobs[0].finished);
     assert_eq!(p.command_launches.jobs[0].started, 1);
+    drop(p.take_retired());
     p.apply(event(UserCommandUpdate::Started {
         index: 9,
         process_id: 100,
     }));
     assert_eq!(p.command_launches.jobs[0].started, 1);
-    assert!(!p.take_retired().is_empty());
+    assert_eq!(
+        p.take_retired().len(),
+        1,
+        "the late launch report is retired, not applied"
+    );
 }
 
 #[test]
@@ -325,14 +330,20 @@ fn jobs_clear_finished_commands_preserves_active_and_error_receipts() {
             }),
         })));
     }
+    drop(p.take_retired());
     p.clear_finished_jobs(true);
     assert_eq!(p.command_launches.jobs.len(), 2);
     assert!(p.command_launches.jobs[0].error.is_some());
     assert!(!p.command_launches.jobs[1].finished);
+    assert_eq!(p.take_retired().len(), 1, "the cleared receipt is retired");
     p.clear_finished_jobs(false);
     assert_eq!(p.command_launches.jobs.len(), 1);
     assert!(!p.command_launches.jobs[0].finished);
-    assert!(!p.take_retired().is_empty());
+    assert_eq!(
+        p.take_retired().len(),
+        1,
+        "the cleared error receipt is retired"
+    );
 }
 
 #[test]
