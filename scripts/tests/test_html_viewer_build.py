@@ -141,6 +141,74 @@ source.rename(destination)
         self.assertIn(str(retained[0].parent), result.stderr)
 
 
+@unittest.skipUnless(os.name == "nt", "Windows HTML build wrapper")
+class HtmlViewerBuildWindows(unittest.TestCase):
+    """cl.exe cannot compile CEF's wrapper below a deep checkout's default target."""
+
+    def setUp(self):
+        temporary = ROOT / "_build/tmp"
+        temporary.mkdir(parents=True, exist_ok=True)
+        self.temporary = tempfile.TemporaryDirectory(prefix="html build ", dir=temporary)
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+        scripts = self.root / "scripts"
+        scripts.mkdir()
+        shutil.copyfile(ROOT / "scripts/build-html-viewer.ps1", scripts / "build-html-viewer.ps1")
+        (scripts / "prepare-html-cef.py").write_text(
+            "import json, pathlib, sys\n"
+            "arguments = sys.argv[1:]\n"
+            "output = pathlib.Path(arguments[arguments.index('--output') + 1])\n"
+            "(output / 'cef').mkdir(parents=True, exist_ok=True)\n"
+            "pathlib.Path(__file__).with_name('cef.json').write_text(json.dumps(arguments))\n"
+            "print(json.dumps({'cef_path': str(output / 'cef')}))\n")
+        plugin = self.root / "plugins/midnight-viewer-html"
+        (plugin / "scripts").mkdir(parents=True)
+        (plugin / "Cargo.toml").write_text("[package]\n")
+        (plugin / "scripts/build-windows.ps1").write_text(
+            "param([string]$SdkConfig, [string]$CefDistribution, [string]$TargetDirectory,\n"
+            "    [string]$OutputDirectory, [switch]$Release)\n"
+            "Set-Content -LiteralPath (Join-Path $PSScriptRoot 'target.txt') -Value $TargetDirectory -Encoding utf8\n"
+            "New-Item -ItemType Directory -Force $OutputDirectory | Out-Null\n"
+            "foreach ($name in 'runtime-files.json', 'web-viewer.json') {\n"
+            "    Set-Content -LiteralPath (Join-Path $OutputDirectory $name) -Value '{}'\n"
+            "}\n"
+            "exit 0\n")
+        stubs = self.root / "bin"
+        stubs.mkdir()
+        (stubs / "cargo.cmd").write_text("@exit /b 0\n")
+        self.sdk = self.root / "sdk.toml"
+        self.sdk.write_text("")
+        self.environment = dict(os.environ, PATH=str(stubs) + os.pathsep + os.environ["PATH"])
+        for name in ("MIDNIGHT_HTML_TARGET_DIR", "MIDNIGHT_HTML_SDK_CONFIG",
+                     "MIDNIGHT_VIEWERS_OFFLINE", "CARGO_TARGET_DIR"):
+            self.environment.pop(name, None)
+
+    def build(self, **environment):
+        result = subprocess.run(
+            ["powershell.exe", "-NoProfile", "-File", str(self.root / "scripts/build-html-viewer.ps1"),
+             "-SdkConfig", str(self.sdk), "-AppDirectory", str(self.root / "_build/debug")],
+            cwd=self.root, env=dict(self.environment, **environment),
+            capture_output=True, text=True, timeout=120)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        target = (self.root / "plugins/midnight-viewer-html/scripts/target.txt").read_text(encoding="utf-8-sig")
+        arguments = json.loads((self.root / "scripts/cef.json").read_text())
+        return result.stdout + result.stderr, Path(target.strip()), Path(arguments[arguments.index("--output") + 1])
+
+    def test_short_target_override_keeps_the_verified_cef_sdk_under_build(self):
+        default = self.root / "_build/html-viewer/provider-target/windows"
+        output, target, cef = self.build()
+        self.assertEqual((target, cef), (default, default / "cef-sdk"))
+        if len(str(default)) > 80:
+            self.assertIn("MIDNIGHT_HTML_TARGET_DIR", output)
+        with tempfile.TemporaryDirectory(prefix="mh") as short:
+            override = Path(short) / "t"
+            output, target, cef = self.build(MIDNIGHT_HTML_TARGET_DIR=str(override))
+            self.assertEqual((target, cef), (override, default / "cef-sdk"))
+            if len(str(override)) <= 80:
+                self.assertNotIn("MIDNIGHT_HTML_TARGET_DIR", output)
+        self.assertTrue((self.root / "_build/debug/viewers/midnight-viewer-html/web-viewer.json").is_file())
+
+
 class LinuxHtmlManifest(unittest.TestCase):
     def test_linux_package_keeps_the_project_manifest_identity(self):
         # The Linux package once synthesized a stale "Chromium HTML" name and its own
