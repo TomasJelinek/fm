@@ -58,6 +58,47 @@ fn local_gio_enumerator_completes_and_closes_without_network_access() {
 }
 
 #[test]
+fn records_beyond_one_request_batch_are_each_returned_once() {
+    let directory = Directory::new();
+    for number in 0..(BATCH as usize + 9) {
+        std::fs::create_dir(directory.0.join(format!("share-{number:02}"))).unwrap();
+    }
+    let mut cursor = Gio.begin(&directory.uri(), &context(&|| false)).unwrap();
+    let mut displays = Vec::new();
+    let mut records = 0;
+    while let Some(entry) = Gio.next(&mut cursor, &context(&|| false)).unwrap() {
+        records += 1;
+        if !entry.display.is_empty() {
+            displays.push(entry.display);
+        }
+    }
+    // Directories carry their caption; the regular fixture file is a placeholder row.
+    assert_eq!(records, BATCH as usize + 10);
+    displays.sort();
+    let expected: Vec<_> = (0..(BATCH as usize + 9))
+        .map(|number| format!("share-{number:02}"))
+        .collect();
+    assert_eq!(displays, expected);
+    drop(cursor);
+}
+
+#[test]
+fn a_partly_read_batch_is_released_with_its_cursor() {
+    let directory = Directory::new();
+    for number in 0..3 {
+        std::fs::create_dir(directory.0.join(format!("share-{number}"))).unwrap();
+    }
+    let mut cursor = Gio.begin(&directory.uri(), &context(&|| false)).unwrap();
+    assert!(
+        Gio.next(&mut cursor, &context(&|| false))
+            .unwrap()
+            .is_some()
+    );
+    assert!(cursor.batch.is_some() && !cursor.unread.is_null());
+    drop(cursor);
+}
+
+#[test]
 fn cancellation_after_async_start_drains_callback_before_cursor_reuse() {
     let directory = Directory::new();
     let mut cursor = Gio.begin(&directory.uri(), &context(&|| false)).unwrap();
