@@ -14,7 +14,8 @@ color signalling (AVIF nclx, PNG cICP) is not converted: those pixels are used a
 sRGB. The first still frame is used. Original dimensions are limited to 32768
 pixels per edge and 128 MiB of RGBA storage; profiles to 4 MiB. Thumbnails reduce
 the frame first, averaging colors with alpha weights so transparent edges keep
-their color, and orient the small result afterwards.
+their color, and orient the small result afterwards. A frame that already fits the
+requested bound is not resampled.
 
 Source reads go through a seek-preserving window of at most 256 KiB: it batches
 small codec reads into brokered reads and keeps fetched bytes across codec seeks,
