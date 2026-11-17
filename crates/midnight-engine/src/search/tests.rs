@@ -26,7 +26,7 @@ fn request(query: &str, names: &[&str]) -> SearchRequest {
 }
 
 fn ready(request: &SearchRequest) -> SearchResult {
-    match compute(request, &|| false) {
+    match compute(request, None, &|| false).0 {
         Computation::Ready(result) => result,
         Computation::Cancelled => panic!("unexpected cancellation"),
         Computation::Failed(error) => panic!("unexpected search error: {error}"),
@@ -66,6 +66,87 @@ fn duplicate_archive_names_filter_by_provider_identity_without_native_paths() {
     assert_eq!(result.matches.len(), 2);
     assert_eq!(result.index.by_id.len(), 2);
     assert!(result.index.by_path.is_empty());
+}
+
+#[test]
+fn network_listing_quick_search_and_filter_use_entry_identities_without_native_paths() {
+    let network = |id: u64, display: &str| {
+        Entry::from_network(
+            EntryId(id),
+            midnight_core::NetworkNode {
+                address: midnight_core::NetworkAddress {
+                    provider: "test.network".into(),
+                    opaque: Arc::from(id.to_le_bytes()),
+                    display: display.into(),
+                },
+                display: display.into(),
+            },
+        )
+    };
+    let mut request = request("s", &[]);
+    request.source = [
+        network(1, "server-a"),
+        network(2, "server-b"),
+        network(3, "printer"),
+    ]
+    .into_iter()
+    .collect();
+    request.filter = midnight_core::PanelFilter {
+        enabled: true,
+        expression: "s*".into(),
+        ..Default::default()
+    };
+    // Network rows share the empty native path; it must not make them ambiguous.
+    // Masks keep folder-like network rows, so the filter projects all three.
+    let result = ready(&request);
+    assert_eq!(rows(&result), [(0, 1), (1, 1)]);
+    assert_eq!(result.filtered.len(), 3);
+    assert_eq!(result.filtered_index.by_id.len(), 3);
+    assert!(result.filtered_index.by_path.is_empty());
+    assert!(result.index.by_path.is_empty());
+    request.filter = Default::default();
+    request.query.clear();
+    let unfiltered = ready(&request);
+    assert_eq!(unfiltered.matches.len(), 3);
+    assert_eq!(unfiltered.index.by_id.get(&EntryId(3)), Some(&2));
+}
+
+#[test]
+fn cached_filter_projection_serves_only_the_same_source_and_filter() {
+    let mut request = request("a", &["alpha", "beta", "another"]);
+    request.filter = midnight_core::PanelFilter {
+        enabled: true,
+        expression: "a*".into(),
+        ..Default::default()
+    };
+    let (first, projection) = compute(&request, None, &|| false);
+    let Computation::Ready(first) = first else {
+        panic!("first search failed")
+    };
+    let projection = projection.expect("validated projection is kept");
+    assert!(projection.serves(&request));
+    request.query = "an".into();
+    let (second, kept) = compute(&request, Some(projection), &|| false);
+    let Computation::Ready(second) = second else {
+        panic!("cached search failed")
+    };
+    assert!(Arc::ptr_eq(&first.filtered_index, &second.filtered_index));
+    assert_eq!(rows(&second), [(2, 2)]);
+    let kept = kept.unwrap();
+    request.query.clear();
+    let (empty, kept) = compute(&request, Some(kept), &|| false);
+    let Computation::Ready(empty) = empty else {
+        panic!("empty query failed")
+    };
+    assert!(Arc::ptr_eq(&empty.index, &empty.filtered_index));
+    assert_eq!(empty.matches, empty.filtered);
+    let kept = kept.unwrap();
+    let mut other_filter = request.clone();
+    other_filter.filter.expression = "b*".into();
+    assert!(!kept.serves(&other_filter));
+    let mut other_source = request.clone();
+    other_source.source = request.source.to_vec().into();
+    assert!(!kept.serves(&other_source));
 }
 
 #[test]
@@ -334,10 +415,11 @@ fn large_snapshot_is_cancellable_and_full_results_keep_valid_indices() {
     };
     let polls = Cell::new(0);
     assert!(matches!(
-        compute(&request, &|| {
+        compute(&request, None, &|| {
             polls.set(polls.get() + 1);
             polls.get() >= 3
-        }),
+        })
+        .0,
         Computation::Cancelled
     ));
     let result = ready(&request);
@@ -363,10 +445,50 @@ fn duplicate_raw_paths_or_ids_cannot_create_an_ambiguous_selection_projection() 
             source[1].path = source[0].path.clone();
         }
         assert!(matches!(
-            compute(&request, &|| false),
+            compute(&request, None, &|| false).0,
             Computation::Failed(_)
         ));
     }
+}
+
+/// `cargo test -p midnight-engine --lib measure_quick_search -- --ignored --nocapture`.
+/// Uncached revisions repeat the per-keystroke work of the former single pass.
+#[test]
+#[ignore = "timing harness"]
+fn measure_quick_search_keystrokes_with_and_without_the_cached_projection() {
+    let names: Vec<_> = (0..200_000)
+        .map(|row| format!("row-{row:06}.txt"))
+        .collect();
+    let names: Vec<_> = names.iter().map(String::as_str).collect();
+    let mut request = request("", &names);
+    let queries = ["r", "ro", "row", "row-", "row-1", "row-12", "row-123"];
+    let started = std::time::Instant::now();
+    for query in queries {
+        request.query = query.into();
+        assert!(matches!(
+            compute(&request, None, &|| false).0,
+            Computation::Ready(_)
+        ));
+    }
+    let uncached = started.elapsed();
+    request.query.clear();
+    let mut projection = compute(&request, None, &|| false).1;
+    let started = std::time::Instant::now();
+    for query in queries {
+        request.query = query.into();
+        let (computation, kept) = compute(&request, projection.take(), &|| false);
+        assert!(matches!(computation, Computation::Ready(_)));
+        projection = kept;
+    }
+    let cached = started.elapsed();
+    eprintln!(
+        "200k rows, {} keystrokes: uncached {:?} ({:?}/key), cached {:?} ({:?}/key)",
+        queries.len(),
+        uncached,
+        uncached / queries.len() as u32,
+        cached,
+        cached / queries.len() as u32
+    );
 }
 
 #[cfg(unix)]
