@@ -1,7 +1,7 @@
 use crate::{Mailbox, navigation, page::Page};
 use midnight_core::*;
 use midnight_plugin_host::{
-    EventKind, Runtime, Session,
+    EventKind, OPEN_REQUEST_ID, Runtime, Session,
     api::{messages, viewer},
 };
 use midnight_viewer_render::{TextOptions, TextPage, TextRenderer, Viewport};
@@ -15,12 +15,12 @@ use std::{
     time::Duration,
 };
 
-/// Plugin-host numbers each session's Open request 1 and reports session-level failures,
-/// such as queue overflow and host registration, with the same ID.
-const OPEN_REQUEST_ID: u64 = 1;
-/// Bounded retry for work without a wake signal: previous sessions finishing their
-/// teardown and paints waiting for shared raster budget.
+/// Bounded retry for work without a wake signal: previous browser and image actors
+/// finishing their teardown and paints waiting for shared raster budget. A closing plugin
+/// session wakes the worker when its dispatcher ends.
 const RETRY: Duration = Duration::from_millis(12);
+/// Events handled per drain of the active plugin session.
+const DRAIN: usize = 32;
 /// In-progress status of the one active search; cleared whenever that search ends.
 const SEARCHING: &str = "Searching…";
 /// Status while an opening waits only for its file identity.
@@ -68,7 +68,7 @@ struct Worker {
     image_startup: Option<crate::image_startup::Startup>,
     web_providers: Arc<[midnight_web_viewer_host::Provider]>,
     web: Option<web::WebView>,
-    closing_web: Option<midnight_web_viewer_host::Session>,
+    closing_web: Option<Box<dyn web::Browser>>,
     image_ids: Arc<std::sync::atomic::AtomicU64>,
     image: Option<crate::image_view::ImageView>,
     closing_image: Option<crate::image_worker::ImageWorker>,
@@ -80,8 +80,6 @@ struct Worker {
     /// Captures other files on demand; absent for single-source launches.
     prefetch: Option<crate::capture_prefetch::Prefetch>,
     capture_request: Option<(u64, usize)>,
-    /// A drained failure the worker did not show, which may have ended the session.
-    orphan_failure: Option<event_loop::Orphan>,
     /// Browser events beyond one drained batch remain queued without another wake.
     web_backlog: bool,
     basic: bool,
@@ -93,7 +91,10 @@ struct Worker {
     generation: u64,
     positions: crate::position_ack::Positions,
     position_page: Option<(u64, Page)>,
+    /// The plugin session of the shown file. Its ready signal wakes this worker.
     session: Option<Session>,
+    /// A previous session finishing its teardown; never set while `session` is. Its
+    /// final ready signal wakes this worker when its dispatcher ends.
     closing: Option<Session>,
     pending_open: bool,
     layout: crate::layout_handshake::Handshake,
@@ -216,7 +217,6 @@ pub(crate) fn run(
         captured: Some((order.current, order.focused)),
         prefetch,
         capture_request: None,
-        orphan_failure: None,
         web_backlog: false,
         basic: launch.basic,
         associations: launch.associations.clone(),
@@ -418,7 +418,6 @@ impl Worker {
         self.continuation = None;
         self.queued_scroll = [0.0; 2];
         self.frames.invalidate();
-        self.orphan_failure = None;
         // The identity is captured while any previous session finishes closing.
         self.request_capture();
         if let Some(web) = self.web.take() {
@@ -891,8 +890,8 @@ impl Worker {
                 self.text.locate_request = None;
                 // Older plugins reject the optional request. This is not a
                 // document failure and must not overwrite the usable viewport.
-                // A session-fatal failure with this ID is remembered by
-                // `session_events` and reported if the session ends.
+                // A session-fatal failure never gets here: `session_events`
+                // reports it whichever request it names.
                 self.text.unavailable = failure.code != midnight_plugin_host::api::abi::QUEUE_FULL;
                 self.dirty = true;
             }
@@ -915,18 +914,7 @@ impl Worker {
             }
             EventKind::Failed(failure) if self.reports_failure(id) => {
                 if self.viewport_request == Some(id) {
-                    self.abort_raster_rebase(&failure.message, output);
-                    self.abort_raster_refill(&failure.message, output);
-                    self.position_page = None;
-                    let failed = self.positions.complete(id, false)
-                        == crate::position_ack::Completion::Failed;
-                    self.viewport_request = None;
-                    if failed {
-                        self.position_context(output);
-                        self.dirty = true;
-                    }
-                    self.queued_scroll = [0.0; 2];
-                    self.continuation = None;
+                    self.viewport_failed(id, &failure.message, output);
                 }
                 if self.search_request == Some(id) {
                     self.search_request = None;
@@ -1007,10 +995,26 @@ impl Worker {
                     }
                 }
             }
-            // Includes events of requests no longer tracked. `session_events` remembers a
-            // failure among them that may have ended the session.
+            // Includes late events of requests no longer tracked, such as cancelled ones.
+            // A session-fatal failure among them never gets here (see `session_events`).
             _ => {}
         }
+    }
+
+    /// The viewport request `id` ended without a page: drop its raster handoff or refill
+    /// and fail the scrollbar position it was serving.
+    fn viewport_failed(&mut self, id: u64, message: &str, output: &Mailbox) {
+        self.abort_raster_rebase(message, output);
+        self.abort_raster_refill(message, output);
+        self.position_page = None;
+        let failed = self.positions.complete(id, false) == crate::position_ack::Completion::Failed;
+        self.viewport_request = None;
+        if failed {
+            self.position_context(output);
+            self.dirty = true;
+        }
+        self.queued_scroll = [0.0; 2];
+        self.continuation = None;
     }
 
     fn wrap_available(&self) -> bool {

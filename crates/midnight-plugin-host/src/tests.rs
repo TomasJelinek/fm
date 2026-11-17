@@ -475,13 +475,24 @@ fn drain_until(
     }
 }
 
-/// Backend cleanup publishes no notification; poll the condition until the deadline.
+/// Wait until every session finished its backend cleanup, woken by the final ready
+/// signal each session sends when its dispatcher ends rather than by polling. Returns
+/// false only when the failure deadline elapses.
 fn closed_by(sessions: &[Session], deadline: std::time::Instant) -> bool {
+    use std::sync::mpsc::{TrySendError, sync_channel};
+    let (ended, wake) = sync_channel(sessions.len().max(1));
+    for session in sessions {
+        let ended = ended.clone();
+        // A full channel already holds a wake, after which every session is checked again.
+        session.notify_on_ready(std::sync::Arc::new(move || {
+            !matches!(ended.try_send(()), Err(TrySendError::Disconnected(_)))
+        }));
+    }
     while sessions.iter().any(|session| !session.is_closed()) {
-        if std::time::Instant::now() >= deadline {
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        if remaining.is_zero() || wake.recv_timeout(remaining).is_err() {
             return false;
         }
-        std::thread::sleep(std::time::Duration::from_millis(1));
     }
     true
 }

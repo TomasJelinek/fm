@@ -25,6 +25,15 @@ impl Message {
 
 /// Backend wakes share the bounded user-input channel. At most one `Ready` is queued at a
 /// time: the worker polls every source after receiving it, so later wakes are redundant.
+///
+/// Producers publish their state (session output, a session's end, a finished capture),
+/// then `wake`. The worker takes `Ready`, calls `received`, then polls every source. Both
+/// sides use read-modify-write operations on `pending`, which totally orders them: either
+/// the producer's `wake` reads the worker's `false` and queues a new `Ready`, or `received`
+/// reads the producer's `true` and synchronizes with it, so the poll that follows sees the
+/// published state. With a plain store in `received`, both could miss each other (store
+/// buffering), and a worker that waits for a wake without a retry, such as for the end of
+/// a closing plugin session, would wait for an unrelated one.
 pub(crate) struct Wakes {
     sender: SyncSender<Message>,
     pending: AtomicBool,
@@ -53,7 +62,7 @@ impl Wakes {
 
     /// The worker received `Ready` and polls every source after this call.
     pub fn received(&self) {
-        self.pending.store(false, Ordering::Release);
+        self.pending.swap(false, Ordering::AcqRel);
     }
 }
 
@@ -212,6 +221,86 @@ mod tests {
         assert!(!wakes.wake(), "a full queue reports the dropped wake");
         receiver.try_iter().for_each(drop);
         assert!(wakes.wake(), "a rejected wake does not stay pending");
+    }
+
+    /// Store-buffering litmus test of the `received`-then-poll handshake. Each round
+    /// starts with a `Ready` taken from the queue: the worker calls `received` and then
+    /// checks a published flag while a producer sets the flag and wakes. At least one side
+    /// must observe the other: the worker sees the flag, or a new `Ready` is queued. The
+    /// run is bounded by a round count and a short time budget so a loaded machine stays
+    /// fast.
+    #[test]
+    fn received_and_poll_never_miss_a_concurrent_publication() {
+        use std::sync::atomic::AtomicUsize;
+        const ROUNDS: usize = 50_000;
+        const STOP: usize = usize::MAX;
+        let (sender, receiver) = mpsc::sync_channel(2);
+        let wakes = Arc::new(Wakes::new(sender));
+        let published = Arc::new(AtomicBool::new(false));
+        let observed = Arc::new(AtomicBool::new(false));
+        let round = Arc::new(AtomicUsize::new(0));
+        let done = Arc::new(AtomicUsize::new(0));
+        // Run one side per round until the coordinator stops the test.
+        let side = |run: fn(&Wakes, &AtomicBool, &AtomicBool)| {
+            let (wakes, published, observed, round, done) = (
+                wakes.clone(),
+                published.clone(),
+                observed.clone(),
+                round.clone(),
+                done.clone(),
+            );
+            std::thread::spawn(move || {
+                let mut last = 0;
+                loop {
+                    let current = loop {
+                        let current = round.load(Ordering::Acquire);
+                        if current != last {
+                            break current;
+                        }
+                        std::thread::yield_now();
+                    };
+                    if current == STOP {
+                        return;
+                    }
+                    run(&wakes, &published, &observed);
+                    done.fetch_add(1, Ordering::AcqRel);
+                    last = current;
+                }
+            })
+        };
+        fn poll(wakes: &Wakes, published: &AtomicBool, observed: &AtomicBool) {
+            wakes.received();
+            observed.store(published.load(Ordering::Acquire), Ordering::Relaxed);
+        }
+        fn publish(wakes: &Wakes, published: &AtomicBool, _: &AtomicBool) {
+            published.store(true, Ordering::Release);
+            wakes.wake();
+        }
+        let worker = side(poll);
+        let producer = side(publish);
+        let started = std::time::Instant::now();
+        let (mut rounds, mut missed) = (0, 0);
+        while rounds < ROUNDS && started.elapsed() < std::time::Duration::from_millis(300) {
+            rounds += 1;
+            // The worker took the pending `Ready`; nothing is published or queued yet.
+            wakes.pending.store(true, Ordering::SeqCst);
+            published.store(false, Ordering::SeqCst);
+            round.store(rounds, Ordering::Release);
+            while done.load(Ordering::Acquire) != rounds * 2 {
+                std::thread::yield_now();
+            }
+            let queued = receiver.try_iter().count() > 0;
+            if !observed.load(Ordering::Relaxed) && !queued {
+                missed += 1;
+            }
+        }
+        round.store(STOP, Ordering::Release);
+        worker.join().unwrap();
+        producer.join().unwrap();
+        assert_eq!(
+            missed, 0,
+            "{missed} of {rounds} publications were neither polled nor woken"
+        );
     }
 
     #[test]

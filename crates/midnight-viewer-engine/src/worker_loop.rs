@@ -1,23 +1,5 @@
 //! Event-driven worker loop plumbing: wakes, bounded input batches and file identities.
 use super::*;
-use std::time::Instant;
-
-/// How long the worker polls for the end of a session after an orphaned failure, because
-/// the end of a session has no wake signal.
-const ORPHAN_WATCH: Duration = Duration::from_secs(1);
-/// Events handled per drain of the active session.
-const DRAIN: usize = 32;
-
-/// The leading INVALID failure of a drain that the worker does not show as its error, such
-/// as a late failure of a cancelled request or a failure of the optional locate request.
-/// Plugin-host drains a session-fatal failure before any other event and pushes nothing
-/// after it, so this failure ended the session when the session ends before delivering
-/// another event.
-pub(super) struct Orphan {
-    pub(super) message: String,
-    /// The worker polls for the session's end until then.
-    pub(super) watch: Instant,
-}
 
 impl Worker {
     /// `None` blocks until a wake or input arrives. Otherwise retry after the delay.
@@ -25,23 +7,21 @@ impl Worker {
         if self.web_backlog {
             return Some(Duration::ZERO);
         }
-        let closing = self.pending_open && !self.closings_finished();
-        let orphan = self.orphan_failure.as_ref().is_some_and(|orphan| {
-            Instant::now() < orphan.watch
-                && self
-                    .session
-                    .as_ref()
-                    .is_some_and(|session| !session.is_closed())
-        });
-        (self.dirty || closing || orphan).then_some(RETRY)
+        // A closing plugin session signals the end of its dispatcher (see `Worker::closing`),
+        // so only browser and image teardown is retried.
+        let closing = self.pending_open && !self.actors_finished();
+        (self.dirty || closing).then_some(RETRY)
     }
 
     pub(super) fn closings_finished(&self) -> bool {
-        self.closing.as_ref().is_none_or(Session::is_closed)
-            && self
-                .closing_web
-                .as_ref()
-                .is_none_or(midnight_web_viewer_host::Session::finished)
+        self.closing.as_ref().is_none_or(Session::is_closed) && self.actors_finished()
+    }
+
+    /// Previous browser and image actors have finished closing. Their end has no wake.
+    fn actors_finished(&self) -> bool {
+        self.closing_web
+            .as_ref()
+            .is_none_or(|session| session.finished())
             && self
                 .closing_image
                 .as_ref()
@@ -144,74 +124,57 @@ impl Worker {
             || self.viewport_request == Some(id)
     }
 
-    /// Handle one bounded drain of the active session, then an end the worker did not cause.
+    /// Handle one bounded drain of the active session.
     pub(super) fn drain_session(&mut self, output: &Mailbox) {
         let Some(session) = &self.session else {
             return;
         };
-        // Read before draining: a closed session pushes nothing more, so this drain
-        // delivers its last events, including a pending session-fatal failure.
-        let ended = session.is_closed();
         let events = session.drain(DRAIN);
-        self.session_events(events, ended, output);
+        self.session_events(events, output);
     }
 
-    /// `ended`: the session had stopped before `events` were drained from it.
+    /// Apply drained events in order until a session-fatal failure. Plugin-host drains
+    /// that failure ahead of every older event it still holds, and the session is
+    /// retired with it, so neither the rest of this drain nor any later one applies.
     pub(super) fn session_events(
         &mut self,
         events: Vec<midnight_plugin_host::HostEvent>,
-        ended: bool,
         output: &Mailbox,
     ) {
-        if !events.is_empty() {
-            // A session pushes nothing after its fatal failure, so a later event shows that
-            // an earlier drain's orphan was not that failure.
-            self.orphan_failure = None;
-        }
-        for (index, event) in events.into_iter().enumerate() {
+        for event in events {
             if event.generation != self.generation {
                 continue;
             }
-            // Plugin-host reports a session-fatal failure as INVALID, with the offending
-            // request's ID, ahead of older queued events. A late failure of a cancelled
-            // request elsewhere in a drain is not shown.
-            let orphan = match &event.kind {
-                EventKind::Failed(failure)
-                    if index == 0
-                        && failure.code == midnight_plugin_host::api::abi::INVALID
-                        && !self.reports_failure(event.request_id) =>
-                {
-                    Some(failure.message.clone())
-                }
-                _ => None,
-            };
-            self.event(event.request_id, event.kind, output);
-            if let Some(message) = orphan {
-                self.orphan_failed(message);
+            if event.fatal {
+                let message = match event.kind {
+                    EventKind::Failed(failure) => failure.message,
+                    _ => "The viewer plugin stopped.".into(),
+                };
+                self.session_failed(message, output);
+                return;
             }
+            self.event(event.request_id, event.kind, output);
         }
-        self.report_session_end(ended, output);
     }
 
-    pub(super) fn orphan_failed(&mut self, message: String) {
-        self.orphan_failure = Some(Orphan {
-            message,
-            watch: Instant::now() + ORPHAN_WATCH,
-        });
-    }
-
-    /// `ended`: the active session stopped although this worker did not close it, which
-    /// follows a fatal failure. Report an orphaned fatal failure instead of a later generic
-    /// "closing" error. A tracked fatal failure has already been reported.
-    pub(super) fn report_session_end(&mut self, ended: bool, output: &Mailbox) {
-        if ended && let Some(orphan) = self.orphan_failure.take() {
-            self.session = None;
-            self.search_request = None;
-            self.queued_scroll = [0.0; 2];
-            self.continuation = None;
-            self.position_context(output);
-            self.viewport_request = None;
-            self.error(orphan.message, output);
+    /// The active session failed fatally: plugin-host already stopped it, answers none of
+    /// its outstanding requests and refuses new ones with "Viewer is closing". Show this
+    /// failure at once, whichever request it names (a cancelled one or the optional locate
+    /// request included), end what waited on the session, and retire the session as a
+    /// closing one: the next opening still waits for its teardown, and later actions find
+    /// no session instead of replacing the message with that refusal.
+    fn session_failed(&mut self, message: String, output: &Mailbox) {
+        if let Some(session) = self.session.take() {
+            self.closing = Some(session);
         }
+        if let Some(id) = self.viewport_request {
+            self.viewport_failed(id, &message, output);
+        }
+        self.search_request = None;
+        self.text.locate_request = None;
+        self.queued_scroll = [0.0; 2];
+        self.continuation = None;
+        self.position_context(output);
+        self.error(message, output);
     }
 }
