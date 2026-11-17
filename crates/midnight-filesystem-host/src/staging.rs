@@ -9,10 +9,17 @@ use std::{
 };
 
 const CACHE_ENTRIES: usize = 16;
-/// Decoded member spools kept for later reads of the same member. Least recently
-/// used members leave first; the newest member always stays, so sequential reads
-/// of one member larger than this budget still hit its single staged copy.
+/// Spool storage of decoded members kept for later reads of the same member. Least
+/// recently read members leave first once it is exceeded, except members in active use.
 const CACHE_BYTES: u64 = 512 * 1024 * 1024;
+/// A member is in active use while it is one of the `ACTIVE_MEMBERS` most recently read
+/// members and was read within the mount's last `ACTIVE_READS` member reads. Such a
+/// member stays beyond the byte budget, so a sequential reader whose chunks interleave
+/// with reads of up to three other members (a copy beside the two thumbnail renders the
+/// scheduler admits, a viewer or another copy) never decodes its member again between
+/// two chunks. A member whose reader moved on leaves once later reads pass it.
+const ACTIVE_MEMBERS: usize = 4;
+const ACTIVE_READS: u64 = 64;
 struct Pending {
     request: u64,
     purpose: StagePurpose,
@@ -55,14 +62,23 @@ impl Lease {
         Ok(bytes)
     }
 }
+struct Cached {
+    entry: u64,
+    lease: Lease,
+    /// Value of `Staging::reads` at this member's latest read.
+    last_read: u64,
+}
 pub(crate) struct Staging {
     root: PrivateSpoolDirectory,
     next: u64,
     pending: Option<(u64, Pending)>,
     sealed: HashMap<u64, Sealed>,
-    cache: VecDeque<(u64, Lease)>,
+    /// Least recently read first, so `last_read` increases towards the back.
+    cache: VecDeque<Cached>,
     cache_bytes: u64,
     cache_budget: u64,
+    /// Member reads served from or added to the cache by this mount.
+    reads: u64,
 }
 impl Staging {
     /// Open this user's private spool root, trying the platform's per-user candidates in
@@ -104,14 +120,21 @@ impl Staging {
             cache: VecDeque::new(),
             cache_bytes: 0,
             cache_budget: CACHE_BYTES,
+            reads: 0,
         })
     }
+    #[cfg(test)]
+    pub(crate) fn set_cache_budget(&mut self, bytes: u64) {
+        self.cache_budget = bytes;
+    }
     pub(crate) fn cached(&mut self, entry: u64) -> Option<Lease> {
-        let index = self.cache.iter().position(|(id, _)| *id == entry)?;
-        let item = self.cache.remove(index)?;
-        let result = item.1.clone();
+        let index = self.cache.iter().position(|cached| cached.entry == entry)?;
+        let mut item = self.cache.remove(index)?;
+        item.last_read = self.next_read();
+        let lease = item.lease.clone();
         self.cache.push_back(item);
-        Some(result)
+        self.trim();
+        Some(lease)
     }
     /// Return a nested reply, or None for a terminal message handled by the caller.
     pub(crate) fn nested(
@@ -262,21 +285,43 @@ impl Staging {
         Ok(Some(reply))
     }
     pub(crate) fn cache_member(&mut self, entry: u64, lease: Lease) {
-        if let Some(index) = self.cache.iter().position(|(id, _)| *id == entry)
-            && let Some((_, replaced)) = self.cache.remove(index)
+        if let Some(index) = self.cache.iter().position(|cached| cached.entry == entry)
+            && let Some(replaced) = self.cache.remove(index)
         {
-            self.cache_bytes = self.cache_bytes.saturating_sub(replaced.member_bytes);
+            self.cache_bytes = self.cache_bytes.saturating_sub(replaced.lease.member_bytes);
         }
         self.cache_bytes = self.cache_bytes.saturating_add(lease.member_bytes);
-        self.cache.push_back((entry, lease));
-        // Dropping an evicted lease releases its anonymous spool once no read holds it.
-        while self.cache.len() > CACHE_ENTRIES
-            || (self.cache_bytes > self.cache_budget && self.cache.len() > 1)
-        {
-            let Some((_, evicted)) = self.cache.pop_front() else {
-                break;
+        let last_read = self.next_read();
+        self.cache.push_back(Cached {
+            entry,
+            lease,
+            last_read,
+        });
+        self.trim();
+    }
+    fn next_read(&mut self) -> u64 {
+        self.reads = self.reads.wrapping_add(1);
+        self.reads
+    }
+    /// Evict least recently read members beyond the entry cap, and beyond the byte
+    /// budget while the oldest member is not in active use. Recency increases towards
+    /// the back, so once the oldest member is active every member is; the member just
+    /// read is always active. Dropping an evicted lease releases its anonymous spool
+    /// once no read holds it.
+    fn trim(&mut self) {
+        loop {
+            let over_budget = self.cache_bytes > self.cache_budget
+                && self.cache.front().is_some_and(|oldest| {
+                    self.cache.len() > ACTIVE_MEMBERS
+                        || self.reads.wrapping_sub(oldest.last_read) >= ACTIVE_READS
+                });
+            if self.cache.len() <= CACHE_ENTRIES && !over_budget {
+                return;
+            }
+            let Some(evicted) = self.cache.pop_front() else {
+                return;
             };
-            self.cache_bytes = self.cache_bytes.saturating_sub(evicted.member_bytes);
+            self.cache_bytes = self.cache_bytes.saturating_sub(evicted.lease.member_bytes);
         }
     }
     fn pending_mut(&mut self, stage: u64, request: u64) -> io::Result<&mut Pending> {

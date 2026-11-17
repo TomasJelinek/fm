@@ -29,6 +29,9 @@ pub(super) struct CloseReceipt {
     changed: Condvar,
     // Shared only by this session. Pending/running alone is never cleanup failure.
     unconfirmed: AtomicBool,
+    /// Host references that a failed release retained instead of dropping. Releases
+    /// decide under this lock, so they always agree on the last live reference.
+    retained: Mutex<usize>,
 }
 impl CloseReceipt {
     pub(super) fn new() -> Self {
@@ -314,24 +317,44 @@ pub(super) fn release(mount: Arc<Mount>) -> Result<(), FsError> {
         )
     };
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        if mount.get().cleanup_unconfirmed() {
-            // The tainted session stays quarantined, but its supervisor-owned process,
-            // staging and permit are independent of the tainted source. When no other
-            // owner can use this session, let the supervisor end and reclaim them.
-            // Engine identities hold only non-upgraded Weak references for comparison.
-            if Arc::strong_count(mount.get()) == 1 {
-                mount.get().supervision.request_stop();
+        let last = {
+            let mut retained = receipt.retained.lock().unwrap_or_else(|e| e.into_inner());
+            let status = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                mount.get().cleanup_unconfirmed()
+            }));
+            let failure = match status {
+                Ok(false) => None,
+                Ok(true) => Some("Archive has an observed unconfirmed cleanup"),
+                Err(payload) => {
+                    std::mem::forget(payload);
+                    Some("Archive cleanup status panicked")
+                }
+            };
+            if let Some(failure) = failure {
+                // The incoming reference stays retained and the tainted session stays
+                // quarantined, but its supervisor-owned process, staging and permit are
+                // independent of the tainted source. Once every remaining reference is
+                // retained, no owner can use this session, so let the supervisor end
+                // and reclaim them. Every later release observes the latched failure.
+                // Engine identities hold only non-upgraded Weak references; a reference
+                // dropped without this release is not observed.
+                receipt.observe_cleanup(true);
+                *retained += 1;
+                if Arc::strong_count(mount.get()) == *retained {
+                    mount.get().supervision.request_stop();
+                }
+                return Err(fail(failure));
             }
-            return Err(fail("Archive has an observed unconfirmed cleanup"));
+            let incoming = match mount.0.take() {
+                Some(mount) => mount,
+                None => unreachable!("archive reference already consumed"),
+            };
+            Arc::into_inner(incoming)
+        };
+        match last {
+            Some(mount) => release_last(mount),
+            None => Ok(()),
         }
-        let incoming = match mount.0.take() {
-            Some(mount) => mount,
-            None => unreachable!("archive reference already consumed"),
-        };
-        let Some(mount) = Arc::into_inner(incoming) else {
-            return Ok(());
-        };
-        release_last(mount)
     }));
     match result {
         Ok(result) => {
@@ -341,9 +364,7 @@ pub(super) fn release(mount: Arc<Mount>) -> Result<(), FsError> {
         Err(payload) => {
             receipt.observe_cleanup(true);
             std::mem::forget(payload);
-            Err(fail(
-                "Archive cleanup status or consuming teardown panicked",
-            ))
+            Err(fail("Archive consuming teardown panicked"))
         }
     }
 }

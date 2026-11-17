@@ -151,14 +151,11 @@ fn cancellation_during_member_extraction_returns_no_partial_content() {
     );
     assert!(mount.read(file.id.entry, 0, 1, &cancel).is_err());
     assert!(cancel.is_cancelled());
-    // Protocol 3 cancels the member cooperatively and keeps the shared mount; earlier
-    // protocols cannot interrupt staging, so cancellation ends their worker.
+    // Protocol 3 cancels the member cooperatively; earlier protocols cannot interrupt
+    // staging, so the host finishes that exchange and discards it. Either way the
+    // shared mount stays usable.
     let next = mount.read(file.id.entry, 0, 1, &Cancellation::default());
-    if package.protocol == midnight_filesystem_api::Protocol::V3 {
-        assert_eq!(next.unwrap().len(), 1);
-    } else {
-        assert!(next.is_err());
-    }
+    assert_eq!(next.unwrap().len(), 1);
 }
 
 #[test]

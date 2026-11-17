@@ -118,9 +118,11 @@ archive addresses retain their decoder independently of subsequent suffix edits.
 4. The host sends serial `List` and `Read` requests. Each has one terminal reply;
    nested source broker exchanges are allowed before that reply. Request IDs
    strictly increase; stale or mismatched responses fail the session.
-5. `Close`, pipe closure, worker failure, hard cancellation or deadline ends the
-   session. The current host terminates the worker when its last mount lease is
-   released; destruction never waits for a child on the UI thread.
+5. `Close`, pipe closure, worker failure, a protocol violation, a cancelled startup
+   or deadline expiry ends the session. Cancelling a listing or member read does not
+   (see [cancellation](#errors-cancellation-and-resource-bounds)). The current host
+   terminates the worker when its last mount lease is released; destruction never
+   waits for a child on the UI thread.
 
 The executable receives pipes and a source length, never a source filename,
 arbitrary native handles, command text, credentials or network access. It must
@@ -226,16 +228,17 @@ one tab does not invalidate a viewer still reading that captured member.
 diagnostic bytes. Report unsupported/encrypted codecs explicitly; never retry
 through an external utility or a host path. The host ends the mount on a failed exchange, except the explicitly negotiated
 protocol-3 cooperative cancellation acknowledgement described below. Protocol violations, truncated frames and unexpected replies
-also fail closed. Cancelling one request does not end a mount that other tabs,
-viewers and jobs share when a bounded or cooperative path exists: a listing stops
-between pages and discards an in-flight page, and protocol-3 member reads cancel
-cooperatively through both the ordinary and the preview read entry points. A
-protocol-1/2 read cannot be interrupted, so cancelling it during its exchange still
-terminates the worker; callers that must keep the mount use the cooperative
-preview read, which drains such a read and discards its result. Mount teardown,
-protocol violations and the idle watchdog always terminate the worker. Deadlines
-apply to blocking pipe reads as well as decoding; timeout/cancellation can
-therefore surface as a closed-pipe or interrupted operation diagnostic.
+also fail closed. Cancelling one request never ends a mount that other tabs,
+viewers and jobs share: a listing stops between pages and discards an in-flight
+page; protocol-3 member reads cancel cooperatively through both the ordinary and
+the preview read entry points; a protocol-1/2 member read cannot be interrupted,
+so a cancelled one finishes its exchange under the idle-progress watchdog and the
+host discards its result. Such a legacy read can therefore delay its caller's
+cancellation until the member is staged. Only the startup exchange, whose caller
+still owns the whole mount, is hard-cancellable. Mount teardown, protocol
+violations and the idle watchdog always terminate the worker. Deadlines apply to
+blocking pipe reads as well as decoding; timeout/cancellation can therefore surface
+as a closed-pipe or interrupted operation diagnostic.
 
 Current application limits are at most two live archive mounts, 512 MiB process
 memory and a 20-second idle-progress watchdog. Protocol 2 adds no aggregate CPU
@@ -244,11 +247,14 @@ byte I/O and monotonic decoded work renew the watchdog. Protocol 1 retains its
 legacy limits. Shared tab/viewer leases count as the same mount. Source reads may
 revisit captured ranges and are bounded to 256 KiB. Host listing validation
 also limits a directory to 100,000 nodes and 8 MiB aggregate raw/display names.
-The idle supervisor waits without polling; it observes a hard request
-cancellation every 10 ms only while such an exchange is active. When
-`release_on_worker` consumes the last host reference of a session whose cleanup is
-already unconfirmed, the host still terminates its worker and returns the mount
-permit; the unconfirmed source stays quarantined.
+The idle supervisor waits without polling; it observes startup cancellation every
+10 ms only while that exchange is active. A failed `release_on_worker` retains its
+host reference instead of dropping it. Once every host reference of a session whose
+cleanup is unconfirmed has been released that way, the host still terminates its
+worker and returns staging and the mount permit; the unconfirmed source stays
+quarantined. A reference dropped without `release_on_worker` is not observed, so
+every owner releases its host reference explicitly; the engine's mount owner holds
+a single one.
 
 The current parser imposes no artificial compressed-source, member, aggregate disk
 or expansion-ratio byte ceiling. It retains 100,000-node and 8 MiB name limits,
@@ -258,14 +264,24 @@ indexes without whole-source buffering; selected members stream directly to disk
 Solid 7z verifies the full required block and stores only the selected member.
 Compressed TAR verifies one complete scratch stream and reuses checked ranges.
 Disk errors abort staging; final spool cleanup runs on backend workers after any
-outstanding native I/O returns. Each mount keeps decoded members for repeated reads
-in least-recently-used order: at most 16 members within 512 MiB of spool storage,
-always including the newest member, so sequential reads of one larger member still
-hit its single staged copy. Spools are anonymous files in a per-user private
-directory: below the user's temporary directory on Windows; on Linux
-`$XDG_CACHE_HOME` (or `~/.cache`) `/midnight-explorer/archive-spool`, falling back
-to `$XDG_RUNTIME_DIR` when that location cannot hold anonymous files. A fixed name
-in the shared `/tmp` is never used.
+outstanding native I/O returns. Each mount keeps up to 16 decoded members for
+repeated reads. Beyond 512 MiB of their spool storage, least recently read members
+leave first, except members in active use: one of the four most recently read
+members that was also read within the mount's last 64 member reads stays even
+beyond the budget. A sequential reader whose chunks interleave with reads of up to
+three other members (a copy beside the two thumbnail renders, a viewer or another
+copy) therefore never decodes its member again between two chunks. A member whose
+reader moved on leaves once later reads pass it; an idle mount trims nothing until
+its next member read. Spools are anonymous files in a per-user private directory:
+below the user's temporary directory on Windows. On Linux the first usable
+candidate is `$XDG_CACHE_HOME` (or `~/.cache`) `/midnight-explorer/archive-spool`,
+then `midnight-explorer-<uid>-archive-spool` in the temporary directory, then
+`$XDG_RUNTIME_DIR/midnight-explorer-archive-spool`, which is usually a small tmpfs.
+Links in these base directories are resolved first; each spool root itself must be
+a directory owned by the user with mode 0700. A candidate that cannot be opened
+that way or cannot hold anonymous files yields to the next, so a directory that
+another account pre-creates only disables that candidate. A fixed shared name is
+never used.
 
 Protocol-2 nodes also carry optional typed UTC seconds/nanoseconds or timezone-free
 local civil timestamps. ZIP DOS times never acquire an invented UTC offset.
@@ -321,10 +337,10 @@ platform qualification and exact commands are recorded in the
 
 Protocol 3 is an explicit installed-worker opt-in, preserving protocol 2 wire
 messages and resource bounds while adding a request-local cancellation contract.
-Ordinary hard cancellation retains session-ending semantics under every protocol.
-A cooperative preview read against legacy protocol 1/2 drains under an independent
-hard token and suppresses its canceled result. No extra worker, mount, queue,
-source authority or native path is added.
+The host applies it to ordinary and preview member reads alike. Against legacy
+protocol 1/2, either read drains its admitted exchange without a hard token and
+suppresses the cancelled result. No extra worker, mount, queue, source authority
+or native path is added.
 
 The thumbnail broker passes viewport cancellation OR decoder shutdown/timeout into
 a separate cooperative member read. At the next valid StageBegin, StageAppend,
@@ -335,11 +351,12 @@ accepts the next strictly increasing request. SourceRead is not interrupted this
 way: generic decoder readers can retry Interrupted, so cancellation is observed at
 the existing bounded staging/progress checkpoints instead.
 
-Only a host-initiated cancellation with the exact terminal acknowledgement keeps
-the session alive. The host retires only that request's pending/sealed member spool;
-existing scratch, member cache and outstanding leases remain valid. A normal
-terminal result racing cancellation is validated but cannot publish newly prepared
-content. Source changes, malformed frames, wrong IDs, unexpected acknowledgement,
+Among `Failed(Cancelled)` replies, only the exact terminal acknowledgement of a
+host-initiated cancellation keeps the session alive. The host retires only that
+request's pending/sealed member spool; existing scratch, member cache and
+outstanding leases remain valid. A normal terminal result racing cancellation is
+validated but cannot publish newly prepared content, to the caller or to the
+member cache. Source changes, malformed frames, wrong IDs, unexpected acknowledgement,
 I/O errors and the idle watchdog still fail closed. The hard watchdog remains armed
 while the cancellation acknowledgement drains and cannot be renewed by chatter.
 Real decoder/I/O capacity remains held until native I/O and spool retirement finish.
