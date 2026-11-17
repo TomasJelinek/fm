@@ -161,19 +161,129 @@ fn native_find_content_can_read_an_idle_log_without_denying_its_writer() {
 }
 
 #[test]
-fn native_find_metadata_uses_existing_backend_locale_date_and_time() {
+fn native_find_leaves_dates_to_the_engine_locale_which_formats_them_like_listings() {
     let temporary = test_fixtures::build_temp("fixture-");
     let path = temporary.path().join("localized.txt");
     fs::write(&path, b"date metadata").unwrap();
     let service = WindowsFileSystem::new(None);
-    let metadata = service.entry_metadata(&path).unwrap();
-    assert!(metadata.localized_modified.is_some());
-    let source = service
-        .open_find_source(&path, &Cancellation::default())
-        .unwrap();
-    assert_eq!(
-        source.entry().metadata.localized_modified,
-        metadata.localized_modified
+    let cancel = Cancellation::default();
+    let listed = service.entry_metadata(&path).unwrap();
+    assert!(listed.localized_modified.is_some());
+    // Neither an opened source nor an enumerated child is formatted per node...
+    let source = service.open_find_source(&path, &cancel).unwrap();
+    let mut directory = service.open_find_source(temporary.path(), &cancel).unwrap();
+    let Some(FindChild::Entry(child)) = directory.next_child(&cancel).unwrap() else {
+        panic!("the fixture file is enumerated");
+    };
+    for entry in [source.entry(), directory.entry(), child.entry()] {
+        assert_eq!(entry.metadata.localized_modified, None, "{:?}", entry.path);
+    }
+    // ...and the engine formats a result's captured time with this native locale
+    // exactly as the panel listing does.
+    for entry in [source.entry(), child.entry()] {
+        assert_eq!(entry.metadata.modified, listed.modified);
+        assert_eq!(
+            service.format_datetime(entry.metadata.modified.unwrap()),
+            listed.localized_modified
+        );
+    }
+}
+
+/// Manual measurement: a name search of 200 folders of 200 empty files, enumerated and
+/// opened like the engine's traversal; results (one name per folder) are revalidated
+/// and get the engine's fill-when-absent date formatting. `every node` also formats each
+/// unformatted node, the provider's former per-node work. Build before and after a
+/// provider change and run `--ignored --nocapture localization_cost` on the same tree.
+#[test]
+#[ignore = "manual performance fixture; writes 40,000 empty native files under _build/qa"]
+fn native_find_localization_cost_fixture() {
+    use std::{
+        hint::black_box,
+        time::{Duration, Instant},
+    };
+    const FOLDERS: usize = 200;
+    const FILES: usize = 200;
+    let parent = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../_build/qa/operations-find/localization-cost");
+    fs::create_dir_all(&parent).unwrap();
+    let parent = fs::canonicalize(parent).unwrap();
+    let root = parent.join("tree");
+    if !parent.join("tree.complete").exists() {
+        for folder in 0..FOLDERS {
+            let folder = root.join(format!("folder-{folder}"));
+            fs::create_dir_all(&folder).unwrap();
+            for file in 0..FILES {
+                fs::write(folder.join(format!("file-{file}.txt")), []).unwrap();
+            }
+        }
+        fs::write(parent.join("tree.complete"), []).unwrap();
+    }
+    let service = WindowsFileSystem::new(None);
+    let cancel = Cancellation::default();
+    let result_name = std::ffi::OsStr::new("file-7.txt");
+    let search = |every_node: bool| {
+        let started = Instant::now();
+        let (mut nodes, mut results, mut by_provider, mut formatted) = (0, 0, 0, 0);
+        let mut stack = vec![service.open_find_source(&root, &cancel).unwrap()];
+        while let Some(directory) = stack.last_mut() {
+            let Some(child) = directory.next_child(&cancel).unwrap() else {
+                stack.pop();
+                continue;
+            };
+            let FindChild::Entry(source) = child else {
+                panic!("fixture children are ordinary entries");
+            };
+            nodes += 1;
+            let entry = source.entry();
+            by_provider += usize::from(entry.metadata.localized_modified.is_some());
+            let result = entry.path.file_name() == Some(result_name);
+            if result {
+                source.revalidate(&cancel).unwrap();
+                results += 1;
+            }
+            if (result || every_node) && entry.metadata.localized_modified.is_none() {
+                formatted += 1;
+                black_box(service.format_datetime(entry.metadata.modified.unwrap()));
+            }
+            if entry.kind == EntryKind::Directory {
+                stack.push(source);
+            }
+        }
+        (started.elapsed(), nodes, results, by_provider, formatted)
+    };
+    search(false);
+    let mut samples = [Vec::new(), Vec::new()];
+    for round in 0..7 {
+        for every_node in [round % 2 == 0, round % 2 != 0] {
+            let (elapsed, nodes, results, by_provider, formatted) = search(every_node);
+            eprintln!(
+                "{}: {elapsed:?}, {nodes} nodes, {results} results, {by_provider} provider-formatted, {formatted} formatted here",
+                if every_node {
+                    "every node"
+                } else {
+                    "results only"
+                }
+            );
+            samples[usize::from(every_node)].push(elapsed);
+        }
+    }
+    for (label, mut times) in ["results only", "every node"].into_iter().zip(samples) {
+        times.sort();
+        eprintln!(
+            "{label}: min {:?}, median {:?}",
+            times[0],
+            times[times.len() / 2]
+        );
+    }
+    let base = std::time::SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+    let started = Instant::now();
+    for index in 0..(FOLDERS * FILES) as u64 {
+        black_box(service.format_datetime(base + Duration::from_secs(index * 61)));
+    }
+    eprintln!(
+        "{} date/time formats alone: {:?}",
+        FOLDERS * FILES,
+        started.elapsed()
     );
 }
 

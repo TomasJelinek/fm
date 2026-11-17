@@ -510,3 +510,162 @@ async fn pending_find_can_cancel_while_two_native_calls_are_blocked_and_session_
         .unwrap()
         .unwrap();
 }
+
+#[tokio::test]
+async fn the_engine_locale_formats_published_and_validated_results_only() {
+    use std::{
+        path::PathBuf,
+        sync::atomic::{AtomicUsize, Ordering},
+        time::{SystemTime, UNIX_EPOCH},
+    };
+    const NAMES: [&str; 4] = ["a.txt", "b.bin", "c.txt", "d.log"];
+    /// A flat directory whose files reopen by path; the provider formats no date.
+    struct Flat(PathBuf);
+    struct Node {
+        entry: FindEntry,
+        children: Vec<FindEntry>,
+    }
+    fn entry(path: PathBuf, kind: EntryKind, index: u8) -> FindEntry {
+        FindEntry {
+            path,
+            kind,
+            metadata: EntryMetadata {
+                size: (kind == EntryKind::File).then_some(1),
+                modified: Some(UNIX_EPOCH + Duration::from_secs(1_700_000_000 + u64::from(index))),
+                ..Default::default()
+            },
+            identity: TransferIdentity {
+                device: 1,
+                object: [index; 16],
+            },
+            revision: FindRevision([u64::from(index); 6]),
+        }
+    }
+    impl FindService for Flat {
+        fn open_find_source(
+            &self,
+            path: &Path,
+            _: &Cancellation,
+        ) -> Result<Box<dyn FindSource>, FsError> {
+            let file =
+                |index: usize| entry(self.0.join(NAMES[index]), EntryKind::File, index as u8 + 1);
+            let node = match (0..NAMES.len()).find(|&index| self.0.join(NAMES[index]) == path) {
+                Some(index) => Node {
+                    entry: file(index),
+                    children: Vec::new(),
+                },
+                None => Node {
+                    entry: entry(path.to_owned(), EntryKind::Directory, 0),
+                    children: (0..NAMES.len()).rev().map(file).collect(),
+                },
+            };
+            Ok(Box::new(node))
+        }
+    }
+    impl FindSource for Node {
+        fn entry(&self) -> &FindEntry {
+            &self.entry
+        }
+        fn revalidate(&self, _: &Cancellation) -> Result<(), FsError> {
+            Ok(())
+        }
+        fn next_child(&mut self, _: &Cancellation) -> Result<Option<FindChild>, FsError> {
+            Ok(self.children.pop().map(|entry| {
+                FindChild::Entry(Box::new(Node {
+                    entry,
+                    children: Vec::new(),
+                }))
+            }))
+        }
+        fn read_chunk(&mut self, _: &mut [u8], _: &Cancellation) -> Result<usize, FsError> {
+            panic!("a name search reads no content")
+        }
+    }
+    #[derive(Default)]
+    struct Counting(AtomicUsize);
+    impl LocaleService for Counting {
+        fn number_locale(&self) -> Result<NumberLocale, FsError> {
+            Ok(NumberLocale::default())
+        }
+        fn format_datetime(&self, value: SystemTime) -> Option<LocalizedDateTime> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Some(engine_format(value))
+        }
+    }
+    fn engine_format(value: SystemTime) -> LocalizedDateTime {
+        LocalizedDateTime {
+            date: format!("{:?}", value.duration_since(UNIX_EPOCH)),
+            time: "engine".into(),
+        }
+    }
+    let root = std::env::current_dir().unwrap();
+    let locale = Arc::new(Counting::default());
+    let (events, mut receive) = mpsc::channel(16);
+    let mut engine = Engine::new(
+        Engine::lifetime().expect("engine cleanup worker"),
+        Arc::new(LocalFileSystem::new(None)),
+        events,
+    );
+    let (send, commands) = engine.command_channel(16).unwrap();
+    engine
+        .configure_find()
+        .unwrap()
+        .install(Arc::new(Flat(root.clone())));
+    engine.configure_locale().unwrap().install(locale.clone());
+    let engine = tokio::spawn(engine.run(commands));
+    let mut query = request(&root, 1, 1);
+    query.masks = "*.txt".into();
+    send.send(Command::StartFind(Box::new(query)))
+        .await
+        .unwrap();
+    let mut results = Vec::new();
+    loop {
+        match next_find(&mut receive).await.update {
+            FindUpdate::Batch(batch) => results.extend(batch.iter().cloned()),
+            FindUpdate::Finished(summary) => {
+                assert_eq!(summary.completion, FindCompletion::Completed);
+                assert_eq!(summary.progress.examined, 4);
+                break;
+            }
+            _ => {}
+        }
+    }
+    assert_eq!(results.len(), 2);
+    for result in &results {
+        let metadata = &result.entry.metadata;
+        assert_eq!(
+            metadata.localized_modified,
+            metadata.modified.map(engine_format)
+        );
+    }
+    // The root and the two nonmatching files were never formatted.
+    assert_eq!(locale.0.load(Ordering::SeqCst), 2);
+    send.send(Command::ValidateFindResult(FindValidationRequest {
+        session: FindSessionId(1),
+        generation: FindGeneration(1),
+        result: results[1].id,
+        token: 1,
+    }))
+    .await
+    .unwrap();
+    let validated = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if let Event::FindResultValidated(event) = receive.recv().await.unwrap() {
+                break event.result.unwrap();
+            }
+        }
+    })
+    .await
+    .expect("Find validation timeout");
+    assert_eq!(validated.path, results[1].entry.path);
+    assert_eq!(
+        validated.metadata.localized_modified,
+        validated.metadata.modified.map(engine_format)
+    );
+    assert_eq!(locale.0.load(Ordering::SeqCst), 3);
+    drop(send);
+    tokio::time::timeout(Duration::from_secs(5), engine)
+        .await
+        .unwrap()
+        .unwrap();
+}

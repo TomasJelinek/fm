@@ -105,9 +105,12 @@ searches from reviving after Stop, completion, restart or Close.
 Name, Extension, Path, Size and Modified headers toggle ascending/descending
 sorting. Text keys use the same captured engine locale as panels; numeric sizes
 and native timestamps are compared directly, with unknown values last in both
-directions. Extension uses the panel Type semantics: directories first, missing
-extensions last in either direction, native locale keys with raw fallback, then
-ascending locale filename and raw filename ties. Missing locale keys stay after
+directions. Result modification times use that engine locale too: each result is
+formatted once when published, and the Windows provider no longer formats every
+examined node (the Linux provider still does). Extension uses the panel Type
+semantics: directories first, missing extensions last in either direction,
+native locale keys with raw fallback, then ascending locale filename and raw
+filename ties. Missing locale keys stay after
 keyed text in either direction. Dotfiles without an extension and explicit empty
 extensions retain the same distinction as panel entries. Native raw paths/IDs
 finish deterministic ties; unrepresentable names stay raw.

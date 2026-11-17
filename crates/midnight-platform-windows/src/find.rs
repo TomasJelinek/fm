@@ -50,7 +50,7 @@ impl FindService for crate::WindowsFileSystem {
         } else {
             probe
         };
-        Ok(Box::new(Source::new(localized(entry), native, file)))
+        Ok(Box::new(Source::new(entry, native, file)))
     }
 }
 struct Pending {
@@ -129,11 +129,7 @@ impl Source {
         } else {
             file
         };
-        Ok(FindChild::Entry(Box::new(Source::new(
-            localized(entry),
-            native,
-            file,
-        ))))
+        Ok(FindChild::Entry(Box::new(Source::new(entry, native, file))))
     }
     fn fill_names(&mut self) -> Result<(), FsError> {
         let pending = &mut self.pending;
@@ -255,10 +251,8 @@ fn ordinary(entry: &FindEntry) -> Result<(), FsError> {
         ))
     }
 }
-fn localized(mut entry: FindEntry) -> FindEntry {
-    entry.metadata.localized_modified = entry.metadata.modified.and_then(crate::locale::modified);
-    entry
-}
+/// Captures a node's facts. Its localized modification time is left to the engine, which
+/// formats only results: most examined nodes never become one.
 fn snapshot(file: &File, path: &Path) -> Result<(FindEntry, Native), FsError> {
     // SAFETY: the owned live handle is only queried for its native type.
     if unsafe { GetFileType(file.as_raw_handle()) } != FILE_TYPE_DISK {

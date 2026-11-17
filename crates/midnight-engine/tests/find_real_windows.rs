@@ -13,6 +13,7 @@ fn run(query: &FindRequest) -> (FindSummary, Vec<Arc<FindResult>>) {
     let cancel = Cancellation::default();
     let summary = find_worker::search_with_location(
         &native,
+        Some(&native),
         query,
         &cancel,
         &mut |update| {
@@ -27,6 +28,13 @@ fn run(query: &FindRequest) -> (FindSummary, Vec<Arc<FindResult>>) {
     assert!(location.get().is_some());
     for row in &rows {
         find_worker::validate_result(&native, &row.entry, &cancel).unwrap();
+        // Ordinary and duplicate results show the panel listing's native date and time.
+        let listed = native.entry_metadata(&row.entry.path).unwrap();
+        assert!(listed.localized_modified.is_some());
+        assert_eq!(
+            row.entry.metadata.localized_modified,
+            listed.localized_modified
+        );
     }
     (summary, rows)
 }
