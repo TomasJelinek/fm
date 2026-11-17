@@ -28,8 +28,10 @@ Locate is independent of Viewport. The source plugin keeps at most 256 exact
 scalar-boundary checkpoints per session and coarsens them as the scanned range
 grows. Each continuation reads at most 32 KiB and decodes at most 64 KiB; the
 decoder and counter check cancellation between bounded batches. No complete file
-or line-offset table is retained. At least one plugin work slot remains available
-for viewport requests when location scans run.
+or line-offset table is retained. Locate never takes the last of the source
+plugin's four work slots, so location scans alone cannot occupy them all. Viewport,
+search and open requests can use all four; a request that finds them full
+reclaims slots still held by cancelled requests before it fails with `QUEUE_FULL`.
 
 The source implementation limits each Locate to **256 KiB of gathered source
 bytes** from its nearest exact checkpoint. The entire bounded gather is reserved

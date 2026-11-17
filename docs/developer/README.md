@@ -96,10 +96,16 @@ One Git repository contains **separate Cargo workspaces**:
 | `filesystem-api/Cargo.toml` | Archive worker protocol and native filesystem API/SDK | Separate public wire and C ABI contracts; no application crates |
 | `worker-api/Cargo.toml` | Restricted executable startup SDK | Public platform containment contract |
 | `thumbnail-api/Cargo.toml` | Brokered media reads and bounded RGBA frame protocol | Independent public API/SDK; no application crates |
-| `image-viewer-api/Cargo.toml` | Raster image/document protocol and SDK 0.2.0 | Versioned public page metadata and bounded viewport messages |
-| `plugins/midnight-thumbnail-image/`, `plugins/midnight-thumbnail-video/` | Image and video frame decoding | Released thumbnail/worker SDK and plugin-owned codecs/tests |
+| `image-viewer-api/Cargo.toml` | Raster image/document API 0.2.0 and SDK 0.3.0 | Versioned public page metadata and bounded viewport messages |
+| `web-viewer-api/Cargo.toml` | Interactive web viewer API and SDK 0.2.0 | Bounded frame/input process protocol; no third-party dependencies |
+| `plugins/midnight-thumbnail-image/`, `plugins/midnight-thumbnail-video/` | Image and video frame decoding | Released thumbnail/worker SDK, the shared image decoder (images) and plugin-owned codecs/tests |
 | `plugins/midnight-fs-archive/` | ZIP, 7z, TAR and GZIP/XZ/BZIP2/Zstandard streams and TAR wrappers | Released filesystem API and worker SDK plus plugin-owned parsers |
-| `plugins/midnight-viewer-image/`, `plugins/midnight-viewer-pdf/` | Restricted image decoding and PDF rendering | Released raster/worker SDKs and plugin-owned tests/codecs |
+| `plugins/midnight-filesystem-native-windows/`, `plugins/midnight-filesystem-native-linux/` | Native Browse/Read, metadata, volume, storage and prepared Rename libraries | Public filesystem plugin API/SDK 0.2.0 as path packages from `filesystem-api/`, plus OS bindings |
+| `plugins/midnight-filesystem-native-macos/` | macOS library for the same ABI, without prepared Rename | Same public API/SDK and pinned libc; type-checked for Darwin only, not run, packaged or loaded by the host |
+| `plugins/midnight-filesystem-network/` | Network Neighborhood discovery and share activation | Public filesystem plugin API/SDK path packages plus Windows WNet or Linux GIO |
+| `plugins/midnight-viewer-image/`, `plugins/midnight-viewer-pdf/` | Restricted image decoding and PDF rendering | Released raster/worker SDKs, the shared image decoder (images) and plugin-owned tests/codecs |
+| `plugins/image-decoder/` | Shared bounded image codecs | Path dependency of the image viewer and image thumbnail workers; not a public API |
+| `plugins/midnight-viewer-html/` | Optional Chromium (CEF) HTML provider | Released web viewer API 0.2.0 and pinned CEF bindings |
 | `plugins/midnight-viewer-basic/` | Text/Binary decoding and search | Released public SDK plus plugin-owned dependencies |
 | `plugins/midnight-viewer-source/` | 19 lexical profiles, including XML/XAML/MSBuild; bounded scanning and styles | Its own workspace, lockfile, dependencies and [syntax/viewport tests](../../plugins/midnight-viewer-source/README.md) |
 | `plugins/midnight-viewer-markdown/` | Semantic Markdown | Its own workspace, lockfile, dependencies and tests |
@@ -108,9 +114,13 @@ One Git repository contains **separate Cargo workspaces**:
 A plugin must build and test from an exported directory without application
 sources. Depend on released, versioned API/SDK packages, not source paths,
 `[patch]` overrides, internal host/platform/UI crates, another plugin, or private
-shared helpers. Plugin tests and CI belong to the plugin package. Plugin builds
-may install their own package; they must never patch application source or another
-plugin. Reading a reference implementation does not make it a linkable dependency.
+shared helpers. Current in-repository exceptions: the native filesystem and Network
+Neighborhood plugins take the unpublished filesystem plugin API/SDK from
+`filesystem-api/` by path, and the image viewer and image thumbnail workers share
+`plugins/image-decoder` by path and patch `image` from `vendor/image`. Plugin tests
+and CI belong to the plugin package. Plugin builds may install their own package;
+they must never patch application source or another plugin. Reading a reference
+implementation does not make it a linkable dependency.
 All third-party dependencies must satisfy the project's
 [dependency policy](../DEPENDENCY_POLICY.md), including no required licence
 fees for the intended use and distribution. That policy does not assign a licence
