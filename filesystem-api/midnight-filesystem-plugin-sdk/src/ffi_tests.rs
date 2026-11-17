@@ -169,6 +169,56 @@ fn buffer_quota_refuses_before_handler_and_resumes_after_release() {
     assert_eq!(destroy(&api, instance), OK);
 }
 
+struct Echo;
+impl Filesystem for Echo {
+    fn create(_: Config) -> Result<Self, Failure> {
+        Ok(Self)
+    }
+    fn handle(&self, request: Request, _: &CallContext<'_>) -> Result<Reply, Failure> {
+        let Request::ReadAt { length, .. } = request else {
+            return Reply::stateless(Response::Unit);
+        };
+        Reply::stateless(Response::Content {
+            bytes: vec![7; length as usize],
+            eof: false,
+        })
+    }
+}
+#[test]
+fn retained_replies_are_charged_their_exact_length_not_a_grown_capacity() {
+    let api = descriptor::<Echo>();
+    // Each 2,119-byte reply is charged exactly, so the third call's 4 KiB reservation
+    // fits beside two retained replies. Charging a grown 4 KiB capacity would refuse it.
+    let instance = create_instance(
+        &api,
+        Config {
+            reply_bytes: 4096,
+            retained_buffer_bytes: 2 * 2119 + 4096,
+            ..Config::default()
+        },
+    );
+    let read = Request::ReadAt {
+        reader: 1,
+        offset: 0,
+        length: 2100,
+    };
+    let mut held = vec![];
+    for _ in 0..3 {
+        let (status, buffer) = invoke(&api, instance, read.clone(), Cancellation::default());
+        assert_eq!(status, OK);
+        assert_eq!(buffer.bytes.len, 2119);
+        held.push(buffer);
+    }
+    assert_eq!(
+        invoke(&api, instance, read, Cancellation::default()).0,
+        RESOURCE_LIMIT
+    );
+    for buffer in held {
+        assert_eq!(release(&api, instance, buffer.id), OK);
+    }
+    assert_eq!(destroy(&api, instance), OK);
+}
+
 #[test]
 fn a_foreign_descriptor_cannot_use_another_authors_valid_instance_or_buffer() {
     let first = descriptor::<Fake>();
