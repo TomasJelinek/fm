@@ -14,11 +14,15 @@ captures input and displays shared results.
 
 Each of at most four modeless windows owns a monotonic session ID. Every accepted
 search increments its generation. Up to two workers stream ordinary batches of at
-most 64 stable-ID results through bounded channels. Duplicate groups publish as
+most 64 stable-ID results through bounded channels; a smaller pending batch is
+published with each progress sample (at most every 250 ms), so sparse matches
+appear while traversal continues. Duplicate groups publish as
 one complete batch, bounded by the 10,000-result limit, so Stop cannot leave half
 a group. Presenter and controller both
-reject late generations. Stop retains results; Close releases the session, and
-host shutdown closes the windows. Queue rejection never pretends cancellation
+reject late generations. Stop retains results: the final partial batch found
+before the worker observed Stop is still published for the same generation, and
+the retained results receive one automatic sort in the current header order.
+Close releases the session, and host shutdown closes the windows. Queue rejection never pretends cancellation
 or close succeeded. Large result allocations are reclaimed on backend workers.
 Replaced row-model order owners enter a small interior-mutable retirement queue:
 refresh already holds a shared presenter borrow, so it must not request a mutable

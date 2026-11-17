@@ -222,10 +222,16 @@ impl Controller {
 
     pub(crate) fn cancel(&self, session: FindSessionId, generation: FindGeneration) {
         for slot in &self.slots {
-            let state = slot.state.lock().unwrap_or_else(|error| error.into_inner());
+            let mut state = slot.state.lock().unwrap_or_else(|error| error.into_inner());
             if state.owner == Some((session, generation)) {
                 state.cancel.cancel();
+                // Retained results keep an automatic order: replace the sort token
+                // and request a final sort (a final batch requests another).
                 state.order_cancel.cancel();
+                state.order_cancel = self.lifetime.child();
+                drop(state);
+                slot.sorts
+                    .send_modify(|version| *version = version.wrapping_add(1));
             }
         }
     }
@@ -355,6 +361,7 @@ async fn run_slot(
             let location = find_worker::CurrentDirectory::default();
             let worker_location = location.clone();
             let worker_sorts = sorts.clone();
+            let worker_lifetime = lifetime.clone();
             let mut worker = tokio::task::spawn_blocking(services.scope.blocking(move || {
                 let _permit = permit;
                 find_worker::search_with_location(
@@ -363,12 +370,14 @@ async fn run_slot(
                     &cancel,
                     &mut |update| {
                         let batch = matches!(&update, FindUpdate::Batch(_));
+                        // Stop retains results: matches found before the worker
+                        // observed Stop are still accepted for the same owner.
                         let accepted = publish(
                             &worker_outbox,
                             &worker_state,
                             &worker_request,
                             update,
-                            &cancel,
+                            if batch { &worker_lifetime } else { &cancel },
                         );
                         if accepted && batch {
                             worker_sorts.send_modify(|version| *version = version.wrapping_add(1));

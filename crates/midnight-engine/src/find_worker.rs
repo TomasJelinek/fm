@@ -15,6 +15,9 @@ use std::{
     time::{Duration, Instant, SystemTime},
 };
 
+/// Progress samples and partial result batches are published at most this often.
+const PROGRESS_INTERVAL: Duration = Duration::from_millis(250);
+
 #[derive(Clone, Default)]
 pub(crate) struct CurrentDirectory(Arc<Mutex<Option<Arc<std::path::PathBuf>>>>);
 impl CurrentDirectory {
@@ -379,8 +382,10 @@ impl Work<'_> {
         true
     }
     fn progress_if_due(&mut self) {
-        if self.last_progress.elapsed() >= Duration::from_millis(250) {
-            if !(self.emit)(FindUpdate::Progress(self.progress.clone())) {
+        if self.last_progress.elapsed() >= PROGRESS_INTERVAL {
+            // A partial batch follows the progress cadence, so a sparse search
+            // shows its matches while traversal continues.
+            if self.flush() && !(self.emit)(FindUpdate::Progress(self.progress.clone())) {
                 self.cancelled = true;
             }
             self.last_progress = Instant::now();
@@ -388,9 +393,10 @@ impl Work<'_> {
     }
     fn finish(mut self) -> FindSummary {
         self.stopped();
-        if !self.cancelled {
-            self.flush();
-        }
+        // Stop retains every match already found and revalidated: the controller
+        // still accepts this generation's final batch after cancellation, while
+        // Close, restart and shutdown reject it.
+        self.flush();
         let completion = if self.cancelled {
             FindCompletion::Cancelled
         } else if self.failed {
