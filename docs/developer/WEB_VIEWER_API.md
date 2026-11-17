@@ -39,7 +39,11 @@ a stopped session and handles it once. Unless the newest browser output it drain
 an error, which stays visible as the reason, it reports *Browser closed; reopen the
 document.* through its error path (an opening without a frame fails with it). The
 terminal error the host publishes for the refused command is drained in the same loop
-pass and replaces that report; later refusals are silent. The host retains at most one
+pass and replaces that report; later refusals are silent. A browser that closes the
+session itself is reported the same way without waiting for input: the host wakes the
+viewer and `Session::drain` delivers the protocol's Closed event after the pending
+output (an error stays ahead of it), while a session the viewer closes publishes no
+Closed event. The host retains at most one
 pending painted frame. Replaced document generations and
 viewport revisions cannot publish stale pixels. Transport budgets bound messages
 and viewport memory, not complete file sizes. Frame acknowledgements and close/EOF
