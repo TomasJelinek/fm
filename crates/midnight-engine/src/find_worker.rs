@@ -16,7 +16,7 @@ use std::{
 };
 
 /// Progress samples and partial result batches are published at most this often.
-const PROGRESS_INTERVAL: Duration = Duration::from_millis(250);
+pub(crate) const PROGRESS_INTERVAL: Duration = Duration::from_millis(250);
 
 #[derive(Clone, Default)]
 pub(crate) struct CurrentDirectory(Arc<Mutex<Option<Arc<std::path::PathBuf>>>>);
@@ -48,6 +48,28 @@ pub(crate) fn search_with_location(
     location: &CurrentDirectory,
     accepted_at: SystemTime,
 ) -> FindSummary {
+    search_with_progress_interval(
+        service,
+        request,
+        cancel,
+        emit,
+        location,
+        accepted_at,
+        PROGRESS_INTERVAL,
+    )
+}
+
+/// `search_with_location` publishing progress and partial batches at most
+/// once per `progress_interval` (tests drive the cadence without real waits).
+pub(crate) fn search_with_progress_interval(
+    service: &dyn FindService,
+    request: &FindRequest,
+    cancel: &Cancellation,
+    emit: &mut dyn FnMut(FindUpdate) -> bool,
+    location: &CurrentDirectory,
+    accepted_at: SystemTime,
+    progress_interval: Duration,
+) -> FindSummary {
     let mut work = Work {
         request,
         cancel,
@@ -60,6 +82,7 @@ pub(crate) fn search_with_location(
         cancelled: false,
         failed: false,
         last_progress: Instant::now(),
+        progress_interval,
     };
     if cancel.is_cancelled() {
         work.cancelled = true;
@@ -332,6 +355,7 @@ struct Work<'a> {
     cancelled: bool,
     failed: bool,
     last_progress: Instant,
+    progress_interval: Duration,
 }
 impl Work<'_> {
     fn stopped(&mut self) -> bool {
@@ -382,7 +406,7 @@ impl Work<'_> {
         true
     }
     fn progress_if_due(&mut self) {
-        if self.last_progress.elapsed() >= PROGRESS_INTERVAL {
+        if self.last_progress.elapsed() >= self.progress_interval {
             // A partial batch follows the progress cadence, so a sparse search
             // shows its matches while traversal continues.
             if self.flush() && !(self.emit)(FindUpdate::Progress(self.progress.clone())) {

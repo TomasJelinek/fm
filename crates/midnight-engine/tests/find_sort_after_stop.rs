@@ -1,27 +1,21 @@
 use midnight_core::*;
 use midnight_engine::Engine;
 use midnight_platform::LocalFileSystem;
-use std::{
-    path::Path,
-    sync::Arc,
-    time::{Duration, Instant},
-};
+use std::{path::Path, sync::Arc, time::Duration};
 use tokio::sync::{Notify, mpsc};
 
 /// Enumerates real children, then blocks before the child after `pause_after`
-/// until the search is cancelled. `slow_child` makes that child arrive only
-/// after the given real delay, while the search is still running.
+/// until the search is cancelled. The worker's partial-batch cadence is
+/// covered without real waits by `find_backend::partial_batches_follow_*`.
 struct PausedEnumeration {
     native: Arc<LocalFileSystem>,
     pause_after: usize,
-    slow_child: Option<(usize, Duration)>,
     paused: Arc<Notify>,
 }
 struct Source {
     inner: Box<dyn FindSource>,
     count: usize,
     pause_after: usize,
-    slow_child: Option<(usize, Duration)>,
     paused: Arc<Notify>,
 }
 impl FindService for PausedEnumeration {
@@ -34,7 +28,6 @@ impl FindService for PausedEnumeration {
             inner: self.native.open_find_source(path, cancel)?,
             count: 0,
             pause_after: self.pause_after,
-            slow_child: self.slow_child,
             paused: self.paused.clone(),
         }))
     }
@@ -56,11 +49,6 @@ impl FindSource for Source {
                 std::thread::sleep(Duration::from_millis(5));
             }
             return Ok(None);
-        }
-        if let Some((index, delay)) = self.slow_child
-            && index == self.count
-        {
-            std::thread::sleep(delay);
         }
         let child = self.inner.next_child(cancel)?;
         if child.is_some() {
@@ -152,7 +140,6 @@ async fn stopped_search_retains_partial_results_and_headers_can_still_sort_them(
         PausedEnumeration {
             native,
             pause_after: FIND_BATCH_SIZE,
-            slow_child: None,
             paused: Arc::default(),
         },
     )
@@ -207,7 +194,6 @@ async fn stop_publishes_matches_below_one_batch_and_orders_them_automatically() 
         PausedEnumeration {
             native,
             pause_after: count,
-            slow_child: None,
             paused: paused.clone(),
         },
     )
@@ -250,46 +236,4 @@ async fn stop_publishes_matches_below_one_batch_and_orders_them_automatically() 
     let mut expected = names.clone();
     expected.sort();
     assert_eq!(names, expected);
-}
-
-#[tokio::test]
-async fn a_running_search_publishes_a_partial_batch_on_the_progress_cadence() {
-    let temporary = tempfile::tempdir().unwrap();
-    files(temporary.path(), 4);
-    let native = Arc::new(LocalFileSystem::new(None));
-    let started = Instant::now();
-    // The fourth child arrives after one progress interval; nothing else ever
-    // completes a 64-row batch before the search is stopped.
-    let mut search = start(
-        temporary.path(),
-        PausedEnumeration {
-            native,
-            pause_after: 4,
-            slow_child: Some((3, Duration::from_millis(260))),
-            paused: Arc::default(),
-        },
-    )
-    .await;
-    let batch = loop {
-        match search.next_find().await {
-            FindUpdate::Batch(batch) => break batch,
-            FindUpdate::Finished(_) => panic!("partial matches must stream before the search ends"),
-            _ => {}
-        }
-    };
-    assert!(started.elapsed() >= Duration::from_millis(250));
-    assert_eq!(batch.len(), 4);
-    search.stop().await;
-    loop {
-        match search.next_find().await {
-            FindUpdate::Batch(batch) => panic!("no match remained unpublished: {}", batch.len()),
-            FindUpdate::Finished(summary) => {
-                assert_eq!(summary.completion, FindCompletion::Cancelled);
-                assert_eq!(summary.progress.results, 4);
-                break;
-            }
-            _ => {}
-        }
-    }
-    search.close().await;
 }
