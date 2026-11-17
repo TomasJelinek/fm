@@ -351,7 +351,8 @@ No complete-tree snapshot, root-capture manifest or recursive deletion is used.
 An unresolved terminal failure or cancellation stops unfinished Move work;
 earlier successful moves remain completed, and later source names stay in place.
 At a supported failure pause, explicit Skip retains that source and allows later
-siblings to continue; Retry resumes only the failed phase.
+siblings to continue. Retry is offered only for a failed source removal and
+repeats the complete post-capture proof before removing the source.
 Every pre-deletion failure or cancellation after staging attempts a no-replace
 restore to the original name, even when the user cancellation token is set.
 The transient path is `.midnight-move-<random>/<original raw basename>`. A
