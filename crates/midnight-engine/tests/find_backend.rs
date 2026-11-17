@@ -6,7 +6,8 @@ use midnight_platform::LocalFileSystem;
 use std::{
     fs,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, Mutex},
+    time::{Instant, SystemTime, UNIX_EPOCH},
 };
 
 fn worker_search(
@@ -18,6 +19,7 @@ fn worker_search(
     let location = find_worker::CurrentDirectory::default();
     let summary = find_worker::search_with_location(
         service,
+        None,
         request,
         cancel,
         emit,
@@ -471,6 +473,7 @@ fn logged_search(progress_interval: std::time::Duration) -> Vec<String> {
     };
     let summary = find_worker::search_with_progress_interval(
         &service,
+        None,
         &request(vec![std::env::current_dir().unwrap()]),
         &Cancellation::default(),
         &mut |update| {
@@ -508,4 +511,323 @@ fn partial_batches_follow_the_progress_cadence_while_traversal_continues() {
         logged_search(std::time::Duration::from_secs(3600)),
         ["child 0", "child 1", "child 2", "child 3", "batch 3"]
     );
+}
+
+/// A synthetic native tree: `folders` folders of `files` empty files, every node with its
+/// own identity and modification time; the `one_byte` file holds one byte instead. Files
+/// reopen by path for duplicate checks. A `provider_locale` formats every node the
+/// provider opens (the former Windows provider).
+mod synthetic {
+    use midnight_core::*;
+    use std::{
+        path::{Path, PathBuf},
+        sync::Arc,
+        time::{Duration, SystemTime},
+    };
+
+    #[derive(Clone)]
+    pub struct Tree {
+        pub folders: usize,
+        pub files: usize,
+        pub one_byte: Option<PathBuf>,
+        pub provider_locale: Option<Arc<dyn LocaleService>>,
+    }
+    #[derive(Clone, Copy)]
+    enum Level {
+        Root,
+        Folder(usize),
+        File,
+    }
+    struct Node {
+        tree: Tree,
+        entry: FindEntry,
+        level: Level,
+        next: usize,
+    }
+    impl Tree {
+        fn node(&self, path: PathBuf, level: Level) -> Node {
+            let (kind, index) = match level {
+                Level::Root => (EntryKind::Directory, 0),
+                Level::Folder(folder) => (EntryKind::Directory, 1 + folder),
+                Level::File => (EntryKind::File, self.file_index(&path).unwrap()),
+            };
+            let index = index as u64;
+            let mut object = [0; 16];
+            object[..8].copy_from_slice(&index.to_le_bytes());
+            let modified = SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000 + index * 61);
+            let size = (kind == EntryKind::File)
+                .then(|| u64::from(self.one_byte.as_ref().is_some_and(|file| *file == path)));
+            Node {
+                tree: self.clone(),
+                entry: FindEntry {
+                    path,
+                    kind,
+                    metadata: EntryMetadata {
+                        size,
+                        modified: Some(modified),
+                        localized_modified: self
+                            .provider_locale
+                            .as_ref()
+                            .and_then(|locale| locale.format_datetime(modified)),
+                        ..Default::default()
+                    },
+                    identity: TransferIdentity { device: 1, object },
+                    revision: FindRevision([index; 6]),
+                },
+                level,
+                next: 0,
+            }
+        }
+        /// `.../folder-F/file-I.txt` is node `1 + folders + F * files + I`.
+        fn file_index(&self, path: &Path) -> Option<usize> {
+            let number = |path: &Path, prefix: &str, suffix: &str| {
+                path.file_name()?
+                    .to_str()?
+                    .strip_prefix(prefix)?
+                    .strip_suffix(suffix)?
+                    .parse::<usize>()
+                    .ok()
+            };
+            let file = number(path, "file-", ".txt")?;
+            let folder = number(path.parent()?, "folder-", "")?;
+            Some(1 + self.folders + folder * self.files + file)
+        }
+    }
+    impl FindService for Tree {
+        fn open_find_source(
+            &self,
+            path: &Path,
+            _: &Cancellation,
+        ) -> Result<Box<dyn FindSource>, FsError> {
+            let level = if self.file_index(path).is_some() {
+                Level::File
+            } else {
+                Level::Root
+            };
+            Ok(Box::new(self.node(path.to_owned(), level)))
+        }
+    }
+    impl FindSource for Node {
+        fn entry(&self) -> &FindEntry {
+            &self.entry
+        }
+        fn revalidate(&self, _: &Cancellation) -> Result<(), FsError> {
+            Ok(())
+        }
+        fn next_child(&mut self, _: &Cancellation) -> Result<Option<FindChild>, FsError> {
+            let (count, path, level) = match self.level {
+                Level::Root => (
+                    self.tree.folders,
+                    format!("folder-{}", self.next),
+                    Level::Folder(self.next),
+                ),
+                Level::Folder(_) => (
+                    self.tree.files,
+                    format!("file-{}.txt", self.next),
+                    Level::File,
+                ),
+                Level::File => (0, String::new(), Level::File),
+            };
+            if self.next == count {
+                return Ok(None);
+            }
+            self.next += 1;
+            let child = self.tree.node(self.entry.path.join(path), level);
+            Ok(Some(FindChild::Entry(Box::new(child))))
+        }
+        fn read_chunk(&mut self, _: &mut [u8], _: &Cancellation) -> Result<usize, FsError> {
+            panic!("synthetic file contents are never read")
+        }
+    }
+}
+
+/// Records every date/time it formats: through `inner`, or as whole seconds.
+#[derive(Default)]
+struct RecordingLocale {
+    inner: Option<Arc<dyn LocaleService>>,
+    formatted: Mutex<Vec<SystemTime>>,
+}
+impl LocaleService for RecordingLocale {
+    fn number_locale(&self) -> Result<NumberLocale, FsError> {
+        Ok(NumberLocale::default())
+    }
+    fn format_datetime(&self, value: SystemTime) -> Option<LocalizedDateTime> {
+        self.formatted.lock().unwrap().push(value);
+        match &self.inner {
+            Some(inner) => inner.format_datetime(value),
+            None => Some(seconds(value)),
+        }
+    }
+}
+fn seconds(value: SystemTime) -> LocalizedDateTime {
+    let seconds = value.duration_since(UNIX_EPOCH).unwrap().as_secs();
+    LocalizedDateTime {
+        date: format!("day {}", seconds / 86_400),
+        time: format!("second {}", seconds % 86_400),
+    }
+}
+
+fn synthetic_search(
+    tree: &synthetic::Tree,
+    locale: Option<&dyn LocaleService>,
+    query: &FindRequest,
+) -> (FindSummary, Vec<Arc<FindResult>>) {
+    let mut results = Vec::new();
+    let summary = find_worker::search_with_location(
+        tree,
+        locale,
+        query,
+        &Cancellation::default(),
+        &mut |update| {
+            if let FindUpdate::Batch(batch) = update {
+                results.extend(batch.iter().cloned());
+            }
+            true
+        },
+        &find_worker::CurrentDirectory::default(),
+        SystemTime::now(),
+    );
+    assert_eq!(summary.completion, FindCompletion::Completed, "{summary:?}");
+    (summary, results)
+}
+
+fn sorted_times<'a>(times: impl IntoIterator<Item = &'a SystemTime>) -> Vec<SystemTime> {
+    let mut times: Vec<_> = times.into_iter().copied().collect();
+    times.sort();
+    times
+}
+
+#[test]
+fn the_engine_locale_formats_each_result_and_duplicate_candidate_once_and_no_other_node() {
+    let root = std::env::current_dir().unwrap();
+    // The three matches are folder-N/file-7.txt; the first one holds one byte.
+    let one_byte = root.join("folder-0").join("file-7.txt");
+    let tree = synthetic::Tree {
+        folders: 3,
+        files: 10,
+        one_byte: Some(one_byte.clone()),
+        provider_locale: None,
+    };
+    let mut query = request(vec![root]);
+    query.masks = "file-7.txt".into();
+    let search = |query: &FindRequest| {
+        let locale = RecordingLocale::default();
+        let (summary, results) = synthetic_search(&tree, Some(&locale), query);
+        assert_eq!(summary.progress.examined, 33);
+        for result in &results {
+            let metadata = &result.entry.metadata;
+            assert_eq!(metadata.localized_modified, metadata.modified.map(seconds));
+        }
+        let formatted = sorted_times(locale.formatted.lock().unwrap().iter());
+        (summary, results, formatted)
+    };
+    let modified_times = |results: &[Arc<FindResult>]| {
+        sorted_times(
+            results
+                .iter()
+                .map(|result| result.entry.metadata.modified.as_ref().unwrap()),
+        )
+    };
+    // An ordinary search formats each of its three results once. The three folders and
+    // 27 nonmatching files are examined but never formatted.
+    let (_, results, formatted) = search(&query);
+    assert_eq!(results.len(), 3);
+    let matches = modified_times(&results);
+    assert_eq!(formatted, matches);
+    // A duplicate search formats each candidate once when it collects it, because a
+    // group publishes copies of its candidates. The one-byte candidate is alone in its
+    // size bucket: it is never read and joins no group, yet it was formatted too.
+    query.duplicates = true;
+    let (summary, results, formatted) = search(&query);
+    assert_eq!(summary.progress.duplicate_candidates, 3);
+    assert_eq!(summary.progress.duplicate_groups, 1);
+    assert_eq!(results.len(), 2);
+    assert!(results.iter().all(|result| result.entry.path != one_byte));
+    assert_eq!(formatted, matches);
+    // A time the provider formatted is kept, and without a locale results keep the
+    // provider's absent value (the UI shows its labelled UTC fallback).
+    query.duplicates = false;
+    let provider = Arc::new(RecordingLocale::default());
+    let provider_formatted = synthetic::Tree {
+        provider_locale: Some(provider.clone()),
+        ..tree.clone()
+    };
+    let engine = RecordingLocale::default();
+    let (_, results) = synthetic_search(&provider_formatted, Some(&engine), &query);
+    assert!(engine.formatted.lock().unwrap().is_empty());
+    assert_eq!(provider.formatted.lock().unwrap().len(), 34);
+    assert!(results.iter().all(|result| {
+        let metadata = &result.entry.metadata;
+        metadata.localized_modified == metadata.modified.map(seconds)
+    }));
+    let (_, results) = synthetic_search(&tree, None, &query);
+    assert_eq!(results.len(), 3);
+    assert!(
+        results
+            .iter()
+            .all(|result| result.entry.metadata.localized_modified.is_none())
+    );
+}
+
+/// Manual measurement: a name search of 400 synthetic folders of 625 files with the
+/// native locale. `provider formats` formats every node the provider opens, as the
+/// Windows provider formerly did; otherwise the engine formats the 400 results only.
+#[test]
+#[ignore = "manual performance measurement over 250,400 synthetic nodes"]
+fn synthetic_name_search_localization_measurement() {
+    let native: Arc<dyn LocaleService> = Arc::new(LocalFileSystem::new(None));
+    let mut query = request(vec![std::env::current_dir().unwrap()]);
+    query.masks = "file-7.txt".into();
+    let mut samples = [Vec::new(), Vec::new()];
+    for round in 0..7 {
+        for provider_formats in [round % 2 == 0, round % 2 != 0] {
+            let provider = Arc::new(RecordingLocale {
+                inner: Some(native.clone()),
+                ..Default::default()
+            });
+            let engine = RecordingLocale {
+                inner: Some(native.clone()),
+                ..Default::default()
+            };
+            let tree = synthetic::Tree {
+                folders: 400,
+                files: 625,
+                one_byte: None,
+                provider_locale: provider_formats
+                    .then(|| provider.clone() as Arc<dyn LocaleService>),
+            };
+            let started = Instant::now();
+            let (summary, results) = synthetic_search(&tree, Some(&engine), &query);
+            let elapsed = started.elapsed();
+            assert!(
+                results
+                    .iter()
+                    .all(|result| result.entry.metadata.localized_modified.is_some())
+            );
+            eprintln!(
+                "{}: {elapsed:?}, {} nodes, {} results, {} provider formats, {} engine formats",
+                if provider_formats {
+                    "provider formats"
+                } else {
+                    "results only"
+                },
+                summary.progress.examined,
+                results.len(),
+                provider.formatted.lock().unwrap().len(),
+                engine.formatted.lock().unwrap().len(),
+            );
+            samples[usize::from(provider_formats)].push(elapsed);
+        }
+    }
+    for (label, mut times) in ["results only", "provider formats"]
+        .into_iter()
+        .zip(samples)
+    {
+        times.sort();
+        eprintln!(
+            "{label}: min {:?}, median {:?}",
+            times[0],
+            times[times.len() / 2]
+        );
+    }
 }

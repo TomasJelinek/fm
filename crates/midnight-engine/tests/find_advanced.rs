@@ -26,6 +26,7 @@ fn execute_at(query: &FindRequest, at: SystemTime) -> (FindSummary, Vec<Arc<Find
     let location = find_worker::CurrentDirectory::default();
     let summary = find_worker::search_with_location(
         &LocalFileSystem::new(None),
+        None,
         query,
         &Cancellation::default(),
         &mut |update| {
@@ -212,6 +213,7 @@ fn large_duplicate_groups_publish_atomically_and_refused_delivery_is_cancelled()
         let cancel = Cancellation::default();
         let summary = find_worker::search_with_location(
             &LocalFileSystem::new(None),
+            None,
             &query,
             &cancel,
             &mut |update| {

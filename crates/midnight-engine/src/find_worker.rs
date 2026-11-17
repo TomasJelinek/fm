@@ -40,8 +40,11 @@ impl CurrentDirectory {
     }
 }
 
+/// Searches the native `service`. `locale` formats the modification time of each
+/// published result (and duplicate candidate), never of every examined node.
 pub(crate) fn search_with_location(
     service: &dyn FindService,
+    locale: Option<&dyn LocaleService>,
     request: &FindRequest,
     cancel: &Cancellation,
     emit: &mut dyn FnMut(FindUpdate) -> bool,
@@ -50,6 +53,7 @@ pub(crate) fn search_with_location(
 ) -> FindSummary {
     search_with_progress_interval(
         service,
+        locale,
         request,
         cancel,
         emit,
@@ -61,8 +65,13 @@ pub(crate) fn search_with_location(
 
 /// `search_with_location` publishing progress and partial batches at most
 /// once per `progress_interval` (tests drive the cadence without real waits).
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the production seam plus its test cadence"
+)]
 pub(crate) fn search_with_progress_interval(
     service: &dyn FindService,
+    locale: Option<&dyn LocaleService>,
     request: &FindRequest,
     cancel: &Cancellation,
     emit: &mut dyn FnMut(FindUpdate) -> bool,
@@ -74,6 +83,7 @@ pub(crate) fn search_with_progress_interval(
         request,
         cancel,
         emit,
+        locale,
         progress: FindProgress::default(),
         budgets: Vec::new(),
         diagnostics: Vec::new(),
@@ -266,7 +276,10 @@ pub(crate) fn search_with_progress_interval(
                 match source.revalidate(cancel) {
                     Ok(()) => {
                         if request.duplicates {
-                            if !candidates.collect(source.entry(), &mut work) {
+                            // Duplicate groups publish copies of their candidates, so every
+                            // candidate is formatted, including one that joins no group.
+                            let entry = work.localized(source.entry());
+                            if !candidates.collect(&entry, &mut work) {
                                 break 'roots;
                             }
                             work.progress_if_due();
@@ -276,8 +289,9 @@ pub(crate) fn search_with_progress_interval(
                             work.budget(FindBudget::Results);
                             break 'roots;
                         }
+                        let entry = work.localized(source.entry());
                         if !work.reserve(
-                            entry_cost(source.entry())
+                            entry_cost(&entry)
                                 + size_of::<FindResult>()
                                 + 2 * size_of::<Arc<FindResult>>(),
                         ) {
@@ -286,7 +300,7 @@ pub(crate) fn search_with_progress_interval(
                         work.progress.results += 1;
                         work.batch.push(Arc::new(FindResult {
                             id: FindResultId(work.progress.results),
-                            entry: source.entry().clone(),
+                            entry,
                             duplicate_group: None,
                             duplicate_group_size: 0,
                         }));
@@ -343,10 +357,21 @@ pub(crate) fn validate_result(
     Ok(source.entry().clone())
 }
 
+/// Fills a missing localized modification time, as panel listings do. A time the
+/// provider formatted is kept; without a locale the UI shows its labelled UTC fallback.
+pub(crate) fn localize(entry: &mut FindEntry, locale: Option<&dyn LocaleService>) {
+    if entry.metadata.localized_modified.is_none()
+        && let (Some(locale), Some(modified)) = (locale, entry.metadata.modified)
+    {
+        entry.metadata.localized_modified = locale.format_datetime(modified);
+    }
+}
+
 struct Work<'a> {
     request: &'a FindRequest,
     cancel: &'a Cancellation,
     emit: &'a mut dyn FnMut(FindUpdate) -> bool,
+    locale: Option<&'a dyn LocaleService>,
     progress: FindProgress,
     budgets: Vec<FindBudget>,
     diagnostics: Vec<FsError>,
@@ -358,6 +383,14 @@ struct Work<'a> {
     progress_interval: Duration,
 }
 impl Work<'_> {
+    /// A retained copy of a result or duplicate candidate with its localized time.
+    /// Nodes that never match are not formatted: a name search over a million nodes
+    /// formats only its matches.
+    fn localized(&self, entry: &FindEntry) -> FindEntry {
+        let mut entry = entry.clone();
+        localize(&mut entry, self.locale);
+        entry
+    }
     fn stopped(&mut self) -> bool {
         self.cancelled |= self.cancel.is_cancelled();
         self.cancelled

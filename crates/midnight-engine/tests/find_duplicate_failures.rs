@@ -150,6 +150,7 @@ fn run(failure: Failure) -> (FindSummary, Vec<Arc<FindResult>>, u64) {
     let location = find_worker::CurrentDirectory::default();
     let summary = find_worker::search_with_location(
         &service,
+        None,
         &query,
         &Cancellation::default(),
         &mut |update| {

@@ -66,6 +66,8 @@ struct Validation {
 #[derive(Clone)]
 struct Services {
     native: Option<Arc<dyn FindService>>,
+    /// Formats published and validated results' modification times on the workers.
+    locale: Option<Arc<dyn LocaleService>>,
     captures: crate::retirement::RetirementDomain,
     capture_slots: Arc<Semaphore>,
     /// At most two searches traverse at once; other sessions wait for a permit.
@@ -84,6 +86,7 @@ impl Controller {
     ) -> Self {
         let services = Services {
             native: service.clone(),
+            locale: locale.clone(),
             captures: retirement.domain,
             capture_slots: Arc::new(Semaphore::new(RETIREMENT_CAPACITY)),
             searches: Arc::new(Semaphore::new(2)),
@@ -388,6 +391,7 @@ async fn run_slot(
         let Some(service) = services.native.clone() else {
             continue;
         };
+        let locale = services.locale.clone();
         let worker_request = request.clone();
         let accepted_at = intent.accepted_at.unwrap_or_else(SystemTime::now);
         let worker_state = state.clone();
@@ -415,6 +419,7 @@ async fn run_slot(
                 let _permit = permit;
                 find_worker::search_with_location(
                     service.as_ref(),
+                    locale.as_deref(),
                     &worker_request,
                     &cancel,
                     &mut |update| {
@@ -587,6 +592,7 @@ async fn run_validations(
         let Some(service) = services.native.clone() else {
             continue;
         };
+        let locale = services.locale.clone();
         let outbox = outbox.clone();
         // Restart, Close and shutdown abandon cooperative provider checks of
         // obsolete requests; Stop keeps them, like the retained file actions.
@@ -618,8 +624,7 @@ async fn run_validations(
                             service.as_ref(),
                             &validation.result.entry,
                             &cancel,
-                        )
-                        .map(Box::new);
+                        );
                         let event = if validation.capture {
                             let result = result.and_then(|_| {
                                 capture::capture(&capture_services, &validation, &capture_lifetime)
@@ -629,6 +634,11 @@ async fn run_validations(
                                 result,
                             }))
                         } else {
+                            // The reported current entry is formatted like a published result.
+                            let result = result.map(|mut entry| {
+                                find_worker::localize(&mut entry, locale.as_deref());
+                                Box::new(entry)
+                            });
                             Event::FindResultValidated(Box::new(FindValidationResult {
                                 request,
                                 result,
