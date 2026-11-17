@@ -385,8 +385,12 @@ successful move retains no source copy and removes its empty temporary directory
 This is internal staging, not a selectable recovery mode, journal or catalogue.
 If a new source-name winner blocks restoration, both objects are preserved and
 the exact exceptional temporary location is reported. Failed empty-directory
-cleanup is also reported; cleanup never removes an unexpected child. Progress
-reports actual file removals, source disposition/durability facts, exceptional
+cleanup is also reported; cleanup never removes an unexpected child. One known
+gap: on Windows, when granted peers refuse a capture's rename into the private
+directory that the same capture has just created, that refused turn cannot remove
+the empty directory, and the automatic repeat of the capture uses a new one, so an
+empty owner-only `.midnight-move-*` directory remains beside the source unreported.
+Progress reports actual file removals, source disposition/durability facts, exceptional
 residual counts, first16 raw residual mappings and at most64 source parents for
 refresh, prioritizing selected-root parents. File-removal counts exclude directories;
 disposition/durability counters include empty-directory removals. They do not

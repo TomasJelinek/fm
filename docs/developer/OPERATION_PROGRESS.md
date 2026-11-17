@@ -109,10 +109,12 @@ second for external changes the registry cannot see. This covers stage creation,
 publication, directory creation, and a Move's source capture (repeated from the
 capture step; the After proof still rehashes both files before removal), its
 empty-directory removal and its verified source removal (whose retry rebuilds the
-finalizer and rehashes both files first). A refusal by a quarantined peer never
-clears and fails the entry with the non-retryable restart error, and a quarantined
-claim makes later jobs fail at once and ask for an application restart instead of
-waiting.
+finalizer and rehashes both files first). A Windows capture refused only at its
+rename into the private directory it has just created leaves that empty directory
+behind unreported (see [bounded ordinary Move](TRANSFERS.md#bounded-ordinary-move)).
+A refusal by a quarantined peer never clears and fails the entry with the
+non-retryable restart error, and a quarantined claim makes later jobs fail at once
+and ask for an application restart instead of waiting.
 
 Turns of a job without a granted peer refresh only the pins they announced (no other
 claim can observe its facts, and every grant re-probes all planned records). Its
