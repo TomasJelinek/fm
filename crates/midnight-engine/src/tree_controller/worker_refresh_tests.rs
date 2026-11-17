@@ -703,10 +703,11 @@ async fn a_running_worker_retries_maintenance_without_reserving_transfer_shares(
     } = fixture;
     let closing = CloseOnDrop(lane);
     let running = tokio::task::spawn_blocking(move || worker.run());
-    // Without any input the worker waits and then retries admission itself. A
-    // waiter queued on the fair gate would instead wait for this very share and
-    // hold every other one meanwhile.
-    for _ in 0..2 {
+    // Without any input the worker keeps retrying admission after bounded waits.
+    // A waiter queued on the fair gate would block (after at most one stored
+    // lane wakeup) until this very share is released, holding every other share
+    // meanwhile.
+    for _ in 0..3 {
         tokio::time::timeout(Duration::from_secs(2), retries.notified())
             .await
             .expect("the waiting worker retries namespace admission");
