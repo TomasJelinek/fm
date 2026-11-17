@@ -12,6 +12,8 @@ struct StreamIndex {
     /// Shared with outstanding range snapshots; the next append copies it once.
     index: Arc<DirectoryIndex>,
     rows: usize,
+    /// The UI showed a complete view of this listing, so its index is gone.
+    released: bool,
 }
 
 #[derive(Clone, Default)]
@@ -39,7 +41,7 @@ impl StreamingSelections {
                 ..Default::default()
             };
         }
-        if entries.is_empty() {
+        if entries.is_empty() || current.released {
             return;
         }
         let StreamIndex { index, rows, .. } = &mut *current;
@@ -73,10 +75,34 @@ impl StreamingSelections {
         let current = self.0[request.pane.index()]
             .lock()
             .unwrap_or_else(|error| error.into_inner());
-        if current.navigation != request.navigation || current.location != request.location {
+        if current.released
+            || current.navigation != request.navigation
+            || current.location != request.location
+        {
             return Err("The streamed range belongs to an obsolete folder listing");
         }
         Ok(current.index.clone())
+    }
+
+    /// Selection worker only, for a request that carries a complete view of this
+    /// listing. Each pane's requests run in order, so every streamed range the UI
+    /// sent before it showed that view has been resolved already. The index is
+    /// dropped outside the pane lock; later batches of the same listing (a
+    /// row-keeping refresh still streaming) are not indexed again.
+    pub(crate) fn release(&self, pane: PaneId, navigation: NavigationId, location: &Path) {
+        let index = {
+            let mut current = self.0[pane.index()]
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            if current.released || current.navigation != navigation || current.location != location
+            {
+                return;
+            }
+            current.released = true;
+            current.rows = 0;
+            std::mem::take(&mut current.index)
+        };
+        drop(index);
     }
 }
 
@@ -159,5 +185,47 @@ mod tests {
             2,
             "a captured range view remains immutable"
         );
+    }
+
+    #[test]
+    fn a_complete_view_releases_only_its_own_listing_and_later_batches_stay_unindexed() {
+        let streams = StreamingSelections::default();
+        let entry = |id: u64, name: &str| Entry::new(EntryId(id), name.into(), EntryKind::File);
+        let root = Path::new("root");
+        streams.append(PaneId::Left, NavigationId(2), root, &[entry(1, "root/a")]);
+        let request = |navigation: u64| SelectionRequest {
+            pane: PaneId::Left,
+            navigation: NavigationId(navigation),
+            revision: SelectionRevision(1),
+            context: NavigationId(navigation),
+            location: "root".into(),
+            view: None,
+            seed: Arc::default(),
+            seed_revision: SelectionRevision(0),
+            authoritative: None,
+            reset: false,
+            preserve: None,
+            restore: None,
+            action: SelectionAction::Rebase,
+            toggle_directory: false,
+        };
+        let captured = streams.snapshot(&request(2)).unwrap();
+        // An older listing, the other pane or another location keep this stream.
+        streams.release(PaneId::Left, NavigationId(1), root);
+        streams.release(PaneId::Right, NavigationId(2), root);
+        streams.release(PaneId::Left, NavigationId(2), Path::new("other"));
+        assert!(Arc::ptr_eq(
+            &captured,
+            &streams.snapshot(&request(2)).unwrap()
+        ));
+        streams.release(PaneId::Left, NavigationId(2), root);
+        assert!(streams.snapshot(&request(2)).is_err());
+        // A row-keeping refresh can still stream batches of the released listing.
+        streams.append(PaneId::Left, NavigationId(2), root, &[entry(2, "root/b")]);
+        assert!(streams.snapshot(&request(2)).is_err());
+        assert_eq!(captured.by_id.len(), 1, "a captured view remains intact");
+        streams.append(PaneId::Left, NavigationId(3), root, &[entry(3, "root/c")]);
+        let next = streams.snapshot(&request(3)).unwrap();
+        assert_eq!(next.by_id[&EntryId(3)], 0);
     }
 }

@@ -130,6 +130,11 @@ async fn run(
                         .snapshot(&request)
                         .and_then(|view| state.apply_with_stream(&request, Some(view)))
                 } else {
+                    if request.view.is_some() {
+                        // The UI shows a complete view: this pane's streamed ranges
+                        // were queued, and therefore resolved, before this request.
+                        stream.release(request.pane, request.navigation, &request.location);
+                    }
                     state.apply(&request)
                 };
                 let event = match selected {
@@ -1602,6 +1607,13 @@ mod tests {
             panic!("committed selection")
         };
         assert_eq!(selection.bits(), [0b101]);
+        assert!(
+            controller
+                .streaming
+                .snapshot(&request(3, None, SelectionAction::Rebase))
+                .is_err(),
+            "the complete view released the streamed index"
+        );
         drop(controller);
         drop(events);
         while tasks.join_next().await.is_some() {}
