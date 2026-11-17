@@ -1,39 +1,32 @@
 #![cfg(windows)]
+#[path = "../src/test_fixtures.rs"]
+mod test_fixtures;
 
 use midnight_core::{Cancellation, DeleteMode, MutationService};
 use midnight_platform_windows::WindowsFileSystem;
 use std::{
     ffi::OsStr,
     fs, io,
-    os::windows::process::CommandExt,
     path::{Path, PathBuf},
-    process::Command,
 };
+use test_fixtures::{SavedDacl, deny_read_data, restore_dacl};
 
 fn fixture() -> tempfile::TempDir {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .join("_build/tmp");
-    fs::create_dir_all(&root).unwrap();
-    tempfile::Builder::new()
-        .prefix("midnight-mutation-acl-")
-        .tempdir_in(root)
-        .unwrap()
+    test_fixtures::build_temp("midnight-mutation-acl-")
 }
 
+/// Denies content read and directory listing to Everyone through a native DACL edit
+/// (no PowerShell), restoring the exact original DACL on drop.
 struct DeniedRead {
     paths: Vec<PathBuf>,
-    original: String,
+    original: SavedDacl,
 }
 
 impl DeniedRead {
     fn new(path: &Path) -> Self {
         Self {
             paths: vec![path.to_owned()],
-            original: acl_script("Deny", path, None).unwrap().trim().to_owned(),
+            original: deny_read_data(path).unwrap(),
         }
     }
 
@@ -48,7 +41,7 @@ impl Drop for DeniedRead {
             if path.exists() {
                 // Restore the exact original DACL even when the tested operation panics.
                 // Removed fixtures have no remaining namespace entry to restore.
-                if let Err(error) = acl_script("Restore", path, Some(&self.original)) {
+                if let Err(error) = restore_dacl(path, &self.original) {
                     eprintln!(
                         "cannot restore owned fixture ACL at {}: {error}",
                         path.display()
@@ -60,27 +53,6 @@ impl Drop for DeniedRead {
             }
         }
     }
-}
-
-fn acl_script(action: &str, path: &Path, original: Option<&str>) -> io::Result<String> {
-    let mut command = Command::new("powershell.exe");
-    command
-        .args(["-NoLogo", "-NoProfile", "-NonInteractive", "-File"])
-        .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixture-read-acl.ps1"))
-        .args(["-Action", action])
-        .arg("-FixturePath")
-        .arg(path)
-        .creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW);
-    if let Some(original) = original {
-        command.arg("-OriginalDacl").arg(original);
-    }
-    let output = command.output()?;
-    if !output.status.success() {
-        return Err(io::Error::other(
-            String::from_utf8_lossy(&output.stderr).into_owned(),
-        ));
-    }
-    String::from_utf8(output.stdout).map_err(io::Error::other)
 }
 
 #[test]

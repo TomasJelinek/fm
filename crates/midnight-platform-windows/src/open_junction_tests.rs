@@ -2,13 +2,12 @@
 //! fixture tests that create native junctions and temporarily deny listing under
 //! `_build/qa`.
 use super::*;
+use crate::test_fixtures::{SavedDacl, deny_read_data, restore_dacl};
 use std::{
     ffi::OsString,
-    os::windows::{ffi::OsStringExt, process::CommandExt},
+    os::windows::ffi::OsStringExt,
     path::{Component, PathBuf, Prefix},
-    process::Command,
 };
-use windows_sys::Win32::System::Threading::CREATE_NO_WINDOW;
 
 #[test]
 fn denied_compatibility_junction_explicitly_opens_its_native_target() {
@@ -51,29 +50,25 @@ fn denied_compatibility_junction_explicitly_opens_its_native_target() {
     assert_eq!(actual, expected);
 }
 
-struct DeniedListing(PathBuf);
+/// Denies listing to Everyone through a native DACL edit of the entry itself (a
+/// junction is changed itself, never its target; no icacls process) and restores the
+/// original DACL on drop.
+struct DeniedListing(PathBuf, SavedDacl);
 impl DeniedListing {
     fn new(path: &Path) -> Self {
-        Self::acl(path, "/deny", "*S-1-1-0:(RD)");
-        Self(path.to_owned())
-    }
-
-    fn acl(path: &Path, operation: &str, permission: &str) {
-        let executable = crate::desktop::system_directory()
-            .unwrap()
-            .join("icacls.exe");
-        let output = Command::new(executable)
-            .arg(path)
-            .args([operation, permission, "/L"])
-            .creation_flags(CREATE_NO_WINDOW)
-            .output()
-            .unwrap();
-        assert!(output.status.success(), "icacls: {output:?}");
+        Self(path.to_owned(), deny_read_data(path).unwrap())
     }
 }
 impl Drop for DeniedListing {
     fn drop(&mut self) {
-        Self::acl(&self.0, "/remove:d", "*S-1-1-0");
+        if let Err(error) = restore_dacl(&self.0, &self.1)
+            && !std::thread::panicking()
+        {
+            panic!(
+                "cannot restore fixture ACL at {}: {error}",
+                self.0.display()
+            );
+        }
     }
 }
 
@@ -82,8 +77,8 @@ fn fixture_directory() -> tempfile::TempDir {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../../_build/qa/junction-navigation/fixtures");
     fs::create_dir_all(&fixtures).unwrap();
     let root = fixtures.canonicalize().unwrap();
-    // PowerShell's junction constructor misinterprets a verbatim target. Keep
-    // its ordinary raw UTF-16 spelling, matching the existing junction fixtures.
+    // Navigation results are compared with the ordinary (non-verbatim) spelling that
+    // panels use, so keep the canonical root's raw UTF-16 without the `\\?\` prefix.
     let root = if matches!(root.components().next(),
         Some(Component::Prefix(prefix)) if matches!(prefix.kind(), Prefix::VerbatimDisk(_)))
     {

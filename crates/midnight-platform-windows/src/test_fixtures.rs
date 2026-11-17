@@ -1,11 +1,13 @@
 //! Native test fixtures without spawning a shell: directory junctions and
-//! non-surrogate (filter-style) reparse points, set with `FSCTL_SET_REPARSE_POINT`.
+//! non-surrogate (filter-style) reparse points, set with `FSCTL_SET_REPARSE_POINT`, and
+//! read-denying DACLs set through the object's own handle.
 //! Standalone (std and windows-sys only) so integration tests can include it by path.
 #![allow(dead_code, reason = "each test binary uses a subset of the fixtures")]
 use std::{
     ffi::OsString,
     fs::{File, OpenOptions},
     io,
+    mem::size_of,
     os::windows::{
         ffi::{OsStrExt, OsStringExt},
         fs::OpenOptionsExt,
@@ -15,9 +17,19 @@ use std::{
     ptr,
 };
 use windows_sys::Win32::{
+    Security::{
+        ACCESS_DENIED_ACE, ACE_HEADER, ACL, ACL_SIZE_INFORMATION, AclSizeInformation,
+        AddAccessDeniedAce, AddAce, CreateWellKnownSid, DACL_SECURITY_INFORMATION, GetAce,
+        GetAclInformation, GetKernelObjectSecurity, GetLengthSid, GetSecurityDescriptorControl,
+        GetSecurityDescriptorDacl, InitializeAcl, InitializeSecurityDescriptor,
+        SE_DACL_AUTO_INHERITED, SE_DACL_PROTECTED, SECURITY_DESCRIPTOR, SECURITY_MAX_SID_SIZE,
+        SetKernelObjectSecurity, SetSecurityDescriptorControl, SetSecurityDescriptorDacl,
+        WinWorldSid,
+    },
     Storage::FileSystem::{
-        FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_DELETE,
-        FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_WRITE_ATTRIBUTES, FILE_WRITE_DATA,
+        FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_READ_DATA,
+        FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_WRITE_ATTRIBUTES,
+        FILE_WRITE_DATA, READ_CONTROL, WRITE_DAC,
     },
     System::{
         IO::DeviceIoControl,
@@ -128,17 +140,186 @@ pub fn clear_filter_tag(path: &Path, tag: u32) -> io::Result<()> {
     )
 }
 
+fn repository_build() -> PathBuf {
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    manifest
+        .parent()
+        .and_then(Path::parent)
+        .expect("the crate lives in <repository>/crates/<name>")
+        .join("_build")
+}
+
 /// The repository's `_build/tmp`, spelled without `.`/`..` steps or forward slashes
 /// (native mutation validation and junction substitute names reject them).
 pub fn build_tmp_root() -> PathBuf {
-    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let repository = manifest
-        .parent()
-        .and_then(Path::parent)
-        .expect("the crate lives in <repository>/crates/<name>");
-    let root = repository.join("_build").join("tmp");
+    let root = repository_build().join("tmp");
     std::fs::create_dir_all(&root).expect("create _build/tmp");
     root
+}
+
+/// The original DACL of a fixture, saved by [`deny_read_data`] for [`restore_dacl`].
+pub struct SavedDacl(Vec<u64>);
+
+fn check(succeeded: i32) -> io::Result<()> {
+    if succeeded == 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
+/// Opens the fixture object itself for its DACL: a link is changed itself, never its
+/// target. Only entries whose parent lies below the repository's `_build` are accepted.
+fn open_for_security(path: &Path) -> io::Result<File> {
+    let owned = path.parent().is_some_and(|parent| {
+        let (Ok(parent), Ok(build)) = (
+            std::fs::canonicalize(parent),
+            std::fs::canonicalize(repository_build()),
+        ) else {
+            return false;
+        };
+        parent.starts_with(build)
+    });
+    if !owned {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "ACL fixtures change only their own entries below _build",
+        ));
+    }
+    OpenOptions::new()
+        .access_mode(READ_CONTROL | WRITE_DAC)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(path)
+}
+
+fn dacl_descriptor(file: &File) -> io::Result<Vec<u64>> {
+    let mut needed = 0u32;
+    // SAFETY: a live handle and a writable size output; the size probe writes no data.
+    unsafe {
+        GetKernelObjectSecurity(
+            file.as_raw_handle(),
+            DACL_SECURITY_INFORMATION,
+            ptr::null_mut(),
+            0,
+            &mut needed,
+        )
+    };
+    if needed == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let mut descriptor = vec![0u64; (needed as usize).div_ceil(8)];
+    // SAFETY: the aligned allocation covers `needed` writable bytes and stays live.
+    check(unsafe {
+        GetKernelObjectSecurity(
+            file.as_raw_handle(),
+            DACL_SECURITY_INFORMATION,
+            descriptor.as_mut_ptr().cast(),
+            needed,
+            &mut needed,
+        )
+    })?;
+    Ok(descriptor)
+}
+
+/// Denies `FILE_READ_DATA` (file content, directory listing) to Everyone by prepending
+/// one explicit deny ACE to the fixture's DACL, keeping its other ACEs and inheritance
+/// flags. Returns the original DACL for [`restore_dacl`]. No shell is involved.
+pub fn deny_read_data(path: &Path) -> io::Result<SavedDacl> {
+    let file = open_for_security(path)?;
+    let mut original = dacl_descriptor(&file)?;
+    let descriptor = original.as_mut_ptr().cast();
+    let (mut present, mut defaulted) = (0, 0);
+    let mut dacl: *mut ACL = ptr::null_mut();
+    // SAFETY: a self-relative descriptor returned by the OS and writable outputs; the
+    // DACL pointer refers into `original`, which outlives every use below.
+    check(unsafe {
+        GetSecurityDescriptorDacl(descriptor, &mut present, &mut dacl, &mut defaulted)
+    })?;
+    if present == 0 || dacl.is_null() {
+        return Err(io::Error::other("ACL fixtures need an existing DACL"));
+    }
+    let mut size = ACL_SIZE_INFORMATION::default();
+    // SAFETY: a valid DACL and an exactly sized writable information structure.
+    check(unsafe {
+        GetAclInformation(
+            dacl,
+            (&mut size as *mut ACL_SIZE_INFORMATION).cast(),
+            size_of::<ACL_SIZE_INFORMATION>() as u32,
+            AclSizeInformation,
+        )
+    })?;
+    let mut everyone = [0u64; (SECURITY_MAX_SID_SIZE as usize).div_ceil(8)];
+    let mut sid_size = SECURITY_MAX_SID_SIZE;
+    // SAFETY: an aligned writable buffer of SECURITY_MAX_SID_SIZE bytes.
+    check(unsafe {
+        CreateWellKnownSid(
+            WinWorldSid,
+            ptr::null_mut(),
+            everyone.as_mut_ptr().cast(),
+            &mut sid_size,
+        )
+    })?;
+    let sid = everyone.as_mut_ptr().cast();
+    // SAFETY: `sid` is the valid SID created above.
+    let sid_length = unsafe { GetLengthSid(sid) } as usize;
+    let deny = size_of::<ACCESS_DENIED_ACE>() - size_of::<u32>() + sid_length;
+    let length = size.AclBytesInUse as usize + deny;
+    let mut replacement = vec![0u64; length.div_ceil(8)];
+    let acl = replacement.as_mut_ptr().cast::<ACL>();
+    // SAFETY: `acl` covers `length` writable bytes; `dacl` and its ACEs stay valid in
+    // `original`. Each copied ACE is read through its own header's size.
+    unsafe {
+        let revision = u32::from((*dacl).AclRevision);
+        check(InitializeAcl(acl, length as u32, revision))?;
+        check(AddAccessDeniedAce(acl, revision, FILE_READ_DATA, sid))?;
+        for index in 0..size.AceCount {
+            let mut ace = ptr::null_mut();
+            check(GetAce(dacl, index, &mut ace))?;
+            let ace_size = u32::from((*ace.cast::<ACE_HEADER>()).AceSize);
+            check(AddAce(acl, revision, u32::MAX, ace, ace_size))?;
+        }
+    }
+    let mut absolute = SECURITY_DESCRIPTOR::default();
+    let replaced = (&mut absolute as *mut SECURITY_DESCRIPTOR).cast();
+    let (mut control, mut revision) = (0u16, 0u32);
+    // SAFETY: `absolute` is initialized in place (SECURITY_DESCRIPTOR_REVISION = 1) and
+    // refers to `replacement`, which outlives the SetKernelObjectSecurity call. The
+    // original control bits are read from the live self-relative descriptor.
+    unsafe {
+        check(InitializeSecurityDescriptor(replaced, 1))?;
+        check(SetSecurityDescriptorDacl(replaced, 1, acl, 0))?;
+        check(GetSecurityDescriptorControl(
+            descriptor,
+            &mut control,
+            &mut revision,
+        ))?;
+        let inheritance = SE_DACL_PROTECTED | SE_DACL_AUTO_INHERITED;
+        check(SetSecurityDescriptorControl(
+            replaced,
+            inheritance,
+            control & inheritance,
+        ))?;
+        check(SetKernelObjectSecurity(
+            file.as_raw_handle(),
+            DACL_SECURITY_INFORMATION,
+            replaced,
+        ))?;
+    }
+    Ok(SavedDacl(original))
+}
+
+/// Writes the DACL saved by [`deny_read_data`] back to the fixture at `path`.
+pub fn restore_dacl(path: &Path, saved: &SavedDacl) -> io::Result<()> {
+    let file = open_for_security(path)?;
+    // SAFETY: a live handle and the self-relative descriptor the OS returned earlier.
+    check(unsafe {
+        SetKernelObjectSecurity(
+            file.as_raw_handle(),
+            DACL_SECURITY_INFORMATION,
+            saved.0.as_ptr().cast_mut().cast(),
+        )
+    })
 }
 
 /// A fresh directory below the repository's `_build/tmp`, removed on drop.

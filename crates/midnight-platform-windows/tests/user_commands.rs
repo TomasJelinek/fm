@@ -5,7 +5,7 @@ use midnight_core::*;
 use midnight_platform_windows::WindowsFileSystem;
 use std::{
     ffi::{OsStr, OsString},
-    fs,
+    fs, io,
     os::windows::ffi::OsStrExt,
     path::Path,
 };
@@ -59,7 +59,14 @@ fn actual_program_receives_native_argv_and_cwd_without_shell_execution_or_trunca
 #[test]
 fn cancelled_missing_and_batch_programs_never_launch_a_fallback() {
     let temp = test_fixtures::build_temp("fixture-");
-    for name in ["missing.exe", "script.cmd", "script.bat"] {
+    // Each refusal has its own cause: a missing program is NotFound, a batch file is
+    // refused as input before any spawn (no cmd.exe fallback), and a cancelled
+    // request is Interrupted. An unrelated failure no longer satisfies the test.
+    for (name, kind) in [
+        ("missing.exe", io::ErrorKind::NotFound),
+        ("script.cmd", io::ErrorKind::InvalidInput),
+        ("script.bat", io::ErrorKind::InvalidInput),
+    ] {
         let executable = temp.path().join(name);
         if name != "missing.exe" {
             fs::write(&executable, b"echo unwanted").unwrap();
@@ -71,11 +78,11 @@ fn cancelled_missing_and_batch_programs_never_launch_a_fallback() {
                 arguments: vec![],
             },
         };
-        assert!(
-            WindowsFileSystem::new(None)
-                .launch_user_command(&process, &Cancellation::default())
-                .is_err()
-        );
+        let error = WindowsFileSystem::new(None)
+            .launch_user_command(&process, &Cancellation::default())
+            .err()
+            .expect("the program must not launch");
+        assert_eq!(error.kind, kind, "{name}: {error:?}");
     }
     let cancel = Cancellation::default();
     cancel.cancel();
@@ -86,11 +93,11 @@ fn cancelled_missing_and_batch_programs_never_launch_a_fallback() {
             arguments: vec!["--list".into()],
         },
     };
-    assert!(
-        WindowsFileSystem::new(None)
-            .launch_user_command(&process, &cancel)
-            .is_err()
-    );
+    let error = WindowsFileSystem::new(None)
+        .launch_user_command(&process, &cancel)
+        .err()
+        .expect("a cancelled request must not launch");
+    assert_eq!(error.kind, io::ErrorKind::Interrupted, "{error:?}");
 }
 
 #[test]
