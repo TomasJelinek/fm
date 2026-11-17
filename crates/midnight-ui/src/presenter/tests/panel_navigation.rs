@@ -123,6 +123,31 @@ fn breadcrumbs_navigate_raw_ancestors_and_reject_stale_tokens() {
     assert!(!p.navigate_path_part(PaneId::Left, &token, &|_| panic!("stale breadcrumb")));
 }
 
+/// Platform tests supply a component that is not valid Unicode on the host.
+pub(super) fn assert_lossy_breadcrumb_is_not_copied(raw: std::ffi::OsString) {
+    let root = test_root();
+    let parent = root.join(raw);
+    let mut p = Presenter::new(parent.join("child"), root.clone());
+    let parts = p.path_parts(PaneId::Left);
+    let sent = RefCell::new(Vec::new());
+    let send = |command| {
+        sent.borrow_mut().push(command);
+        true
+    };
+    assert_eq!(parts.len(), 3, "root, raw parent and child");
+    let lossy = &parts[1];
+    assert_eq!(lossy.prefix, parent.to_string_lossy());
+    assert!(lossy.prefix.contains('\u{FFFD}'));
+    assert!(!p.copy_path_part(PaneId::Left, &lossy.identity, &send));
+    assert!(sent.borrow().is_empty(), "replacement text is not the path");
+    assert!(p.desktop.notice.is_some());
+    assert!(p.copy_path_part(PaneId::Left, &parts[0].identity, &send));
+    assert!(
+        matches!(&sent.borrow()[..], [Command::CopyText { text, .. }]
+        if root.to_str() == Some(text.as_str()))
+    );
+}
+
 #[test]
 fn breadcrumb_copy_preserves_unicode_prefix_without_navigation_and_rejects_stale_token() {
     let root = test_root();

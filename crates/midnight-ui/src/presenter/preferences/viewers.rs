@@ -11,6 +11,27 @@ impl Presenter {
         change: ViewerPreferenceChange,
         send: &dyn Fn(Command) -> bool,
     ) -> bool {
+        if self.preferences.loaded {
+            // Viewer windows report one validated field per input step (for
+            // example each zoom notch). Viewer settings are not Options-owned
+            // and affect no other preference family, so patch the field in place
+            // instead of cloning and diffing every preference for each step.
+            let mut viewer = self.preferences.values.viewer.clone();
+            if viewer.apply(&change).is_err() {
+                return false;
+            }
+            if viewer != self.preferences.values.viewer {
+                self.retired.push(Box::new(mem::replace(
+                    &mut self.preferences.values.viewer,
+                    viewer,
+                )));
+                self.preferences.unsaved = true;
+                self.preferences.revision.0 = self.preferences.revision.0.saturating_add(1);
+                self.preferences.flush_after_load = false;
+                self.send_preferences_save(send);
+            }
+            return true;
+        }
         let mut preferences = self.preferences.values.clone();
         if preferences.viewer.apply(&change).is_err() {
             return false;

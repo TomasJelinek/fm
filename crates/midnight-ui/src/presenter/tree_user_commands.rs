@@ -58,20 +58,27 @@ impl Presenter {
                 continue;
             };
             let p = &mut self.panes[pane.index()];
-            let current = p
+            let view_current = p
                 .tree_view()
-                .is_some_and(|view| Arc::ptr_eq(view, &pending.capture.view))
-                && pending
-                    .command
-                    .settings_preview
-                    .as_ref()
-                    .is_none_or(|origin| origin.matches(&self.user_command_settings));
-            if !current
+                .is_some_and(|view| Arc::ptr_eq(view, &pending.capture.view));
+            let settings_current = pending
+                .command
+                .settings_preview
+                .as_ref()
+                .is_none_or(|origin| origin.matches(&self.user_command_settings));
+            let capture_lost = !view_current
                 || matches!(
                     pending.capture.status(p, self.operations.closing),
                     tree_capture::Status::Gone | tree_capture::Status::SelectionChanged
-                )
-            {
+                );
+            if capture_lost || !settings_current {
+                if capture_lost {
+                    self.report_tree_capture_lost(
+                        &pending.capture.view,
+                        &pending.capture.cancel,
+                        "the command",
+                    );
+                }
                 pending.capture.cancel.cancel();
                 self.retired.push(Box::new(pending));
                 continue;

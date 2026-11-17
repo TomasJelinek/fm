@@ -43,6 +43,21 @@ impl Pane {
         self.error_revision = self.error_revision.wrapping_add(1);
     }
 
+    /// Report congestion of a send that is retried automatically. A repeated
+    /// refusal does not re-signal the unchanged notice.
+    pub(super) fn report_busy(&mut self, notice: &'static str, retired: &mut Vec<DeferredDrop>) {
+        if self.error != notice {
+            self.set_error(notice, retired);
+        }
+    }
+
+    /// An accepted retry clears its own congestion notice, never another error.
+    pub(super) fn clear_busy(&mut self, notice: &'static str, retired: &mut Vec<DeferredDrop>) {
+        if self.error == notice {
+            self.set_error("", retired);
+        }
+    }
+
     pub(super) fn set_tree_error(
         &mut self,
         error: &TreeDiagnostic,
@@ -257,7 +272,7 @@ impl Presenter {
             self.retired.push(Box::new(content));
             self.desktop.report(
                 "Diagnostic details",
-                "Viewer settings are still loading. Try again.".into(),
+                self.viewer_plugins.policy_unavailable().into(),
             );
             return;
         };

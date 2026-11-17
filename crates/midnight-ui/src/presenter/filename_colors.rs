@@ -13,6 +13,14 @@ pub(crate) struct ColorState {
     pub(crate) editor: crate::color_options::Editor,
 }
 
+impl ColorState {
+    /// Shutdown hands the listing Arcs and per-entry style maps to reclamation.
+    pub(super) fn retire_sources(&mut self, retired: &mut Vec<DeferredDrop>) {
+        retired.push(Box::new(mem::take(&mut self.inputs)));
+        retired.push(Box::new(mem::take(&mut self.results)));
+    }
+}
+
 impl Presenter {
     pub(crate) fn cancel_color_draft(&mut self) {
         self.colors.validation = None;

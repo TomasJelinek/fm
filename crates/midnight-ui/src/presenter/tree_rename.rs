@@ -99,6 +99,7 @@ impl Presenter {
                 .tree_view()
                 .is_some_and(|view| Arc::ptr_eq(view, &pending.view))
         {
+            self.report_tree_capture_lost(&pending.view, &pending.cancel, "Rename");
             pending.cancel.cancel();
             self.retired.push(Box::new(pending));
             return;

@@ -192,6 +192,33 @@ fn tree_delete_navigation_reprojection_shutdown_and_replacement_reject_late_capt
 }
 
 #[test]
+fn only_a_capture_lost_to_a_same_session_publication_asks_for_a_retry() {
+    for publication in [true, false] {
+        let mut p = loaded();
+        let request = request(&mut p, DeleteMode::Trash);
+        if publication {
+            p.apply_with_sender(
+                Event::Tree(Box::new(TreeEvent::Published(super::tree::publication(
+                    request.view.root.clone(),
+                    2,
+                    true,
+                    false,
+                )))),
+                &|_| true,
+            );
+        } else {
+            p.request_operation_shutdown(&|_| true);
+            p.flush_selection(&|_| true);
+        }
+        assert!(request.cancel.is_cancelled());
+        assert_eq!(
+            p.panes[0].error.contains("changed before Delete"),
+            publication,
+            "a watch publication explains the lost Delete; shutdown stays silent"
+        );
+    }
+}
+#[test]
 fn tree_delete_invalid_capture_payload_never_prepares_a_native_operation() {
     for mismatch in 0..4 {
         let mut p = loaded();

@@ -76,3 +76,24 @@ fn stale_and_duplicate_final_payloads_are_retired_without_ui_destruction() {
         assert!(weak.upgrade().is_none());
     }
 }
+
+#[test]
+fn shutdown_leaves_no_presenter_reference_to_a_compared_listing() {
+    let mut p = Presenter::new("a".into(), "b".into());
+    for (pane, path) in [(PaneId::Left, "a"), (PaneId::Right, "b")] {
+        let id = begin(&mut p, pane, path);
+        finish(&mut p, pane, id, vec![entry(1, &format!("{path}/child"))]);
+    }
+    let weak_entries = Arc::downgrade(&p.panes[0].entries);
+    let weak_index = Arc::downgrade(&p.panes[0].index);
+    p.open_comparison();
+    p.submit_comparison(CompareOptions::default(), &|_| true);
+    assert!(p.comparison.busy, "the request captured both listings");
+    p.retire_all();
+    let retired = p.take_retired();
+    std::thread::spawn(move || drop(retired)).join().unwrap();
+    assert!(
+        weak_entries.upgrade().is_none() && weak_index.upgrade().is_none(),
+        "the final listing drop must not wait for the Presenter on the UI thread"
+    );
+}

@@ -57,6 +57,12 @@ impl PreferencesState {
         {
             restore_fields(&mut values, baseline);
         }
+        // Commands run while history was not remembered stay session-only.
+        if !self.session_commands.is_empty() {
+            values
+                .command_history
+                .retain(|entry| !self.session_commands.contains(&entry.command));
+        }
         values
     }
 }

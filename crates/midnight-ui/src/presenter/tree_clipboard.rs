@@ -18,6 +18,15 @@ impl Purpose {
             Self::Paste => "Cannot paste files",
         }
     }
+    fn action_name(&self) -> &'static str {
+        match self {
+            Self::Clipboard => "the clipboard copy",
+            Self::Properties => "Properties",
+            Self::Menu(_) => "the context menu",
+            Self::Open(_) => "Open",
+            Self::Paste => "Paste",
+        }
+    }
 }
 
 pub(super) struct Pending {
@@ -145,6 +154,19 @@ impl Presenter {
         self.flush_tree_clipboard(send);
     }
 
+    /// A Copy or Cut to the clipboard already handed to the desktop worker.
+    pub(super) fn tree_clipboard_copy_admitted(&self, pane: PaneId) -> bool {
+        self.file_actions
+            .tree_clipboard
+            .as_ref()
+            .is_some_and(|pending| {
+                pending.capture.view.stamp.pane == pane
+                    && matches!(pending.purpose, Purpose::Clipboard)
+                    && pending.desktop_request.is_some()
+                    && !pending.retire_requested
+            })
+    }
+
     pub(super) fn cancel_tree_clipboard(&mut self, pane: Option<PaneId>) {
         if let Some(pending) = self
             .file_actions
@@ -187,6 +209,11 @@ impl Presenter {
         let p = &mut self.panes[pending.capture.view.stamp.pane.index()];
         match pending.capture.status(p, self.operations.closing) {
             tree_capture::Status::Gone | tree_capture::Status::SelectionChanged => {
+                self.report_tree_capture_lost(
+                    &pending.capture.view,
+                    &pending.capture.cancel,
+                    pending.purpose.action_name(),
+                );
                 pending.capture.cancel.cancel();
                 if let Some(request) = pending.desktop_request {
                     self.desktop.requests.remove(&request);

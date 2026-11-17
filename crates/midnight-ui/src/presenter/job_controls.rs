@@ -20,9 +20,12 @@ impl Presenter {
                 progress.id == id
                     && !progress.state.is_terminal()
                     && progress.state != CopyOperationState::CancelRequested
-            }) && send(Command::SetCopyPaused { id, paused })
-            {
-                Arc::make_mut(progress).pause_requested = paused;
+            }) {
+                if send(Command::SetCopyPaused { id, paused }) {
+                    Arc::make_mut(progress).pause_requested = paused;
+                } else {
+                    self.report_control_busy();
+                }
             }
         } else if let Ok(id) = token.parse::<u64>().map(OperationId)
             && !self.operations.unconfirmed.contains(&id)
@@ -32,9 +35,12 @@ impl Presenter {
                     && !progress.state.is_terminal()
                     && progress.state != OperationState::CancelRequested
             })
-            && send(Command::SetOperationPaused { id, paused })
         {
-            Arc::make_mut(progress).pause_requested = paused;
+            if send(Command::SetOperationPaused { id, paused }) {
+                Arc::make_mut(progress).pause_requested = paused;
+            } else {
+                self.report_control_busy();
+            }
         }
     }
 }

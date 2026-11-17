@@ -54,6 +54,13 @@ impl Presenter {
         self.flush_tree_editor(send);
     }
 
+    /// An F4 launch already handed to the desktop worker.
+    pub(super) fn tree_editor_admitted(&self, pane: PaneId) -> bool {
+        self.editor.tree.as_ref().is_some_and(|pending| {
+            pending.view.stamp.pane == pane && pending.desktop_request.is_some()
+        })
+    }
+
     pub(super) fn cancel_tree_editor(&mut self, pane: Option<PaneId>) {
         if self
             .editor
@@ -82,6 +89,7 @@ impl Presenter {
                 .tree_view()
                 .is_some_and(|view| Arc::ptr_eq(view, &pending.view))
         {
+            self.report_tree_capture_lost(&pending.view, &pending.cancel, "the editor");
             pending.cancel.cancel();
             if let Some(request) = pending.desktop_request {
                 self.desktop.requests.remove(&request);

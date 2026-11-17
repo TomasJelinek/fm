@@ -106,7 +106,7 @@ impl Presenter {
         if self.bookmarks().len() >= MAX_BOOKMARKS {
             self.desktop.report(
                 "Bookmark limit reached",
-                "Up to 64 bookmarks can be saved.".into(),
+                format!("Up to {MAX_BOOKMARKS} bookmarks can be saved."),
             );
             return false;
         }

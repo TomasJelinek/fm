@@ -56,6 +56,20 @@ fn superseded_generations_and_closed_windows_cannot_receive_results() {
     })));
     assert!(p.finds.sessions[&id].running);
     assert!(p.finds.sessions[&id].summary.is_none());
+    let revision = p.finds.sessions[&id].revision;
+    p.apply(Event::FindRejected(Box::new(FindRejected {
+        session: id,
+        generation: FindGeneration(1),
+        error: FsError::from_io(
+            "find",
+            Path::new(""),
+            std::io::ErrorKind::Interrupted.into(),
+        ),
+    })));
+    assert_eq!(
+        p.finds.sessions[&id].revision, revision,
+        "a stale tail must not force a full Find-window refresh"
+    );
     p.close_find(id, &|_| true);
     p.apply(Event::Find(Box::new(FindEvent {
         session: id,

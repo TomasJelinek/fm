@@ -13,6 +13,14 @@ pub(super) fn test_root() -> PathBuf {
 }
 
 #[test]
+fn breadcrumb_copy_refuses_an_unpaired_utf16_component() {
+    use std::{ffi::OsString, os::windows::ffi::OsStringExt};
+    super::panel_navigation::assert_lossy_breadcrumb_is_not_copied(OsString::from_wide(&[
+        0x72, 0xd800,
+    ]));
+}
+
+#[test]
 fn unique_bookmarks_compare_native_utf16_without_display_loss() {
     use std::{ffi::OsString, os::windows::ffi::OsStringExt};
     let first = PathBuf::from(OsString::from_wide(&[67, 58, 92, 0xd800]));

@@ -392,6 +392,87 @@ fn accepted_recursive_disclosure_of_another_row_supersedes_the_older_queued_star
 }
 
 #[test]
+fn dropped_adopted_session_leaves_tree_mode_instead_of_recommitting() {
+    for accepted in [true, false] {
+        let (mut p, root) = fixture();
+        p.apply_with_sender(
+            Event::Tree(Box::new(TreeEvent::Published(publication(
+                root.clone(),
+                1,
+                true,
+                false,
+            )))),
+            &|_| true,
+        );
+        let stamp = p.panes[0].tree_view().unwrap().stamp;
+        let sent = RefCell::new(Vec::new());
+        let send = |command| {
+            sent.borrow_mut().push(command);
+            accepted
+        };
+        p.apply_with_sender(
+            Event::Tree(Box::new(TreeEvent::Unavailable {
+                root,
+                error: TreeDiagnostic::new("Tree session failed"),
+            })),
+            &send,
+        );
+        assert!(p.desktop.notice.is_some(), "the failure is reported once");
+        // The engine answers observations of a dropped session with request 0.
+        for _ in 0..3 {
+            p.apply_with_sender(
+                Event::Tree(Box::new(TreeEvent::Rejected {
+                    stamp,
+                    request: TreeRequestId(0),
+                    row: TreeRowId(0),
+                    error: TreeDiagnostic::new("Tree session is not ready."),
+                })),
+                &send,
+            );
+        }
+        assert!(
+            !sent.borrow().iter().any(|command| matches!(command,
+                Command::Tree(tree) if matches!(tree.as_ref(), TreeCommand::Commit(_) | TreeCommand::Viewport { .. }))),
+            "observations of a dropped session must not be re-sent"
+        );
+        let left = |sent: &RefCell<Vec<Command>>| {
+            sent.borrow().iter().any(|command| {
+                matches!(
+                    command,
+                    Command::Refresh {
+                        pane: PaneId::Left,
+                        ..
+                    }
+                )
+            })
+        };
+        assert!(
+            left(&sent),
+            "a flat re-read is requested to leave tree mode"
+        );
+        if accepted {
+            assert!(p.panes[0].loading);
+        } else {
+            assert!(!p.panes[0].loading, "the refused re-read was not committed");
+            assert!(
+                p.panes[0].tree_view().is_some(),
+                "kept until the re-read is sent"
+            );
+            sent.borrow_mut().clear();
+            p.flush_selection(&|command| {
+                sent.borrow_mut().push(command);
+                true
+            });
+            assert!(left(&sent), "the retained re-read is retried");
+            assert!(p.panes[0].loading && p.panes[0].tree_view().is_none());
+        }
+        p.retire_all();
+        let retired = p.take_retired();
+        std::thread::spawn(move || drop(retired)).join().unwrap();
+    }
+}
+
+#[test]
 fn tree_commit_backpressure_does_not_send_selection_before_acknowledgment() {
     let (mut p, root) = fixture();
     p.apply_with_sender(

@@ -74,6 +74,18 @@ impl Presenter {
         else {
             return false;
         };
+        // A native part copies its exact path; its lossy label is display text.
+        // Archive and network parts copy their provider display text.
+        if part.archive.is_none() && part.network.is_none() {
+            let Some(text) = part.path.to_str() else {
+                self.desktop.report(
+                    "Cannot copy path",
+                    "This native path cannot be represented exactly as clipboard text.".into(),
+                );
+                return false;
+            };
+            return self.queue_clipboard_text(text.to_owned(), send);
+        }
         self.queue_clipboard_text(part.prefix, send)
     }
 

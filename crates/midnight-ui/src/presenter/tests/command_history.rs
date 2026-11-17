@@ -166,3 +166,60 @@ fn recall_rejects_a_shell_from_another_platform_and_keeps_current_draft_grammar(
     assert_eq!(p.effective_shell(), Some(ShellFlavor::Posix));
     assert!(p.desktop.terminal_pending.is_none());
 }
+
+fn saved_histories(sent: &RefCell<Vec<Command>>) -> Vec<Vec<CommandHistoryEntry>> {
+    sent.borrow()
+        .iter()
+        .filter_map(|command| match command {
+            Command::SavePreferences { preferences, .. } => {
+                Some(preferences.command_history.clone())
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn commands_run_while_history_is_not_remembered_stay_session_only() {
+    let secret = "curl -H 'Authorization: Bearer 文档'";
+    let mut p = Presenter::new("left".into(), "right".into());
+    p.preferences_loaded(Ok(UserPreferences {
+        command_history: vec![entry("saved", ShellFlavor::Posix)],
+        ..Default::default()
+    }));
+    let sent = RefCell::new(Vec::new());
+    let send = |command| {
+        sent.borrow_mut().push(command);
+        true
+    };
+    p.change_remember_command_history(false, &send);
+    sent.borrow_mut().clear();
+    let revision = p.preferences.revision;
+    p.record_command_history(entry(secret, ShellFlavor::Posix));
+    p.flush_loaded_preferences(&send);
+    assert!(
+        saved_histories(&sent).is_empty(),
+        "the stored history does not change while it is not remembered"
+    );
+    assert_ne!(p.preferences.revision, revision, "recall still refreshes");
+    assert_eq!(p.rotate_command_history(true, "").as_deref(), Some(secret));
+
+    p.change_remember_command_history(true, &send);
+    let saved = saved_histories(&sent);
+    assert!(!saved.is_empty());
+    assert!(
+        saved
+            .iter()
+            .all(|history| history.iter().all(|entry| entry.command != secret)),
+        "enabling the option later must not persist the earlier command"
+    );
+    sent.borrow_mut().clear();
+    p.record_command_history(entry(secret, ShellFlavor::Cmd));
+    p.flush_loaded_preferences(&send);
+    assert!(
+        saved_histories(&sent)
+            .last()
+            .is_some_and(|history| history.first() == Some(&entry(secret, ShellFlavor::Cmd))),
+        "running it again while remembering authorizes persistence"
+    );
+}

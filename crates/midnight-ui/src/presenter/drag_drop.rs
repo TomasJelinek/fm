@@ -92,14 +92,7 @@ impl Presenter {
         else {
             return false;
         };
-        let expected = format!(
-            "{}:{}:{}:entry:{}",
-            p.generation,
-            p.displayed_generation().0,
-            p.search.view_revision,
-            entry.id.0
-        );
-        if identity != expected || !entry.path.is_absolute() {
+        if identity != p.row_identity(entry) || !entry.path.is_absolute() {
             return false;
         }
         let selected = p.selection_visible(entry);

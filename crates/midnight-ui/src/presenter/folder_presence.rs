@@ -63,10 +63,12 @@ impl Retained {
             return;
         }
         if !self.values.contains_key(&id) {
+            // `order` mirrors `values`; never spin if an invariant break empties it.
             while self.values.len() >= CACHE_ROWS {
-                if let Some(old) = self.order.pop_front() {
-                    retired.push(Box::new(self.values.remove(&old)));
-                }
+                let Some(old) = self.order.pop_front() else {
+                    break;
+                };
+                retired.push(Box::new(self.values.remove(&old)));
             }
             self.order.push_back(id);
         }
@@ -334,10 +336,11 @@ impl Presenter {
             for (id, value) in result.values.iter() {
                 if !p.folder_presence.values.contains_key(id) {
                     while p.folder_presence.values.len() >= CACHE_ROWS {
-                        if let Some(old) = p.folder_presence.order.pop_front() {
-                            self.retired
-                                .push(Box::new(p.folder_presence.values.remove(&old)));
-                        }
+                        let Some(old) = p.folder_presence.order.pop_front() else {
+                            break;
+                        };
+                        self.retired
+                            .push(Box::new(p.folder_presence.values.remove(&old)));
                     }
                     p.folder_presence.order.push_back(*id);
                 }

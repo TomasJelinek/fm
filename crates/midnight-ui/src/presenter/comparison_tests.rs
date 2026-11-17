@@ -222,3 +222,36 @@ fn persistent_empty_projection_cannot_activate_a_previously_visible_cursor() {
         );
     }
 }
+
+#[test]
+fn watch_refresh_waits_for_a_running_comparison_then_rereads_the_folder() {
+    let mut p = loaded();
+    let request = start(&mut p);
+    let sent = RefCell::new(Vec::new());
+    let send = |command| {
+        sent.borrow_mut().push(command);
+        true
+    };
+    assert!(!p.refresh_if_changed(PaneId::Left, NavigationId(1), &send));
+    p.flush_selection(&send);
+    assert!(
+        !sent
+            .borrow()
+            .iter()
+            .any(|command| matches!(command, Command::Refresh { .. })),
+        "a watch hint must not replace rows the comparison captured"
+    );
+    p.apply_with_sender(result(request), &send);
+    assert!(p.comparison.error.is_empty(), "the comparison completes");
+    assert!(p.comparison.summary.contains("Found 1 differences"));
+    assert!(
+        sent.borrow().iter().any(|command| matches!(
+            command,
+            Command::Refresh {
+                pane: PaneId::Left,
+                ..
+            }
+        )),
+        "the retained hint re-reads the folder after the comparison"
+    );
+}

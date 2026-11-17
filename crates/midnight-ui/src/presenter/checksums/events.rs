@@ -4,8 +4,7 @@ impl Presenter {
     pub(in crate::presenter) fn apply_checksum(&mut self, event: ChecksumEvent) {
         let Some(s) = self
             .checksums
-            .session_mut(event.job)
-            .filter(|s| s.generation == event.generation)
+            .session_mut_if(event.job, |s| s.generation == event.generation)
         else {
             self.retired.push(Box::new(event));
             return;
@@ -38,8 +37,7 @@ impl Presenter {
     pub(in crate::presenter) fn reject_checksum(&mut self, event: ChecksumRejected) {
         if let Some(s) = self
             .checksums
-            .session_mut(event.job)
-            .filter(|s| s.generation == event.generation)
+            .session_mut_if(event.job, |s| s.generation == event.generation)
         {
             s.running = false;
             s.stopping = false;
@@ -49,7 +47,7 @@ impl Presenter {
     }
 
     pub(in crate::presenter) fn apply_checksum_manifest(&mut self, event: ChecksumManifestEvent) {
-        let Some(s) = self.checksums.session_mut(event.job).filter(|s| {
+        let Some(s) = self.checksums.session_mut_if(event.job, |s| {
             s.generation == event.generation
                 && s.save.as_ref().is_some_and(|save| save.id == event.save_id)
         }) else {
@@ -83,18 +81,7 @@ impl Presenter {
                         );
                         if let Some(parent) = receipt.path.parent() {
                             for pane in [PaneId::Left, PaneId::Right] {
-                                if self.panes[pane.index()].native_capabilities()
-                                    && self.panes[pane.index()].display_path() == parent
-                                    && !self
-                                        .operations
-                                        .refresh
-                                        .iter()
-                                        .any(|(target, _, _)| *target == pane)
-                                {
-                                    self.operations
-                                        .refresh
-                                        .push((pane, parent.to_owned(), None));
-                                }
+                                self.queue_operation_refresh(pane, parent, None);
                             }
                         }
                     }

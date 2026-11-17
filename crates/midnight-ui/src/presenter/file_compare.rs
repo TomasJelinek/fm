@@ -11,7 +11,7 @@ impl Presenter {
             .viewer_plugins
             .startup_disabled
             .clone()
-            .ok_or("Viewer preferences are still loading.")?;
+            .ok_or(self.viewer_plugins.policy_unavailable())?;
         let active_pane = &self.panes[active.index()];
         let panes: &[PaneId] = if compare_selection_len(active_pane) == 2 {
             std::slice::from_ref(&active)
