@@ -529,7 +529,13 @@ fn lookup_mode(directory: &File, volume: Option<&Volume>) -> LookupMode {
             volume.root.physical
         );
     }
-    if !persistent_short_names_disabled(query_result, returned, &response) {
+    // Test seam: lets the qualified (incremental) branches of the namespace tests run on
+    // an NTFS volume that still creates 8.3 names; their fixtures never use short names.
+    #[cfg(test)]
+    let assumed = std::env::var_os("MIDNIGHT_TEST_ASSUME_SHORT_NAMES_DISABLED").is_some();
+    #[cfg(not(test))]
+    let assumed = false;
+    if !assumed && !persistent_short_names_disabled(query_result, returned, &response) {
         return LookupMode::Unqualified;
     }
     // The root still belongs to the originally pinned volume after the query. A path

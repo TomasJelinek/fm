@@ -450,6 +450,20 @@ before native root/loaded-branch reconciliation. See the
 [tree transfer contract](TREE_PANEL.md#move-and-transfer-reconciliation) and
 [integration evidence](../verification/2026-11-10-tree-move.md).
 
+## Windows namespace pins
+
+The Windows adapter reports exact lookup keys only on NTFS volumes whose
+persistent 8.3-name creation is disabled, for ASCII names in case-insensitive
+directories and any names in case-sensitive directories. Every other binding is
+`Unknown`, which sends that turn to the host's opaque lane and its full refresh of
+the job's pins. Original pins (selected sources and destination entries or
+subtrees) and their directory anchor handles are retained for the job's lifetime;
+an external change to one of their bindings is a job namespace error. Private pins
+witness the stages a job creates and then their published outputs; once every native
+owner of such an object has closed, the next refresh retires that alias, so published
+outputs neither accumulate claims nor turn later external changes into job errors.
+Their names stay covered by the original destination pins.
+
 ## Current limits and next stage
 
 Copy preserves verified content, with explicit required modified time as above.
