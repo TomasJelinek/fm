@@ -97,10 +97,12 @@ using exclusive temporary files and atomic replacement. Existing hash-only
 registrations need one deployment refresh for default-OFF selection.
 It refuses unsafe pre-existing directories/records and never repairs their ACLs.
 It changes permissions only on new deployment/registration directories and deployed
-files. Installations made directly with `deploy-private.ps1` are retained. `build.bat`
-(deploy-build.ps1 `-ReplaceBuildDeployment`) marks its installation and, after
-registering it, removes its own earlier deployments of the same build output that no
-launcher pointer selects and no running process uses. Build deployments of one build
+files. Installations made with `deploy-private.ps1` without `-ReplaceBuildDeployment`
+are retained. `build.bat` (through `deploy-build.ps1`, which passes
+`-ReplaceBuildDeployment` to `deploy-private.ps1`) marks its installation and, after
+registering it, removes earlier deployments marked for the same build output that no
+launcher pointer selects and no running process uses. Build deployments made before
+this marker existed are never removed automatically. Build deployments of one build
 output run one at a time per logon session. Compiler/test output stays under `_build`.
 Replace compatible plugin packages with the app closed, then restart; there is
 no per-plugin content pin. The EXE hash in an ON registration selects a runtime;
@@ -115,12 +117,16 @@ listing needs an installation that only administrators can change, for example a
 folder below `C:\Program Files` ([installation steps](../../README.md#build-and-run));
 see the [directory authorization helper](../../SECURITY.md#directory-authorization-helper).
 From a per-user runtime, Retry with authorization is refused with an explanation of
-this requirement; everything else, including plugin loading, works there.
+this requirement; plugin loading is unaffected. A runtime from an earlier deployment
+that still copied the helper keeps that copy. Builds with this protected-location check
+refuse it, because the runtime's user can change it; an older `me.exe` in such a
+runtime may still use it until the runtime is removed.
 
 Tests use `-RegistrationDirectory` with a protected disposable fixture. That
 override requires `-RegisterRuntime`; no test needs to edit the actual profile.
-`-ReplaceBuildDeployment` refuses `-Destination` and always deploys directly below
-the profile, so its retirement test points `USERPROFILE` at a disposable directory.
+With `-ReplaceBuildDeployment`, `deploy-private.ps1` refuses `-Destination` and always
+deploys directly below the profile, so the retirement test points `USERPROFILE` at a
+disposable directory.
 See [the resolution design](../superpowers/specs/2026-11-07-trusted-runtime-resolution.md)
 and [verification](../verification/2026-11-07-trusted-runtime-resolution.md).
 
