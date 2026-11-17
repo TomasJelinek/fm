@@ -11,6 +11,47 @@ use std::{
     time::{Duration, Instant},
 };
 
+/// Native revalidation reopens a source's parent and name (and, for manifest
+/// entries, every ancestor), so it is not repeated after every 256 KiB chunk.
+/// Bytes come from the pinned handle; the unconditional checks before the first
+/// and after the last read establish the live-file guarantee. This cadence only
+/// bounds how long a replaced or rewritten source can keep streaming.
+pub(super) const REVALIDATION_INTERVAL: Duration = Duration::from_millis(250);
+
+/// Due-time tracker for intermediate revalidation between the mandatory checks.
+pub(super) struct Cadence {
+    interval: Duration,
+    last: Instant,
+}
+impl Cadence {
+    pub(super) fn new(interval: Duration) -> Self {
+        Self {
+            interval,
+            last: Instant::now(),
+        }
+    }
+    /// Whether an intermediate check is due; a due check restarts the interval.
+    pub(super) fn due(&mut self) -> bool {
+        let now = Instant::now();
+        let due = now.saturating_duration_since(self.last) >= self.interval;
+        if due {
+            self.last = now;
+        }
+        due
+    }
+}
+
+#[derive(Clone, Copy)]
+struct Settings {
+    /// Calculated rows can be saved as a manifest; keep them within its verifier budget.
+    exportable: bool,
+    revalidation: Duration,
+}
+const CALCULATION: Settings = Settings {
+    exportable: true,
+    revalidation: REVALIDATION_INTERVAL,
+};
+
 pub(super) fn calculate_captured(
     request: ChecksumRequest,
     source: Option<&dyn CapturedChecksumFiles>,
@@ -76,6 +117,33 @@ pub(super) fn calculate(
     service: &dyn TransferService,
     cancel: &Cancellation,
     retention: Arc<ChecksumRetention>,
+    emit: impl FnMut(ChecksumUpdate) -> bool,
+) -> Arc<ChecksumRun> {
+    run(request, service, cancel, retention, CALCULATION, emit)
+}
+
+/// Manifest entries are compared, never exported, so they use only the parsed
+/// manifest's own per-entry charge.
+pub(super) fn calculate_for_verification(
+    request: ChecksumRequest,
+    service: &dyn TransferService,
+    cancel: &Cancellation,
+    retention: Arc<ChecksumRetention>,
+    emit: impl FnMut(ChecksumUpdate) -> bool,
+) -> Arc<ChecksumRun> {
+    let settings = Settings {
+        exportable: false,
+        ..CALCULATION
+    };
+    run(request, service, cancel, retention, settings, emit)
+}
+
+fn run(
+    request: ChecksumRequest,
+    service: &dyn TransferService,
+    cancel: &Cancellation,
+    retention: Arc<ChecksumRetention>,
+    settings: Settings,
     mut emit: impl FnMut(ChecksumUpdate) -> bool,
 ) -> Arc<ChecksumRun> {
     let roots: Arc<[_]> = request
@@ -85,6 +153,7 @@ pub(super) fn calculate(
         .collect();
     let mut state = State {
         request: &request,
+        settings,
         cancel,
         retention: retention.clone(),
         rows: Vec::new(),
@@ -182,6 +251,7 @@ fn matches_capture(entry: &TransferEntry, target: &ChecksumTarget) -> bool {
 
 struct State<'a, F> {
     request: &'a ChecksumRequest,
+    settings: Settings,
     cancel: &'a Cancellation,
     retention: Arc<ChecksumRetention>,
     rows: Vec<Arc<ChecksumRow>>,
@@ -226,7 +296,20 @@ impl<F: FnMut(ChecksumUpdate) -> bool> State<'_, F> {
             self.budget(ChecksumBudget::RetainedBytes);
             return false;
         };
-        if total > self.request.limits.max_retained_bytes {
+        // The same per-entry charge is what the manifest verifier retains. Its
+        // transient check of one line's names may exceed that charge, so a row
+        // that can be exported also needs that headroom; otherwise a completed or
+        // budget-limited run could later fail to save (or the saved file to verify).
+        let headroom = if self.settings.exportable {
+            super::format::export_line_headroom(path, self.request.algorithms)
+        } else {
+            Some(0)
+        };
+        if total > self.request.limits.max_retained_bytes
+            || headroom
+                .and_then(|headroom| total.checked_add(headroom))
+                .is_none_or(|peak| peak > self.request.limits.max_retained_bytes)
+        {
             self.budget(ChecksumBudget::RetainedBytes);
             return false;
         }
@@ -314,6 +397,7 @@ impl<F: FnMut(ChecksumUpdate) -> bool> State<'_, F> {
             with_io(self.cancel, &entry.item.path, || {
                 source.revalidate(self.cancel)
             })?;
+            let mut cadence = Cadence::new(self.settings.revalidation);
             loop {
                 if self.cancel.is_cancelled() {
                     return Err(failure(
@@ -341,16 +425,6 @@ impl<F: FnMut(ChecksumUpdate) -> bool> State<'_, F> {
                     ));
                 }
                 if count == 0 {
-                    with_io(self.cancel, &entry.item.path, || {
-                        source.revalidate(self.cancel)
-                    })?;
-                    if entry.item.metadata.size != Some(read) {
-                        return Err(failure(
-                            &entry.item.path,
-                            io::ErrorKind::InvalidData,
-                            "Source length changed during calculation.",
-                        ));
-                    }
                     break;
                 }
                 read = read.checked_add(count as u64).ok_or_else(|| {
@@ -371,9 +445,6 @@ impl<F: FnMut(ChecksumUpdate) -> bool> State<'_, F> {
                             "Aggregate checksum byte count overflow.",
                         )
                     })?;
-                with_io(self.cancel, &entry.item.path, || {
-                    source.revalidate(self.cancel)
-                })?;
                 if entry.item.metadata.size.is_none_or(|length| read > length) {
                     return Err(failure(
                         &entry.item.path,
@@ -382,11 +453,24 @@ impl<F: FnMut(ChecksumUpdate) -> bool> State<'_, F> {
                     ));
                 }
                 hashers.update(&self.buffer[..count]);
+                if cadence.due() {
+                    with_io(self.cancel, &entry.item.path, || {
+                        source.revalidate(self.cancel)
+                    })?;
+                }
                 self.progress();
             }
             with_io(self.cancel, &entry.item.path, || {
                 source.revalidate(self.cancel)
-            })
+            })?;
+            if entry.item.metadata.size != Some(read) {
+                return Err(failure(
+                    &entry.item.path,
+                    io::ErrorKind::InvalidData,
+                    "Source length changed during calculation.",
+                ));
+            }
+            Ok(())
         })();
         let (state, digests, error) = match result {
             Ok(()) => {

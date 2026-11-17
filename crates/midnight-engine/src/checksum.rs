@@ -15,7 +15,7 @@ use std::{
     time::Duration,
 };
 use tokio::{
-    sync::{OwnedSemaphorePermit, Semaphore, mpsc},
+    sync::{Notify, OwnedSemaphorePermit, Semaphore, mpsc},
     task::JoinHandle,
 };
 
@@ -36,7 +36,7 @@ pub(super) struct Work {
     cancel: Cancellation,
     // Captured native/provider ownership closes before quota, worker permit and service.
     source: Option<Arc<dyn CapturedChecksumFiles>>,
-    retention: Arc<ChecksumRetention>,
+    reservation: Reservation,
     worker: Option<OwnedSemaphorePermit>,
     service: Service,
 }
@@ -44,7 +44,7 @@ impl Work {
     pub(super) fn calculate(
         request: ChecksumRequest,
         cancel: Cancellation,
-        retention: Arc<ChecksumRetention>,
+        reservation: Reservation,
         source: Option<Arc<dyn CapturedChecksumFiles>>,
         service: Service,
     ) -> Self {
@@ -52,7 +52,7 @@ impl Work {
             request: Some(Request::Calculate(request)),
             cancel,
             source,
-            retention,
+            reservation,
             worker: None,
             service,
         }
@@ -60,14 +60,14 @@ impl Work {
     pub(super) fn verify(
         request: ChecksumVerifyRequest,
         cancel: Cancellation,
-        retention: Arc<ChecksumRetention>,
+        reservation: Reservation,
         service: Service,
     ) -> Self {
         Self {
             request: Some(Request::Verify(request)),
             cancel,
             source: None,
-            retention,
+            reservation,
             worker: None,
             service,
         }
@@ -93,7 +93,70 @@ impl Request {
 }
 struct Quota {
     _job: OwnedSemaphorePermit,
-    _memory: OwnedSemaphorePermit,
+    memory: Mutex<OwnedSemaphorePermit>,
+}
+impl Quota {
+    /// Return reserved bytes beyond `retained` to the shared budget. The rest stays
+    /// held until the run and every row referencing this quota are dropped.
+    fn shrink_to(&self, retained: usize) {
+        let mut memory = self
+            .memory
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let excess = memory.num_permits().saturating_sub(retained);
+        drop(memory.split(excess));
+    }
+}
+
+/// One admitted request's share of the process-wide checksum quota.
+pub(super) struct Reservation {
+    retention: Arc<ChecksumRetention>,
+    quota: Option<Arc<Quota>>,
+}
+impl Reservation {
+    pub(super) fn retention(&self) -> Arc<ChecksumRetention> {
+        self.retention.clone()
+    }
+    /// Admission reserves for the worst case (expanded targets, rows and, during
+    /// verification, overlapping row sets). A finished run keeps only its actual
+    /// bounded rows and roots, so retained result windows and a replacement
+    /// generation fit the same budget.
+    fn finish(&self, run: &ChecksumRun) {
+        if let Some(quota) = &self.quota {
+            quota.shrink_to(retained_bytes(run));
+        }
+    }
+    /// Quota-free ownership for fixtures that bypass process-wide admission.
+    #[cfg(test)]
+    pub(super) fn untracked() -> Self {
+        Self {
+            retention: ChecksumRetention::new(()),
+            quota: None,
+        }
+    }
+}
+
+/// Conservative size of what a finished run keeps alive: the calculation's own
+/// per-row charge (path, index and diagnostic copies plus bounded digest/error
+/// data) and the captured roots and diagnostics.
+fn retained_bytes(run: &ChecksumRun) -> usize {
+    let length = |path: &Path| path.as_os_str().as_encoded_bytes().len();
+    let rows = run
+        .rows
+        .iter()
+        .map(|row| length(&row.path).saturating_mul(4).saturating_add(1024));
+    let roots = run
+        .captured_roots
+        .iter()
+        .map(|root| length(root).saturating_add(std::mem::size_of::<std::path::PathBuf>()));
+    let diagnostics = run.summary.diagnostics.iter().map(|error| {
+        length(&error.path)
+            .saturating_add(error.message.len())
+            .saturating_add(std::mem::size_of::<FsError>())
+    });
+    rows.chain(roots)
+        .chain(diagnostics)
+        .fold(std::mem::size_of::<ChecksumRun>(), usize::saturating_add)
 }
 fn jobs() -> Arc<Semaphore> {
     static JOBS: OnceLock<Arc<Semaphore>> = OnceLock::new();
@@ -111,7 +174,7 @@ fn workers() -> Arc<Semaphore> {
     WORKERS.get_or_init(|| Arc::new(Semaphore::new(1))).clone()
 }
 
-pub(super) fn reserve(bytes: usize, retained: usize) -> Result<Arc<ChecksumRetention>, FsError> {
+pub(super) fn reserve(bytes: usize, retained: usize) -> Result<Reservation, FsError> {
     let fail = |kind, message| worker::failure(Path::new(""), kind, message);
     let job = jobs().try_acquire_owned().map_err(|_| {
         fail(
@@ -134,15 +197,19 @@ pub(super) fn reserve(bytes: usize, retained: usize) -> Result<Arc<ChecksumReten
             "Checksum target/result memory budget is full (64 MiB).",
         )
     })?;
-    Ok(ChecksumRetention::new(Quota {
+    let quota = Arc::new(Quota {
         _job: job,
-        _memory: memory,
-    }))
+        memory: Mutex::new(memory),
+    });
+    Ok(Reservation {
+        retention: ChecksumRetention::new(quota.clone()),
+        quota: Some(quota),
+    })
 }
 
 pub(super) fn reserve_verification(
     request: &ChecksumVerifyRequest,
-) -> Result<Arc<ChecksumRetention>, FsError> {
+) -> Result<Reservation, FsError> {
     let bytes = request.validate().map_err(|message| {
         worker::failure(&request.manifest, io::ErrorKind::InvalidInput, message)
     })?;
@@ -161,6 +228,8 @@ pub struct Controller {
     events: mpsc::Receiver<ChecksumEvent>,
     registry: Registry,
     stop: Cancellation,
+    // Wakes the idle actor for `stop`; `Cancellation` itself is a polled flag.
+    wake: Arc<Notify>,
     task: Option<JoinHandle<()>>,
 }
 impl Controller {
@@ -170,12 +239,16 @@ impl Controller {
         let (outgoing, events) = mpsc::channel(64);
         let registry = Registry::default();
         let stop = Cancellation::default();
+        let wake = Arc::new(Notify::new());
         let task = tokio::spawn(run(
             incoming,
             outgoing,
             service.clone(),
             registry.clone(),
-            stop.clone(),
+            Stop {
+                cancel: stop.clone(),
+                wake: wake.clone(),
+            },
         ));
         Self {
             requests,
@@ -183,6 +256,7 @@ impl Controller {
             _service: service,
             registry,
             stop,
+            wake,
             task: Some(task),
             #[cfg(test)]
             retirement: None,
@@ -208,8 +282,8 @@ impl Controller {
                 "Checksum service is closing.",
             ));
         }
-        let retention = reserve(request_bytes, request.limits.max_retained_bytes)?;
-        self.admit_plain(Request::Calculate(request), self.stop.child(), retention)
+        let reservation = reserve(request_bytes, request.limits.max_retained_bytes)?;
+        self.admit_plain(Request::Calculate(request), self.stop.child(), reservation)
     }
 
     pub(super) async fn admit_prepared(&self, work: WorkerOwned<Work>) -> Result<(), FsError> {
@@ -224,15 +298,15 @@ impl Controller {
     #[cfg(test)]
     #[allow(dead_code)] // Used by path-included native integration tests.
     pub fn verify(&self, request: ChecksumVerifyRequest) -> Result<(), FsError> {
-        let retention = reserve_verification(&request)?;
-        self.admit_plain(Request::Verify(request), self.stop.child(), retention)
+        let reservation = reserve_verification(&request)?;
+        self.admit_plain(Request::Verify(request), self.stop.child(), reservation)
     }
     #[cfg(test)]
     fn admit_plain(
         &self,
         request: Request,
         cancel: Cancellation,
-        retention: Arc<ChecksumRetention>,
+        reservation: Reservation,
     ) -> Result<(), FsError> {
         let lease = self
             .retirement
@@ -250,7 +324,7 @@ impl Controller {
             request: Some(request),
             cancel,
             source: None,
-            retention,
+            reservation,
             worker: None,
             service: self._service.clone(),
         });
@@ -317,6 +391,7 @@ impl Controller {
     }
     pub async fn shutdown(mut self) {
         self.stop.cancel();
+        self.wake.notify_one();
         for cancel in self
             .registry
             .lock()
@@ -335,6 +410,7 @@ impl Controller {
 impl Drop for Controller {
     fn drop(&mut self) {
         self.stop.cancel();
+        self.wake.notify_one();
         for cancel in self
             .registry
             .lock()
@@ -346,33 +422,45 @@ impl Drop for Controller {
     }
 }
 
+/// Shutdown flag plus its wakeup. `notify_one` stores a permit while the single
+/// actor task is not waiting, so a stop between its flag check and the next wait
+/// is still observed without periodic polling.
+struct Stop {
+    cancel: Cancellation,
+    wake: Arc<Notify>,
+}
+
 async fn run(
     mut incoming: mpsc::Receiver<WorkerOwned<Work>>,
     outgoing: mpsc::Sender<ChecksumEvent>,
     _service: Service,
     registry: Registry,
-    stop: Cancellation,
+    Stop { cancel: stop, wake }: Stop,
 ) {
     'jobs: loop {
         if stop.is_cancelled() {
             break;
         }
-        let mut work = match tokio::time::timeout(Duration::from_millis(25), incoming.recv()).await
-        {
-            Ok(Some(work)) => work,
-            Ok(None) => break,
-            Err(_) => continue,
+        let mut work = tokio::select! {
+            received = incoming.recv() => match received {
+                Some(work) => work,
+                None => break,
+            },
+            () = wake.notified() => continue,
         };
         let key = work.key();
-        let permit = loop {
-            if stop.is_cancelled() {
-                let _ = work.retire().await;
-                break 'jobs;
+        // Queue for the process-wide serial worker in FIFO order, without polling.
+        let permit = if stop.is_cancelled() {
+            None
+        } else {
+            tokio::select! {
+                permit = workers().acquire_owned() => permit.ok(),
+                () = wake.notified() => None,
             }
-            if let Ok(permit) = workers().try_acquire_owned() {
-                break permit;
-            }
-            tokio::time::sleep(Duration::from_millis(25)).await;
+        };
+        let Some(permit) = permit.filter(|_| !stop.is_cancelled()) else {
+            let _ = work.retire().await;
+            break 'jobs;
         };
         work.worker = Some(permit);
         let events = outgoing.clone();
@@ -440,17 +528,18 @@ fn execute(
             work.source.as_deref(),
             work.service.provider(),
             &work.cancel,
-            work.retention.clone(),
+            work.reservation.retention(),
             send,
         ),
         Request::Verify(request) => verify::verify(
             request,
             work.service.provider(),
             &work.cancel,
-            work.retention.clone(),
+            work.reservation.retention(),
             send,
         ),
     };
+    work.reservation.finish(&run);
     // Actual native reads are gone before the captured provider, permits and lease.
     drop(work);
     drop(lease);

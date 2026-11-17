@@ -31,6 +31,7 @@ impl Drop for ReleaseOnDrop {
 struct Reads {
     bytes: AtomicU64,
     calls: AtomicUsize,
+    revalidations: AtomicUsize,
     buffer: AtomicUsize,
     interrupted: AtomicBool,
     changed: AtomicBool,
@@ -40,6 +41,7 @@ impl Default for Reads {
         Self {
             bytes: AtomicU64::new(0),
             calls: AtomicUsize::new(0),
+            revalidations: AtomicUsize::new(0),
             buffer: AtomicUsize::new(0),
             interrupted: AtomicBool::new(false),
             changed: AtomicBool::new(false),
@@ -118,6 +120,10 @@ impl TransferSource for Source {
         &self.entry
     }
     fn revalidate(&self, cancel: &Cancellation) -> Result<(), FsError> {
+        self.provider
+            .reads
+            .revalidations
+            .fetch_add(1, Ordering::SeqCst);
         if cancel.is_cancelled() {
             return Err(failure(
                 &self.entry.item.path,
@@ -292,6 +298,128 @@ fn changed_unreadable_cancelled_and_wrong_length_files_never_publish_partial_dig
         assert!(result.rows[0].bytes_read > 0);
         assert_ne!(result.summary.completion, ChecksumCompletion::Completed);
     }
+}
+
+#[test]
+fn source_revalidation_brackets_reads_and_repeats_only_at_a_bounded_cadence() {
+    let mut provider = Provider::new(&[7; 3000]);
+    provider.chunk = 1;
+    let started = Instant::now();
+    let result = run(request(), &provider, &Cancellation::default());
+    let elapsed = started.elapsed();
+    assert_eq!(result.summary.completion, ChecksumCompletion::Completed);
+    assert_eq!(provider.reads.calls.load(Ordering::SeqCst), 3001);
+    // Each check reopens the native parent and name: once before the first and
+    // once after the last read, plus at most one per elapsed interval, never per chunk.
+    let revalidations = provider.reads.revalidations.load(Ordering::SeqCst);
+    let periodic = (elapsed.as_nanos() / REVALIDATION_INTERVAL.as_nanos()) as usize;
+    assert!(
+        (2..=2 + periodic).contains(&revalidations),
+        "{revalidations} revalidations for 3000 chunks in {elapsed:?}"
+    );
+}
+
+#[test]
+fn due_revalidation_stops_a_changed_source_before_its_end() {
+    let mut provider = Provider::new(&[1; 30]);
+    provider.change = true;
+    let settings = Settings {
+        revalidation: Duration::ZERO,
+        ..CALCULATION
+    };
+    let result = super::run(
+        request(),
+        &provider,
+        &Cancellation::default(),
+        ChecksumRetention::new(()),
+        settings,
+        |_| true,
+    );
+    assert_eq!(result.rows[0].state, ChecksumRowState::SourceChanged);
+    assert!(result.rows[0].digests.is_empty());
+    assert_eq!(
+        result.rows[0].bytes_read, 3,
+        "stopped after the first chunk"
+    );
+}
+
+/// Name of exactly `length` bytes; the index keeps paths distinct.
+fn padded(index: usize, length: usize) -> String {
+    let prefix = format!("{index:05}-");
+    format!("{prefix}{}", "n".repeat(length - prefix.len()))
+}
+fn export(run: &ChecksumRun, directory: &Path) -> Result<Vec<u8>, FsError> {
+    let included = run
+        .rows
+        .iter()
+        .filter(|row| row.state == ChecksumRowState::Calculated)
+        .count() as u64;
+    let partial = ChecksumPartialAcknowledgement {
+        included,
+        excluded: run.rows.len() as u64 - included,
+        incomplete_discovery: run.summary.completion != ChecksumCompletion::Completed,
+    };
+    let request = ChecksumManifestRequest {
+        algorithm: ChecksumAlgorithm::Sha256,
+        destination: directory.join("out.sha256"),
+        acknowledge_partial: (partial.excluded > 0 || partial.incomplete_discovery)
+            .then_some(partial),
+    };
+    super::super::manifest::encode(run, &request, directory, &Cancellation::default())
+        .map(|(bytes, _)| bytes)
+}
+
+#[test]
+fn completed_and_budget_limited_calculations_always_fit_the_manifest_verifier() {
+    // Long names keep the row count, and so the I/O gate traffic, small.
+    let directory = std::env::current_dir()
+        .unwrap()
+        .join("_build/virtual-export-budget");
+    let limit = ChecksumLimits::default().max_retained_bytes;
+    let charge = |path: &Path| path.as_os_str().as_encoded_bytes().len() * 4 + 1024;
+    let name = 4000;
+    let per_row = charge(&directory.join(padded(0, name)));
+    let count = limit / per_row - 1;
+    let uniform = (0..count).map(|index| directory.join(padded(index, name)));
+
+    // A completed run that leaves less than one row of its budget unused.
+    let provider = Provider::new(b"x");
+    let mut whole = request();
+    whole.targets = uniform.clone().map(Into::into).collect();
+    let completed = run(whole, &provider, &Cancellation::default());
+    assert_eq!(completed.summary.completion, ChecksumCompletion::Completed);
+    assert_eq!(completed.rows.len(), count);
+    let bytes = export(&completed, &directory).expect("a completed run must be exportable");
+    assert!(bytes.len() > 1024 * 1024);
+
+    // A final row whose plain charge lands within 4 bytes of the limit would make
+    // the verifier's per-line name check overflow; it must stop the calculation
+    // with an honest budget instead, and the acknowledged partial run must save.
+    let remaining = limit - count * per_row;
+    let base = directory.as_os_str().as_encoded_bytes().len() + 1;
+    let last = directory.join(padded(count, (remaining - 1024) / 4 - base));
+    assert!(remaining - charge(&last) < 4);
+    let mut limited = request();
+    limited.targets = uniform.chain([last]).map(Into::into).collect();
+    let request = limited;
+    let limited = run(request.clone(), &provider, &Cancellation::default());
+    assert_eq!(limited.summary.completion, ChecksumCompletion::Incomplete);
+    assert_eq!(
+        limited.summary.reached_budgets,
+        [ChecksumBudget::RetainedBytes]
+    );
+    assert_eq!(limited.rows.len(), count);
+    export(&limited, &directory).expect("an acknowledged partial run must be exportable");
+    // Verification rows are never exported and keep the plain per-entry charge.
+    let verified = calculate_for_verification(
+        request,
+        &provider,
+        &Cancellation::default(),
+        ChecksumRetention::new(()),
+        |_| true,
+    );
+    assert_eq!(verified.summary.completion, ChecksumCompletion::Completed);
+    assert_eq!(verified.rows.len(), count + 1);
 }
 
 #[test]

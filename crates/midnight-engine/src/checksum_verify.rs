@@ -63,7 +63,7 @@ pub(super) fn verify(
     let provider = Contained { directory };
     let mut transformed = HashMap::new();
     let mut counts = ChecksumProgress::default();
-    let run = worker::calculate(
+    let run = worker::calculate_for_verification(
         ChecksumRequest {
             job: request.job,
             generation: request.generation,
@@ -188,11 +188,17 @@ fn prepare(
         })?;
     let mut bytes = Vec::with_capacity(length as usize);
     let mut buffer = vec![0; CHECKSUM_BUFFER_BYTES];
-    loop {
+    let revalidate = |source: &dyn TransferSource| {
         worker::with_io(cancel, path, || {
             directory.revalidate(cancel)?;
             source.revalidate(cancel)
-        })?;
+        })
+    };
+    // Same contract as calculation: check before the first and after the last read,
+    // in between only at the bounded cadence (the pinned handle cannot switch files).
+    revalidate(source.as_ref())?;
+    let mut cadence = worker::Cadence::new(worker::REVALIDATION_INTERVAL);
+    loop {
         let count = match worker::with_io(cancel, path, || source.read_chunk(&mut buffer, cancel)) {
             Err(error) if error.kind == io::ErrorKind::Interrupted && !cancel.is_cancelled() => {
                 continue;
@@ -206,15 +212,15 @@ fn prepare(
                 "Manifest length changed or the native read returned an invalid length.",
             ));
         }
-        worker::with_io(cancel, path, || {
-            directory.revalidate(cancel)?;
-            source.revalidate(cancel)
-        })?;
         if count == 0 {
             break;
         }
         bytes.extend_from_slice(&buffer[..count]);
+        if cadence.due() {
+            revalidate(source.as_ref())?;
+        }
     }
+    revalidate(source.as_ref())?;
     if bytes.len() != length as usize {
         return Err(worker::failure(
             path,
@@ -223,10 +229,7 @@ fn prepare(
         ));
     }
     let parsed = format::parse_manifest(&bytes, path, request.limits, cancel)?;
-    worker::with_io(cancel, path, || {
-        directory.revalidate(cancel)?;
-        source.revalidate(cancel)
-    })?;
+    revalidate(source.as_ref())?;
     Ok((directory, parsed))
 }
 

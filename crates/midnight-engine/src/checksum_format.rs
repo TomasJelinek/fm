@@ -46,10 +46,17 @@ pub(super) fn parse_manifest(
         .parent()
         .ok_or_else(|| invalid(path, "Checksum manifest needs a parent directory."))?;
     if bytes.len() > MAX_MANIFEST_BYTES || bytes.len() > limits.max_retained_bytes {
-        return Err(budget(path));
+        return Err(budget(path, "encoded input"));
     }
     let text = decode_text(bytes, path, limits.max_retained_bytes, cancel)?;
-    let mut retained = text.len();
+    // Borrowed UTF-8 text is the caller's encoded buffer, bounded above and
+    // reserved separately from decoded/entry data (`checksum::reserve_verification`).
+    // Only decoded UTF-16 text is a second allocation in this budget. Each entry is
+    // then charged exactly like a calculated row (`checksum_worker::State::charge`).
+    let mut retained = match &text {
+        Cow::Borrowed(_) => 0,
+        Cow::Owned(decoded) => decoded.len(),
+    };
     let mut algorithm = None;
     let mut entries = Vec::new();
     let mut seen = HashSet::new();
@@ -62,6 +69,7 @@ pub(super) fn parse_manifest(
         }
         // Bound temporary decoded names, native paths and alias keys before
         // allocating them, including when the record will later prove malformed.
+        // `export_line_headroom` mirrors how far this may exceed the entry charge.
         let _temporary = line
             .len()
             .checked_add(parent.as_os_str().as_encoded_bytes().len())
@@ -69,7 +77,7 @@ pub(super) fn parse_manifest(
             .and_then(|length| length.checked_add(1024))
             .and_then(|length| retained.checked_add(length))
             .filter(|total| *total <= limits.max_retained_bytes)
-            .ok_or_else(|| budget(path))?;
+            .ok_or_else(|| budget(path, "retained name/entry"))?;
         let decoded = decode_record(line, path).map_err(|mut error| {
             error.message = format!("Line {}: {}", index + 1, error.message);
             error
@@ -115,15 +123,18 @@ pub(super) fn parse_manifest(
             .and_then(|length| length.checked_add(1024))
             .and_then(|length| retained.checked_add(length))
             .filter(|total| *total <= limits.max_retained_bytes)
-            .ok_or_else(|| budget(path))?;
+            .ok_or_else(|| budget(path, "retained name/entry"))?;
         if entries.len() >= limits.max_rows || entries.len() as u64 >= limits.max_nodes {
-            return Err(budget(path));
+            return Err(budget(path, "entry count"));
         }
-        seen.try_reserve(1).map_err(|_| budget(path))?;
+        seen.try_reserve(1)
+            .map_err(|_| budget(path, "allocation"))?;
         if !seen.insert(key) {
             return Err(invalid(path, "Duplicate or ambiguous checksum filename."));
         }
-        entries.try_reserve(1).map_err(|_| budget(path))?;
+        entries
+            .try_reserve(1)
+            .map_err(|_| budget(path, "allocation"))?;
         retained = cost;
         entries.push(ManifestEntry {
             path: absolute,
@@ -297,7 +308,9 @@ fn decode_hex(hex: &str, algorithm: ChecksumAlgorithm, path: &Path) -> Result<Ve
 
 fn unescape(name: &str, path: &Path) -> Result<String, FsError> {
     let mut decoded = String::new();
-    decoded.try_reserve(name.len()).map_err(|_| budget(path))?;
+    decoded
+        .try_reserve(name.len())
+        .map_err(|_| budget(path, "allocation"))?;
     let mut chars = name.chars();
     while let Some(character) = chars.next() {
         decoded.push(if character == '\\' {
@@ -331,7 +344,7 @@ fn relative_name(
     let mut relative = PathBuf::new();
     for (index, part) in normalized.split('/').enumerate() {
         if index >= max_depth {
-            return Err(budget(path));
+            return Err(budget(path, "relative path depth"));
         }
         // Checking the native component shape also prevents a GNU escaped literal
         // backslash from becoming a separator when read on Windows.
@@ -427,10 +440,10 @@ fn decode_text<'a>(
             .len()
             .checked_add(character.len_utf8())
             .filter(|size| *size <= limit)
-            .ok_or_else(|| budget(path))?;
+            .ok_or_else(|| budget(path, "decoded text"))?;
         decoded
             .try_reserve(size - decoded.len())
-            .map_err(|_| budget(path))?;
+            .map_err(|_| budget(path, "allocation"))?;
         decoded.push(character);
     }
     Ok(Cow::Owned(decoded))
@@ -439,12 +452,37 @@ fn decode_text<'a>(
 fn invalid(path: &Path, message: &str) -> FsError {
     failure(path, io::ErrorKind::InvalidData, message)
 }
-fn budget(path: &Path) -> FsError {
+fn budget(path: &Path, budget: &str) -> FsError {
     failure(
         path,
         io::ErrorKind::OutOfMemory,
-        "Checksum manifest exceeds its bounded parsing budget.",
+        &format!("Checksum manifest exceeds its bounded {budget} parsing budget."),
     )
+}
+
+/// Upper bound by which `parse_manifest`'s transient check of one exported line
+/// (4 x (line + manifest directory) + 1 KiB) exceeds that entry's committed charge
+/// (4 x absolute path + 1 KiB), for any line `manifest::encode` can write for
+/// `path` with one of `algorithms`. The relative name plus the directory is never
+/// longer than the absolute path, so only the digest, separators, the GNU escape
+/// marker and doubled escaped characters remain. None means arithmetic overflow.
+pub(super) fn export_line_headroom(path: &Path, algorithms: ChecksumAlgorithms) -> Option<usize> {
+    let digest = algorithms.iter().map(ChecksumAlgorithm::bytes).max()?;
+    let escaped = path
+        .components()
+        .filter_map(|component| match component {
+            Component::Normal(name) => Some(name.as_encoded_bytes()),
+            _ => None,
+        })
+        .flatten()
+        .filter(|byte| matches!(byte, b'\\' | b'\n' | b'\r'))
+        .count();
+    // GNU: optional '\\' marker + hex digest + " *". SFV: "  " + 8 hex digits.
+    digest
+        .checked_mul(2)?
+        .checked_add(3)?
+        .checked_add(escaped)?
+        .checked_mul(4)
 }
 fn check_cancel(path: &Path, cancel: &Cancellation) -> Result<(), FsError> {
     if cancel.is_cancelled() {

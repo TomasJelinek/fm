@@ -115,12 +115,13 @@ async fn checksum_retirement_covers_completed_unconsumed_preparation_output() {
     let (dropped, received) = channel::channel();
     let resolved = Arc::new(AtomicUsize::new(0));
     let request = captured(1, dropped, resolved.clone());
-    let retention = checksum::reserve(8 * 1024 * 1024, request.limits.max_retained_bytes).unwrap();
+    let reservation =
+        checksum::reserve(8 * 1024 * 1024, request.limits.max_retained_bytes).unwrap();
     let start = lease.own(Start {
         capture: Some(Capture::Captured(request)),
         key: (ChecksumJobId(1), ChecksumGeneration(1)),
         cancel: Cancellation::default(),
-        retention: Some(retention),
+        reservation: Some(reservation),
         service,
     });
     let task = tokio::task::spawn_blocking(move || prepare(start));
@@ -198,8 +199,8 @@ async fn checksum_retirement_keeps_rejected_capture_slot_and_quota_until_drop_fi
         "service and capture slots stay occupied"
     );
     let mut quota = Vec::new();
-    while let Ok(retention) = checksum::reserve(0, 0) {
-        quota.push(retention);
+    while let Ok(reservation) = checksum::reserve(0, 0) {
+        quota.push(reservation);
     }
     assert_eq!(
         quota.len(),
@@ -235,7 +236,7 @@ fn checksum_retirement_covers_unstarted_blocking_preparation_at_runtime_shutdown
         capture: Some(Capture::Captured(captured(1, dropped, resolved.clone()))),
         key: (ChecksumJobId(1), ChecksumGeneration(1)),
         cancel: Cancellation::default(),
-        retention: Some(ChecksumRetention::new(())),
+        reservation: Some(checksum::Reservation::untracked()),
         service,
     });
     let runtime = tokio::runtime::Builder::new_current_thread()

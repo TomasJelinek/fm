@@ -32,7 +32,7 @@ async fn checksum_retirement_covers_backend_work_pending_on_worker_admission() {
                 .join("_build/checksum-lifetime-source"),
         ],
     );
-    let retention = reserve(
+    let reservation = reserve(
         request.validate().unwrap(),
         request.limits.max_retained_bytes,
     )
@@ -41,7 +41,7 @@ async fn checksum_retirement_covers_backend_work_pending_on_worker_admission() {
         .admit_prepared(lease.own(Work::calculate(
             request,
             Cancellation::default(),
-            retention,
+            reservation,
             Some(input.sources),
             controller._service.clone(),
         )))

@@ -229,6 +229,7 @@ async fn full_queue_rejects_whole_request_without_superseding_an_admitted_genera
         input,
         state: Arc::default(),
         lifetime: Cancellation::default(),
+        wake: Arc::default(),
         available: true,
         service,
         retirement: retirement.domain,
@@ -246,7 +247,7 @@ async fn full_queue_rejects_whole_request_without_superseding_an_admitted_genera
             .admit_plain(
                 Capture::Paths(request),
                 (ChecksumJobId(id), ChecksumGeneration(1)),
-                ChecksumRetention::new(()),
+                checksum::Reservation::untracked(),
             )
             .unwrap();
     }
@@ -257,7 +258,7 @@ async fn full_queue_rejects_whole_request_without_superseding_an_admitted_genera
             .admit_plain(
                 Capture::Paths(request),
                 (ChecksumJobId(1), ChecksumGeneration(2)),
-                ChecksumRetention::new(()),
+                checksum::Reservation::untracked(),
             )
             .unwrap_err()
             .kind,
@@ -362,6 +363,180 @@ async fn stale_generation_is_rechecked_before_a_backpressured_event_can_be_publi
     assert!(events.try_recv().is_err());
 }
 
+#[tokio::test(start_paused = true)]
+async fn idle_actor_wakes_for_shutdown_without_a_polling_timer() {
+    let (controller, _events, _) = setup(crate::transfer_leases::namespace_gate(), None);
+    tokio::task::yield_now().await; // The actor reaches its idle wait.
+    // Paused time advances only to fire a timer: an event-driven actor needs none.
+    let started = tokio::time::Instant::now();
+    controller.shutdown().await;
+    assert_eq!(tokio::time::Instant::now(), started);
+}
+
+#[tokio::test(start_paused = true)]
+async fn waiting_manifest_save_keeps_its_fifo_place_at_the_mutation_gate() {
+    let gate = Arc::new(Semaphore::new(0));
+    let barrier = Barrier::new();
+    let _release = ReleaseOnDrop(barrier.clone());
+    let (controller, _events, directory) = setup(gate.clone(), Some(barrier.clone()));
+    let key = (ChecksumJobId(1), ChecksumGeneration(1));
+    controller
+        .save(ChecksumManifestId(1), key, request(&directory, 1))
+        .unwrap();
+    // Paused time advances only once every task waits: the save is queued.
+    tokio::time::sleep(Duration::from_millis(1)).await;
+    let later = tokio::spawn(
+        gate.clone()
+            .acquire_many_owned(crate::transfer_leases::NAMESPACE_WEIGHT),
+    );
+    // Many former 25 ms re-queue periods pass before the gate opens.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    gate.add_permits(crate::transfer_leases::NAMESPACE_WEIGHT as usize);
+    tokio::time::timeout(Duration::from_secs(5), barrier.entered.notified())
+        .await
+        .expect("the earlier save must receive the gate first");
+    assert!(!later.is_finished(), "a later mutation overtook the save");
+    barrier.release();
+    drop(
+        tokio::time::timeout(Duration::from_secs(5), later)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap(),
+    );
+    controller.shutdown().await;
+}
+
+struct Files;
+impl TransferService for Files {
+    fn prepare_transfer_source(
+        &self,
+        path: &Path,
+        _: &Cancellation,
+    ) -> Result<Box<dyn TransferSource>, FsError> {
+        Ok(Box::new(ThreeBytes {
+            entry: TransferEntry {
+                item: MutationItem {
+                    path: path.to_owned(),
+                    kind: EntryKind::File,
+                    metadata: EntryMetadata {
+                        size: Some(3),
+                        ..Default::default()
+                    },
+                },
+                identity: TransferIdentity {
+                    device: 1,
+                    object: [1; 16],
+                },
+            },
+            read: false,
+        }))
+    }
+    fn prepare_transfer_destination(
+        &self,
+        _: &Path,
+        _: &Cancellation,
+    ) -> Result<Arc<dyn TransferDirectory>, FsError> {
+        Err(invalid("Calculation never writes."))
+    }
+}
+struct ThreeBytes {
+    entry: TransferEntry,
+    read: bool,
+}
+impl TransferSource for ThreeBytes {
+    fn entry(&self) -> &TransferEntry {
+        &self.entry
+    }
+    fn revalidate(&self, _: &Cancellation) -> Result<(), FsError> {
+        Ok(())
+    }
+    fn read_chunk(&mut self, buffer: &mut [u8], _: &Cancellation) -> Result<usize, FsError> {
+        if std::mem::replace(&mut self.read, true) {
+            return Ok(0);
+        }
+        buffer[..3].copy_from_slice(b"abc");
+        Ok(3)
+    }
+    fn next_child(&mut self, _: &Cancellation) -> Result<Option<Box<dyn TransferSource>>, FsError> {
+        Err(invalid("A file has no children."))
+    }
+}
+fn selected(job: u64, generation: u64, path: &Path) -> SelectedChecksumRequest {
+    let entries = [Entry::new(EntryId(1), path.to_owned(), EntryKind::File)];
+    SelectedChecksumRequest {
+        job: ChecksumJobId(job),
+        generation: ChecksumGeneration(generation),
+        files: SelectedFiles {
+            selection: Arc::default(),
+            view: Arc::new(DirectoryIndex::from_entries(&entries)),
+            fallback: Some(path.to_owned()),
+        },
+        algorithms: ChecksumAlgorithms::default(),
+        recursive: false,
+        limits: ChecksumLimits::default(),
+    }
+}
+async fn finished(
+    events: &mut mpsc::Receiver<Event>,
+    job: u64,
+    generation: u64,
+) -> Arc<ChecksumRun> {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            match events.recv().await.expect("checksum events") {
+                Event::Checksum(event)
+                    if event.job == ChecksumJobId(job)
+                        && event.generation == ChecksumGeneration(generation) =>
+                {
+                    if let ChecksumUpdate::Finished(run) = event.update {
+                        return run;
+                    }
+                }
+                Event::ChecksumRejected(rejected) => panic!("{rejected:?}"),
+                _ => {}
+            }
+        }
+    })
+    .await
+    .expect("checksum run must finish")
+}
+
+#[tokio::test]
+async fn four_retained_result_windows_leave_room_to_recalculate_one() {
+    let _quota = checksum::test_quota_fixture().await;
+    let (sender, mut events) = mpsc::channel(64);
+    let controller = Controller::new(
+        Retirement::testing(),
+        Some(Arc::new(Files)),
+        Outbox {
+            sender,
+            wakeup: Arc::new(|| {}),
+        },
+        crate::transfer_leases::namespace_gate(),
+    );
+    let path = std::env::current_dir()
+        .unwrap()
+        .join("_build/virtual-checksum-window");
+    // Like the UI's four windows, every finished run and its rows stay retained.
+    let mut windows = Vec::new();
+    for job in 1..=4 {
+        controller.start_selected(selected(job, 1, &path)).unwrap();
+        windows.push(finished(&mut events, job, 1).await);
+    }
+    controller
+        .start_selected(selected(1, 2, &path))
+        .expect("Recalculate must fit beside four retained results");
+    let replacement = finished(&mut events, 1, 2).await;
+    assert_eq!(
+        replacement.summary.completion,
+        ChecksumCompletion::Completed
+    );
+    controller.shutdown().await;
+    drop((windows, replacement));
+    checksum::test_wait_for_quota_idle().await;
+}
+
 #[tokio::test]
 async fn verification_admission_fits_alongside_retained_calculation_or_verification() {
     let _quota = checksum::test_quota_fixture().await;
@@ -380,7 +555,7 @@ async fn verification_admission_fits_alongside_retained_calculation_or_verificat
             checksum::reserve(8 * 1024 * 1024, 8 * 1024 * 1024).unwrap()
         };
         let mut previous = (*retained(directory.join("source"))).clone();
-        previous.retention = held.clone();
+        previous.retention = held.retention();
         controller
             .state
             .lock()
