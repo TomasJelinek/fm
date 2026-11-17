@@ -221,7 +221,7 @@ This table is a guide; the linked inventories above contain every selected crate
 | sha2 0.10.9 | SHA-256 copy/readback verification, protected Windows plugin runtimes and standalone SHA-256/SHA-512 checksum backend | MIT OR Apache-2.0 |
 | md-5 0.10.6 / sha1 0.10.6 | MD5/SHA-1 compatibility calculations in the standalone checksum backend; not authentication or copy verification | MIT OR Apache-2.0; MIT branch selected |
 | crc32fast 1.5.4 | SFV/CRC32 compatibility calculations; also an existing PNG/compression dependency | MIT OR Apache-2.0; MIT branch selected |
-| notify 8.2.1 | Filesystem event watching | CC0-1.0 |
+| notify 8.2.1 | Linux filesystem event watching (Windows uses its own `ReadDirectoryChangesW` service) | CC0-1.0 |
 | image 0.25.10 / png 0.18.1 | Icons, isolated image thumbnails and the independent image viewer | MIT OR Apache-2.0 |
 | zip 8.6.0 | Read-only ZIP archive provider | MIT |
 | hayro 0.9.0 and its parser/interpreter crates | Isolated PDF rendering | Apache-2.0 OR MIT; pinned notices and embedded font/CMap licenses accompany the PDF plugin |

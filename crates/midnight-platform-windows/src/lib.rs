@@ -53,6 +53,7 @@ mod transfer;
 mod volume_details;
 mod volume_information;
 mod watch;
+mod watch_service;
 mod window_geometry;
 mod windows_argv;
 pub use window_geometry::monitor_work_area;
