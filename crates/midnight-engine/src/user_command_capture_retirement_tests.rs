@@ -104,14 +104,11 @@ async fn tree_user_command_early_rejections_retire_actual_captured_provider_off_
         "queue-full",
     ] {
         let (input, _queued) = mpsc::channel(1);
-        let controller = Controller {
+        let controller = Controller::queue_only(
             input,
-            retirement: RetirementDomain::try_start(2, 0).unwrap(),
-            state: Arc::default(),
-            stop: Cancellation::default(),
-            available: cause != "unavailable",
-            task: None,
-        };
+            RetirementDomain::try_start(2, 0).unwrap(),
+            cause != "unavailable",
+        );
         let mut occupied = Vec::new();
         if cause == "cleanup-full" {
             for _ in 0..2 {
