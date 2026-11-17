@@ -92,7 +92,7 @@ fn opening_reports_plugin_open_and_initial_viewport_errors_without_a_frame() {
     }
 }
 
-fn worker() -> (Worker, Mailbox) {
+pub(super) fn worker() -> (Worker, Mailbox) {
     let root = tempfile::tempdir().unwrap();
     let runtime = Arc::new(Runtime::discover(root.path()).unwrap());
     let raster_budget = Arc::new(crate::raster_budget::Budget::default());

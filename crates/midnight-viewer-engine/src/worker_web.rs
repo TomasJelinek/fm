@@ -6,6 +6,40 @@ use midnight_core::viewer_web as api;
 mod tests;
 
 const WEB_BATCH: usize = 32;
+/// Shown once per browser session when it stopped accepting input.
+const BROWSER_CLOSED: &str = "Browser closed; reopen the document.";
+
+/// The browser session operations the worker uses: `midnight_web_viewer_host::Session`,
+/// or a scripted session in tests. The worker owns the session and calls these on its own
+/// thread; none waits for the browser. Dropping a host session joins its actor thread, so
+/// while the window stays open the worker drops a closing one only after `finished` (see
+/// `Worker::open`).
+pub(super) trait Browser: Send {
+    /// Queue one command. Apart from the host-only Open, ResourceReply and FrameAck
+    /// commands, which the worker never sends, the host refuses a command only when the
+    /// session stopped: it was closed, its actor finished, or the command could not be
+    /// queued and the host closed the session rather than lose ordered input. A refusal
+    /// is therefore never transient.
+    fn send(&self, command: api::CommandKind) -> bool;
+    fn drain(&self, maximum: usize) -> Vec<api::Event>;
+    fn close(&self);
+    fn finished(&self) -> bool;
+}
+
+impl Browser for midnight_web_viewer_host::Session {
+    fn send(&self, command: api::CommandKind) -> bool {
+        midnight_web_viewer_host::Session::send(self, command)
+    }
+    fn drain(&self, maximum: usize) -> Vec<api::Event> {
+        midnight_web_viewer_host::Session::drain(self, maximum)
+    }
+    fn close(&self) {
+        midnight_web_viewer_host::Session::close(self)
+    }
+    fn finished(&self) -> bool {
+        midnight_web_viewer_host::Session::finished(self)
+    }
+}
 
 fn accepts_input(
     frames: &crate::interaction::Frames,
@@ -38,7 +72,7 @@ fn accepts_input(
 }
 
 pub(super) struct WebView {
-    pub session: midnight_web_viewer_host::Session,
+    pub session: Box<dyn Browser>,
     viewport: api::Viewport,
     policy: api::Policy,
     zoom: f64,
@@ -46,6 +80,24 @@ pub(super) struct WebView {
     find_result: Option<String>,
     file_floor: u64,
     context_floor: u64,
+    /// The session stopped accepting input, and `Worker::browser_closed` reported it.
+    ended: bool,
+}
+
+impl WebView {
+    fn new(session: Box<dyn Browser>, viewport: api::Viewport, floor: u64) -> Self {
+        Self {
+            session,
+            viewport,
+            policy: api::Policy::default(),
+            zoom: 1.0,
+            find: String::new(),
+            find_result: None,
+            file_floor: floor,
+            context_floor: floor,
+            ended: false,
+        }
+    }
 }
 
 impl Worker {
@@ -60,22 +112,18 @@ impl Worker {
             height: self.geometry.height,
             scale: f64::from(self.geometry.scale),
         };
-        self.web = Some(WebView {
-            file_floor: self.frames.latest_revision().saturating_add(1),
-            context_floor: self.frames.latest_revision().saturating_add(1),
-            session: midnight_web_viewer_host::Session::open(
-                provider,
-                file,
-                None,
-                viewport,
-                self.wake.clone(),
-            )?,
+        let session = midnight_web_viewer_host::Session::open(
+            provider,
+            file,
+            None,
             viewport,
-            policy: api::Policy::default(),
-            zoom: 1.0,
-            find: String::new(),
-            find_result: None,
-        });
+            self.wake.clone(),
+        )?;
+        self.web = Some(WebView::new(
+            Box::new(session),
+            viewport,
+            self.frames.latest_revision().saturating_add(1),
+        ));
         self.mode = VIEWER_MODE_HTML;
         self.modes = vec![VIEWER_MODE_HTML];
         self.binary = false;
@@ -178,8 +226,11 @@ impl Worker {
             }),
             _ => return true,
         };
+        // A refusal means the host stopped the session, so retrying cannot help. A host
+        // that stops the session because of this very command can publish its reason as
+        // well; `poll_web` drains it after this input and shows it instead.
         if !web.session.send(command) {
-            self.status("Browser input queue is busy; try again.".into(), output);
+            self.browser_closed(output);
         }
         if policy_change || matches!(input, ViewerInput::Resize(_)) {
             self.frames.invalidate();
@@ -270,10 +321,24 @@ impl Worker {
                 api::EventKind::HostShortcut(shortcut) => {
                     output.put(ViewerOutput::WebShortcut(shortcut))
                 }
+                // Not every browser error ends the session (an oversized Copy does not).
                 api::EventKind::Error { message, .. } => self.error(message, output),
-                api::EventKind::Closed => self.error("Browser closed.".into(), output),
+                api::EventKind::Closed => self.browser_closed(output),
                 _ => {}
             }
+        }
+    }
+
+    /// The active browser session stopped and accepts no more input. Report that once:
+    /// later reports would replace the reason the host published for the stop, and wake
+    /// the UI for every pointer move over the stopped page.
+    fn browser_closed(&mut self, output: &Mailbox) {
+        if self
+            .web
+            .as_mut()
+            .is_some_and(|web| !std::mem::replace(&mut web.ended, true))
+        {
+            self.error(BROWSER_CLOSED.into(), output);
         }
     }
 }

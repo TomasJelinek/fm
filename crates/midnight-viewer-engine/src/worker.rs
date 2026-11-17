@@ -68,7 +68,7 @@ struct Worker {
     image_startup: Option<crate::image_startup::Startup>,
     web_providers: Arc<[midnight_web_viewer_host::Provider]>,
     web: Option<web::WebView>,
-    closing_web: Option<midnight_web_viewer_host::Session>,
+    closing_web: Option<Box<dyn web::Browser>>,
     image_ids: Arc<std::sync::atomic::AtomicU64>,
     image: Option<crate::image_view::ImageView>,
     closing_image: Option<crate::image_worker::ImageWorker>,

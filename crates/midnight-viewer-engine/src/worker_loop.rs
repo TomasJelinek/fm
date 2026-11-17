@@ -21,7 +21,7 @@ impl Worker {
     fn actors_finished(&self) -> bool {
         self.closing_web
             .as_ref()
-            .is_none_or(midnight_web_viewer_host::Session::finished)
+            .is_none_or(|session| session.finished())
             && self
                 .closing_image
                 .as_ref()
