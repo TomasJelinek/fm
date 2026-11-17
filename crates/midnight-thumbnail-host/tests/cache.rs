@@ -142,7 +142,7 @@ fn live_cache_instances_share_the_disk_budget() {
 }
 
 #[test]
-fn damaged_generation_forces_inventory_refresh_without_reusing_old_versions() {
+fn damaged_generation_is_repaired_after_an_inventory_refresh_without_reusing_old_versions() {
     let root = directory();
     let path = root.path().join("cache");
     let source = SourceVersion {
@@ -157,7 +157,16 @@ fn damaged_generation_forces_inventory_refresh_without_reusing_old_versions() {
     first.put(&key(&source, 2), &source, frame(2)).unwrap();
     second.put(&key(&source, 3), &source, frame(3)).unwrap();
     let store = midnight_worker_platform::store::PrivateStore::open(&path).unwrap();
-    assert!(store.transaction().unwrap().generation().is_none());
+    // The first mutation after the damage rewrote the record with a fresh generation.
+    let repaired = store.transaction().unwrap().generation();
+    assert!(repaired.is_some());
+    // Later mutations from either cache advance the repaired record one step each.
+    first.put(&key(&source, 4), &source, frame(4)).unwrap();
+    second.put(&key(&source, 5), &source, frame(5)).unwrap();
+    assert_eq!(
+        store.transaction().unwrap().generation(),
+        repaired.map(|value| value.wrapping_add(2))
+    );
     assert!(
         disk_records(&path)
             .iter()
