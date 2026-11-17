@@ -132,8 +132,11 @@ impl Harness {
         h.tick(0);
         h
     }
+    /// Advance the virtual clock by `millis` (0 settles the current instant), run due
+    /// timers such as the 180 ms preview debounce, and draw the form.
     pub fn tick(&self, millis: u64) {
-        self.clock.set(Duration::from_millis(millis));
+        self.clock
+            .set(self.clock.get() + Duration::from_millis(millis));
         slint::platform::update_timers_and_animations();
         modeless::draw(&self.native, 1000, 740, "installed-file-list");
         assert_eq!(

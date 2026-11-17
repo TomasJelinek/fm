@@ -370,6 +370,18 @@ fn cache_pressure_after_reversal_before_the_next_target_report() {
         &[201, 37, 51, 255],
     ));
     let coverage = h.presenter.borrow().thumbnail_coverage(first_identity, 0);
+    let resident_after = {
+        let presenter = h.presenter.borrow();
+        identities
+            .iter()
+            .chain([&targets[1].identity])
+            .filter(|identity| presenter.thumbnail_coverage(identity, 0) != 0)
+            .count()
+    };
+    assert!(
+        resident_after <= 4096,
+        "the record cap bounds the cache even while the target report is stale: {resident_after}"
+    );
     let returned = pixels(&model, parent);
     println!(
         "panel-scroll-retention {}",

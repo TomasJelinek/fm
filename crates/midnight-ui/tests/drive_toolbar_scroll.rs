@@ -80,6 +80,12 @@ fn overflowing_drive_toolbar_scrolls_to_both_ends_and_keeps_the_other_pane_still
     test.draw();
     // At the absolute minimum, the established compact layout hides the drive bar.
     test.resize(320, 200);
+    for label in ["Test drive 0", left, right] {
+        assert!(
+            !ui::root_item(&test.window, label, AccessibleRole::Button).is_visible(),
+            "{label} is hidden at 320x200"
+        );
+    }
     test.resize(4000, 820);
     assert!(!ui::root_item(&test.window, right, AccessibleRole::Button).is_visible());
     assert!(!ui::root_item(&test.window, left, AccessibleRole::Button).is_visible());

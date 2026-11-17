@@ -25,7 +25,6 @@ mod command_line_layout;
 mod command_menus;
 mod commander_dialogs;
 mod commander_edges;
-mod commander_tools;
 mod compact_controls;
 mod compact_feedback;
 mod comparison_toolbar;

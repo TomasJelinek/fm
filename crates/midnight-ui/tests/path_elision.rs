@@ -25,7 +25,8 @@ slint::slint! {
         out property <string> selected;
         out property <string> copied;
         out property <string> edit-text: navigation.text;
-        out property <bool> editing: navigation.editing;
+        // The path editor owns keyboard focus exactly while the path is being edited.
+        out property <bool> editing: navigation.has-focus;
         navigation := PathNavigation {
             x: 12px; y: 12px; width: parent.width - 24px; height: 32px;
             path: root.path; parts: root.parts;

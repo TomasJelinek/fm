@@ -422,15 +422,20 @@ fn embedded_file_list_preserves_template_caret_and_capture_through_refresh_and_e
         !matches!(command, Command::RunFileList(request) if request.destination != FileListDestination::Preview)
     }));
 
+    // Preset and history choices are edits: each previews its own template once the
+    // 180 ms debounce elapsed.
+    let previewed = |expected: &str| {
+        assert_eq!(form.get_template_text(), expected);
+        h.tick(200);
+        let preview = h.request();
+        assert_eq!(preview.destination, FileListDestination::Preview);
+        assert_eq!(preview.template, expected);
+        assert!(Arc::ptr_eq(&first.capture, &preview.capture));
+    };
     form.invoke_select_preset(token.clone(), 1);
-    h.tick(200);
-    assert_eq!(
-        form.get_template_text(),
-        "$(Drive)$(Path)$(FileName)$(CRLF)"
-    );
+    previewed("$(Drive)$(Path)$(FileName)$(CRLF)");
     form.invoke_select_history(token.clone(), 1);
-    h.tick(200);
-    assert_eq!(form.get_template_text(), "$(FileSize)$(LF)");
+    previewed("$(FileSize)$(LF)");
     h.main.invoke_activate(1);
     let destination = h.root.join("output 文档.txt");
     form.set_destination(2);

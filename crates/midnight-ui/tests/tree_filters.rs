@@ -15,6 +15,21 @@ use slint::{
 use std::sync::{Arc, atomic::Ordering};
 use support::Harness;
 
+/// Submit the open embedded Panel Filter form through its token-bound callback,
+/// exactly as its OK button does.
+fn submit_open_filter(h: &Harness, mode: i32, expression: &str) {
+    let form = h.ui.window.global::<midnight_ui::PanelFilterPresentation>();
+    let token = form.get_token();
+    assert!(!token.is_empty(), "the Panel Filter form is open");
+    form.invoke_apply(token, true, mode, expression.into(), false);
+}
+
+/// Close the open embedded Panel Filter form as its Cancel does.
+fn dismiss_open_filter(h: &Harness) {
+    let form = h.ui.window.global::<midnight_ui::PanelFilterPresentation>();
+    form.invoke_dismiss(form.get_token());
+}
+
 fn apply(h: &mut Harness, mode: i32, expression: &str) {
     let previous_label = h.filter_label();
     h.ui.draw();
@@ -162,7 +177,7 @@ fn native_tree_controls_apply_clear_sort_and_cancel_across_layouts() {
         );
         h.ui.window.invoke_open_panel_filter(0);
         assert_eq!(h.ui.window.get_panel_filter_view().expression, expression);
-        h.ui.window.invoke_cancel_panel_filter();
+        dismiss_open_filter(&h);
     }
     let revision = h.view.as_ref().unwrap().stamp.revision;
     h.ui.window.invoke_view_mode(0, 0);
@@ -224,24 +239,22 @@ fn archive_tree_inactive_panel_filter_preserves_authority_and_last_valid_result(
     let prior = h.view.as_ref().unwrap().clone();
     let label = h.filter_label();
     h.ui.window.invoke_open_panel_filter(1);
-    h.ui.window
-        .invoke_apply_panel_filter(1, true, 2, "kind =".into(), false);
+    submit_open_filter(&h, 2, "kind =");
     h.until(|h| !h.ui.window.get_panel_filter_view().busy);
     assert!(!h.ui.window.get_panel_filter_view().error.is_empty());
     assert!(Arc::ptr_eq(&prior, h.view.as_ref().unwrap()));
     assert_eq!(h.filter_label(), label);
-    h.ui.window.invoke_cancel_panel_filter();
+    dismiss_open_filter(&h);
 
     *h.reject_reproject.borrow_mut() = true;
     h.ui.window.invoke_open_panel_filter(1);
-    h.ui.window
-        .invoke_apply_panel_filter(1, true, 0, "*.txt".into(), false);
+    submit_open_filter(&h, 0, "*.txt");
     h.until(|h| !h.ui.window.get_panel_filter_view().busy);
     assert!(h.ui.window.get_panel_filter_view().open);
     assert!(!h.ui.window.get_panel_filter_view().error.is_empty());
     assert_eq!(h.filter_label(), label);
     *h.reject_reproject.borrow_mut() = false;
-    h.ui.window.invoke_cancel_panel_filter();
+    dismiss_open_filter(&h);
     h.calls.fail_save.store(true, Ordering::SeqCst);
     apply(&mut h, 0, "*.txt");
     h.until(|h| h.ui.window.get_preferences_save_status().contains("denied"));
@@ -253,8 +266,7 @@ fn archive_tree_inactive_panel_filter_preserves_authority_and_last_valid_result(
 fn actual_engine_receipt_after_navigation_cannot_apply_to_replacement_pane() {
     let mut h = Harness::new(PaneId::Left, false);
     h.ui.window.invoke_open_panel_filter(0);
-    h.ui.window
-        .invoke_apply_panel_filter(0, true, 0, "*.txt".into(), false);
+    submit_open_filter(&h, 0, "*.txt");
     h.until(|h| !h.ui.window.get_panel_filter_view().open);
     let delayed = loop {
         let event = h.receive();
@@ -290,8 +302,7 @@ fn real_branch_overtaking_filter_reports_failure_and_keeps_draft_retryable() {
         .clone();
     h.ui.window.invoke_tree_disclosure(0, identity);
     h.ui.window.invoke_open_panel_filter(0);
-    h.ui.window
-        .invoke_apply_panel_filter(0, true, 0, "*.txt".into(), false);
+    submit_open_filter(&h, 0, "*.txt");
     let mut delayed = Vec::new();
     loop {
         let event = h.receive();

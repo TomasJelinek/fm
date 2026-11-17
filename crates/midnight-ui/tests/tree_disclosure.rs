@@ -249,18 +249,8 @@ fn disclosure_states_and_deep_indent_preserve_row_geometry() {
             );
         }
     }
-    // Modified disclosure clicks still only disclose; modifiers cannot leak to selection.
-    ui.window.window().dispatch_event(WindowEvent::KeyPressed {
-        text: Key::Control.into(),
-    });
-    ui::click_root(
-        &ui.window,
-        "Collapse folders in Folder 文档",
-        AccessibleRole::Button,
-    );
-    ui.window.window().dispatch_event(WindowEvent::KeyReleased {
-        text: Key::Control.into(),
-    });
+    // Modified disclosure clicks (only disclose, no selection leak) are asserted by
+    // recursive_disclosure_uses_pressed_control_in_both_panes_and_all_layouts.
 }
 
 type Disclosures = Rc<RefCell<Vec<(i32, String, bool)>>>;

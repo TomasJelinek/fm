@@ -339,7 +339,7 @@ fn compact_options_keeps_cancel_reachable_during_validation_and_locked_during_sa
 }
 
 #[test]
-fn scrolling_dialogs_open_at_minimum_size_with_keyboard_close_available() {
+fn scrolling_comparison_dialog_opens_at_minimum_size_with_keyboard_close_available() {
     let mut test = ui::TestUi::new();
     test.window.invoke_apply_fonts("".into(), 32, 32);
     test.window.invoke_apply_preferences(0, 1);
@@ -365,17 +365,7 @@ fn scrolling_dialogs_open_at_minimum_size_with_keyboard_close_available() {
         focused.is_some(),
         "compact comparison lost keyboard focus before Escape"
     );
-    eprintln!(
-        "compact comparison focus: {:?}",
-        focused.as_ref().map(|item| (
-            item.accessible_role(),
-            item.geometry(),
-            item.is_visible(),
-            item.accessible_string_property(
-                i_slint_core::accessibility::AccessibleStringProperty::Label
-            )
-        ))
-    );
+    drop(focused);
     ui::key(&test.window, Key::Escape);
     draw(&mut test);
     assert!(

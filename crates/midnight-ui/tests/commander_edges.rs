@@ -117,9 +117,10 @@ fn footer_mouse_release_keeps_the_pressed_action_and_logical_pane() {
     test.window.on_open_metadata(move |pane, case| {
         captured.borrow_mut().push((pane, if case { 7 } else { 2 }))
     });
+    // Sort actions record their column (sort.name = 0, sort.size = 1) as 30 + column.
     let captured = actions.clone();
     test.window
-        .on_sort(move |pane, _| captured.borrow_mut().push((pane, 3)));
+        .on_sort(move |pane, column| captured.borrow_mut().push((pane, 30 + column)));
     let captured = actions.clone();
     test.window
         .on_mutation(move |pane, action| captured.borrow_mut().push((pane, 100 + action)));
@@ -130,8 +131,8 @@ fn footer_mouse_release_keeps_the_pressed_action_and_logical_pane() {
         test.resize(width, height);
         for (label, expected) in [
             ("Ctrl+F2 Attributes", 2),
-            ("Ctrl+F3 Name", 3),
-            ("Ctrl+F6 Size", 3),
+            ("Ctrl+F3 Name", 30),
+            ("Ctrl+F6 Size", 31),
             ("Ctrl+F7 Case", 7),
         ] {
             for pane in [0, 1] {
@@ -165,7 +166,8 @@ fn footer_mouse_release_keeps_the_pressed_action_and_logical_pane() {
                         button: PointerEventButton::Left,
                     });
                 assert_eq!(actions.borrow().last(), Some(&(pane, expected)), "{label}");
-                if expected == 3 {
+                if expected >= 30 {
+                    // Sorting keeps keyboard focus in the sorted pane.
                     assert_eq!(test.window.get_focused_pane(), pane);
                 }
             }
@@ -530,7 +532,11 @@ fn reassigned_control_slot_dispatches_the_effective_action_and_disabled_slot_doe
     control(&test, false);
     test.window.invoke_focus_files();
     ui::chord(&test.window, &[Key::Control], Key::F2);
-    assert_eq!(actions.borrow().len(), 2);
+    assert_eq!(
+        actions.borrow().as_slice(),
+        &[(0, 0), (0, 0)],
+        "the remapped key renames in the left pane too"
+    );
     ui::chord(&test.window, &[Key::Control], Key::F11);
     assert!(!test.window.get_panel_zoomed());
 }
@@ -576,4 +582,74 @@ fn history_can_be_remapped_disabled_and_reset_by_replacing_the_draft() {
     test.window.invoke_set_command("replacement".into(), 11);
     ui::chord(&test.window, &[Key::Alt], Key::PageUp);
     assert_eq!(test.window.get_command_text(), "first");
+}
+
+// Formerly tests/commander_tools.rs; its Ctrl-layer caption and Ctrl+F11 zoom tests
+// were subsets of control_footer_and_zoom_fit_touch_density_with_large_fonts,
+// control_layer_clears_on_release_and_excludes_alt_shift_meta_and_altgr and
+// zoom_follows_activation_and_swapping_without_changing_models_or_split.
+#[test]
+fn alt_history_wraps_without_changing_terminal_or_executing() {
+    let mut test = ui::TestUi::new();
+    let p = Rc::new(RefCell::new(Presenter::new("left".into(), "right".into())));
+    let sent = Rc::new(RefCell::new(Vec::new()));
+    let captured = sent.clone();
+    install(
+        &test.window,
+        p.clone(),
+        Rc::new(move |command| {
+            captured.borrow_mut().push(command);
+            true
+        }),
+    );
+    p.borrow_mut().apply(Event::DesktopContext {
+        system_locations: Vec::new(),
+        network_position: 0,
+        shell: ShellFlavor::PowerShell,
+        locations: vec![],
+    });
+    p.borrow_mut()
+        .apply(Event::PreferencesLoaded(Ok(Box::new(UserPreferences {
+            windows_shell: WindowsShell::Cmd,
+            command_history: vec![
+                CommandHistoryEntry {
+                    command: "new 文档".into(),
+                    shell: ShellFlavor::PowerShell,
+                },
+                CommandHistoryEntry {
+                    command: "old 👩🏽‍💻".into(),
+                    shell: ShellFlavor::Cmd,
+                },
+            ],
+            ..Default::default()
+        }))));
+    refresh(&test.window, &p.borrow());
+    test.window.invoke_set_command("draft".into(), 5);
+    sent.borrow_mut().clear();
+    for (key, expected) in [
+        (Key::UpArrow, "new 文档"),
+        (Key::UpArrow, "old 👩🏽‍💻"),
+        (Key::UpArrow, "new 文档"),
+        (Key::DownArrow, "old 👩🏽‍💻"),
+    ] {
+        ui::chord(&test.window, &[Key::Alt], key);
+        test.draw();
+        assert_eq!(test.window.get_command_text(), expected);
+        assert_eq!(test.window.get_terminal_index(), 1);
+        assert!(test.window.get_command_focused());
+        assert!(sent.borrow().is_empty(), "recall never launches a terminal");
+    }
+    ui::key(&test.window, "x");
+    ui::chord(&test.window, &[Key::Alt], Key::UpArrow);
+    assert_eq!(
+        test.window.get_command_text(),
+        "new 文档",
+        "editing resets traversal"
+    );
+    ui::key(&test.window, Key::Return);
+    assert!(
+        sent.borrow()
+            .iter()
+            .any(|command| matches!(command, Command::LaunchTerminal { .. }))
+    );
 }

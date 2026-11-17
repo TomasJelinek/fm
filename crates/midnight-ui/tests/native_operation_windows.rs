@@ -544,15 +544,15 @@ fn native_operation_rejected_close_retains_modal_child_and_never_turns_into_conf
     h.accepting.set(true);
     key(&child, Key::Return);
     assert!(
-        h.commands
-            .borrow()
-            .iter()
-            .all(|command| !matches!(command, Command::ConfirmOperation { .. }))
+        h.commands.borrow().is_empty(),
+        "Return neither confirms nor silently retries the refused cancellation"
     );
-    if h.main.global::<OperationPresentation>().get_active() {
-        // A second explicit close retries the same cancellation identity.
-        child.window().dispatch_event(WindowEvent::CloseRequested);
-    }
+    assert!(
+        h.main.global::<OperationPresentation>().get_active(),
+        "the refused close keeps the form until an explicit retry"
+    );
+    // A second explicit close retries the same cancellation identity.
+    child.window().dispatch_event(WindowEvent::CloseRequested);
     assert!(
         matches!(h.commands.borrow().as_slice(), [Command::CancelOperation(actual)] if *actual == id)
     );

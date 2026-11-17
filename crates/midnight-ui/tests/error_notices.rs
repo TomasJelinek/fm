@@ -276,6 +276,55 @@ fn panel_error_has_a_readable_multiline_body_at_the_minimum_window_size() {
     ui.resize(1040, 480);
     ui::root_item(&ui.window, "Show error details", AccessibleRole::Button);
     assert!(ui.window.get_left_list_height() >= 22.0);
+    // The whole message is one wrapped text laid out for all of its lines inside a
+    // scrollable viewport that shows at least one complete line.
+    fn message_text(item: ItemRc, message: &str) -> Option<ItemRc> {
+        let text = item
+            .downcast::<i_slint_core::items::SimpleText>()
+            .map(|text| text.as_pin_ref().text())
+            .or_else(|| {
+                item.downcast::<i_slint_core::items::ComplexText>()
+                    .map(|text| text.as_pin_ref().text())
+            });
+        if item.is_visible() && text.is_some_and(|text| text == message) {
+            return Some(item);
+        }
+        let mut child = item.first_child();
+        while let Some(item) = child {
+            child = item.next_sibling();
+            if let Some(found) = message_text(item, message) {
+                return Some(found);
+            }
+        }
+        None
+    }
+    let text = message_text(
+        ItemRc::new_root(WindowInner::from_pub(ui.window.window()).component()),
+        message,
+    )
+    .expect("the panel shows the complete multiline message");
+    let font = ui.window.global::<midnight_ui::Theme>().get_font_size();
+    assert!(
+        text.geometry().height() >= 3.0 * font,
+        "every line of the body is laid out: {:?}",
+        text.geometry()
+    );
+    let mut parent =
+        text.parent_item(i_slint_core::item_tree::ParentItemTraversalMode::StopAtPopups);
+    while let Some(item) = parent {
+        if item.downcast::<i_slint_core::items::Flickable>().is_some() {
+            let viewport = item.geometry();
+            let origin = item.map_to_native_window(viewport.origin);
+            assert!(
+                viewport.height() >= font
+                    && origin.y >= 0.0
+                    && origin.y + viewport.height() <= ui.height as f32,
+                "the scrollable body shows a complete line inside the window: {origin:?} {viewport:?}"
+            );
+            break;
+        }
+        parent = item.parent_item(i_slint_core::item_tree::ParentItemTraversalMode::StopAtPopups);
+    }
     modeless::bitmap::snapshot(&ui.pixels, ui.width, ui.height, "error-panel-minimum");
     ui.window.hide().unwrap();
 }
