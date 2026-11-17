@@ -430,6 +430,9 @@ impl Worker {
         self.continuation = None;
         self.queued_scroll = [0.0; 2];
         self.frames.invalidate();
+        self.orphan_failure = None;
+        // The identity is captured while any previous session finishes closing.
+        self.request_capture();
         if let Some(web) = self.web.take() {
             web.session.close();
             self.closing_web = Some(web.session);
@@ -472,8 +475,6 @@ impl Worker {
             return;
         }
         self.closing = None;
-        self.orphan_failure = None;
-        self.request_capture();
         if !self.capture_ready() {
             self.pending_open = true;
             self.status("Preparing file identity…".into(), output);
