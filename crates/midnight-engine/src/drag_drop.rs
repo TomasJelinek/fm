@@ -476,7 +476,7 @@ impl Controller {
             let service = self.service.clone();
             // Both actors live for the rest of the session: keep them off the
             // bounded blocking pool that listings and scans need.
-            crate::watch::actor_thread::spawn("midnight-drag-drop", tasks, move || {
+            crate::actor_thread::spawn("midnight-drag-drop", tasks, move || {
                 actor::run(state, service, receiver, events, cancel)
             });
             let (sender, receiver) = std::sync::mpsc::sync_channel(1);
@@ -485,7 +485,7 @@ impl Controller {
             let events = self.events.clone();
             let snapshots = self.snapshots.clone();
             let cancel = self.cancel.clone();
-            crate::watch::actor_thread::spawn("midnight-drag-prepare", tasks, move || {
+            crate::actor_thread::spawn("midnight-drag-prepare", tasks, move || {
                 prepare_worker(state, snapshots, receiver, events, cancel)
             });
         }

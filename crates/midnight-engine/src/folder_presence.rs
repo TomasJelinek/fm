@@ -5,8 +5,10 @@ use crate::{
     task_lifetime::TaskLifetime,
 };
 use midnight_core::*;
+use midnight_work_budget::{Admission, Gate, Permit};
 use std::{
     collections::HashSet,
+    path::{Path, PathBuf},
     sync::{Arc, Mutex, mpsc},
     time::Duration,
 };
@@ -35,6 +37,8 @@ impl Controller {
         tasks: &mut JoinSet<()>,
     ) -> Self {
         let stop = Cancellation::default();
+        // Both lanes serialize their storage classification queries.
+        let classification = Arc::new(Gate::new(1));
         let lanes = std::array::from_fn(|side| {
             let lane: Mailbox = Arc::default();
             let (wake, receiver) = mpsc::sync_channel(1);
@@ -45,7 +49,9 @@ impl Controller {
             let reports = reports.clone();
             let listing = listings[side].clone();
             let outbox = outbox.clone();
-            crate::watch::actor_thread::spawn(
+            let admissions =
+                Admissions::new(midnight_work_budget::shared_io(), classification.clone());
+            crate::actor_thread::spawn(
                 "midnight-folder-presence",
                 tasks,
                 scope.blocking(move || {
@@ -59,6 +65,7 @@ impl Controller {
                             listing,
                             outbox,
                             reports,
+                            admissions,
                         },
                     )
                 }),
@@ -113,6 +120,158 @@ struct WorkerContext {
     listing: Arc<Semaphore>,
     outbox: Outbox,
     reports: crate::ReportArena,
+    admissions: Admissions,
+}
+
+/// One lane's probe admission. Storage classification is a serialized control
+/// query (on Linux it reads the mount table), so a lane classifies its listed
+/// directory once and each other device a row resolves to (through a link or
+/// a mount point) once, until it lists another directory. Only a row proven
+/// to be on a confirmed local SSD shares the I/O gate with running scans.
+struct Admissions {
+    io: Arc<Gate>,
+    classification: Arc<Gate>,
+    listing: Option<Listing>,
+}
+
+struct Listing {
+    directory: PathBuf,
+    admission: Admission,
+    /// The listed directory's device, queried only for a shared listing.
+    device: Option<u64>,
+    /// Other devices that rows of this listing resolved to.
+    devices: Vec<(u64, Admission)>,
+}
+
+/// A listing rarely reaches more devices; older ones are classified again.
+const KNOWN_DEVICES: usize = 16;
+
+impl Admissions {
+    fn new(io: Arc<Gate>, classification: Arc<Gate>) -> Self {
+        Self {
+            io,
+            classification,
+            listing: None,
+        }
+    }
+
+    fn classify(
+        &self,
+        filesystem: &dyn FileSystem,
+        path: &Path,
+        cancel: &Cancellation,
+    ) -> Option<Admission> {
+        let _classification = self
+            .classification
+            .acquire(Admission::Exclusive, || cancel.is_cancelled())?;
+        let kind = filesystem
+            .storage_kind(path)
+            .unwrap_or(StorageKind::Unknown);
+        Some(midnight_work_budget::storage_admission(
+            kind == StorageKind::LocalSsd,
+        ))
+    }
+
+    /// Classify `directory`, the parent of every probed row, unless the lane
+    /// already did for this listing. `None` only after cancellation.
+    fn list(
+        &mut self,
+        filesystem: &dyn FileSystem,
+        directory: &Path,
+        cancel: &Cancellation,
+    ) -> Option<()> {
+        if self
+            .listing
+            .as_ref()
+            .is_some_and(|listing| listing.directory == directory)
+        {
+            return Some(());
+        }
+        self.listing = None;
+        let admission = self.classify(filesystem, directory, cancel)?;
+        // Only a shared listing needs its device, to prove where its rows are.
+        let device = if admission == Admission::Shared {
+            let _io = self.io.acquire(admission, || cancel.is_cancelled())?;
+            device(filesystem, directory, cancel)
+        } else {
+            None
+        };
+        if cancel.is_cancelled() {
+            // An interrupted identity query must not leave the listing unproven.
+            return None;
+        }
+        self.listing = Some(Listing {
+            directory: directory.to_owned(),
+            admission,
+            device,
+            devices: Vec::new(),
+        });
+        Some(())
+    }
+
+    fn exclusive(&self, cancel: &Cancellation) -> Option<Permit> {
+        self.io
+            .acquire(Admission::Exclusive, || cancel.is_cancelled())
+    }
+
+    /// The I/O permit for probing `row`. A row shares the gate only when its
+    /// resolved device is the shared listing's or another classified SSD;
+    /// rows of other listings, unknown identities and other storage stay
+    /// exclusive. `None` only after cancellation.
+    fn admit(
+        &mut self,
+        filesystem: &dyn FileSystem,
+        row: &Path,
+        cancel: &Cancellation,
+    ) -> Option<Permit> {
+        let Some((admission, expected)) = self.listing.as_ref().and_then(|listing| {
+            listing
+                .device
+                .filter(|_| row.parent() == Some(listing.directory.as_path()))
+                .map(|device| (listing.admission, device))
+        }) else {
+            return self.exclusive(cancel);
+        };
+        // The identity query reads metadata only, under the listing's
+        // admission; a link or a mount point can lead to another device.
+        let permit = self.io.acquire(admission, || cancel.is_cancelled())?;
+        let resolved = device(filesystem, row, cancel);
+        if resolved == Some(expected) {
+            return Some(permit);
+        }
+        drop(permit);
+        let Some(other) = resolved else {
+            return self.exclusive(cancel);
+        };
+        let known = self.listing.as_ref().and_then(|listing| {
+            listing
+                .devices
+                .iter()
+                .find_map(|&(device, admission)| (device == other).then_some(admission))
+        });
+        let admission = match known {
+            Some(admission) => admission,
+            None => {
+                let admission = self.classify(filesystem, row, cancel)?;
+                if let Some(listing) = &mut self.listing {
+                    if listing.devices.len() == KNOWN_DEVICES {
+                        listing.devices.remove(0);
+                    }
+                    listing.devices.push((other, admission));
+                }
+                admission
+            }
+        };
+        self.io.acquire(admission, || cancel.is_cancelled())
+    }
+}
+
+fn device(filesystem: &dyn FileSystem, path: &Path, cancel: &Cancellation) -> Option<u64> {
+    filesystem
+        .browse_directory_identity(path, cancel)
+        .ok()
+        .flatten()
+        .map(|identity| identity.device)
 }
 
 fn worker(lane: Mailbox, wake: mpsc::Receiver<()>, stop: Cancellation, context: WorkerContext) {
@@ -122,6 +281,7 @@ fn worker(lane: Mailbox, wake: mpsc::Receiver<()>, stop: Cancellation, context: 
         listing,
         outbox,
         reports,
+        mut admissions,
     } = context;
     let native = NativeProvider::new(filesystem);
     loop {
@@ -153,7 +313,7 @@ fn worker(lane: Mailbox, wake: mpsc::Receiver<()>, stop: Cancellation, context: 
             &native,
             &listing,
             &reports,
-            &midnight_work_budget::shared_io(),
+            &mut admissions,
         );
         if cancel.is_cancelled() {
             continue;
@@ -181,7 +341,7 @@ fn run(
     native: &NativeProvider,
     listing: &Arc<Semaphore>,
     reports: &crate::ReportArena,
-    io: &Arc<midnight_work_budget::Gate>,
+    admissions: &mut Admissions,
 ) -> Option<Vec<(EntryId, FolderPresence)>> {
     if request.revision.0 == 0
         || request.visible.len() > FolderPresenceRequest::MAX_VISIBLE
@@ -212,24 +372,19 @@ fn run(
     }
     let mut values = Vec::with_capacity(request.visible.len());
     let report = crate::tree_diagnostics::log(reports);
-    // Classify the request's storage once. Proven local SSD probes share the
-    // process-wide gate with running scans instead of draining them for every
-    // folder; archives, other storage and failed hints stay exclusive.
-    let admission = if native_root {
-        request
+    // Proven local SSD probes share the process-wide gate with running scans
+    // instead of draining them for every folder; archives, other storage and
+    // failed hints stay exclusive.
+    let filesystem = native.filesystem();
+    if native_root
+        && let Some(directory) = request
             .visible
             .first()
             .and_then(|id| request.root.entries[request.root.index.by_id[id]].native_path())
-            .map_or(midnight_work_budget::Admission::Exclusive, |path| {
-                let kind = native
-                    .filesystem()
-                    .storage_kind(path)
-                    .unwrap_or(StorageKind::Unknown);
-                midnight_work_budget::storage_admission(kind == StorageKind::LocalSsd)
-            })
-    } else {
-        midnight_work_budget::Admission::Exclusive
-    };
+            .and_then(Path::parent)
+    {
+        admissions.list(filesystem.as_ref(), directory, cancel)?;
+    }
     for id in &request.visible {
         let entry = &request.root.entries[request.root.index.by_id[id]];
         let _listing = loop {
@@ -244,7 +399,10 @@ fn run(
                 Err(tokio::sync::TryAcquireError::Closed) => return None,
             }
         };
-        let _io = io.acquire(admission, || cancel.is_cancelled())?;
+        let _io = match entry.native_path().filter(|_| native_root) {
+            Some(path) => admissions.admit(filesystem.as_ref(), path, cancel)?,
+            None => admissions.exclusive(cancel)?,
+        };
         let value = (|| {
             if let Some(location) = ready.archive() {
                 let node = entry

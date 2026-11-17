@@ -20,7 +20,6 @@ use std::{
 };
 use tokio::{sync::mpsc::error::TrySendError, task::JoinSet};
 
-pub(crate) mod actor_thread;
 pub(crate) mod signature;
 pub(crate) mod tree;
 pub(crate) use tree::RefreshTicket;
@@ -159,7 +158,7 @@ impl Controller {
             // The worker starts when its task first runs; an unpolled task
             // leaves the captured scope to the retained handles.
             tasks.spawn(scope.future(async move {
-                actor_thread::run(
+                crate::actor_thread::run(
                     "midnight-watch",
                     native_scope.blocking(move || run(shared, filesystem, native, outbox, timing)),
                 )
