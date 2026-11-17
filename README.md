@@ -801,9 +801,17 @@ metadata the listing shows and reads metadata separately only for entries whose
 enumeration lacks it; an entry whose metadata cannot be read stays unknown, as in
 the listing, instead of causing a refresh on every check. Notifications that
 arrive while an automatic refresh of the same directory is being accepted are
-checked against the new listing at once. Automatic refresh preserves the
-viewport, selection and command editing; it invalidates earlier recursive
-folder-size estimates.
+checked against the new listing at once. The watcher cannot tell which of them
+the refresh listing already saw, so every refresh that follows notifications
+re-lists that directory once more right away (and reads metadata for each entry
+whose enumeration lacks it); a quiet directory is not re-listed. In tree mode, a
+changed set of watched branches registers its native watches before the old ones
+are released, so directories watched before and after stay covered; a directory
+that becomes natively watched is checked at once, and a collapse alone requests
+no refresh. A newly expanded branch still requests one refresh of the loaded
+branches, because its accepted listing records only the folders it shows.
+Automatic refresh preserves the viewport, selection and command editing; it
+invalidates earlier recursive folder-size estimates.
 Folder sizing uses a bounded fair batch and a shared I/O budget: up to the Disk
 operations limit (four by default) of parallel reads only for proven local SSD,
 one stream for HDD/network/unknown storage. Detection errors remain conservative;

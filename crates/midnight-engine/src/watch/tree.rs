@@ -109,6 +109,10 @@ pub(super) struct TreeControl {
     active_request: Option<TreeRequestId>,
     retry_at: Instant,
     batch: u64,
+    /// The replaced batch while its native subscription is still registered:
+    /// its callbacks count until the subscription is released, so swapping
+    /// batches leaves no registration gap.
+    retiring: Option<u64>,
     diagnostic: Option<TreeDiagnostic>,
     exhausted: bool,
 }
@@ -135,6 +139,7 @@ impl TreeControl {
             active_request: None,
             retry_at: Instant::now() + timing.poll,
             batch: 0,
+            retiring: None,
             diagnostic: None,
             exhausted: false,
         }
@@ -400,9 +405,9 @@ impl Runtime {
         same_session(self.scope.stamp, scope.stamp)
     }
 
-    /// Unobserved targets are due now, in scope order; observed ones keep
-    /// their next poll time.
-    fn schedule(&mut self) {
+    /// Unobserved targets and `due_now` are due now, in scope order; other
+    /// observed ones keep their next poll time.
+    fn schedule(&mut self, due_now: &[Arc<ScopeTarget>]) {
         let now = Instant::now();
         self.due = self
             .scope
@@ -410,10 +415,10 @@ impl Runtime {
             .iter()
             .enumerate()
             .map(|(index, target)| {
-                let at = self
-                    .observed
-                    .get(&target.branch)
-                    .map_or(now, |old| old.poll_at);
+                let at = match self.observed.get(&target.branch) {
+                    Some(old) if !due_now.iter().any(|due| Arc::ptr_eq(due, target)) => old.poll_at,
+                    _ => now,
+                };
                 Reverse((at, index))
             })
             .collect();
@@ -484,13 +489,27 @@ impl Runtime {
                 .zip(&slots)
                 .any(|(old, new)| !old.same_notification_directory(new));
         self.scope = scope;
-        self.schedule();
         if !changed {
+            self.schedule(&[]);
             // A surviving alias may represent the same physical slot. Retain
             // only its current provider context while keeping the subscription.
             self.slots = slots;
             return;
         }
+        // A directory joining the batch was only polled (or not observed yet),
+        // so probe it at once instead of requesting a sweep of every branch.
+        // Directories in both batches stay covered by the overlap below.
+        let joined = slots
+            .iter()
+            .filter(|new| {
+                !self
+                    .slots
+                    .iter()
+                    .any(|old| old.same_notification_directory(new))
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        self.schedule(&joined);
         let stamp = self.scope.stamp;
         let batch = {
             let mut state = shared.state.lock().unwrap_or_else(|e| e.into_inner());
@@ -504,16 +523,42 @@ impl Runtime {
             else {
                 return;
             };
+            let replaced = tree.batch;
             tree.batch = tree
                 .batch
                 .checked_add(1)
                 .expect("watch batch revision exhausted");
-            tree.dirty(); // Covers the registration gap, including callbacks during setup.
+            // Callbacks during setup count for the new batch; those of the
+            // replaced one count until its subscription is released below.
+            tree.retiring = self.subscription.is_some().then_some(replaced);
             tree.batch
         };
         self.batch = batch;
-        drop(self.subscription.take());
-        self.slots = slots;
+        // The new subscription is registered before the old one is released,
+        // and old slots keep their provider scope until their callbacks end.
+        let replaced = self.subscription.take();
+        let retired = std::mem::replace(&mut self.slots, slots);
+        self.subscribe(stamp, batch, shared, native);
+        // Destruction can join native watcher threads; it stays on this worker.
+        drop(replaced);
+        drop(retired);
+        let mut state = shared.state.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(tree) = state
+            .tree
+            .as_mut()
+            .filter(|tree| same_session(tree.scope.stamp, stamp) && tree.batch == batch)
+        {
+            tree.retiring = None;
+        }
+    }
+
+    fn subscribe(
+        &mut self,
+        stamp: TreeViewStamp,
+        batch: u64,
+        shared: &SharedOwner,
+        native: Option<&dyn WatchService>,
+    ) {
         if self.slots.is_empty() {
             return;
         }
@@ -537,11 +582,10 @@ impl Runtime {
             {
                 return;
             }
-            let Some(tree) = state
-                .tree
-                .as_mut()
-                .filter(|tree| same_session(tree.scope.stamp, stamp) && tree.batch == batch)
-            else {
+            let Some(tree) = state.tree.as_mut().filter(|tree| {
+                same_session(tree.scope.stamp, stamp)
+                    && (tree.batch == batch || tree.retiring == Some(batch))
+            }) else {
                 return;
             };
             if keys

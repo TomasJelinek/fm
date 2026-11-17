@@ -176,6 +176,8 @@ type BatchCallback = Arc<dyn Fn(u32) + Send + Sync>;
 struct Batches {
     callbacks: Mutex<Vec<(Vec<PathBuf>, BatchCallback)>>,
     ready: Notify,
+    /// Fire the previous batch's callback while the next batch registers.
+    fire_previous_on_register: AtomicBool,
 }
 struct BatchGuard;
 impl WatchSubscription for BatchGuard {}
@@ -192,6 +194,12 @@ impl WatchService for Batches {
         paths: &[PathBuf],
         changed: BatchCallback,
     ) -> Result<Box<dyn WatchSubscription>, FsError> {
+        if self.fire_previous_on_register.load(Ordering::SeqCst) {
+            let previous = self.callbacks.lock().unwrap().last().cloned();
+            if let Some((_, previous)) = previous {
+                previous(u32::MAX);
+            }
+        }
         self.callbacks
             .lock()
             .unwrap()
@@ -1143,4 +1151,83 @@ fn tree_link_watch_unknown_identities_keep_distinct_slots_and_ordinary_polling()
         "root must remain polled too"
     );
     assert_eq!(runtime.native.callbacks.lock().unwrap().len(), 1);
+}
+
+/// Settle a two-branch scope (polls only on demand), then collapse its last branch.
+fn settled_then_collapsed(
+    suffix: &str,
+) -> (Arc<Files>, Session, LinkWatchRuntime, tree::TreeScope) {
+    let files = Arc::new(Files::default());
+    let (session, scope) = expanded_scope(&files, 2, suffix);
+    let mut runtime = LinkWatchRuntime::with_timing(
+        &scope,
+        Timing {
+            quiet: Duration::ZERO,
+            maximum: Duration::ZERO,
+            poll: Duration::from_secs(3600),
+        },
+    );
+    runtime.settle(files.as_ref(), &scope, 100);
+    let mut collapsed = scope.clone();
+    let removed = collapsed.targets.pop().unwrap();
+    collapsed.eligible.remove(&removed.branch);
+    (files, session, runtime, collapsed)
+}
+
+impl LinkWatchRuntime {
+    fn adopt(&mut self, scope: &tree::TreeScope) {
+        self.handle.set_tree_scope(scope.clone());
+        self.runtime.update(
+            Arc::new(scope.clone()),
+            &self.handle.panes[scope.stamp.pane.index()],
+            Some(self.native.as_ref()),
+        );
+    }
+}
+
+#[test]
+fn collapsing_a_watched_branch_without_changes_requests_no_sweep() {
+    let (files, _session, mut runtime, collapsed) = settled_then_collapsed("watch-tree-collapse");
+    let probes = files.probes.load(Ordering::SeqCst);
+    runtime.adopt(&collapsed);
+    {
+        let batches = runtime.native.callbacks.lock().unwrap();
+        assert_eq!(batches.len(), 2, "the smaller slot set has its own batch");
+        assert_eq!(batches[1].0.len(), 2);
+    }
+    runtime.tick(files.as_ref(), collapsed.targets.len() + 1);
+    assert!(
+        runtime.changed().is_none(),
+        "a slot change without any change requests no maintenance sweep"
+    );
+    assert_eq!(
+        files.probes.load(Ordering::SeqCst),
+        probes,
+        "directories watched by both batches need no probe"
+    );
+}
+
+#[test]
+fn the_replaced_batch_counts_until_its_subscription_is_released() {
+    let (files, _session, mut runtime, collapsed) = settled_then_collapsed("watch-tree-overlap");
+    // A change the old batch reports while the new batch registers is kept.
+    runtime
+        .native
+        .fire_previous_on_register
+        .store(true, Ordering::SeqCst);
+    runtime.adopt(&collapsed);
+    runtime
+        .native
+        .fire_previous_on_register
+        .store(false, Ordering::SeqCst);
+    runtime.tick(files.as_ref(), 1);
+    assert_eq!(runtime.changed(), Some(collapsed.stamp));
+    runtime.acknowledge(&collapsed, 101);
+    runtime.tick(files.as_ref(), collapsed.targets.len() + 1);
+    assert!(runtime.changed().is_none());
+    // Once released, the old batch can no longer dirty the scope.
+    let old = runtime.native.callbacks.lock().unwrap()[0].1.clone();
+    old(u32::MAX);
+    runtime.tick(files.as_ref(), 1);
+    assert!(runtime.changed().is_none());
 }
