@@ -20,6 +20,7 @@ use std::{
 };
 use tokio::{sync::mpsc::error::TrySendError, task::JoinSet};
 
+pub(crate) mod actor_thread;
 pub(crate) mod signature;
 pub(crate) mod tree;
 pub(crate) use tree::RefreshTicket;
@@ -150,13 +151,11 @@ impl Controller {
             let filesystem = filesystem.clone();
             let native = native.clone();
             let outbox = outbox.clone();
-            let native_scope = scope.clone();
-            tasks.spawn(scope.future(async move {
-                let _ = tokio::task::spawn_blocking(native_scope.blocking(move || {
-                    run(shared, filesystem, native, outbox, timing);
-                }))
-                .await;
-            }));
+            actor_thread::spawn(
+                "midnight-watch",
+                tasks,
+                scope.blocking(move || run(shared, filesystem, native, outbox, timing)),
+            );
         }
         Self { panes }
     }

@@ -8,7 +8,8 @@ use midnight_core::{
     SizeDirectoryIdentity, TreeDiagnostic, TreeEvent, TreeRequestId, TreeRevision, TreeViewStamp,
 };
 use std::{
-    collections::{HashMap, HashSet},
+    cmp::Reverse,
+    collections::{BinaryHeap, HashMap, HashSet},
     path::PathBuf,
 };
 
@@ -366,9 +367,12 @@ pub(super) struct Runtime {
     scope: Arc<TreeScope>,
     cancel: Cancellation,
     observed: HashMap<BranchId, Observed>,
+    /// Next poll deadline of every scope target (by index), rebuilt whenever
+    /// the scope changes. With up to 10,000 eligible branches, finding the
+    /// next due target and the park deadline is O(log T) instead of O(T).
+    due: BinaryHeap<Reverse<(Instant, usize)>>,
     slots: Vec<Arc<ScopeTarget>>,
     batch: u64,
-    cursor: usize,
     epoch: u64,
     debounce: Debouncer,
     hint_pending: bool,
@@ -381,10 +385,10 @@ impl Runtime {
             scope,
             cancel,
             observed: HashMap::new(),
+            due: BinaryHeap::new(),
             slots: Vec::new(),
             subscription: None,
             batch: 0,
-            cursor: 0,
             epoch: 0,
             debounce: Debouncer::default(),
             hint_pending: false,
@@ -394,6 +398,25 @@ impl Runtime {
 
     pub(super) fn same(&self, scope: &TreeScope) -> bool {
         same_session(self.scope.stamp, scope.stamp)
+    }
+
+    /// Unobserved targets are due now, in scope order; observed ones keep
+    /// their next poll time.
+    fn schedule(&mut self) {
+        let now = Instant::now();
+        self.due = self
+            .scope
+            .targets
+            .iter()
+            .enumerate()
+            .map(|(index, target)| {
+                let at = self
+                    .observed
+                    .get(&target.branch)
+                    .map_or(now, |old| old.poll_at);
+                Reverse((at, index))
+            })
+            .collect();
     }
 
     pub(super) fn update(
@@ -461,6 +484,7 @@ impl Runtime {
                 .zip(&slots)
                 .any(|(old, new)| !old.same_notification_directory(new));
         self.scope = scope;
+        self.schedule();
         if !changed {
             // A surviving alias may represent the same physical slot. Retain
             // only its current provider context while keeping the subscription.
@@ -602,17 +626,15 @@ impl Runtime {
             }
         }
         // Exactly one due target per iteration: control and due output run between
-        // probes, and the cursor advances regardless of ongoing native callbacks.
-        let count = self.scope.targets.len();
-        let due = (0..count)
-            .map(|offset| (self.cursor + offset) % count)
-            .find(|index| {
-                self.observed
-                    .get(&self.scope.targets[*index].branch)
-                    .is_none_or(|old| now >= old.poll_at)
-            });
+        // probes, and targets are served in deadline order regardless of
+        // ongoing native callbacks.
+        let due = self
+            .due
+            .peek()
+            .filter(|Reverse((at, _))| now >= *at)
+            .map(|Reverse((_, index))| *index);
         if let Some(index) = due {
-            self.cursor = (index + 1) % count;
+            self.due.pop();
             let target = &self.scope.targets[index];
             let result = target.probe(filesystem, &self.cancel);
             let checked_scope = {
@@ -678,17 +700,16 @@ impl Runtime {
                 }
             };
             old.poll_at = Instant::now() + timing.poll;
+            self.due.push(Reverse((old.poll_at, index)));
             if changed {
                 tree.dirty();
             }
             return Duration::ZERO;
         }
         let mut deadline = self
-            .observed
-            .values()
-            .map(|old| old.poll_at)
-            .min()
-            .unwrap_or(now + timing.poll);
+            .due
+            .peek()
+            .map_or(now + timing.poll, |Reverse((at, _))| *at);
         if let Some(debounce) = self.debounce.deadline(timing.quiet, timing.maximum) {
             deadline = deadline.min(debounce);
         }

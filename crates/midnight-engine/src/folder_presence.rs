@@ -45,20 +45,24 @@ impl Controller {
             let reports = reports.clone();
             let listing = listings[side].clone();
             let outbox = outbox.clone();
-            tasks.spawn_blocking(scope.blocking(move || {
-                worker(
-                    pending,
-                    receiver,
-                    stopping,
-                    WorkerContext {
-                        snapshots,
-                        filesystem,
-                        listing,
-                        outbox,
-                        reports,
-                    },
-                )
-            }));
+            crate::watch::actor_thread::spawn(
+                "midnight-folder-presence",
+                tasks,
+                scope.blocking(move || {
+                    worker(
+                        pending,
+                        receiver,
+                        stopping,
+                        WorkerContext {
+                            snapshots,
+                            filesystem,
+                            listing,
+                            outbox,
+                            reports,
+                        },
+                    )
+                }),
+            );
             (lane, wake)
         });
         Self { lanes, stop }
@@ -134,16 +138,23 @@ fn worker(lane: Mailbox, wake: mpsc::Receiver<()>, stop: Cancellation, context: 
             break;
         }
         let Some(request) = request else {
-            if matches!(
-                wake.recv_timeout(Duration::from_millis(25)),
-                Err(mpsc::RecvTimeoutError::Disconnected)
-            ) {
+            // Every submission wakes the lane; dropping the controller
+            // disconnects it. No idle timer is needed.
+            if wake.recv().is_err() {
                 break;
             }
             continue;
         };
         let cancel = request.cancel.linked(&stop);
-        let result = run(&request, &cancel, &snapshots, &native, &listing, &reports);
+        let result = run(
+            &request,
+            &cancel,
+            &snapshots,
+            &native,
+            &listing,
+            &reports,
+            &midnight_work_budget::shared_io(),
+        );
         if cancel.is_cancelled() {
             continue;
         }
@@ -170,6 +181,7 @@ fn run(
     native: &NativeProvider,
     listing: &Arc<Semaphore>,
     reports: &crate::ReportArena,
+    io: &Arc<midnight_work_budget::Gate>,
 ) -> Option<Vec<(EntryId, FolderPresence)>> {
     if request.revision.0 == 0
         || request.visible.len() > FolderPresenceRequest::MAX_VISIBLE
@@ -200,6 +212,24 @@ fn run(
     }
     let mut values = Vec::with_capacity(request.visible.len());
     let report = crate::tree_diagnostics::log(reports);
+    // Classify the request's storage once. Proven local SSD probes share the
+    // process-wide gate with running scans instead of draining them for every
+    // folder; archives, other storage and failed hints stay exclusive.
+    let admission = if native_root {
+        request
+            .visible
+            .first()
+            .and_then(|id| request.root.entries[request.root.index.by_id[id]].native_path())
+            .map_or(midnight_work_budget::Admission::Exclusive, |path| {
+                let kind = native
+                    .filesystem()
+                    .storage_kind(path)
+                    .unwrap_or(StorageKind::Unknown);
+                midnight_work_budget::storage_admission(kind == StorageKind::LocalSsd)
+            })
+    } else {
+        midnight_work_budget::Admission::Exclusive
+    };
     for id in &request.visible {
         let entry = &request.root.entries[request.root.index.by_id[id]];
         let _listing = loop {
@@ -214,10 +244,7 @@ fn run(
                 Err(tokio::sync::TryAcquireError::Closed) => return None,
             }
         };
-        let gate = midnight_work_budget::shared_io();
-        let _io = gate.acquire(midnight_work_budget::Admission::Exclusive, || {
-            cancel.is_cancelled()
-        })?;
+        let _io = io.acquire(admission, || cancel.is_cancelled())?;
         let value = (|| {
             if let Some(location) = ready.archive() {
                 let node = entry

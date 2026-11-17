@@ -110,15 +110,10 @@ pub(crate) fn compute_batched(
             });
         }
         drop(progress);
-        loop {
-            match receiver.recv_timeout(WAIT_INTERVAL) {
-                Ok((entry, size)) => {
-                    if !emit(entry, size) {
-                        break;
-                    }
-                }
-                Err(mpsc::RecvTimeoutError::Timeout) => {}
-                Err(mpsc::RecvTimeoutError::Disconnected) => break,
+        // The channel disconnects once every lane has returned.
+        while let Ok((entry, size)) = receiver.recv() {
+            if !emit(entry, size) {
+                break;
             }
         }
         local_cancel.cancel();

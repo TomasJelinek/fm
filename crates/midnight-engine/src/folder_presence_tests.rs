@@ -146,6 +146,7 @@ fn flat_presence_checks_only_requested_folders_and_stops_at_first_subfolder() {
         &NativeProvider::new(files.clone()),
         &Arc::new(Semaphore::new(1)),
         &crate::ReportArena::testing(),
+        &Arc::new(midnight_work_budget::Gate::new(1)),
     )
     .unwrap();
     assert_eq!(
@@ -194,7 +195,8 @@ fn foreign_snapshot_navigation_side_files_and_oversized_requests_do_no_io() {
                 &snapshots,
                 &NativeProvider::new(files.clone()),
                 &Arc::new(Semaphore::new(1)),
-                &crate::ReportArena::testing()
+                &crate::ReportArena::testing(),
+                &Arc::new(midnight_work_budget::Gate::new(1))
             )
             .is_none()
         );
@@ -213,6 +215,7 @@ fn native_mixed_directory_and_link_presence_retains_every_requested_hint() {
         &NativeProvider::new(files.clone()),
         &Arc::new(Semaphore::new(1)),
         &crate::ReportArena::testing(),
+        &Arc::new(midnight_work_budget::Gate::new(1)),
     )
     .expect("one native directory link must not discard the whole visible batch");
     assert_eq!(
@@ -254,6 +257,7 @@ fn native_empty_and_denied_links_preserve_their_ordinary_sibling_hint() {
             &NativeProvider::new(files.clone()),
             &Arc::new(Semaphore::new(1)),
             &crate::ReportArena::testing(),
+            &Arc::new(midnight_work_budget::Gate::new(1)),
         )
     };
     let result = probe().expect("link availability is an individual hint result");
@@ -292,6 +296,7 @@ fn unavailable_directory_is_never_reported_empty_and_cancelled_requests_do_no_io
         &NativeProvider::new(files.clone()),
         &Arc::new(Semaphore::new(1)),
         &crate::ReportArena::testing(),
+        &Arc::new(midnight_work_budget::Gate::new(1)),
     )
     .unwrap();
     assert!(
@@ -306,7 +311,8 @@ fn unavailable_directory_is_never_reported_empty_and_cancelled_requests_do_no_io
             &snapshots,
             &NativeProvider::new(files.clone()),
             &Arc::new(Semaphore::new(1)),
-            &crate::ReportArena::testing()
+            &crate::ReportArena::testing(),
+            &Arc::new(midnight_work_budget::Gate::new(1))
         )
         .is_none()
     );
@@ -398,6 +404,7 @@ fn archive_presence_uses_captured_member_identity_without_native_fallback() {
         &NativeProvider::new(files.clone()),
         &Arc::new(Semaphore::new(1)),
         &crate::ReportArena::testing(),
+        &Arc::new(midnight_work_budget::Gate::new(1)),
     )
     .unwrap();
     assert_eq!(result, [(EntryId(2), FolderPresence::HasFolders)]);
@@ -417,6 +424,7 @@ fn archive_presence_keeps_directory_links_and_files_out_of_probe_batches() {
                 &NativeProvider::new(files.clone()),
                 &Arc::new(Semaphore::new(1)),
                 &crate::ReportArena::testing(),
+                &Arc::new(midnight_work_budget::Gate::new(1)),
             )
             .is_none(),
             "archive presence retains the ordinary-directory-only contract: {kind:?}"
