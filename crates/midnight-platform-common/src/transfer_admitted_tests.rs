@@ -117,18 +117,18 @@ fn configured_limit_one_copy_retry_and_move_proof_preserve_full_and_sampled_evid
             let cancel = Cancellation::default();
             let _deadline = Deadline::new(&cancel);
             while job.phase() != CopyPhase::Verifying {
-                job.step_admitted(&cancel, &permit).unwrap();
+                job.step(&cancel).unwrap();
             }
-            job.step_admitted(&cancel, &permit).unwrap();
+            job.step(&cancel).unwrap();
             assert_eq!(job.verified_bytes(), 65536);
             let written = job.copied_bytes();
-            assert!(job.step_admitted(&cancel, &permit).is_err());
+            assert!(job.step(&cancel).is_err());
             assert_eq!(job.verified_bytes(), 65536);
             assert_eq!(job.copied_bytes(), written);
-            job.retry_admitted(&cancel, &permit).unwrap();
+            job.retry(&cancel).unwrap();
             assert_eq!(job.verified_bytes(), 65536);
             while job.phase() != CopyPhase::ReadyToPublish {
-                job.step_admitted(&cancel, &permit).unwrap();
+                job.step(&cancel).unwrap();
             }
             assert_eq!(job.copied_bytes(), 600_007);
             assert_eq!(job.verified_bytes(), policy.readback_bytes(600_007));
@@ -142,25 +142,18 @@ fn configured_limit_one_copy_retry_and_move_proof_preserve_full_and_sampled_evid
                 1
             );
             assert!(matches!(
-                job.publish_admitted(OsStr::new("target"), &cancel, &permit)
-                    .unwrap(),
+                job.publish(OsStr::new("target"), &cancel).unwrap(),
                 TransferPublication::Published(_)
             ));
-            let mut proof = job.into_published_proof_admitted(&cancel, &permit).unwrap();
-            proof.begin_validation_admitted(&cancel, &permit).unwrap();
+            let mut proof = job.into_published_proof(&cancel).unwrap();
+            proof.begin_validation(&cancel).unwrap();
             let mut buffer = vec![0; 65536];
             while proof.phase() != FileProofPhase::Complete {
-                proof
-                    .validation_step_admitted(&mut buffer, &cancel, &permit)
-                    .unwrap();
+                proof.validation_step(&mut buffer, &cancel).unwrap();
             }
             assert_eq!(proof.validation_bytes(), 2 * policy.readback_bytes(600_007));
-            proof
-                .revalidate_publication_admitted(&cancel, &permit)
-                .unwrap();
-            proof
-                .revalidate_finalization_admitted(&cancel, &permit)
-                .unwrap();
+            proof.revalidate_publication(&cancel).unwrap();
+            proof.revalidate_finalization(&cancel).unwrap();
         }
     })
     .unwrap();
@@ -195,26 +188,24 @@ fn configured_limit_one_replacement_keeps_the_verified_stage_and_exact_outcome()
         let cancel = Cancellation::default();
         let _deadline = Deadline::new(&cancel);
         while job.phase() != CopyPhase::ReadyToPublish {
-            job.step_admitted(&cancel, &permit).unwrap();
+            job.step(&cancel).unwrap();
         }
         let verified = job.verified_bytes();
-        job.prepare_replacement_admitted(
+        job.prepare_replacement(
             OsStr::new("target"),
             target,
             TransferReplacementPolicy::RecoverableCurrentEntry,
             &cancel,
-            &permit,
         )
         .unwrap();
         assert!(matches!(
-            job.publish_replace_admitted(OsStr::new("target"), &cancel, &permit)
-                .unwrap(),
+            job.publish_replace(OsStr::new("target"), &cancel).unwrap(),
             TransferPublication::Replaced { .. }
         ));
         assert_eq!(job.verified_bytes(), verified);
         assert_eq!(preparations.load(Ordering::SeqCst), 1);
         assert_eq!(publications.load(Ordering::SeqCst), 1);
-        job.cleanup_admitted(&permit).unwrap();
+        job.cleanup().unwrap();
     })
     .unwrap();
     assert_eq!(gate.snapshot().active_shared, 1);
@@ -222,12 +213,20 @@ fn configured_limit_one_replacement_keeps_the_verified_stage_and_exact_outcome()
 
 #[test]
 fn rejected_admitted_witness_does_not_advance_or_clean_the_copy() {
+    let configured = Arc::new(Gate::new(1));
     let wrong = Arc::new(Gate::new(1))
         .try_acquire(Admission::Shared)
         .unwrap();
     let (mut job, _) = copy(b"bytes".to_vec(), false);
-    assert!(job.step_admitted(&Cancellation::default(), &wrong).is_err());
-    assert!(job.cleanup_admitted(&wrong).is_err());
+    assert!(
+        crate::transfer_io::with_transfer_io_permit_from(&configured, &wrong, || job
+            .step(&Cancellation::default()))
+        .is_err()
+    );
+    assert!(
+        crate::transfer_io::with_transfer_io_permit_from(&configured, &wrong, || job.cleanup())
+            .is_err()
+    );
     assert_eq!(job.phase(), CopyPhase::Copying);
     assert_eq!(job.copied_bytes(), 0);
     assert_eq!(job.verified_bytes(), 0);

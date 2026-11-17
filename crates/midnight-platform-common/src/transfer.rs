@@ -50,53 +50,8 @@ pub struct VerifiedFileCopy {
     failure_stage: midnight_core::CopyErrorStage,
 }
 impl VerifiedFileCopy {
-    /// Execute the existing bounded step under the job's retained Shared I/O owner.
-    pub fn step_admitted(
-        &mut self,
-        cancel: &Cancellation,
-        permit: &midnight_work_budget::Permit,
-    ) -> Result<CopyPhase, FsError> {
-        crate::transfer_io::with_transfer_io_permit(permit, || self.step(cancel))?
-    }
-
-    pub fn cleanup_admitted(
-        &mut self,
-        permit: &midnight_work_budget::Permit,
-    ) -> Result<(), FsError> {
-        crate::transfer_io::with_transfer_io_permit(permit, || self.cleanup())?
-    }
-
-    pub fn publish_admitted(
-        &mut self,
-        name: &OsStr,
-        cancel: &Cancellation,
-        permit: &midnight_work_budget::Permit,
-    ) -> Result<TransferPublication, FsError> {
-        crate::transfer_io::with_transfer_io_permit(permit, || self.publish(name, cancel))?
-    }
-
-    pub fn prepare_replacement_admitted(
-        &mut self,
-        name: &OsStr,
-        expected: Arc<dyn TransferTarget>,
-        policy: TransferReplacementPolicy,
-        cancel: &Cancellation,
-        permit: &midnight_work_budget::Permit,
-    ) -> Result<(), FsError> {
-        crate::transfer_io::with_transfer_io_permit(permit, || {
-            self.prepare_replacement(name, expected, policy, cancel)
-        })?
-    }
-
-    pub fn publish_replace_admitted(
-        &mut self,
-        name: &OsStr,
-        cancel: &Cancellation,
-        permit: &midnight_work_budget::Permit,
-    ) -> Result<TransferPublication, FsError> {
-        crate::transfer_io::with_transfer_io_permit(permit, || self.publish_replace(name, cancel))?
-    }
-
+    // An admitted job runs each call inside `transfer_io::with_transfer_io_permit_from`, which
+    // validates and borrows its retained Shared I/O permit for the call's duration.
     pub fn new(
         source: Box<dyn TransferSource>,
         stage: Box<dyn StagedTransferFile>,
@@ -164,9 +119,6 @@ impl VerifiedFileCopy {
     }
     pub fn source_entry(&self) -> &TransferEntry {
         self.source.entry()
-    }
-    pub fn source_native_identity(&self) -> Option<TransferIdentity> {
-        self.source.native_identity()
     }
     pub fn phase(&self) -> CopyPhase {
         self.phase

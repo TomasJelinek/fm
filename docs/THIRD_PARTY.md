@@ -46,6 +46,16 @@ Make File List adds no third-party library or enabled feature. Its engine reuses
 the workspace's `midnight-worker-platform` private spool and existing transfer,
 clipboard, native picker and viewer services.
 
+`midnight-platform-common` no longer uses `fs2` 0.4.3 (unmaintained since 2018):
+command-icon snapshot locking uses the standard library's file locks, and Unix
+filesystem capacity uses the already pinned `rustix` 1.1.6 `statvfs` with its
+already selected `fs` feature (Windows adapters query capacity natively). This
+removes `fs2` and `winapi` 0.3.9, which only `fs2` used, together with the
+platform-excluded `winapi-*-pc-windows-gnu` 0.4.0 shims, from the application
+lockfile. The generated tables were refreshed by targeted row comparison
+(**644 records / 526 names / 65 direct records**; `rustix` gains this declaring
+crate), not by a full recapture or generator `--check`.
+
 The additional color themes add no Cargo library or feature. Modern palette
 references use Apache-2.0 (Tokyo Night) and MIT (One Dark, Rosé Pine and Catppuccin), with
 [pinned provenance, adaptation notes and retained license texts](THEME_PROVENANCE.md).

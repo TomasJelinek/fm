@@ -27,25 +27,15 @@ impl Drop for CallPermit {
     }
 }
 
-/// Run one synchronous backend call under an actual Shared permit from the
-/// configured gate, defaulting to the process-global gate. The caller retains
-/// the permit throughout the closure. No references or permits are stored in TLS;
-/// nothing may rely on this context
-/// after the closure returns, on another thread, or across an await.
-pub fn with_transfer_io_permit<R>(
-    permit: &Permit,
-    operation: impl FnOnce() -> R,
-) -> Result<R, FsError> {
-    let configured = CONFIGURED
-        .with(|configured| configured.borrow().clone())
-        .unwrap_or_else(midnight_work_budget::shared_io);
-    with_transfer_io_permit_from(&configured, permit, operation)
-}
-
+/// Run one synchronous backend call under an admitted job's actual Shared permit.
+///
 /// Trusted backend composition only: use the controller's actual configured
 /// gate, never a new per-job budget or a user-requested admission override.
 /// Production controllers pass the process-global gate; isolated fixtures may
-/// supply their own configured gate. TLS retains only its identity, not capacity.
+/// supply their own configured gate. The caller retains the permit throughout
+/// the closure; nested calls borrow it instead of acquiring a second admission.
+/// TLS retains only the gate's identity, not capacity, and nothing may rely on
+/// this context after the closure returns, on another thread, or across an await.
 #[doc(hidden)]
 pub fn with_transfer_io_permit_from<R>(
     configured: &Arc<Gate>,
@@ -145,6 +135,12 @@ fn acquire_with_gate(
             owned: Some(permit),
         })
         .ok_or_else(interrupted)
+}
+
+/// The gate whose witness the current synchronous call borrows, if any.
+#[cfg(test)]
+fn configured_gate() -> Option<Arc<Gate>> {
+    CONFIGURED.with(|configured| configured.borrow().clone())
 }
 
 #[cfg(test)]
