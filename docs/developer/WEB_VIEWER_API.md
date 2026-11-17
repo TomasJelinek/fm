@@ -31,10 +31,13 @@ have no implicit scope.
 Every message has a session, document generation and sequence. Resize and mouse
 move coalesce only when adjacent; key/button transitions preserve ordering. The
 input queue holds 64 commands. Rather than drop a key or button release and leave
-the page with stuck input, a command that does not fit stops the browser session
-and publishes one terminal error (*Browser input overflowed while the page was busy;
-reopen the document.*) that the viewer reports like any browser failure. The
-host retains at most one pending painted frame. Replaced document generations and
+the page with stuck input, a command that does not fit stops the browser session:
+`Session::send` refuses it and every later command, and pending output is replaced by
+one terminal error (*Browser input overflowed while the page was busy; reopen the
+document.*) that `Session::drain` delivers. The viewer engine still reports a refused
+send as a busy queue (*Browser input queue is busy; try again.*) on each later input,
+which replaces that error on its status line until it treats a stopped session as
+closed. The host retains at most one pending painted frame. Replaced document generations and
 viewport revisions cannot publish stale pixels. Transport budgets bound messages
 and viewport memory, not complete file sizes. Frame acknowledgements and close/EOF
 release ownership. No UI callback performs file reads, discovery or process waits.
