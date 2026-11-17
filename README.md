@@ -155,13 +155,23 @@ the independent Rust modules too.
 The HTML build acquires the exact pinned CEF archive, verifies its SHA-256 and
 retains the complete runtime, license and Chromium credits. Set `CEF_PATH` to an
 already verified SDK or use the build helper cache under `.tools/cef/`.
-Chromium renderer sandboxing remains enabled. MSVC cannot compile CEF's C++ wrapper
-below a deep Windows checkout (260-character paths); set `MIDNIGHT_HTML_TARGET_DIR`
-to a short Cargo target directory (for example a junction such as `D:\mh` into the
-checkout's `_build`). The web SDK archives the HTML provider pins are classic-zlib
-output: Python 3.14+ on Windows bundles zlib-ng, so the packager prefers an installed
-`py -3.13`/`-3.12` and otherwise stops with that explanation (or set
-`MIDNIGHT_HTML_SDK_CONFIG` to an existing web SDK bundle).
+Chromium renderer sandboxing remains enabled. On Windows the verified SDK stays in the
+checkout's `_build`: the provider compiles against it in place, the package copies its
+runtime files from it and checks them against the SDK's verification receipt, and a
+rebuild with unchanged inputs keeps the installed package. MSVC cannot compile CEF's
+C++ wrapper objects below a deep Windows checkout (260-character paths). Set
+`MIDNIGHT_HTML_TARGET_DIR` to a short absolute directory for the provider's Cargo
+output, for example a junction such as `D:\mh` into the checkout's `_build\mh`; inside
+the checkout it must lie below `_build`. The wrapper sources stay in the SDK, which
+needs a checkout path of at most about 125 characters.
+
+The web SDK archives that the HTML provider pins are classic-zlib deflate output.
+Python 3.14+ on Windows bundles zlib-ng, and so does the system zlib of some Linux
+distributions (Fedora's zlib-ng-compat, which its Python uses). The web SDK packager
+then stops with that explanation instead of producing archives that fail the pinned
+checksums. On Windows it prefers an installed `py -3.13`/`-3.12`; on such a Linux
+host build with `FM_BUILD_BACKEND=docker` (the Ubuntu build image has classic zlib).
+On either platform `MIDNIGHT_HTML_SDK_CONFIG` can name an existing web SDK bundle instead.
 
 Linux thumbnail builds acquire and verify the pinned FFmpeg 9.0.2 source and
 signature, then build the existing restricted LGPL configuration. GPG and libclang
