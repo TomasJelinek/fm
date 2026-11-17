@@ -47,10 +47,13 @@ fn previous_file_waits_for_capture_without_repainting_old_content() {
     assert!(worker.pending_open);
     assert!(worker.page.is_none());
     assert_eq!(worker.status, "Preparing file identity…");
+    let requested = worker.capture_request;
+    assert!(requested.is_some());
     worker.open(&output);
-    assert!(
-        worker.pending_open,
-        "a repeated wait does not request again"
+    assert!(worker.pending_open);
+    assert_eq!(
+        worker.capture_request, requested,
+        "a repeated wait keeps the in-flight request instead of superseding it"
     );
     serve_capture(&mut worker, &output, Err("retained capture failure".into()));
     assert!(!worker.pending_open);
@@ -103,5 +106,64 @@ fn previous_file_leaves_loading_and_ready_image_or_pdf() {
             );
             assert_eq!(worker.status, "captured identity: third.rs");
         }
+    }
+}
+
+#[test]
+fn identity_capture_overlaps_the_teardown_of_the_previous_image() {
+    for capture_first in [true, false] {
+        let (mut worker, output) = worker();
+        captured_order(&mut worker, &ORDER);
+        // Declared after the worker, so a failed assertion releases the thread before the
+        // worker joins it.
+        let (release, teardown) = std::sync::mpsc::channel::<()>();
+        let (_, events) = std::sync::mpsc::sync_channel(1);
+        let thread = std::thread::spawn(move || {
+            let _ = teardown.recv();
+        });
+        worker.image = Some(crate::image_view::ImageView::new(
+            crate::image_worker::ImageWorker::for_test(events, Some(thread)),
+            worker.image_ids.clone(),
+        ));
+        worker.input(ViewerInput::NextFile, &output);
+        assert_eq!(worker.current, 1);
+        assert!(worker.image.is_none() && worker.pending_open);
+        assert_eq!(worker.status, "Closing previous image…");
+        assert_eq!(
+            worker.prefetch.as_ref().unwrap().wanted(),
+            Some(1),
+            "the identity is requested while the previous image closes"
+        );
+        let serve = |worker: &mut Worker| {
+            let prefetch = worker.prefetch.as_ref().unwrap();
+            prefetch.serve(Err("captured identity: first.md".into()));
+            worker.resume_open(&output);
+        };
+        let finish_teardown = |worker: &mut Worker| {
+            release.send(()).unwrap();
+            let deadline = std::time::Instant::now() + Duration::from_secs(10);
+            while !worker.closings_finished() {
+                assert!(std::time::Instant::now() < deadline, "teardown finishes");
+                std::thread::yield_now();
+            }
+            worker.resume_open(&output);
+        };
+        if capture_first {
+            serve(&mut worker);
+            assert!(
+                worker.capture_ready() && worker.pending_open,
+                "waits for teardown"
+            );
+            assert_eq!(worker.status, "Closing previous image…");
+            finish_teardown(&mut worker);
+        } else {
+            finish_teardown(&mut worker);
+            assert!(worker.pending_open, "waits for the identity");
+            assert_eq!(worker.status, "Preparing file identity…");
+            serve(&mut worker);
+        }
+        assert!(!worker.pending_open, "capture_first={capture_first}");
+        assert_eq!(worker.status, "captured identity: first.md");
+        assert!(worker.caption.starts_with("first.md"));
     }
 }

@@ -1,10 +1,23 @@
 //! Event-driven worker loop plumbing: wakes, bounded input batches and file identities.
 use super::*;
+use std::time::Instant;
 
-/// Watch a session for this long after a failure of a request the worker had cancelled.
-/// Plugin-host reports a session-fatal failure with the offending request ID, and the
-/// session's teardown has no wake signal.
+/// How long the worker polls for the end of a session after an orphaned failure, because
+/// the end of a session has no wake signal.
 const ORPHAN_WATCH: Duration = Duration::from_secs(1);
+/// Events handled per drain of the active session.
+const DRAIN: usize = 32;
+
+/// The leading INVALID failure of a drain that the worker does not show as its error, such
+/// as a late failure of a cancelled request or a failure of the optional locate request.
+/// Plugin-host drains a session-fatal failure before any other event and pushes nothing
+/// after it, so this failure ended the session when the session ends before delivering
+/// another event.
+pub(super) struct Orphan {
+    pub(super) message: String,
+    /// The worker polls for the session's end until then.
+    pub(super) watch: Instant,
+}
 
 impl Worker {
     /// `None` blocks until a wake or input arrives. Otherwise retry after the delay.
@@ -13,8 +26,8 @@ impl Worker {
             return Some(Duration::ZERO);
         }
         let closing = self.pending_open && !self.closings_finished();
-        let orphan = self.orphan_failure.as_ref().is_some_and(|(_, watch)| {
-            std::time::Instant::now() < *watch
+        let orphan = self.orphan_failure.as_ref().is_some_and(|orphan| {
+            Instant::now() < orphan.watch
                 && self
                     .session
                     .as_ref()
@@ -108,23 +121,97 @@ impl Worker {
         }
     }
 
-    /// A failed request ID the worker no longer tracks, outside the Open request.
+    /// Continue a deferred opening once its identity is ready and every previous session,
+    /// browser and image actor has finished closing. The opening requested the identity
+    /// when it began, so the capture overlaps that teardown.
+    pub(super) fn resume_open(&mut self, output: &Mailbox) {
+        self.poll_capture();
+        if !self.pending_open || !self.closings_finished() {
+            return;
+        }
+        if self.capture_ready() {
+            self.closing = None;
+            self.open(output);
+        } else if self.status != PREPARING {
+            self.status(PREPARING.into(), output);
+        }
+    }
+
+    /// Whether a Failed event with this ID is shown as the viewer's error.
+    pub(super) fn reports_failure(&self, id: u64) -> bool {
+        id == OPEN_REQUEST_ID
+            || self.search_request == Some(id)
+            || self.viewport_request == Some(id)
+    }
+
+    /// Handle one bounded drain of the active session, then an end the worker did not cause.
+    pub(super) fn drain_session(&mut self, output: &Mailbox) {
+        let Some(session) = &self.session else {
+            return;
+        };
+        // Read before draining: a closed session pushes nothing more, so this drain
+        // delivers its last events, including a pending session-fatal failure.
+        let ended = session.is_closed();
+        let events = session.drain(DRAIN);
+        self.session_events(events, ended, output);
+    }
+
+    /// `ended`: the session had stopped before `events` were drained from it.
+    pub(super) fn session_events(
+        &mut self,
+        events: Vec<midnight_plugin_host::HostEvent>,
+        ended: bool,
+        output: &Mailbox,
+    ) {
+        if !events.is_empty() {
+            // A session pushes nothing after its fatal failure, so a later event shows that
+            // an earlier drain's orphan was not that failure.
+            self.orphan_failure = None;
+        }
+        for (index, event) in events.into_iter().enumerate() {
+            if event.generation != self.generation {
+                continue;
+            }
+            // Plugin-host reports a session-fatal failure as INVALID, with the offending
+            // request's ID, ahead of older queued events. A late failure of a cancelled
+            // request elsewhere in a drain is not shown.
+            let orphan = match &event.kind {
+                EventKind::Failed(failure)
+                    if index == 0
+                        && failure.code == midnight_plugin_host::api::abi::INVALID
+                        && !self.reports_failure(event.request_id) =>
+                {
+                    Some(failure.message.clone())
+                }
+                _ => None,
+            };
+            self.event(event.request_id, event.kind, output);
+            if let Some(message) = orphan {
+                self.orphan_failed(message);
+            }
+        }
+        self.report_session_end(ended, output);
+    }
+
     pub(super) fn orphan_failed(&mut self, message: String) {
-        self.orphan_failure = Some((message, std::time::Instant::now() + ORPHAN_WATCH));
+        self.orphan_failure = Some(Orphan {
+            message,
+            watch: Instant::now() + ORPHAN_WATCH,
+        });
     }
 
     /// `ended`: the active session stopped although this worker did not close it, which
-    /// follows a fatal failure. Report the failure that preceded the end instead of a later
-    /// generic "closing" error.
+    /// follows a fatal failure. Report an orphaned fatal failure instead of a later generic
+    /// "closing" error. A tracked fatal failure has already been reported.
     pub(super) fn report_session_end(&mut self, ended: bool, output: &Mailbox) {
-        if ended && let Some((message, _)) = self.orphan_failure.take() {
+        if ended && let Some(orphan) = self.orphan_failure.take() {
             self.session = None;
             self.search_request = None;
             self.queued_scroll = [0.0; 2];
             self.continuation = None;
             self.position_context(output);
             self.viewport_request = None;
-            self.error(message, output);
+            self.error(orphan.message, output);
         }
     }
 }

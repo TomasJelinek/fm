@@ -199,7 +199,11 @@ fn serve_capture(worker: &mut Worker, output: &Mailbox, result: crate::capture::
     prefetch.serve(result);
     worker.poll_capture();
     assert!(worker.pending_open && worker.capture_ready());
-    worker.open(output);
+    worker.resume_open(output);
+    assert!(
+        !worker.pending_open,
+        "the opening continues with its identity"
+    );
     index
 }
 

@@ -23,6 +23,8 @@ const OPEN_REQUEST_ID: u64 = 1;
 const RETRY: Duration = Duration::from_millis(12);
 /// In-progress status of the one active search; cleared whenever that search ends.
 const SEARCHING: &str = "Searching…";
+/// Status while an opening waits only for its file identity.
+const PREPARING: &str = "Preparing file identity…";
 
 /// Text rows intersecting the viewport. Ctrl+A selects what the window shows, never rows
 /// of the loaded page that lie outside it (including retained guard rows).
@@ -78,9 +80,8 @@ struct Worker {
     /// Captures other files on demand; absent for single-source launches.
     prefetch: Option<crate::capture_prefetch::Prefetch>,
     capture_request: Option<(u64, usize)>,
-    /// Failure of a request the worker had already cancelled, and the end of its watch.
-    /// Plugin-host reports session-fatal failures with the offending request ID.
-    orphan_failure: Option<(String, std::time::Instant)>,
+    /// A drained failure the worker did not show, which may have ended the session.
+    orphan_failure: Option<event_loop::Orphan>,
     /// Browser events beyond one drained batch remain queued without another wake.
     web_backlog: bool,
     basic: bool,
@@ -161,7 +162,7 @@ pub(crate) fn run(
         preferences: preference_state,
         negotiate_layout,
     } = services;
-    output.put(ViewerOutput::Status("Preparing file identity…".into()));
+    output.put(ViewerOutput::Status(PREPARING.into()));
     let order = crate::capture::prepare_with(&launch, closed, capture)?;
     let backend = wakes.clone();
     let wake: Arc<dyn Fn() -> bool + Send + Sync> = Arc::new(move || backend.wake());
@@ -287,21 +288,8 @@ pub(crate) fn run(
             break;
         }
         worker.sync_preferences(output);
-        worker.poll_capture();
-        if worker.pending_open && worker.capture_ready() && worker.closings_finished() {
-            worker.closing = None;
-            worker.open(output);
-        }
-        if let Some(session) = &worker.session {
-            let events = session.drain(32);
-            for event in events {
-                if event.generation == worker.generation {
-                    worker.event(event.request_id, event.kind, output);
-                }
-            }
-        }
-        let ended = worker.session.as_ref().is_some_and(Session::is_closed);
-        worker.report_session_end(ended, output);
+        worker.resume_open(output);
+        worker.drain_session(output);
         worker.poll_image(output);
         worker.poll_web(output);
         if worker.dirty {
@@ -477,7 +465,7 @@ impl Worker {
         self.closing = None;
         if !self.capture_ready() {
             self.pending_open = true;
-            self.status("Preparing file identity…".into(), output);
+            self.status(PREPARING.into(), output);
             return;
         }
         self.pending_open = false;
@@ -903,6 +891,8 @@ impl Worker {
                 self.text.locate_request = None;
                 // Older plugins reject the optional request. This is not a
                 // document failure and must not overwrite the usable viewport.
+                // A session-fatal failure with this ID is remembered by
+                // `session_events` and reported if the session ends.
                 self.text.unavailable = failure.code != midnight_plugin_host::api::abi::QUEUE_FULL;
                 self.dirty = true;
             }
@@ -923,11 +913,7 @@ impl Worker {
                 self.status(format!("Match at byte {}", found.source.offset), output);
                 self.request_page(found.source.offset, false, output);
             }
-            EventKind::Failed(failure)
-                if id == OPEN_REQUEST_ID
-                    || self.search_request == Some(id)
-                    || self.viewport_request == Some(id) =>
-            {
+            EventKind::Failed(failure) if self.reports_failure(id) => {
                 if self.viewport_request == Some(id) {
                     self.abort_raster_rebase(&failure.message, output);
                     self.abort_raster_refill(&failure.message, output);
@@ -1021,13 +1007,8 @@ impl Worker {
                     }
                 }
             }
-            // A cancelled request's late failure, or a session-fatal one, which plugin-host
-            // always reports as INVALID; see report_session_end.
-            EventKind::Failed(failure)
-                if failure.code == midnight_plugin_host::api::abi::INVALID =>
-            {
-                self.orphan_failed(failure.message)
-            }
+            // Includes events of requests no longer tracked. `session_events` remembers a
+            // failure among them that may have ended the session.
             _ => {}
         }
     }

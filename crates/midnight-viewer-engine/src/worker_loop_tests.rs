@@ -1,5 +1,6 @@
 //! Event-driven loop, input batching and window-level inputs.
 use super::*;
+use midnight_plugin_host::api::abi::{INVALID, QUEUE_FULL, UNSUPPORTED};
 
 fn complete_page(worker: &mut Worker, output: &Mailbox, rows: usize) {
     let source: String = (0..rows)
@@ -160,41 +161,130 @@ fn retained_raster_choice_survives_an_image_for_the_next_text_file() {
     assert!(!worker.raster.enabled);
 }
 
+/// A failure drained from the worker's session (generation 0).
+fn failed(id: u64, code: u32, message: &str) -> midnight_plugin_host::HostEvent {
+    midnight_plugin_host::HostEvent {
+        request_id: id,
+        generation: 0,
+        kind: EventKind::Failed(messages::Failure {
+            code,
+            message: message.into(),
+        }),
+    }
+}
+
 #[test]
 fn failure_of_a_cancelled_request_is_reported_when_its_session_ends() {
     let (mut worker, output) = worker();
-    worker.event(
-        9,
-        EventKind::Failed(messages::Failure {
-            code: midnight_plugin_host::api::abi::INVALID,
-            message: "Malformed plugin output".into(),
-        }),
+    worker.session_events(
+        vec![failed(9, INVALID, "Malformed plugin output")],
+        false,
         &output,
     );
     assert!(
         output.take_open_result().is_none() && worker.status.is_empty(),
         "an unrelated late failure is not shown while its session continues"
     );
-    worker.report_session_end(false, &output);
+    worker.session_events(Vec::new(), false, &output);
     assert!(worker.status.is_empty());
-    worker.report_session_end(true, &output);
+    worker.session_events(Vec::new(), true, &output);
     assert_eq!(worker.status, "Malformed plugin output");
     assert_eq!(
         output.take_open_result(),
         Some(Err("Malformed plugin output".into()))
     );
-    worker.event(
-        10,
-        EventKind::Failed(messages::Failure {
-            code: midnight_plugin_host::api::abi::UNSUPPORTED,
-            message: "optional request rejected".into(),
-        }),
+    worker.session_events(
+        vec![failed(10, UNSUPPORTED, "optional request rejected")],
+        false,
         &output,
     );
     assert!(
         worker.orphan_failure.is_none(),
         "plugin-host reports fatal failures as INVALID only"
     );
+}
+
+#[test]
+fn an_earlier_orphan_never_replaces_the_failure_that_ended_the_session() {
+    for stale in [false, true] {
+        let (mut worker, output) = worker();
+        worker.session_events(
+            vec![failed(9, INVALID, "late failure of a cancelled read")],
+            false,
+            &output,
+        );
+        if stale {
+            // Its polling watch elapsed while the session continued.
+            worker.orphan_failure.as_mut().unwrap().watch = std::time::Instant::now();
+        }
+        worker.viewport_request = Some(41);
+        worker.session_events(
+            vec![failed(41, INVALID, "Malformed plugin output")],
+            false,
+            &output,
+        );
+        assert_eq!(worker.status, "Malformed plugin output");
+        assert!(
+            worker.orphan_failure.is_none(),
+            "a later event shows that the orphan did not end the session"
+        );
+        worker.session_events(Vec::new(), true, &output);
+        assert_eq!(worker.status, "Malformed plugin output", "stale={stale}");
+    }
+}
+
+#[test]
+fn only_a_drain_leading_failure_can_have_ended_the_session() {
+    // Plugin-host drains its session-fatal failure ahead of older queued events.
+    for (drain, shown, ended) in [
+        (
+            [
+                (9, "Malformed plugin output"),
+                (41, "Plugin rejected request (3)"),
+            ],
+            "Plugin rejected request (3)",
+            "Malformed plugin output",
+        ),
+        // A tracked fatal failure is reported at once; an older late failure after it is not.
+        (
+            [
+                (41, "Malformed plugin output"),
+                (9, "late failure of a cancelled read"),
+            ],
+            "Malformed plugin output",
+            "Malformed plugin output",
+        ),
+    ] {
+        let (mut worker, output) = worker();
+        worker.viewport_request = Some(41);
+        let events = drain
+            .iter()
+            .map(|(id, message)| failed(*id, INVALID, message))
+            .collect();
+        worker.session_events(events, false, &output);
+        assert_eq!(worker.status, shown);
+        assert_eq!(worker.orphan_failure.is_some(), shown != ended);
+        worker.session_events(Vec::new(), true, &output);
+        assert_eq!(worker.status, ended);
+    }
+}
+
+#[test]
+fn invalid_failure_of_the_optional_locate_request_is_reported_when_its_session_ends() {
+    const MESSAGE: &str = "Plugin output does not match captured content";
+    for (code, reported) in [(INVALID, true), (QUEUE_FULL, false), (UNSUPPORTED, false)] {
+        let (mut worker, output) = worker();
+        worker.text.locate_request = Some((12, 0));
+        worker.session_events(vec![failed(12, code, MESSAGE)], false, &output);
+        assert!(worker.text.locate_request.is_none());
+        assert_eq!(worker.text.unavailable, code != QUEUE_FULL);
+        assert!(
+            worker.status.is_empty(),
+            "an optional lookup's failure leaves the page usable"
+        );
+        worker.session_events(Vec::new(), true, &output);
+        assert_eq!(worker.status == MESSAGE, reported, "code {code}");
+    }
 }
 
 #[test]
