@@ -1236,33 +1236,72 @@ fn keyboard_options_validate_apply_disable_and_restore_effective_bindings() {
             .iter()
             .all(|command| !matches!(command, Command::SavePreferences { .. }))
     );
+    let can_assign = || view.get_can_assign();
+    assert!(!can_assign(), "assigning consumes the captured shortcut");
     let assigned = aliases().len();
     assert_eq!(assigned, defaults.len() + 1);
-    let mut click = |label: &str| {
-        ui::click_popup(&window, label, AccessibleRole::Button);
+    let click = |h: &mut Harness, label: &str| {
+        ui::click_popup(&h.ui.window, label, AccessibleRole::Button);
         h.draw();
     };
-    click("Remove");
+    let confirmation =
+        || ui::try_popup_item(&window, "Reset all shortcuts", AccessibleRole::Button);
+    click(&mut h, "Remove");
     assert_eq!(aliases().len(), assigned - 1, "Remove drops one alias");
-    click("Remove");
+    assert!(!can_assign(), "Remove leaves nothing to assign");
+    click(&mut h, "Remove");
     assert_eq!(aliases().len(), assigned - 2, "Remove drops one alias");
-    click("Restore command");
+    assert!(!can_assign(), "Remove leaves nothing to assign");
+    click(&mut h, "Restore command");
     assert_eq!(
         aliases(),
         defaults,
         "Restore command brings back its defaults"
     );
-    click("Restore all defaults");
+    assert!(!can_assign(), "Restore command leaves nothing to assign");
+    // Customize two commands again, so that only a reset of every command can
+    // bring back both default maps.
+    click(&mut h, "Remove");
+    assert_eq!(
+        aliases(),
+        defaults[1..].to_vec(),
+        "Remove drops the selected (first) alias"
+    );
+    h.select_action("files.rename");
+    let rename_defaults = aliases();
+    assert!(!rename_defaults.is_empty(), "Rename has a default shortcut");
+    click(&mut h, "Remove");
+    let rename_custom = aliases();
+    assert_eq!(rename_custom.len(), rename_defaults.len() - 1);
+    click(&mut h, "Restore all defaults");
     assert!(
-        ui::try_popup_item(&window, "Reset all shortcuts", AccessibleRole::Button).is_some(),
+        confirmation().is_some(),
         "restoring every default asks for confirmation first"
     );
-    assert_eq!(aliases(), defaults);
-    click("Reset all shortcuts");
-    assert_eq!(aliases(), defaults);
+    assert_eq!(
+        aliases(),
+        rename_custom,
+        "nothing changes before confirming"
+    );
     assert!(
-        ui::try_popup_item(&window, "Reset all shortcuts", AccessibleRole::Button).is_none(),
+        !can_assign(),
+        "asking for confirmation leaves nothing to assign"
+    );
+    click(&mut h, "Reset all shortcuts");
+    assert!(
+        confirmation().is_none(),
         "the confirmation closes after the reset"
+    );
+    assert_eq!(aliases(), rename_defaults, "the reset restores Rename");
+    assert!(!can_assign(), "the reset leaves nothing to assign");
+    h.select_action("files.copy");
+    assert_eq!(aliases(), defaults, "the reset restores Copy as well");
+    // The editor accepts a new capture after the reset, and the custom chord is
+    // free again.
+    h.edit("Ctrl+Alt+Y");
+    assert!(
+        can_assign(),
+        "Ctrl+Alt+Y is unassigned again after the reset"
     );
     assert!(
         h.commands

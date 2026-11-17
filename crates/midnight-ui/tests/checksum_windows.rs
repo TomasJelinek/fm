@@ -582,7 +582,7 @@ fn checksum_actions_keep_320_by_200_layout_in_every_theme_and_density() {
                         &native,
                         width,
                         height,
-                        &format!("checksum-layout-page-{page}"),
+                        &format!("checksum-layout-theme{theme}-density{density}-page{page}"),
                         theme == themes[0],
                     );
                     if page == 1 {

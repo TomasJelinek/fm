@@ -369,26 +369,20 @@ fn refresh_errors_keep_the_inline_notice_and_do_not_open_a_message_box() {
 }
 
 #[test]
-fn a_busy_authorization_queue_keeps_the_receipt_and_asks_to_reopen_the_folder() {
+fn a_busy_authorization_queue_reports_failure_and_closes_both_authorization_entry_points() {
     let (mut p, navigation, path) = denied_notice();
     offer(&mut p, navigation, &path);
     p.retry_notice_authorized(p.desktop.notice_generation, &|_| false);
+    // The refused send starts no navigation.
     assert!(!p.panes[0].loading);
     assert_eq!(p.panes[0].generation, navigation.0);
-    assert!(
-        p.desktop
-            .notice
-            .as_ref()
-            .unwrap()
-            .1
-            .contains("queue is busy")
-    );
-    assert_eq!(
-        p.panes[0].elevation_retry,
-        Some((navigation, path)),
-        "a refused retry does not consume the receipt"
-    );
-    // The busy notice replaces the offer: authorization needs the folder reopened.
+    let (title, body) = p.desktop.notice.clone().unwrap();
+    assert_eq!(title, "Cannot retry folder");
+    assert!(body.contains("queue is busy"), "{body}");
+    assert!(p.desktop.notice_path.contains(path.to_str().unwrap()));
+    // The busy notice replaces the offer: neither the notice nor the pane can
+    // start an authorized retry until the folder is opened again. Whether the
+    // pane keeps its unreachable receipt meanwhile is not part of this contract.
     assert!(!p.notice_can_authorize());
     assert!(!p.can_retry_directory_elevated(PaneId::Left));
 }

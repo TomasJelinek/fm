@@ -87,7 +87,8 @@ fn shell_hover_preserves_frame(test: &mut ui::TestUi, launch_label: &str, top: f
             });
         test.draw();
         if test.window.global::<Theme>().get_scheme() == 0 {
-            render::snapshot(test, &format!("shell-split-hover-{index}"));
+            let density = test.window.global::<Theme>().get_density();
+            render::snapshot(test, &format!("shell-split-hover-density{density}-{index}"));
         }
         assert_eq!(
             frame_points.map(|(x, y)| test.pixel(x, y)),
