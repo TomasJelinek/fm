@@ -42,11 +42,27 @@ fn exercise_external_changes(pane: PaneId) {
         let hints = h.watch_hints[pane.index()];
         let directory = parent.join(name);
         fs::create_dir(&directory).unwrap();
-        h.until(|h| {
-            watch.callbacks() > before
-                && h.watch_hints[pane.index()] > hints
-                && h.rows().iter().any(|row| row.name == name)
-        });
+        if let Err(panic) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            h.until(|h| {
+                watch.callbacks() > before
+                    && h.watch_hints[pane.index()] > hints
+                    && h.rows().iter().any(|row| row.name == name)
+            });
+        })) {
+            let callbacks = watch.callbacks();
+            let current_hints = h.watch_hints[pane.index()];
+            let ui_row = h.rows().iter().any(|row| row.name == name);
+            let projection_row = h.views[pane.index()]
+                .as_ref()
+                .is_some_and(|view| view.rows.iter().any(|row| row.entry.display_name == name));
+            eprintln!(
+                "tree watch creation predicates: pane={pane:?}, target={name:?}, callbacks={callbacks}>{before} ({}), hints={current_hints}>{hints} ({}), ui_row={ui_row}, observed_projection_row={projection_row}, historical_subscriptions(root,branch)={:?}",
+                callbacks > before,
+                current_hints > hints,
+                (watch.observes(&fixture.root), watch.observes(&branch)),
+            );
+            std::panic::resume_unwind(panic);
+        }
         assert_eq!(h.view.as_ref().unwrap().stamp.session, session);
         assert!(
             h.rows()

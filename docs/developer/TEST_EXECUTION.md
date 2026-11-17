@@ -10,6 +10,14 @@ cargo test --locked -p midnight-core --test shortcuts --no-run --message-format=
 py -3 -B scripts/run-targeted-tests.py --metadata _build/qa/targeted-metadata.json --receipt _build/qa/targeted-build.jsonl --target midnight-core test:shortcuts
 ```
 
+When reproducing a failed CI job, match its workspace/package selection,
+feature flags, profile, target, toolchain and lockfile. A targeted `-p` pass does
+not establish workspace feature equivalence: shared dependencies can resolve
+with different features. Retain the exact commands and resolved graph/features
+with the receipt, state any differences and limit qualification to that scope.
+Independent plugins still use their own workspace and normal configuration;
+this does not require blanket workspace builds for independent plugin checks.
+
 To run two independent headless targets concurrently, select both in the build
 and in the runner (no second Cargo process is needed):
 

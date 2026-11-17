@@ -18,6 +18,51 @@ code or a green subset into complete qualification.
 designed app features, test each deeply and polish all UI. Copy/Move convergence
 comes first; role work still requires scoped acceptance and exclusive ownership.
 
+### Tree-watch CI follow-up — 17 November 2026
+
+Root verified CI `44018173075` completed **19/20 successful jobs**, including
+the full Windows check (release/native viewers). Only Linux complete Test failed,
+at gate **43/47** on
+`external_root_and_expanded_branch_changes_preserve_left_tree` / `right_tree`:
+seven command-reclaim units passed, two native cases failed. The first create
+wait at `tree_watch.rs:45` combines callback/hint/UI-row conditions; the failing
+predicate and cause remain unattributed. The preceding 42 gates, including the
+Engine correction, passed. No newer remote-CI result is claimed.
+
+The resolved graph for `-p midnight-ui` has **415 nodes**, versus CI `--workspace`
+**432**. Shared Slint **1.18.1** gains `unstable-wgpu-30`; Tokio `test-util`, X11
+and tracing-regex features also differ. Two nine-case Linux diagnostic runs
+passed (two threads **1.67 s**, four CPUs/four threads **1.69 s**), but are
+**UNREPRODUCED / not CI-feature-equivalent**, with no watcher fix proven.
+Root directly verified the **CI-feature-equivalent** workspace/tail receipts:
+selected gates **43–47**, **34 artifacts / 131 passed / 0 failed / 1 ignored**,
+including `tree_watch` **9 passed / 1.67 s** at four CPUs/four threads and both
+`ui_polish` artifacts. The archive-worker case requires its separately built binary.
+Source guards passed, all owned processes exited and the Linux lease was released.
+Scoped workspace `--test tree_watch` Clippy exited **0 / 46.93 s**; pinned-format
+reuse verifies diagnostic postimage `e625…`. This is **WSL/kernel 6.6**, with a
+CI-feature-equivalent graph/selection, not the hosted CI environment.
+
+Watcher passes remain **UNREPRODUCED**: the cause is **UNKNOWN**, feature differences
+are not an established cause, and **no watcher behavior fix is proven**. Only
+failure-only diagnostics were applied on
+`codex/ci-linux-tree-watch-observation-20261117`. Windows metadata-only
+`cargo clippy --workspace --test tree_watch --locked --offline` (jobs 2,
+`-D warnings`) exited **0**, with zero errors/warnings; format exited **0** and
+source guards passed for the same `e625…` diagnostic postimage. No runtime or
+product rebuild ran; Root released the lease with no compiler processes remaining.
+A diagnostic-only commit/new remote CI is pending. The c97 EXE remains valid for its unchanged Windows production source;
+no runtime rebuild is required for this test/docs-only change.
+[Execution guidance](developer/TEST_EXECUTION.md) requires the resolved feature scope.
+
+The c97 host EXE is independently built and normal-profile deployed: SHA-256
+prefix `2d906dea…`, **106,150,912 B**,
+`C:/Users/tjelinek/MidnightExplorer-20261117-044645-b596dbbb/me.exe`.
+Inventory checked all 13 components / 1,823 files (only host changed, twelve
+retained); validators and registration/pointer checks exited **0** as normal
+non-admin, without launching the user app. This deployment does not qualify the
+watcher cases or whole CI. Earlier pending states below retain their dated scope.
+
 ### CI and concurrent-copy investigation — 17 November 2026
 
 Investigation input: `codex/ci-concurrent-copy-diagnostics-20261117`, following
