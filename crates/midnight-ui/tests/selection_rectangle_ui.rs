@@ -24,7 +24,14 @@ struct Harness {
 }
 impl Harness {
     fn new(count: usize) -> Self {
-        let ui = ui::TestUi::new();
+        Self::with_ui(count, ui::TestUi::new())
+    }
+    /// The 30 ms repeated rectangle timer (src/selection_bridge.rs) follows `clock`.
+    fn with_clock(count: usize) -> (Self, Rc<Cell<std::time::Duration>>) {
+        let (ui, clock) = ui::TestUi::with_virtual_clock();
+        (Self::with_ui(count, ui), clock)
+    }
+    fn with_ui(count: usize, ui: ui::TestUi) -> Self {
         let root = std::env::temp_dir().join("selection 文档");
         let presenter = Rc::new(RefCell::new(Presenter::new(
             root.clone(),
@@ -235,13 +242,13 @@ fn escape_focus_loss_and_refused_release_remove_preview_without_phantom_selectio
 
 #[test]
 fn long_details_view_starts_in_gutter_autoscrolls_and_reaches_offscreen_rows() {
-    let mut h = Harness::new(500);
+    let (mut h, clock) = Harness::with_clock(500);
     let (x, _) = h.start();
     let y = h.ui.window.get_left_list_top() + h.ui.window.get_left_list_height() - 1.0;
     h.pointer(h.ui.window.get_left_list_left() + 1.0, y, 1);
     for _ in 0..12 {
-        std::thread::sleep(std::time::Duration::from_millis(35));
-        slint::platform::update_timers_and_animations();
+        // One period of the repeated 30 ms autoscroll timer per frame.
+        ui::advance(&clock, std::time::Duration::from_millis(35));
         h.ui.draw();
     }
     assert!(h.ui.window.get_left_list_content_y() < -100.0);
@@ -287,7 +294,7 @@ fn long_details_view_starts_in_gutter_autoscrolls_and_reaches_offscreen_rows() {
 
 #[test]
 fn cancellation_during_presenter_borrow_defers_repaint_without_reentrant_borrow() {
-    let h = Harness::new(5);
+    let (h, clock) = Harness::with_clock(5);
     h.start();
     let (x, y) = h.top();
     h.pointer(x, y, 1);
@@ -295,8 +302,8 @@ fn cancellation_during_presenter_borrow_defers_repaint_without_reentrant_borrow(
     assert!(h.ui.window.global::<SelectionRectangle>().invoke_cancel());
     drop(borrowed);
     assert_eq!(h.flags(), vec![false; 5]);
-    std::thread::sleep(std::time::Duration::from_millis(35));
-    slint::platform::update_timers_and_animations();
+    // The deferred repaint runs on the next 30 ms timer period.
+    ui::advance(&clock, std::time::Duration::from_millis(35));
     assert_eq!(h.ui.window.global::<SelectionRectangle>().get_pane(), -1);
     assert!(
         h.commands

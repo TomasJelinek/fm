@@ -9,7 +9,12 @@ use i_slint_core::{
 use midnight_core::*;
 use midnight_ui::Presenter;
 use slint::ComponentHandle;
-use std::{cell::RefCell, rc::Rc, sync::Arc, time::Duration};
+use std::{
+    cell::{Cell, RefCell},
+    rc::Rc,
+    sync::Arc,
+    time::Duration,
+};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Scenario {
@@ -21,19 +26,22 @@ enum Scenario {
     Unchanged,
 }
 
-fn hover_hint(test: &mut ui::TestUi, label: &str, role: AccessibleRole) {
-    hover_due(test, label, role);
-    test.draw();
-    assert!(
-        WindowInner::from_pub(test.window.window())
-            .active_popups()
-            .iter()
-            .any(|popup| matches!(popup.window_kind, WindowKind::ToolTip)),
-        "visible tooltip precondition: {label}"
-    );
+fn tooltips(test: &ui::TestUi) -> usize {
+    WindowInner::from_pub(test.window.window())
+        .active_popups()
+        .iter()
+        .filter(|popup| matches!(popup.window_kind, WindowKind::ToolTip))
+        .count()
 }
 
-fn hover_due(test: &mut ui::TestUi, label: &str, role: AccessibleRole) {
+fn hover_hint(test: &mut ui::TestUi, clock: &Cell<Duration>, label: &str, role: AccessibleRole) {
+    hover_due(test, clock, label, role);
+    test.draw();
+    assert!(tooltips(test) > 0, "visible tooltip precondition: {label}");
+}
+
+/// Hover until Slint's 500 ms tooltip delay is due, without running its timer yet.
+fn hover_due(test: &mut ui::TestUi, clock: &Cell<Duration>, label: &str, role: AccessibleRole) {
     let hovered = {
         let item = ui::popup_item(&test.window, label, role);
         let rect = item.geometry();
@@ -43,7 +51,7 @@ fn hover_due(test: &mut ui::TestUi, label: &str, role: AccessibleRole) {
     test.window
         .window()
         .dispatch_event(slint::platform::WindowEvent::PointerMoved { position: hovered });
-    std::thread::sleep(Duration::from_millis(650));
+    clock.set(clock.get() + Duration::from_millis(650));
 }
 
 #[test]
@@ -77,7 +85,7 @@ fn reviewing_unchanged_attributes_is_safe_and_cannot_apply() {
 }
 
 fn review_workflow(scenario: Scenario) {
-    let mut test = ui::TestUi::new();
+    let (mut test, clock) = ui::TestUi::with_virtual_clock();
     let root = std::env::temp_dir();
     let state = Rc::new(RefCell::new(Presenter::new(root.clone(), root.clone())));
     let commands = Rc::new(RefCell::new(Vec::new()));
@@ -213,10 +221,17 @@ fn review_workflow(scenario: Scenario) {
         ui::click_popup(&test.window, "Conversion", AccessibleRole::Combobox);
         test.draw();
     } else if scenario == Scenario::PendingHint {
-        hover_due(&mut test, "Change filename case", AccessibleRole::Checkbox);
+        hover_due(
+            &mut test,
+            &clock,
+            "Change filename case",
+            AccessibleRole::Checkbox,
+        );
+        assert_eq!(tooltips(&test), 0, "the hint is due but not shown yet");
     } else if scenario != Scenario::OpenDropdown {
         hover_hint(
             &mut test,
+            &clock,
             if scenario == Scenario::Unchanged {
                 "Read-only"
             } else {
@@ -228,6 +243,17 @@ fn review_workflow(scenario: Scenario) {
     state.borrow_mut().apply(preview(revision, patch.clone()));
     midnight_ui::refresh(&test.window, &state.borrow());
     test.draw();
+    if scenario == Scenario::PendingHint {
+        // The due timer fires in this frame, before the review replaces the field.
+        assert_eq!(
+            tooltips(&test),
+            0,
+            "a hint of the replaced editing field must not appear over the review"
+        );
+        ui::advance(&clock, Duration::from_millis(650));
+        test.draw();
+        assert_eq!(tooltips(&test), 0, "no stale hint appears in a later frame");
+    }
     if scenario != Scenario::Hints {
         let apply = ui::popup_item(&test.window, "Apply", AccessibleRole::Button);
         if scenario == Scenario::Unchanged {
@@ -251,11 +277,16 @@ fn review_workflow(scenario: Scenario) {
         );
         return;
     }
-    hover_hint(&mut test, "Back to editing", AccessibleRole::Button);
+    hover_hint(&mut test, &clock, "Back to editing", AccessibleRole::Button);
     ui::popup_item(&test.window, "Back to editing", AccessibleRole::Button)
         .accessible_action(&AccessibilityAction::Default);
     test.draw();
-    hover_hint(&mut test, "Change filename case", AccessibleRole::Checkbox);
+    hover_hint(
+        &mut test,
+        &clock,
+        "Change filename case",
+        AccessibleRole::Checkbox,
+    );
     ui::popup_item(&test.window, "Attributes", AccessibleRole::Button)
         .accessible_action(&AccessibilityAction::Default);
     test.draw();

@@ -9,7 +9,11 @@ use slint::{
         software_renderer::{MinimalSoftwareWindow, RepaintBufferType},
     },
 };
-use std::{cell::RefCell, rc::Rc};
+use std::{
+    cell::{Cell, RefCell},
+    rc::Rc,
+    time::Duration,
+};
 
 pub type Windows = Rc<RefCell<Vec<Rc<MinimalSoftwareWindow>>>>;
 struct Boundary(Windows, RepaintBufferType);
@@ -20,12 +24,32 @@ impl Platform for Boundary {
         Ok(native)
     }
 }
+/// [`Boundary`] whose Slint timers and animations only follow a virtual clock.
+struct ClockBoundary(Boundary, Rc<Cell<Duration>>);
+impl Platform for ClockBoundary {
+    fn create_window_adapter(&self) -> Result<Rc<dyn WindowAdapter>, PlatformError> {
+        self.0.create_window_adapter()
+    }
+    fn duration_since_start(&self) -> Duration {
+        self.1.get()
+    }
+}
 pub fn new() -> (TestUi, Windows) {
     with_buffer(RepaintBufferType::ReusedBuffer)
+}
+/// [`new`] whose Slint timers and animations only follow `clock`.
+pub fn with_clock(clock: Rc<Cell<Duration>>) -> (TestUi, Windows) {
+    let windows = Windows::default();
+    let boundary = Boundary(windows.clone(), RepaintBufferType::ReusedBuffer);
+    slint::platform::set_platform(Box::new(ClockBoundary(boundary, clock))).unwrap();
+    (main_window(&windows), windows)
 }
 pub fn with_buffer(buffer: RepaintBufferType) -> (TestUi, Windows) {
     let windows = Windows::default();
     slint::platform::set_platform(Box::new(Boundary(windows.clone(), buffer))).unwrap();
+    (main_window(&windows), windows)
+}
+fn main_window(windows: &Windows) -> TestUi {
     let window = midnight_ui::MainWindow::new().unwrap();
     window.set_preferences_ready(true);
     midnight_ui::install_file_keys(&window);
@@ -42,7 +66,7 @@ pub fn with_buffer(buffer: RepaintBufferType) -> (TestUi, Windows) {
         height: 820,
     };
     ui.resize(1340, 820);
-    (ui, windows)
+    ui
 }
 pub fn child_key(windows: &Windows, text: impl Into<slint::SharedString>) {
     slint::platform::update_timers_and_animations();

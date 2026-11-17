@@ -7,9 +7,9 @@ use i_slint_core::{
     accessibility::AccessibleStringProperty, item_tree::ItemRc, items::AccessibleRole,
     window::WindowInner,
 };
-use midnight_ui::{MetadataDraft, MetadataFileRow};
-use slint::{ComponentHandle, ModelRc, VecModel, platform::Key};
-use std::{cell::RefCell, rc::Rc};
+use midnight_ui::MetadataDraft;
+use slint::{ComponentHandle, platform::Key};
+use std::{cell::RefCell, rc::Rc, time::Duration};
 
 #[test]
 fn unix_permissions_offer_owner_group_other_and_special_bits() {
@@ -56,19 +56,6 @@ fn choose_attribute(test: &ui::TestUi, field: &str, value: &str) {
         ui::click_popup(&test.window, field, AccessibleRole::Checkbox);
     }
     panic!("attribute {field} cannot reach {value}");
-}
-
-fn rendered_file_rows(item: ItemRc) -> usize {
-    let mut count = usize::from(
-        item.accessible_string_property(AccessibleStringProperty::Label)
-            .is_some_and(|label| label.starts_with("Captured file ")),
-    );
-    let mut child = item.first_child();
-    while let Some(item) = child {
-        child = item.next_sibling();
-        count += rendered_file_rows(item);
-    }
-    count
 }
 
 fn action_is_not_vertically_clipped(test: &ui::TestUi, label: &str) {
@@ -229,7 +216,7 @@ fn metadata_edit_sections_exclude_obsolete_preview_and_require_prepared_confirma
 
 #[test]
 fn metadata_editor_requires_review_and_keeps_sections_readable() {
-    let mut test = ui::TestUi::new();
+    let (mut test, clock) = ui::TestUi::with_virtual_clock();
     test.window.set_metadata_can_windows(true);
     test.window.set_metadata_windows_mask(39);
     test.window.set_metadata_can_compress(true);
@@ -237,13 +224,6 @@ fn metadata_editor_requires_review_and_keeps_sections_readable() {
     test.window.set_metadata_can_modified(true);
     test.window.set_metadata_can_accessed(true);
     test.window.set_metadata_can_rename(true);
-    test.window.set_metadata_rows(ModelRc::new(VecModel::from((0..256).map(|index| MetadataFileRow {
-        current_name: format!("ŽLUŤOUČKÝ-{index}.TXT").into(),
-        proposed_name: format!("žluťoučký-{index}.txt").into(),
-        attributes: "Current: H\nProposed: R".into(),
-        times: "Modified: 2026-11-06 12:30:00 UTC\nCreated: Unavailable\nAccessed: 2026-11-06 12:30:00 UTC".into(),
-        detail: format!("Captured file {index}").into(), issue: false,
-    }).collect::<Vec<_>>())));
     let drafts = Rc::new(RefCell::new(Vec::<MetadataDraft>::new()));
     let captured = drafts.clone();
     test.window
@@ -263,15 +243,6 @@ fn metadata_editor_requires_review_and_keeps_sections_readable() {
     test.window.set_metadata_token("1".into());
     slint::platform::update_timers_and_animations();
     test.draw();
-    let inner = WindowInner::from_pub(test.window.window());
-    let popups = inner.active_popups();
-    let visible_rows =
-        rendered_file_rows(ItemRc::new_root(popups.last().unwrap().component.clone()));
-    assert_eq!(
-        visible_rows, 0,
-        "captured-file preview rows are no longer rendered"
-    );
-    drop(popups);
     let popups = WindowInner::from_pub(test.window.window()).active_popups();
     let text = ui::text_values(ItemRc::new_root(popups.last().unwrap().component.clone()));
     assert!(
@@ -364,7 +335,9 @@ fn metadata_editor_requires_review_and_keeps_sections_readable() {
         for font in [11, 32] {
             test.window.invoke_apply_preferences(7, density);
             test.window.invoke_apply_fonts("".into(), font, font);
-            std::thread::sleep(std::time::Duration::from_millis(250));
+            // Let Fluent's colour animations settle (and keep the tab clicks below
+            // single clicks).
+            ui::advance(&clock, Duration::from_millis(600));
             settle(&mut test);
             for tab in ["Attributes", "Times", "Case"] {
                 ui::click_popup(&test.window, tab, AccessibleRole::Button);

@@ -20,13 +20,15 @@ use std::{
 
 struct Harness {
     ui: ui::TestUi,
+    /// The 25 ms paste timer (src/path_paste.rs) follows this clock only.
+    clock: Rc<Cell<Duration>>,
     p: Rc<RefCell<Presenter>>,
     sent: Rc<RefCell<Vec<Command>>>,
     accept: Rc<Cell<bool>>,
 }
 impl Harness {
     fn new() -> Self {
-        let ui = ui::TestUi::new();
+        let (ui, clock) = ui::TestUi::with_virtual_clock();
         let base = std::env::temp_dir().join("paste 资料");
         let p = Rc::new(RefCell::new(Presenter::new(
             base.clone(),
@@ -53,6 +55,7 @@ impl Harness {
         refresh(&ui.window, &p.borrow());
         let mut h = Self {
             ui,
+            clock,
             p,
             sent,
             accept,
@@ -64,9 +67,10 @@ impl Harness {
         slint::platform::update_timers_and_animations();
         self.ui.draw();
     }
+    /// Run due timers in 10 ms steps past the 25 ms paste timer, as real frames would.
     fn settle(&mut self) {
         for _ in 0..5 {
-            std::thread::sleep(Duration::from_millis(10));
+            self.clock.set(self.clock.get() + Duration::from_millis(10));
             self.tick();
         }
     }
@@ -359,8 +363,8 @@ fn paste_timer_defers_conservatively_while_presenter_is_borrowed() {
         result: Ok(Arc::from("after/")),
     });
     let held = h.p.borrow_mut();
-    std::thread::sleep(Duration::from_millis(35));
-    slint::platform::update_timers_and_animations();
+    // The paste timer becomes due while the presenter is borrowed.
+    ui::advance(&h.clock, Duration::from_millis(35));
     drop(held);
     h.settle();
     assert_eq!(h.value(), "beforeafter/");

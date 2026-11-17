@@ -267,7 +267,8 @@ fn network_drivebar_opens_its_own_panel_and_disables_without_the_plugin() {
 
 #[test]
 fn network_menu_enter_double_click_and_refresh_use_captured_virtual_addresses() {
-    let mut test = ui::TestUi::new();
+    // Slint's 500 ms double-click interval follows this clock, not scheduling delays.
+    let (mut test, clock) = ui::TestUi::with_virtual_clock();
     let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let presenter = Rc::new(RefCell::new(Presenter::new(root.clone(), root)));
     presenter
@@ -358,6 +359,8 @@ fn network_menu_enter_double_click_and_refresh_use_captured_virtual_addresses() 
     let x = test.window.get_left_list_left() + 100.0;
     let y = test.window.get_left_list_top() + test.window.get_left_view_row_height() * 1.5;
     calls.borrow_mut().clear();
+    // A fresh single click: beyond the double-click interval of any earlier press.
+    ui::advance(&clock, std::time::Duration::from_millis(650));
     ui::click(&test.window, x, y);
     ui::key(&test.window, Key::Return);
     assert!(calls.borrow().iter().any(|command| matches!(
@@ -371,10 +374,10 @@ fn network_menu_enter_double_click_and_refresh_use_captured_virtual_addresses() 
     calls.borrow_mut().clear();
     // The preceding single click belonged to the old view. Start a new native
     // double-click sequence, then keep the two presses within its interval.
-    std::thread::sleep(std::time::Duration::from_millis(650));
+    ui::advance(&clock, std::time::Duration::from_millis(650));
     ui::click(&test.window, x, y);
     test.draw();
-    std::thread::sleep(std::time::Duration::from_millis(70));
+    ui::advance(&clock, std::time::Duration::from_millis(70));
     ui::click(&test.window, x, y);
     assert!(calls.borrow().iter().any(|command| matches!(
         command,

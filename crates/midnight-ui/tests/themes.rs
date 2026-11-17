@@ -7,7 +7,7 @@ mod ui;
 use i_slint_core::items::AccessibleRole;
 use midnight_ui::{FileRow, Theme};
 use slint::{Color, ComponentHandle, VecModel, platform::Key};
-use std::{cell::Cell, collections::HashSet, rc::Rc};
+use std::{cell::Cell, collections::HashSet, rc::Rc, time::Duration};
 
 fn luminance(color: Color) -> f64 {
     let linear = |channel: u8| {
@@ -144,7 +144,7 @@ fn high_contrast_selection_marks(test: &ui::TestUi) {
 
 #[test]
 fn all_themes_are_selectable_and_keep_text_readable() {
-    let mut test = ui::TestUi::new();
+    let (mut test, clock) = ui::TestUi::with_virtual_clock();
     let choices = [
         "Blue",
         "Dark",
@@ -235,8 +235,15 @@ fn all_themes_are_selectable_and_keep_text_readable() {
         test.window.invoke_apply_fonts("".into(), 11, 15);
         let mut current_position = 1usize; // Blue in the alphabetic picker.
         for (position, (index, name)) in choices.iter().enumerate() {
+            // Only the panel frame below is a pixel assertion; the dialog itself is
+            // rendered for the first theme of each density (and for artifacts).
+            let render_dialog = ui::render_case(position == 0);
             test.window.invoke_show_options();
-            test.draw();
+            if render_dialog {
+                test.draw();
+            } else {
+                test.layout();
+            }
             test.options_topic(1);
             ui::click_popup(&test.window, "Theme", AccessibleRole::Combobox);
             for _ in 0..position.abs_diff(current_position) {
@@ -251,12 +258,16 @@ fn all_themes_are_selectable_and_keep_text_readable() {
             }
             current_position = position;
             ui::key(&test.window, Key::Return);
-            test.draw();
+            test.layout();
             // Fluent animates foregrounds and borders for 150–200 ms. Capture
             // the settled palette, rather than an intermediate light/dark frame.
-            std::thread::sleep(std::time::Duration::from_millis(250));
-            slint::platform::update_timers_and_animations();
-            test.draw();
+            // The virtual clock also keeps the next iteration's clicks single clicks.
+            ui::advance(&clock, Duration::from_millis(600));
+            if render_dialog {
+                test.draw();
+            } else {
+                test.layout();
+            }
             assert_eq!(accepted.get(), *index as i32, "picker must offer {name}");
             let theme = test.window.global::<Theme>();
             assert_eq!(

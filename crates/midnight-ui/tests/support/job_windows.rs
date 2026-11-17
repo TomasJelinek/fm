@@ -111,8 +111,13 @@ impl TestUi {
         input::key(&self.child(), text);
         self.draw();
     }
+    /// Keep this frame as an artifact; without a render directory only lay it out.
     pub fn snapshot(&self, name: &str) {
-        modeless::draw(&self.child(), self.width, self.height, name);
+        if modeless::bitmap::enabled(&format!("{name}-{}x{}", self.width, self.height)) {
+            modeless::draw(&self.child(), self.width, self.height, name);
+        } else {
+            modeless::layout(&self.child(), self.width, self.height);
+        }
     }
     pub fn click_owner(&self, x: f32, y: f32) {
         let position = slint::LogicalPosition::new(x, y);

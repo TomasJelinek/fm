@@ -130,7 +130,8 @@ fn entries(parent: &Path, child: &Path) -> Vec<Entry> {
 
 #[test]
 fn parent_routes_focus_child_and_scroll_it_into_view_without_checking_it() {
-    let mut ui = ui::TestUi::new();
+    // The double click below follows Slint's 500 ms interval on this clock only.
+    let (mut ui, clock) = ui::TestUi::with_virtual_clock();
     let parent = std::env::temp_dir().join("parent 文档");
     let child = parent.join("Žluťoučký child");
     let p = Rc::new(RefCell::new(Presenter::new(child.clone(), parent.clone())));
@@ -168,6 +169,7 @@ fn parent_routes_focus_child_and_scroll_it_into_view_without_checking_it() {
             1 => ui::key(&ui.window, Key::Return),
             2 => {
                 let position = ui::root_position(&ui.window, "..", AccessibleRole::ListItem);
+                ui::advance(&clock, std::time::Duration::from_millis(600));
                 ui::click(&ui.window, position.x, position.y);
                 ui::click(&ui.window, position.x, position.y);
             }

@@ -1,4 +1,6 @@
 //! Verify compact panel details, fixed function-button height and size warnings.
+#[path = "support/bitmap.rs"]
+mod bitmap;
 #[path = "support/ui.rs"]
 mod ui;
 
@@ -154,12 +156,13 @@ fn compact_geometry_and_unfinished_sizes_render_in_every_theme() {
                     })
                     .count();
                 if row == 1 && warning_pixels == 0 {
-                    let mut dump = b"P6\n1340 820\n255\n".to_vec();
-                    dump.extend(pixels.iter().flat_map(|value| [value.r, value.g, value.b]));
-                    let artifacts = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                        .join("../../_build/verification/interaction/compact-feedback");
-                    std::fs::create_dir_all(&artifacts).unwrap();
-                    std::fs::write(artifacts.join("compact-feedback-debug.ppm"), dump).unwrap();
+                    // Failure evidence goes to the requested render directory only.
+                    bitmap::snapshot(
+                        &pixels,
+                        1340,
+                        820,
+                        &format!("missing-warning-theme-{scheme}-density-{density}"),
+                    );
                 }
                 assert_eq!(
                     warning_pixels > 0,

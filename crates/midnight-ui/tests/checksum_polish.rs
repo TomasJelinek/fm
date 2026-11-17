@@ -40,12 +40,7 @@ fn verification_glyphs_are_green_and_red_in_light_and_dark_schemes() {
     let native = windows.borrow()[0].clone();
     for theme in [1, 2] {
         window.invoke_apply_preferences(theme, 0, "".into(), 13, 15);
-        draw(&native, 860, 620, &format!("verification-colors-{theme}"));
-        let mut pixels = vec![slint::Rgb8Pixel::default(); 860 * 620];
-        native.window().request_redraw();
-        native.draw_if_needed(|renderer| {
-            renderer.render(&mut pixels, 860);
-        });
+        let pixels = modeless::render(&native, 860, 620, &format!("verification-colors-{theme}"));
         for (label, passed) in [
             ("Passed: matching.txt", true),
             ("Failed: changed.txt", false),

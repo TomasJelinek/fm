@@ -254,9 +254,8 @@ fn held_drag_autoscrolls_virtualized_rows_and_keyboard_selection_reveals_its_row
     h.press_drag(start);
     h.move_drag(end);
     for _ in 0..12 {
-        std::thread::sleep(Duration::from_millis(35));
-        slint::platform::update_timers_and_animations();
-        h.ui.draw();
+        // One period of the 30 ms `edge-scroll` timer per step.
+        h.advance(35);
         assert!(
             view.get_drag_active(),
             "viewport capture survives virtualizing the source row"
@@ -438,22 +437,40 @@ fn long_form_wheel_scroll_reveals_apply_for_a_real_pointer_click() {
         slint::platform::update_timers_and_animations();
         h.ui.draw();
     }
-    let apply = ui::popup_item(
+    let window = h.ui.window.clone_strong();
+    let view = window.global::<UserCommandSettingsView>();
+    assert!(view.get_dirty(), "the edited name is still a draft");
+    for label in ["Preview Custom Command", "Save Custom Command"] {
+        let action = bounds(&ui::popup_item(&h.ui.window, label, AccessibleRole::Button));
+        assert!(
+            action.1 >= clip.1 && action.3 <= clip.3,
+            "wheel scrolling must reveal the form action {label}"
+        );
+        // Horizontal scrolling is disabled. The pinned Fluent vertical scrollbar
+        // overlays the rightmost 14 logical pixels of the reported viewport.
+        assert!(
+            action.0 >= clip.0 && action.2 <= clip.2 - 14.0,
+            "{label} must clear the vertical scrollbar: action={action:?}, viewport={clip:?}"
+        );
+    }
+    // Click the revealed Save at its visible centre with the real pointer route.
+    let save = bounds(&ui::popup_item(
         &h.ui.window,
-        "Preview Custom Command",
+        "Save Custom Command",
         AccessibleRole::Button,
+    ));
+    ui::click(
+        &h.ui.window,
+        (save.0 + save.2) / 2.0,
+        (save.1 + save.3) / 2.0,
     );
-    let apply = bounds(&apply);
+    h.advance(140);
     assert!(
-        apply.1 >= clip.1 && apply.3 <= clip.3,
-        "wheel scrolling must reveal the last form action"
+        !view.get_dirty(),
+        "the pointer click staged the edited command"
     );
-    // Horizontal scrolling is disabled. The pinned Fluent vertical scrollbar
-    // overlays the rightmost 14 logical pixels of the reported viewport.
-    assert!(
-        apply.0 >= clip.0 && apply.2 <= clip.2 - 14.0,
-        "the form action must clear the vertical scrollbar: action={apply:?}, viewport={clip:?}"
-    );
+    assert_eq!(h.rows()[0].name, "Saved through visible Apply");
+    assert_eq!(h.save_count(), 0, "Save stages the command inside Options");
     ui::click_popup(&h.ui.window, "OK", AccessibleRole::Button);
     slint::platform::update_timers_and_animations();
     h.ui.draw();

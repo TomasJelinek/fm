@@ -163,14 +163,37 @@ fn command_editor_and_controls_match_the_footer_across_themes_and_font_sizes() {
     let mut test = ui::TestUi::new();
     let path = format!("C:\\文档\\{}\\tail", "e\u{301}👩🏽‍💻".repeat(80));
     configure(&mut test, &path);
+    // Themes select colours only (ui/theme.slint), so the row geometry is checked for
+    // every theme but software-rendered for the first one; the shell-split hover is a
+    // pixel check and still renders in every theme.
+    let themes = midnight_core::PreferenceTheme::ALL.map(|theme| theme.index());
+    let launch_label = format!("Open PowerShell\nWorking folder: {path}");
+    let controls = [
+        ("Command shell".to_owned(), AccessibleRole::Combobox, 1.0),
+        (
+            "Executed command history".to_owned(),
+            AccessibleRole::Combobox,
+            0.0,
+        ),
+        (launch_label.clone(), AccessibleRole::Button, 1.0),
+        ("Run".to_owned(), AccessibleRole::Button, 0.0),
+        ("Command line".to_owned(), AccessibleRole::TextInput, 0.0),
+    ];
     for width in [1340, 1040] {
         test.resize(width, 820);
-        for scheme in midnight_core::PreferenceTheme::ALL.map(|theme| theme.index()) {
-            for density in 0..2 {
-                for font in [8, 11, 15, 32] {
+        for density in 0..2 {
+            for font in [8, 11, 15, 32] {
+                // A theme changes no item, so each control is looked up once per
+                // layout and its live geometry is checked in every theme.
+                let mut items: Option<Vec<ItemRc>> = None;
+                for scheme in themes {
                     test.window.invoke_apply_fonts("".into(), font, font);
                     test.window.invoke_apply_preferences(scheme, density);
-                    test.draw();
+                    if ui::render_case(scheme == themes[0]) {
+                        test.draw();
+                    } else {
+                        test.layout();
+                    }
                     let height = test.window.global::<Theme>().get_bottom_height();
                     let top = test.window.get_command_bar_top();
                     for (label, actual) in [
@@ -191,23 +214,18 @@ fn command_editor_and_controls_match_the_footer_across_themes_and_font_sizes() {
                             > test.window.get_command_path_width()
                     );
                     assert!(test.window.get_command_input_width() >= 300.0);
-                    let launch_label = format!("Open PowerShell\nWorking folder: {path}");
-                    for (label, role, inset) in [
-                        ("Command shell".to_owned(), AccessibleRole::Combobox, 1.0),
-                        (
-                            "Executed command history".to_owned(),
-                            AccessibleRole::Combobox,
-                            0.0,
-                        ),
-                        (launch_label.clone(), AccessibleRole::Button, 1.0),
-                        ("Run".to_owned(), AccessibleRole::Button, 0.0),
-                        ("Command line".to_owned(), AccessibleRole::TextInput, 0.0),
-                    ] {
+                    let items = items.get_or_insert_with(|| {
+                        controls
+                            .iter()
+                            .map(|(label, role, _)| ui::root_item(&test.window, label, *role))
+                            .collect()
+                    });
+                    for ((label, _, inset), item) in controls.iter().zip(items.iter()) {
                         in_command_row(
-                            ui::root_item(&test.window, &label, role),
+                            item.clone(),
                             top + inset,
                             height - 2.0 * inset,
-                            &label,
+                            &format!("{label} (theme {scheme})"),
                         );
                     }
                     if width == 1340 && font == 11 {

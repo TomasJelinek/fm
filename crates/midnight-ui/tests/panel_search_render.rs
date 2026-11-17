@@ -158,6 +158,8 @@ fn product_prefix_color_and_compression_badge_survive_themes_density_fonts_and_r
                 renderer.render(&mut pixels, WIDTH);
             });
             let top = window.get_left_list_top();
+            // One accessibility search per frame, not one per scanline.
+            let end = name_end(&window);
             for (row, (name, _, compressed)) in names.iter().enumerate() {
                 let icon_columns = file_icon_columns(&window, name, *compressed);
                 let text_start = icon_columns.end + 2;
@@ -175,7 +177,7 @@ fn product_prefix_color_and_compression_badge_survive_themes_density_fonts_and_r
                     theme.get_text()
                 };
                 let highlighted = (y1..y2)
-                    .flat_map(|y| (text_start..name_end(&window)).map(move |x| y * WIDTH + x))
+                    .flat_map(|y| (text_start..end).map(move |x| y * WIDTH + x))
                     .filter(|index| {
                         prefix_ink(pixels[*index], theme.get_search_match(), normal, background)
                     })
@@ -323,8 +325,9 @@ fn product_prefix_color_and_compression_badge_survive_themes_density_fonts_and_r
     });
     let top = window.get_left_list_top();
     let start = file_icon_columns(&window, names[0].0, names[0].2).end + 2;
+    let end = name_end(&window);
     let ordinary_prefix = (top as usize..(top + theme.get_row_height()) as usize)
-        .flat_map(|y| (start..name_end(&window)).map(move |x| y * WIDTH + x))
+        .flat_map(|y| (start..end).map(move |x| y * WIDTH + x))
         .filter(|index| {
             prefix_ink(
                 pixels[*index],

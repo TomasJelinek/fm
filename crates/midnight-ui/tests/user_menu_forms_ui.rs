@@ -25,7 +25,13 @@ fn options_with_sender(
     arguments: Vec<String>,
     send: Rc<dyn Fn(Command) -> bool>,
 ) -> (ui::TestUi, Rc<RefCell<Presenter>>) {
-    let mut ui = ui::TestUi::new();
+    options_on(ui::TestUi::new(), arguments, send)
+}
+fn options_on(
+    mut ui: ui::TestUi,
+    arguments: Vec<String>,
+    send: Rc<dyn Fn(Command) -> bool>,
+) -> (ui::TestUi, Rc<RefCell<Presenter>>) {
     let root = std::env::current_dir().unwrap();
     let p = Rc::new(RefCell::new(Presenter::new(root.clone(), root)));
     install(&ui.window, p.clone(), send);
@@ -405,7 +411,12 @@ fn selected_forms_keep_save_and_close_in_window_in_compact_layouts() {
 #[test]
 fn hovered_argument_can_be_removed_without_popup_reentrancy() {
     use slint::platform::WindowEvent;
-    let (mut h, _p) = options();
+    let (test, clock) = ui::TestUi::with_virtual_clock();
+    let (mut h, _p) = options_on(
+        test,
+        vec!["--literal flag".into(), "{file}".into()],
+        Rc::new(|_| true),
+    );
     h.window.set_options_topic_index(9);
     h.draw();
     // Reveal each nested clip by its required distance, then select by real
@@ -418,8 +429,8 @@ fn hovered_argument_can_be_removed_without_popup_reentrancy() {
     h.window.window().dispatch_event(WindowEvent::PointerMoved {
         position: slint::LogicalPosition::new(origin.x + 30.0, origin.y + rect.size.height / 2.0),
     });
-    std::thread::sleep(std::time::Duration::from_millis(650));
-    slint::platform::update_timers_and_animations();
+    // Slint shows a tooltip after 500 ms of hover.
+    ui::advance(&clock, std::time::Duration::from_millis(650));
     h.draw();
     let tooltips = WindowInner::from_pub(h.window.window())
         .active_popups()

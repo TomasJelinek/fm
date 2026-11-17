@@ -97,13 +97,8 @@ fn find_adopts_theme_and_font_on_the_same_refresh_without_recreating_its_draft()
     input::chord(&child, &[Key::Control], "a");
     input::key(&child, "*.žlutý");
     main.invoke_preferences_changed(3, 0, 0);
-    modeless::draw(&child, 900, 700, "find-first-theme-refresh");
+    let pixels = modeless::render(&child, 900, 700, "find-first-theme-refresh");
     let background = main.global::<Theme>().get_window_background();
-    let mut pixels = vec![slint::Rgb8Pixel::default(); 900 * 700];
-    child.window().request_redraw();
-    child.draw_if_needed(|renderer| {
-        renderer.render(&mut pixels, 900);
-    });
     assert_eq!(
         (pixels[0].r, pixels[0].g, pixels[0].b),
         (background.red(), background.green(), background.blue())
@@ -151,12 +146,7 @@ fn find_primary_and_close_actions_use_application_colors_and_keep_keyboard_input
     native
         .window()
         .dispatch_event(WindowEvent::WindowActiveChanged(true));
-    modeless::draw(&native, 900, 700, "find-themed-actions");
-    let mut pixels = vec![slint::Rgb8Pixel::default(); 900 * 700];
-    native.window().request_redraw();
-    native.draw_if_needed(|renderer| {
-        renderer.render(&mut pixels, 900);
-    });
+    let pixels = modeless::render(&native, 900, 700, "find-themed-actions");
     for (label, expected) in [
         ("Find", child.global::<Theme>().get_active_header()),
         ("Close", child.global::<Theme>().get_secondary_surface()),
