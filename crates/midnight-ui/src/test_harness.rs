@@ -4,7 +4,7 @@
 use crate::{MainWindow, Presenter};
 use i_slint_core::{
     accessibility::{AccessibilityAction, AccessibleStringProperty},
-    item_tree::ItemRc,
+    item_tree::{ItemRc, ParentItemTraversalMode},
     items::AccessibleRole,
     window::{WindowInner, WindowKind},
 };
@@ -19,10 +19,25 @@ use slint::{
 use std::{
     cell::{Cell, RefCell},
     rc::Rc,
+    time::{Duration, Instant},
 };
 
 const WIDTH: usize = 1340;
 const HEIGHT: usize = 820;
+
+/// Real time until a test freezes it; afterwards Slint timers and animations
+/// advance only through `Harness::advance`.
+#[derive(Clone)]
+struct Clock {
+    started: Instant,
+    frozen: Rc<Cell<Option<Duration>>>,
+}
+
+impl Clock {
+    fn now(&self) -> Duration {
+        self.frozen.get().unwrap_or_else(|| self.started.elapsed())
+    }
+}
 
 /// The first adapter is the main window; later ones (native dialogs such as
 /// Jobs or progress windows) are separate software windows kept for inspection.
@@ -30,6 +45,7 @@ struct TestPlatform {
     main: Rc<MinimalSoftwareWindow>,
     main_created: Cell<bool>,
     children: Rc<RefCell<Vec<Rc<MinimalSoftwareWindow>>>>,
+    clock: Clock,
 }
 
 impl Platform for TestPlatform {
@@ -41,12 +57,19 @@ impl Platform for TestPlatform {
         self.children.borrow_mut().push(child.clone());
         Ok(child)
     }
+
+    fn duration_since_start(&self) -> Duration {
+        self.clock.now()
+    }
 }
 
 pub(crate) struct Harness {
     pub(crate) window: MainWindow,
     native: Rc<MinimalSoftwareWindow>,
     pixels: Vec<slint::Rgb8Pixel>,
+    /// Current window width: the pixel stride of the fixed buffer.
+    width: usize,
+    clock: Clock,
     pub(crate) presenter: Rc<RefCell<Presenter>>,
     pub(crate) sent: Rc<RefCell<Vec<Command>>>,
     /// While set, the backend sender refuses commands as a full queue does.
@@ -66,10 +89,15 @@ impl Harness {
     ) -> Self {
         let native = MinimalSoftwareWindow::new(RepaintBufferType::ReusedBuffer);
         let children = Rc::new(RefCell::new(Vec::new()));
+        let clock = Clock {
+            started: Instant::now(),
+            frozen: Rc::default(),
+        };
         slint::platform::set_platform(Box::new(TestPlatform {
             main: native.clone(),
             main_created: Cell::new(false),
             children: children.clone(),
+            clock: clock.clone(),
         }))
         .unwrap();
         let window = MainWindow::new().unwrap();
@@ -105,6 +133,8 @@ impl Harness {
             window,
             native,
             pixels: vec![slint::Rgb8Pixel::default(); WIDTH * HEIGHT],
+            width: WIDTH,
+            clock,
             presenter,
             sent,
             refuse,
@@ -127,7 +157,7 @@ impl Harness {
         for _ in 0..3 {
             slint::platform::update_timers_and_animations();
             self.native.draw_if_needed(|renderer| {
-                renderer.render(&mut self.pixels, WIDTH);
+                renderer.render(&mut self.pixels, self.width);
             });
         }
     }
@@ -135,6 +165,53 @@ impl Harness {
     pub(crate) fn refresh(&mut self) {
         crate::refresh(&self.window, &self.presenter.borrow());
         self.settle();
+    }
+
+    /// Stop real time: from now on Slint timers fire only through `advance`.
+    pub(crate) fn freeze_time(&self) {
+        if self.clock.frozen.get().is_none() {
+            self.clock.frozen.set(Some(self.clock.started.elapsed()));
+        }
+    }
+
+    /// Advance the frozen clock, then run the timers that became due.
+    pub(crate) fn advance(&mut self, by: Duration) {
+        self.freeze_time();
+        self.clock.frozen.set(Some(self.clock.now() + by));
+        self.settle();
+    }
+
+    /// Resize the window as a native resize does (never beyond the initial size).
+    pub(crate) fn resize(&mut self, width: usize, height: usize) {
+        assert!(
+            width <= WIDTH && height <= HEIGHT,
+            "the pixel buffer is fixed"
+        );
+        self.width = width;
+        self.native
+            .set_size(slint::PhysicalSize::new(width as u32, height as u32));
+        self.window.window().dispatch_event(WindowEvent::Resized {
+            size: slint::LogicalSize::new(width as f32, height as f32),
+        });
+        self.settle();
+    }
+
+    /// The label of the control that owns keyboard focus: the focused item or
+    /// its nearest labelled ancestor (a text field's inner editor, say).
+    pub(crate) fn focused_label(&self) -> Option<String> {
+        let mut item = WindowInner::from_pub(self.window.window())
+            .focus_item
+            .borrow()
+            .upgrade()?;
+        loop {
+            if let Some(label) = item
+                .accessible_string_property(AccessibleStringProperty::Label)
+                .filter(|label| !label.is_empty())
+            {
+                return Some(label.to_string());
+            }
+            item = item.parent_item(ParentItemTraversalMode::StopAtPopups)?;
+        }
     }
 
     /// The topmost dialog surface: the newest non-tooltip popup, else the window.
@@ -223,6 +300,35 @@ impl Harness {
         self.settle();
     }
 
+    /// A shortcut chord: modifiers pressed, the key typed, modifiers released.
+    pub(crate) fn chord(&mut self, modifiers: &[Key], text: &str) {
+        let window = self.window.window();
+        for &modifier in modifiers {
+            window.dispatch_event(WindowEvent::KeyPressed {
+                text: modifier.into(),
+            });
+        }
+        key_edges(window, text.into());
+        for &modifier in modifiers.iter().rev() {
+            window.dispatch_event(WindowEvent::KeyReleased {
+                text: modifier.into(),
+            });
+        }
+        self.settle();
+    }
+
+    /// Mouse-wheel input at a window position (negative `delta_y` scrolls down).
+    pub(crate) fn wheel(&mut self, x: f32, y: f32, delta_y: f32) {
+        self.window
+            .window()
+            .dispatch_event(WindowEvent::PointerScrolled {
+                position: slint::LogicalPosition::new(x, y),
+                delta_x: 0.0,
+                delta_y,
+            });
+        self.settle();
+    }
+
     /// Left-button pointer input at a window position: 0 press, 1 move, 2 release.
     pub(crate) fn pointer(&self, phase: i32, x: f32, y: f32) {
         let position = slint::LogicalPosition::new(x, y);
@@ -262,4 +368,27 @@ impl Harness {
         }
         self.key(Key::Return);
     }
+}
+
+/// Press and release one key. Windows' winit adapter also reports the text
+/// without modifiers, which shortcut matching reads for Ctrl chords.
+#[cfg(windows)]
+fn key_edges(window: &slint::Window, text: SharedString) {
+    use i_slint_core::input::{InternalKeyEvent, KeyEvent, KeyEventType};
+    for event_type in [KeyEventType::KeyPressed, KeyEventType::KeyReleased] {
+        let mut key_event = KeyEvent::default();
+        key_event.text = text.clone();
+        window.dispatch_event(WindowEvent::internal(InternalKeyEvent {
+            key_event,
+            text_without_modifiers: text.clone(),
+            event_type,
+            ..Default::default()
+        }));
+    }
+}
+
+#[cfg(not(windows))]
+fn key_edges(window: &slint::Window, text: SharedString) {
+    window.dispatch_event(WindowEvent::KeyPressed { text: text.clone() });
+    window.dispatch_event(WindowEvent::KeyReleased { text });
 }

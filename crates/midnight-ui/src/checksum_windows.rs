@@ -781,4 +781,90 @@ mod tests {
         );
         assert!(!text.contains("\nforged.txt"), "{text}");
     }
+
+    #[test]
+    fn checksum_updates_keep_the_output_models_of_an_unchanged_algorithm_set() {
+        let h = crate::test_harness::Harness::with_location(
+            UserPreferences::default(),
+            std::env::temp_dir(),
+        );
+        let state = h.presenter.clone();
+        let send: Rc<dyn Fn(Command) -> bool> = Rc::new(|_| true);
+        state
+            .borrow_mut()
+            .request_checksums(PaneId::Left, send.as_ref());
+        let id = *state
+            .borrow()
+            .checksums
+            .sessions
+            .keys()
+            .next()
+            .expect("an empty panel opens a checksum session");
+        // Drive this module's refresh directly to reach the window it creates.
+        let windows: Windows = Rc::default();
+        let sessions = RefCell::new(DialogSessions::default());
+        let closing = Rc::new(Cell::new(false));
+        let failures = Failures::new(
+            &h.window,
+            &state,
+            &send,
+            &closing,
+            "Checksums",
+            Presenter::close_checksums,
+        );
+        let update = || refresh(&h.window, &windows, &sessions, &state, &send, &failures);
+        let outputs = || {
+            let records = windows.borrow();
+            let window = &records[&id].window;
+            (
+                window.get_output_labels(),
+                window.get_output_values(),
+                window.get_output_available(),
+                window.get_format_labels(),
+            )
+        };
+        update();
+        let published = outputs();
+        let algorithms = state.borrow().checksums.sessions[&id].algorithms;
+        assert!(
+            state
+                .borrow_mut()
+                .start_checksums(id, algorithms, false, send.as_ref())
+        );
+        update();
+        let generation = state.borrow().checksums.sessions[&id].generation;
+        for discovered in 1..=3 {
+            state
+                .borrow_mut()
+                .apply(Event::Checksum(Box::new(ChecksumEvent {
+                    job: id,
+                    generation,
+                    update: ChecksumUpdate::Progress(ChecksumProgress {
+                        discovered,
+                        ..Default::default()
+                    }),
+                })));
+            update();
+            // ModelRc equality is identity: a republished model resets both
+            // output choosers and every visible result row.
+            assert!(
+                outputs() == published,
+                "progress {discovered} republished the output models"
+            );
+        }
+        // Verification narrows the session to the manifest's algorithm.
+        assert!(!algorithms.contains(ChecksumAlgorithm::Md5));
+        state
+            .borrow_mut()
+            .apply(Event::Checksum(Box::new(ChecksumEvent {
+                job: id,
+                generation,
+                update: ChecksumUpdate::Verifying(ChecksumAlgorithm::Md5),
+            })));
+        update();
+        let republished = outputs();
+        assert!(republished != published, "a new algorithm set republishes");
+        assert_eq!(republished.0.row_count(), 1);
+        assert_eq!(republished.0.row_data(0).unwrap(), "MD5");
+    }
 }

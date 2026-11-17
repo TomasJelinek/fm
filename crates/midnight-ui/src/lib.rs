@@ -22,6 +22,8 @@ mod owned_command_test_support;
 mod window_position;
 pub use dialog_native::configure_dialog_window_attributes;
 pub use window_position::restore_window_position;
+#[cfg(test)]
+mod compact_focus_tests;
 mod decision_windows;
 mod drag_bridge;
 mod drag_lifecycle;
@@ -53,6 +55,8 @@ mod operation_windows;
 #[cfg(test)]
 mod options_binding_tests;
 mod owned_commands;
+#[cfg(test)]
+mod refresh_churn_tests;
 #[cfg(test)]
 mod test_harness;
 #[cfg(test)]

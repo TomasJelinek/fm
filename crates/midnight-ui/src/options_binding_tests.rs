@@ -3,16 +3,37 @@
 //! `text`/`checked`/`current-index`/`value`, which permanently detaches a
 //! one-way binding; these tests drive that native input first.
 use crate::{
-    ArchiveOptionsView, ColorOptionsView, HotPathsPresentation, ViewerPluginsView,
-    test_harness::Harness,
+    ArchiveOptionsView, ColorOptionsView, HotPathsPresentation, UserCommandSettingsView,
+    ViewerPluginsView, test_harness::Harness,
 };
-use i_slint_core::{accessibility::AccessibleStringProperty, items::AccessibleRole};
+use i_slint_core::{
+    accessibility::AccessibleStringProperty,
+    item_tree::ItemRc,
+    items::{AccessibleRole, Flickable},
+};
 use midnight_core::{
     ArchiveFormat, Bookmark, BookmarkId, Command, Event, FilenameColorRule, FilenameColorTarget,
-    FilenameStyle, FilterMode, RgbColor, UserPreferences, ViewerPluginInfo,
+    FilenameStyle, FilterMode, RgbColor, ShellFlavor, UserCommand, UserCommandId,
+    UserCommandInvocation, UserCommandLaunch, UserPreferences, ViewerPluginInfo,
 };
 use slint::{ComponentHandle, platform::Key};
-use std::{cell::Cell, rc::Rc};
+use std::{cell::Cell, rc::Rc, sync::Arc};
+
+/// The first control with `role` whose label starts with `prefix`.
+fn labelled(h: &Harness, role: AccessibleRole, prefix: &str) -> ItemRc {
+    h.find(|item| {
+        item.accessible_role() == role
+            && item
+                .accessible_string_property(AccessibleStringProperty::Label)
+                .is_some_and(|label| label.starts_with(prefix))
+    })
+    .unwrap_or_else(|| panic!("no {role:?} labelled {prefix}…"))
+}
+
+fn is_checked(item: &ItemRc) -> bool {
+    item.accessible_string_property(AccessibleStringProperty::Checked)
+        .is_some_and(|value| value.as_str() == "true")
+}
 
 fn rule(expression: &str) -> FilenameColorRule {
     FilenameColorRule {
@@ -329,4 +350,97 @@ fn hot_path_number_chooser_follows_the_selected_path() {
         .map(|bookmark| bookmark.slot)
         .collect();
     assert_eq!(slots, [Some(3), None], "Apply used the displayed number");
+}
+
+#[test]
+fn narrow_topic_chooser_follows_page_changes_after_a_native_pick() {
+    let mut h = Harness::options(UserPreferences::default(), 0);
+    h.resize(600, 700);
+    let chooser = "Options topic";
+    assert_eq!(h.value(chooser, AccessibleRole::Combobox), "General");
+    h.choose(chooser, 1);
+    assert_eq!(h.window.get_options_topic_index(), 1, "picked Appearance");
+    // Links and validation errors change the page from outside the chooser.
+    h.window.set_options_topic_index(8);
+    h.settle();
+    assert_eq!(h.value(chooser, AccessibleRole::Combobox), "Colors");
+}
+
+#[test]
+fn required_value_boxes_follow_discard_after_a_native_toggle() {
+    let command = UserCommand {
+        id: UserCommandId::new("script").unwrap(),
+        name: "Script".into(),
+        enabled: true,
+        toolbar_label: None,
+        icon: None,
+        working_directory: "${active.path}".into(),
+        launch: UserCommandLaunch::Single,
+        invocation: UserCommandInvocation::Terminal {
+            shell: ShellFlavor::Posix,
+            script: "echo ready".into(),
+            variables: Vec::new(),
+        },
+    };
+    let preferences = UserPreferences {
+        user_commands: Arc::new(vec![command]),
+        ..Default::default()
+    };
+    let mut h = Harness::options(preferences, 9);
+    let row = labelled(&h, AccessibleRole::ListItem, "Script");
+    h.activate_item(row);
+    h.activate("Required terminal values", AccessibleRole::Button);
+    let active = |h: &Harness| labelled(h, AccessibleRole::Checkbox, "Active folder");
+    assert!(!is_checked(&active(&h)));
+    h.activate_item(active(&h));
+    let window = h.window.clone_strong();
+    let view = window.global::<UserCommandSettingsView>();
+    assert!(
+        view.get_draft().active_path,
+        "the toggle requires the value"
+    );
+    assert!(is_checked(&active(&h)));
+    h.activate("Cancel Custom Command draft", AccessibleRole::Button);
+    assert!(
+        !view.get_draft().active_path,
+        "Discard restored the saved command"
+    );
+    assert!(
+        !is_checked(&active(&h)),
+        "the toggled box follows the discarded draft"
+    );
+}
+
+#[test]
+fn compact_picker_keyboard_browsing_reveals_its_row_after_wheel_scrolling() {
+    let mut h = Harness::options(UserPreferences::default(), 1);
+    let families = (0..60).map(|index| format!("Family {index:02}")).collect();
+    h.presenter
+        .borrow_mut()
+        .apply(Event::FontFamiliesLoaded(Ok(families)));
+    h.refresh();
+    h.click("Font family", AccessibleRole::Combobox);
+    let offset = |h: &Harness| {
+        let list = h
+            .find(|item| item.downcast::<Flickable>().is_some())
+            .expect("the open picker list");
+        list.downcast::<Flickable>()
+            .unwrap()
+            .as_pin_ref()
+            .content_y()
+            .get()
+    };
+    assert_eq!(offset(&h), 0.0, "the committed first row is in view");
+    let first = h.item("Application default", AccessibleRole::Button);
+    let rect = first.geometry();
+    let origin = first.map_to_native_window(rect.origin);
+    h.wheel(
+        origin.x + rect.size.width / 2.0,
+        origin.y + rect.size.height / 2.0,
+        -3000.0,
+    );
+    assert!(offset(&h) < -100.0, "the wheel scrolled the list away");
+    // Down browses to row 1; the list must bring it back into view.
+    h.key(Key::DownArrow);
+    assert_eq!(offset(&h), 0.0, "keyboard browsing reveals its row");
 }
