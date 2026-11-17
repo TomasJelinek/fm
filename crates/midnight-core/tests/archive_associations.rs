@@ -1,5 +1,6 @@
 use midnight_core::{
-    ARCHIVE_ASSOCIATIONS, ArchiveFormat, Entry, EntryId, EntryKind, archive_association,
+    ARCHIVE_ASSOCIATIONS, ArchiveFormat, Entry, EntryId, EntryKind, UserPreferences,
+    archive_association,
 };
 use std::{collections::HashSet, path::Path};
 
@@ -42,6 +43,7 @@ fn known_associations_are_unique_and_preserve_native_document_opening_by_default
 
 #[test]
 fn only_regular_native_files_receive_backend_archive_hints() {
+    let preferences = UserPreferences::default();
     for kind in [
         EntryKind::Directory,
         EntryKind::DirectoryLink,
@@ -50,14 +52,16 @@ fn only_regular_native_files_receive_backend_archive_hints() {
     ] {
         assert!(
             Entry::new(EntryId(1), "directory.zip".into(), kind)
-                .archive_association
+                .archive_extensions
+                .enabled_format(&preferences)
                 .is_none()
         );
     }
-    assert!(
+    assert_eq!(
         Entry::new(EntryId(1), "package.whl".into(), EntryKind::File)
-            .archive_association
-            .is_some()
+            .archive_extensions
+            .enabled_format(&preferences),
+        Some(ArchiveFormat::Zip)
     );
 }
 

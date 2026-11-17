@@ -65,6 +65,36 @@ fn native_maintenance_actions_accept_new_files_and_reject_foreign_or_forged_snap
 }
 
 #[test]
+fn root_validation_and_payload_admission_share_the_hidden_root_row_budget() {
+    let folder = std::env::current_dir().unwrap();
+    let snapshot = |count: usize| {
+        let entries: Arc<[Entry]> = (0..count)
+            .map(|row| {
+                Entry::new(
+                    EntryId(row as u64 + 1),
+                    folder.join(format!("{row}")),
+                    EntryKind::File,
+                )
+            })
+            .collect();
+        TreeRootSnapshot {
+            pane: PaneId::Left,
+            navigation: NavigationId(7),
+            index: Arc::new(DirectoryIndex::from_entries(&entries)),
+            entries,
+        }
+    };
+    let largest = snapshot(TreeProjection::MAX_ROWS - 1);
+    assert!(largest.within_payload_budget());
+    assert!(TreeRootSelection::Empty.validate_for(&largest).is_ok());
+    // The hidden root is the 10,000th occurrence: validation must not admit a
+    // root that every projection then rejects as foreign or over budget.
+    let full = snapshot(TreeProjection::MAX_ROWS);
+    assert!(!full.within_payload_budget());
+    assert!(TreeRootSelection::Empty.validate_for(&full).is_err());
+}
+
+#[test]
 fn initial_constructor_shares_root_action_allocations() {
     let view = projection(vec![row(1, "initial.txt", EntryKind::File)]);
     assert!(view.root.same_snapshot(&view.root_actions));

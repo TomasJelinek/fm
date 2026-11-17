@@ -64,7 +64,7 @@ impl TreeRootSnapshot {
     /// Accounts for spare index capacity, raw paths, cached text and sort keys.
     pub fn within_payload_budget(&self) -> bool {
         let maximum = TreeProjection::MAX_ROWS;
-        self.entries.len() < maximum
+        root_rows_within_budget(self.entries.len())
             && self.index.by_id.capacity() <= maximum * 2
             && self.index.by_path.capacity() <= maximum * 2
             && self.index.directory_bits.capacity() <= maximum.div_ceil(64) * 2
@@ -82,7 +82,7 @@ impl TreeRootSnapshot {
 
     pub(crate) fn validate(&self) -> Result<(), &'static str> {
         let count = self.entries.len();
-        if count > TreeProjection::MAX_ROWS
+        if !root_rows_within_budget(count)
             || self.index.by_id.len() != count
             || self.index.directory_bits.len() != count.div_ceil(64)
             || self.index.file_sizes.len() != count
@@ -115,6 +115,12 @@ impl TreeRootSnapshot {
         }
         Ok(())
     }
+}
+
+/// One admission rule for root listings: the hidden root consumes one of the
+/// tree's `TreeProjection::MAX_ROWS` occurrences.
+fn root_rows_within_budget(count: usize) -> bool {
+    count < TreeProjection::MAX_ROWS
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -403,21 +409,24 @@ impl TreeProjection {
     }
 }
 
+/// The caller has already validated `root`; the same snapshot (the `new` path,
+/// once per reprojection) is not traversed a second time.
 fn validate_root_actions(
     root: &TreeRootSnapshot,
     actions: &TreeRootSnapshot,
 ) -> Result<(), &'static str> {
+    let same = root.same_snapshot(actions);
     if root.pane != actions.pane
         || root.navigation != actions.navigation
         || !root.within_payload_budget()
-        || !actions.within_payload_budget()
+        || (!same && !actions.within_payload_budget())
     {
         return Err("tree action snapshot has a foreign generation or exceeds its budget");
     }
-    actions.validate()?;
-    if root.same_snapshot(actions) {
+    if same {
         return Ok(());
     }
+    actions.validate()?;
     let mut parent = None;
     for entry in root.entries.iter().chain(actions.entries.iter()) {
         let path = entry
@@ -453,10 +462,20 @@ fn entry_bytes(entry: &Entry) -> usize {
         .map_or(0, |value| {
             value.date.capacity().saturating_add(value.time.capacity())
         });
+    // Provider nodes are boxed outside the inline `Entry`; charge each allocation.
     let virtual_bytes = entry.virtual_node.as_ref().map_or(0, |node| {
-        ARC_HEADER
+        size_of::<crate::ArchiveNode>()
+            .saturating_add(ARC_HEADER)
             .saturating_add(node.raw_name.len())
             .saturating_add(node.display_name.capacity())
+    });
+    let network_bytes = entry.network_node.as_ref().map_or(0, |node| {
+        size_of::<crate::NetworkNode>()
+            .saturating_add(node.address.provider.capacity())
+            .saturating_add(ARC_HEADER)
+            .saturating_add(node.address.opaque.len())
+            .saturating_add(node.address.display.capacity())
+            .saturating_add(node.display.capacity())
     });
     entry
         .path
@@ -471,6 +490,7 @@ fn entry_bytes(entry: &Entry) -> usize {
         }))
         .saturating_add(localized)
         .saturating_add(virtual_bytes)
+        .saturating_add(network_bytes)
 }
 
 fn root_bytes(root: &TreeRootSnapshot) -> usize {
