@@ -148,13 +148,15 @@ opened descendant handles. Where a filesystem takes its permissions from mount o
 still be owned by the user (the mount must map ownership to the user, as desktop
 automounting does). It keeps the mount-provided permissions only if no other user can
 write to it (group write only for the user's private group, without a POSIX access
-ACL), or if they are exactly the permissions, owner and group of a folder other users
-can already change (for example a share mounted with `dir_mode=0777`), so staging never
-lets other users change more than the folder itself does; otherwise the operation is
-refused. Permission bits protect only where the kernel enforces them: FUSE mounts with
-`allow_other` but without `default_permissions`, and CIFS mounts with `noperm`, exclude
-other local users only as far as their server does. A staging directory refused after
-creation is removed again; one that cannot be removed is reported with its path.
+ACL), or if they are exactly the permissions, owner and group of the folder that
+contains it, when other users can already change that folder (for example a share
+mounted with `dir_mode=0777`) and neither folder has a POSIX access ACL, so staging
+never lets other users change more than that folder itself does; otherwise the
+operation is refused. Permission bits protect only where the kernel enforces them:
+FUSE mounts with `allow_other` but without `default_permissions`, and CIFS mounts
+with `noperm`, exclude other local users only as far as their server does. A staging
+directory refused after creation is removed again; one that cannot be removed is
+reported with its path.
 See [Windows guarantees](crates/midnight-platform-windows/MUTATION_SAFETY.md)
 and the Linux mutation module's safety comments. No claim of universal race freedom
 is made. Tests mutate fresh, owned fixtures only; they never empty a user's Trash.

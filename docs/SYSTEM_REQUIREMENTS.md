@@ -166,13 +166,14 @@ kernel drivers implement it; FUSE mounts such as ntfs-3g only when their daemon
 does) and a staging folder owned by you: the mount must map file ownership to your
 user, as desktop automounting does, so they are refused on a root-owned mount
 without `uid=`. The staging folder keeps the mount-provided permissions only if they
-let no other user write to it, or if they equal those of a folder other users can
-already change (for example a share mounted with `dir_mode=0777`); otherwise Rename
-and permanent Delete are refused there and the staging folder is removed. This
-support follows the drivers' documented behavior and is covered by tests that
-simulate such mounts; it has not yet been verified on a live vfat, exFAT, NTFS or
-CIFS mount. Trash is limited to the home filesystem. Unsupported operations fail
-explicitly rather than silently weakening identity checks or checksum verification.
+let no other user write to it, or if its permissions, owner and group equal those of
+its parent folder, which other users can already change (for example a share mounted
+with `dir_mode=0777`); otherwise Rename and permanent Delete are refused there and
+the staging folder is removed. This support follows the drivers' documented behavior
+and is covered by tests that simulate such mounts; it has not yet been verified on a
+live vfat, exFAT, NTFS or CIFS mount. Trash is limited to the home filesystem.
+Unsupported operations fail explicitly rather than silently weakening identity
+checks or checksum verification.
 Newer optional metadata syscalls have guarded fallbacks; they do not raise the
 general minimum kernel to the newest syscall's introduction version.
 
