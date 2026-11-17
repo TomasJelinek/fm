@@ -256,6 +256,7 @@ pub enum DragDropEvent {
         /// session that failed to open or was lost (the engine then publishes
         /// `Ready { supported: false }` for that host), or a refused incoming native
         /// drop, after which the session stays usable (see [`FileDropSink::reject`]).
+        /// Only `Ready { supported: false }` revokes native drag support.
         id: Option<DragId>,
         error: FsError,
     },
@@ -267,11 +268,14 @@ pub trait FileDropSink: Send + Sync + 'static {
     fn try_accept(&self, request: FileDropRequest) -> Result<(), FsError>;
     /// Latest state only; implementations coalesce before delivering it to the UI.
     fn hover(&self, _pane: Option<PaneId>) {}
-    /// Reports why an incoming native drop that offered Copy was refused: its payload
-    /// could not be decoded, or [`Self::try_accept`] failed. The native target still
-    /// answers "no effect"; this only tells the user why. Called on the native
-    /// callback thread: implementations enqueue a bounded report and never wait,
-    /// block or perform file I/O. The default ignores the report.
+    /// Reports why an incoming native drop released after a Copy cursor was refused:
+    /// its payload could not be read, its destination or modifiers changed since the
+    /// cursor was shown, or [`Self::try_accept`] failed. The native target still
+    /// answers "no effect"; this only tells the user why, in fixed text that never
+    /// repeats source-supplied descriptions. Called on the native callback thread:
+    /// implementations record a bounded report (the engine keeps only the latest
+    /// undelivered one) and never wait, block or perform file I/O. The default
+    /// ignores the report.
     fn reject(&self, _error: FsError) {}
 }
 

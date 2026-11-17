@@ -20,6 +20,8 @@ use tokio::{sync::mpsc, task::JoinSet};
 
 type Pending = Arc<WorkerOwned<Mutex<HashMap<DropToken, Accepted>>>>;
 type Hover = Arc<Mutex<Option<(u64, Option<PaneId>)>>>;
+/// The latest undelivered refused native drop, with the lifetime of its drop window.
+type Refused = Arc<Mutex<Option<(Cancellation, FsError)>>>;
 struct Accepted {
     files: FileClipboard,
     destination: Arc<std::path::PathBuf>,
@@ -110,6 +112,7 @@ struct Sink {
     events: mpsc::Sender<DragDropEvent>,
     next: Arc<AtomicU64>,
     hover: Hover,
+    refused: Refused,
     cancel: Cancellation,
 }
 impl FileDropSink for Sink {
@@ -210,14 +213,15 @@ impl FileDropSink for Sink {
         *self.hover.lock().unwrap_or_else(|e| e.into_inner()) = Some((self.host.generation, pane));
     }
     fn reject(&self, error: FsError) {
-        // Runs inside the native drop callback, so it never waits: a closed window needs
-        // no report, and a full event queue drops it. The drop itself is already refused.
+        // Runs inside the native drop callback, so it never waits and never takes capacity
+        // from the event queue, whose saturation is itself a refusal reason. The latest
+        // refusal replaces an undelivered one; `forward` reports it once the UI accepts
+        // events, unless the window has closed by then.
         if self.cancel.is_cancelled() || self.host.lifetime.is_cancelled() {
             return;
         }
-        let _ = self
-            .events
-            .try_send(DragDropEvent::Failed { id: None, error });
+        *self.refused.lock().unwrap_or_else(|e| e.into_inner()) =
+            Some((self.host.lifetime.clone(), error));
     }
 }
 
@@ -396,6 +400,7 @@ pub(crate) struct Controller {
     capacity: copy_operations::Admission,
     next: Arc<AtomicU64>,
     hover: Hover,
+    refused: Refused,
     cancel: Cancellation,
     service: Option<Arc<dyn FileDragDropService>>,
     transfers: Option<Arc<dyn TransferService>>,
@@ -427,7 +432,14 @@ impl Controller {
         let (events, receiver) = mpsc::channel(64);
         let cancel = Cancellation::default();
         let hover = Hover::default();
-        tasks.spawn(forward(receiver, outbox, hover.clone(), cancel.clone()));
+        let refused = Refused::default();
+        tasks.spawn(forward(
+            receiver,
+            outbox,
+            hover.clone(),
+            refused.clone(),
+            cancel.clone(),
+        ));
         Self {
             state: Arc::new(retirement.state.own(Mutex::new(State::default()))),
             backlog: tokio::sync::Mutex::new(retirement.backlog),
@@ -436,6 +448,7 @@ impl Controller {
             capacity,
             next: Arc::new(AtomicU64::new(0)),
             hover,
+            refused,
             cancel,
             service,
             transfers,
@@ -473,6 +486,7 @@ impl Controller {
                     events: self.events.clone(),
                     next: self.next.clone(),
                     hover: self.hover.clone(),
+                    refused: self.refused.clone(),
                     cancel: self.cancel.clone(),
                 }),
             });
@@ -899,6 +913,7 @@ async fn forward(
     mut events: mpsc::Receiver<DragDropEvent>,
     outbox: Outbox,
     hover: Hover,
+    refused: Refused,
     cancel: Cancellation,
 ) {
     let mut tick = tokio::time::interval(Duration::from_millis(25));
@@ -907,11 +922,17 @@ async fn forward(
         let event = tokio::select! {
             event = events.recv() => match event { Some(event) => event, None => break },
             _ = tick.tick() => {
-                let latest = *hover.lock().unwrap_or_else(|e| e.into_inner());
-                if previous == latest { continue; }
-                previous = latest;
-                let Some((host_generation, pane)) = latest else { continue; };
-                DragDropEvent::Hover { host_generation, pane }
+                let refusal = refused.lock().unwrap_or_else(|e| e.into_inner()).take();
+                // A refusal outside any gesture leaves the native session usable.
+                if let Some((lifetime, error)) = refusal && !lifetime.is_cancelled() {
+                    DragDropEvent::Failed { id: None, error }
+                } else {
+                    let latest = *hover.lock().unwrap_or_else(|e| e.into_inner());
+                    if previous == latest { continue; }
+                    previous = latest;
+                    let Some((host_generation, pane)) = latest else { continue; };
+                    DragDropEvent::Hover { host_generation, pane }
+                }
             },
         };
         let send = outbox.send(Event::DragDrop(event));

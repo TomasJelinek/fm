@@ -404,6 +404,31 @@ impl Target {
         self.sink.hover(target.map(|(target, _)| target.pane));
         Ok(())
     }
+    /// Admits a released drop, or says why it is refused. DragOver answered Copy for the
+    /// previous position, so a refusal here means the modifiers, pointer or targets
+    /// changed since then, or the file list cannot be read or admitted.
+    fn receive(
+        &self,
+        data: Option<&IDataObject>,
+        offered: DROPEFFECT,
+        keys: u32,
+        point: &POINTL,
+    ) -> Result<(), FsError> {
+        if !copy_requested(offered, keys) {
+            return Err(error(
+                "Dropped files can only be copied; release them without Shift or Alt.",
+            ));
+        }
+        let (target, targets_revision) = self
+            .at(point)
+            .ok_or_else(|| error("The drop destination changed."))?;
+        let data = data.ok_or_else(|| error("The drag source did not provide its file list."))?;
+        self.sink.try_accept(FileDropRequest {
+            files: read_files(data)?,
+            target,
+            targets_revision,
+        })
+    }
 }
 impl IDropTarget_Impl for Target_Impl {
     fn DragEnter(
@@ -445,25 +470,19 @@ impl IDropTarget_Impl for Target_Impl {
             *effect = DROPEFFECT_NONE;
         }
         self.sink.hover(None);
-        if !copy_requested(offered, keys.0) {
-            return Ok(());
-        }
-        let (Some((target, targets_revision)), Some(data)) = (self.at(point), data.as_ref()) else {
-            return Ok(());
-        };
-        // The cursor offered Copy for this drop: report a refusal instead of ending the
-        // gesture silently. The sink enqueues the report without waiting.
-        match read_files(data).and_then(|files| {
-            self.sink.try_accept(FileDropRequest {
-                files,
-                target,
-                targets_revision,
-            })
-        }) {
+        // OLE delivers Drop only after DragEnter/DragOver answered Copy, which requires the
+        // file list found at DragEnter. The next drag starts with DragEnter again.
+        let entered_with_files = self.has_files.replace(false);
+        match self.receive(data.as_ref(), offered, keys.0, point) {
             Ok(()) => unsafe {
                 *effect = DROPEFFECT_COPY;
             },
-            Err(error) => self.sink.reject(error),
+            // The user saw the Copy cursor: say why nothing happens. The sink records the
+            // report without waiting. A closed window has nobody to tell.
+            Err(error) if entered_with_files && validate_host(&self.host).is_ok() => {
+                self.sink.reject(error);
+            }
+            Err(_) => {}
         }
         Ok(())
     }

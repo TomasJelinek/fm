@@ -10,8 +10,9 @@ use std::{
     },
 };
 use windows::Win32::{
-    Foundation::{DRAGDROP_S_CANCEL, DRAGDROP_S_DROP},
+    Foundation::{DRAGDROP_S_CANCEL, DRAGDROP_S_DROP, E_FAIL, E_NOTIMPL},
     System::{
+        Com::{FORMATETC, IAdviseSink, IDataObject_Impl, IEnumFORMATETC, IEnumSTATDATA, STGMEDIUM},
         Ole::{DROPEFFECT_COPY, DROPEFFECT_MOVE, DROPEFFECT_NONE, OleInitialize, OleUninitialize},
         SystemServices::MODIFIERKEYS_FLAGS,
     },
@@ -124,10 +125,20 @@ impl FileDropSink for Capture {
     }
 }
 
+impl Capture {
+    fn take_rejected(&self) -> Vec<String> {
+        std::mem::take(&mut *self.rejected.lock().unwrap())
+            .into_iter()
+            .map(|error| error.message)
+            .collect()
+    }
+}
+
 /// An owned live window whose client columns 100..200 are the Right pane's drop target.
 struct DropFixture {
     hwnd: windows_sys::Win32::Foundation::HWND,
     host: DragHost,
+    targets: SharedDropTargets,
     sink: Arc<Capture>,
     target: IDropTarget,
     // Declared last: OLE is uninitialized only after the target is released.
@@ -177,10 +188,11 @@ impl DropFixture {
             }],
         }));
         let sink = Arc::new(Capture::default());
-        let target = make_target(host.clone(), targets, sink.clone()).unwrap();
+        let target = make_target(host.clone(), targets.clone(), sink.clone()).unwrap();
         Self {
             hwnd,
             host,
+            targets,
             sink,
             target,
             _ole: ole,
@@ -232,16 +244,19 @@ fn ole_target_uses_drop_coordinates_and_reports_copy_only_after_sink_admission()
     f.sink.refuse.store(true, Ordering::Relaxed);
     assert_eq!(f.drop_files(&data, 0, at), DROPEFFECT_NONE);
     assert!(f.sink.requests.lock().unwrap().is_empty());
-    let rejected = std::mem::take(&mut *f.sink.rejected.lock().unwrap());
-    assert_eq!(rejected.len(), 1, "the sink's refusal must reach the user");
-    assert_eq!(rejected[0].message, "queue full");
+    assert_eq!(
+        f.sink.take_rejected(),
+        ["queue full"],
+        "the sink's refusal must reach the user"
+    );
     f.sink.refuse.store(false, Ordering::Relaxed);
+    assert_eq!(f.enter(&data, DROPEFFECT_COPY, at), DROPEFFECT_COPY);
     assert_eq!(f.drop_files(&data, 0, at), DROPEFFECT_COPY);
     assert_eq!(
         f.sink.requests.lock().unwrap()[0].target.pane,
         PaneId::Right
     );
-    assert!(f.sink.rejected.lock().unwrap().is_empty());
+    assert!(f.sink.take_rejected().is_empty());
     f.host.lifetime.cancel();
     let mut effect = DROPEFFECT_COPY;
     unsafe {
@@ -250,6 +265,9 @@ fn ole_target_uses_drop_coordinates_and_reports_copy_only_after_sink_admission()
             .unwrap();
     }
     assert_eq!(effect, DROPEFFECT_NONE);
+    // A window that has closed refuses the drop and has nobody to tell.
+    assert_eq!(f.drop_files(&data, 0, at), DROPEFFECT_NONE);
+    assert!(f.sink.take_rejected().is_empty());
 }
 
 /// A CF_HDROP with `count` distinct paths; `wide: false` writes an ANSI header.
@@ -270,34 +288,119 @@ fn hdrop(count: usize, wide: bool) -> Vec<u8> {
 fn ole_target_reports_a_file_list_it_cannot_read_instead_of_dropping_silently() {
     let f = DropFixture::new();
     let at = f.at(150, 50);
-    for (payload, reason) in [
-        (
-            hdrop(MAX_FILE_CLIPBOARD_PATHS + 1, true),
-            "4096-item resource budget",
-        ),
-        (hdrop(1, false), "valid Unicode DROPFILES header"),
+    for (payload, case) in [
+        (hdrop(MAX_FILE_CLIPBOARD_PATHS + 1, true), "4097 paths"),
+        (hdrop(1, false), "ANSI list"),
     ] {
         let data = data::malformed_offer(payload);
         // The cursor promises Copy for any CF_HDROP; only Drop decodes the list.
         assert_eq!(f.enter(&data, DROPEFFECT_COPY, at), DROPEFFECT_COPY);
         assert_eq!(f.drop_files(&data, 0, at), DROPEFFECT_NONE);
-        let rejected = std::mem::take(&mut *f.sink.rejected.lock().unwrap());
         assert_eq!(
-            rejected.len(),
-            1,
-            "{reason}: the read failure was swallowed"
-        );
-        assert!(
-            rejected[0].message.contains(reason),
-            "{}",
-            rejected[0].message
+            f.sink.take_rejected(),
+            ["The dropped file list is malformed, not Unicode, or longer than 4096 items."],
+            "{case}: the read failure must be reported in drop terms"
         );
     }
     assert!(f.sink.requests.lock().unwrap().is_empty());
-    // Drops the cursor never offered Copy for stay silent: Shift requests an
-    // unsupported Move, and the left half of the window is no drop target.
-    let data = data::malformed_offer(hdrop(1, false));
+}
+
+#[test]
+fn ole_target_reports_a_release_that_no_longer_matches_its_copy_cursor() {
+    let f = DropFixture::new();
+    let data = make_data(&files()).unwrap();
+    let at = f.at(150, 50);
+    // OLE delivers Drop only after DragOver showed Copy, so each refusal follows a
+    // Copy cursor: Shift pressed at release, the pointer left the pane, or the pane
+    // started loading and withdrew its drop target.
+    assert_eq!(f.enter(&data, DROPEFFECT_COPY, at), DROPEFFECT_COPY);
     assert_eq!(f.drop_files(&data, 4, at), DROPEFFECT_NONE);
+    assert_eq!(
+        f.sink.take_rejected(),
+        ["Dropped files can only be copied; release them without Shift or Alt."]
+    );
+    assert_eq!(f.enter(&data, DROPEFFECT_COPY, at), DROPEFFECT_COPY);
     assert_eq!(f.drop_files(&data, 0, f.at(50, 50)), DROPEFFECT_NONE);
-    assert!(f.sink.rejected.lock().unwrap().is_empty());
+    assert_eq!(f.sink.take_rejected(), ["The drop destination changed."]);
+    assert_eq!(f.enter(&data, DROPEFFECT_COPY, at), DROPEFFECT_COPY);
+    {
+        let mut targets = f.targets.lock().unwrap();
+        targets.revision += 1;
+        targets.targets.clear();
+    }
+    assert_eq!(f.drop_files(&data, 0, at), DROPEFFECT_NONE);
+    assert_eq!(f.sink.take_rejected(), ["The drop destination changed."]);
+    assert!(f.sink.requests.lock().unwrap().is_empty());
+    // A Drop without a current DragEnter, or after DragLeave, had no Copy cursor.
+    assert_eq!(f.drop_files(&data, 0, at), DROPEFFECT_NONE);
+    assert_eq!(f.enter(&data, DROPEFFECT_COPY, at), DROPEFFECT_NONE);
+    unsafe { f.target.DragLeave().unwrap() };
+    assert_eq!(f.drop_files(&data, 0, at), DROPEFFECT_NONE);
+    assert!(f.sink.take_rejected().is_empty());
+}
+
+const SOURCE_TEXT: &str = "text chosen by the drag source";
+
+/// A drag source that offers a file list but fails to render it, with an error
+/// description of its own choosing (any length, for a cross-process source).
+#[implement(IDataObject)]
+struct Unrenderable;
+impl IDataObject_Impl for Unrenderable_Impl {
+    fn GetData(&self, _: *const FORMATETC) -> windows::core::Result<STGMEDIUM> {
+        Err(windows::core::Error::new(E_FAIL, SOURCE_TEXT.repeat(8)))
+    }
+    fn GetDataHere(&self, _: *const FORMATETC, _: *mut STGMEDIUM) -> windows::core::Result<()> {
+        Err(E_NOTIMPL.into())
+    }
+    fn QueryGetData(&self, _: *const FORMATETC) -> HRESULT {
+        HRESULT(0)
+    }
+    fn GetCanonicalFormatEtc(&self, _: *const FORMATETC, _: *mut FORMATETC) -> HRESULT {
+        E_NOTIMPL
+    }
+    fn SetData(
+        &self,
+        _: *const FORMATETC,
+        _: *const STGMEDIUM,
+        _: BOOL,
+    ) -> windows::core::Result<()> {
+        Err(E_NOTIMPL.into())
+    }
+    fn EnumFormatEtc(&self, _: u32) -> windows::core::Result<IEnumFORMATETC> {
+        Err(E_NOTIMPL.into())
+    }
+    fn DAdvise(
+        &self,
+        _: *const FORMATETC,
+        _: u32,
+        _: Ref<IAdviseSink>,
+    ) -> windows::core::Result<u32> {
+        Err(E_NOTIMPL.into())
+    }
+    fn DUnadvise(&self, _: u32) -> windows::core::Result<()> {
+        Err(E_NOTIMPL.into())
+    }
+    fn EnumDAdvise(&self) -> windows::core::Result<IEnumSTATDATA> {
+        Err(E_NOTIMPL.into())
+    }
+}
+
+#[test]
+fn ole_target_reports_an_unrenderable_file_list_by_code_only() {
+    let f = DropFixture::new();
+    let data: IDataObject = Unrenderable.into();
+    let Err(failure) = (unsafe { data.GetData(&FORMATETC::default()) }) else {
+        panic!("the fixture must fail to render its file list");
+    };
+    assert!(
+        failure.message().contains(SOURCE_TEXT),
+        "the fixture must carry the source's description: {failure}"
+    );
+    let at = f.at(150, 50);
+    assert_eq!(f.enter(&data, DROPEFFECT_COPY, at), DROPEFFECT_COPY);
+    assert_eq!(f.drop_files(&data, 0, at), DROPEFFECT_NONE);
+    assert_eq!(
+        f.sink.take_rejected(),
+        ["The drag source did not provide its file list (0x80004005)."]
+    );
 }

@@ -66,6 +66,7 @@ impl Harness {
                 events,
                 next: Arc::new(AtomicU64::new(0)),
                 hover: Arc::default(),
+                refused: Arc::default(),
                 cancel: Cancellation::default(),
             },
             events: receiver,
