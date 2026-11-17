@@ -277,6 +277,51 @@ jobs:
           if-no-files-found: error
           path: _build/raster-viewer-ci/package/
 
+  # The image thumbnailer has the raster viewers' inputs (the shared decoder with its
+  # pinned native dav1d build and the released worker SDK). The HTML viewer and the
+  # video thumbnailer need pinned CEF and FFmpeg inputs that have no cached CI setup yet.
+  thumbnail-image:
+    needs: public-worker-sdk
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-24.04]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            /plugins/midnight-thumbnail-image/
+            /plugins/image-decoder/
+            /vendor/image/
+            /rust-toolchain.toml
+            /.github/actions/
+      - uses: actions/download-artifact@v4
+        with:
+          name: released-worker-sdk
+          path: _build/released-sdk
+      - uses: ./.github/actions/rust-setup
+      - name: Independently check, test and build the image thumbnailer
+        shell: pwsh
+        run: |
+          if ((Test-Path 'crates') -or (Test-Path 'thumbnail-api')) { throw 'Application or unpublished API source leaked into thumbnailer job' }
+          $temporary = Join-Path $env:GITHUB_WORKSPACE '_build/tmp'
+          New-Item -ItemType Directory -Force $temporary | Out-Null
+          $env:TEMP=$temporary; $env:TMP=$temporary; $env:TMPDIR=$temporary
+          $sdk = (Resolve-Path '_build/released-sdk/.cargo/registry.toml').Path
+          $build = Join-Path $env:GITHUB_WORKSPACE '_build/thumbnail-ci'
+          $plugin = 'plugins/midnight-thumbnail-image'
+          cargo --config $sdk fetch --manifest-path "$plugin/Cargo.toml" --locked
+          if ($LASTEXITCODE -ne 0) { throw 'Thumbnailer dependency fetch failed' }
+          if ($IsWindows) {
+            & "$plugin/scripts/ci.ps1" -SdkConfig $sdk -BuildRoot $build
+          } else {
+            bash "$plugin/scripts/ci.sh" $sdk $build
+          }
+          if ($LASTEXITCODE -ne 0) { throw 'Independent image thumbnailer checks failed' }
+
   archive-filesystem:
     needs: public-worker-sdk
     strategy:

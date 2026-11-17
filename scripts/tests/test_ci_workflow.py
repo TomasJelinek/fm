@@ -60,6 +60,17 @@ class WorkflowTests(unittest.TestCase):
         self.assertNotRegex(after_gates, r"cargo test -p ")
         self.assertNotIn("--include-ignored", check)
 
+    def test_image_thumbnailer_has_independent_ci_with_strict_checks(self):
+        job = self.jobs["thumbnail-image"]
+        self.assertIn("needs: public-worker-sdk", job)
+        self.assertIn('"$plugin/scripts/ci.ps1"', job)
+        self.assertIn('bash "$plugin/scripts/ci.sh"', job)
+        for script in ("ci.ps1", "ci.sh"):
+            text = (ROOT / "plugins/midnight-thumbnail-image/scripts" / script).read_text(encoding="utf-8")
+            with self.subTest(script=script):
+                for step in ("image-decoder/native", "fmt", "test", "clippy", "-D", "warnings", "build", "--release"):
+                    self.assertIn(step, text)
+
     def test_public_protocol_workspaces_and_conformance_have_ci(self):
         sdk = self.jobs["public-worker-sdk"]
         for workspace in ("worker-api", "thumbnail-api", "filesystem-api", "image-viewer-api", "web-viewer-api"):

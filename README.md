@@ -970,10 +970,11 @@ native operations and watches still use explicit host platform services; the
 generic provider migration remains in progress.
 Plugins share this Git repository but have independent Cargo workspaces under
 `plugins/`, with their own builds, dependencies and tests. CI checks the basic,
-source, Markdown, image and PDF viewers, the viewer ABI conformance fixture and the
-native, network and archive filesystems from exported plugin directories, plus all
-public API workspaces; the HTML viewer and both thumbnailers are built and
-validated by the normal build helpers but have no CI job yet. Plugins share only the
+source, Markdown, image and PDF viewers, the image thumbnailer, the viewer ABI
+conformance fixture and the native, network and archive filesystems from exported
+plugin directories, plus all public API workspaces; the HTML viewer and the video
+thumbnailer are built and validated by the normal build helpers but have no CI job
+yet (their pinned CEF and FFmpeg inputs need a cached CI setup). Plugins share only the
 public API/SDK and must build from an exported plugin directory without host
 sources. Plugins cannot depend on private
 application crates or modify the main application's sources; API extensions are
