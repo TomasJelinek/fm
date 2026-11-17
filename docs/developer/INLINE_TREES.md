@@ -41,10 +41,11 @@ browse-target identity. Ordinary directories retain their existing browse
 semantics when that identity capability is unsupported.
 
 Before listing, branch work rejects a physical target identity already recorded
-for an ancestor. Returned mount-scoped logical node references are also checked
-against the ancestor chain. Distinct logical aliases elsewhere remain separate
-occurrences. A second target-identity observation after listing rejects an
-observed retarget. These browse-only identities grant no operation authority.
+for an ancestor. Mount-scoped logical node references returned by an expansion
+or refresh are also checked against the ancestor chain. Distinct logical aliases
+elsewhere remain separate occurrences. A second target-identity observation after
+listing, or after a probe, rejects an observed retarget. These browse-only
+identities grant no operation authority.
 Native namespace replacement remains live; the adapter does not promise an
 atomic snapshot or handle-relative no-follow branch enumeration.
 
@@ -54,10 +55,16 @@ directory service and stops processing further callbacks after a stop or entry
 failure. This does not promise to interrupt an already blocked OS/provider call.
 
 Unknown, loading, collapsed-with-children, expanded, confirmed empty and failed
-are distinct states. Probes do not expand a branch. An expanded branch requires
-Refresh rather than Probe, preventing an empty hint contradicting visible rows.
-Failure retains the previous successful children, with an explicit error. The
-hidden root has a state accessor too; failed root loading is not an empty folder.
+are distinct states. Probes do not expand a branch. A probe of a descendant asks
+only whether it contains a folder or directory link: enumeration stops at the
+first one, and the probe issues no child reference or row and has no row limit,
+so a folder with more children than an expansion may list still shows as
+collapsed-with-children. Only the entries inspected before that first folder are
+validated; a child that repeats an ancestor reference fails the later expansion,
+not the probe. An expanded branch requires Refresh rather than Probe, preventing
+an empty hint contradicting visible rows. Failure retains the previous successful
+children, with an explicit error. The hidden root has a state accessor too;
+failed root loading is not an empty folder.
 
 Refresh reconciles children by mount-scoped node identity, preserves surviving
 occurrence IDs, removes obsolete descendants and rejects ancestor cycles. It
@@ -131,8 +138,9 @@ ledger catches duplicate/self-referencing tokens and changed issued kinds; an
 additional one-million-callback ceiling bounds inspected work. The token budget
 normally triggers earlier. The existing general listing limit remains 50,000
 entries/32 MiB payload; folder requests may lower their retained-row limit.
-Failed/cancelled attempts issue no partial references. Provider-side node/cache
-limits still apply independently.
+Failed/cancelled attempts issue no partial references. Presence probes use the
+same ledger for the entries they inspect, retain no row and issue no reference.
+Provider-side node/cache limits still apply independently.
 
 Owned String capacities count toward payload admission, including localized date
 and time. Diagnostics use a fresh bounded UTF-8 allocation, at most 4096 bytes
@@ -161,13 +169,14 @@ including after publication of the initial empty revision. Context rows cannot
 be selected by clicks, ranges or rectangles. Ctrl+I inverts non-directory entries
 and retains both folder and directory-link selection.
 
-The production controller owns these sessions on one persistent blocking worker
-per pane. Completed-root notifications, bounded command admission, loading and
-collapse publications, selection and typed navigation use the real Engine
-command/event boundary. Selection, viewport, reprojection and operation captures
-require the exact `Commit` of the current projection. Branch and navigation
-gestures may still name the previously acknowledged view while a newer
-publication travels to the UI; the actor revalidates that the occurrence is
+The production controller owns these sessions on one persistent model worker per
+pane, a dedicated thread outside Tokio's blocking pool; branch listings still run
+as separate blocking jobs. Completed-root notifications, bounded command
+admission, loading and collapse publications, selection and typed navigation use
+the real Engine command/event boundary. Selection, viewport, reprojection and
+operation captures require the exact `Commit` of the current projection. Branch
+and navigation gestures may still name the previously acknowledged view while a
+newer publication travels to the UI; the actor revalidates that the occurrence is
 still visible and unchanged. A shared listing permit and the persistent branch
 budget remain held through actual provider return and completion retirement,
 including after cancellation or pane replacement.
