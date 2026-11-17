@@ -19,8 +19,9 @@
 //! completed, with that directory as a typed residue; its location is claimed
 //! only while it still has the identity it was created with. A failed change
 //! that also leaves its staging directory behind names it in an error of kind
-//! Other, never as a plain conflict or cancellation. Staging contents are never
-//! removed recursively.
+//! Other, never as a plain conflict or cancellation; after a failed capture
+//! request that directory is reported as possibly holding the item. Staging
+//! contents are never removed recursively.
 //! renameat2(RENAME_NOREPLACE) support is required. Recursive operations use
 //! openat2 (Linux 5.6+) and fail explicitly if these kernel guarantees are absent.
 //! Preparation retains two file descriptors per selected item; exhaustion fails
@@ -412,17 +413,6 @@ impl PreparedMutation for Prepared {
     }
 }
 
-/// A completed metadata rename whose staging directory could not be removed.
-/// Metadata edits report it as their outcome error, of kind Other so that it
-/// never reads as a name conflict or a cancellation of the completed rename.
-fn completed_with_residue(completed: &str, residue: MutationResidue) -> FsError {
-    FsError::from_io(
-        OPERATION,
-        &residue.path,
-        io::Error::other(format!("{completed}, but {residue}")),
-    )
-}
-
 struct Staged {
     parent: Arc<File>,
     directory: Arc<File>,
@@ -490,7 +480,7 @@ impl Staged {
 
     fn capture(&self, prepared: &Prepared, cancel: &Cancellation) -> Result<(), FsError> {
         if let Err(failure) = prepared.revalidate(cancel) {
-            return Err(self.discard(failure));
+            return Err(self.abandon(failure, false));
         }
         if let Err(e) = renameat_with(
             &*prepared.parent,
@@ -499,7 +489,7 @@ impl Staged {
             STAGED_NAME,
             RenameFlags::NOREPLACE,
         ) {
-            return Err(self.discard(native_error(&prepared.item.path, e)));
+            return Err(self.abandon(native_error(&prepared.item.path, e), true));
         }
         if let Err(failure) = prepared.identity.verify(
             &self.directory,
@@ -511,6 +501,35 @@ impl Staged {
         Ok(())
     }
 
+    /// Removes the stage of a change that did not complete and returns `failure`. A
+    /// stage that stays behind is named in it and makes it kind Other, so it is never
+    /// consumed as a plain conflict or cancellation. A capture request that returned
+    /// an error may still have moved the item there (a lost reply on a network or
+    /// FUSE filesystem), so after such a request a stage that holds the staged name,
+    /// or cannot be inspected, is reported as possibly holding the item, never as
+    /// unused or unneeded.
+    fn abandon(&self, mut failure: FsError, capture_requested: bool) -> FsError {
+        let Err(residue) = self.cleanup() else {
+            return failure;
+        };
+        failure.kind = ErrorKind::Other;
+        if capture_requested
+            && !matches!(
+                statat(&*self.directory, STAGED_NAME, AtFlags::SYMLINK_NOFOLLOW),
+                Err(rustix::io::Errno::NOENT)
+            )
+        {
+            failure.message.push_str(&format!(
+                "; the item may have been moved into {}: {}",
+                self.path.join(STAGED_NAME).display(),
+                residue.error.message
+            ));
+        } else {
+            failure.message.push_str(&format!("; {residue}"));
+        }
+        failure
+    }
+
     fn restore(&self, prepared: &Prepared, mut failure: FsError) -> FsError {
         match renameat_with(
             &*self.directory,
@@ -519,7 +538,7 @@ impl Staged {
             &prepared.name,
             RenameFlags::NOREPLACE,
         ) {
-            Ok(()) => self.discard(failure),
+            Ok(()) => self.abandon(failure, false),
             Err(restore) => {
                 failure.message.push_str(&format!(
                     "; remaining entry preserved at {} (restore failed: {restore})",
@@ -531,17 +550,6 @@ impl Staged {
                 failure
             }
         }
-    }
-
-    /// Removes the unused staging directory of a change that did not complete. If
-    /// it stays behind, the failure names it and becomes kind Other, so the residue
-    /// is never consumed as a plain conflict or cancellation.
-    fn discard(&self, mut failure: FsError) -> FsError {
-        if let Err(residue) = self.cleanup() {
-            failure.message.push_str(&format!("; {residue}"));
-            failure.kind = ErrorKind::Other;
-        }
-        failure
     }
 
     /// Removes the staging directory while it is still the one created here; rmdir
@@ -560,6 +568,8 @@ impl Staged {
             Ok(()) => return Ok(()),
             Err(e) => native_error(&self.path, e),
         };
+        #[cfg(test)]
+        simulation::after_failed_removal(&self.path);
         Err(match self.verify() {
             Ok(()) => residue(false, failure),
             Err(changed) => residue(true, changed),
@@ -583,12 +593,14 @@ impl Staged {
 /// Test-only interference with staging cleanup, on the calling thread only.
 #[cfg(test)]
 pub(crate) mod simulation {
-    use std::{cell::RefCell, path::Path};
+    use std::{cell::RefCell, path::Path, thread::LocalKey};
 
     type Interference = Box<dyn FnOnce(&Path)>;
+    type Hook = LocalKey<RefCell<Option<Interference>>>;
 
     thread_local! {
         static BEFORE_CLEANUP: RefCell<Option<Interference>> = const { RefCell::new(None) };
+        static AFTER_FAILED_REMOVAL: RefCell<Option<Interference>> = const { RefCell::new(None) };
     }
 
     /// Calls `interfere` with the staging directory's path just before the first
@@ -597,14 +609,36 @@ pub(crate) mod simulation {
         interfere: impl FnOnce(&Path) + 'static,
         run: impl FnOnce() -> T,
     ) -> T {
-        BEFORE_CLEANUP.with(|hook| *hook.borrow_mut() = Some(Box::new(interfere)));
+        with(&BEFORE_CLEANUP, Box::new(interfere), run)
+    }
+
+    /// Calls `interfere` with the staging directory's path right after the first
+    /// failed removal of a staging directory that `run` performs, before that
+    /// directory's binding is checked again.
+    pub(crate) fn with_interference_after_failed_removal<T>(
+        interfere: impl FnOnce(&Path) + 'static,
+        run: impl FnOnce() -> T,
+    ) -> T {
+        with(&AFTER_FAILED_REMOVAL, Box::new(interfere), run)
+    }
+
+    fn with<T>(hook: &'static Hook, interfere: Interference, run: impl FnOnce() -> T) -> T {
+        hook.with(|hook| *hook.borrow_mut() = Some(interfere));
         let result = run();
-        BEFORE_CLEANUP.with(|hook| hook.borrow_mut().take());
+        hook.with(|hook| hook.borrow_mut().take());
         result
     }
 
     pub(super) fn before_cleanup(stage: &Path) {
-        if let Some(interfere) = BEFORE_CLEANUP.with(|hook| hook.borrow_mut().take()) {
+        interfere(&BEFORE_CLEANUP, stage);
+    }
+
+    pub(super) fn after_failed_removal(stage: &Path) {
+        interfere(&AFTER_FAILED_REMOVAL, stage);
+    }
+
+    fn interfere(hook: &'static Hook, stage: &Path) {
+        if let Some(interfere) = hook.with(|hook| hook.borrow_mut().take()) {
             interfere(stage);
         }
     }

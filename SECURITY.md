@@ -148,16 +148,22 @@ opened descendant handles. Where a filesystem takes its permissions from mount o
 still be owned by the user (the mount must map ownership to the user, as desktop
 automounting does); it keeps the mount-provided permissions and excludes other users
 only as far as the mount does. A staging directory refused after creation is removed
-again. If a rename, Trash move or permanent deletion completed but its staging
-directory cannot be removed afterwards (for example because another program created
-an entry in it, or a network or FUSE filesystem keeps a pending name there), the change
-is reported as completed with one issue that names the leftover directory. It is said
-to remain there only while it still has the identity it was created with; its contents
-are never removed. A change that did not complete and leaves its staging directory
-behind names it in an error that is never treated as a name conflict or cancellation.
+again.
 See [Windows guarantees](crates/midnight-platform-windows/MUTATION_SAFETY.md)
 and the Linux mutation module's safety comments. No claim of universal race freedom
 is made. Tests mutate fresh, owned fixtures only; they never empty a user's Trash.
+
+When a Linux rename, Trash move or permanent deletion completed but its staging
+directory cannot be removed afterwards (for example because another program created an
+entry in it, or a network or FUSE filesystem keeps a pending name there), a Rename or
+Delete job reports the target as completed with one issue that names the leftover
+directory; a Properties rename still applies the item's other changes but counts the
+item as failed (see [operation progress](docs/developer/OPERATION_PROGRESS.md)). The
+directory is said to remain there only while it still has the identity it was created
+with, and its contents are never removed. A change that did not complete and leaves its
+staging directory behind names it in an error that is never treated as a name conflict
+or cancellation; after a capture request that returned an error, the directory is
+reported as possibly holding the item, never as unneeded.
 
 - Ordinary browsing does not copy, rename, delete, execute files, invoke a shell,
   request elevation or interpret filenames as code. A failed explicit native folder

@@ -48,15 +48,16 @@ pub struct MutationResidue {
 }
 
 /// One clause describing the leftover, as in "The entry was renamed, but {residue}".
-/// It claims that the folder remains at its path only when that was confirmed.
+/// It claims that the folder remains at its path only when that was confirmed, and
+/// otherwise claims nothing it did not observe.
 impl fmt::Display for MutationResidue {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if self.cleanup_unconfirmed {
             write!(
                 f,
-                "its temporary staging folder at {} was moved, removed or replaced by \
-                 another program and was not removed: {}. Anything now at that path is \
-                 not part of this operation",
+                "its temporary staging folder at {} could not be confirmed after cleanup \
+                 ({}); another program may have moved, removed or replaced it. Anything \
+                 now at that path is not part of this operation",
                 self.path.display(),
                 self.error.message
             )
@@ -283,13 +284,22 @@ mod tests {
             "{confirmed}"
         );
         assert!(confirmed.contains("no longer needed"), "{confirmed}");
+        // An unconfirmed binding may only have been unreadable (EACCES, EIO, ESTALE):
+        // the text reports what was observed and what may have happened, nothing more.
         let unconfirmed = residue(true).to_string();
-        assert!(
-            unconfirmed.contains("was moved, removed or replaced by another program"),
-            "{unconfirmed}"
+        assert_eq!(
+            unconfirmed,
+            "its temporary staging folder at /data/文档/.midnight-mutation-1-2-3 could not \
+             be confirmed after cleanup (Directory not empty); another program may have \
+             moved, removed or replaced it. Anything now at that path is not part of this \
+             operation"
         );
-        assert!(unconfirmed.contains("/data/文档/.midnight-mutation-1-2-3"));
-        for claim in ["remains at", "no longer needed"] {
+        for claim in [
+            "remains at",
+            "no longer needed",
+            "was moved",
+            "was not removed",
+        ] {
             assert!(!unconfirmed.contains(claim), "{unconfirmed}");
         }
     }
