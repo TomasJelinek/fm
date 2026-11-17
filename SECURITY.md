@@ -144,9 +144,11 @@ The Windows Shell recycle API remains path-based inside its native call; a
 concurrent namespace substitution there cannot be excluded. Linux private staging
 narrows pathname races but is not a boundary against the same UID, root or previously
 opened descendant handles. Where a filesystem takes its permissions from mount options
-(vfat, exfat, NTFS, CIFS without Unix extensions, FUSE), the owned staging directory
-keeps the mount-provided permissions and excludes other users only as far as the mount
-does; a staging directory refused after creation is removed again.
+(vfat, exfat, NTFS, CIFS without Unix extensions, FUSE), the staging directory must
+still be owned by the user (the mount must map ownership to the user, as desktop
+automounting does); it keeps the mount-provided permissions and excludes other users
+only as far as the mount does. A staging directory refused after creation is removed
+again.
 See [Windows guarantees](crates/midnight-platform-windows/MUTATION_SAFETY.md)
 and the Linux mutation module's safety comments. No claim of universal race freedom
 is made. Tests mutate fresh, owned fixtures only; they never empty a user's Trash.

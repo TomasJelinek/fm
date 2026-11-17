@@ -161,10 +161,14 @@ tmpfs provide them. FAT/exFAT/NTFS removable media, NFS/SMB shares, sshfs and GV
 FUSE mounts (including shares opened from Network Neighborhood) cannot create
 `O_TMPFILE` files, so Linux Copy and cross-volume Move into them fail with an
 explicit unsupported-filesystem error; copying from them works. Rename and
-permanent Delete need only no-replace rename there (vfat, exfat, ntfs3 and CIFS
-provide it; FUSE mounts only when their daemon does), and their private staging
-directory keeps the mount-provided permissions. Trash is limited to the home
-filesystem. Unsupported operations fail
+permanent Delete there need a no-replace rename (the vfat, exfat, ntfs3 and CIFS
+kernel drivers implement it; FUSE mounts such as ntfs-3g only when their daemon
+does) and a staging folder owned by you: the mount must map file ownership to your
+user, as desktop automounting does, so they are refused on a root-owned mount
+without `uid=`. The staging folder keeps the mount-provided permissions. This
+support follows the drivers' documented behavior and is covered by tests that
+simulate such mounts; it has not yet been verified on a live vfat, exFAT, NTFS or
+CIFS mount. Trash is limited to the home filesystem. Unsupported operations fail
 explicitly rather than silently weakening identity checks or checksum verification.
 Newer optional metadata syscalls have guarded fallbacks; they do not raise the
 general minimum kernel to the newest syscall's introduction version.
