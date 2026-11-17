@@ -10,8 +10,10 @@ Protocol 3 adds negotiated request-local thumbnail staging cancellation; the
 [11 November MEDIA-01 evidence](verification/2026-11-10-archive-thumbnails.md)
 records same-mount ZIP/solid-7z cancellation, cache retention and retry checks.
 ZIP and TAR index captured ranges; verified member content streams into host-owned
-private TEMP files. There are no artificial source/member/aggregate disk byte
-ceilings. Metadata, chunks, decoder windows and process memory remain bounded.
+private spool files. There are no artificial source/member/aggregate disk byte
+ceilings; free space on the host's spool volume bounds decoded content (a reserve
+guard is planned). Metadata, chunks, XZ/Zstandard windows, 7z dictionaries, retained
+7z siblings and process memory remain bounded.
 Compressed TAR still requires complete outer-stream decoding and integrity checks.
 See [the resumed design and Salamander source references](superpowers/specs/2026-11-09-archive-streaming-design.md).
 The current author-facing reference is [Filesystem API](developer/FILESYSTEM_API.md).
@@ -97,13 +99,12 @@ never persist session IDs or encode members in `PathBuf`. Active tabs restore vi
 backend validation; inactive tabs remain lazy. Missing providers and changed
 sources retain unavailable tabs instead of silently switching to native paths.
 
-The decoder holds an immutable bounded mount in memory, with ZIP contents decoded
-and CRC-checked on demand: at most
-64 MiB source, 64 MiB per member, 128 MiB decoded aggregate, 100,000 entries,
-8 MiB name storage and expansion ratio 200. Host process limits are 512 MiB and
-15 CPU seconds, with a 20-second operation deadline and at most two live mounts.
-Over-budget archives return an explicit error. This is not an unlimited streaming
-implementation. Copy-out uses host-owned verified native destinations. No plugin-side
+Historical (6 November in-memory design, superseded by protocol-2 streaming): the
+decoder held an immutable bounded mount in memory, with ZIP contents decoded and
+CRC-checked on demand: at most 64 MiB source, 64 MiB per member, 128 MiB decoded
+aggregate, 100,000 entries, 8 MiB name storage and expansion ratio 200, with host
+process limits of 512 MiB and 15 CPU seconds. The current limits are in the
+[filesystem API](developer/FILESYSTEM_API.md). Copy-out uses host-owned verified native destinations. No plugin-side
 extraction, archive writing, password handling, RAR codecs or
 automatic external launch of archive members exists.
 

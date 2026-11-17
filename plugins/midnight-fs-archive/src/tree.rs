@@ -1,8 +1,16 @@
 use crate::*;
+use std::borrow::Cow;
 
 /// Names remain raw provider data. This predicate only permits byte-stream access;
 /// it never turns a member into a native path or silently repairs its spelling.
+/// `.` components (`./usr/bin/tool`) name the current directory and are harmless,
+/// but a regular file cannot be named by a final `.`.
 pub(crate) fn safe_name(name: &[u8]) -> bool {
+    safe_path(name) && name.rsplit(|b| *b == b'/').next() != Some(b".")
+}
+
+/// A safe directory record may end in `.` (`./`, `a/.`): it names that directory.
+fn safe_path(name: &[u8]) -> bool {
     !name.is_empty()
         && !name.contains(&0)
         && !name.contains(&b'\\')
@@ -10,7 +18,7 @@ pub(crate) fn safe_name(name: &[u8]) -> bool {
         && !name.starts_with(b"/")
         && name
             .split(|b| *b == b'/')
-            .all(|part| !part.is_empty() && part != b"." && part != b"..")
+            .all(|part| !part.is_empty() && part != b"..")
 }
 
 impl Archive {
@@ -24,6 +32,8 @@ impl Archive {
         node.size = Some(size);
         Ok(node.id)
     }
+    /// Index one member. Returns its node ID; a `./` directory record names the
+    /// root (ID 1), which has no node or metadata of its own.
     pub(crate) fn add(
         &mut self,
         raw: &[u8],
@@ -42,66 +52,67 @@ impl Archive {
         {
             return Err(Error::limit());
         }
-        let safe = safe_name(raw);
-        let mut parent = 1;
-        let mut parts = raw.split(|b| *b == b'/').peekable();
-        let mut labels = display.trim_end_matches('/').split('/');
-        let matching_components = parts.clone().count() == labels.clone().count();
-        if safe {
-            while let Some(part) = parts.next() {
-                let label = matching_components.then(|| labels.next()).flatten();
-                if parts.peek().is_none() {
-                    break;
-                }
-                let key = (parent, part.to_vec());
-                if let Some(existing) = self.directories.get(&key) {
-                    parent = *existing;
+        let safe = if kind == Kind::Directory {
+            safe_path(raw)
+        } else {
+            safe_name(raw)
+        };
+        if !safe {
+            // Unsafe records stay visible at the root under their complete raw name.
+            // They never become navigable, always-empty directories named `..` or `C:`.
+            let kind = if kind == Kind::Directory {
+                Kind::Other
+            } else {
+                kind
+            };
+            return self.push(1, raw, display, kind, data, false);
+        }
+        let parts: Vec<&[u8]> = raw.split(|b| *b == b'/').collect();
+        let labels: Vec<&str> = display.trim_end_matches('/').split('/').collect();
+        let matching = parts.len() == labels.len();
+        let last = parts.len() - 1;
+        let components: Vec<(&[u8], Cow<'_, str>)> = parts
+            .iter()
+            .enumerate()
+            .filter(|(_, part)| **part != b".")
+            .map(|(index, part)| {
+                let label = if matching {
+                    Cow::Borrowed(labels[index])
+                } else if index == last {
+                    Cow::Borrowed(labels[labels.len() - 1])
                 } else {
-                    parent = self.push(
-                        parent,
-                        part,
-                        &label
-                            .map(std::borrow::Cow::Borrowed)
-                            .unwrap_or_else(|| String::from_utf8_lossy(part)),
-                        Kind::Directory,
-                        None,
-                        false,
-                    )?;
-                    self.directories.insert(key, parent);
-                }
-            }
-        }
-        let name = if safe {
-            raw.rsplit(|b| *b == b'/').next().unwrap_or(raw)
-        } else {
-            raw
+                    String::from_utf8_lossy(part)
+                };
+                (*part, label)
+            })
+            .collect();
+        let Some(((name, label), parents)) = components.split_last() else {
+            return Ok(1);
         };
-        let display = if safe {
-            display
-                .trim_end_matches('/')
-                .rsplit('/')
-                .next()
-                .unwrap_or(display)
-        } else {
-            display
-        };
-        if safe
-            && kind == Kind::Directory
-            && self.directories.contains_key(&(parent, name.to_vec()))
-        {
-            return Ok(self.directories[&(parent, name.to_vec())]);
+        let mut parent = 1;
+        for (part, label) in parents {
+            parent = self.directory(parent, part, label)?;
         }
-        let id = self.push(
+        if kind == Kind::Directory {
+            return self.directory(parent, name, label);
+        }
+        self.push(
             parent,
             name,
-            display,
+            label,
             kind,
             data,
-            readable && safe && kind == Kind::File,
-        )?;
-        if safe && kind == Kind::Directory {
-            self.directories.insert((parent, name.to_vec()), id);
+            readable && kind == Kind::File,
+        )
+    }
+    /// The directory `name` below `parent`, created on first encounter.
+    fn directory(&mut self, parent: u64, name: &[u8], label: &str) -> Result<u64, Error> {
+        let key = (parent, name.to_vec());
+        if let Some(existing) = self.directories.get(&key) {
+            return Ok(*existing);
         }
+        let id = self.push(parent, name, label, Kind::Directory, None, false)?;
+        self.directories.insert(key, id);
         Ok(id)
     }
     fn push(

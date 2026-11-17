@@ -60,11 +60,13 @@ fn thumbnail(input: &mut ffmpeg::format::context::Input, request: &Request) -> i
     {
         return Err(io::Error::other("Video dimensions exceed decoder bound"));
     }
-    // Every request is independently seekable and cacheable. Sample between 10% and 85%.
+    // Every request is independently seekable and cacheable. Sample between 10% and 85%
+    // of the duration, counted from the container's start time.
     let duration = input.duration().max(0);
     let fraction = 10 + i64::from(request.frame) * 15;
-    let target = duration.saturating_mul(fraction) / 100;
-    if target > 0 {
+    let offset = duration.saturating_mul(fraction) / 100;
+    let target = native::start_time(input).saturating_add(offset);
+    if offset > 0 {
         input.seek(target, ..target).map_err(io::Error::other)?;
         decoder.flush();
     }
@@ -78,29 +80,47 @@ fn thumbnail(input: &mut ffmpeg::format::context::Input, request: &Request) -> i
         0
     };
     let mut decoded = ffmpeg::frame::Video::empty();
+    // The latest frame before the target, kept by swapping buffers rather than copying.
+    let mut earlier = ffmpeg::frame::Video::empty();
+    let mut has_earlier = false;
+    let mut ended = false;
     for _ in 0..4096 {
-        let mut packet = ffmpeg::Packet::empty();
-        match packet.read(input) {
-            Ok(()) => {
-                if packet.stream() != index {
-                    continue;
+        if !ended {
+            let mut packet = ffmpeg::Packet::empty();
+            match packet.read(input) {
+                Ok(()) => {
+                    if packet.stream() != index {
+                        continue;
+                    }
+                    decoder.send_packet(&packet).map_err(io::Error::other)?;
                 }
-                decoder.send_packet(&packet).map_err(io::Error::other)?;
+                Err(ffmpeg::Error::Eof) => {
+                    // Signal end of input once; the decoder then drains its frames.
+                    decoder.send_eof().map_err(io::Error::other)?;
+                    ended = true;
+                }
+                Err(error) => return Err(io::Error::other(error)),
             }
-            Err(ffmpeg::Error::Eof) => {
-                decoder.send_eof().map_err(io::Error::other)?;
-            }
-            Err(error) => return Err(io::Error::other(error)),
         }
         while decoder.receive_frame(&mut decoded).is_ok() {
             if decoded
                 .timestamp()
                 .is_some_and(|timestamp| timestamp < target_timestamp)
             {
+                std::mem::swap(&mut decoded, &mut earlier);
+                has_earlier = true;
                 continue;
             }
             return pixels(&decoded, request, rotation);
         }
+        if ended {
+            break;
+        }
+    }
+    // A header can overstate the decodable content (incomplete downloads), and sparse
+    // keyframes can exhaust the packet budget: show the latest frame decoded instead.
+    if has_earlier {
+        return pixels(&earlier, request, rotation);
     }
     Err(io::Error::other(
         "No representative frame within decode budget",

@@ -2,7 +2,9 @@
 
 The independent worker uses [the shared decoder](../image-decoder/README.md) for
 PNG, JPEG, GIF, WebP, BMP, ICO, TIFF, bounded static SVG and AVIF. The first still frame
-is oriented, reduced without upscaling and converted to straight-alpha sRGB.
+is reduced without upscaling, with alpha-weighted averaging so transparent edges keep
+their color, then oriented and converted to straight-alpha sRGB. A frame that already
+fits the cell is not resampled.
 SVG rasterizes directly to the requested aspect ratio with embedded Noto fonts;
 it receives no path, network or system-font access. See the shared decoder's
 explicit SVG subset, resource limits and bundled font provenance.

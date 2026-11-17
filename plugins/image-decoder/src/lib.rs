@@ -2,15 +2,17 @@
 //! Call only after the caller has entered its restricted process boundary.
 #![forbid(unsafe_code)]
 
-use image::{DynamicImage, ImageDecoder, ImageReader, RgbaImage, metadata::Cicp};
-use std::io::{self, BufReader, Read, Seek};
+use image::{DynamicImage, ImageDecoder, ImageReader, RgbaImage, metadata::Orientation};
+use moxcms::{ColorProfile, DataColorSpace, Layout};
+use std::io::{self, Read, Seek};
 mod avif;
 mod svg;
+mod window;
 
 /// Original dimensions and RGBA storage are bounded independently of requested thumbnails.
-pub const MAX_DECODED_EDGE: u32 = 32768;
+pub(crate) const MAX_DECODED_EDGE: u32 = 32768;
 /// Maximum retained original RGBA bytes.
-pub const MAX_DECODED_BYTES: u64 = 128 * 1024 * 1024;
+pub(crate) const MAX_DECODED_BYTES: u64 = 128 * 1024 * 1024;
 
 fn validate_dimensions(width: u32, height: u32) -> io::Result<()> {
     if width == 0
@@ -42,8 +44,9 @@ pub fn decode<R: Read + Seek + ?Sized>(
     limits.max_image_height = Some(MAX_DECODED_EDGE);
     limits.max_alloc = Some(MAX_DECODED_BYTES);
     // Each broker read crosses a process boundary and validates the captured
-    // source. Batch decoder row reads without preloading the complete file.
-    let buffered = BufReader::with_capacity(256 * 1024, stream);
+    // source. Batch decoder reads without preloading the complete file, and keep
+    // fetched bytes across codec seeks.
+    let buffered = window::Window::new(stream)?;
     let mut reader = ImageReader::new(buffered).with_guessed_format()?;
     if reader.format().is_none() {
         return svg::decode(reader.into_inner(), thumbnail);
@@ -70,42 +73,214 @@ pub fn decode<R: Read + Seek + ?Sized>(
     {
         return Err(io::Error::other("Embedded color profile exceeds budget"));
     }
+    let profile = icc
+        .map(|icc| ColorProfile::new_from_slice(&icc))
+        .transpose()
+        .map_err(io::Error::other)?;
+    // CICP-only color signalling (AVIF nclx, PNG cICP) is not converted: image-rs
+    // tags every decoded image as sRGB, so its pixels are used as sRGB as before.
     let mut decoded = DynamicImage::from_decoder(decoder).map_err(io::Error::other)?;
-    decoded.apply_orientation(orientation);
-    if icc.is_none() {
-        decoded
-            .apply_color_space(Cicp::SRGB, Default::default())
-            .map_err(io::Error::other)?;
-    }
+    let gray = !decoded.color().has_color();
+    let conversion = profile
+        .map(|profile| Conversion::new(profile, gray))
+        .transpose()?
+        .flatten();
     if let Some((width, height)) = thumbnail {
-        decoded = decoded.thumbnail(width.min(decoded.width()), height.min(decoded.height()));
+        // Reduce first so orientation only moves the small result.
+        let (width, height) = if transposes(orientation) {
+            (height, width)
+        } else {
+            (width, height)
+        };
+        decoded = reduce(decoded, width, height);
     }
+    decoded.apply_orientation(orientation);
     let mut pixels = decoded.into_rgba8();
-    if let Some(icc) = icc {
-        let profile = moxcms::ColorProfile::new_from_slice(&icc).map_err(io::Error::other)?;
-        if profile.color_space != moxcms::DataColorSpace::Rgb {
-            return Err(io::Error::new(
-                io::ErrorKind::Unsupported,
-                "Unsupported ICC color model",
-            ));
+    if let Some(conversion) = conversion {
+        conversion.apply(&mut pixels)?;
+    }
+    Ok(pixels)
+}
+
+fn transposes(orientation: Orientation) -> bool {
+    matches!(
+        orientation,
+        Orientation::Rotate90
+            | Orientation::Rotate270
+            | Orientation::Rotate90FlipH
+            | Orientation::Rotate270FlipH
+    )
+}
+
+/// Reduce without enlarging. image-rs's box filter averages straight-alpha color
+/// channels independently, which darkens or tints edges next to transparent
+/// pixels; colors are therefore averaged with alpha weights.
+fn reduce(image: DynamicImage, width: u32, height: u32) -> DynamicImage {
+    if width >= image.width() && height >= image.height() {
+        // Nothing to reduce: keep the decoded samples exactly (an icon smaller than
+        // its cell must not pass through 8-bit premultiplication).
+        return image;
+    }
+    let (width, height) = (width.min(image.width()), height.min(image.height()));
+    if !image.color().has_alpha() {
+        return image.thumbnail(width, height);
+    }
+    let mut pixels = image.into_rgba8();
+    for pixel in pixels.pixels_mut() {
+        let alpha = u32::from(pixel[3]);
+        for channel in &mut pixel.0[..3] {
+            *channel = ((u32::from(*channel) * alpha + 127) / 255) as u8;
         }
+    }
+    let mut reduced = DynamicImage::ImageRgba8(pixels)
+        .thumbnail(width, height)
+        .into_rgba8();
+    for pixel in reduced.pixels_mut() {
+        let alpha = u32::from(pixel[3]);
+        if alpha == 0 {
+            pixel.0 = [0; 4];
+            continue;
+        }
+        for channel in &mut pixel.0[..3] {
+            *channel = ((u32::from(*channel) * 255 + alpha / 2) / alpha).min(255) as u8;
+        }
+    }
+    DynamicImage::ImageRgba8(reduced)
+}
+
+/// Embedded ICC handling. RGB and gray profiles are converted to sRGB; anything
+/// else is rejected rather than claiming sRGB, except CMYK (see `new`).
+struct Conversion {
+    transform: std::sync::Arc<moxcms::Transform8BitExecutor>,
+    gray: bool,
+}
+
+impl Conversion {
+    fn new(profile: ColorProfile, gray_image: bool) -> io::Result<Option<Self>> {
+        let srgb = ColorProfile::new_srgb();
+        let source = match profile.color_space {
+            DataColorSpace::Rgb => Layout::Rgba,
+            // A gray profile describes only gray samples.
+            DataColorSpace::Gray if gray_image => Layout::GrayAlpha,
+            // image-rs has already converted CMYK samples to RGB without a profile,
+            // exactly as for CMYK files that carry none; the CMYK profile cannot
+            // describe those RGB samples, so it is not applied.
+            DataColorSpace::Cmyk => return Ok(None),
+            _ => {
+                return Err(io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    "Unsupported ICC color model",
+                ));
+            }
+        };
         let transform = profile
-            .create_transform_8bit(
-                moxcms::Layout::Rgba,
-                &moxcms::ColorProfile::new_srgb(),
-                moxcms::Layout::Rgba,
-                Default::default(),
-            )
+            .create_transform_8bit(source, &srgb, Layout::Rgba, Default::default())
             .map_err(io::Error::other)?;
-        // A row-sized conversion buffer avoids retaining a second full decoded image.
+        Ok(Some(Self {
+            transform,
+            gray: source == Layout::GrayAlpha,
+        }))
+    }
+
+    fn apply(&self, pixels: &mut RgbaImage) -> io::Result<()> {
+        // Row-sized conversion buffers avoid retaining a second full image.
         let stride = pixels.width() as usize * 4;
         let mut row = vec![0; stride];
+        let mut gray = Vec::new();
         for bytes in pixels.as_mut().chunks_exact_mut(stride) {
-            transform
-                .transform(bytes, &mut row)
+            let source = if self.gray {
+                // Gray samples were replicated into R, G and B.
+                gray.clear();
+                gray.extend(
+                    bytes
+                        .as_chunks::<4>()
+                        .0
+                        .iter()
+                        .flat_map(|pixel| [pixel[0], pixel[3]]),
+                );
+                gray.as_slice()
+            } else {
+                &*bytes
+            };
+            self.transform
+                .transform(source, &mut row)
                 .map_err(io::Error::other)?;
             bytes.copy_from_slice(&row);
         }
+        Ok(())
     }
-    Ok(pixels)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn color_profile_policy_by_model() {
+        let profile = |space| {
+            let mut profile = ColorProfile::new_srgb();
+            profile.color_space = space;
+            profile
+        };
+        assert!(
+            Conversion::new(profile(DataColorSpace::Rgb), false)
+                .unwrap()
+                .is_some()
+        );
+        let gray = ColorProfile::new_gray_with_gamma(1.0);
+        assert!(Conversion::new(gray.clone(), true).unwrap().is_some());
+        assert_eq!(
+            Conversion::new(gray, false).err().unwrap().kind(),
+            io::ErrorKind::Unsupported
+        );
+        assert!(
+            Conversion::new(profile(DataColorSpace::Cmyk), false)
+                .unwrap()
+                .is_none()
+        );
+        for space in [DataColorSpace::Lab, DataColorSpace::YCbr] {
+            assert_eq!(
+                Conversion::new(profile(space), false).err().unwrap().kind(),
+                io::ErrorKind::Unsupported
+            );
+        }
+    }
+
+    #[test]
+    fn alpha_weighted_reduction_keeps_edge_color_and_reduces_before_orientation() {
+        // Opaque red beside transparent black: the plain box filter yields (128,0,0,128).
+        let mut image = RgbaImage::new(4, 2);
+        for (x, _, pixel) in image.enumerate_pixels_mut() {
+            *pixel = if x < 2 {
+                image::Rgba([255, 0, 0, 255])
+            } else {
+                image::Rgba([0, 0, 0, 0])
+            };
+        }
+        let reduced = reduce(DynamicImage::ImageRgba8(image), 1, 1).into_rgba8();
+        assert_eq!(reduced.get_pixel(0, 0).0, [255, 0, 0, 128]);
+        assert!(transposes(Orientation::Rotate90));
+        assert!(!transposes(Orientation::FlipVertical));
+    }
+
+    #[test]
+    fn images_within_the_bound_keep_their_exact_samples() {
+        // A faint pixel loses most of its color precision through 8-bit
+        // premultiplication; an icon smaller than its cell must not be touched.
+        let icon =
+            DynamicImage::ImageRgba8(RgbaImage::from_pixel(16, 16, image::Rgba([201, 37, 99, 4])));
+        assert_eq!(reduce(icon.clone(), 96, 96), icon);
+        assert_eq!(reduce(icon.clone(), 16, 16), icon);
+        let mut wide = RgbaImage::from_pixel(32, 16, image::Rgba([201, 37, 99, 4]));
+        wide.put_pixel(0, 0, image::Rgba([0, 0, 0, 255]));
+        let wide = DynamicImage::ImageRgba8(wide);
+        // One bound below the image still reduces it.
+        assert_eq!(reduce(wide.clone(), 16, 96).width(), 16);
+        let gray = DynamicImage::ImageLumaA16(image::ImageBuffer::from_pixel(
+            8,
+            8,
+            image::LumaA([40_000u16, 300]),
+        ));
+        assert_eq!(reduce(gray.clone(), 8, 8), gray);
+    }
 }

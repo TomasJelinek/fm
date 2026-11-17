@@ -17,16 +17,20 @@ The first still frame is decoded once, applies supported orientation/color metad
 inside the sandbox. Viewports sample the original pixels: 1:1 is exact,
 magnification uses nearest original pixels, and reduction uses alpha-weighted area
 filtering. No full zoomed-image allocation is created.
-The last reduced viewport is cached (at most 16 MiB) across 1:1 inspection, so
-returning to the same Fit view does not filter the original pixels again.
+The last reduced viewport request is cached (at most 16 MiB) across 1:1 inspection,
+so repeating that exact request does not filter the original pixels again. The
+application's viewer requests 256x256 tiles, so this helps whole-viewport consumers
+such as image comparison; tiled Fit views rely on the host's tile cache.
 
 Only the released `midnight-image-viewer-sdk`/API and worker SDK are host
 dependencies. The process enters its Windows AppContainer or Linux worker
 restriction before reading content. The protocol contains no path, URL, native
 handle, UI object or executable command. Decoding has a 32768-pixel edge and
 128 MiB decoded-data budget; viewports have 4096-pixel edges and at most 4 Mi pixels.
-Opaque source reads are at most 256 KiB. Decoder reads use a bounded 256 KiB
-buffer to batch small codec row requests. The host enforces read volume, read
+Opaque source reads are at most 256 KiB. Decoder reads use a seek-preserving window
+of at most 256 KiB that batches small codec reads and keeps fetched bytes across
+codec seeks, so seeking codecs (TIFF strips and tiles) stay within the host's read
+budget. The host enforces read volume, read
 count, source revision, per-response deadlines and a 512 MiB/60 CPU-second process limit.
 The CPU allowance is cumulative across a session; exhaustion ends that session.
 

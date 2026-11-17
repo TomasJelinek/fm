@@ -68,6 +68,168 @@ fn zip_mount_reads_index_without_copying_whole_source_and_extracts_selected_memb
     );
 }
 
+/// A captured source that clamps each read like the host broker and counts the
+/// bytes it is asked for, which is what crosses the worker pipe.
+struct Brokered {
+    inner: Cursor<Vec<u8>>,
+    requested: Rc<Cell<u64>>,
+}
+impl Read for Brokered {
+    fn read(&mut self, output: &mut [u8]) -> io::Result<usize> {
+        let remaining = self.inner.get_ref().len() as u64 - self.inner.position();
+        let count = (output.len() as u64).min(256 * 1024).min(remaining);
+        self.requested.set(self.requested.get() + count);
+        self.inner.read(&mut output[..count as usize])
+    }
+}
+impl Seek for Brokered {
+    fn seek(&mut self, from: SeekFrom) -> io::Result<u64> {
+        self.inner.seek(from)
+    }
+}
+fn open_brokered(format: Format, source: Vec<u8>) -> (Archive, Rc<Cell<u64>>, Rc<MemoryStorage>) {
+    let length = source.len() as u64;
+    let requested = Rc::new(Cell::new(0));
+    let storage = Rc::new(MemoryStorage::default());
+    let archive = Archive::open_stream(
+        format,
+        Box::new(Brokered {
+            inner: Cursor::new(source),
+            requested: requested.clone(),
+        }),
+        length,
+        storage.clone(),
+        Limits::default(),
+    )
+    .unwrap();
+    (archive, requested, storage)
+}
+
+#[test]
+fn many_member_zip_and_tar_indexes_fetch_about_their_own_size() {
+    let options =
+        zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+    let mut zip = zip::ZipWriter::new(Cursor::new(Vec::new()));
+    let mut tar = tar::Builder::new(Vec::new());
+    for index in 0..1000 {
+        let data = vec![index as u8; 1024];
+        zip.start_file(format!("member-{index:04}.bin"), options)
+            .unwrap();
+        zip.write_all(&data).unwrap();
+        let mut header = tar::Header::new_gnu();
+        header.set_size(data.len() as u64);
+        header.set_mode(0o600);
+        header.set_cksum();
+        tar.append_data(
+            &mut header,
+            format!("member-{index:04}.bin"),
+            data.as_slice(),
+        )
+        .unwrap();
+    }
+    for (format, source) in [
+        (Format::Zip, zip.finish().unwrap().into_inner()),
+        (Format::Tar, tar.into_inner().unwrap()),
+    ] {
+        let length = source.len() as u64;
+        let (archive, requested, _) = open_brokered(format, source);
+        assert_eq!(archive.list(1, 0).unwrap().len(), 128);
+        eprintln!(
+            "{format:?}: index fetched {} of {length} bytes",
+            requested.get()
+        );
+        // A seek-discarding 256 KiB buffer fetched about 1000 x 256 KiB here.
+        assert!(
+            requested.get() < 2 * length,
+            "{format:?} index fetched {} bytes of a {length}-byte source",
+            requested.get()
+        );
+    }
+}
+
+#[test]
+fn tar_index_of_large_members_fetches_only_headers() {
+    let mut tar = tar::Builder::new(Vec::new());
+    for index in 0..16 {
+        let mut header = tar::Header::new_gnu();
+        header.set_size(1024 * 1024);
+        header.set_mode(0o600);
+        header.set_cksum();
+        tar.append_data(
+            &mut header,
+            format!("large-{index}.bin"),
+            vec![index; 1024 * 1024].as_slice(),
+        )
+        .unwrap();
+    }
+    let (archive, requested, _) = open_brokered(Format::Tar, tar.into_inner().unwrap());
+    assert_eq!(archive.list(1, 0).unwrap().len(), 16);
+    eprintln!("large-member TAR: index fetched {} bytes", requested.get());
+    assert!(
+        requested.get() < 1024 * 1024,
+        "index fetched {} bytes",
+        requested.get()
+    );
+}
+
+#[test]
+fn solid_sevenzip_members_share_block_decodes_in_production_reads() {
+    use sevenz_rust2::{
+        ArchiveEntry, ArchiveWriter, EncoderConfiguration, EncoderMethod, SourceReader,
+    };
+    let mut writer = ArchiveWriter::new(Cursor::new(Vec::new())).unwrap();
+    writer.set_content_methods(vec![EncoderConfiguration::new(EncoderMethod::COPY)]);
+    let payloads: Vec<Vec<u8>> = (0..20u8).map(|index| vec![index; 64 * 1024]).collect();
+    writer
+        .push_archive_entries(
+            (0..20)
+                .map(|index| ArchiveEntry::new_file(&format!("member-{index:02}")))
+                .collect(),
+            payloads
+                .iter()
+                .map(|bytes| SourceReader::new(Cursor::new(bytes.clone())))
+                .collect(),
+        )
+        .unwrap();
+    let source = writer.finish().unwrap().into_inner();
+    let length = source.len() as u64;
+    let (mut archive, requested, storage) = open_brokered(Format::SevenZip, source);
+    let members: Vec<(u64, usize)> = archive
+        .list(1, 0)
+        .unwrap()
+        .iter()
+        .map(|node| (node.id, node.display[7..].parse().unwrap()))
+        .collect();
+    // `prepare` is what the worker answers each host Read with; `Archive::read` would
+    // also consult the fixture-only content cache.
+    let mut fetched = |order: &[(u64, usize)]| {
+        let before = requested.get();
+        for (id, index) in order {
+            let content = archive.prepare(*id).unwrap();
+            let bytes = storage
+                .read(content.stage, content.offset, content.length as u32)
+                .unwrap();
+            assert_eq!(bytes, payloads[*index]);
+        }
+        requested.get() - before
+    };
+    // Copy-out order: one verified block decode serves all 20 members; reading each
+    // one separately used to decode the 1.3 MiB block 20 times.
+    let forward = fetched(&members);
+    // A sibling stays in the worker only until it is staged; repeated reads normally
+    // hit the host's lease cache. Reading them all again, in reverse, decodes the
+    // block exactly once more: that first read retains the others, nearest first.
+    let reversed: Vec<_> = members.iter().rev().copied().collect();
+    let again = fetched(&reversed);
+    eprintln!("solid 7z: members fetched {forward} then {again} bytes of a {length}-byte archive");
+    for pass in [forward, again] {
+        assert!(
+            pass > length / 2 && pass < length + 256 * 1024,
+            "a pass over all members fetched {pass} bytes of a {length}-byte archive"
+        );
+    }
+}
+
 struct DiskFull;
 impl Storage for DiskFull {
     fn begin(&self, _: StagePurpose, _: Option<u64>, _: u64) -> io::Result<u64> {

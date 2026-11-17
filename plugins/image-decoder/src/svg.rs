@@ -10,6 +10,7 @@ use std::{
 const MAX_BYTES: u64 = 4 * 1024 * 1024;
 const MAX_NODES: u32 = 32768;
 const MAX_EXPANSION: usize = 65536;
+const XLINK: &str = "http://www.w3.org/1999/xlink";
 
 pub(super) fn decode(reader: impl Read, target: Option<(u32, u32)>) -> io::Result<RgbaImage> {
     let mut bytes = Vec::new();
@@ -141,9 +142,18 @@ fn bounded_expansion(document: &usvg::roxmltree::Document<'_>) -> io::Result<()>
                 node.tag_name().name(),
                 "use" | "linearGradient" | "radialGradient"
             ) {
+                // Budget exactly the reference usvg follows: an unprefixed `href` wins
+                // over `xlink:href` in any attribute order, and other namespaces are
+                // ignored. `attribute("href")` matches the local name in any namespace.
                 let href = node
-                    .attribute("href")
-                    .or_else(|| node.attribute(("http://www.w3.org/1999/xlink", "href")));
+                    .attributes()
+                    .find(|attribute| attribute.name() == "href" && attribute.namespace().is_none())
+                    .or_else(|| {
+                        node.attributes().find(|attribute| {
+                            attribute.name() == "href" && attribute.namespace() == Some(XLINK)
+                        })
+                    })
+                    .map(|attribute| attribute.value());
                 if let Some(href) = href {
                     let id = href.strip_prefix('#').ok_or_else(unsupported)?;
                     let referenced = ids

@@ -1,9 +1,24 @@
 //! Metadata-only mounting; each requested compression block is verified atomically.
 use crate::*;
-use sevenz_rust2::{ArchiveEntry, BlockDecoder, EncoderMethod, Password};
-use std::io::{Seek, SeekFrom};
+use sevenz_rust2::{ArchiveEntry, Block, BlockDecoder, EncoderMethod, Password};
+use std::{
+    collections::HashSet,
+    io::{Seek, SeekFrom},
+    ops::Range,
+};
 
 const MAX_NEXT_HEADER: u64 = 64 * 1024 * 1024;
+/// Largest LZMA/LZMA2 dictionary memory one block may use in the 512 MiB worker.
+/// Members of a block that declares more are listed but unreadable.
+const MAX_DICTIONARY: u64 = 256 * 1024 * 1024;
+/// Verified solid-block siblings kept in worker memory, so the members read after
+/// one block decode within this window need no further decode of that block.
+const RETAINED_SIBLINGS: u64 = 128 * 1024 * 1024;
+// A decodable block's dictionary and the siblings retained beside it stay within
+// 384 MiB of the 512 MiB worker limit.
+const _: () = assert!(MAX_DICTIONARY + RETAINED_SIBLINGS <= 384 * 1024 * 1024);
+/// Allocation and map overhead charged per retained sibling.
+const RETAINED_ENTRY_COST: u64 = 64;
 
 #[cfg(test)]
 #[path = "sevenzip_tests.rs"]
@@ -13,7 +28,32 @@ pub(crate) struct Content {
     source: Reader,
     metadata: sevenz_rust2::Archive,
     members: HashMap<u64, usize>,
-    empty: std::collections::HashSet<u64>,
+    /// Readable member node of each compact stream index.
+    nodes: Vec<Option<u64>>,
+    /// Compact stream indices of each block.
+    block_files: Vec<Range<usize>>,
+    empty: HashSet<u64>,
+    retained: Retained,
+}
+
+/// Bytes of members of one block whose complete decode, including every member
+/// length and checksum, was verified by an earlier read. Nothing unverified enters it.
+#[derive(Default)]
+struct Retained {
+    block: Option<usize>,
+    members: HashMap<u64, Vec<u8>>,
+    cost: u64,
+}
+impl Retained {
+    fn insert(&mut self, entry: u64, bytes: Vec<u8>) {
+        self.cost += bytes.len() as u64 + RETAINED_ENTRY_COST;
+        self.members.insert(entry, bytes);
+    }
+    fn remove(&mut self, entry: u64) {
+        if let Some(bytes) = self.members.remove(&entry) {
+            self.cost -= bytes.len() as u64 + RETAINED_ENTRY_COST;
+        }
+    }
 }
 
 impl Archive {
@@ -22,6 +62,14 @@ impl Archive {
         // This parses and verifies the 7z index (including compressed headers), not bodies.
         let metadata =
             sevenz_rust2::Archive::read(&mut source, &Password::empty()).map_err(seven_error)?;
+        self.index_sevenzip(source, metadata)
+    }
+
+    fn index_sevenzip(
+        &mut self,
+        source: Reader,
+        metadata: sevenz_rust2::Archive,
+    ) -> Result<(), Error> {
         if metadata.files.len() > self.limits.max_entries {
             return Err(Error::limit());
         }
@@ -45,34 +93,30 @@ impl Archive {
                 return Err(corrupt_block());
             }
         }
-        if total > source_length.saturating_mul(self.limits.max_ratio) {
-            return Err(Error::limit());
-        }
-        for (block, size) in metadata.blocks.iter().zip(block_sizes) {
+        let mut undecodable = HashSet::new();
+        for (index, (block, size)) in metadata.blocks.iter().zip(block_sizes).enumerate() {
             if size != block.get_unpack_size() {
                 return Err(corrupt_block());
             }
             if size == 0 && block.has_crc && block.crc != 0 {
                 return Err(corrupt_block());
             }
-            // Keep unsupported/encrypted inputs explicit even though payload decoding is deferred.
-            if block
-                .coders
-                .iter()
-                .any(|coder| !supported(coder.encoder_method_id()))
-            {
-                return Err(Error::new(
-                    ErrorCode::Unsupported,
-                    "Encrypted or unsupported 7z codec",
-                ));
+            // Payload decoding is deferred: a block with an encrypted or unsupported
+            // coder, or with a dictionary beyond the worker budget, only makes its own
+            // members unreadable, as ZIP does per member.
+            if !decodable(block, dictionary_bytes(block)) {
+                undecodable.insert(index);
             }
         }
         let mut file_nodes = Vec::with_capacity(metadata.files.len());
-        for entry in &metadata.files {
+        for (index, entry) in metadata.files.iter().enumerate() {
             let kind = kind(entry);
-            let readable = kind == Kind::File && tree::safe_name(entry.name.as_bytes());
+            let decodable = metadata.stream_map.file_block_index[index]
+                .is_none_or(|block| !undecodable.contains(&block));
+            let readable =
+                kind == Kind::File && decodable && tree::safe_name(entry.name.as_bytes());
             let id = self.add(entry.name.as_bytes(), &entry.name, kind, None, readable)?;
-            if let Some(node) = self.nodes.get_mut((id - 2) as usize) {
+            if let Some(node) = self.node_mut(id) {
                 node.modified = entry
                     .has_last_modified_date
                     .then(|| timestamps::filetime(u64::from(entry.last_modified_date)));
@@ -86,6 +130,51 @@ impl Archive {
         }
         self.sevenzip_content = Some(Content::new(source, metadata, file_nodes)?);
         Ok(())
+    }
+}
+
+fn decodable(block: &Block, dictionary: u64) -> bool {
+    dictionary <= MAX_DICTIONARY
+        && block
+            .coders
+            .iter()
+            .all(|coder| supported(coder.encoder_method_id()))
+}
+
+/// Dictionary bytes the pinned decoders allocate for one block. Malformed coder
+/// properties count as zero here; the decoder rejects them when the block is read.
+fn dictionary_bytes(block: &Block) -> u64 {
+    block
+        .coders
+        .iter()
+        .enumerate()
+        .map(|(index, coder)| {
+            coder_dictionary(
+                coder.encoder_method_id(),
+                coder.properties(),
+                block.get_unpack_size_at_index(index),
+            )
+        })
+        .fold(0u64, u64::saturating_add)
+}
+
+fn coder_dictionary(method: &[u8], properties: &[u8], unpacked: u64) -> u64 {
+    match method {
+        EncoderMethod::ID_LZMA => match properties.get(1..5) {
+            // LZMA never keeps more history than its own output length.
+            Some(size) => {
+                u64::from(u32::from_le_bytes([size[0], size[1], size[2], size[3]])).min(unpacked)
+            }
+            None => 0,
+        },
+        EncoderMethod::ID_LZMA2 => match properties.first() {
+            Some(40) => u64::from(u32::MAX),
+            Some(&bits) if bits < 40 => {
+                u64::from(2 | (u32::from(bits) & 1)) << (u32::from(bits) / 2 + 11)
+            }
+            _ => 0,
+        },
+        _ => 0,
     }
 }
 
@@ -119,8 +208,9 @@ fn preflight_header(source: &mut Reader, source_length: u64) -> Result<(), Error
         ));
     }
     // The pinned parser verifies header CRCs. Its optional recovery scan is bounded
-    // to 1 MiB. Encoded-header output and decoder dictionaries have no public limit
-    // hook; process memory containment remains necessary for those allocations.
+    // to 1 MiB. Encoded-header output has no public limit hook; process memory
+    // containment remains necessary for it. Payload dictionaries are checked against
+    // `MAX_DICTIONARY` from the public coder properties before any member decode.
     source.seek(SeekFrom::Start(0))?;
     Ok(())
 }
@@ -138,8 +228,9 @@ impl Content {
         let original_blocks = std::mem::take(&mut metadata.stream_map.file_block_index);
         let mut first = vec![0; metadata.blocks.len()];
         let mut counts = vec![0usize; metadata.blocks.len()];
-        let mut empty = std::collections::HashSet::new();
+        let mut empty = HashSet::new();
         let mut members = HashMap::new();
+        let mut nodes = Vec::new();
         for ((file, block), node) in original_files
             .into_iter()
             .zip(original_blocks)
@@ -164,9 +255,15 @@ impl Content {
             if let Some(id) = node {
                 members.insert(id, index);
             }
+            nodes.push(node);
             metadata.files.push(file);
             metadata.stream_map.file_block_index.push(Some(block));
         }
+        let block_files = first
+            .iter()
+            .zip(&counts)
+            .map(|(first, count)| *first..*first + *count)
+            .collect();
         metadata.stream_map.block_first_file_index = first;
         for (block, expected) in counts.into_iter().enumerate() {
             // No decoder span may index beyond the compact table, including empty blocks.
@@ -180,7 +277,10 @@ impl Content {
             source,
             metadata,
             members,
+            nodes,
+            block_files,
             empty,
+            retained: Retained::default(),
         })
     }
 
@@ -193,17 +293,41 @@ impl Content {
             return Stage::new(storage, StagePurpose::Member { entry }, Some(0), 0)?.finish();
         }
         let index = *self.members.get(&entry).ok_or_else(corrupt_block)?;
+        let length = self.metadata.files[index].size;
+        if let Some(bytes) = self.retained.members.get(&entry) {
+            // Verified together with its whole block by an earlier read.
+            let mut staged = Stage::new(
+                storage,
+                StagePurpose::Member { entry },
+                Some(length),
+                length,
+            )?;
+            staged.copy(bytes.as_slice())?;
+            let content = staged.finish()?;
+            // Published: the host lease cache serves repeated reads.
+            self.retained.remove(entry);
+            return Ok(content);
+        }
         let block = self.metadata.stream_map.file_block_index[index].ok_or_else(corrupt_block)?;
         let mut file_index = self.metadata.stream_map.block_first_file_index[block];
         let block_size = self.metadata.blocks[block].get_unpack_size();
-        let mut actual = 0u64;
-        let length = self.metadata.files[index].size;
         let mut staged = Stage::new(
             storage,
             StagePurpose::Member { entry },
             Some(length),
             length,
         )?;
+        if self.retained.block != Some(block) {
+            // Siblings of another block give way to the block decoded now. Siblings of
+            // this block stay, so a cancelled decode does not discard verified bytes.
+            self.retained = Retained {
+                block: Some(block),
+                ..Retained::default()
+            };
+        }
+        let keep = self.retention(block, index);
+        let mut kept = Vec::new();
+        let mut actual = 0u64;
         let mut failure = None;
         let password = Password::empty();
         BlockDecoder::new(1, block, &self.metadata, &password, &mut self.source)
@@ -213,6 +337,11 @@ impl Content {
                     // enters the retained cache until every member and the block CRC succeed.
                     let count = if file_index == index {
                         staged.copy(reader)?
+                    } else if let Some(node) = keep.get(&file_index) {
+                        let bytes = staged.retain(reader, file.size)?;
+                        let count = bytes.len() as u64;
+                        kept.push((*node, bytes));
+                        count
                     } else {
                         staged.discard(reader)?
                     };
@@ -238,7 +367,36 @@ impl Content {
         if actual != block_size {
             return Err(corrupt_block());
         }
+        for (node, bytes) in kept {
+            self.retained.insert(node, bytes);
+        }
         staged.finish()
+    }
+
+    /// Readable siblings worth keeping from one decode of `block`: later members
+    /// first (sequential copy-out and thumbnails), then earlier ones nearest first,
+    /// within the retention budget beside those already kept. A member outside this
+    /// window that is read later costs another decode of the whole block.
+    fn retention(&self, block: usize, requested: usize) -> HashMap<usize, u64> {
+        let files = self.block_files[block].clone();
+        let mut cost = self.retained.cost;
+        let mut keep = HashMap::new();
+        for index in (requested + 1..files.end).chain((files.start..requested).rev()) {
+            let Some(node) = self.nodes[index] else {
+                continue;
+            };
+            if self.retained.members.contains_key(&node) {
+                continue;
+            }
+            let next = cost
+                .saturating_add(self.metadata.files[index].size)
+                .saturating_add(RETAINED_ENTRY_COST);
+            if next <= RETAINED_SIBLINGS {
+                cost = next;
+                keep.insert(index, node);
+            }
+        }
+        keep
     }
 }
 

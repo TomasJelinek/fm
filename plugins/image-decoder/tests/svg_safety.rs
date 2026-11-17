@@ -58,6 +58,36 @@ fn dtd_cycles_duplicate_ids_deep_xml_and_exponential_reuse_fail_before_render() 
 }
 
 #[test]
+fn expansion_budget_follows_the_href_that_usvg_follows() {
+    // usvg instantiates the unprefixed `href`; a leading `xlink:href` to a leaf must
+    // not hide 10^5 expanded references from the budget.
+    let mut body = String::from(
+        r#"<defs><rect id="s" width="1" height="1"/><rect id="n0" width="40" height="20"/>"#,
+    );
+    for level in 1..=5 {
+        body.push_str(&format!(r#"<g id="n{level}">"#));
+        for _ in 0..10 {
+            body.push_str(&format!(
+                r##"<use xlink:href="#s" href="#n{}"/>"##,
+                level - 1
+            ));
+        }
+        body.push_str("</g>");
+    }
+    body.push_str(r##"</defs><use xlink:href="#s" href="#n5"/>"##);
+    let svg = format!(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="40" height="20">{body}</svg>"#
+    );
+    let error = midnight_image_decoder::decode(&mut Cursor::new(svg), Some((20, 20)))
+        .expect_err("hidden reference expansion must be refused");
+    assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    // The xlink form alone still works when no unprefixed `href` competes with it.
+    let xlink = r##"<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="4" height="2"><defs><rect id="r" width="4" height="2" fill="red"/></defs><use xlink:href="#r"/></svg>"##;
+    let image = midnight_image_decoder::decode(&mut Cursor::new(xlink), None).unwrap();
+    assert_eq!(image.get_pixel(1, 1).0, [255, 0, 0, 255]);
+}
+
+#[test]
 fn excessive_dimensions_and_nodes_are_refused_even_for_tiny_thumbnails() {
     for dimensions in [
         r#"width="32769" height="1""#,

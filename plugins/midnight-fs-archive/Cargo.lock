@@ -203,7 +203,7 @@ checksum = "9157d62a316f1d1a4ebc34dc8fbc28c99d52ec5afce232f31e0ca2c03a9b7b23"
 
 [[package]]
 name = "midnight-fs-archive"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bzip2",
  "flate2",

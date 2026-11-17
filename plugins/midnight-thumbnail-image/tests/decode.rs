@@ -33,6 +33,33 @@ fn real_png_preserves_aspect_ratio_and_transparency() {
 }
 
 #[test]
+fn transparent_edges_do_not_darken_reduced_colors() {
+    // Half opaque red, half transparent black, reduced 4:1: every edge block mixes
+    // both. Straight-alpha box averaging produced dark (128, 0, 0) halos here.
+    let source = RgbaImage::from_fn(40, 20, |x, _| {
+        if x < 18 {
+            image::Rgba([255, 0, 0, 255])
+        } else {
+            image::Rgba([0, 0, 0, 0])
+        }
+    });
+    let mut encoded = Cursor::new(Vec::new());
+    DynamicImage::ImageRgba8(source)
+        .write_to(&mut encoded, ImageFormat::Png)
+        .unwrap();
+    encoded.set_position(0);
+    let result = midnight_thumbnail_image::decode(&request(), &mut encoded).unwrap();
+    assert_eq!((result.width, result.height), (10, 5));
+    for pixel in result.rgba.as_chunks::<4>().0 {
+        if pixel[3] != 0 {
+            assert_eq!(pixel[..3], [255, 0, 0], "{pixel:?}");
+        }
+    }
+    let edge = &result.rgba.as_chunks::<4>().0[4];
+    assert!((100..156).contains(&edge[3]), "{edge:?}");
+}
+
+#[test]
 fn malformed_and_excessive_dimensions_fail_without_a_frame() {
     for bytes in [
         Vec::new(),

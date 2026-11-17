@@ -25,8 +25,12 @@ TAR indexes checked member ranges without reading file payloads. Compressed TAR 
 standalone compressed streams first decode and validate their complete outer stream
 into one private scratch file; members then reuse checked ranges of it. The worker
 reads source bytes on demand through the host's revision-checked source broker and
-streams selected members into private host-owned spool files, so neither the
-complete archive nor a decoded member stays in worker memory. Each mount keeps
+streams selected members into private host-owned spool files, so the complete
+archive never stays in worker memory; source reads are bounded to 256 KiB, and
+indexes fetch only the ranges they parse. Verified siblings of the last decoded
+solid 7z block do stay there, up to 128 MiB with later members first: members read
+within that window need no further block decode, while a larger block or a read
+outside the window decodes the whole block again. Each mount keeps
 recently read members for repeated reads (at most 16 members within 512 MiB of
 spool storage). Worker startup and indexing remain part of opening time. These
 changes do not remove resource limits, source revision validation or sandbox
