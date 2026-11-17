@@ -1,3 +1,4 @@
+#[path = "support/mod.rs"]
 mod support;
 
 use midnight_core::{Command, EntryKind, PaneId};

@@ -1,5 +1,5 @@
 //! Direct reusable operation progress fixture; adapter lifecycle has its own tests.
-use crate::modeless;
+use super::modeless;
 use i_slint_core::{
     accessibility::AccessibleStringProperty, item_tree::ItemRc, items::AccessibleRole,
     window::WindowInner,

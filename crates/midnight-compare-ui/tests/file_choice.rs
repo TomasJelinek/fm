@@ -1,4 +1,5 @@
 //! Real Slint form, worker session and keyboard input; fixtures never touch user files.
+#[path = "support/mod.rs"]
 mod support;
 use midnight_compare_ui::{ComparatorWindow, ComparatorWindows};
 use midnight_core::{FileCompareLaunch, FileCompareSource, ViewerAppearance};

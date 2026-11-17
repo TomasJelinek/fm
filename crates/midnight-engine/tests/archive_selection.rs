@@ -1,3 +1,5 @@
+// The production module under test shares this test module's name.
+#[allow(clippy::module_inception)]
 #[path = "../src/archive_selection.rs"]
 mod archive_selection;
 use midnight_core::*;

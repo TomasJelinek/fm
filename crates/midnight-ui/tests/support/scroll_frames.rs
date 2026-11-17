@@ -32,8 +32,8 @@ pub struct Frames<C: ComponentHandle + 'static> {
     clock: Rc<Cell<Duration>>,
     pixels: Vec<slint::Rgb8Pixel>,
     width: usize,
-    driver: Option<crate::native_scroll::NativeScroll>,
-    pub command: Option<crate::native_scroll::CommandStrip>,
+    driver: Option<super::native_scroll::NativeScroll>,
+    pub command: Option<super::native_scroll::CommandStrip>,
 }
 
 impl<C: ComponentHandle + 'static> Frames<C> {
@@ -60,10 +60,10 @@ impl<C: ComponentHandle + 'static> Frames<C> {
     }
 
     pub fn install_native_scroll(&mut self) {
-        self.driver = Some(crate::native_scroll::NativeScroll::new(&self.window));
+        self.driver = Some(super::native_scroll::NativeScroll::new(&self.window));
     }
 
-    pub fn take_native_scroll(&mut self) -> crate::native_scroll::NativeScroll {
+    pub fn take_native_scroll(&mut self) -> super::native_scroll::NativeScroll {
         self.driver.take().unwrap()
     }
     pub fn driver_event(&mut self, event: slint::winit_030::winit::event::WindowEvent) -> bool {

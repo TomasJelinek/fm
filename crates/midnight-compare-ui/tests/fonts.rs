@@ -11,6 +11,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+#[path = "support/mod.rs"]
 mod support;
 use support::TestPlatform;
 

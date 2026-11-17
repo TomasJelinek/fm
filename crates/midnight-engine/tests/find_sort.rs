@@ -1,3 +1,5 @@
+// The production module under test shares this test module's name.
+#[allow(clippy::module_inception)]
 #[path = "../src/find_sort.rs"]
 mod find_sort;
 use midnight_core::*;

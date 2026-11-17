@@ -1,5 +1,5 @@
 //! Optional BMP artifacts shared by software-rendered UI checks.
-use crate::ui;
+use super::ui;
 #[path = "bitmap.rs"]
 mod bitmap;
 

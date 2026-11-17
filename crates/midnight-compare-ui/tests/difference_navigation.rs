@@ -16,6 +16,7 @@ use std::{
     sync::Arc,
     time::{Duration, Instant},
 };
+#[path = "support/mod.rs"]
 mod support;
 use support::TestPlatform;
 

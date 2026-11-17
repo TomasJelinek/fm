@@ -2,6 +2,7 @@ use slint::{
     ComponentHandle, Rgba8Pixel, SharedPixelBuffer,
     platform::software_renderer::{MinimalSoftwareWindow, RepaintBufferType},
 };
+#[path = "support/mod.rs"]
 mod support;
 use support::TestPlatform;
 slint::slint! {

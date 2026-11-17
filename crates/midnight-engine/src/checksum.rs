@@ -1,6 +1,6 @@
 //! Backend-only checksum controller. One process-wide worker, bounded queues and retained quota.
 //! The host must await shutdown during normal close; UI/protocol integration is separate.
-use crate::retirement::WorkerOwned;
+use super::retirement::WorkerOwned;
 use midnight_core::*;
 #[path = "checksum_retirement.rs"]
 pub(crate) mod ownership;
@@ -157,7 +157,7 @@ pub struct Controller {
     requests: mpsc::Sender<WorkerOwned<Work>>,
     _service: Service,
     #[cfg(test)]
-    retirement: Option<crate::retirement::RetirementDomain>,
+    retirement: Option<super::retirement::RetirementDomain>,
     events: mpsc::Receiver<ChecksumEvent>,
     registry: Registry,
     stop: Cancellation,

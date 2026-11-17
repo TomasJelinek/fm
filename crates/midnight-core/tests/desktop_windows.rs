@@ -138,7 +138,12 @@ fn encoded_command(script: &str) -> String {
 fn hidden_shell_drains_both_output_streams_before_waiting_for_exit() {
     let mut command = Command::new(std::env::current_exe().unwrap());
     command
-        .args(["--exact", "shell_output_child", "--ignored", "--nocapture"])
+        .args([
+            "--exact",
+            &child_test("shell_output_child"),
+            "--ignored",
+            "--nocapture",
+        ])
         .env("MIDNIGHT_CORE_OUTPUT_CHILD", "1");
     let output = run_hidden(command);
     assert!(output.status.success());
@@ -314,8 +319,9 @@ fn cmd_roundtrip_keeps_each_argument_and_sentinel() {
         let mut command = Command::new(system_program("cmd.exe"));
         // /S removes these outer quotes; raw_arg preserves cmd's own syntax.
         // Expanding the trusted executable once also supports '%' in the repo path.
+        let child = child_test("cmd_native_argument_child");
         let tail = format!(
-            "\"\"%MIDNIGHT_CORE_ARGV_EXE%\" --exact cmd_native_argument_child --ignored --nocapture -- {ARGV_MARKER} {token} {SENTINEL}\""
+            "\"\"%MIDNIGHT_CORE_ARGV_EXE%\" --exact {child} --ignored --nocapture -- {ARGV_MARKER} {token} {SENTINEL}\""
         );
         command
             .args(["/D", "/V:OFF", "/S", "/C"])
@@ -364,5 +370,14 @@ fn cmd_refuses_expansion_newlines_quotes_nul_and_ambiguous_quoted_trailing_slash
             quote_shell_path(Path::new(value), ShellFlavor::Cmd).is_err(),
             "{value:?}"
         );
+    }
+}
+
+/// Name of a helper test of this module as libtest lists it, whether this file
+/// is compiled as its own test crate or as a module of `tests/integration.rs`.
+fn child_test(name: &str) -> String {
+    match module_path!().split_once("::") {
+        Some((_, module)) => format!("{module}::{name}"),
+        None => name.to_owned(),
     }
 }

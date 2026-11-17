@@ -1,5 +1,6 @@
 #![cfg(windows)]
 
+#[path = "support/mod.rs"]
 mod support;
 
 use midnight_core::{Command, PaneId};

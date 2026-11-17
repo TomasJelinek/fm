@@ -43,6 +43,9 @@ the formatting authority; strict Clippy checks run in CI.
 - **Tests:** test observable behavior and real boundaries; cover errors, races,
   cancellation, Unicode and long paths. Keep large and OS-specific test groups
   in separate files. Do not copy implementation logic into expected results.
+  A crate's integration tests normally form one `integration` binary: declare
+  each new `tests/*.rs` file in `tests/integration.rs` (its guard test fails
+  otherwise). Do not rely on process-wide state being fresh per test file.
 - **Test execution:** compile targeted test artifacts once and run independent
   headless suites concurrently with a bounded process/thread budget. Give each
   process its own temporary files, render output and log; preserve package

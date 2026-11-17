@@ -4,7 +4,13 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
+# All tests/*.rs files are modules of one binary; see tests/integration.rs.
+autotests = false
 
 [dependencies]
 midnight-web-viewer-api = { path = "../../web-viewer-api/midnight-web-viewer-api" }
 unicase = "=2.10.0"
+
+[[test]]
+name = "integration"
+path = "tests/integration.rs"

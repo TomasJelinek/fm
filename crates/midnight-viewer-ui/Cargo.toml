@@ -4,6 +4,8 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
+# All tests/*.rs files are modules of one binary; see tests/integration.rs.
+autotests = false
 
 [dependencies]
 midnight-core.workspace = true
@@ -24,3 +26,7 @@ png = "0.18"
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 midnight-native-filesystem-host = { path = "../midnight-native-filesystem-host" }
 midnight-platform-linux.workspace = true
+
+[[test]]
+name = "integration"
+path = "tests/integration.rs"

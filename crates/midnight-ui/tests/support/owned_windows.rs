@@ -1,6 +1,6 @@
 //! Installed UI input routes to embedded popups or independent native tools.
 #![allow(dead_code)]
-use crate::ui::TestUi;
+use super::ui::TestUi;
 use i_slint_core::window::{WindowInner, WindowKind};
 use slint::{
     ComponentHandle,

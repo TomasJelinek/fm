@@ -115,7 +115,7 @@ impl Harness {
         );
         assert!(!self.ui.window.get_dialog_input_blocked());
         assert!(
-            !crate::ui::has_popup(&self.ui.window),
+            !super::ui::has_popup(&self.ui.window),
             "the decision is not an owner popup"
         );
         self.ui.item("Decide later", AccessibleRole::Button);

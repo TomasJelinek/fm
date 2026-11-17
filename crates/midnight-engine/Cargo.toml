@@ -4,6 +4,8 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
+# All tests/*.rs files are modules of one binary; see tests/integration.rs.
+autotests = false
 
 [dependencies]
 midnight-core.workspace = true
@@ -29,3 +31,7 @@ crc32fast = { version = "=1.5.4", default-features = false, features = ["std"] }
 midnight-platform.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
+
+[[test]]
+name = "integration"
+path = "tests/integration.rs"

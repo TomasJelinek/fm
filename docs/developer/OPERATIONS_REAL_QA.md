@@ -42,7 +42,7 @@ claim physical desktop keyboard/mouse/Shell handoff automation.
 Run from the repository root using the normal repository Rust environment:
 
 ```powershell
-cargo test -p midnight-engine --test operations_real_windows -- --nocapture --test-threads=1
+cargo test -p midnight-engine --test integration operations_real_windows:: -- --nocapture --test-threads=1
 ```
 
 The manual recycle case uses the production dedicated Windows recycle service on
@@ -50,7 +50,7 @@ one freshly generated owned folder. It does not enumerate or empty the Recycle
 Bin. Run only when deliberately exercising that integration:
 
 ```powershell
-cargo test -p midnight-engine --test operations_real_windows real_recycle_owned_fixture_without_permanent_fallback -- --ignored --nocapture --test-threads=1
+cargo test -p midnight-engine --test integration operations_real_windows::real_recycle_owned_fixture_without_permanent_fallback -- --ignored --nocapture --test-threads=1
 ```
 
 ## Coverage and evidence

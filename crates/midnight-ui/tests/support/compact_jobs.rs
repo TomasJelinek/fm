@@ -1,5 +1,5 @@
 //! Compact Jobs geometry uses its native body while main/Options retain their fixture.
-use crate::{inside_window, jobs_form, ui};
+use super::{inside_window, jobs_form, ui};
 use i_slint_core::items::AccessibleRole;
 use midnight_ui::OperationRow;
 use slint::{ComponentHandle, VecModel};

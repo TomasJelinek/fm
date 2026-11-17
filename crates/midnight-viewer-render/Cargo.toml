@@ -4,6 +4,8 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
+# All tests/*.rs files are modules of one binary; see tests/integration.rs.
+autotests = false
 
 [dependencies]
 parley = { version = "=0.11.1", features = ["complex-scripts"] }
@@ -13,3 +15,7 @@ unicode-width = "=0.2.3"
 
 [lints.rust]
 unsafe_code = "forbid"
+
+[[test]]
+name = "integration"
+path = "tests/integration.rs"

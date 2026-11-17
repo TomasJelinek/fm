@@ -549,7 +549,7 @@ fn selected(request: &UserCommandRequest, cancel: &Cancellation) -> Result<Vec<P
     }
     let files = request.context.files.as_ref();
     if let Some(files) = files.filter(|files| !files.selection.is_empty()) {
-        let paths = crate::file_targets::resolve(&files.selection, &files.view, None, cancel)?;
+        let paths = super::file_targets::resolve(&files.selection, &files.view, None, cancel)?;
         if paths.len() != files.selection.len() {
             return Err(invalid(
                 "Captured command selection no longer matches its visible directory.",

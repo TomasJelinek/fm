@@ -9,6 +9,7 @@ use slint::{
 };
 use std::{rc::Rc, sync::Arc};
 
+#[path = "support/mod.rs"]
 mod support;
 use support::TestPlatform;
 

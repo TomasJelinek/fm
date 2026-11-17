@@ -1,5 +1,5 @@
 //! Reveal popup controls through actual wheel input before pointer activation.
-use crate::ui;
+use super::ui;
 use i_slint_core::{
     item_tree::{ItemRc, ParentItemTraversalMode},
     items::{AccessibleRole, Flickable},

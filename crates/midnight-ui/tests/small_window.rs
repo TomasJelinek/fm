@@ -8,8 +8,8 @@ mod jobs_form;
 #[path = "support/modeless.rs"]
 mod modeless;
 mod render {
-    pub fn snapshot(test: &crate::ui::TestUi, name: &str) {
-        crate::modeless::bitmap::snapshot(&test.pixels, test.width, test.height, name);
+    pub fn snapshot(test: &super::ui::TestUi, name: &str) {
+        super::modeless::bitmap::snapshot(&test.pixels, test.width, test.height, name);
     }
 }
 #[path = "support/toolbar.rs"]

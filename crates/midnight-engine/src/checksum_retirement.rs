@@ -1,5 +1,5 @@
 //! Startup capabilities and the shared checksum service owner.
-use crate::retirement::{RetirementDomain, RetirementLease, RetirementWaiter, WorkerOwned};
+use super::super::retirement::{RetirementDomain, RetirementLease, RetirementWaiter, WorkerOwned};
 use midnight_core::{MAX_CHECKSUM_JOBS, TransferService};
 use std::sync::Arc;
 

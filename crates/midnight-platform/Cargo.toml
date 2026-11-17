@@ -4,6 +4,8 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
+# All tests/*.rs files are modules of one binary; see tests/integration.rs.
+autotests = false
 
 [dependencies]
 midnight-core.workspace = true
@@ -16,3 +18,7 @@ midnight-platform-linux.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+
+[[test]]
+name = "integration"
+path = "tests/integration.rs"

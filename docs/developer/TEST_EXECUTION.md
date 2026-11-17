@@ -6,9 +6,23 @@ Build the exact affected package/target set once, using the normal repository en
 
 ```text
 cargo metadata --locked --no-deps --format-version 1 > _build/qa/targeted-metadata.json
-cargo test --locked -p midnight-core --test shortcuts --no-run --message-format=json > _build/qa/targeted-build.jsonl
-py -3 -B scripts/run-targeted-tests.py --metadata _build/qa/targeted-metadata.json --receipt _build/qa/targeted-build.jsonl --target midnight-core test:shortcuts
+cargo test --locked -p midnight-core --test integration --no-run --message-format=json > _build/qa/targeted-build.jsonl
+py -3 -B scripts/run-targeted-tests.py --metadata _build/qa/targeted-metadata.json --receipt _build/qa/targeted-build.jsonl --test midnight-core test:integration shortcuts::
 ```
+
+Most application crates link all files under `tests/` into one `integration`
+binary: `tests/integration.rs` declares every other `tests/*.rs` file as a module
+and Cargo `autotests` is disabled, so each test is named `<file>::<test>`. A guard
+test, `every_test_file_is_a_module`, fails when a new file is not declared. One
+binary per crate avoids one link step, one executable and one cold process start
+per test file; select a former file with a module filter such as `shortcuts::`.
+`midnight-worker-platform` and `midnight-platform-windows` keep one binary per
+file because their tests change or inspect process-wide containment and terminal
+state. Crates with at most three integration files also keep one binary per
+file; CI selects some of those by name (`--test native`, `--test pdf_native`,
+`--test worker`). A test that re-runs its own executable must select the child
+by its module-qualified name (see `child_test` in
+`crates/midnight-core/tests/desktop_windows.rs`).
 
 When reproducing a failed CI job, match its workspace/package selection,
 feature flags, profile, target, toolchain and lockfile. A targeted `-p` pass does
@@ -32,8 +46,8 @@ To run two independent headless targets concurrently, select both in the build
 and in the runner (no second Cargo process is needed):
 
 ```text
-cargo test --locked -p midnight-core --test shortcuts --test panel_selected_navigation --no-run --message-format=json > _build/qa/targeted-build.jsonl
-py -3 -B scripts/run-targeted-tests.py --metadata _build/qa/targeted-metadata.json --receipt _build/qa/targeted-build.jsonl --target midnight-core test:shortcuts --target midnight-core test:panel_selected_navigation
+cargo test --locked -p midnight-core -p midnight-platform-common --test integration --no-run --message-format=json > _build/qa/targeted-build.jsonl
+py -3 -B scripts/run-targeted-tests.py --metadata _build/qa/targeted-metadata.json --receipt _build/qa/targeted-build.jsonl --target midnight-core test:integration --target midnight-platform-common test:integration
 ```
 
 The examples use the Windows Python launcher (`py -3 -B`); on Linux use `python3 -B`. `-B` suppresses bytecode files outside `_build`. Create `_build/qa` first if needed. Use UTF-8 redirection (PowerShell 7 supports this); do not mix receipts from failed builds or multiple builds of the same selected artifact. Supply the same toolchain, loader and installed-provider environment used to build and run the target. `rustc` must be available on PATH. The runner adds the native Rust runtime directory, artifact directories and receipt-declared generated native library paths under the target tree to the child's loader search path. Other required SDK/runtime paths remain the caller's responsibility. Cross-target execution is unsupported.
