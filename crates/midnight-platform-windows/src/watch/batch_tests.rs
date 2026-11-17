@@ -196,9 +196,11 @@ fn batch_overflow_signals_every_target_and_keeps_watching() {
     let release_receiver = Mutex::new(release_receiver);
     let (sender, receiver) = mpsc::sync_channel(64);
     let held = hold.clone();
-    let subscription = provider()
-        .watch_directories(
-            &[busy.clone(), other.clone()],
+    // A private service: stalling its thread must not delay other tests' subscriptions.
+    let service = crate::watch_service::Service::private().unwrap();
+    let subscription = service
+        .register(
+            Arc::from([busy.clone(), other.clone()]),
             Arc::new(move |mask| {
                 if held.swap(false, Ordering::SeqCst) {
                     // Hold the service thread so no read is pending while changes arrive.
@@ -227,8 +229,11 @@ fn batch_overflow_signals_every_target_and_keeps_watching() {
     }
     release.send(()).unwrap();
     expect_mask(&receiver, 3);
-    // The overflowed directory is re-armed and still reports ordinary changes.
+    // The overflow completion discarded every buffered record, so a later mask of the
+    // overflowed directory alone proves that it was re-armed; the other target too.
     receiver.try_iter().for_each(drop);
+    fs::write(busy.join("after"), b"after").unwrap();
+    expect_mask(&receiver, 1);
     fs::write(other.join("after"), b"after").unwrap();
     expect_mask(&receiver, 2);
     drop(subscription);

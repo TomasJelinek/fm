@@ -7,6 +7,12 @@
 //! buffer overflowed), `ERROR_NOTIFY_ENUM_DIR` and every other error signal all bits,
 //! as the core watch contract requires. Overflow re-arms; any other error stops that
 //! directory's watch (it was removed or became inaccessible) after signalling.
+//!
+//! Consumer callbacks run on the service thread. A panicking callback counts as
+//! delivered and never unwinds that thread. Should the thread still end (a broken port
+//! or a panic in the service itself), it leaks every entry whose read is pending instead
+//! of freeing memory the kernel may still write, and fails queued and later
+//! registrations instead of leaving them waiting.
 use std::{
     collections::HashMap,
     fs::{File, OpenOptions},
@@ -17,13 +23,15 @@ use std::{
         fs::OpenOptionsExt,
         io::{AsRawHandle, FromRawHandle, OwnedHandle},
     },
-    path::PathBuf,
+    panic::{AssertUnwindSafe, catch_unwind},
+    path::{Path, PathBuf},
     ptr,
     sync::{
-        Arc, Mutex, OnceLock,
+        Arc, Mutex, MutexGuard, OnceLock, PoisonError,
         atomic::{AtomicU64, Ordering},
         mpsc,
     },
+    time::Duration,
 };
 use windows_sys::Win32::{
     Foundation::{ERROR_NOTIFY_ENUM_DIR, GetLastError, INVALID_HANDLE_VALUE},
@@ -54,6 +62,24 @@ const FILTER: u32 = FILE_NOTIFY_CHANGE_FILE_NAME
     | FILE_NOTIFY_CHANGE_LAST_WRITE
     | FILE_NOTIFY_CHANGE_CREATION
     | FILE_NOTIFY_CHANGE_SECURITY;
+/// Arming never blocks the service thread, but consumer callbacks run on it. Should one
+/// block (a consumer bug), registration fails after this bound instead of blocking the
+/// registering backend worker forever.
+const REGISTER_TIMEOUT: Duration = Duration::from_secs(10);
+
+fn stopped() -> io::Error {
+    io::Error::other("the native watch service stopped")
+}
+
+fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// Delivers one mask. A panicking consumer callback counts as delivered: it must not
+/// unwind the service thread, which owns every pending read.
+fn deliver(signal: &Signal, mask: u32) {
+    let _ = catch_unwind(AssertUnwindSafe(|| signal(mask)));
+}
 
 enum Command {
     Register {
@@ -82,7 +108,9 @@ pub(crate) struct Registration {
 
 impl Drop for Registration {
     fn drop(&mut self) {
-        self.service.post(Command::Unregister(self.id));
+        // A lost wakeup leaves the command queued for the next one; the owner already
+        // disabled its callback, so a late unregistration only delays freeing the reads.
+        let _ = self.service.post(Command::Unregister(self.id));
     }
 }
 
@@ -97,6 +125,16 @@ impl Service {
     }
 
     fn start() -> io::Result<&'static Self> {
+        let service = Self::detached()?;
+        std::thread::Builder::new()
+            .name("midnight-native-watch".into())
+            .spawn(move || Worker::new(service).run())?;
+        Ok(service)
+    }
+
+    /// A service whose worker the caller still has to run. Services live as long as
+    /// the process; production has exactly one.
+    fn detached() -> io::Result<&'static Self> {
         // SAFETY: creates a new completion port; no file handle is associated yet.
         let port = unsafe { CreateIoCompletionPort(INVALID_HANDLE_VALUE, ptr::null_mut(), 0, 1) };
         if port.is_null() {
@@ -104,16 +142,18 @@ impl Service {
         }
         // SAFETY: a successful call returned one owned port handle.
         let port = unsafe { OwnedHandle::from_raw_handle(port) };
-        // The process-wide service lives as long as the process.
-        let service: &'static Self = Box::leak(Box::new(Self {
+        Ok(Box::leak(Box::new(Self {
             port,
             commands: Mutex::new(Some(Vec::new())),
             next: AtomicU64::new(1),
-        }));
-        std::thread::Builder::new()
-            .name("midnight-native-watch".into())
-            .spawn(move || Worker::default().run(service))?;
-        Ok(service)
+        })))
+    }
+
+    /// A separate service with its own thread, so a test that stalls its thread cannot
+    /// delay the subscriptions of other tests.
+    #[cfg(test)]
+    pub(crate) fn private() -> io::Result<&'static Self> {
+        Self::start()
     }
 
     /// Opens every directory on the calling backend worker (a slow share blocks only
@@ -123,48 +163,101 @@ impl Service {
         targets: Arc<[PathBuf]>,
         signal: Signal,
     ) -> io::Result<Registration> {
+        self.register_within(targets, signal, REGISTER_TIMEOUT)
+    }
+
+    fn register_within(
+        &'static self,
+        targets: Arc<[PathBuf]>,
+        signal: Signal,
+        timeout: Duration,
+    ) -> io::Result<Registration> {
+        // Target bits are one u32 mask; the service thread must never compute an
+        // out-of-range shift (`watch.rs` validates the same bound for its callers).
+        if targets.is_empty() || targets.len() > 32 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "a native watch has 1..=32 target directories",
+            ));
+        }
         let directories = targets
             .iter()
-            .map(|path| {
-                OpenOptions::new()
-                    .access_mode(FILE_LIST_DIRECTORY)
-                    .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
-                    .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OVERLAPPED)
-                    .open(path)
-            })
+            .map(|path| open_directory(path))
             .collect::<io::Result<Vec<_>>>()?;
         let id = self.next.fetch_add(1, Ordering::Relaxed);
         let (reply, result) = mpsc::sync_channel(1);
-        self.post(Command::Register {
+        let posted = self.post(Command::Register {
             id,
             directories,
             targets,
             signal,
             reply,
         });
-        // Arming never blocks the service thread, so the answer is prompt.
-        result
-            .recv()
-            .map_err(|_| io::Error::other("the native watch service stopped"))??;
+        if let Err(error) = posted {
+            // No wakeup was queued. Withdraw the registration unless a wakeup for
+            // another reason already handed it to the service thread.
+            if self.withdraw(id) {
+                return Err(error);
+            }
+        }
+        match result.recv_timeout(timeout) {
+            Ok(armed) => armed?,
+            Err(mpsc::RecvTimeoutError::Disconnected) => return Err(stopped()),
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                // No Registration owns it: unarm it whenever the thread gets to it.
+                let _ = self.post(Command::Unregister(id));
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "the native watch service did not respond",
+                ));
+            }
+        }
         Ok(Registration { id, service: self })
     }
 
-    fn post(&self, command: Command) {
-        let mut commands = self.commands.lock().unwrap_or_else(|e| e.into_inner());
+    /// Queues `command` and wakes the service thread. When the wakeup cannot be posted,
+    /// the command stays queued and runs at the thread's next wakeup (it drains the
+    /// queue on every wakeup, read completions included); the error is returned.
+    fn post(&self, command: Command) -> io::Result<()> {
+        let mut commands = lock(&self.commands);
         let Some(queue) = commands.as_mut() else {
             if let Command::Register { reply, .. } = command {
-                let _ = reply.send(Err(io::Error::other("the native watch service stopped")));
+                let _ = reply.send(Err(stopped()));
             }
-            return;
+            return Ok(());
         };
         queue.push(command);
         drop(commands);
         // SAFETY: a live port; a null OVERLAPPED with the command key only wakes the
-        // service thread, which drains the whole queue on every wakeup.
-        unsafe {
+        // service thread.
+        if unsafe {
             PostQueuedCompletionStatus(self.port.as_raw_handle(), 0, COMMAND_KEY, ptr::null())
-        };
+        } == 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
     }
+
+    /// Removes a still queued registration; false once the service thread took it.
+    fn withdraw(&self, id: u64) -> bool {
+        let mut commands = lock(&self.commands);
+        let Some(queue) = commands.as_mut() else {
+            return false;
+        };
+        let queued = queue.iter().position(
+            |command| matches!(command, Command::Register { id: queued, .. } if *queued == id),
+        );
+        queued.map(|index| queue.remove(index)).is_some()
+    }
+}
+
+fn open_directory(path: &Path) -> io::Result<File> {
+    OpenOptions::new()
+        .access_mode(FILE_LIST_DIRECTORY)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OVERLAPPED)
+        .open(path)
 }
 
 /// One watched directory, boxed so its OVERLAPPED and buffer keep stable addresses
@@ -183,14 +276,44 @@ struct Entry {
     cancelled: bool,
 }
 
-#[derive(Default)]
 struct Worker {
+    service: &'static Service,
     entries: HashMap<usize, Box<Entry>>,
     next_key: usize,
 }
 
+/// Runs when the service thread ends: a broken port, or a panic unwinding the thread.
+impl Drop for Worker {
+    fn drop(&mut self) {
+        // Later registrations fail at once instead of waiting for a reply nobody sends;
+        // queued ones fail now.
+        let queued = lock(&self.service.commands).take().unwrap_or_default();
+        for command in queued {
+            if let Command::Register { reply, .. } = command {
+                let _ = reply.send(Err(stopped()));
+            }
+        }
+        // A pending read still owns its OVERLAPPED and buffer, and the kernel may complete
+        // it at any time. Leak such entries, handles included, rather than free memory
+        // under a pending read; a stopped service never restarts.
+        for (_, entry) in self.entries.drain() {
+            if entry.pending {
+                std::mem::forget(entry);
+            }
+        }
+    }
+}
+
 impl Worker {
-    fn run(mut self, service: &'static Service) {
+    fn new(service: &'static Service) -> Self {
+        Self {
+            service,
+            entries: HashMap::new(),
+            next_key: 0,
+        }
+    }
+
+    fn run(mut self) {
         loop {
             let mut bytes = 0u32;
             let mut key = 0usize;
@@ -198,49 +321,39 @@ impl Worker {
             // SAFETY: a live port and writable outputs; INFINITE blocks without wakeups.
             let completed = unsafe {
                 GetQueuedCompletionStatus(
-                    service.port.as_raw_handle(),
+                    self.service.port.as_raw_handle(),
                     &mut bytes,
                     &mut key,
                     &mut overlapped,
                     INFINITE,
                 )
             } != 0;
-            if overlapped.is_null() {
-                if !completed {
-                    // Only a broken port fails without dequeuing anything: stop serving
-                    // instead of spinning, and fail pending and later registrations.
-                    break;
-                }
-                let commands = service
-                    .commands
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .as_mut()
-                    .map(std::mem::take)
-                    .unwrap_or_default();
-                for command in commands {
-                    self.command(service, command);
-                }
-                continue;
+            if !overlapped.is_null() {
+                // SAFETY: reads the calling thread's error for the failed dequeued read.
+                let error = (!completed).then(|| unsafe { GetLastError() });
+                self.completed(key, bytes, error);
+            } else if !completed {
+                // Only a broken port fails without dequeuing anything: stop serving
+                // instead of spinning; dropping the worker fails every registration.
+                return;
             }
-            // SAFETY: reads the calling thread's error for the failed dequeued read.
-            let error = (!completed).then(|| unsafe { GetLastError() });
-            self.completed(key, bytes, error);
-        }
-        let pending = service
-            .commands
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .take()
-            .unwrap_or_default();
-        for command in pending {
-            if let Command::Register { reply, .. } = command {
-                let _ = reply.send(Err(io::Error::other("the native watch service stopped")));
-            }
+            // Every wakeup drains the queue, so a command whose own wakeup could not be
+            // posted still runs at the next completion.
+            self.drain();
         }
     }
 
-    fn command(&mut self, service: &Service, command: Command) {
+    fn drain(&mut self) {
+        let commands = lock(&self.service.commands)
+            .as_mut()
+            .map(std::mem::take)
+            .unwrap_or_default();
+        for command in commands {
+            self.command(command);
+        }
+    }
+
+    fn command(&mut self, command: Command) {
         match command {
             Command::Register {
                 id,
@@ -249,7 +362,7 @@ impl Worker {
                 signal,
                 reply,
             } => {
-                let result = self.register(service, id, directories, &targets, signal);
+                let result = self.register(id, directories, &targets, signal);
                 if result.is_err() {
                     self.unregister(id);
                 }
@@ -261,7 +374,6 @@ impl Worker {
 
     fn register(
         &mut self,
-        service: &Service,
         id: u64,
         directories: Vec<File>,
         targets: &[PathBuf],
@@ -285,7 +397,7 @@ impl Worker {
             if unsafe {
                 CreateIoCompletionPort(
                     directory.as_raw_handle(),
-                    service.port.as_raw_handle(),
+                    self.service.port.as_raw_handle(),
                     key,
                     0,
                 )
@@ -346,21 +458,21 @@ impl Worker {
         let rearm = match error {
             // A zero-byte completion: the buffer overflowed and the changes were lost.
             None if bytes == 0 => {
-                (entry.signal)(entry.all);
+                deliver(&entry.signal, entry.all);
                 true
             }
             None => {
-                (entry.signal)(entry.mask(bytes as usize));
+                deliver(&entry.signal, entry.mask(bytes as usize));
                 true
             }
             Some(ERROR_NOTIFY_ENUM_DIR) => {
-                (entry.signal)(entry.all);
+                deliver(&entry.signal, entry.all);
                 true
             }
             // Removed, inaccessible or disconnected directory, or an abort that was not
             // requested: refresh everything once and stop this directory's watch.
             Some(_) => {
-                (entry.signal)(entry.all);
+                deliver(&entry.signal, entry.all);
                 false
             }
         };
@@ -368,7 +480,7 @@ impl Worker {
             return;
         }
         if rearm {
-            (entry.signal)(entry.all);
+            deliver(&entry.signal, entry.all);
         }
         self.entries.remove(&key);
     }
@@ -453,6 +565,201 @@ fn records_mask(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_fixtures::build_temp;
+    use std::{fs, sync::atomic::AtomicBool};
+
+    const DEADLINE: Duration = Duration::from_secs(10);
+
+    fn targets(path: &Path) -> Arc<[PathBuf]> {
+        Arc::from([path.to_path_buf()])
+    }
+
+    /// Sends once when dropped: proves that every owner released a signal closure.
+    struct DropNotice(mpsc::SyncSender<()>);
+    impl Drop for DropNotice {
+        fn drop(&mut self) {
+            let _ = self.0.try_send(());
+        }
+    }
+
+    /// Before: a panicking callback unwound the service thread, which freed every
+    /// pending read's buffer and OVERLAPPED and left later registrations waiting forever.
+    #[test]
+    fn a_panicking_callback_counts_as_delivered_and_the_service_keeps_watching() {
+        let service = Service::private().unwrap();
+        let directory = build_temp("watch-panic-");
+        let (sender, receiver) = mpsc::sync_channel(16);
+        let panicked = Arc::new(AtomicBool::new(false));
+        let first = panicked.clone();
+        let _registration = service
+            .register(
+                targets(directory.path()),
+                Arc::new(move |mask| {
+                    let _ = sender.try_send(mask);
+                    if !first.swap(true, Ordering::SeqCst) {
+                        panic!("deliberate consumer callback panic");
+                    }
+                }),
+            )
+            .unwrap();
+        fs::write(directory.path().join("first"), b"first").unwrap();
+        receiver.recv_timeout(DEADLINE).unwrap();
+        assert!(panicked.load(Ordering::SeqCst));
+        receiver.try_iter().for_each(drop);
+        fs::write(directory.path().join("second"), b"second").unwrap();
+        assert_eq!(receiver.recv_timeout(DEADLINE).unwrap() & 1, 1);
+        let other = build_temp("watch-panic-other-");
+        drop(
+            service
+                .register(targets(other.path()), Arc::new(|_| {}))
+                .expect("the service thread survived the panic"),
+        );
+    }
+
+    #[test]
+    fn an_unwinding_worker_leaks_pending_reads_and_fails_registrations() {
+        let service = Service::detached().unwrap();
+        let directory = build_temp("watch-unwind-");
+        let (dropped, notice) = mpsc::sync_channel(1);
+        let guard = DropNotice(dropped);
+        let signal: Signal = Arc::new(move |_| {
+            let _ = &guard;
+        });
+        let mut worker = Worker::new(service);
+        worker
+            .register(
+                1,
+                vec![open_directory(directory.path()).unwrap()],
+                &[directory.path().to_path_buf()],
+                signal,
+            )
+            .unwrap();
+        let (reply, queued) = mpsc::sync_channel(1);
+        service
+            .post(Command::Register {
+                id: 2,
+                directories: Vec::new(),
+                targets: Arc::from([]),
+                signal: Arc::new(|_| {}),
+                reply,
+            })
+            .unwrap();
+        let unwound = catch_unwind(AssertUnwindSafe(move || {
+            let _worker = worker;
+            panic!("deliberate service thread failure");
+        }));
+        assert!(unwound.is_err());
+        // The entry with a pending read (and its signal) was leaked, never freed.
+        assert!(notice.try_recv().is_err());
+        assert!(queued.recv_timeout(DEADLINE).unwrap().is_err());
+        let later = service.register(targets(directory.path()), Arc::new(|_| {}));
+        assert!(later.err().unwrap().to_string().contains("stopped"));
+        // The kernel may still complete the leaked read into its intact buffer.
+        fs::write(directory.path().join("after"), b"after").unwrap();
+    }
+
+    #[test]
+    fn a_registration_times_out_while_a_callback_blocks_and_is_unarmed_later() {
+        let service = Service::private().unwrap();
+        let blocking = build_temp("watch-blocking-");
+        let (entered, entered_receiver) = mpsc::sync_channel(1);
+        let (release, release_receiver) = mpsc::sync_channel::<()>(1);
+        let release_receiver = Mutex::new(release_receiver);
+        let held = Arc::new(AtomicBool::new(true));
+        let _blocking = service
+            .register(
+                targets(blocking.path()),
+                Arc::new(move |_| {
+                    if held.swap(false, Ordering::SeqCst) {
+                        let _ = entered.send(());
+                        let _ = lock(&release_receiver).recv_timeout(DEADLINE);
+                    }
+                }),
+            )
+            .unwrap();
+        fs::write(blocking.path().join("hold"), b"hold").unwrap();
+        entered_receiver.recv_timeout(DEADLINE).unwrap();
+        let late = build_temp("watch-late-");
+        let (dropped, notice) = mpsc::sync_channel(1);
+        let guard = DropNotice(dropped);
+        let error = service
+            .register_within(
+                targets(late.path()),
+                Arc::new(move |_| {
+                    let _ = &guard;
+                }),
+                Duration::from_millis(50),
+            )
+            .err()
+            .unwrap();
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+        release.send(()).unwrap();
+        // The thread arms the late registration, then unarms it: its signal is freed.
+        notice.recv_timeout(DEADLINE).unwrap();
+        let after = build_temp("watch-after-");
+        drop(
+            service
+                .register(targets(after.path()), Arc::new(|_| {}))
+                .unwrap(),
+        );
+    }
+
+    #[test]
+    fn a_command_whose_wakeup_was_lost_runs_at_the_next_completion() {
+        let service = Service::private().unwrap();
+        let watched = build_temp("watch-wakeup-");
+        let (sender, receiver) = mpsc::sync_channel(16);
+        let _watched = service
+            .register(
+                targets(watched.path()),
+                Arc::new(move |mask| {
+                    let _ = sender.try_send(mask);
+                }),
+            )
+            .unwrap();
+        // Queue a registration without its wakeup, as after a failed post.
+        let other = build_temp("watch-wakeup-other-");
+        let id = service.next.fetch_add(1, Ordering::Relaxed);
+        let (reply, armed) = mpsc::sync_channel(1);
+        lock(&service.commands)
+            .as_mut()
+            .unwrap()
+            .push(Command::Register {
+                id,
+                directories: vec![open_directory(other.path()).unwrap()],
+                targets: targets(other.path()),
+                signal: Arc::new(|_| {}),
+                reply,
+            });
+        fs::write(watched.path().join("change"), b"change").unwrap();
+        receiver.recv_timeout(DEADLINE).unwrap();
+        armed.recv_timeout(DEADLINE).unwrap().unwrap();
+        drop(Registration { id, service });
+    }
+
+    #[test]
+    fn only_a_still_queued_registration_can_be_withdrawn() {
+        let service = Service::detached().unwrap();
+        let (reply, result) = mpsc::sync_channel(1);
+        lock(&service.commands)
+            .as_mut()
+            .unwrap()
+            .push(Command::Register {
+                id: 7,
+                directories: Vec::new(),
+                targets: Arc::from([]),
+                signal: Arc::new(|_| {}),
+                reply,
+            });
+        assert!(!service.withdraw(8));
+        assert!(service.withdraw(7));
+        assert!(!service.withdraw(7));
+        assert!(
+            result.try_recv().is_err(),
+            "a withdrawn registration has no reply"
+        );
+        assert!(lock(&service.commands).as_ref().unwrap().is_empty());
+    }
 
     fn buffer(records: &[(&str, u32)]) -> (Vec<u32>, usize) {
         let mut bytes = Vec::new();
