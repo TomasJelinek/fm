@@ -124,6 +124,58 @@ fn a_probe_stops_at_the_first_folder_and_issues_no_child_reference() {
 }
 
 #[test]
+fn a_child_that_repeats_an_ancestor_fails_the_expansion_not_the_probe() {
+    let (_registry, graph, mut tree) = fixture(TreeLimits::default());
+    let parent = row(&tree, 1).id;
+    run(&mut tree, Some(parent), TreeRequest::Expand);
+    let branch = row(&tree, 4).id;
+    // The hidden root's reference reappears below its descendant.
+    graph.set(4, vec![directory(0)]);
+    run(&mut tree, Some(branch), TreeRequest::Probe);
+    assert_eq!(row(&tree, 4).disclosure, Disclosure::Collapsed);
+    assert_eq!(row(&tree, 4).error, None);
+    run(&mut tree, Some(branch), TreeRequest::Expand);
+    assert_eq!(row(&tree, 4).disclosure, Disclosure::Failed);
+    assert_eq!(
+        row(&tree, 4).error,
+        Some(ProviderError::InvalidResponse(
+            "ancestor cycle in directory branch"
+        ))
+    );
+}
+
+#[test]
+fn a_probe_validates_only_the_entries_before_the_first_folder() {
+    let (_registry, graph, mut tree) = fixture(TreeLimits::default());
+    let parent = row(&tree, 1).id;
+    run(&mut tree, Some(parent), TreeRequest::Expand);
+    let branch = row(&tree, 4).id;
+    let duplicate = Some(ProviderError::InvalidResponse(
+        "duplicate or self-referencing listing node",
+    ));
+    // A token repeated before the first folder fails the probe.
+    graph.set(
+        4,
+        vec![
+            entry(8, EntryKind::File),
+            entry(8, EntryKind::File),
+            directory(9),
+        ],
+    );
+    run(&mut tree, Some(branch), TreeRequest::Probe);
+    assert_eq!(row(&tree, 4).disclosure, Disclosure::Failed);
+    assert_eq!(row(&tree, 4).error, duplicate);
+    // The probe never inspects one repeated after it; the expansion rejects it.
+    graph.set(4, vec![directory(9), directory(9)]);
+    run(&mut tree, Some(branch), TreeRequest::Probe);
+    assert_eq!(row(&tree, 4).disclosure, Disclosure::Collapsed);
+    assert_eq!(row(&tree, 4).error, None);
+    run(&mut tree, Some(branch), TreeRequest::Expand);
+    assert_eq!(row(&tree, 4).disclosure, Disclosure::Failed);
+    assert_eq!(row(&tree, 4).error, duplicate);
+}
+
+#[test]
 fn a_probe_reports_a_branch_with_more_folders_than_a_listing_can_hold() {
     let folders = TreeLimits::default().nodes as u64 + 1;
     let (_registry, provider, mut tree) =
