@@ -20,6 +20,9 @@ pub fn encoding(bytes: &[u8]) -> (Encoding, usize) {
     }
 }
 
+/// The (host) cancellation callback is polled once per this many scalars.
+const POLL_SCALARS: usize = 4096;
+
 #[derive(Clone, Debug)]
 pub struct Decoded {
     pub text: String,
@@ -27,7 +30,17 @@ pub struct Decoded {
     pub consumed: usize,
 }
 
-/// Incomplete scalars and CR are left unread unless EOF is known.
+/// Ends decoding once a forward page is complete: `bytes` text bytes or
+/// `lines` newlines follow the first scalar boundary at or after `source`.
+#[derive(Clone, Copy, Debug)]
+pub struct Tail {
+    pub source: u64,
+    pub bytes: usize,
+    pub lines: usize,
+}
+
+/// Incomplete scalars, and a CR whose next unit is still incomplete, are left
+/// unread unless EOF is known.
 pub fn decode(
     bytes: &[u8],
     offset: u64,
@@ -37,22 +50,48 @@ pub fn decode(
     max_lines: usize,
     cancelled: impl Fn() -> bool,
 ) -> Option<Decoded> {
+    decode_until(
+        bytes, offset, encoding, eof, max_bytes, max_lines, None, cancelled,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn decode_until(
+    bytes: &[u8],
+    offset: u64,
+    encoding: Encoding,
+    eof: bool,
+    max_bytes: usize,
+    max_lines: usize,
+    tail: Option<Tail>,
+    cancelled: impl Fn() -> bool,
+) -> Option<Decoded> {
     offset.checked_add(bytes.len() as u64)?;
     if cancelled() {
         return None;
     }
     let limit = max_bytes.min(64 * 1024);
+    // Each scalar consumes at least one source byte and emits at least one text
+    // byte, so this reserves every anchor once instead of growing geometrically.
+    let mut scalars = bytes.len().min(limit);
+    if let Some(tail) = tail {
+        let before = usize::try_from(tail.source.saturating_sub(offset)).unwrap_or(usize::MAX);
+        scalars = scalars.min(before.saturating_add(tail.bytes).saturating_add(1));
+    }
     let mut decoded = Decoded {
         text: String::with_capacity(limit.min(bytes.len())),
-        anchors: vec![Anchor {
-            text_offset: 0,
-            source_offset: offset,
-        }],
+        anchors: Vec::with_capacity(scalars + 1),
         consumed: 0,
     };
+    decoded.anchors.push(Anchor {
+        text_offset: 0,
+        source_offset: offset,
+    });
+    // Text offset and newline count since the tail boundary, once reached.
+    let mut page = tail.filter(|tail| offset >= tail.source).map(|_| (0, 0));
     let mut lines = 0;
     while decoded.consumed < bytes.len() && lines < max_lines {
-        if decoded.anchors.len().is_multiple_of(128) && cancelled() {
+        if decoded.anchors.len().is_multiple_of(POLL_SCALARS) && cancelled() {
             return None;
         }
         let at = decoded.consumed;
@@ -60,11 +99,11 @@ pub fn decode(
             break;
         };
         if ch == '\r' {
-            if at + size == bytes.len() && !eof {
-                break;
-            }
-            if let Some(('\n', next)) = scalar(&bytes[at + size..], encoding, eof) {
-                size += next;
+            match scalar(&bytes[at + size..], encoding, eof) {
+                // An incomplete look-ahead may still be the LF of this CRLF.
+                None if !eof => break,
+                Some(('\n', next)) => size += next,
+                _ => {}
             }
             ch = '\n';
         } else if ch.is_control() && ch != '\n' && ch != '\t' {
@@ -87,6 +126,16 @@ pub fn decode(
         });
         if ch == '\n' {
             lines += 1;
+        }
+        if let Some(tail) = tail {
+            if let Some((start, newlines)) = &mut page {
+                *newlines += usize::from(ch == '\n');
+                if decoded.text.len() - *start >= tail.bytes || *newlines >= tail.lines {
+                    break;
+                }
+            } else if offset + decoded.consumed as u64 >= tail.source {
+                page = Some((decoded.text.len(), 0));
+            }
         }
     }
     Some(decoded)
@@ -177,11 +226,13 @@ pub fn lookbehind(anchor: u64, bom: u64, encoding: Encoding) -> u64 {
 /// Decode an arbitrary read whose initial look-behind may itself split a scalar.
 /// Discard only that leading fragment; callers select the requested boundary
 /// after decoding, so genuine malformed bytes at that boundary remain visible.
+/// A `tail` stops decoding once the forward page after its source is complete.
 pub fn fragment(
     bytes: &[u8],
     location: (u64, Encoding, bool),
     eof: bool,
     max_bytes: usize,
+    tail: Option<Tail>,
     cancelled: impl Fn() -> bool,
 ) -> Option<Decoded> {
     let (offset, encoding, known_boundary) = location;
@@ -207,13 +258,14 @@ pub fn fragment(
     } else {
         0
     };
-    let mut decoded = decode(
+    let mut decoded = decode_until(
         &bytes[skip..],
         offset.checked_add(skip as u64)?,
         encoding,
         eof,
         max_bytes,
         usize::MAX,
+        tail,
         cancelled,
     )?;
     decoded.consumed += skip;

@@ -30,6 +30,8 @@ DLL/SO manifest. The checked-in manifest is the Windows template. The default
 output is `BUILD_ROOT/package/midnight-viewer-basic`; copy that directory under
 `viewers/` beside the host executable. Remove it and restart to remove capability.
 The platform-neutral ABI tests use real SDK dispatch and host service callbacks.
+Their test host keeps at most the SDK's 16 live plugin instances per test process
+and queues further hosts, so tests running in parallel never fail with `QUEUE_FULL`.
 The distribution's host tests own native DLL/SO loading and routing checks.
 
 ## Behavior and limits
@@ -38,34 +40,45 @@ The distribution's host tests own native DLL/SO loading and routing checks.
   It does not guess ANSI/code-page encodings. CR, LF and CRLF display as LF.
   Invalid bytes display as `\xFF`, malformed UTF-16 units as `\uD800`, and
   control characters except tab/newline as visible escapes. Escape sequences
-  are never interpreted as terminal commands. Valid Unicode and combining/RTL
-  content remain intact for the host renderer.
+  are never interpreted as terminal commands. Escapes carry the protocol's
+  invalid-source style (adjacent escapes share one span, at most 2048 spans per
+  page), so they stay distinguishable from literal backslash text; copied text
+  is the displayed text. Valid Unicode and combining/RTL content remain intact
+  for the host renderer.
 - Binary mode sends exact bounded raw bytes and u64 source offsets to the host's
   hexadecimal/printable-column renderer, with at most 16 bytes per requested row.
   The caller selects Text or Binary explicitly. Alt+F3 remains Text; ordinary F3
   can select Binary after host probing. This plugin does not reinterpret Text.
 - Open emits `Opened`; the host then requests a viewport. Seeking reads a bounded
   neighborhood of the requested source anchor, including a four-byte alignment
-  margin. It never scans a huge line or file before returning its first viewport.
-  Backward viewport requests return the nearest bounded lines before the anchor.
+  margin that only resynchronizes the decoder: forward and backward pages start
+  and end on boundaries of the file's own decoding, never inside a scalar, CRLF
+  or surrogate pair. It never scans a huge line or file before returning its
+  first viewport. Backward viewport requests return the nearest bounded lines
+  before the anchor; one that ends at the start of content is empty.
   Every decoded unit has exact start/end source anchors; escaped bytes and UTF-16
   offsets must not be interpolated. Pages remain below 256 KiB and CBOR item limits.
-- Each positional read is at most 8192 bytes. Short reads accumulate until the
-  requested range is full or explicit EOF arrives. Three consecutive zero-byte
-  non-EOF replies produce a terminal error. Small viewports that cannot contain
-  one complete decoded unit also report an error, without skipping source bytes.
-- Each instance admits at most 32 sessions. A session retains at most 1024 sparse
-  source checkpoints, coarsened as needed; it retains no decoded file cache.
-  Line count stays provisional (`estimated_lines = None`). Individual requests
-  retain bounded read, decoded-page and search state; the SDK separately caps
-  active requests, transport buffers, host leases and queued output.
+- Each viewport read is at most 8192 bytes; search reads use the 256 KiB protocol
+  maximum, so each searched byte is requested about once. Short reads accumulate
+  until the requested range is full or explicit EOF arrives. Three consecutive
+  zero-byte non-EOF replies produce a terminal error. Small viewports that cannot
+  contain one complete decoded unit also report an error, without skipping source
+  bytes.
+- Each instance admits at most 32 sessions. A session retains no checkpoints,
+  index or decoded file cache. Line count stays provisional
+  (`estimated_lines = None`). Individual requests retain bounded read,
+  decoded-page and search state; the SDK separately caps active requests,
+  transport buffers, host leases and queued output.
 - Search uses streaming KMP with Unicode 17 default full case folding (C+F,
   non-Turkic), including expansions such as `ß`/`ss`. It does not normalize
   canonically equivalent strings. Queries are capped by the API at 4096 UTF-8
-  bytes; matches return exact original byte ranges, including across pages.
-  Forward searches include starts at the anchor. Backward searches select the
-  nearest match ending at or before the anchor by a cancellable bounded scan
-  from the BOM; their latency is proportional to the preceding file content.
+  bytes; matches return exact original byte ranges, including across reads.
+  Forward searches include starts at the anchor. Backward searches scan 256 KiB
+  windows backwards from the anchor and stop at the first window that proves its
+  last match is the nearest one ending at or before the anchor, so latency grows
+  with the distance to that match, not with the preceding file content. (Content
+  of unknown length is scanned from the BOM instead.) Search decodes without
+  per-character allocation and polls host cancellation every 4096 decoded units.
   Search operates on decoded visible text, including visible escapes in binary
   mode, and is not a hexadecimal-pattern search. No match emits only completion.
 - Generation changes and Close invalidate pending session work. The SDK owns

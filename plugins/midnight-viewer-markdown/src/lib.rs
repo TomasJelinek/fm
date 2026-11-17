@@ -1,4 +1,7 @@
+mod build;
+mod checkpoints;
 pub mod decode;
+mod fence;
 pub mod markdown;
 mod page_cache;
 mod paging;

@@ -47,11 +47,31 @@ do not claim HTML or SVG. Saved per-plugin extension overrides remain in control
 
 Multiline strings and C-style block comments retain explicit state. Rust nested
 block comments support depth 16; Python/TOML triple quotes and Rust raw strings
-with up to 16 hashes are recognized. At most 256 complete-line checkpoints are
-retained per session. A viewport can rescan at most 32 KiB before its anchor;
-distant uncached positions or exhausted token/depth limits render plain text.
-Returning near a cached checkpoint restores highlighting. Source text and byte
-anchors remain identical when colouring is omitted.
+with up to 16 hashes are recognized. Literals follow each profile's delimiters:
+single-line literals (C-family, Java, C#, Go, Kotlin, Swift, JavaScript and
+TypeScript quotes, JSON, Batch, non-triple Python/TOML) end at an unescaped
+newline; Rust lifetimes and loop labels are not character literals; JSON has no
+`'` strings; YAML quotes only start whole scalars, so `Don't` stays plain;
+Java/Kotlin/Swift/C# `"""`, Go and JavaScript backtick strings span lines; and
+TOML/shell single quotes, Go raw strings, C# verbatim/raw strings and SQL/YAML
+doubled-quote literals take backslashes literally.
+
+At most 256 complete-line states are retained per session: the line starts of
+the latest highlighted page, for continuation in either direction, plus a sparse
+cover of every visited region that always keeps the BOM. The cover keeps states
+at least 2 KiB apart and doubles that spacing whenever its 192 entries are full,
+so earlier regions stay covered instead of being displaced by later ones. A page
+replays at most 32 KiB before the source its text can occupy: its anchor for a
+forward page, and the requested bytes and lines before the anchor for a backward
+page (for UTF-8, one byte per text byte plus one per line). While the visited text spans
+up to about 3 MiB, covered states stay less than 32 KiB apart (lines longer than
+that aside), so every revisit is highlighted; beyond that the cover thins and a
+distant revisit can render plain until paging reaches a covered state again.
+Positions never visited render plain text, and Text mode or unrecognized names
+never replay. A nesting overflow (depth 16) leaves its page plain but keeps the
+states before it. A page touching a line with more than 4096 styled tokens is
+plain, while lexing continues so later pages stay highlighted. Source text and
+byte anchors remain identical when colouring is omitted.
 
 ## Bounds and protocol
 
@@ -74,24 +94,32 @@ control pictures are supported. No terminal escape interpretation occurs.
 Offsets use checked u64 arithmetic. Every displayed scalar boundary has an
 exact source-byte anchor; incomplete encoded units are deferred to the next
 read. Maximum emitted text is 8192 UTF-8 bytes, with a further requested line
-limit. Enormous logical lines are fragments with `partial_line`/`has_after`.
+limit. A page reads only the source that text can occupy: one byte per text byte
+and line break for UTF-8, two for UTF-16, plus an 8-byte margin for a split
+scalar or CRLF. Enormous logical lines are fragments with `partial_line`/`has_after`.
 Uncached seeks use four bytes of look-behind after UTF-16 word alignment and
 select actual decoded boundaries. Backward pages retain the original source
 anchor as an upper bound and select the nearest preceding displayed lines.
 Forward search uses the same bounded alignment and excludes earlier matches.
 
-Each instance permits 16 sessions and four active operations. Reads are at most
+Each instance permits 16 sessions and four active operations; Locate never takes
+the last one. The SDK keeps a superseded request's pending read until the host
+replies, so admission reclaims the slots of cancelled requests rather than
+rejecting new viewports while stale reads drain on slow storage. Reads are at most
 64 KiB, decoder text at most 64 KiB, styles at most 4096, and checkpoint state
-at most 256 items per session. Four scratch decoders plus their inputs, output
-models and state remain below the 16 MiB plugin budget. SDK queues separately
-enforce their public byte/item caps. Cancellation is checked during decoding,
-lexing and between every asynchronous read.
+at most 256 items per session. A forward page decodes only its replay prefix and
+the page itself, never the rest of its read. Four scratch decoders plus their
+inputs, output models and state remain below the 16 MiB plugin budget. SDK queues
+separately enforce their public byte/item caps. Host cancellation is polled
+between asynchronous reads and once per 4 KiB of decoded, lexed or searched text;
+each poll crosses the plugin ABI.
 
 Search uses streaming KMP with a bounded query window across page boundaries.
 Insensitive search compares Unicode lowercase expansions; this is not locale
-collation or full Unicode case folding. Backward search scans from the start
-and retains the last match before the supplied anchor, trading latency for
-bounded memory. Reads yield host workers; progress is emitted at most four
+collation or full Unicode case folding. Each 32 KiB read is decoded and scanned
+completely, so every source byte is requested once. Backward search scans from
+the start and retains the last match before the supplied anchor, trading latency
+for bounded memory. Reads yield host workers; progress is emitted at most four
 times per second. There is no whole-file size cap and cancellation interrupts
 the scan.
 

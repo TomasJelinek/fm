@@ -1,3 +1,4 @@
+#[allow(dead_code)]
 mod support;
 use midnight_plugin_sdk::api::{abi, codec, messages::*, viewer::*};
 use midnight_viewer_source::midnight_plugin_entry_v1 as entry;
@@ -160,7 +161,8 @@ fn cross_page_search_and_reverse_search_preserve_offsets() {
 
 #[test]
 fn dense_tokens_fall_back_to_plain_when_the_wire_item_budget_is_exhausted() {
-    let input = "'' ".repeat(2730);
+    // 2,730 separate string spans plus 8,191 anchors exceed the CBOR item budget.
+    let input = "\"\" ".repeat(2730);
     let mut host = Host::new(input.as_bytes(), entry);
     open(&mut host, input.len() as u64);
     host.submit(

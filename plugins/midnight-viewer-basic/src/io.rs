@@ -1,15 +1,16 @@
 use crate::viewer::{Session, fail};
 use midnight_plugin_sdk::{
     Context,
-    api::{abi, messages},
+    api::{abi, messages, viewer::MAX_PAGE_BYTES},
 };
 use std::sync::Arc;
 
 type Done = Box<dyn FnOnce(Context, Vec<u8>, bool) + Send>;
-// A short successful read is not EOF. Accumulate only this bounded request;
-// copied bytes outlive individual SDK content leases, each released at callback end.
+// A short successful read is not EOF. Accumulate only this bounded request (at most
+// one protocol read); copied bytes outlive individual SDK content leases, each
+// released at callback end.
 pub fn read(context: Context, session: Arc<Session>, offset: u64, count: usize, done: Done) {
-    let count = count.min(crate::decode::READ_BYTES);
+    let count = count.min(MAX_PAGE_BYTES);
     let count = session
         .open
         .length

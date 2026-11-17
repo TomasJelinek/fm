@@ -1,6 +1,6 @@
 use super::*;
 use crate::decode::Encoding;
-use midnight_plugin_sdk::api::codec::Model;
+use midnight_plugin_sdk::api::{codec::Model, wire::WireError};
 
 fn raw_page(text: &str) -> DocumentPage {
     let decoded = decode::decode(
@@ -69,14 +69,14 @@ fn a_successful_context_check_preserves_the_exact_rich_page_in_both_directions()
         || false,
     )
     .unwrap();
-    let (raw, _) = render_context(&decoded, 7, true, || false).unwrap();
+    let raw = render_context(&decoded, 7, true, || false).unwrap().page;
     assert!(raw.blocks.iter().any(|block| !block.text.spans.is_empty()));
     assert!(raw.blocks.iter().any(|block| !block.links.is_empty()));
     assert!(raw.blocks.iter().any(|block| block.strikethrough.is_some()));
     assert!(raw.blocks.iter().any(|block| block.table.is_some()));
     let encoded = codec::encode(&raw).unwrap();
     for backwards in [false, true] {
-        let actual = crop_context(&raw, &full_window(&raw, backwards)).unwrap();
+        let actual = crop_context(&raw, u64::MAX, &full_window(&raw, backwards)).unwrap();
         assert_eq!(
             actual, raw,
             "text, exact anchors and all metadata must survive"
@@ -98,7 +98,7 @@ fn a_check_that_fits_after_removing_decorations_returns_that_mutated_page() {
     expected.blocks[0].strikethrough = None;
     codec::encode(&expected).unwrap();
     for backwards in [false, true] {
-        let actual = crop_context(&raw, &full_window(&raw, backwards)).unwrap();
+        let actual = crop_context(&raw, u64::MAX, &full_window(&raw, backwards)).unwrap();
         assert_eq!(
             actual, expected,
             "successful mutation must not be replaced by the raw page"
@@ -127,7 +127,7 @@ fn a_context_still_over_the_wire_limit_keeps_its_directional_scalar_fallback() {
     undecorated.blocks[0].strikethrough = None;
     assert_eq!(codec::encode(&undecorated), Err(WireError::Limit));
     for backwards in [false, true] {
-        let actual = crop_context(&raw, &full_window(&raw, backwards)).unwrap();
+        let actual = crop_context(&raw, u64::MAX, &full_window(&raw, backwards)).unwrap();
         let selected = if backwards {
             14000 - 8192..14000
         } else {
@@ -156,10 +156,62 @@ fn a_context_still_over_the_wire_limit_keeps_its_directional_scalar_fallback() {
             }
         );
         assert_eq!(block.text.source, actual.source);
-        assert!(block.text.spans.is_empty() && block.links.is_empty());
-        assert!(block.strikethrough.is_none() && block.table.is_none());
+        if backwards {
+            // The fragment is cropped from the decorated unit, so it keeps the
+            // styles that fall inside it when they fit its wire budget.
+            assert_eq!(block.text.spans.len(), MAX_SPANS - 2904);
+            assert_eq!(block.text.spans[0].start, 0);
+        } else {
+            // All 4,096 spans fall inside this fragment and still exceed it.
+            assert!(block.text.spans.is_empty());
+        }
+        assert!(block.links.is_empty() && block.table.is_none());
+        assert!(block.strikethrough.as_ref().is_none_or(Vec::is_empty));
         assert!(actual.has_before);
         assert_eq!(actual.has_after, !backwards);
+        assert!(codec::encode(&actual).is_ok());
+    }
+    assert_eq!(raw, original);
+}
+
+#[test]
+fn a_scalar_fallback_keeps_decoration_that_fits_its_smaller_fragment() {
+    let mut raw = raw_page(&"x".repeat(14000));
+    let block = &mut raw.blocks[0];
+    block.text.spans = (0..100)
+        .map(|at| at * 10)
+        .chain((0..100).map(|at| 13000 + at * 10))
+        .map(|start| Span {
+            start,
+            end: start + 5,
+            role: STYLE_CODE,
+            flags: 1,
+        })
+        .collect();
+    block.links.push(Link {
+        start: 0,
+        end: 4,
+        target: "https://example.org".into(),
+    });
+    block.strikethrough = Some(vec![TextRange { start: 6, end: 9 }]);
+    raw.validate().unwrap();
+    // 14,001 exact anchors alone exceed the public item budget.
+    assert_eq!(codec::encode(&raw), Err(WireError::Limit));
+    let original = raw.clone();
+    for backwards in [false, true] {
+        let actual = crop_context(&raw, u64::MAX, &full_window(&raw, backwards)).unwrap();
+        let block = &actual.blocks[0];
+        assert_eq!(block.text.text.len(), 8192);
+        assert_eq!(block.text.spans.len(), 100, "styles fit the fragment");
+        assert_eq!(block.links.len(), usize::from(!backwards));
+        assert_eq!(
+            block
+                .strikethrough
+                .as_ref()
+                .is_some_and(|ranges| !ranges.is_empty()),
+            !backwards
+        );
+        assert!(block.table.is_none());
         assert!(codec::encode(&actual).is_ok());
     }
     assert_eq!(raw, original);
@@ -172,7 +224,7 @@ fn a_malformed_context_remains_rejected_after_the_fallback_check() {
     let original = raw.clone();
     assert_eq!(codec::encode(&raw), Err(WireError::Malformed));
     for backwards in [false, true] {
-        assert!(crop_context(&raw, &full_window(&raw, backwards)).is_none());
+        assert!(crop_context(&raw, u64::MAX, &full_window(&raw, backwards)).is_none());
     }
     assert_eq!(raw, original);
 }

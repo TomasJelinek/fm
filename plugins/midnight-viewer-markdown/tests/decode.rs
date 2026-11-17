@@ -44,6 +44,40 @@ fn utf16_surrogate_pairs_and_malformed_units_are_exact() {
 }
 
 #[test]
+fn utf16_carriage_return_waits_for_a_line_feed_split_by_the_read_end() {
+    let decoded = decode(&[13, 0, 10], 0, Encoding::Le, false, 8192, 30, || false).unwrap();
+    assert_eq!((decoded.text.as_str(), decoded.consumed), ("", 0));
+    for (encoding, a, cr, lf) in [
+        (Encoding::Le, [b'A', 0], [b'\r', 0], [b'\n', 0]),
+        (Encoding::Be, [0, b'A'], [0, b'\r'], [0, b'\n']),
+    ] {
+        // A non-EOF read ends after a CR and the first byte of its LF.
+        let split = [a[0], a[1], cr[0], cr[1], lf[0]];
+        let decoded = decode(&split, 2, encoding, false, 8192, 30, || false).unwrap();
+        assert_eq!(
+            (decoded.text.as_str(), decoded.consumed),
+            ("A", 2),
+            "{encoding:?}"
+        );
+        // The next read starts at the CR and decodes CRLF as one line break.
+        let next = [cr[0], cr[1], lf[0], lf[1]];
+        let decoded = decode(&next, 4, encoding, false, 8192, 30, || false).unwrap();
+        assert_eq!(
+            (decoded.text.as_str(), decoded.consumed),
+            ("\n", 4),
+            "{encoding:?}"
+        );
+        // At EOF the lone byte cannot complete an LF, so the CR ends its line.
+        let decoded = decode(&split, 2, encoding, true, 8192, 30, || false).unwrap();
+        assert_eq!(
+            (decoded.text.as_str(), decoded.consumed),
+            ("A\n�", 5),
+            "{encoding:?}"
+        );
+    }
+}
+
+#[test]
 fn partial_units_and_crlf_are_deferred_and_huge_lines_are_bounded() {
     let decoded = decode(b"A\xf0\x9f", 0, Encoding::Utf8, false, 8192, 30, || false).unwrap();
     assert_eq!((decoded.text.as_str(), decoded.consumed), ("A", 1));

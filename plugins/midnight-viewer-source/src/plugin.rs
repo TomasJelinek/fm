@@ -9,14 +9,18 @@ use midnight_plugin_sdk::{
 use std::{
     collections::HashMap,
     sync::{
-        Arc, Mutex, MutexGuard,
+        Arc, Mutex, MutexGuard, Weak,
         atomic::{AtomicBool, AtomicUsize, Ordering},
     },
 };
 
+// Concurrent operations per instance; Locate never takes the last slot.
+const MAX_WORK: usize = 4;
+const MAX_LOCATE_WORK: usize = MAX_WORK - 1;
+
 pub struct Plugin {
     sessions: Mutex<HashMap<u64, Arc<Session>>>,
-    work: Arc<AtomicUsize>,
+    work: Arc<Budget>,
 }
 pub struct Metadata {
     pub encoding: Encoding,
@@ -35,10 +39,73 @@ pub struct Session {
 pub fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(|poison| poison.into_inner())
 }
-struct Permit(Arc<AtomicUsize>);
+
+/// Bounds the operations an instance runs at once. The SDK keeps a superseded
+/// request's pending read continuation, and so its permit, until the host
+/// replies; admission therefore reclaims permits of cancelled requests instead
+/// of rejecting new viewports while those stale reads drain on slow storage.
+struct Budget {
+    used: AtomicUsize,
+    slots: Mutex<Vec<Weak<Slot>>>,
+}
+struct Slot {
+    budget: Arc<Budget>,
+    context: Context,
+    released: AtomicBool,
+}
+struct Permit(Arc<Slot>);
+
+impl Budget {
+    fn new() -> Self {
+        Self {
+            used: AtomicUsize::new(0),
+            slots: Mutex::new(Vec::new()),
+        }
+    }
+
+    fn acquire(self: &Arc<Self>, limit: usize, context: &Context) -> Option<Permit> {
+        let take = || {
+            self.used
+                .try_update(Ordering::Acquire, Ordering::Relaxed, |n| {
+                    (n < limit).then_some(n + 1)
+                })
+                .is_ok()
+        };
+        if !take() {
+            // Outside the slot lock: polling cancellation may call the host.
+            let live: Vec<_> = lock(&self.slots).iter().filter_map(Weak::upgrade).collect();
+            for slot in live {
+                if !slot.released.load(Ordering::Acquire) && slot.context.is_cancelled() {
+                    slot.release();
+                }
+            }
+            if !take() {
+                return None;
+            }
+        }
+        let slot = Arc::new(Slot {
+            budget: self.clone(),
+            context: context.clone(),
+            released: AtomicBool::new(false),
+        });
+        let mut slots = lock(&self.slots);
+        slots.retain(|slot| slot.strong_count() != 0);
+        slots.push(Arc::downgrade(&slot));
+        Some(Permit(slot))
+    }
+}
+
+impl Slot {
+    fn release(&self) {
+        if !self.released.swap(true, Ordering::AcqRel) {
+            self.budget.used.fetch_sub(1, Ordering::Release);
+        }
+    }
+}
+
 impl Drop for Permit {
     fn drop(&mut self) {
-        self.0.fetch_sub(1, Ordering::Release);
+        self.0.release();
     }
 }
 impl Viewer for Plugin {
@@ -47,7 +114,7 @@ impl Viewer for Plugin {
     fn create(_: &[u8]) -> Result<Self, abi::Status> {
         Ok(Self {
             sessions: Mutex::new(HashMap::new()),
-            work: Arc::new(AtomicUsize::new(0)),
+            work: Arc::new(Budget::new()),
         })
     }
     fn handle(&self, request: Request, context: Context) {
@@ -61,23 +128,15 @@ impl Viewer for Plugin {
         if context.is_cancelled() {
             return;
         }
-        if self
-            .work
-            .try_update(Ordering::Acquire, Ordering::Relaxed, |n| {
-                // Locate never takes the last slot needed for viewport work.
-                (n < if request.kind() == abi::REQUEST_LOCATE {
-                    3
-                } else {
-                    4
-                })
-                .then_some(n + 1)
-            })
-            .is_err()
-        {
+        let limit = if request.kind() == abi::REQUEST_LOCATE {
+            MAX_LOCATE_WORK
+        } else {
+            MAX_WORK
+        };
+        let Some(permit) = self.work.acquire(limit, &context) else {
             let _ = context.fail(abi::QUEUE_FULL, "Viewer work budget exhausted");
             return;
-        }
-        let permit = Arc::new(Permit(self.work.clone()));
+        };
         if request.kind() == abi::REQUEST_OPEN {
             let open: messages::Open = match request.decode() {
                 Ok(open) => open,
@@ -178,7 +237,8 @@ impl Viewer for Plugin {
                         return;
                     }
                 };
-                let (offset, count, anchor) = paging::plan(&session, &viewport);
+                let plan = paging::plan(&session, &viewport);
+                let (offset, count) = (plan.offset, plan.count);
                 let next = session.clone();
                 read(
                     context,
@@ -187,7 +247,7 @@ impl Viewer for Plugin {
                     count,
                     Box::new(move |context, data, eof| {
                         let _permit = permit;
-                        paging::viewport(context, next, data, offset, anchor, viewport, eof);
+                        paging::viewport(context, next, data, plan, viewport, eof);
                     }),
                 );
             }

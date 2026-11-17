@@ -1,3 +1,4 @@
+#[allow(dead_code)]
 mod support;
 use midnight_plugin_sdk::api::{abi, codec, document::*, messages::*, viewer::*};
 use midnight_viewer_markdown::midnight_plugin_entry_v1 as entry;
@@ -232,5 +233,113 @@ fn dense_markdown_stays_readable_at_the_combined_wire_item_limit() {
         host.finish()
             .iter()
             .any(|e| e.kind == abi::EVENT_SEARCH_MATCH)
+    );
+}
+
+fn viewport_bytes() -> Vec<u8> {
+    codec::encode(&Viewport {
+        source_anchor: 0,
+        backwards: false,
+        max_bytes: 8192,
+        max_lines: 20,
+    })
+    .unwrap()
+}
+
+fn terminal(events: &[support::Event], request: u64) -> u32 {
+    events
+        .iter()
+        .find(|e| {
+            e.id == request
+                && [
+                    abi::EVENT_COMPLETED,
+                    abi::EVENT_FAILED,
+                    abi::EVENT_CANCELLED,
+                ]
+                .contains(&e.kind)
+        })
+        .unwrap_or_else(|| panic!("request {request} has no terminal event: {events:?}"))
+        .kind
+}
+
+#[test]
+fn requests_of_a_stale_generation_are_rejected_after_reopen() {
+    let input = b"# Heading\n\ntext\n";
+    let mut host = Host::new(input, entry);
+    open(&mut host, input.len() as u64);
+    host.submit_bytes(abi::REQUEST_CLOSE, &[]);
+    host.finish();
+    let reopen = codec::encode(&Open {
+        reader: 1,
+        length: Some(input.len() as u64),
+        revision: 4,
+        mode: MODE_DOCUMENT,
+        display_name: "test.md".into(),
+    })
+    .unwrap();
+    host.submit_generation(abi::REQUEST_OPEN, &reopen, 3);
+    assert!(host.finish().iter().any(|e| e.kind == abi::EVENT_OPENED));
+    let stale = host.submit_generation(abi::REQUEST_VIEWPORT, &viewport_bytes(), 2);
+    let events = host.finish();
+    assert_eq!(terminal(&events, stale), abi::EVENT_FAILED, "{events:?}");
+    assert!(events.iter().all(|e| e.kind != abi::EVENT_DOCUMENT_PAGE));
+    // A stale Close leaves the live generation open.
+    host.submit_generation(abi::REQUEST_CLOSE, &[], 2);
+    host.finish();
+    let live = host.submit_generation(abi::REQUEST_VIEWPORT, &viewport_bytes(), 3);
+    let events = host.finish();
+    let page: DocumentPage = codec::decode(
+        &events
+            .iter()
+            .find(|e| e.id == live && e.kind == abi::EVENT_DOCUMENT_PAGE)
+            .expect("live generation page")
+            .payload,
+    )
+    .unwrap();
+    assert_eq!(page.revision, 4);
+}
+
+#[test]
+fn superseded_viewports_waiting_for_reads_do_not_exhaust_work_slots() {
+    let input = "# Heading\n\ntext\n".repeat(100);
+    let mut host = Host::new(input.as_bytes(), entry);
+    open(&mut host, input.len() as u64);
+    // Each viewport is admitted and cancelled while its read is still queued,
+    // as when the user scrolls faster than slow storage answers.
+    for anchor in 0..6_u64 {
+        let request = host.submit(
+            abi::REQUEST_VIEWPORT,
+            &Viewport {
+                source_anchor: anchor * 16,
+                backwards: false,
+                max_bytes: 8192,
+                max_lines: 20,
+            },
+        );
+        let events = host.run_steps(1);
+        assert!(
+            events.iter().all(|e| e.kind != abi::EVENT_FAILED),
+            "{events:?}"
+        );
+        host.cancel(request);
+    }
+    let latest = host.submit(
+        abi::REQUEST_VIEWPORT,
+        &Viewport {
+            source_anchor: 160,
+            backwards: false,
+            max_bytes: 8192,
+            max_lines: 20,
+        },
+    );
+    let events = host.finish();
+    assert!(
+        events.iter().all(|e| e.kind != abi::EVENT_FAILED),
+        "{events:?}"
+    );
+    assert!(
+        events
+            .iter()
+            .any(|e| e.id == latest && e.kind == abi::EVENT_DOCUMENT_PAGE)
     );
 }

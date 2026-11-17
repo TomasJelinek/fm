@@ -1,15 +1,9 @@
 //! CommonMark to inert semantic blocks. This module has no I/O capability.
-use crate::decode::{self, Decoded};
-use midnight_plugin_sdk::api::{codec, document::*, viewer::*, wire::WireError};
-use pulldown_cmark::{Alignment, Event, Options, Parser, Tag, TagEnd};
-use std::ops::Range;
-
-fn parser(text: &str) -> Parser<'_> {
-    Parser::new_ext(
-        text,
-        Options::ENABLE_TABLES | Options::ENABLE_TASKLISTS | Options::ENABLE_STRIKETHROUGH,
-    )
-}
+use crate::{
+    build::{self, Parsed},
+    decode::{self, Decoded},
+};
+use midnight_plugin_sdk::api::{codec, document::*, viewer::*};
 
 pub fn render(
     decoded: &Decoded,
@@ -52,6 +46,30 @@ pub fn render_window(
     .map(|(page, _)| page)
 }
 
+pub fn render_backward(
+    decoded: &Decoded,
+    revision: u64,
+    eof: bool,
+    upper: u64,
+    max_bytes: usize,
+    max_lines: usize,
+    cancelled: impl Fn() -> bool,
+) -> Option<DocumentPage> {
+    render_slice(
+        decoded,
+        revision,
+        eof,
+        Window {
+            anchor: upper,
+            backwards: true,
+            max_bytes,
+            max_lines,
+        },
+        cancelled,
+    )
+    .map(|(page, _)| page)
+}
+
 pub(crate) struct Window {
     pub anchor: u64,
     pub backwards: bool,
@@ -72,8 +90,29 @@ impl Window {
             crop(page, self.anchor, self.max_bytes.min(8192), self.max_lines)
         }
     }
+
+    /// The bounded scalar fragment for an oversized unit or an anchor after
+    /// the last proven unit. A forward fragment that starts in proven content
+    /// stops before units that may continue past the read.
+    fn fragment(&self, raw: &DocumentPage, proven_end: u64) -> DocumentPage {
+        let complete = raw
+            .blocks
+            .iter()
+            .take_while(|block| block.text.source.offset < proven_end)
+            .count();
+        let proven_after_anchor = raw.blocks[..complete]
+            .last()
+            .is_some_and(|block| block.text.source.offset + block.text.source.length > self.anchor);
+        if !self.backwards && proven_after_anchor && complete < raw.blocks.len() {
+            self.crop(crate::semantic_window::slice_ref(raw, 0..complete))
+        } else {
+            self.crop(raw.clone())
+        }
+    }
 }
 
+/// The production viewport selection over one decoded read: semantic units,
+/// their bounded fallbacks, and finally the scalar plain-text fragment.
 pub(crate) fn render_slice(
     decoded: &Decoded,
     revision: u64,
@@ -81,13 +120,10 @@ pub(crate) fn render_slice(
     window: Window,
     cancelled: impl Fn() -> bool,
 ) -> Option<(DocumentPage, Vec<u64>)> {
-    let (raw, checkpoints) = render_context(decoded, revision, eof, &cancelled)?;
-    let mut page =
-        crate::semantic_window::crop(raw, &window).unwrap_or_else(|raw| window.crop(raw));
-    if !fits_wire(&mut page) {
-        page = window.crop(plain(decoded, revision, eof));
-    }
-    Some((page, checkpoints))
+    let parsed = render_context(decoded, revision, eof, &cancelled)?;
+    let page = crop_context(&parsed.page, parsed.proven_end, &window)
+        .unwrap_or_else(|| window.crop(plain(decoded, revision, eof)));
+    Some((page, parsed.checkpoints))
 }
 
 pub(crate) fn render_context(
@@ -95,323 +131,50 @@ pub(crate) fn render_context(
     revision: u64,
     eof: bool,
     cancelled: impl Fn() -> bool,
-) -> Option<(DocumentPage, Vec<u64>)> {
-    let mut checkpoints = Vec::new();
-    let raw = render_raw(decoded, revision, eof, &mut checkpoints, &cancelled)?;
-    Some((raw, checkpoints))
+) -> Option<Parsed> {
+    build::render_raw(decoded, revision, eof, cancelled)
 }
 
-pub(crate) fn crop_context(raw: &DocumentPage, window: &Window) -> Option<DocumentPage> {
-    let mut page =
-        crate::semantic_window::crop_ref(raw, window).unwrap_or_else(|| window.crop(raw.clone()));
-    if fits_wire(&mut page) {
+/// Select complete layout units around the anchor, or a bounded fragment.
+/// `proven_end` is the parse's [`Parsed::proven_end`].
+pub(crate) fn crop_context(
+    raw: &DocumentPage,
+    proven_end: u64,
+    window: &Window,
+) -> Option<DocumentPage> {
+    let selected = crate::semantic_window::crop_ref(raw, window, proven_end)
+        .unwrap_or_else(|| window.fragment(raw, proven_end));
+    if fits_wire(&selected) {
+        return Some(selected);
+    }
+    // A dense unit can fit its text and exact anchors only without optional
+    // styles and link metadata; keep the complete unit then.
+    let mut stripped = selected.clone();
+    strip_decoration(&mut stripped);
+    if fits_wire(&stripped) {
+        return Some(stripped);
+    }
+    drop(stripped);
+    // Otherwise use the same bounded prose fragment as an oversized raw unit,
+    // cropped from the still-decorated selection: the smaller fragment keeps
+    // its styles and links whenever they fit.
+    let mut page = window.crop(selected);
+    if fits_wire(&page) {
         return Some(page);
     }
-    // A complete layout unit can fit the read budget while exceeding the
-    // public exact-anchor/item budget. Preserve exact selection boundaries
-    // and use the same bounded prose fallback as an oversized raw unit.
-    page = window.crop(page);
-    fits_wire(&mut page).then_some(page)
+    strip_decoration(&mut page);
+    fits_wire(&page).then_some(page)
 }
 
-fn render_raw(
-    decoded: &Decoded,
-    revision: u64,
-    eof: bool,
-    checkpoints: &mut Vec<u64>,
-    cancelled: impl Fn() -> bool,
-) -> Option<DocumentPage> {
-    if cancelled() {
-        return None;
-    }
-    let start = decoded.anchors.first()?.source_offset;
-    let end = decoded.anchors.last()?.source_offset;
-    let mut page = DocumentPage {
-        revision,
-        source: SourceRange {
-            offset: start,
-            length: end - start,
-        },
-        blocks: Vec::new(),
-        has_before: start != 0,
-        has_after: !eof,
-    };
-    if decoded.text.len() > 65536 {
-        return Some(plain(decoded, revision, eof));
-    }
-    let mut active: Option<Block> = None;
-    let mut depth = 0usize;
-    let mut quote = 0u8;
-    let mut item = 0u8;
-    let mut strong = 0u8;
-    let mut emphasis = 0u8;
-    let mut strike = 0u8;
-    let mut images = 0u8;
-    let mut columns = Vec::new();
-    let mut table_start = 0;
-    let mut pending_link: Option<(u32, String)> = None;
-    for (count, (event, range)) in parser(&decoded.text).into_offset_iter().enumerate() {
-        if cancelled() {
-            return None;
-        }
-        if count >= 16384 {
-            return Some(plain(decoded, revision, eof));
-        }
-        match event {
-            Event::Start(tag) => {
-                depth += 1;
-                if depth > 16 {
-                    return Some(plain(decoded, revision, eof));
-                }
-                match tag {
-                    Tag::Table(alignments) => {
-                        flush(&mut active, &mut page);
-                        table_start = page.blocks.len();
-                        if alignments.len() > MAX_TABLE_COLUMNS {
-                            return Some(plain(decoded, revision, eof));
-                        }
-                        columns = alignments
-                            .into_iter()
-                            .map(|alignment| match alignment {
-                                Alignment::Center => TABLE_ALIGN_CENTER,
-                                Alignment::Right => TABLE_ALIGN_RIGHT,
-                                _ => TABLE_ALIGN_LEFT,
-                            })
-                            .collect();
-                    }
-                    Tag::TableHead | Tag::TableRow => {
-                        flush(&mut active, &mut page);
-                        let mut row = block(
-                            BLOCK_PARAGRAPH,
-                            item + quote,
-                            0,
-                            revision,
-                            decoded.source_at(range.start)?,
-                        );
-                        row.table = Some(TableRow {
-                            cells: Vec::new(),
-                            header: tag == Tag::TableHead,
-                        });
-                        active = Some(row);
-                    }
-                    Tag::TableCell => {
-                        let row = active.as_mut()?;
-                        let column = row.table.as_ref()?.cells.len();
-                        if column >= columns.len() {
-                            return Some(plain(decoded, revision, eof));
-                        }
-                        if column != 0 {
-                            append(row, decoded, "\t", range.start..range.start, STYLE_PLAIN, 0)?;
-                        } else if row.text.text.is_empty() {
-                            row.text.source.offset = decoded.source_at(range.start)?;
-                            row.text.anchors[0].source_offset = row.text.source.offset;
-                        }
-                        let start = row.text.text.len() as u32;
-                        row.table.as_mut()?.cells.push(TableCell {
-                            start,
-                            end: start,
-                            alignment: columns[column],
-                        });
-                    }
-                    Tag::BlockQuote(_) => {
-                        flush(&mut active, &mut page);
-                        quote += 1;
-                    }
-                    Tag::List(_) => flush(&mut active, &mut page),
-                    Tag::Item => {
-                        flush(&mut active, &mut page);
-                        item += 1;
-                        active = Some(block(BLOCK_LIST_ITEM, item + quote, 0, revision, start));
-                    }
-                    Tag::Paragraph => {
-                        flush(&mut active, &mut page);
-                        let kind = if item != 0 {
-                            BLOCK_LIST_ITEM
-                        } else if quote != 0 {
-                            BLOCK_QUOTE
-                        } else {
-                            BLOCK_PARAGRAPH
-                        };
-                        active = Some(block(kind, item + quote, 0, revision, start));
-                    }
-                    Tag::Heading { level, .. } => {
-                        flush(&mut active, &mut page);
-                        active = Some(block(
-                            BLOCK_HEADING,
-                            item + quote,
-                            level as u8,
-                            revision,
-                            start,
-                        ));
-                    }
-                    Tag::CodeBlock(_) | Tag::HtmlBlock => {
-                        flush(&mut active, &mut page);
-                        active = Some(block(BLOCK_CODE, item + quote, 0, revision, start));
-                    }
-                    Tag::Strong => strong += 1,
-                    Tag::Emphasis => emphasis += 1,
-                    Tag::Strikethrough => strike += 1,
-                    Tag::Image { .. } => images += 1,
-                    Tag::Link { dest_url, .. } if images == 0 && safe_link(&dest_url) => {
-                        let at = active.as_ref().map_or(0, |b| b.text.text.len() as u32);
-                        pending_link = Some((at, dest_url.into_string()));
-                    }
-                    _ => {}
-                }
-            }
-            Event::End(tag) => {
-                depth = depth.saturating_sub(1);
-                // Rendering already traverses the exact parser events. Record
-                // complete top-level boundaries here rather than parsing the
-                // same 64 KiB window again after every viewport.
-                if depth == 0
-                    && checkpoints.len() < 256
-                    && range.end < decoded.text.len()
-                    && let Some(offset) = decoded.source_at(range.end)
-                {
-                    checkpoints.push(offset);
-                }
-                match tag {
-                    TagEnd::TableCell => {
-                        let row = active.as_mut()?;
-                        row.table.as_mut()?.cells.last_mut()?.end = row.text.text.len() as u32;
-                    }
-                    TagEnd::TableHead | TagEnd::TableRow => flush(&mut active, &mut page),
-                    TagEnd::Table => {
-                        flush(&mut active, &mut page);
-                        // The parser closes an unfinished table at the raw read
-                        // boundary too. Its missing rows could change every column.
-                        if !eof && range.end == decoded.text.len() {
-                            for block in &mut page.blocks[table_start..] {
-                                block.table = None;
-                            }
-                        }
-                        columns.clear();
-                    }
-                    TagEnd::Paragraph
-                    | TagEnd::Heading(_)
-                    | TagEnd::CodeBlock
-                    | TagEnd::HtmlBlock => flush(&mut active, &mut page),
-                    TagEnd::Item => {
-                        flush(&mut active, &mut page);
-                        item = item.saturating_sub(1);
-                    }
-                    TagEnd::BlockQuote(_) => {
-                        flush(&mut active, &mut page);
-                        quote = quote.saturating_sub(1);
-                    }
-                    TagEnd::Strong => strong = strong.saturating_sub(1),
-                    TagEnd::Emphasis => emphasis = emphasis.saturating_sub(1),
-                    TagEnd::Strikethrough => strike = strike.saturating_sub(1),
-                    TagEnd::Image => images = images.saturating_sub(1),
-                    TagEnd::Link => {
-                        if let (Some((start, target)), Some(block)) =
-                            (pending_link.take(), active.as_mut())
-                        {
-                            let end = block.text.text.len() as u32;
-                            if start < end {
-                                block.links.push(Link { start, end, target });
-                            }
-                        }
-                    }
-                    _ => {}
-                }
-            }
-            Event::Rule => {
-                flush(&mut active, &mut page);
-                let mut rule = block(
-                    BLOCK_RULE,
-                    item + quote,
-                    0,
-                    revision,
-                    decoded.source_at(range.start)?,
-                );
-                // Empty semantic rule, represented by one exact source point.
-                rule.text.has_after = !eof;
-                page.blocks.push(rule);
-            }
-            Event::Text(text) | Event::Html(text) | Event::InlineHtml(text) => {
-                let current = active.get_or_insert_with(|| {
-                    block(BLOCK_PARAGRAPH, item + quote, 0, revision, start)
-                });
-                let role = if current.kind == BLOCK_CODE {
-                    STYLE_CODE
-                } else if current.kind == BLOCK_HEADING {
-                    STYLE_HEADING
-                } else if pending_link.is_some() {
-                    STYLE_LINK
-                } else {
-                    STYLE_PLAIN
-                };
-                append(
-                    current,
-                    decoded,
-                    &text,
-                    range,
-                    role,
-                    u8::from(strong != 0)
-                        | (u8::from(emphasis != 0) << 1)
-                        | (u8::from(strike != 0) << 3),
-                )?;
-            }
-            Event::Code(text) => {
-                let current = active.get_or_insert_with(|| {
-                    block(BLOCK_PARAGRAPH, item + quote, 0, revision, start)
-                });
-                append(
-                    current,
-                    decoded,
-                    &text,
-                    range,
-                    STYLE_CODE,
-                    u8::from(strong != 0) | (u8::from(strike != 0) << 3),
-                )?;
-            }
-            Event::TaskListMarker(checked) => {
-                let current = active.get_or_insert_with(|| {
-                    block(BLOCK_LIST_ITEM, item + quote, 0, revision, start)
-                });
-                // The checkbox is the marker; legacy hosts must not add a
-                // second bullet. Keep the nesting depth and exact source map.
-                current.kind = BLOCK_PARAGRAPH;
-                append(
-                    current,
-                    decoded,
-                    // Plain markers stay readable in user-selected text fonts;
-                    // Unicode ballot boxes can become emoji or missing glyphs.
-                    if checked { "[x] " } else { "[ ] " },
-                    range,
-                    STYLE_PLAIN,
-                    0,
-                )?;
-            }
-            Event::SoftBreak | Event::HardBreak => {
-                if let Some(current) = active.as_mut() {
-                    let separator = if matches!(event, Event::SoftBreak) {
-                        " "
-                    } else {
-                        "\n"
-                    };
-                    append(current, decoded, separator, range, STYLE_PLAIN, 0)?;
-                }
-            }
-            _ => {}
-        }
-    }
-    flush(&mut active, &mut page);
-    for block in &mut page.blocks {
-        block.text.has_before = block.text.source.offset != 0;
-        block.text.has_after = !eof || block.text.source.end().ok()? < end;
-    }
-    Some(page)
-}
-
+/// Crop a page whose blocks carry no table geometry (plain pages and scalar
+/// fragments) to the displayed text after `anchor`.
 pub fn crop(
     mut page: DocumentPage,
     anchor: u64,
     max_bytes: usize,
     max_lines: usize,
 ) -> DocumentPage {
+    debug_assert!(page.blocks.iter().all(|block| block.table.is_none()));
     let old_start = page.source.offset;
     let old_end = page.source.offset + page.source.length;
     let mut budget = max_bytes;
@@ -456,20 +219,19 @@ pub fn crop(
             if end < block.text.text.len() {
                 clipped = true;
             }
-            if start == end && block.kind != BLOCK_RULE && block.table.is_none() {
+            if start == end && block.kind != BLOCK_RULE {
                 return None;
             }
             let text = &mut block.text;
             text.anchors
                 .retain(|a| (start..=end).contains(&(a.text_offset as usize)));
-            if text.anchors.is_empty() {
-                return None;
-            }
+            let first = text.anchors.first()?.source_offset;
+            let last = text.anchors.last()?.source_offset;
             for a in &mut text.anchors {
                 a.text_offset -= start as u32;
             }
-            text.source.offset = text.anchors[0].source_offset;
-            text.source.length = text.anchors.last().unwrap().source_offset - text.source.offset;
+            text.source.offset = first;
+            text.source.length = last - first;
             text.text = text.text[start..end].into();
             text.spans = text
                 .spans
@@ -498,14 +260,6 @@ pub fn crop(
                     })
                 })
                 .collect();
-            if let Some(table) = &mut block.table {
-                for cell in &mut table.cells {
-                    cell.start = (cell.start as usize)
-                        .clamp(start, end)
-                        .saturating_sub(start) as u32;
-                    cell.end = (cell.end as usize).clamp(start, end).saturating_sub(start) as u32;
-                }
-            }
             if let Some(ranges) = &mut block.strikethrough {
                 *ranges = ranges
                     .iter()
@@ -519,12 +273,12 @@ pub fn crop(
                     })
                     .collect();
             }
-            budget -= text.text.len();
+            budget -= block.text.text.len();
             // Paragraphs, headings, list items and table rows have no literal
             // trailing newline, but each consumes at least one displayed line.
             // Counting only SoftBreak/HardBreak allowed hundreds of blocks into
             // a viewport requesting only a handful of lines.
-            if !text.text.ends_with('\n') {
+            if !block.text.text.ends_with('\n') {
                 lines = lines.saturating_sub(1);
             }
             Some(block)
@@ -549,45 +303,18 @@ pub fn crop(
     page
 }
 
-pub fn render_backward(
-    decoded: &Decoded,
-    revision: u64,
-    eof: bool,
-    upper: u64,
-    max_bytes: usize,
-    max_lines: usize,
-    cancelled: impl Fn() -> bool,
-) -> Option<DocumentPage> {
-    render_slice(
-        decoded,
-        revision,
-        eof,
-        Window {
-            anchor: upper,
-            backwards: true,
-            max_bytes,
-            max_lines,
-        },
-        cancelled,
-    )
-    .map(|(page, _)| page)
+fn fits_wire(page: &DocumentPage) -> bool {
+    codec::encode(page).is_ok()
 }
 
-fn fits_wire(page: &mut DocumentPage) -> bool {
-    match codec::encode(page) {
-        Ok(_) => true,
-        Err(WireError::Limit) => {
-            // Anchors, spans and links share one CBOR item quota. Optional
-            // decoration is discarded before displayed text or exact anchors,
-            // keeping document search consistent with the visible fallback.
-            for block in &mut page.blocks {
-                block.text.spans.clear();
-                block.links.clear();
-                block.strikethrough = None;
-            }
-            codec::encode(page).is_ok()
-        }
-        Err(_) => false,
+/// Anchors, spans and links share one CBOR item quota. Optional decoration is
+/// discarded before displayed text or exact anchors, keeping document search
+/// consistent with the visible fallback.
+fn strip_decoration(page: &mut DocumentPage) {
+    for block in &mut page.blocks {
+        block.text.spans.clear();
+        block.links.clear();
+        block.strikethrough = None;
     }
 }
 
@@ -692,119 +419,12 @@ pub fn crop_backward(
     page
 }
 
-fn block(kind: u16, depth: u8, level: u8, revision: u64, source: u64) -> Block {
-    Block {
-        kind,
-        depth,
-        heading_level: level,
-        links: Vec::new(),
-        table: None,
-        strikethrough: None,
-        text: TextPage {
-            revision,
-            source: SourceRange {
-                offset: source,
-                length: 0,
-            },
-            text: String::new(),
-            spans: Vec::new(),
-            anchors: vec![Anchor {
-                text_offset: 0,
-                source_offset: source,
-            }],
-            has_before: source != 0,
-            has_after: false,
-            partial_line: false,
-        },
-    }
-}
-
-fn flush(active: &mut Option<Block>, page: &mut DocumentPage) {
-    if let Some(block) = active
-        .take()
-        .filter(|b| !b.text.text.is_empty() || b.table.is_some())
-    {
-        page.blocks.push(block);
-    }
-}
-
-fn append(
-    block: &mut Block,
-    decoded: &Decoded,
-    rendered: &str,
-    range: Range<usize>,
-    role: u16,
-    flags: u8,
-) -> Option<()> {
-    if rendered.is_empty() {
-        return Some(());
-    }
-    let raw = decoded.text.get(range.clone())?;
-    let exact = if raw == rendered {
-        Some(range.start)
-    } else if role == STYLE_CODE {
-        raw.find(rendered).map(|at| range.start + at)
-    } else if raw.strip_prefix('\\') == Some(rendered) {
-        Some(range.start + 1)
-    } else {
-        None
-    };
-    let start = exact.unwrap_or(range.start);
-    let end = exact.map_or(range.end, |start| start + rendered.len());
-    let source_start = decoded.source_at(start)?;
-    let source_end = decoded.source_at(end)?;
-    let text = &mut block.text;
-    let base = text.text.len() as u32;
-    if base == 0 {
-        text.source.offset = source_start;
-        text.anchors[0].source_offset = source_start;
-    }
-    // A removed marker creates two source choices at one displayed boundary.
-    // Keep the previous exact boundary; never fabricate/interpolate an offset.
-    text.text.push_str(rendered);
-    if let Some(exact) = exact {
-        for (at, ch) in rendered.char_indices() {
-            let end = at + ch.len_utf8();
-            text.anchors.push(Anchor {
-                text_offset: base + end as u32,
-                source_offset: decoded.source_at(exact + end)?,
-            });
-        }
-    } else {
-        // Entities and normalized code can map multiple source scalars to one
-        // displayed span. Only event endpoints are exact; no guessed interior.
-        text.anchors.push(Anchor {
-            text_offset: text.text.len() as u32,
-            source_offset: source_end,
-        });
-    }
-    text.source.length = source_end.checked_sub(text.source.offset)?;
-    if flags & 8 != 0 {
-        let ranges = block.strikethrough.get_or_insert_with(Vec::new);
-        if let Some(last) = ranges.last_mut().filter(|last| last.end == base) {
-            last.end = text.text.len() as u32;
-        } else {
-            ranges.push(TextRange {
-                start: base,
-                end: text.text.len() as u32,
-            });
-        }
-    }
-    if role != STYLE_PLAIN || flags & 7 != 0 {
-        text.spans.push(Span {
-            start: base,
-            end: text.text.len() as u32,
-            role,
-            flags: flags & 7,
-        });
-    }
-    Some(())
-}
-
 pub fn safe_link(target: &str) -> bool {
     if target.is_empty()
         || target.len() > 2048
-        || target.chars().any(|c| c.is_control() || c.is_whitespace())
+        || target
+            .chars()
+            .any(|c| c.is_control() || c.is_whitespace() || decode::visible(c) != c)
         || target.contains('\\')
     {
         return false;

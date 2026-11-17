@@ -70,7 +70,9 @@ fn every_declared_language_recognizes_keywords_strings_comments_and_numbers() {
     ];
     for (name, language, code, keyword, comment) in cases {
         assert_eq!(syntax::detect(name, ""), Some(language), "{name}");
-        let spans = syntax::highlight(code, language, &mut State::default(), || false).unwrap();
+        let spans = syntax::highlight(code, language, &mut State::default(), || false)
+            .unwrap()
+            .spans;
         for (token, role) in [
             (keyword, STYLE_KEYWORD),
             ("42", STYLE_NUMBER),
@@ -122,7 +124,8 @@ fn nested_rust_comments_and_multiline_strings_keep_context_between_pages() {
         &mut state,
         || false,
     )
-    .unwrap();
+    .unwrap()
+    .spans;
     assert_eq!(spans[0].role, STYLE_COMMENT);
     assert_eq!(spans[0].end, 16);
     assert!(spans.iter().any(|span| span.role == STYLE_KEYWORD));
@@ -134,7 +137,8 @@ fn nested_rust_comments_and_multiline_strings_keep_context_between_pages() {
         &mut state,
         || false,
     )
-    .unwrap();
+    .unwrap()
+    .spans;
     assert_eq!(spans[0].role, STYLE_STRING);
     assert!(spans.iter().any(|span| span.role == STYLE_KEYWORD));
 }
@@ -147,6 +151,7 @@ fn lexical_resource_limits_and_cancellation_return_plain_fallback() {
     assert!(
         syntax::highlight("let x = 1", Language::Rust, &mut State::default(), || true).is_none()
     );
+    // Inputs above 64 KiB are rejected before lexing.
     assert!(
         syntax::highlight(
             &"x ".repeat(100_000),
@@ -156,15 +161,29 @@ fn lexical_resource_limits_and_cancellation_return_plain_fallback() {
         )
         .is_none()
     );
-    assert!(
-        syntax::highlight(
-            &"/*".repeat(100),
-            Language::Rust,
-            &mut State::default(),
-            || false
-        )
-        .is_none()
+    let mut state = State::default();
+    assert!(syntax::highlight(&"/*".repeat(100), Language::Rust, &mut state, || false).is_none());
+    assert_eq!(
+        state,
+        State::default(),
+        "a nesting overflow keeps the state"
     );
+}
+
+#[test]
+fn span_budget_overflow_truncates_styles_but_still_advances_the_state() {
+    // 5,000 numbers in 10 KB: more styled tokens than one page can carry.
+    let dense = format!("{}/* open\n", "1 ".repeat(5000));
+    let mut state = State::default();
+    let lexed = syntax::highlight(&dense, Language::Rust, &mut state, || false).unwrap();
+    assert!(lexed.truncated);
+    assert_eq!(lexed.spans.len(), MAX_SPANS);
+    assert!(lexed.spans.iter().all(|span| span.role == STYLE_NUMBER));
+    // The block comment opened after the truncated spans still carries over.
+    let next = syntax::highlight("still */ let x;", Language::Rust, &mut state, || false).unwrap();
+    assert!(!next.truncated);
+    assert_eq!((next.spans[0].role, next.spans[0].end), (STYLE_COMMENT, 8));
+    assert!(next.spans.iter().any(|span| span.role == STYLE_KEYWORD));
 }
 
 #[test]
@@ -220,7 +239,9 @@ fn additional_common_lexical_profiles_have_real_token_coverage() {
         ),
     ] {
         let language = syntax::detect(name, "").expect(name);
-        let spans = syntax::highlight(code, language, &mut State::default(), || false).unwrap();
+        let spans = syntax::highlight(code, language, &mut State::default(), || false)
+            .unwrap()
+            .spans;
         for (text, role) in [
             (keyword, STYLE_KEYWORD),
             (comment, STYLE_COMMENT),

@@ -31,6 +31,7 @@ fn viewport(host: &mut Host, anchor: u64, backwards: bool) -> DocumentPage {
 
 #[test]
 fn nearby_small_pages_do_not_copy_the_retained_context() {
+    let _exclusive = meter::exclusive();
     let input: String = (0..180)
         .map(|index| {
             format!(

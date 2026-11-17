@@ -151,7 +151,8 @@ fn step(context: Context, mut scan: Scan) {
                 return;
             };
             for (index, ch) in decoded.text.chars().enumerate() {
-                if index.is_multiple_of(128) && context.is_cancelled() {
+                // The host callback takes host locks; poll it at bounded intervals.
+                if index % 4096 == 4095 && context.is_cancelled() {
                     return;
                 }
                 let next = if matches!(ch, '\n' | '\u{2028}' | '\u{2029}') {

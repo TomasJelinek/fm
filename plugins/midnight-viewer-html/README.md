@@ -21,7 +21,9 @@ Set `MIDNIGHT_WEB_VIEWER_PROFILE` to an absolute, owned private session director
 The trusted host creates and pins it, restricts permissions, supervises the full
 Chromium process tree, and removes it only after every child exits. It is runtime
 storage, never a viewed-document resource path. Each document uses a fresh
-off-record request context with no persistent cookie store. Windows 10 or later
+off-record request context in which cookies are disabled entirely: no cookie is
+loaded or saved, session cookies included, so online sites that require cookies
+do not work. Windows 10 or later
 supplies the OS shader compiler; the package does not redistribute Microsoft's
 `d3dcompiler_47.dll`.
 
@@ -58,8 +60,13 @@ packaged bootstrap and a fresh `MIDNIGHT_WEB_VIEWER_PROFILE`. Run
 Windows desktop. It exercises real CEF, captured HTML and nested CSS streaming,
 inline styling, script denial, a denied loopback HTTP image request, browser
 Find and Find Next, select-control popup composition/hide, browser-arbitrated
-Space input, editable-field Space and explicit selection copy, layout zoom, fractional-DPI resize, and clean process exit. The final
-fixture passed in 2.29 seconds on the development Windows environment. Tests
+Space input, editable-field Space and explicit selection copy, textarea
+Enter/Shift+Enter, punctuation keys and a synthetic IME commit, layout zoom,
+fractional-DPI resize, and clean process exit. Editable steps wait for the copied
+selection rather than fixed delays, because frames carry no input acknowledgment.
+The final fixture passed in 2.29 seconds on the development Windows environment;
+on a loaded development machine CefShutdown alone took 10-12 seconds, so the
+fixture allows 30 seconds for the clean exit. Tests
 inside Codex's additional process sandbox failed child DLL startup; external
 qualification keeps Chromium's own sandbox enabled and succeeds. No unsandboxed
 fallback exists.
@@ -68,12 +75,35 @@ Policy changes require a new Open document generation and fresh source/resource
 IDs. The old browser must complete OnBeforeClose before a new context is created;
 a five-second close timeout exits the provider instead of weakening isolation.
 Offline permits only the current synthetic origin, main document and bounded
-host resource capabilities. Online exposes only the captured main document and
-permits HTTP(S); relative native/archive assets are revoked. Scripts require
-explicit online mode. Navigation, redirects, downloads, popups, file dialogs,
-permissions and external protocols cannot grant native authority. Select-control
-popup surfaces are separately bounded and composited into owned RGBA frames.
-No OnPaint or resource-output pointer survives its callback.
+host resource capabilities. The captured document is served at
+`https://mewv-<generation>.invalid/mewv-document/`; relative assets, and offline
+relative navigation to other captured files in scope, resolve below that directory
+through host capabilities. A reference that climbs above it (`../x`) or is
+root-relative (`/x`) is denied, never mapped onto a same-named file of the document
+directory. `State.url` always reports that main document URL (not the page shown
+after an in-scope navigation), and `State.editable` is always false. Online exposes
+only the captured main document and permits HTTP(S); relative native/archive assets
+are revoked. Scripts require explicit online mode. Navigation, redirects, downloads,
+popups, file dialogs, permissions and external protocols cannot grant native
+authority. Select-control popup surfaces are separately bounded and composited into
+owned RGBA frames; without a visible popup each converted paint moves into its
+frame without a second copy. No OnPaint or resource-output pointer survives its callback.
+
+At most 32 host resource requests are in flight; further browser requests wait in
+a FIFO of at most 4096 instead of failing, and a relative URL over 8 KiB is denied
+locally. Provider events are validated before they are queued, so an over-budget
+event becomes a bounded runtime error instead of stopping the transport. Paints and
+browser state keep only their latest value, resource releases use their own bounded
+lane, and the remaining controls use a FIFO of 256. The run loop handles up to 64 queued
+commands per CEF pump and wakes as soon as a command arrives; without commands it
+still pumps CEF about every 2 ms (no external message pump is used).
+
+Windows virtual keys never come from a character's ASCII value: punctuation uses
+the US-layout OEM key of its physical key, letters follow the produced Latin letter
+(QWERTZ/AZERTY), numpad keys follow NumLock, and unknown keys are 0, so typed
+punctuation never acts as Delete, arrow or page commands. Mouse Back/Forward buttons are not forwarded as clicks, and
+focus loss ends a held button's capture. Fractional wheel deltas accumulate per
+document. IME composition and commit pass CEF's required invalid replacement range.
 
 ## Linux status
 
@@ -87,7 +117,13 @@ authority, a 350-byte Unicode source path, Find, zoom, fractional viewport resiz
 Escape, policy-context replacement, provider crash and complete tree/state cleanup.
 Independent native CEF protocol tests additionally cover offline script/network
 denial, Find/Next, selection/Copy and editable Space/Enter/Shift+Enter.
-Physical IME and native Chromium Wayland remain unqualified. Other display/system
+The launcher passes its arguments to CEF as raw bytes, so a non-UTF-8 installation
+path does not abort startup. Before CEF starts any child, the browser process keeps
+a private close-on-exec duplicate of the MWV1 standard output for its writer and
+points descriptor 1 at standard error, so Chromium children and native libraries
+cannot write into the protocol stream. These two Linux adapter changes have not yet
+been qualified with the native Linux package.
+Physical IME input and native Chromium Wayland remain unqualified. Other display/system
 policies require their own native qualification. macOS has no implementation here.
 
 The host keeps the full profile path and separately owns a short private socket

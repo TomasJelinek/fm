@@ -14,6 +14,11 @@ use std::{
     },
 };
 
+/// Requests of one plugin instance that may decode/parse/match at once.
+/// Waiting for content reads holds no slot; the SDK bounds pending reads.
+const WORK_SLOTS: usize = 4;
+const MAX_SESSIONS: usize = 16;
+
 pub struct Plugin {
     sessions: Mutex<HashMap<u64, Arc<Session>>>,
     work: Arc<AtomicUsize>,
@@ -24,6 +29,9 @@ pub struct Metadata {
     pub ready: bool,
 }
 pub struct Session {
+    /// The envelope generation of the Open that created this session; other
+    /// generations of the same session ID are stale.
+    pub generation: u64,
     pub reader: u64,
     pub revision: u64,
     pub length: Option<u64>,
@@ -34,12 +42,38 @@ pub struct Session {
 pub fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(|poison| poison.into_inner())
 }
-struct Permit(Arc<AtomicUsize>);
+
+/// One of the instance's CPU work slots, released on drop.
+pub(crate) struct Permit(Arc<AtomicUsize>);
+impl Permit {
+    pub fn try_acquire(work: &Arc<AtomicUsize>) -> Option<Self> {
+        work.try_update(Ordering::Acquire, Ordering::Relaxed, |n| {
+            (n < WORK_SLOTS).then_some(n + 1)
+        })
+        .ok()?;
+        Some(Self(work.clone()))
+    }
+}
 impl Drop for Permit {
     fn drop(&mut self) {
         self.0.fetch_sub(1, Ordering::Release);
     }
 }
+
+/// Run a read continuation's CPU phase under a work slot.
+fn with_permit(
+    work: Arc<AtomicUsize>,
+    done: impl FnOnce(Context, Vec<u8>, bool) + Send + 'static,
+) -> ReadDone {
+    Box::new(move |context, data, eof| {
+        let Some(_permit) = Permit::try_acquire(&work) else {
+            let _ = context.fail(abi::QUEUE_FULL, "Viewer work budget exhausted");
+            return;
+        };
+        done(context, data, eof);
+    })
+}
+
 impl Viewer for Plugin {
     const ID: &'static str = "midnight.viewer.markdown";
     const VERSION: &'static str = "0.1.0";
@@ -51,26 +85,28 @@ impl Viewer for Plugin {
     }
     fn handle(&self, request: Request, context: Context) {
         if request.kind() == abi::REQUEST_CLOSE {
-            if let Some(session) = lock(&self.sessions).remove(&context.session()) {
+            let mut sessions = lock(&self.sessions);
+            // A stale generation's Close must not close the live session.
+            if sessions
+                .get(&context.session())
+                .is_some_and(|session| session.generation == context.generation())
+                && let Some(session) = sessions.remove(&context.session())
+            {
                 session.closed.store(true, Ordering::Release);
             }
+            drop(sessions);
             let _ = context.complete();
             return;
         }
         if context.is_cancelled() {
             return;
         }
-        if self
-            .work
-            .try_update(Ordering::Acquire, Ordering::Relaxed, |n| {
-                (n < 4).then_some(n + 1)
-            })
-            .is_err()
-        {
+        // The synchronous part (decoding requests, cache hits) is CPU work too;
+        // the slot is released before any content read is awaited.
+        let Some(permit) = Permit::try_acquire(&self.work) else {
             let _ = context.fail(abi::QUEUE_FULL, "Viewer work budget exhausted");
             return;
-        }
-        let permit = Arc::new(Permit(self.work.clone()));
+        };
         if request.kind() == abi::REQUEST_OPEN {
             let open: messages::Open = match request.decode() {
                 Ok(open) => open,
@@ -90,6 +126,7 @@ impl Viewer for Plugin {
                 return;
             }
             let session = Arc::new(Session {
+                generation: context.generation(),
                 reader: open.reader,
                 revision: open.revision,
                 length: open.length,
@@ -99,37 +136,31 @@ impl Viewer for Plugin {
                     bom: 0,
                     ready: false,
                 }),
-                hints: Mutex::new(paging::Hints::new(&open.display_name, open.mode)),
+                hints: Mutex::new(paging::Hints::new(open.mode)),
             });
             {
                 let mut sessions = lock(&self.sessions);
-                if sessions.len() >= 16 || sessions.contains_key(&context.session()) {
+                if sessions.len() >= MAX_SESSIONS || sessions.contains_key(&context.session()) {
                     let _ = context.fail(abi::QUEUE_FULL, "Viewer session unavailable");
                     return;
                 }
                 sessions.insert(context.session(), session.clone());
             }
             let next = session.clone();
+            drop(permit);
             read(
                 context,
                 session,
                 0,
-                512,
-                Box::new(move |context, data, _| {
-                    let _permit = permit;
+                4,
+                with_permit(self.work.clone(), move |context, data, _| {
                     let (encoding, bom) = decode::encoding(&data);
                     *lock(&next.metadata) = Metadata {
                         encoding,
                         bom: bom as u64,
                         ready: true,
                     };
-                    if let Some(prefix) =
-                        decode::decode(&data[bom..], bom as u64, encoding, true, 512, 4, || {
-                            context.is_cancelled()
-                        })
-                    {
-                        lock(&next.hints).initialize(&prefix.text, bom as u64);
-                    }
+                    lock(&next.hints).initialize(bom as u64);
                     send(
                         context,
                         Output::opened(&messages::Opened {
@@ -147,6 +178,10 @@ impl Viewer for Plugin {
             let _ = context.fail(abi::UNKNOWN_HANDLE, "Viewer session is closed");
             return;
         };
+        if session.generation != context.generation() {
+            let _ = context.fail(abi::UNKNOWN_HANDLE, "Viewer session generation is stale");
+            return;
+        }
         if !lock(&session.metadata).ready {
             let _ = context.fail(abi::INVALID, "Viewer is not opened yet");
             return;
@@ -164,16 +199,16 @@ impl Viewer for Plugin {
                     paging::send_page(context, &page, plain);
                     return;
                 }
-                let (offset, count, anchor) = paging::plan(&session, &viewport);
+                let plan = paging::plan(&session, &viewport);
                 let next = session.clone();
+                drop(permit);
                 read(
                     context,
                     session,
-                    offset,
-                    count,
-                    Box::new(move |context, data, eof| {
-                        let _permit = permit;
-                        paging::viewport(context, next, data, offset, anchor, viewport, eof);
+                    plan.offset,
+                    plan.count,
+                    with_permit(self.work.clone(), move |context, data, eof| {
+                        paging::viewport(context, next, data, plan, viewport, eof);
                     }),
                 );
             }
@@ -185,7 +220,8 @@ impl Viewer for Plugin {
                         return;
                     }
                 };
-                search::start(context, session, query, Box::new(move || drop(permit)));
+                drop(permit);
+                search::start(context, session, query, self.work.clone());
             }
             _ => {
                 let _ = context.fail(abi::UNSUPPORTED, "Unsupported request");

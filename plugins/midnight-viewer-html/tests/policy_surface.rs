@@ -1,11 +1,14 @@
 use midnight_viewer_html::policy::{Access, DocumentPolicy};
-use midnight_viewer_html::surface::Surface;
+use midnight_viewer_html::surface::Layers;
 
 #[test]
 fn offline_origin_never_falls_through_to_network() {
     let policy = DocumentPolicy::new(1, false, false).unwrap();
+    let main = policy.main_url();
+    assert!(main.starts_with("https://mewv-1.invalid/"));
+    assert_eq!(policy.access(&main), Access::Captured);
     assert_eq!(
-        policy.access("https://mewv-1.invalid/index.html"),
+        policy.access(&format!("{main}assets/index.css?v=2")),
         Access::Captured
     );
     assert_eq!(policy.access("https://example.com/"), Access::Deny);
@@ -15,6 +18,11 @@ fn offline_origin_never_falls_through_to_network() {
         "data:text/html,x",
         "https://mewv-1.invalid.evil/a",
         "https://mewv-1.invalid@evil/a",
+        // "../site.css" from the document resolves above its root; denied rather
+        // than clamped onto a same-named file of the document directory.
+        "https://mewv-1.invalid/site.css",
+        "https://mewv-1.invalid/",
+        "https://mewv-2.invalid/mewv-document/a.css",
     ] {
         assert_eq!(policy.access(url), Access::Deny, "{url}");
     }
@@ -24,67 +32,60 @@ fn offline_origin_never_falls_through_to_network() {
 fn online_only_exposes_main_document_and_scripts_require_network() {
     assert!(DocumentPolicy::new(1, false, true).is_err());
     let policy = DocumentPolicy::new(2, true, true).unwrap();
-    assert_eq!(policy.access("https://mewv-2.invalid/"), Access::Captured);
-    assert_eq!(
-        policy.access("https://mewv-2.invalid/index.html"),
-        Access::Deny
-    );
-    assert_eq!(
-        policy.access("https://mewv-2.invalid/sibling.css"),
-        Access::Deny
-    );
+    let main = policy.main_url();
+    assert_eq!(policy.access(&main), Access::Captured);
+    assert_eq!(policy.access(&format!("{main}?query")), Access::Captured);
+    assert_eq!(policy.access(&format!("{main}index.html")), Access::Deny);
+    assert_eq!(policy.access(&format!("{main}sibling.css")), Access::Deny);
     assert_eq!(policy.access("https://example.com/asset"), Access::Network);
     assert_eq!(policy.access("file:///tmp/a"), Access::Deny);
 }
 
 #[test]
-fn paint_is_owned_rgba_and_rejects_stale_resize() {
-    let mut surface = Surface::new(7, 1, 1).unwrap();
-    let mut bgra = vec![10, 20, 30, 128];
-    let frame = surface.paint(7, 1, 1, &bgra).unwrap();
-    bgra.fill(255);
-    assert_eq!(frame, vec![30, 20, 10, 128]);
-    surface.resize(8, 2, 1).unwrap();
-    assert!(surface.paint(7, 1, 1, &bgra).is_none());
-    assert!(Surface::new(1, 8193, 1).is_err());
-    assert!(Surface::new(1, 8192, 8192).is_err());
+fn online_network_branch_rejects_private_userinfo_and_empty_authorities() {
+    let policy = DocumentPolicy::new(2, true, false).unwrap();
+    for url in [
+        // A previous generation's private origin never becomes a network request.
+        "https://mewv-1.invalid/",
+        "https://mewv-1.invalid/mewv-document/",
+        "https://example.invalid/",
+        "https://user@example.com/",
+        "https:///x",
+        "http://",
+    ] {
+        assert_eq!(policy.access(url), Access::Deny, "{url}");
+    }
+    assert_eq!(policy.access("https://example.com/"), Access::Network);
+    assert_eq!(policy.access("http://example.com/a?b"), Access::Network);
 }
 
 #[test]
-fn fractional_dpi_rounding_crops_only_the_extra_native_edge() {
-    let mut surface = Surface::new(3, 3, 1).unwrap();
+fn zero_generation_reports_its_own_error() {
     assert_eq!(
-        surface
-            .paint_cropped(
-                3,
-                4,
-                1,
-                &[
-                    0, 0, 10, 255, 0, 20, 0, 255, 30, 0, 0, 255, 255, 255, 255, 255
-                ]
-            )
-            .unwrap(),
-        [10, 0, 0, 255, 0, 20, 0, 255, 0, 0, 30, 255]
+        DocumentPolicy::new(0, false, false).unwrap_err(),
+        "document generation must be nonzero"
     );
-    assert!(surface.paint_cropped(2, 4, 1, &[0; 16]).is_none());
-    assert!(surface.paint_cropped(3, 2, 1, &[0; 8]).is_none());
 }
 
 #[test]
-fn popup_composes_premultiplied_pixels_and_restores_base_on_hide() {
-    let mut layers = midnight_viewer_html::surface::Layers::default();
-    layers.base(2, 1, vec![100, 100, 100, 255, 100, 100, 100, 255]);
+fn view_paints_move_into_frames_and_popups_compose_on_a_fresh_base() {
+    let base = vec![100, 100, 100, 255, 100, 100, 100, 255];
+    let mut layers = Layers::default();
+    // Without a popup the converted paint becomes the frame; no base copy is kept.
+    assert_eq!(layers.view(2, 1, base.clone()), Some(base.clone()));
+    assert!(layers.frame().is_none());
     layers.popup_rect(-1, 0);
-    layers.show(true);
+    assert_eq!(layers.show(true), None);
     assert!(layers.popup(2, 1, &[0, 0, 0, 0, 0, 0, 128, 128]));
-    assert_eq!(
-        layers.frame().unwrap(),
-        [178, 50, 50, 255, 100, 100, 100, 255]
-    );
-    layers.show(false);
-    assert_eq!(
-        layers.frame().unwrap(),
-        [100, 100, 100, 255, 100, 100, 100, 255]
-    );
+    // Composition waits for the fresh view paint requested on show.
+    assert!(layers.frame().is_none());
+    let composed = [178, 50, 50, 255, 100, 100, 100, 255];
+    assert_eq!(layers.view(2, 1, base.clone()).unwrap(), composed);
+    // Popup-only repaints recompose from the retained base.
+    assert_eq!(layers.frame().unwrap(), composed);
+    // Hiding returns the plain base and stops retaining it.
+    assert_eq!(layers.show(false), Some(base));
+    assert!(layers.frame().is_none());
     assert!(!layers.popup(8192, 8192, &[]));
+    assert!(layers.view(2, 1, vec![0; 7]).is_none());
 }

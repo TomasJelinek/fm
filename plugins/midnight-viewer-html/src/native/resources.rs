@@ -1,100 +1,134 @@
 //! Bounded streaming through host capabilities, with no filesystem access.
 use super::*;
 use crate::policy::Access;
+use std::collections::{HashMap, VecDeque};
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+/// Host resource requests awaiting a reply. Kept well below the output control
+/// capacity, so resource traffic alone can never overflow it.
+pub(super) const MAX_IN_FLIGHT: usize = 32;
+/// Browser requests waiting for an in-flight slot. Beyond this (bounded memory)
+/// further assets are cancelled.
+pub(super) const MAX_WAITING: usize = 4096;
+/// Longest captured relative URL (path and query) sent for host resolution; longer
+/// URLs are denied locally instead of exceeding the protocol's control budget.
+pub(super) const MAX_RESOURCE_URL_BYTES: usize = 8 * 1024;
 
-    #[test]
-    fn canceled_resolution_releases_late_resource_without_releasing_main_authority() {
-        let (output, events) = crate::output::channel();
-        let viewport = api::Viewport {
-            revision: 1,
-            width: 1,
-            height: 1,
-            scale: 1.0,
-        };
-        let doc = Arc::new(Document {
-            header: api::Header {
-                session: 1,
-                document: 1,
-                sequence: 1,
-            },
-            source: api::Resource {
-                id: 1,
-                length: 0,
-                mime: "text/html".into(),
-            },
-            policy: crate::policy::DocumentPolicy::new(1, false, false).unwrap(),
-            viewport: Mutex::new(viewport),
-            surface: Mutex::new(crate::surface::Surface::new(1, 1, 1).unwrap()),
-            layers: Mutex::new(crate::surface::Layers::default()),
-            output,
-            active: AtomicBool::new(true),
-            closed: AtomicBool::new(false),
-            finding: Mutex::new(crate::find::FindQueue::default()),
-            request_sequence: AtomicU64::new(1),
-            pending: Mutex::new(HashMap::new()),
-            selection: Mutex::new(crate::selection::Selection::default()),
-            mouse_buttons: AtomicU64::new(0),
-            host_shortcuts: false,
-        });
-        let stream = Arc::new(Mutex::new(Stream {
-            resource: None,
-            offset: 0,
-            bytes: Vec::new(),
-            callback: None,
-            failed: false,
-            pending_offset: 0,
-            pending_length: 0,
-            owner: Arc::downgrade(&doc),
-        }));
-        doc.pending.lock().unwrap().insert(7, stream.clone());
-        let handler =
-            CapturedResource::new(doc.clone(), stream, "https://mewv-1.invalid/a.css".into());
-        handler.cancel();
-        assert!(doc.pending.lock().unwrap().is_empty());
-        reply(
-            &doc,
-            api::ResourceReply::Resolved {
-                request: 7,
-                resource: api::Resource {
-                    id: 42,
-                    length: 20,
-                    mime: "text/css".into(),
-                },
-            },
-        );
-        assert_eq!(
-            events.controls.try_recv().unwrap().kind,
-            api::EventKind::ResourceRelease { resource: 42 }
-        );
-        reply(
-            &doc,
-            api::ResourceReply::Resolved {
-                request: 8,
-                resource: doc.source.clone(),
-            },
-        );
-        reply(
-            &doc,
-            api::ResourceReply::Data {
-                request: 9,
-                resource: 42,
-                offset: 0,
-                bytes: vec![1],
-            },
-        );
-        reply(
-            &doc,
-            api::ResourceReply::Denied {
-                request: 10,
-                reason: "canceled".into(),
-            },
-        );
-        assert!(events.controls.try_recv().is_err());
+pub(super) enum HostRequest {
+    Resolve {
+        url: String,
+    },
+    Read {
+        resource: u64,
+        offset: u64,
+        length: u32,
+    },
+}
+
+/// In-flight host requests by ID, plus browser requests queued in FIFO order.
+#[derive(Default)]
+pub(super) struct Requests {
+    active: HashMap<u64, Arc<Mutex<Stream>>>,
+    waiting: VecDeque<(Arc<Mutex<Stream>>, HostRequest)>,
+}
+
+impl Requests {
+    pub(super) fn drain(&mut self) -> Vec<Arc<Mutex<Stream>>> {
+        let mut streams: Vec<_> = self.active.drain().map(|(_, stream)| stream).collect();
+        streams.extend(self.waiting.drain(..).map(|(stream, _)| stream));
+        streams
     }
+}
+
+impl Document {
+    fn request_event(&self, id: u64, request: &HostRequest) -> api::EventKind {
+        match request {
+            HostRequest::Resolve { url } => api::EventKind::ResourceResolve {
+                request: id,
+                base: self.source.id,
+                url: url.clone(),
+            },
+            HostRequest::Read {
+                resource,
+                offset,
+                length,
+            } => api::EventKind::ResourceRead {
+                request: id,
+                resource: *resource,
+                offset: *offset,
+                length: *length,
+            },
+        }
+    }
+
+    /// Sends or queues one host request for `stream`. Excess requests wait for a free
+    /// slot instead of failing the asset. Returns false when the request can never be
+    /// sent (invalid for the protocol, waiting queue full, retired document); the
+    /// caller then cancels the browser request.
+    pub(super) fn request(&self, stream: Arc<Mutex<Stream>>, request: HostRequest) -> bool {
+        let valid = api::Message::Event(api::Event {
+            header: self.header,
+            kind: self.request_event(u64::MAX, &request),
+        })
+        .validate()
+        .is_ok();
+        if !valid || !self.active.load(Ordering::Acquire) {
+            return false;
+        }
+        let Ok(mut requests) = self.requests.lock() else {
+            return false;
+        };
+        if requests.active.len() >= MAX_IN_FLIGHT {
+            if requests.waiting.len() >= MAX_WAITING {
+                return false;
+            }
+            requests.waiting.push_back((stream, request));
+            return true;
+        }
+        let id = self.request_sequence.fetch_add(1, Ordering::Relaxed);
+        requests.active.insert(id, stream);
+        drop(requests);
+        self.emit(self.request_event(id, &request));
+        true
+    }
+
+    /// Sends queued requests while in-flight slots are free.
+    fn admit_waiting(&self) {
+        let mut events = Vec::new();
+        if let Ok(mut requests) = self.requests.lock() {
+            while requests.active.len() < MAX_IN_FLIGHT {
+                let Some((stream, request)) = requests.waiting.pop_front() else {
+                    break;
+                };
+                let id = self.request_sequence.fetch_add(1, Ordering::Relaxed);
+                requests.active.insert(id, stream);
+                events.push(self.request_event(id, &request));
+            }
+        }
+        for event in events {
+            self.emit(event);
+        }
+    }
+
+    /// Removes every active or waiting request of a cancelled browser request.
+    fn forget(&self, stream: &Arc<Mutex<Stream>>) {
+        if let Ok(mut requests) = self.requests.lock() {
+            requests
+                .active
+                .retain(|_, value| !Arc::ptr_eq(value, stream));
+            requests
+                .waiting
+                .retain(|(value, _)| !Arc::ptr_eq(value, stream));
+        }
+        self.admit_waiting();
+    }
+}
+
+/// Relative URL (path and query) of a captured asset below the document root, or
+/// None when it must be denied locally: another directory level than the document
+/// root, the main document itself, or a URL beyond the resolution budget.
+pub(super) fn captured_path(policy: &crate::policy::DocumentPolicy, url: &str) -> Option<String> {
+    let path = url.strip_prefix(&policy.main_url())?;
+    (!path.is_empty() && path.len() <= MAX_RESOURCE_URL_BYTES).then(|| path.to_owned())
 }
 
 pub(super) struct Stream {
@@ -106,6 +140,21 @@ pub(super) struct Stream {
     pending_offset: u64,
     pending_length: u32,
     owner: std::sync::Weak<Document>,
+}
+
+impl Stream {
+    fn new(owner: &Arc<Document>) -> Self {
+        Self {
+            resource: None,
+            offset: 0,
+            bytes: Vec::new(),
+            callback: None,
+            failed: false,
+            pending_offset: 0,
+            pending_length: 0,
+            owner: Arc::downgrade(owner),
+        }
+    }
 }
 
 impl Drop for Stream {
@@ -127,7 +176,11 @@ pub(super) fn reply(doc: &Document, reply: api::ResourceReply) {
         | api::ResourceReply::Denied { request, .. } => *request,
         api::ResourceReply::Released { .. } => return,
     };
-    let stream = doc.pending.lock().ok().and_then(|mut p| p.remove(&request));
+    let stream = doc
+        .requests
+        .lock()
+        .ok()
+        .and_then(|mut requests| requests.active.remove(&request));
     let Some(stream) = stream else {
         // Cancellation can win after the host has allocated an asset capability. Its
         // successful reply still transfers ownership, even though no browser request
@@ -141,6 +194,7 @@ pub(super) fn reply(doc: &Document, reply: api::ResourceReply) {
         }
         return;
     };
+    doc.admit_waiting();
     let Ok(mut stream) = stream.lock() else {
         return;
     };
@@ -194,19 +248,22 @@ wrap_resource_handler! {
         fn process_request(&self, _request: Option<&mut Request>, callback: Option<&mut Callback>) -> i32 {
             if !self.doc.active.load(Ordering::Acquire) { return 0; }
             let Some(callback) = callback else { return 0; };
-            let Ok(mut stream) = self.stream.lock() else { return 0; };
             if self.url.split(['?', '#']).next() == Some(self.doc.policy.main_url().as_str()) {
+                let Ok(mut stream) = self.stream.lock() else { return 0; };
                 stream.resource = Some(self.doc.source.clone());
                 drop(stream);
                 callback.cont();
-            } else {
-                stream.callback = Some(callback.clone());
-                drop(stream);
-                let prefix = format!("{}/", self.doc.policy.origin());
-                let path = self.url.strip_prefix(&prefix).unwrap_or("").to_owned();
-                if !self.doc.request(self.stream.clone(), |request| api::EventKind::ResourceResolve {
-                    request, base: self.doc.source.id, url: path,
-                }) { callback.cancel(); }
+                return 1;
+            }
+            // Deny an over-long or out-of-root URL here: it must neither reach the host
+            // nor exceed the protocol budget (which used to stop the whole provider).
+            let Some(url) = captured_path(&self.doc.policy, &self.url) else { return 0; };
+            let Ok(mut stream) = self.stream.lock() else { return 0; };
+            stream.callback = Some(callback.clone());
+            drop(stream);
+            if !self.doc.request(self.stream.clone(), HostRequest::Resolve { url }) {
+                if let Ok(mut stream) = self.stream.lock() { stream.callback = None; }
+                return 0;
             }
             1
         }
@@ -252,14 +309,15 @@ wrap_resource_handler! {
             stream.pending_length = length;
             stream.callback = Some(callback.clone());
             drop(stream);
-            if !self.doc.request(self.stream.clone(), |request| api::EventKind::ResourceRead {
-                request, resource: resource.id, offset, length,
-            }) { callback.cancel(); }
+            if !self.doc.request(self.stream.clone(), HostRequest::Read { resource: resource.id, offset, length }) {
+                if let Ok(mut stream) = self.stream.lock() { stream.callback = None; }
+                callback.cancel();
+            }
             1
         }
         fn cancel(&self) {
             if let Ok(mut stream) = self.stream.lock() { stream.failed = true; stream.callback = None; }
-            if let Ok(mut pending) = self.doc.pending.lock() { pending.retain(|_, value| !Arc::ptr_eq(value, &self.stream)); }
+            self.doc.forget(&self.stream);
         }
     }
 }
@@ -275,10 +333,7 @@ wrap_resource_request_handler! {
         fn resource_handler(&self, _browser: Option<&mut Browser>, _frame: Option<&mut Frame>, request: Option<&mut Request>) -> Option<ResourceHandler> {
             let url = CefString::from(&request?.url()).to_string();
             if self.doc.policy.access(&url) != Access::Captured { return None; }
-            Some(CapturedResource::new(self.doc.clone(), Arc::new(Mutex::new(Stream {
-                resource: None, offset: 0, bytes: Vec::new(), callback: None, failed: false,
-                pending_offset: 0, pending_length: 0, owner: Arc::downgrade(&self.doc),
-            })), url))
+            Some(CapturedResource::new(self.doc.clone(), Arc::new(Mutex::new(Stream::new(&self.doc))), url))
         }
         fn on_resource_redirect(&self, _browser: Option<&mut Browser>, _frame: Option<&mut Frame>, _request: Option<&mut Request>, _response: Option<&mut Response>, new_url: Option<&mut CefString>) {
             if let Some(url) = new_url
@@ -290,3 +345,7 @@ wrap_resource_request_handler! {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "resources_tests.rs"]
+mod tests;

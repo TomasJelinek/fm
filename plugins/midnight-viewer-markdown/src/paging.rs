@@ -1,5 +1,7 @@
 use crate::{
+    checkpoints::Checkpoints,
     decode::{self, Decoded},
+    fence::{self, OpenFence},
     markdown, page_cache,
     plugin::{Session, lock, send},
     retained_context::Retained,
@@ -9,30 +11,48 @@ use midnight_plugin_sdk::{
     Context, Output,
     api::{document::DocumentPage, messages::Viewport, viewer::*},
 };
-use std::{collections::BTreeSet, sync::Arc};
+use std::sync::Arc;
+
+/// Viewport replay starts at a proven boundary at most this far before it.
+pub(crate) const REPLAY_BYTES: u64 = 32760;
 
 pub struct Hints {
-    plain: bool,
-    checkpoints: BTreeSet<u64>,
+    pub(crate) plain: bool,
+    pub(crate) checkpoints: Checkpoints,
     cache: page_cache::Cache,
     context: Option<Retained>,
+    /// The latest top-level fence a parse left open at its read edge.
+    fence: Option<OpenFence>,
 }
 impl Hints {
-    pub fn new(_: &str, mode: u16) -> Self {
+    pub fn new(mode: u16) -> Self {
         Self {
             plain: mode == MODE_TEXT,
-            checkpoints: BTreeSet::new(),
+            checkpoints: Checkpoints::default(),
             cache: page_cache::Cache::default(),
             context: None,
+            fence: None,
         }
     }
-    pub fn initialize(&mut self, _: &str, bom: u64) {
-        self.checkpoints.insert(bom);
+    pub fn initialize(&mut self, bom: u64) {
+        self.checkpoints.initialize(bom);
     }
+}
+
+/// One bounded viewport read.
+#[derive(Clone, Copy, Debug)]
+pub struct Plan {
+    pub offset: u64,
+    pub count: u32,
+    /// Forward anchor, or the start of a backward request's look-behind.
+    pub anchor: u64,
+    /// `offset` is a proven top-level boundary, decided when the read was
+    /// planned; later checkpoint eviction cannot revoke it.
+    pub known: bool,
 }
 
 pub fn cached(session: &Session, request: &Viewport) -> Option<(Arc<DocumentPage>, bool)> {
-    let (offset, count, _) = plan(session, request);
+    let plan = plan(session, request);
     let bom = lock(&session.metadata).bom;
     let mut hints = lock(&session.hints);
     if let Some(page) = hints.cache.get(request) {
@@ -42,8 +62,8 @@ pub fn cached(session: &Session, request: &Viewport) -> Option<(Arc<DocumentPage
     let context = hints.context.as_ref()?;
     let end = context.source.offset.checked_add(context.source.length)?;
     if hints.plain
-        || offset < context.source.offset
-        || (end < offset.saturating_add(u64::from(count)) && context.has_after)
+        || plan.offset < context.source.offset
+        || (end < plan.offset.saturating_add(u64::from(plan.count)) && context.has_after)
         || request.source_anchor > end
     {
         return None;
@@ -65,59 +85,67 @@ fn window(request: &Viewport) -> markdown::Window {
     }
 }
 
-pub fn plan(session: &Session, viewport: &Viewport) -> (u64, u32, u64) {
-    let metadata = lock(&session.metadata);
+/// Plan a viewport read; the request anchor becomes the checkpoint focus.
+pub fn plan(session: &Session, viewport: &Viewport) -> Plan {
+    let (bom, encoding) = {
+        let metadata = lock(&session.metadata);
+        (metadata.bom, metadata.encoding)
+    };
     let limit = viewport.max_bytes.min(65536) as u64;
-    let upper = viewport.source_anchor.max(metadata.bom);
+    let upper = viewport.source_anchor.max(bom);
     let anchor = if viewport.backwards {
-        upper
-            .saturating_sub((limit * 4 + 8).min(32776))
-            .max(metadata.bom)
+        upper.saturating_sub((limit * 4 + 8).min(32776)).max(bom)
     } else {
         upper
     };
     let target = if viewport.backwards { upper } else { anchor };
-    let lower = target.saturating_sub(32760).max(metadata.bom);
+    let lower = target.saturating_sub(REPLAY_BYTES).max(bom);
     let upper_checkpoint = if viewport.backwards {
-        target.saturating_sub(1).max(metadata.bom)
+        target.saturating_sub(1).max(bom)
     } else {
         target
     };
-    let checkpoint = lock(&session.hints)
-        .checkpoints
-        .range(lower..=upper_checkpoint)
-        .next()
-        .copied();
-    let offset =
-        checkpoint.unwrap_or_else(|| decode::lookbehind(anchor, metadata.bom, metadata.encoding));
+    let checkpoint = {
+        let mut hints = lock(&session.hints);
+        hints.checkpoints.focus(viewport.source_anchor);
+        hints.checkpoints.earliest(lower..=upper_checkpoint)
+    };
+    let offset = checkpoint.unwrap_or_else(|| decode::lookbehind(anchor, bom, encoding));
     // A backward anchor can lie inside a table/paragraph. Include its following
     // context too, otherwise layout would measure a different partial block.
     let end = target.saturating_add(limit * 4 + 8);
     let count = end.saturating_sub(offset).min(65536).min(u64::MAX - offset) as u32;
-    (offset, count.max(1), anchor)
+    Plan {
+        offset,
+        count: count.max(1),
+        anchor,
+        known: checkpoint.is_some(),
+    }
 }
 
 pub fn viewport(
     context: Context,
     session: Arc<Session>,
     data: Vec<u8>,
-    offset: u64,
-    anchor: u64,
+    plan: Plan,
     request: Viewport,
     eof: bool,
 ) {
-    let Some(decoded) = decode_window(&session, &data, offset, anchor, &request, eof, || {
+    let Some(decoded) = decode_window(&session, &data, plan, &request, eof, || {
         context.is_cancelled()
     }) else {
         return;
     };
-    let page_eof =
-        eof && decoded.anchors.last().unwrap().source_offset == offset + data.len() as u64;
+    let (Some(first), Some(last)) = (decoded.anchors.first(), decoded.anchors.last()) else {
+        return;
+    };
+    let page_eof = eof && last.source_offset == plan.offset + data.len() as u64;
+    let known = plan.known && first.source_offset == plan.offset;
     let anchor = decoded
         .anchors
         .iter()
-        .find(|a| a.source_offset >= anchor)
-        .unwrap_or_else(|| decoded.anchors.last().unwrap())
+        .find(|a| a.source_offset >= plan.anchor)
+        .unwrap_or(last)
         .source_offset;
     let upper = decoded
         .anchors
@@ -125,16 +153,11 @@ pub fn viewport(
         .take_while(|a| a.source_offset <= request.source_anchor)
         .last()
         .map_or(request.source_anchor, |a| a.source_offset);
-    let (plain, known) = {
-        let hints = lock(&session.hints);
-        (
-            hints.plain,
-            hints
-                .checkpoints
-                .contains(&decoded.anchors[0].source_offset),
-        )
-    };
+    let plain = lock(&session.hints).plain;
     let mut page = if plain || !known {
+        if !plain {
+            resynchronize(&session, &decoded);
+        }
         let page = markdown::plain(&decoded, session.revision, page_eof);
         if request.backwards {
             markdown::crop_backward(
@@ -153,24 +176,34 @@ pub fn viewport(
         }
     } else {
         trace::request("parse", &request);
-        let Some((raw, checkpoints)) =
-            markdown::render_context(&decoded, session.revision, page_eof, || {
-                context.is_cancelled()
-            })
-        else {
+        let Some(parsed) = markdown::render_context(&decoded, session.revision, page_eof, || {
+            context.is_cancelled()
+        }) else {
             return;
         };
         let mut window = window(&request);
         window.anchor = if request.backwards { upper } else { anchor };
-        let page = markdown::crop_context(&raw, &window).unwrap_or_else(|| {
-            let plain = markdown::plain(&decoded, session.revision, page_eof);
-            if request.backwards {
-                markdown::crop_backward(plain, upper, window.max_bytes.min(8192), window.max_lines)
-            } else {
-                markdown::crop(plain, anchor, window.max_bytes.min(8192), window.max_lines)
-            }
-        });
-        let retained = Retained::new(&raw, &window, &decoded.anchors, || context.is_cancelled());
+        let page =
+            markdown::crop_context(&parsed.page, parsed.proven_end, &window).unwrap_or_else(|| {
+                let plain = markdown::plain(&decoded, session.revision, page_eof);
+                if request.backwards {
+                    markdown::crop_backward(
+                        plain,
+                        upper,
+                        window.max_bytes.min(8192),
+                        window.max_lines,
+                    )
+                } else {
+                    markdown::crop(plain, anchor, window.max_bytes.min(8192), window.max_lines)
+                }
+            });
+        let retained = Retained::new(
+            &parsed.page,
+            parsed.proven_end,
+            &window,
+            &decoded.anchors,
+            || context.is_cancelled(),
+        );
         let mut hints = lock(&session.hints);
         // One bounded parsed context, separate from the small final-page LRU.
         // It is revision-local and was already read on demand. Nearby anchors
@@ -180,11 +213,10 @@ pub fn viewport(
         {
             hints.context = Some(retained);
         }
-        trace::retained(&raw, hints.context.as_ref());
-        hints.checkpoints.extend(checkpoints);
-        while hints.checkpoints.len() > 256 {
-            let second = *hints.checkpoints.iter().nth(1).unwrap();
-            hints.checkpoints.remove(&second);
+        trace::retained(&parsed.page, hints.context.as_ref());
+        hints.checkpoints.extend(parsed.checkpoints);
+        if parsed.open_fence.is_some() {
+            hints.fence = parsed.open_fence;
         }
         page
     };
@@ -200,6 +232,30 @@ pub fn viewport(
     send_page(context, cached.as_deref().unwrap_or(&page), plain);
 }
 
+/// A plain read without a nearby checkpoint may continue the scan for the end
+/// of a long top-level fence; the line after it is a proven checkpoint.
+fn resynchronize(session: &Session, decoded: &Decoded) {
+    let Some(mut open) = lock(&session.hints).fence else {
+        return;
+    };
+    let scan = open.advance(decoded);
+    let mut hints = lock(&session.hints);
+    if hints
+        .fence
+        .is_some_and(|current| current.start != open.start)
+    {
+        return;
+    }
+    match scan {
+        fence::Scan::Closed(boundary) => {
+            hints.checkpoints.extend([boundary]);
+            hints.fence = None;
+        }
+        fence::Scan::Open => hints.fence = Some(open),
+        fence::Scan::Gap => {}
+    }
+}
+
 pub fn send_page(context: Context, page: &DocumentPage, plain: bool) {
     if context.is_cancelled() {
         return;
@@ -207,7 +263,11 @@ pub fn send_page(context: Context, page: &DocumentPage, plain: bool) {
     if plain {
         let text = page.blocks.first().map(|b| b.text.clone());
         if let Some(mut text) = text {
+            // The block keeps the flags of the whole decoded read; the crop
+            // decides whether the page itself has content before/after it.
             text.has_before = page.has_before;
+            text.has_after = page.has_after;
+            text.partial_line = page.has_after && !text.text.ends_with('\n');
             send(context, Output::text(&text));
         } else {
             // Cropping removes empty semantic blocks, but a plain viewport
@@ -235,105 +295,10 @@ pub fn send_page(context: Context, page: &DocumentPage, plain: bool) {
     }
 }
 
-pub fn search_text(
-    session: &Session,
-    decoded: &Decoded,
-    anchor: u64,
-    eof: bool,
-    cancelled: impl Fn() -> bool,
-) -> Option<(TextPage, u64)> {
-    let revision = session.revision;
-    let anchor = decoded
-        .anchors
-        .iter()
-        .find(|a| a.source_offset >= anchor)
-        .unwrap_or_else(|| decoded.anchors.last().unwrap())
-        .source_offset;
-    let known = {
-        let hints = lock(&session.hints);
-        !hints.plain
-            && hints
-                .checkpoints
-                .contains(&decoded.anchors[0].source_offset)
-    };
-    let document = if known {
-        let (document, checkpoints) = markdown::render_slice(
-            decoded,
-            revision,
-            eof,
-            markdown::Window {
-                anchor,
-                backwards: false,
-                max_bytes: 8192,
-                max_lines: 4096,
-            },
-            &cancelled,
-        )?;
-        let mut hints = lock(&session.hints);
-        hints.checkpoints.extend(checkpoints);
-        while hints.checkpoints.len() > 256 {
-            let second = *hints.checkpoints.iter().nth(1).unwrap();
-            hints.checkpoints.remove(&second);
-        }
-        document
-    } else {
-        markdown::crop(markdown::plain(decoded, revision, eof), anchor, 8192, 4096)
-    };
-    let next = document.source.end().ok()?;
-    let has_after = document.has_after;
-    let mut text = String::new();
-    let mut anchors = Vec::new();
-    for block in document.blocks {
-        if !text.is_empty() {
-            text.push('\n');
-            anchors.push(Anchor {
-                text_offset: text.len() as u32,
-                source_offset: block.text.source.offset,
-            });
-        }
-        let base = text.len() as u32;
-        if anchors.is_empty() {
-            anchors.push(Anchor {
-                text_offset: 0,
-                source_offset: block.text.source.offset,
-            });
-        }
-        anchors.extend(block.text.anchors.into_iter().skip(1).map(|a| Anchor {
-            text_offset: base + a.text_offset,
-            source_offset: a.source_offset,
-        }));
-        text.push_str(&block.text.text);
-    }
-    if anchors.is_empty() {
-        anchors.push(Anchor {
-            text_offset: 0,
-            source_offset: next,
-        });
-    }
-    let source = SourceRange {
-        offset: anchors[0].source_offset,
-        length: anchors.last()?.source_offset - anchors[0].source_offset,
-    };
-    Some((
-        TextPage {
-            revision,
-            has_before: source.offset != 0,
-            source,
-            text,
-            spans: Vec::new(),
-            anchors,
-            has_after,
-            partial_line: false,
-        },
-        next,
-    ))
-}
-
-pub fn decode_window(
+fn decode_window(
     session: &Session,
     data: &[u8],
-    offset: u64,
-    anchor: u64,
+    plan: Plan,
     request: &Viewport,
     eof: bool,
     cancelled: impl Fn() -> bool,
@@ -342,12 +307,13 @@ pub fn decode_window(
         let metadata = lock(&session.metadata);
         (metadata.encoding, metadata.bom)
     };
-    let known = lock(&session.hints).checkpoints.contains(&offset);
-    let mut decoded = decode::fragment(data, (offset, encoding, known), eof, 65536, &cancelled)?;
+    let offset = plan.offset;
+    let boundary = plan.known || offset == bom;
+    let mut decoded = decode::fragment(data, (offset, encoding, boundary), eof, 65536, &cancelled)?;
     let target = if request.backwards {
         request.source_anchor
     } else {
-        anchor
+        plan.anchor
     };
     let end = decoded.anchors.last()?.source_offset;
     let read_end = offset + data.len() as u64;

@@ -90,7 +90,8 @@ fn chromium_renders_captured_html_and_denies_default_scripts() {
     let mut popup_hidden = false;
     let mut cycle_shortcut = false;
     let mut physical_shortcuts = Vec::new();
-    let mut edit_started = false;
+    let mut edit = Edit::Idle;
+    let mut copy_pending = false;
     let mut editable_space = false;
     let mut repeat_find_sequence = 0;
     let mut repeated_find = false;
@@ -109,8 +110,21 @@ fn chromium_renders_captured_html_and_denies_default_scripts() {
             if let Some(status) = child.try_wait().unwrap() {
                 panic!("Chromium terminated before rendering: {status}");
             }
+            // Selection notifications are asynchronous; probe again until they arrive.
+            if edit != Edit::Idle && !editable_space && !copy_pending {
+                select_all_and_copy(&mut stdin, &mut sequence);
+                copy_pending = true;
+            }
             continue;
         };
+        if matches!(event.kind, EventKind::Frame(_))
+            && edit != Edit::Idle
+            && !editable_space
+            && !copy_pending
+        {
+            select_all_and_copy(&mut stdin, &mut sequence);
+            copy_pending = true;
+        }
         match event.kind {
             EventKind::Ready => ready = true,
             EventKind::ResourceRead {
@@ -261,20 +275,37 @@ fn chromium_renders_captured_html_and_denies_default_scripts() {
                 value @ (HostShortcut::Backspace | HostShortcut::AltLeft | HostShortcut::AltRight),
             ) => {
                 assert!(
-                    !edit_started,
+                    edit == Edit::Idle,
                     "editable focus escaped to physical host navigation"
                 );
                 physical_shortcuts.push(value);
             }
             EventKind::HostShortcut(HostShortcut::CycleNext) => {
                 assert!(
-                    !edit_started,
+                    edit == Edit::Idle,
                     "Space in an editable field escaped to file cycling"
                 );
                 cycle_shortcut = true;
             }
-            EventKind::Selection(text) if edit_started => {
-                editable_space = text.contains(' ') && text.replace(' ', "") == "abc";
+            EventKind::Selection(text) if edit != Edit::Idle => {
+                copy_pending = false;
+                if edit == Edit::Focusing && text == "abc" {
+                    // Select-all reached the input, so Chromium has focused it: Space
+                    // must now replace the selected value instead of cycling files.
+                    send_key(
+                        &mut stdin,
+                        &mut sequence,
+                        " ",
+                        "Space",
+                        Modifiers::default(),
+                    );
+                    send(&mut stdin, &mut sequence, CommandKind::Text(" ".into()));
+                    edit = Edit::Typed;
+                    select_all_and_copy(&mut stdin, &mut sequence);
+                    copy_pending = true;
+                } else if edit == Edit::Typed {
+                    editable_space = text == " ";
+                }
             }
             EventKind::Error { message, .. } => panic!("provider error: {message}"),
             _ => {}
@@ -283,31 +314,13 @@ fn chromium_renders_captured_html_and_denies_default_scripts() {
             click(&mut stdin, &mut sequence, 200.0, 110.0);
             popup_stage = 1;
         }
-        if cycle_shortcut && physical_shortcuts.len() == 3 && !edit_started {
-            edit_started = true;
+        if cycle_shortcut && physical_shortcuts.len() == 3 && edit == Edit::Idle {
+            // No fixed delay: probe focus by selecting all until the input's value is
+            // the selection (Space is sent only then).
+            edit = Edit::Focusing;
             click(&mut stdin, &mut sequence, 20.0, 75.0);
-            std::thread::sleep(Duration::from_millis(100));
-            send_key(
-                &mut stdin,
-                &mut sequence,
-                " ",
-                "Space",
-                Modifiers::default(),
-            );
-            send(&mut stdin, &mut sequence, CommandKind::Text(" ".into()));
-            std::thread::sleep(Duration::from_millis(100));
-            send_key(
-                &mut stdin,
-                &mut sequence,
-                "a",
-                "KeyA",
-                Modifiers {
-                    control: true,
-                    ..Default::default()
-                },
-            );
-            std::thread::sleep(Duration::from_millis(100));
-            send(&mut stdin, &mut sequence, CommandKind::Copy);
+            select_all_and_copy(&mut stdin, &mut sequence);
+            copy_pending = true;
         }
         if rendered && found && popup_hidden && cycle_shortcut && editable_space && !zoom_sent {
             send(&mut stdin, &mut sequence, CommandKind::Zoom(1.5));
@@ -320,19 +333,7 @@ fn chromium_renders_captured_html_and_denies_default_scripts() {
     }
     send(&mut stdin, &mut sequence, CommandKind::Close);
     drop(stdin);
-    let close_deadline = Instant::now() + Duration::from_secs(10);
-    let mut status = None;
-    while Instant::now() < close_deadline {
-        if let Some(done) = child.try_wait().unwrap() {
-            status = Some(done);
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(10));
-    }
-    if status.is_none() {
-        let _ = child.kill();
-    }
-    let _ = child.wait();
+    let status = wait_for_exit(child);
     assert!(
         ready
             && rendered
@@ -364,6 +365,71 @@ fn chromium_renders_captured_html_and_denies_default_scripts() {
     );
 }
 
+/// Editable-field steps. Chromium does not acknowledge processed input in frames, so
+/// focus and text are observed through the copied selection instead of fixed delays.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Edit {
+    Idle,
+    Focusing,
+    Typed,
+}
+
+fn select_all_and_copy(stdin: &mut impl Write, sequence: &mut u64) {
+    send_key(
+        stdin,
+        sequence,
+        "a",
+        "KeyA",
+        Modifiers {
+            control: true,
+            ..Default::default()
+        },
+    );
+    send(stdin, sequence, CommandKind::Copy);
+}
+
+/// Waits for the provider to exit after Close; the deadline only elapses on failure.
+/// CefShutdown alone took 10-12 s on a loaded 20-thread development machine.
+fn wait_for_exit(mut child: std::process::Child) -> Option<std::process::ExitStatus> {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let status = loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            break Some(status);
+        }
+        if Instant::now() >= deadline {
+            break None;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    if status.is_none() {
+        let _ = child.kill();
+    }
+    let _ = child.wait();
+    status
+}
+
+/// A printable key as the host sends it: key down, its text, key up.
+fn typed_key(
+    stdin: &mut impl Write,
+    sequence: &mut u64,
+    key: &str,
+    code: &str,
+    modifiers: Modifiers,
+) {
+    let event = |pressed| {
+        CommandKind::Key(Key {
+            key: key.into(),
+            code: code.into(),
+            pressed,
+            repeat: false,
+            modifiers,
+        })
+    };
+    send(stdin, sequence, event(true));
+    send(stdin, sequence, CommandKind::Text(key.into()));
+    send(stdin, sequence, event(false));
+}
+
 fn send_key(
     stdin: &mut impl Write,
     sequence: &mut u64,
@@ -385,6 +451,11 @@ fn send_key(
         );
     }
 }
+
+/// Final textarea value: Enter and Shift+Enter each insert one newline; "." and the
+/// shifted quote/bracket are inserted text, never Delete/PageDown/ArrowDown commands
+/// that would remove or select the "y" after the caret; the IME commit is inserted.
+const TEXTAREA_EXPECTED: &str = "first\nsecond\nthirdx.\"(日本y";
 
 #[test]
 #[ignore = "requires matching packaged CEF runtime and interactive Windows or Linux desktop"]
@@ -413,7 +484,7 @@ fn textarea_enter_and_shift_enter_preserve_newlines_through_key_text_and_copy() 
             }
         }
     });
-    let html = b"<!doctype html><title>Textarea newline fixture</title><style>html,body{margin:0}textarea{position:absolute;left:0;top:0;width:300px;height:160px}</style><textarea aria-label='Newline fixture'></textarea>";
+    let html = b"<!doctype html><title>Textarea newline fixture</title><style>html,body{margin:0}textarea{position:absolute;left:0;top:0;width:300px;height:160px}</style><textarea aria-label='Newline fixture'>seed</textarea>";
     let mut sequence = 0;
     send(
         &mut stdin,
@@ -437,127 +508,152 @@ fn textarea_enter_and_shift_enter_preserve_newlines_through_key_text_and_copy() 
     let mut loaded = false;
     let mut titled = false;
     let mut painted = false;
-    let mut entered = false;
+    let mut edit = Edit::Idle;
+    let mut copy_pending = false;
     let mut selection = None;
-    while Instant::now() < deadline && selection.is_none() {
-        let Ok(Message::Event(event)) = rx.recv_timeout(Duration::from_millis(100)) else {
-            if let Some(status) = child.try_wait().unwrap() {
-                panic!("Chromium terminated before textarea qualification: {status}");
-            }
-            continue;
-        };
-        match event.kind {
-            EventKind::ResourceRead {
-                request,
-                resource,
-                offset,
-                length,
-            } => {
-                assert_eq!(resource, 1);
-                let end = (offset as usize + length as usize).min(html.len());
-                send(
-                    &mut stdin,
-                    &mut sequence,
-                    CommandKind::ResourceReply(ResourceReply::Data {
-                        request,
-                        resource,
-                        offset,
-                        bytes: html[offset as usize..end].to_vec(),
-                    }),
-                );
-            }
-            EventKind::ResourceResolve { request, .. } => send(
-                &mut stdin,
-                &mut sequence,
-                CommandKind::ResourceReply(ResourceReply::Denied {
+    while Instant::now() < deadline && selection.as_deref() != Some(TEXTAREA_EXPECTED) {
+        let mut probe = false;
+        match rx.recv_timeout(Duration::from_millis(100)) {
+            Ok(Message::Event(event)) => match event.kind {
+                EventKind::ResourceRead {
                     request,
-                    reason: "fixture has no siblings".into(),
-                }),
-            ),
-            EventKind::State(state) => {
-                loaded |= !state.loading;
-                titled |= state.title == "Textarea newline fixture";
-            }
-            EventKind::Frame(_) if titled => painted = true,
-            EventKind::Selection(text) => selection = Some(text),
-            EventKind::HostShortcut(shortcut) => {
-                panic!("textarea editing escaped to host: {shortcut:?}")
-            }
-            EventKind::Error { message, .. } => panic!("textarea provider error: {message}"),
-            _ => {}
-        }
-        if loaded && titled && painted && !entered {
-            entered = true;
-            click(&mut stdin, &mut sequence, 40.0, 40.0);
-            std::thread::sleep(Duration::from_millis(100));
-            send(&mut stdin, &mut sequence, CommandKind::Text("first".into()));
-            enter(&mut stdin, &mut sequence, false);
-            send(
-                &mut stdin,
-                &mut sequence,
-                CommandKind::Text("second".into()),
-            );
-            enter(&mut stdin, &mut sequence, true);
-            send(&mut stdin, &mut sequence, CommandKind::Text("third".into()));
-            send_key(
-                &mut stdin,
-                &mut sequence,
-                "Backspace",
-                "Backspace",
-                Modifiers::default(),
-            );
-            send(&mut stdin, &mut sequence, CommandKind::Text("d".into()));
-            for key in ["ArrowLeft", "ArrowRight"] {
-                send_key(
+                    resource,
+                    offset,
+                    length,
+                } => {
+                    assert_eq!(resource, 1);
+                    let end = (offset as usize + length as usize).min(html.len());
+                    send(
+                        &mut stdin,
+                        &mut sequence,
+                        CommandKind::ResourceReply(ResourceReply::Data {
+                            request,
+                            resource,
+                            offset,
+                            bytes: html[offset as usize..end].to_vec(),
+                        }),
+                    );
+                }
+                EventKind::ResourceResolve { request, .. } => send(
                     &mut stdin,
                     &mut sequence,
-                    key,
-                    key,
-                    Modifiers {
-                        alt: true,
-                        ..Default::default()
-                    },
-                );
+                    CommandKind::ResourceReply(ResourceReply::Denied {
+                        request,
+                        reason: "fixture has no siblings".into(),
+                    }),
+                ),
+                EventKind::State(state) => {
+                    loaded |= !state.loading;
+                    titled |= state.title == "Textarea newline fixture";
+                }
+                EventKind::Frame(_) => {
+                    painted |= titled;
+                    probe = true;
+                }
+                EventKind::Selection(text) => {
+                    copy_pending = false;
+                    if edit == Edit::Focusing && text == "seed" {
+                        // Select-all reached the textarea, so it has focus; the first
+                        // text replaces the selected seed.
+                        type_textarea(&mut stdin, &mut sequence);
+                        edit = Edit::Typed;
+                        select_all_and_copy(&mut stdin, &mut sequence);
+                        copy_pending = true;
+                    } else if edit == Edit::Typed {
+                        selection = Some(text);
+                    }
+                }
+                EventKind::HostShortcut(shortcut) => {
+                    panic!("textarea editing escaped to host: {shortcut:?}")
+                }
+                EventKind::Error { message, .. } => panic!("textarea provider error: {message}"),
+                _ => {}
+            },
+            _ => {
+                if let Some(status) = child.try_wait().unwrap() {
+                    panic!("Chromium terminated before textarea qualification: {status}");
+                }
+                probe = true;
             }
-            std::thread::sleep(Duration::from_millis(100));
-            send_key(
-                &mut stdin,
-                &mut sequence,
-                "a",
-                "KeyA",
-                Modifiers {
-                    control: true,
-                    ..Default::default()
-                },
-            );
-            std::thread::sleep(Duration::from_millis(100));
-            send(&mut stdin, &mut sequence, CommandKind::Copy);
+        }
+        if loaded && titled && painted && edit == Edit::Idle {
+            edit = Edit::Focusing;
+            click(&mut stdin, &mut sequence, 40.0, 40.0);
+            select_all_and_copy(&mut stdin, &mut sequence);
+            copy_pending = true;
+        } else if probe && edit != Edit::Idle && !copy_pending {
+            // Selection notifications are asynchronous; probe again until they arrive.
+            select_all_and_copy(&mut stdin, &mut sequence);
+            copy_pending = true;
         }
     }
     send(&mut stdin, &mut sequence, CommandKind::Close);
     drop(stdin);
-    let deadline = Instant::now() + Duration::from_secs(10);
-    let mut status = None;
-    while Instant::now() < deadline {
-        if let Some(done) = child.try_wait().unwrap() {
-            status = Some(done);
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(10));
-    }
-    if status.is_none() {
-        let _ = child.kill();
-    }
-    let _ = child.wait();
+    let status = wait_for_exit(child);
     assert_eq!(
         selection.as_deref(),
-        Some("first\nsecond\nthird"),
-        "Enter and Shift+Enter must each insert exactly one textarea newline"
+        Some(TEXTAREA_EXPECTED),
+        "Enter/Shift+Enter, punctuation and IME commit must each insert exactly their text"
     );
     assert!(
         status.is_some_and(|status| status.success()),
         "CEF did not close cleanly"
     );
+}
+
+fn type_textarea(stdin: &mut impl Write, sequence: &mut u64) {
+    send(stdin, sequence, CommandKind::Text("first".into()));
+    enter(stdin, sequence, false);
+    send(stdin, sequence, CommandKind::Text("second".into()));
+    enter(stdin, sequence, true);
+    send(stdin, sequence, CommandKind::Text("third".into()));
+    send_key(
+        stdin,
+        sequence,
+        "Backspace",
+        "Backspace",
+        Modifiers::default(),
+    );
+    send(stdin, sequence, CommandKind::Text("dxy".into()));
+    send_key(
+        stdin,
+        sequence,
+        "ArrowLeft",
+        "ArrowLeft",
+        Modifiers::default(),
+    );
+    let shift = Modifiers {
+        shift: true,
+        ..Default::default()
+    };
+    // US "." and "\"", Czech QWERTZ "(" (Shift+BracketRight), typed before the "y".
+    typed_key(stdin, sequence, ".", "Period", Modifiers::default());
+    typed_key(stdin, sequence, "\"", "Quote", shift);
+    typed_key(stdin, sequence, "(", "BracketRight", shift);
+    for ime in [
+        Ime::Start,
+        Ime::Update {
+            text: "日本".into(),
+            selection_start: 6,
+            selection_end: 6,
+        },
+        Ime::Commit("日本".into()),
+        Ime::End,
+    ] {
+        send(stdin, sequence, CommandKind::Ime(ime));
+    }
+    for key in ["ArrowLeft", "ArrowRight"] {
+        send_key(
+            stdin,
+            sequence,
+            key,
+            key,
+            Modifiers {
+                alt: true,
+                ..Default::default()
+            },
+        );
+    }
 }
 
 fn enter(stdin: &mut impl Write, sequence: &mut u64, shift: bool) {

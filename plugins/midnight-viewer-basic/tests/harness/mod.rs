@@ -3,8 +3,80 @@ use midnight_plugin_sdk::api::{abi, codec, messages};
 use std::{
     collections::{HashMap, VecDeque},
     mem::MaybeUninit,
-    sync::Mutex,
+    sync::{Condvar, Mutex, MutexGuard, PoisonError},
+    time::{Duration, Instant},
 };
+
+/// The SDK admits at most 16 live plugin instances per loaded library and
+/// rejects further `create` calls with `QUEUE_FULL` (ABI_AND_LIFECYCLE.md),
+/// while libtest runs one test per hardware thread. Each `Host` holds one of
+/// these slots from before `create` until after `destroy`, so surplus tests
+/// queue here instead of failing.
+const INSTANCE_SLOTS: usize = 16;
+/// Elapses only when slots leak or a test that holds one hangs.
+const SLOT_WAIT: Duration = Duration::from_secs(120);
+struct Slots {
+    used: usize,
+    /// Hosts blocked in `Slot::acquire`.
+    waiting: usize,
+}
+static SLOTS: Mutex<Slots> = Mutex::new(Slots {
+    used: 0,
+    waiting: 0,
+});
+static SLOTS_CHANGED: Condvar = Condvar::new();
+
+fn wait_slots(
+    slots: MutexGuard<'static, Slots>,
+    deadline: Instant,
+    what: &str,
+) -> MutexGuard<'static, Slots> {
+    let left = deadline.saturating_duration_since(Instant::now());
+    if left.is_zero() {
+        drop(slots);
+        panic!("Waited {SLOT_WAIT:?} for {what}");
+    }
+    SLOTS_CHANGED
+        .wait_timeout(slots, left)
+        .unwrap_or_else(PoisonError::into_inner)
+        .0
+}
+
+/// One SDK instance slot, returned on drop while `release` is set, also when
+/// a test panics. It stays taken while the plugin instance outlives its host.
+struct Slot {
+    release: bool,
+}
+impl Slot {
+    fn acquire() -> Self {
+        let deadline = Instant::now() + SLOT_WAIT;
+        let mut slots = lock(&SLOTS);
+        while slots.used >= INSTANCE_SLOTS {
+            slots.waiting += 1;
+            SLOTS_CHANGED.notify_all();
+            slots = wait_slots(slots, deadline, "a released plugin instance slot");
+            slots.waiting -= 1;
+        }
+        slots.used += 1;
+        Self { release: true }
+    }
+}
+impl Drop for Slot {
+    fn drop(&mut self) {
+        if self.release {
+            lock(&SLOTS).used -= 1;
+            SLOTS_CHANGED.notify_all();
+        }
+    }
+}
+/// Blocks until `count` hosts wait for a plugin instance slot.
+pub fn await_slot_waiters(count: usize) {
+    let deadline = Instant::now() + SLOT_WAIT;
+    let mut slots = lock(&SLOTS);
+    while slots.waiting < count {
+        slots = wait_slots(slots, deadline, "hosts waiting for an instance slot");
+    }
+}
 
 struct Work {
     context: usize,
@@ -21,10 +93,15 @@ struct Buffer {
     bytes: Box<[u8]>,
     refs: usize,
 }
+/// Host state shared with the C callbacks. Callbacks never panic across the C ABI:
+/// contract violations are recorded and asserted on the test thread instead.
 struct State {
     jobs: Mutex<VecDeque<Work>>,
     services: Mutex<VecDeque<Service>>,
     buffers: Mutex<HashMap<u64, Buffer>>,
+    violations: Mutex<Vec<String>>,
+    // Like the real host, every cancellation poll takes a lock.
+    polls: Mutex<u64>,
 }
 pub struct Event {
     pub id: u64,
@@ -42,6 +119,8 @@ pub struct Host {
     pub reads: Vec<messages::ReadAt>,
     pub events: Vec<Event>,
     next_buffer: u64,
+    // Fields drop after `Drop::drop`, so the slot outlives `destroy`.
+    slot: Slot,
 }
 fn empty() -> abi::ByteSlice {
     slice(&[])
@@ -53,54 +132,77 @@ fn slice(bytes: &[u8]) -> abi::ByteSlice {
         reserved: 0,
     }
 }
+fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(PoisonError::into_inner)
+}
 unsafe fn state<'a>(id: u64) -> &'a State {
     unsafe { &*(id as *const State) }
 }
+fn violation(state: &State, message: String) -> u32 {
+    lock(&state.violations).push(message);
+    abi::INVALID
+}
 unsafe extern "C" fn schedule(id: u64, work: *const abi::Work) -> u32 {
-    let w = unsafe { &*work };
-    unsafe { state(id) }.jobs.lock().unwrap().push_back(Work {
+    let state = unsafe { state(id) };
+    let Some(w) = (unsafe { work.as_ref() }) else {
+        return violation(state, "schedule_work received a null work item".into());
+    };
+    let (Some(run), Some(drop)) = (w.run, w.drop) else {
+        return violation(state, "schedule_work without run/drop callbacks".into());
+    };
+    lock(&state.jobs).push_back(Work {
         context: w.context as usize,
-        run: w.run.unwrap(),
-        drop: w.drop.unwrap(),
+        run,
+        drop,
     });
     abi::OK
 }
 unsafe extern "C" fn service(id: u64, r: *const abi::Request) -> u32 {
-    let r = unsafe { &*r };
-    assert_eq!(r.kind, abi::SERVICE_READ_AT);
+    let state = unsafe { state(id) };
+    let Some(r) = (unsafe { r.as_ref() }) else {
+        return violation(state, "submit_service received a null request".into());
+    };
+    if r.kind != abi::SERVICE_READ_AT {
+        return violation(state, format!("unexpected service kind {}", r.kind));
+    }
     let payload = unsafe { std::slice::from_raw_parts(r.payload.data, r.payload.len as usize) };
-    unsafe { state(id) }
-        .services
-        .lock()
-        .unwrap()
-        .push_back(Service {
-            id: r.id,
-            session: r.session,
-            generation: r.generation,
-            read: codec::decode(payload).unwrap(),
-        });
+    let read = match codec::decode::<messages::ReadAt>(payload) {
+        Ok(read) => read,
+        Err(error) => return violation(state, format!("invalid ReadAt payload: {error}")),
+    };
+    lock(&state.services).push_back(Service {
+        id: r.id,
+        session: r.session,
+        generation: r.generation,
+        read,
+    });
     abi::OK
 }
 unsafe extern "C" fn retain(id: u64, b: u64) -> u32 {
-    unsafe { state(id) }
-        .buffers
-        .lock()
-        .unwrap()
-        .get_mut(&b)
-        .unwrap()
-        .refs += 1;
+    let state = unsafe { state(id) };
+    let mut buffers = lock(&state.buffers);
+    let Some(buffer) = buffers.get_mut(&b) else {
+        drop(buffers);
+        return violation(state, format!("retain of unknown buffer {b}"));
+    };
+    buffer.refs += 1;
     abi::OK
 }
 unsafe extern "C" fn release(id: u64, b: u64) -> u32 {
-    let mut buffers = unsafe { state(id) }.buffers.lock().unwrap();
-    let buffer = buffers.get_mut(&b).unwrap();
+    let state = unsafe { state(id) };
+    let mut buffers = lock(&state.buffers);
+    let Some(buffer) = buffers.get_mut(&b) else {
+        drop(buffers);
+        return violation(state, format!("release of unknown buffer {b}"));
+    };
     buffer.refs -= 1;
     if buffer.refs == 0 {
         buffers.remove(&b);
     }
     abi::OK
 }
-unsafe extern "C" fn cancelled(_: u64, _: u64) -> u32 {
+unsafe extern "C" fn cancelled(id: u64, _: u64) -> u32 {
+    *lock(&unsafe { state(id) }.polls) += 1;
     0
 }
 unsafe extern "C" fn notify(_: u64) {}
@@ -112,6 +214,8 @@ impl Host {
             jobs: Mutex::new(VecDeque::new()),
             services: Mutex::new(VecDeque::new()),
             buffers: Mutex::new(HashMap::new()),
+            violations: Mutex::new(Vec::new()),
+            polls: Mutex::new(0),
         });
         let host = abi::HostApi {
             header: abi::Header {
@@ -143,6 +247,7 @@ impl Host {
         );
         let api = unsafe { api.assume_init() };
         let mut instance = 0;
+        let slot = Slot::acquire();
         assert_eq!(
             unsafe { api.create.unwrap()(&host, empty(), &mut instance) },
             abi::OK
@@ -157,6 +262,7 @@ impl Host {
             reads: vec![],
             events: vec![],
             next_buffer: 1,
+            slot,
         }
     }
     pub fn submit<T: codec::Model>(
@@ -227,23 +333,36 @@ impl Host {
             abi::OK
         );
     }
+    /// Number of host cancellation polls the plugin made so far.
+    pub fn polls(&self) -> u64 {
+        *lock(&self.state.polls)
+    }
+    /// Asserts on the test thread that no callback recorded a contract violation.
+    pub fn check(&self) {
+        let violations = lock(&self.state.violations);
+        assert!(
+            violations.is_empty(),
+            "Plugin ABI violations: {violations:?}"
+        );
+    }
     pub fn jobs(&mut self) {
         for _ in 0..100000 {
-            let work = self.state.jobs.lock().unwrap().pop_front();
+            let work = lock(&self.state.jobs).pop_front();
             let Some(work) = work else { return };
             unsafe {
                 (work.run)(work.context as *mut _);
                 (work.drop)(work.context as *mut _);
             }
             self.drain();
+            self.check();
         }
         panic!("Unbounded worker loop");
     }
     pub fn pending(&self) -> usize {
-        self.state.services.lock().unwrap().len()
+        lock(&self.state.services).len()
     }
     pub fn service(&mut self) -> Service {
-        let value = self.state.services.lock().unwrap().pop_front();
+        let value = lock(&self.state.services).pop_front();
         value.expect("Plugin must request content")
     }
     pub fn reply(&mut self, s: Service, bytes: Vec<u8>, eof: bool, status: u32) {
@@ -268,7 +387,7 @@ impl Host {
                 id,
                 bytes: slice(&buffer.bytes),
             };
-            self.state.buffers.lock().unwrap().insert(id, buffer);
+            lock(&self.state.buffers).insert(id, buffer);
             Some(b)
         };
         self.raw(
@@ -289,6 +408,7 @@ impl Host {
         for _ in 0..100000 {
             self.jobs();
             self.drain();
+            self.check();
             if self.pending() == 0 {
                 return;
             }
@@ -299,7 +419,11 @@ impl Host {
                 .min(s.read.length as usize)
                 .min(self.short);
             let bytes = if offset < self.base {
-                vec![b'x'; count]
+                // Sparse prefix: only the requested part is materialized.
+                let prefix = (self.base - offset).min(count as u64) as usize;
+                let mut bytes = vec![b'x'; prefix];
+                bytes.extend_from_slice(&self.data[..count - prefix]);
+                bytes
             } else {
                 self.data[(offset - self.base) as usize..(offset - self.base) as usize + count]
                     .to_vec()
@@ -370,13 +494,18 @@ impl Host {
 }
 impl Drop for Host {
     fn drop(&mut self) {
+        // The instance occupies its SDK slot until `destroy` succeeds.
+        self.slot.release = false;
         unsafe {
             self.api.begin_shutdown.unwrap()(self.instance);
         }
         self.pump();
-        assert_eq!(unsafe { self.api.destroy.unwrap()(self.instance) }, abi::OK);
+        let destroyed = unsafe { self.api.destroy.unwrap()(self.instance) };
+        self.slot.release = destroyed == abi::OK;
+        assert_eq!(destroyed, abi::OK);
+        self.check();
         assert!(
-            self.state.buffers.lock().unwrap().is_empty(),
+            lock(&self.state.buffers).is_empty(),
             "Host content lease leak"
         );
     }

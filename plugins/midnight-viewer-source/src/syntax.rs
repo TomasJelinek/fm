@@ -6,6 +6,10 @@ use std::sync::OnceLock;
 #[path = "syntax_xml.rs"]
 mod xml;
 
+/// Host cancellation callbacks cross the plugin ABI and take host locks, so the
+/// lexers poll them at most once per this many input bytes.
+const POLL_BYTES: usize = 4096;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Language {
     Rust,
@@ -34,18 +38,114 @@ enum Mode {
     #[default]
     Normal,
     Block(u8),
-    Quote {
-        quote: u8,
-        count: u8,
-        escaped: bool,
-    },
+    Quote(Quote),
     Raw(u8),
+}
+
+/// An open string literal closed by `count` (1 or 3) `quote` bytes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Quote {
+    quote: u8,
+    count: u8,
+    escape: Escape,
+    /// Single-line literals end at an unescaped newline.
+    multiline: bool,
+    escaped: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Escape {
+    /// `\` escapes the next character.
+    Backslash,
+    /// A doubled delimiter is one literal delimiter (SQL, YAML, C# verbatim).
+    Doubled,
+    /// Every character before the delimiter is literal.
+    Verbatim,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct State {
     mode: Mode,
     xml: xml::State,
+}
+
+/// Styles of one lexed text. `truncated` reports more than `MAX_SPANS` styled
+/// tokens: the extra spans are omitted, but the lexical state still advanced
+/// over the whole text, so later checkpoints remain exact.
+#[derive(Debug, Default)]
+pub struct Highlight {
+    pub spans: Vec<Span>,
+    pub truncated: bool,
+}
+
+/// Calls a cancellation callback at most once per `POLL_BYTES` of input.
+struct Poll<F> {
+    cancelled: F,
+    next: usize,
+}
+
+impl<F: Fn() -> bool> Poll<F> {
+    fn new(cancelled: F) -> Self {
+        Self { cancelled, next: 0 }
+    }
+
+    fn cancelled(&mut self, at: usize) -> bool {
+        if at < self.next {
+            return false;
+        }
+        self.next = at.saturating_add(POLL_BYTES);
+        (self.cancelled)()
+    }
+}
+
+/// Collects merged spans up to `MAX_SPANS`, recording any overflow.
+#[derive(Default)]
+struct Spans(Highlight);
+
+impl Spans {
+    fn push(&mut self, start: usize, end: usize, role: u16) {
+        if start == end {
+            return;
+        }
+        let spans = &mut self.0.spans;
+        if let Some(last) = spans.last_mut()
+            && last.end == start as u32
+            && last.role == role
+        {
+            last.end = end as u32;
+        } else if spans.len() < MAX_SPANS {
+            spans.push(Span {
+                start: start as u32,
+                end: end as u32,
+                role,
+                flags: 0,
+            });
+        } else {
+            self.0.truncated = true;
+        }
+    }
+}
+
+/// Whether a Batch `::`/`rem` would start a command: the text since the last
+/// `&`, `|`, `(`, `)` or newline is whitespace with optional leading `@`s.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum BatchStart {
+    Command,
+    At,
+    AtSpace,
+    Argument,
+}
+
+impl BatchStart {
+    fn next(self, ch: char) -> Self {
+        match (self, ch) {
+            (_, '\n' | '&' | '|' | '(' | ')') => Self::Command,
+            (Self::Command, ch) if ch.is_whitespace() => Self::Command,
+            (Self::Command | Self::At, '@') => Self::At,
+            (Self::At | Self::AtSpace, ch) if ch.is_whitespace() => Self::AtSpace,
+            _ => Self::Argument,
+        }
+    }
 }
 
 pub fn detect(name: &str, prefix: &str) -> Option<Language> {
@@ -106,31 +206,36 @@ fn tokens() -> &'static Regex {
     ).size_limit(128 * 1024).dfa_size_limit(128 * 1024).build().unwrap())
 }
 
+/// Lexes `text` from `state`. `None` means cancellation or an exhausted
+/// nesting/length bound; `state` then keeps its previous value.
 pub fn highlight(
     text: &str,
     language: Language,
     state: &mut State,
     cancelled: impl Fn() -> bool,
-) -> Option<Vec<Span>> {
-    if text.len() > 64 * 1024 || cancelled() {
+) -> Option<Highlight> {
+    let mut poll = Poll::new(cancelled);
+    if text.len() > 64 * 1024 || poll.cancelled(0) {
         return None;
     }
     if language == Language::Xml {
-        return xml::highlight(text, &mut state.xml, cancelled);
+        return xml::highlight(text, &mut state.xml, &mut poll);
     }
     let mut current = *state;
-    let mut spans = Vec::<Span>::new();
+    let mut spans = Spans::default();
     let bytes = text.as_bytes();
     let mut at = 0;
+    // Each call starts at a line start, where a Batch command can begin.
+    let mut batch = BatchStart::Command;
     while at < bytes.len() {
-        if cancelled() || spans.len() >= MAX_SPANS {
+        if poll.cancelled(at) {
             return None;
         }
         let start = at;
         let role = match current.mode {
             Mode::Block(mut depth) => {
                 while at < bytes.len() {
-                    if at % 128 == 0 && cancelled() {
+                    if poll.cancelled(at) {
                         return None;
                     }
                     if bytes[at..].starts_with(b"*/") {
@@ -156,24 +261,31 @@ pub fn highlight(
                 };
                 STYLE_COMMENT
             }
-            Mode::Quote {
-                quote,
-                count,
-                mut escaped,
-            } => {
+            Mode::Quote(mut quote) => {
                 let mut closed = false;
                 while at < bytes.len() {
-                    if at % 128 == 0 && cancelled() {
+                    if poll.cancelled(at) {
                         return None;
                     }
-                    if escaped {
-                        escaped = false;
+                    let delimiter = &[quote.quote; 3][..quote.count as usize];
+                    if quote.escaped {
+                        quote.escaped = false;
                         at += text[at..].chars().next().unwrap().len_utf8();
-                    } else if bytes[at] == b'\\' && language != Language::Batch {
-                        escaped = true;
+                    } else if bytes[at] == b'\\' && quote.escape == Escape::Backslash {
+                        quote.escaped = true;
                         at += 1;
-                    } else if bytes[at..].starts_with(&[quote; 3][..count as usize]) {
-                        at += count as usize;
+                    } else if bytes[at..].starts_with(delimiter) {
+                        if quote.escape == Escape::Doubled
+                            && bytes.get(at + 1) == Some(&quote.quote)
+                        {
+                            at += 2;
+                            continue;
+                        }
+                        at += delimiter.len();
+                        closed = true;
+                        break;
+                    } else if bytes[at] == b'\n' && !quote.multiline {
+                        // An unterminated single-line literal ends with its line.
                         closed = true;
                         break;
                     } else {
@@ -183,18 +295,14 @@ pub fn highlight(
                 current.mode = if closed {
                     Mode::Normal
                 } else {
-                    Mode::Quote {
-                        quote,
-                        count,
-                        escaped,
-                    }
+                    Mode::Quote(quote)
                 };
                 STYLE_STRING
             }
             Mode::Raw(hashes) => {
                 let mut closed = false;
                 while at < bytes.len() {
-                    if at % 128 == 0 && cancelled() {
+                    if poll.cancelled(at) {
                         return None;
                     }
                     if bytes[at] == b'"'
@@ -234,12 +342,12 @@ pub fn highlight(
                         | Language::Yaml
                 );
                 let batch_comment = language == Language::Batch
+                    && batch != BatchStart::Argument
                     && (bytes[at..].starts_with(b"::")
                         || (bytes
                             .get(at..at + 3)
                             .is_some_and(|word| word.eq_ignore_ascii_case(b"rem"))
-                            && bytes.get(at + 3).is_none_or(u8::is_ascii_whitespace)))
-                    && batch_command_start(&text[..at]);
+                            && bytes.get(at + 3).is_none_or(u8::is_ascii_whitespace)));
                 if batch_comment
                     || (c_style && bytes[at..].starts_with(b"//"))
                     || (hash_style && bytes[at] == b'#')
@@ -253,32 +361,25 @@ pub fn highlight(
                     STYLE_COMMENT
                 } else if language == Language::Rust
                     && bytes[at] == b'r'
-                    && raw_start(&bytes[at..]).is_some()
+                    && let Some(hashes) = raw_start(&bytes[at..])
                 {
-                    let hashes = raw_start(&bytes[at..]).unwrap();
                     at += 2 + hashes as usize;
                     current.mode = Mode::Raw(hashes);
                     STYLE_STRING
-                } else if bytes[at] == b'"'
-                    || (language != Language::Batch && bytes[at] == b'\'')
-                    || (matches!(language, Language::JavaScript | Language::TypeScript)
-                        && bytes[at] == b'`')
-                {
-                    let quote = bytes[at];
-                    let count = if matches!(language, Language::Python | Language::Toml)
-                        && bytes[at..].starts_with(&[quote; 3])
-                    {
-                        3
-                    } else {
-                        1
-                    };
-                    at += count as usize;
-                    current.mode = Mode::Quote {
-                        quote,
-                        count,
-                        escaped: false,
-                    };
+                } else if let Some(quote) = quote_start(language, text, at) {
+                    at += quote.count as usize;
+                    current.mode = Mode::Quote(quote);
                     STYLE_STRING
+                } else if language == Language::Rust && bytes[at] == b'\'' {
+                    // A lifetime or loop label, never a character literal.
+                    at += 1;
+                    let name: usize = text[at..]
+                        .chars()
+                        .take_while(|ch| ch.is_alphanumeric() || *ch == '_')
+                        .map(char::len_utf8)
+                        .sum();
+                    at += name;
+                    if name == 0 { STYLE_PLAIN } else { STYLE_TYPE }
                 } else if let Some(token) = tokens().find(&text[at..]) {
                     let token = token.as_str();
                     at += token.len();
@@ -296,30 +397,79 @@ pub fn highlight(
             }
         };
         if role != STYLE_PLAIN {
-            if let Some(last) = spans
-                .last_mut()
-                .filter(|s| s.end as usize == start && s.role == role)
-            {
-                last.end = at as u32;
-            } else {
-                spans.push(Span {
-                    start: start as u32,
-                    end: at as u32,
-                    role,
-                    flags: 0,
-                });
-            }
+            spans.push(start, at, role);
+        }
+        if language == Language::Batch {
+            batch = text[start..at].chars().fold(batch, BatchStart::next);
         }
     }
     *state = current;
-    Some(spans)
+    Some(spans.0)
 }
 
-fn batch_command_start(prefix: &str) -> bool {
-    prefix
-        .rsplit(['\n', '&', '|', '(', ')'])
-        .next()
-        .is_some_and(|part| part.trim().trim_start_matches('@').is_empty())
+/// The string literal that a delimiter at `at` opens in `language`, if any.
+fn quote_start(language: Language, text: &str, at: usize) -> Option<Quote> {
+    use Escape::*;
+    use Language::*;
+    let bytes = text.as_bytes();
+    let quote = bytes[at];
+    if !matches!(quote, b'"' | b'\'' | b'`') {
+        return None;
+    }
+    let triple = bytes[at..].starts_with(&[quote; 3]);
+    let (count, escape, multiline) = match (language, quote) {
+        (Python, b'"' | b'\'') | (Toml | Java | Swift, b'"') if triple => (3, Backslash, true),
+        (Toml, b'\'') | (CSharp | Kotlin, b'"') if triple => (3, Verbatim, true),
+        (Rust | Ruby | Shell, b'"') | (Ruby, b'\'') | (JavaScript | TypeScript, b'`') => {
+            (1, Backslash, true)
+        }
+        (Rust, b'\'') if char_literal(text, at) => (1, Backslash, false),
+        (Shell, b'\'') | (Go, b'`') => (1, Verbatim, true),
+        (Toml, b'\'') => (1, Verbatim, false),
+        (CSharp, b'"') if bytes[..at].ends_with(b"@") || bytes[..at].ends_with(b"@$") => {
+            (1, Doubled, true)
+        }
+        (Sql, b'"' | b'\'') => (1, Doubled, true),
+        (Yaml, b'"') if yaml_scalar_start(bytes, at) => (1, Backslash, true),
+        (Yaml, b'\'') if yaml_scalar_start(bytes, at) => (1, Doubled, true),
+        (Batch, b'"') => (1, Verbatim, false),
+        (Json | Toml, b'"')
+        | (
+            C | Cpp | JavaScript | TypeScript | Python | Java | CSharp | Go | Swift | Kotlin,
+            b'"' | b'\'',
+        ) => (1, Backslash, false),
+        _ => return None,
+    };
+    Some(Quote {
+        quote,
+        count,
+        escape,
+        multiline,
+        escaped: false,
+    })
+}
+
+/// A Rust character literal (`'x'` or an escape), as opposed to a lifetime.
+fn char_literal(text: &str, at: usize) -> bool {
+    let mut chars = text[at + 1..].chars();
+    match chars.next() {
+        Some('\\') => true,
+        Some('\'' | '\n') | None => false,
+        Some(_) => chars.next() == Some('\''),
+    }
+}
+
+/// YAML quotes delimit only whole scalars, not apostrophes inside plain text.
+fn yaml_scalar_start(bytes: &[u8], at: usize) -> bool {
+    let before = bytes[..at].trim_ascii_end();
+    let gap = &bytes[before.len()..at];
+    match before.last() {
+        None => true,
+        _ if gap.contains(&b'\n') => true,
+        Some(b'[' | b'{' | b',') => true,
+        Some(b':' | b'-' | b'?') => !gap.is_empty(),
+        Some(_) => false,
+    }
 }
 
 fn raw_start(bytes: &[u8]) -> Option<u8> {
@@ -333,8 +483,8 @@ fn raw_start(bytes: &[u8]) -> Option<u8> {
     (bytes.get(1 + hashes) == Some(&b'"')).then_some(hashes as u8)
 }
 
-fn keyword(language: Language, token: &str) -> bool {
-    let words = match language {
+fn keyword_list(language: Language) -> &'static str {
+    match language {
         Language::Rust => {
             "as async await break const continue crate dyn else enum extern false fn for if impl in let loop match mod move mut pub ref return self Self static struct super trait true type unsafe use where while"
         }
@@ -379,17 +529,53 @@ fn keyword(language: Language, token: &str) -> bool {
         Language::Ruby => {
             "BEGIN END alias and begin break case class def defined do else elsif end ensure false for if in module next nil not or redo rescue retry return self super then true undef unless until when while yield"
         }
+        // Case-insensitive languages list lowercase words.
         Language::Sql => {
-            "SELECT FROM WHERE AS JOIN LEFT RIGHT INNER OUTER ON GROUP BY ORDER HAVING LIMIT OFFSET INSERT INTO VALUES UPDATE SET DELETE CREATE TABLE DROP ALTER INDEX VIEW DISTINCT UNION ALL NULL TRUE FALSE AND OR NOT IS LIKE IN EXISTS CASE WHEN THEN ELSE END BEGIN COMMIT ROLLBACK"
+            "select from where as join left right inner outer on group by order having limit offset insert into values update set delete create table drop alter index view distinct union all null true false and or not is like in exists case when then else end begin commit rollback"
         }
         Language::Yaml => "true false null True False Null TRUE FALSE NULL yes no on off",
         Language::Xml => "",
+    }
+}
+
+fn keyword(language: Language, token: &str) -> bool {
+    const LANGUAGES: usize = Language::Xml as usize + 1;
+    static TABLES: [OnceLock<Box<[&'static str]>>; LANGUAGES] =
+        [const { OnceLock::new() }; LANGUAGES];
+    let words = TABLES[language as usize].get_or_init(|| {
+        let mut words: Vec<_> = keyword_list(language).split_ascii_whitespace().collect();
+        words.sort_unstable();
+        words.into_boxed_slice()
+    });
+    if !matches!(language, Language::Sql | Language::Batch) {
+        return words.binary_search(&token).is_ok();
+    }
+    // Tokens are ASCII; anything longer than the buffer is longer than every keyword.
+    let mut lower = [0; 16];
+    let Some(lower) = lower.get_mut(..token.len()) else {
+        return false;
     };
-    words.split_ascii_whitespace().any(|word| {
-        if matches!(language, Language::Sql | Language::Batch) {
-            word.eq_ignore_ascii_case(token)
-        } else {
-            word == token
+    lower.copy_from_slice(token.as_bytes());
+    lower.make_ascii_lowercase();
+    std::str::from_utf8(lower).is_ok_and(|lower| words.binary_search(&lower).is_ok())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn case_insensitive_keyword_tables_fit_the_lowercase_buffer() {
+        for language in [Language::Sql, Language::Batch] {
+            for word in keyword_list(language).split_ascii_whitespace() {
+                assert!(
+                    word.len() <= 16 && word == word.to_ascii_lowercase(),
+                    "{word}"
+                );
+                assert!(keyword(language, &word.to_ascii_uppercase()));
+            }
         }
-    })
+        assert!(!keyword(Language::Sql, "selection"));
+        assert!(keyword(Language::Rust, "Self") && !keyword(Language::Rust, "SELF"));
+    }
 }
