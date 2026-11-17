@@ -135,6 +135,7 @@ fn late_old_session_retirement_does_not_cancel_new_flat_navigation() {
     handle.clear_scope(PaneId::Left, NavigationId(2));
     let controller = Controller {
         panes: handle.panes.clone(),
+        listings: Default::default(),
     };
     controller.set_visible(VisibleDirectory {
         pane: PaneId::Left,

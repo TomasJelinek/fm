@@ -705,6 +705,15 @@ impl EngineServices {
                         navigation_high_water[pane.index()] = Some(navigation);
                         denied_navigations.begin(pane, navigation);
                         folder_presence.cancel(pane);
+                        // Before `trees.invalidate` clears the pane's watch scope and
+                        // before a listing task can read the directory.
+                        if let Some(watcher) = &watcher {
+                            match &command {
+                                Some(Command::Navigate { path, .. } | Command::Refresh { path, .. }) => watcher.listing_started(pane, navigation, path),
+                                Some(Command::Resort { path, .. }) => watcher.resort_started(pane, navigation, path),
+                                _ => {}
+                            }
+                        }
                     }
                     let resort = matches!(&command, Some(Command::Resort { .. }));
                     let desired_source = match &command {

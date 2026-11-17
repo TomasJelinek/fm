@@ -10,7 +10,7 @@ use midnight_core::{
     WatchSubscription,
 };
 use std::{
-    path::{Component, Path},
+    path::{Component, Path, PathBuf},
     sync::{
         Arc, Mutex, OnceLock,
         atomic::{AtomicBool, AtomicU64, Ordering},
@@ -48,6 +48,8 @@ type SharedOwner = Arc<WorkerOwned<Shared>>;
 /// There are no unbounded event/path queues and no worker per filesystem event.
 pub(crate) struct Controller {
     panes: [SharedOwner; RETIREMENT_CAPACITY],
+    /// Dispatched flat listings and fences per pane; tree watches never use them.
+    listings: [Arc<Mutex<Listings>>; RETIREMENT_CAPACITY],
 }
 
 #[derive(Clone)]
@@ -71,13 +73,47 @@ const PRODUCTION_TIMING: Timing = Timing {
 };
 
 struct Control {
-    visible: Option<VisibleDirectory>,
+    visible: Option<Visible>,
     revision: u64,
     cancel: Cancellation,
     stopped: bool,
     navigation: NavigationId,
     tree_navigation: Option<NavigationId>,
     tree: Option<tree::TreeControl>,
+}
+
+/// A directory the UI accepted, with the fence of the listing that produced it.
+#[derive(Clone)]
+struct Visible {
+    directory: VisibleDirectory,
+    /// `None` when that listing's start was not recorded: a resort shows rows
+    /// listed earlier, and a listing can start before a target has published
+    /// its counter.
+    fence: Option<Fence>,
+}
+
+/// A flat target's change count when a listing of its directory started.
+#[derive(Clone)]
+struct Fence {
+    counter: Arc<AtomicU64>,
+    value: u64,
+}
+
+/// The newest flat Navigate, Refresh or Resort the backend dispatched for a pane.
+struct Started {
+    navigation: NavigationId,
+    path: PathBuf,
+    /// Recorded for a Navigate/Refresh listing once a target has published its
+    /// counter.
+    fence: Option<Fence>,
+}
+
+/// Shared by the backend's command loop and one pane's flat worker.
+#[derive(Default)]
+struct Listings {
+    /// Change counter of the newest flat target, published before it subscribes.
+    counter: Option<Arc<AtomicU64>>,
+    started: Option<Started>,
 }
 
 struct Shared {
@@ -149,8 +185,11 @@ impl Controller {
                 timing,
             }))
         });
-        for shared in &panes {
+        let listings: [Arc<Mutex<Listings>>; RETIREMENT_CAPACITY] =
+            std::array::from_fn(|_| Arc::default());
+        for (shared, listings) in panes.iter().zip(&listings) {
             let shared = shared.clone();
+            let listings = listings.clone();
             let filesystem = filesystem.clone();
             let native = native.clone();
             let outbox = outbox.clone();
@@ -160,16 +199,61 @@ impl Controller {
             tasks.spawn(scope.future(async move {
                 crate::actor_thread::run(
                     "midnight-watch",
-                    native_scope.blocking(move || run(shared, filesystem, native, outbox, timing)),
+                    native_scope.blocking(move || {
+                        run(shared, listings, filesystem, native, outbox, timing)
+                    }),
                 )
                 .await;
             }));
         }
-        Self { panes }
+        Self { panes, listings }
+    }
+
+    /// Called by the backend when it dispatches a flat Navigate/Refresh listing
+    /// of `path`, before it clears the pane's watch scope and before the listing
+    /// reads the directory. The listing includes every change the pane's flat
+    /// target has counted so far (see `Target::retarget`), and a target already
+    /// watching `path` keeps counting until the listing is accepted.
+    pub(crate) fn listing_started(&self, pane: PaneId, navigation: NavigationId, path: &Path) {
+        self.started(pane, navigation, path, true);
+    }
+
+    /// Like `listing_started` for a flat Resort, which shows rows listed earlier
+    /// and therefore records no fence.
+    pub(crate) fn resort_started(&self, pane: PaneId, navigation: NavigationId, path: &Path) {
+        self.started(pane, navigation, path, false);
+    }
+
+    fn started(&self, pane: PaneId, navigation: NavigationId, path: &Path, listing: bool) {
+        let mut listings = self.listings[pane.index()]
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let fence = listings
+            .counter
+            .as_ref()
+            .filter(|_| listing)
+            .map(|counter| Fence {
+                value: counter.load(Ordering::Acquire),
+                counter: counter.clone(),
+            });
+        listings.started = Some(Started {
+            navigation,
+            path: path.to_path_buf(),
+            fence,
+        });
     }
 
     /// Called by the backend only after the UI accepts a complete listing.
     pub(crate) fn set_visible(&self, visible: VisibleDirectory) {
+        // Left in place: until the worker sees this acceptance, it still tells
+        // from that record whether the pane is listing its directory again.
+        let fence = self.listings[visible.pane.index()]
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .started
+            .as_ref()
+            .filter(|started| started.navigation == visible.navigation)
+            .and_then(|started| started.fence.clone());
         let shared = &self.panes[visible.pane.index()];
         let mut state = shared
             .state
@@ -181,6 +265,7 @@ impl Controller {
             || tree::current(&state)
                 .is_some_and(|scope| scope.stamp.navigation == visible.navigation)
             || state.visible.as_ref().is_some_and(|old| {
+                let old = &old.directory;
                 old.navigation > visible.navigation
                     || (old.navigation == visible.navigation
                         && old.path == visible.path
@@ -194,7 +279,10 @@ impl Controller {
         state.navigation = visible.navigation;
         state.tree_navigation = None;
         state.revision = state.revision.wrapping_add(1);
-        state.visible = Some(visible);
+        state.visible = Some(Visible {
+            directory: visible,
+            fence,
+        });
         drop(state);
         shared.wake();
     }
@@ -262,9 +350,12 @@ struct Target {
     /// Constant-space multiset signature of the accepted rows (`None` only if
     /// it could not be represented, which makes every probe a change).
     baseline: Option<[u8; 32]>,
+    /// Change count: native notifications and probes that found a change.
     dirty: Arc<AtomicU64>,
     observed: u64,
-    /// Native event count when this navigation's target was accepted.
+    /// Change count up to which the accepted rows include every change: the
+    /// fence of the listing they came from (0 for a new target, whose counter
+    /// starts after its listing).
     accepted_at: u64,
     active: Arc<AtomicBool>,
     _subscription: Option<Box<dyn WatchSubscription>>,
@@ -273,37 +364,50 @@ struct Target {
 }
 
 impl Target {
-    /// A refresh/resort of the same directory keeps its event counter. A new
-    /// native subscription (the directory may have been replaced) is in place
-    /// before the old one is released, so there is no registration gap. Events
-    /// during the replaced generation can postdate the new listing; their hints
-    /// carried the old navigation and were discarded by the UI, so probe once
-    /// immediately against the newly accepted rows instead of waiting for the
-    /// next poll.
+    /// A refresh/resort of the same directory keeps its change counter: the
+    /// target stays subscribed from the dispatch until this acceptance (see
+    /// `relisting`). A new native subscription (the directory may have been
+    /// replaced) is in place before the old one is released, so there is no
+    /// registration gap.
+    ///
+    /// The new rows are probed at once only if a change was counted that they
+    /// may lack; no hint reported it for them. A change is counted only after it
+    /// happened, and the backend reads the fence before the listing reads the
+    /// directory, so the listing includes every change counted up to its fence;
+    /// a later count may postdate it. The count when a hint was sent cannot
+    /// serve as the fence: a user refresh can start before the hinted change,
+    /// and its listing can lack that change although the hint precedes the
+    /// acceptance (the UI ignores hints while it loads). Rows without a fence
+    /// for this target (a resort, or a listing that started before the target
+    /// published its counter) are the accepted rows or were listed after them,
+    /// so they keep `accepted_at`.
     fn retarget(
         &mut self,
         shared: &SharedOwner,
         native: Option<&dyn WatchService>,
-        visible: VisibleDirectory,
+        visible: Visible,
         revision: u64,
         cancel: Cancellation,
         timing: Timing,
     ) {
+        // Read before subscribing again: a notification through the new
+        // subscription is counted after this and reaches the debounce.
+        let version = self.dirty.load(Ordering::Acquire);
+        if let Some(fence) = visible
+            .fence
+            .filter(|fence| Arc::ptr_eq(&fence.counter, &self.dirty))
+        {
+            self.accepted_at = fence.value;
+        }
+        let activity = version != self.accepted_at;
         let subscription = subscribe(shared, native, &self.path, &self.dirty, &self.active);
         // Destruction can join native watcher threads; it stays on this worker.
         drop(std::mem::replace(&mut self._subscription, subscription));
-        let version = self.dirty.load(Ordering::Relaxed);
-        let activity = version != self.accepted_at
-            || self
-                .debounce
-                .deadline(timing.quiet, timing.maximum)
-                .is_some();
         self.revision = revision;
-        self.navigation = visible.navigation;
+        self.navigation = visible.directory.navigation;
         self.cancel = cancel;
-        self.baseline = accepted_signature(&visible.entries);
+        self.baseline = accepted_signature(&visible.directory.entries);
         self.observed = version;
-        self.accepted_at = version;
         self.debounce = Debouncer::default();
         let now = Instant::now();
         self.poll_at = if activity { now } else { now + timing.poll };
@@ -329,7 +433,8 @@ fn subscribe(
     let callback_shared = Arc::downgrade(shared);
     let callback = Arc::new(move || {
         if callback_active.load(Ordering::Acquire) {
-            callback_dirty.fetch_add(1, Ordering::Relaxed);
+            // Pairs with the fence's acquire load in `Controller::listing_started`.
+            callback_dirty.fetch_add(1, Ordering::Release);
             if let Some(shared) = callback_shared.upgrade() {
                 shared.wake();
             }
@@ -341,12 +446,19 @@ fn subscribe(
 fn register(
     shared: &SharedOwner,
     native: Option<&dyn WatchService>,
+    listings: &Mutex<Listings>,
     visible: VisibleDirectory,
     revision: u64,
     cancel: Cancellation,
     timing: Timing,
 ) -> Target {
     let dirty = Arc::new(AtomicU64::new(0));
+    // Published before the subscription exists, so a listing that starts from
+    // now on fences against the counter that will see its changes.
+    listings
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .counter = Some(dirty.clone());
     let active = Arc::new(AtomicBool::new(true));
     let subscription = subscribe(shared, native, &visible.path, &dirty, &active);
     Target {
@@ -366,8 +478,27 @@ fn register(
     }
 }
 
+/// Whether the pane's newest dispatch shows `path` again: a Navigate, Refresh or
+/// Resort that is not older than the navigation that made the target stale
+/// (the backend records it before it clears the pane's watch scope). Archive,
+/// network and tree views, and other directories, release the target at once.
+fn relisting(shared: &Shared, listings: &Mutex<Listings>, path: &Path) -> bool {
+    let navigation = shared
+        .state
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .navigation;
+    listings
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .started
+        .as_ref()
+        .is_some_and(|started| started.navigation >= navigation && started.path == path)
+}
+
 fn run(
     shared: SharedOwner,
+    listings: Arc<Mutex<Listings>>,
     filesystem: Arc<dyn FileSystem>,
     native: Option<Arc<dyn WatchService>>,
     outbox: Outbox,
@@ -428,7 +559,8 @@ fn run(
                     .visible
                     .clone()
                     .filter(|visible| {
-                        visible.navigation == state.navigation && !state.cancel.is_cancelled()
+                        visible.directory.navigation == state.navigation
+                            && !state.cancel.is_cancelled()
                     })
                     .map(|visible| (visible, state.revision, state.cancel.clone()))
             } else {
@@ -436,7 +568,10 @@ fn run(
             }
         };
         if let Some((visible, revision, cancel)) = update {
-            if let Some(current) = target.as_mut().filter(|old| old.path == visible.path) {
+            if let Some(current) = target
+                .as_mut()
+                .filter(|old| old.path == visible.directory.path)
+            {
                 current.retarget(
                     &shared,
                     native.as_deref(),
@@ -452,17 +587,24 @@ fn run(
             target = Some(register(
                 &shared,
                 native.as_deref(),
-                visible,
+                &listings,
+                visible.directory,
                 revision,
                 cancel,
                 timing,
             ));
             continue;
         }
-        if target
+        if let Some(stale) = target
             .as_ref()
-            .is_some_and(|target| !shared.is_current(target.revision))
+            .filter(|target| !shared.is_current(target.revision))
         {
+            if relisting(&shared, &listings, &stale.path) {
+                // Counts this directory's notifications for the fence of its
+                // next listing, without probes or hints, until it is accepted.
+                thread::park();
+                continue;
+            }
             drop(target.take());
         }
         let Some(target) = target.as_mut() else {
@@ -487,6 +629,9 @@ fn run(
             }
             target.poll_at = Instant::now() + timing.poll;
             if changed {
+                // Counted like a notification, so a listing that started
+                // before this probe is checked again when it is accepted.
+                target.observed = target.dirty.fetch_add(1, Ordering::Release).wrapping_add(1);
                 target.debounce.record(Instant::now());
             }
         }
