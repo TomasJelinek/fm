@@ -40,13 +40,27 @@ impl Content {
         stage.finish()
     }
 }
+/// Bytes the tar crate may read between two seeks while indexing. Member data is
+/// always skipped by seeking, so this bounds one header plus one GNU long-name/link
+/// or PAX record, which the crate buffers completely in memory.
+const MAX_METADATA_RUN: u64 = 16 * 1024 * 1024;
+
 struct BoundedReader {
     reader: Reader,
     length: u64,
+    unseeked: u64,
 }
 impl Read for BoundedReader {
     fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
-        self.reader.read(buffer)
+        let count = self.reader.read(buffer)?;
+        self.unseeked += count as u64;
+        if self.unseeked > MAX_METADATA_RUN {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "TAR metadata record exceeds 16 MiB",
+            ));
+        }
+        Ok(count)
     }
 }
 impl Seek for BoundedReader {
@@ -55,6 +69,7 @@ impl Seek for BoundedReader {
         if position > self.length {
             return Err(io::ErrorKind::UnexpectedEof.into());
         }
+        self.unseeked = 0;
         Ok(position)
     }
 }
@@ -68,13 +83,19 @@ impl Archive {
         let mut archive = ::tar::Archive::new(BoundedReader {
             reader: source,
             length,
+            unseeked: 0,
         });
         let mut ranges = HashMap::new();
         for entry in archive.entries_with_seek()? {
             let mut entry = entry?;
+            let typ = entry.header().entry_type();
+            // A PAX global header (`git archive` writes one) is archive metadata, not a
+            // member; GNU tar and bsdtar do not list it either.
+            if typ.is_pax_global_extensions() {
+                continue;
+            }
             let raw = entry.path_bytes().into_owned();
             let display = String::from_utf8_lossy(&raw).into_owned();
-            let typ = entry.header().entry_type();
             let kind = if typ.is_dir() {
                 Kind::Directory
             } else if typ.is_file() {
@@ -91,7 +112,7 @@ impl Archive {
             }
             let modified = timestamps::tar_modified(&mut entry);
             let id = self.add(&raw, &display, kind, None, readable)?;
-            if let Some(node) = self.nodes.get_mut((id - 2) as usize) {
+            if let Some(node) = self.node_mut(id) {
                 node.modified = modified;
             }
             if readable {

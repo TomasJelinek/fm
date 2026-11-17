@@ -36,13 +36,12 @@ fn zstd(mut source: Reader, stage: &mut Stage) -> Result<(), Error> {
         if (0x184d2a50..=0x184d2a5f).contains(&u32::from_le_bytes(magic)) {
             let mut size = [0; 4];
             source.read_exact(&mut size)?;
-            let count = u64::from(u32::from_le_bytes(size));
-            let copied = io::copy(&mut (&mut source).take(count), &mut io::sink())?;
-            if copied != count {
-                return Err(io::Error::from(io::ErrorKind::UnexpectedEof).into());
-            }
+            // Skippable content is never decoded. The read window rejects a seek
+            // past the source end, so a truncated frame still fails.
+            source.seek(SeekFrom::Current(i64::from(u32::from_le_bytes(size))))?;
             continue;
         }
+        // Peeking the magic stays inside the read window: seeking back is free.
         source.seek(SeekFrom::Start(start))?;
         let mut frame = ruzstd::decoding::FrameDecoder::new();
         frame.set_max_window_size(DECODER_MEMORY);

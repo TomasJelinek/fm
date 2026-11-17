@@ -72,6 +72,31 @@ fn streams_obey_actual_output_budgets() {
     }
 }
 #[test]
+fn zstandard_skippable_frames_are_skipped_but_must_be_complete() {
+    let skippable = |declared: u32, present: usize| {
+        let mut frame = 0x184d_2a50u32.to_le_bytes().to_vec();
+        frame.extend(declared.to_le_bytes());
+        frame.extend(vec![0xee; present]);
+        frame
+    };
+    let mut bytes = skippable(100, 100);
+    bytes.extend(compressed(Format::Zstd, b"hello"));
+    bytes.extend(skippable(3, 3));
+    let mut archive = Archive::open(Format::Zstd, bytes, Limits::default()).unwrap();
+    let node = archive.list(1, 0).unwrap().remove(0);
+    assert_eq!(archive.read(node.id, 0, 100).unwrap().0, b"hello");
+    let mut truncated = compressed(Format::Zstd, b"hello");
+    truncated.extend(skippable(100, 10));
+    assert_eq!(
+        Archive::open(Format::Zstd, truncated, Limits::default())
+            .err()
+            .unwrap()
+            .code,
+        ErrorCode::Corrupt
+    );
+}
+
+#[test]
 fn zstandard_checksum_is_checked_before_output_publication() {
     let mut bytes = compressed(Format::Zstd, b"hello");
     // Set the frame's checksum flag and append a deliberately invalid checksum.

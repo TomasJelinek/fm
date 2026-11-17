@@ -99,15 +99,22 @@ fn export_cooperative_fixtures() {
     seven.set_content_methods(vec![sevenz_rust2::EncoderConfiguration::new(
         sevenz_rust2::EncoderMethod::COPY,
     )]);
+    // `cached.bin` has its own block. Reading it therefore cannot retain `large.bin`
+    // as a verified sibling: reading `large.bin` must drain the 2 MiB unsafe sibling
+    // of its solid block, which is where the host cancels cooperatively.
+    seven
+        .push_archive_entry(
+            sevenz_rust2::ArchiveEntry::new_file("cached.bin"),
+            Some(Cursor::new(b"keep".to_vec())),
+        )
+        .unwrap();
     seven
         .push_archive_entries(
             vec![
-                sevenz_rust2::ArchiveEntry::new_file("cached.bin"),
                 sevenz_rust2::ArchiveEntry::new_file("../discard"),
                 sevenz_rust2::ArchiveEntry::new_file("large.bin"),
             ],
             vec![
-                sevenz_rust2::SourceReader::new(Cursor::new(b"keep".to_vec())),
                 sevenz_rust2::SourceReader::new(Cursor::new(vec![3; 2 * 1024 * 1024])),
                 sevenz_rust2::SourceReader::new(Cursor::new(vec![42; 4])),
             ],

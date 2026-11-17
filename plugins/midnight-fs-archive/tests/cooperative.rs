@@ -108,29 +108,33 @@ fn zip_cancelled_append_or_seal_can_retry_on_same_archive() {
     }
 }
 #[test]
-fn solid_sevenzip_cancellation_during_sibling_discard_preserves_retry() {
+fn solid_sevenzip_cancellation_during_sibling_decode_preserves_retry() {
     use sevenz_rust2::{
         ArchiveEntry, ArchiveWriter, EncoderConfiguration, EncoderMethod, SourceReader,
     };
-    let mut writer = ArchiveWriter::new(Cursor::new(Vec::new())).unwrap();
-    writer.set_content_methods(vec![EncoderConfiguration::new(EncoderMethod::COPY)]);
-    writer
-        .push_archive_entries(
-            vec![
-                ArchiveEntry::new_file("sibling"),
-                ArchiveEntry::new_file("image"),
-            ],
-            vec![
-                SourceReader::new(Cursor::new(vec![3; 600_000])),
-                SourceReader::new(Cursor::new(b"image".to_vec())),
-            ],
-        )
-        .unwrap();
-    verify(
-        Format::SevenZip,
-        writer.finish().unwrap().into_inner(),
-        Point::Progress,
-        1,
-        b"image",
-    );
+    // An unsafe sibling is drained; a readable one is decoded for retention. Both
+    // report batched progress (one report per MiB), which is the cancellation point.
+    for sibling in ["../sibling", "sibling"] {
+        let mut writer = ArchiveWriter::new(Cursor::new(Vec::new())).unwrap();
+        writer.set_content_methods(vec![EncoderConfiguration::new(EncoderMethod::COPY)]);
+        writer
+            .push_archive_entries(
+                vec![
+                    ArchiveEntry::new_file(sibling),
+                    ArchiveEntry::new_file("image"),
+                ],
+                vec![
+                    SourceReader::new(Cursor::new(vec![3; 2 * 1024 * 1024])),
+                    SourceReader::new(Cursor::new(b"image".to_vec())),
+                ],
+            )
+            .unwrap();
+        verify(
+            Format::SevenZip,
+            writer.finish().unwrap().into_inner(),
+            Point::Progress,
+            1,
+            b"image",
+        );
+    }
 }

@@ -16,14 +16,10 @@ fn main() {
 
 fn serve(broker: Broker) -> io::Result<()> {
     let mut archive = None;
-    let mut last_request = 0;
     loop {
+        // The broker rejects non-increasing host request IDs before returning.
         let message = broker.receive()?;
         let request = message.request();
-        if request <= last_request {
-            return Err(io::ErrorKind::InvalidData.into());
-        }
-        last_request = request;
         let result: Result<Message, Error> = match message {
             Message::Open { format, length, .. } if archive.is_none() => {
                 let limits = Limits::default();
@@ -44,27 +40,15 @@ fn serve(broker: Broker) -> io::Result<()> {
             Message::List {
                 directory, after, ..
             } => match archive.as_ref() {
-                Some(archive) => archive.list(directory, after).and_then(|entries| {
-                    let mut bytes = 32usize;
-                    let entries: Vec<_> = entries
-                        .into_iter()
-                        .take_while(|entry| {
-                            bytes =
-                                bytes.saturating_add(entry.name.len() + entry.display.len() + 64);
-                            bytes <= MAX_FRAME
+                Some(archive) => {
+                    archive
+                        .page(directory, after)
+                        .map(|(entries, more)| Message::Entries {
+                            request,
+                            more,
+                            entries,
                         })
-                        .collect();
-                    let more = if let Some(last) = entries.last() {
-                        !archive.list(directory, last.id)?.is_empty()
-                    } else {
-                        false
-                    };
-                    Ok(Message::Entries {
-                        request,
-                        more,
-                        entries,
-                    })
-                }),
+                }
                 None => Err(unopened()),
             },
             Message::Read { entry, .. } => match archive.as_mut() {

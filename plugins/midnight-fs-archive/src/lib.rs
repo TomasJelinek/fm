@@ -7,8 +7,9 @@ mod streams;
 mod tar;
 mod timestamps;
 mod tree;
+mod window;
 use midnight_filesystem_api::StagePurpose;
-use midnight_filesystem_api::{ErrorCode, Format, Kind, MAX_BATCH, MAX_READ, Node};
+use midnight_filesystem_api::{ErrorCode, Format, Kind, MAX_BATCH, MAX_FRAME, MAX_READ, Node};
 use std::rc::Rc;
 use std::{
     collections::HashMap,
@@ -16,24 +17,23 @@ use std::{
 };
 use storage::{Content, Reader, Stage, Storage};
 
+/// Metadata budgets. Production deliberately keeps the decoded byte budgets
+/// unlimited: content length is bounded by the host's spool volume, not by an
+/// artificial ceiling. The byte fields let embedders and tests bound output.
 #[derive(Clone, Copy, Debug)]
 pub struct Limits {
-    pub max_source: u64,
     pub max_entry: u64,
     pub max_total: u64,
     pub max_entries: usize,
     pub max_names: usize,
-    pub max_ratio: u64,
 }
 impl Default for Limits {
     fn default() -> Self {
         Self {
-            max_source: u64::MAX,
             max_entry: u64::MAX,
             max_total: u64::MAX,
             max_entries: 100_000,
             max_names: 8 * 1024 * 1024,
-            max_ratio: u64::MAX,
         }
     }
 }
@@ -85,7 +85,7 @@ pub struct Archive {
     storage: Rc<dyn Storage>,
     directories: HashMap<(u64, Vec<u8>), u64>,
     children: HashMap<u64, Vec<usize>>,
-    zip: Option<zip::ZipArchive<Reader>>,
+    zip: Option<zip::ZipArchive<formats::Shared>>,
     zip_members: HashMap<u64, usize>,
     tar_content: Option<tar::Content>,
     sevenzip_content: Option<sevenzip::Content>,
@@ -106,19 +106,8 @@ impl Archive {
         )
     }
 
-    /// Production entry point: source and decoded storage are host-brokered streams.
-    pub fn open_stream(
-        format: Format,
-        source: Box<dyn storage::ReadSeek>,
-        source_length: u64,
-        storage: Rc<dyn Storage>,
-        limits: Limits,
-    ) -> Result<Self, Error> {
-        if source_length > limits.max_source {
-            return Err(Error::limit());
-        }
-        let source = std::io::BufReader::with_capacity(MAX_READ as usize, source);
-        let mut result = Self {
+    fn empty(storage: Rc<dyn Storage>, limits: Limits) -> Self {
+        Self {
             nodes: vec![],
             contents: HashMap::new(),
             storage,
@@ -131,7 +120,19 @@ impl Archive {
             limits,
             names: 0,
             total: 0,
-        };
+        }
+    }
+
+    /// Production entry point: source and decoded storage are host-brokered streams.
+    pub fn open_stream(
+        format: Format,
+        source: Box<dyn storage::ReadSeek>,
+        source_length: u64,
+        storage: Rc<dyn Storage>,
+        limits: Limits,
+    ) -> Result<Self, Error> {
+        let source = Reader::new(source, source_length);
+        let mut result = Self::empty(storage, limits);
         match format {
             Format::Zip => result.zip(source)?,
             Format::Tar => result.tar(source, source_length, None)?,
@@ -144,21 +145,24 @@ impl Archive {
             | Format::TarBzip2
             | Format::Zstd
             | Format::TarZstd => {
-                let budget = limits
-                    .max_total
-                    .min(source_length.saturating_mul(limits.max_ratio));
-                let mut stage =
-                    Stage::new(result.storage.clone(), StagePurpose::Scratch, None, budget)?;
+                // No artificial decoded-size ceiling: the host stops a scratch spool
+                // before it exhausts its volume's free-space reserve.
+                let mut stage = Stage::new(
+                    result.storage.clone(),
+                    StagePurpose::Scratch,
+                    None,
+                    limits.max_total,
+                )?;
                 streams::decode(format, source, &mut stage)?;
                 let content = stage.finish()?;
                 if matches!(
                     format,
                     Format::TarGzip | Format::TarXz | Format::TarBzip2 | Format::TarZstd
                 ) {
-                    let reader: Box<dyn storage::ReadSeek> =
+                    let reader =
                         Box::new(storage::StoredReader::new(result.storage.clone(), content));
                     result.tar(
-                        std::io::BufReader::with_capacity(MAX_READ as usize, reader),
+                        Reader::new(reader, content.length),
                         content.length,
                         Some(content),
                     )?;
@@ -167,13 +171,40 @@ impl Archive {
                 }
             }
         }
-        if result.total > source_length.saturating_mul(limits.max_ratio) {
-            return Err(Error::limit());
-        }
         Ok(result)
     }
 
     pub fn list(&self, directory: u64, after: u64) -> Result<Vec<Node>, Error> {
+        Ok(self
+            .children_after(directory, after)?
+            .iter()
+            .take(MAX_BATCH)
+            .map(|index| self.nodes[*index].clone())
+            .collect())
+    }
+
+    /// One listing reply: at most `MAX_BATCH` children after `after` that fit the
+    /// frame budget, and whether more children follow. Nodes are cloned once.
+    pub fn page(&self, directory: u64, after: u64) -> Result<(Vec<Node>, bool), Error> {
+        let children = self.children_after(directory, after)?;
+        let mut bytes = 32usize;
+        let mut page = Vec::new();
+        for index in children.iter().take(MAX_BATCH) {
+            let node = &self.nodes[*index];
+            bytes = bytes.saturating_add(node.name.len() + node.display.len() + 64);
+            if bytes > MAX_FRAME {
+                break;
+            }
+            page.push(node.clone());
+        }
+        // A node's two bounded names always fit one frame, so a page is never empty
+        // while children remain.
+        let more = !page.is_empty() && page.len() < children.len();
+        Ok((page, more))
+    }
+
+    /// Children of `directory` with IDs above `after`, in increasing ID order.
+    fn children_after(&self, directory: u64, after: u64) -> Result<&[usize], Error> {
         if directory != 1
             && self
                 .node(directory)
@@ -183,14 +214,10 @@ impl Archive {
         }
         // IDs are increasing and remain stable after sorting, filtering and pagination.
         let Some(children) = self.children.get(&directory) else {
-            return Ok(Vec::new());
+            return Ok(&[]);
         };
         let start = children.partition_point(|index| self.nodes[*index].id <= after);
-        Ok(children[start..]
-            .iter()
-            .take(MAX_BATCH)
-            .map(|index| self.nodes[*index].clone())
-            .collect())
+        Ok(&children[start..])
     }
 
     pub fn read(&mut self, entry: u64, offset: u64, length: u32) -> Result<(Vec<u8>, bool), Error> {
@@ -259,5 +286,11 @@ impl Archive {
 
     fn node(&self, id: u64) -> Option<&Node> {
         self.nodes.get(usize::try_from(id.checked_sub(2)?).ok()?)
+    }
+
+    /// The root (ID 1) has no node; member IDs start at 2.
+    fn node_mut(&mut self, id: u64) -> Option<&mut Node> {
+        self.nodes
+            .get_mut(usize::try_from(id.checked_sub(2)?).ok()?)
     }
 }
