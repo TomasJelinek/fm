@@ -159,7 +159,7 @@ digits; change or disable them in Options → Keyboard to free those numbers.
 | Ctrl+Shift+0 | Assign current folder to bookmark slot 10; other slots use the Hot Paths manager |
 | 1…9/0, Ctrl+1…9/0 or Shift+1…9/0 | Open the numbered Hot Path in the focused pane |
 | Ctrl+Alt+number or Shift+Alt+number | Open the numbered bookmark in the other pane |
-| Ctrl+Shift+Plus | Add the current folder once, using the first free numbered slot |
+| Ctrl+Shift+Plus or Ctrl+Shift+Equal | Add the current folder once, using the first free numbered slot |
 | Ctrl+Enter in files or command editor | Append the focused basename to the end of the command draft and focus the command editor |
 | Ctrl+Shift+P in files or command editor | Append the focused native item's complete path, including filename, and focus the command editor; no added quotes or spaces |
 | Ctrl+P in files or command editor | Insert the active pane path, ending in a native path separator, at the command selection |
@@ -250,8 +250,9 @@ folder. Native-menu Copy/Paste uses the same verified copy service as Ctrl+C/V.
 Each panel drive bar includes a sort chooser beside View, available in every mode.
 F10 shows the current configured shortcut beside each action. Its category picker
 can narrow the list; unsupported operations stay visible but disabled. Options,
-Jobs, About, Custom Commands settings, Manage Hot Paths and the three panel view
-modes have configurable action entries without default keys. See the
+Jobs, About, Custom Commands settings and Manage Hot Paths have configurable
+action entries without default keys; the three panel view modes default to
+Alt+2, Alt+3 and Alt+5. See the
 [main menu design](superpowers/specs/2026-11-08-main-menu.md).
 
 **Recycle Bin / Trash** appears at the same position among special locations in
