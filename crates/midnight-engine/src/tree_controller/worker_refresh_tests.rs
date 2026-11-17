@@ -315,18 +315,20 @@ async fn observations_after_terminal_session_failure_are_ignored() {
     // The UI may still observe the last adopted publication. Answering with a
     // retryable rejection made it commit again in an endless loop.
     for _ in 0..3 {
-        fixture
-            .worker
-            .command(TreeCommand::Commit(fixture.view.clone()));
         let rows = TreeViewport::new(&fixture.view, vec![fixture.view.rows[0].id]).unwrap();
-        fixture.worker.command(TreeCommand::Viewport {
-            view: fixture.view.clone(),
-            rows,
-        });
-        assert!(matches!(
-            fixture.receiver.try_recv(),
-            Err(mpsc::error::TryRecvError::Empty)
-        ));
+        for observation in [
+            TreeCommand::Commit(fixture.view.clone()),
+            TreeCommand::Viewport {
+                view: fixture.view.clone(),
+                rows,
+            },
+        ] {
+            fixture.worker.command(observation);
+            assert!(matches!(
+                fixture.receiver.try_recv(),
+                Err(mpsc::error::TryRecvError::Empty)
+            ));
+        }
     }
     // Explicit actions still get their terminal, non-retryable answer.
     fixture.worker.command(selection(fixture.view.clone()));
