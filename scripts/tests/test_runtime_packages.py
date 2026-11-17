@@ -7,10 +7,11 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import tomllib
 import unittest
 import zipfile
 
-from scripts.tests.test_worker_packages import packaging
+from test_worker_packages import packaging
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -155,23 +156,33 @@ class RuntimePackages(unittest.TestCase):
 
     def test_each_required_module_is_rejected_before_normal_deployment(self):
         validate = self.validator()
-        source = self.root / 'runtime'
-        complete_runtime(source, self.target)
-        for relative in [
-            *(f'viewers/midnight-viewer-{name}' for name in ('basic', 'source', 'markdown', 'image', 'pdf', 'html')),
-            *(f'filesystems/{name}' for name in ('native', 'network', 'archive')),
-            'thumbnailers/midnight-thumbnail-image.json', 'thumbnailers/midnight-thumbnail-video.json',
-            'midnight-elevated-listing',
-        ]:
-            with self.subTest(missing=relative):
-                original = source / relative
-                backup = self.root / 'removed'
-                original.rename(backup)
-                try:
-                    with self.assertRaises((OSError, ValueError)):
-                        validate(source, self.target)
-                finally:
-                    backup.rename(original)
+        for target in (self.target, 'x86_64-pc-windows-msvc'):
+            windows = target.endswith('windows-msvc')
+            suffix = '.exe' if windows else ''
+            source = self.root / ('runtime-' + target)
+            complete_runtime(source, target)
+            libraries = (['avcodec-63.dll', 'avformat-63.dll', 'avutil-61.dll', 'swscale-10.dll'] if windows else
+                         ['libavcodec.so.63', 'libavformat.so.63', 'libavutil.so.61', 'libswscale.so.10'])
+            for relative in [
+                *(f'viewers/midnight-viewer-{name}' for name in ('basic', 'source', 'markdown', 'image', 'pdf', 'html')),
+                *(f'filesystems/{name}' for name in ('native', 'network', 'archive')),
+                *(f'thumbnailers/midnight-thumbnail-{name}{extension}' for name in ('image', 'video')
+                  for extension in ('.json', suffix)),
+                *(f'thumbnailers/notices/midnight-thumbnail-{name}' for name in ('image', 'video')),
+                *(f'thumbnailers/{name}' for name in libraries),
+                *(f'thumbnailers/notices/ffmpeg-9.0.2/{name}' for name in (
+                    'ffmpeg-9.0.2.tar.xz', 'COPYING.LGPLv2.1', 'build-options.txt', 'config.h', 'config.mak')),
+                'thumbnailers', 'midnight-elevated-listing' + suffix,
+            ]:
+                with self.subTest(target=target, missing=relative):
+                    original = source / relative
+                    backup = self.root / 'removed'
+                    original.rename(backup)
+                    try:
+                        with self.assertRaises((OSError, ValueError)):
+                            validate(source, target)
+                    finally:
+                        backup.rename(original)
 
     def test_runtime_validation_cli_rejects_partial_modules_without_creating_outputs(self):
         source = self.root / 'runtime'
@@ -299,6 +310,28 @@ class RuntimePackages(unittest.TestCase):
         inventory.write_text(original.replace('"cef":', '"cef":"duplicate", "cef":', 1))
         with self.assertRaises(ValueError):
             validate(source, self.target)
+
+    def release(self, source, readme_version='0.2.0'):
+        readme = self.root / 'README.txt'
+        readme.write_text(f'Midnight Explorer {readme_version} - fixture\n')
+        output = self.root / 'release-output'
+        command = [sys.executable, '-B', str(ROOT / 'scripts/package-release.py'),
+                   '--binary', str(source / 'me'), '--metadata', str(self.root / 'absent.json'),
+                   '--dependency-list', str(self.root / 'absent.txt'), '--rust-docs', str(self.root),
+                   '--target', self.target, '--format', 'tar.gz', '--readme', str(readme),
+                   '--revision', '0' * 40, '--output', str(output)]
+        return subprocess.run(command, capture_output=True, text=True), output
+
+    def test_refused_release_inputs_leave_no_partial_stage(self):
+        source = self.root / 'runtime'
+        complete_runtime(source, self.target)
+        shutil.rmtree(source / 'viewers/midnight-viewer-html')
+        version = tomllib.loads((ROOT / 'Cargo.toml').read_text())['workspace']['package']['version']
+        for readme_version in (version, '0.0.0-stale'):
+            with self.subTest(readme=readme_version):
+                result, output = self.release(source, readme_version)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertFalse(output.exists(), 'A refused release left a staging directory')
 
 
 if __name__ == '__main__':

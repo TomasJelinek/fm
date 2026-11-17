@@ -1,6 +1,11 @@
 <#
 Copy a verified Windows build to a new private runtime installation. This does not
 build, run, replace an installation, or change checkout/ancestor permissions.
+
+-ReplaceBuildDeployment (used by build.bat) marks the new installation as the build
+deployment of SourceDirectory and, after registering it, removes earlier build
+deployments of the same build output that this script created and that no
+launcher pointer selects and no running process uses.
 #>
 param(
     [string]$SourceDirectory,
@@ -9,23 +14,36 @@ param(
     [switch]$IncludeThumbnailers,
     [switch]$CreateDesktopShortcut,
     [switch]$RegisterRuntime,
-    [string]$RegistrationDirectory
+    [string]$RegistrationDirectory,
+    [switch]$ReplaceBuildDeployment
 )
 $ErrorActionPreference = 'Stop'
 if ($env:OS -ne 'Windows_NT') { throw 'This deployment helper requires Windows' }
 $projectRoot = Split-Path -Parent $PSScriptRoot
+if ($ReplaceBuildDeployment) {
+    # Only a default-named installation without a shortcut can later be retired.
+    if (-not $RegisterRuntime) { throw '-ReplaceBuildDeployment requires -RegisterRuntime' }
+    if ($Destination -or $CreateDesktopShortcut) {
+        throw '-ReplaceBuildDeployment cannot be combined with -Destination or -CreateDesktopShortcut'
+    }
+}
 if (-not $SourceDirectory) { $SourceDirectory = Join-Path $projectRoot '_build/debug' }
+$installationName = $null
 if (-not $Destination) {
-    $name = 'MidnightExplorer-' + [DateTime]::UtcNow.ToString('yyyyMMdd-HHmmss') + '-' +
+    $installationName = 'MidnightExplorer-' + [DateTime]::UtcNow.ToString('yyyyMMdd-HHmmss') + '-' +
         [guid]::NewGuid().ToString('N').Substring(0, 8)
-    $Destination = Join-Path $env:USERPROFILE $name
+    $Destination = Join-Path $env:USERPROFILE $installationName
 }
 $originalSourceDirectory = $SourceDirectory
 if ($RegisterRuntime -and (($originalSourceDirectory -split '[\\/]') -contains '..')) {
     throw 'Source launcher parent traversal is forbidden'
 }
-$SourceDirectory = [IO.Path]::GetFullPath($SourceDirectory).TrimEnd('\')
-$Destination = [IO.Path]::GetFullPath($Destination).TrimEnd('\')
+# Relative arguments follow the PowerShell location; [IO.Path]::GetFullPath alone
+# would resolve them against the unrelated process working directory.
+$resolvedArgument = { param($Path) $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Path) }
+$originalSourceDirectory = & $resolvedArgument $originalSourceDirectory
+$SourceDirectory = [IO.Path]::GetFullPath($originalSourceDirectory).TrimEnd('\')
+$Destination = [IO.Path]::GetFullPath((& $resolvedArgument $Destination)).TrimEnd('\')
 if ($SourceDirectory -notmatch '^[A-Za-z]:\\' -or $Destination -notmatch '^[A-Za-z]:\\') {
     throw 'Source and destination must be absolute local Windows filesystem paths'
 }
@@ -37,13 +55,20 @@ $installer = (New-Object Security.Principal.NTAccount('NT SERVICE', 'TrustedInst
     [Security.Principal.SecurityIdentifier]).Value
 $trustedSids = @($currentSid, 'S-1-5-18', 'S-1-5-32-544', $installer)
 
+# Directories already proven plain (or private as an ancestor) during this run.
+# Files are always checked themselves; a deployment tree of N files then costs
+# O(N) instead of O(N x depth) provider and ACL queries.
+$plainDirectories = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+$privateAncestors = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+
 function Assert-PlainPath([string]$Path) {
     $current = $Path
-    while ($current) {
+    while ($current -and -not $plainDirectories.Contains($current)) {
         $item = Get-Item -LiteralPath $current -Force
         if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) {
             throw "Symlinks/junctions are not deployment inputs or destinations: $current"
         }
+        if ($item.PSIsContainer) { [void]$plainDirectories.Add($current) }
         $parent = [IO.Directory]::GetParent($current)
         $current = if ($parent) { $parent.FullName } else { $null }
     }
@@ -54,6 +79,9 @@ function Assert-PrivatePath([string]$Path, [bool]$CheckContents) {
     $current = $Path
     $first = $true
     while ($current) {
+        # An ancestor that already passed the ancestor policy needs no second query;
+        # the leaf itself is always checked with its own (stricter) policy.
+        if (-not $first -and $privateAncestors.Contains($current)) { break }
         $security = Get-Acl -LiteralPath $current
         $owner = $security.GetOwner([Security.Principal.SecurityIdentifier]).Value
         $raw = New-Object Security.AccessControl.RawSecurityDescriptor(
@@ -74,6 +102,7 @@ function Assert-PrivatePath([string]$Path, [bool]$CheckContents) {
                 throw "Deployment path is writable or replaceable by another account: $current"
             }
         }
+        if (-not $first) { [void]$privateAncestors.Add($current) }
         $parent = [IO.Directory]::GetParent($current)
         $current = if ($parent) { $parent.FullName } else { $null }
         $first = $false
@@ -370,6 +399,133 @@ function Register-PrivateRuntime([string]$Directory, [string]$Executable,
     Write-Output "Registered launch pointer: $pointer"
 }
 
+# Build deployments (build.bat) are retired, never repaired or reused: a later
+# deployment of the same build output removes earlier ones that carry this exact
+# marker, stay private, are selected by no launcher pointer and are not running.
+$buildDeploymentMarker = '.midnight-build-deployment'
+$buildDeploymentName = '^(MidnightExplorer-[0-9]{8}-[0-9]{6}-[0-9a-f]{8})(\.superseded)?\z'
+
+function Get-BuildDeploymentMarkerText([string]$LaunchKey, [string]$Name) {
+    $newline = [string][char]10
+    return 'schema_version = 1' + $newline + 'launch_key = "' + $LaunchKey + '"' + $newline +
+        'installation = "' + $Name + '"' + $newline
+}
+
+function Write-BuildDeploymentMarker([string]$Installation, [string]$LaunchKey, [string]$Name) {
+    if ($Name -cnotmatch $buildDeploymentName -or $LaunchKey -cnotmatch '^[0-9a-f]{64}\z') {
+        throw 'Invalid build deployment identity'
+    }
+    $bytes = [Text.UTF8Encoding]::new($false).GetBytes((Get-BuildDeploymentMarkerText $LaunchKey $Name))
+    $path = Join-Path $Installation $buildDeploymentMarker
+    $stream = [IO.File]::Open($path, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+    try { $stream.Write($bytes, 0, $bytes.Length) } finally { $stream.Dispose() }
+    Assert-PrivatePath $path $true
+}
+
+function Read-SmallPlainFile([string]$Path) {
+    $item = Get-Item -LiteralPath $Path -Force
+    if ($item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -or
+        $item.Length -gt 1048576) {
+        throw "Unexpected registration or marker file: $Path"
+    }
+    return [IO.File]::ReadAllText($Path, [Text.UTF8Encoding]::new($false, $true))
+}
+
+function Get-SelectedInstallations([string]$Registry) {
+    # Every installation a launcher pointer currently selects through its record.
+    # Unrecognized registration state stops cleanup instead of guessing.
+    $selected = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+    $launchers = Join-Path $Registry 'launchers'
+    if (-not (Test-Path -LiteralPath $launchers -PathType Container)) { return ,$selected }
+    foreach ($pointer in [IO.Directory]::GetFiles($launchers, '*.toml')) {
+        $match = [regex]::Match((Read-SmallPlainFile $pointer), '(?m)^registration_sha256 = "([0-9a-f]{64})"$')
+        if (-not $match.Success) { throw "Unrecognized launcher pointer: $pointer" }
+        $record = Join-Path $Registry ($match.Groups[1].Value + '.toml')
+        if (-not (Test-Path -LiteralPath $record)) { continue }
+        $units = [regex]::Match((Read-SmallPlainFile $record), '(?m)^executable_utf16 = \[([0-9]+(?:,[0-9]+)*)\]$')
+        if (-not $units.Success) { throw "Unrecognized runtime registration: $record" }
+        $executable = -join ($units.Groups[1].Value.Split(',') | ForEach-Object { [char][uint16]$_ })
+        [void]$selected.Add([IO.Path]::GetDirectoryName($executable))
+    }
+    return ,$selected
+}
+
+function Get-PlainTree([string]$Directory) {
+    # Entries in parent-before-child order; any link means the tree is not ours.
+    $entries = New-Object 'System.Collections.Generic.List[IO.FileSystemInfo]'
+    $pending = New-Object 'System.Collections.Generic.Queue[IO.DirectoryInfo]'
+    $pending.Enqueue([IO.DirectoryInfo]::new($Directory))
+    while ($pending.Count -gt 0) {
+        foreach ($entry in $pending.Dequeue().EnumerateFileSystemInfos()) {
+            if ($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+                throw "Link inside a build installation: $($entry.FullName)"
+            }
+            if ($entries.Count -ge 65536) { throw 'Build installation entry limit exceeded' }
+            $entries.Add($entry)
+            if ($entry -is [IO.DirectoryInfo]) { $pending.Enqueue($entry) }
+        }
+    }
+    return ,$entries
+}
+
+function Remove-SupersededBuildDeployment([string]$Directory, [bool]$Retired) {
+    # A running host maps plugin libraries and workers map their executables; such
+    # an installation stays intact. A mapped image cannot be opened for writing.
+    foreach ($entry in (Get-PlainTree $Directory)) {
+        if ($entry -is [IO.FileInfo] -and $entry.Extension -in @('.exe', '.dll')) {
+            [IO.File]::Open($entry.FullName, [IO.FileMode]::Open, [IO.FileAccess]::Write,
+                [IO.FileShare]::ReadWrite).Dispose()
+        }
+    }
+    if (-not $Retired) {
+        # The rename also fails while any file inside is open. It retires the name
+        # first, so a partly deleted tree is never at a registered location.
+        $retiredPath = $Directory + '.superseded'
+        [IO.Directory]::Move($Directory, $retiredPath)
+        $Directory = $retiredPath
+    }
+    # Delete files, then directories deepest first, and the marker last: a failure
+    # leaves a still-marked tree that a later deployment retries.
+    $entries = Get-PlainTree $Directory
+    $marker = Join-Path $Directory $buildDeploymentMarker
+    foreach ($entry in $entries) {
+        if ($entry -is [IO.FileInfo] -and $entry.FullName -ne $marker) {
+            $entry.Attributes = [IO.FileAttributes]::Normal
+            $entry.Delete()
+        }
+    }
+    for ($index = $entries.Count - 1; $index -ge 0; $index--) {
+        if ($entries[$index] -is [IO.DirectoryInfo]) { $entries[$index].Delete($false) }
+    }
+    [IO.File]::Delete($marker)
+    [IO.Directory]::Delete($Directory, $false)
+}
+
+function Remove-SupersededBuildDeployments([string]$Parent, [string]$LaunchKey, [string]$Current,
+    [string]$Registry) {
+    try { $selected = Get-SelectedInstallations $Registry }
+    catch { Write-Warning "Earlier build installations were kept: $_"; return }
+    foreach ($directory in [IO.Directory]::GetDirectories($Parent, 'MidnightExplorer-*')) {
+        $match = [regex]::Match([IO.Path]::GetFileName($directory), $buildDeploymentName)
+        if (-not $match.Success) { continue }
+        $name = $match.Groups[1].Value
+        $installation = Join-Path $Parent $name
+        if ([string]::Equals($installation, $Current, [StringComparison]::OrdinalIgnoreCase) -or
+            $selected.Contains($installation)) { continue }
+        try {
+            if ((Get-Item -LiteralPath $directory -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) { continue }
+            $marker = Join-Path $directory $buildDeploymentMarker
+            if (-not (Test-Path -LiteralPath $marker -PathType Leaf)) { continue }
+            if ((Read-SmallPlainFile $marker) -cne (Get-BuildDeploymentMarkerText $LaunchKey $name)) { continue }
+            Assert-PrivatePath $directory $true
+            Remove-SupersededBuildDeployment $directory $match.Groups[2].Success
+            Write-Output "Removed superseded build installation: $installation"
+        } catch {
+            Write-Warning "Superseded build installation kept (in use or changed): $directory ($_)"
+        }
+    }
+}
+
 if ($RegistrationDirectory -and -not $RegisterRuntime) {
     throw '-RegistrationDirectory requires -RegisterRuntime'
 }
@@ -378,7 +534,7 @@ if ($RegisterRuntime) {
         if (-not $env:USERPROFILE) { throw 'USERPROFILE is required for runtime registration' }
         $RegistrationDirectory = Join-Path $env:USERPROFILE '.midnight-explorer/plugin-runtimes'
     }
-    $RegistrationDirectory = [IO.Path]::GetFullPath($RegistrationDirectory).TrimEnd('\')
+    $RegistrationDirectory = [IO.Path]::GetFullPath((& $resolvedArgument $RegistrationDirectory)).TrimEnd('\')
     if ($RegistrationDirectory -notmatch '^[A-Za-z]:\\') { throw 'Registration requires an absolute local directory' }
     Assert-RegistrationLocation $RegistrationDirectory
     Assert-RegistrationLocation (Join-Path $RegistrationDirectory 'launchers')
@@ -469,26 +625,42 @@ try {
         [Security.AccessControl.AccessControlSections]::Access)
     Set-Acl -LiteralPath $Destination -AclObject $privateAcl
     Assert-PrivatePath $Destination $true
+    if ($ReplaceBuildDeployment) {
+        # Written first, so even an interrupted copy remains provably this script's own.
+        Write-BuildDeploymentMarker $Destination $launchStamp.Key $installationName
+    }
+    $createdDirectories = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+    $copyBuffer = New-Object byte[] 1048576
     foreach ($source in $files) {
         Assert-PlainPath $source
         $relative = $source.Substring($SourceDirectory.Length + 1)
         $target = Join-Path $Destination $relative
-        New-Item -ItemType Directory -Path (Split-Path -Parent $target) -Force | Out-Null
+        $targetDirectory = Split-Path -Parent $target
+        if ($createdDirectories.Add($targetDirectory)) {
+            New-Item -ItemType Directory -Path $targetDirectory -Force | Out-Null
+        }
         # Read sharing prevents concurrent writes/renames of each opened source file.
-        # CreateNew avoids overwriting any unexpected destination entry.
+        # CreateNew avoids overwriting any unexpected destination entry. The source is
+        # hashed while it is copied; the copy is then read back and hashed separately.
         $sourceStream = [IO.File]::Open($source, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
         try {
-            $destinationStream = [IO.File]::Open($target, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
-            try { $sourceStream.CopyTo($destinationStream) } finally { $destinationStream.Dispose() }
-            $sourceStream.Position = 0
-            $hasher = [Security.Cryptography.SHA256]::Create()
+            $sourceHash = [Security.Cryptography.SHA256]::Create()
+            $copyHash = [Security.Cryptography.SHA256]::Create()
             try {
-                $expected = [Convert]::ToBase64String($hasher.ComputeHash($sourceStream))
+                $destinationStream = [IO.File]::Open($target, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+                try {
+                    while (($count = $sourceStream.Read($copyBuffer, 0, $copyBuffer.Length)) -gt 0) {
+                        [void]$sourceHash.TransformBlock($copyBuffer, 0, $count, $null, 0)
+                        $destinationStream.Write($copyBuffer, 0, $count)
+                    }
+                    [void]$sourceHash.TransformFinalBlock($copyBuffer, 0, 0)
+                } finally { $destinationStream.Dispose() }
+                $expected = [Convert]::ToBase64String($sourceHash.Hash)
                 $copied = [IO.File]::Open($target, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
-                try { $actual = [Convert]::ToBase64String($hasher.ComputeHash($copied)) }
+                try { $actual = [Convert]::ToBase64String($copyHash.ComputeHash($copied)) }
                 finally { $copied.Dispose() }
                 if ($expected -cne $actual) { throw "Deployment readback hash mismatch: $target" }
-            } finally { $hasher.Dispose() }
+            } finally { $sourceHash.Dispose(); $copyHash.Dispose() }
         } finally { $sourceStream.Dispose() }
         Assert-PrivatePath $target $true
     }
@@ -523,6 +695,9 @@ try {
     }
     if ($RegisterRuntime) {
         Register-PrivateRuntime $RegistrationDirectory (Join-Path $Destination 'me.exe') $launchLease $privateAcl
+    }
+    if ($ReplaceBuildDeployment) {
+        Remove-SupersededBuildDeployments $destinationParent $launchStamp.Key $Destination $RegistrationDirectory
     }
     Write-Output "Private installation: $Destination"
     Write-Output ('Run: & "' + (Join-Path $Destination 'me.exe') + '"')

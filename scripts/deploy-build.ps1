@@ -7,34 +7,26 @@ if (-not [IO.Path]::IsPathRooted($targetRoot)) {
     $targetRoot = Join-Path $projectRoot $targetRoot
 }
 $source = Join-Path ([IO.Path]::GetFullPath($targetRoot)) $Profile
-$thumbnailers = Join-Path $source 'thumbnailers'
-foreach ($file in @('midnight-thumbnail-image.exe', 'midnight-thumbnail-image.json',
-    'midnight-thumbnail-video.exe', 'midnight-thumbnail-video.json',
-    'avcodec-63.dll', 'avformat-63.dll', 'avutil-61.dll', 'swscale-10.dll')) {
-    if (-not (Test-Path -LiteralPath (Join-Path $thumbnailers $file) -PathType Leaf)) {
-        throw "Normal builds require both thumbnail providers and the complete video runtime: $file"
-    }
+# One validator checks every viewer, filesystem and thumbnail module, the FFmpeg
+# runtime with its corresponding source/build notices and the elevation helper.
+# Python 3.12+ runs through the documented py launcher; python may be a Store alias.
+$python = 'python'
+$pythonArguments = @('-B')
+if (Get-Command py -CommandType Application -ErrorAction Ignore) {
+    $python = 'py'
+    $pythonArguments = @('-3', '-B')
 }
-foreach ($name in @('midnight-thumbnail-image', 'midnight-thumbnail-video')) {
-    $notices = Join-Path $thumbnailers "notices/$name"
-    if (-not (Test-Path -LiteralPath $notices -PathType Container) -or
-        -not (Get-ChildItem -LiteralPath $notices -Recurse -File | Select-Object -First 1)) {
-        throw "Missing thumbnail dependency notices: $name"
-    }
-}
-foreach ($file in @('ffmpeg-9.0.2.tar.xz', 'COPYING.LGPLv2.1', 'build-options.txt', 'config.h', 'config.mak')) {
-    if (-not (Test-Path -LiteralPath (Join-Path $thumbnailers "notices/ffmpeg-9.0.2/$file") -PathType Leaf)) {
-        throw "Missing corresponding FFmpeg source or build notice: $file"
-    }
-}
-& python -B (Join-Path $PSScriptRoot 'package-release.py') validate-runtime --source $source --target 'x86_64-pc-windows-msvc'
+& $python @pythonArguments (Join-Path $PSScriptRoot 'package-release.py') validate-runtime --source $source --target 'x86_64-pc-windows-msvc'
 if ($LASTEXITCODE -ne 0) {
     throw 'Normal deployment requires all viewer, filesystem, thumbnail and elevation modules with their complete runtime notices'
 }
+# Each build replaces the previous build deployment of this output directory
+# instead of accumulating complete private installations in the user profile.
 $deployment = @{
     SourceDirectory = $source
     RegisterRuntime = $true
     IncludeFilesystems = $true
     IncludeThumbnailers = $true
+    ReplaceBuildDeployment = $true
 }
 & (Join-Path $PSScriptRoot 'deploy-private.ps1') @deployment

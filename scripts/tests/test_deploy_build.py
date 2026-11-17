@@ -1,4 +1,8 @@
-"""Normal Windows deployment requires both thumbnail providers and runtime notices."""
+"""Normal Windows deployment validates the complete runtime before replacing a build deployment.
+
+The per-file module matrix runs in process (test_runtime_packages); these cases keep
+the PowerShell boundary: validator success/failure and the forwarded deployment flags.
+"""
 import os
 from pathlib import Path
 import shutil
@@ -6,19 +10,10 @@ import subprocess
 import tempfile
 import unittest
 
-from scripts.tests.test_runtime_packages import complete_runtime
+from test_runtime_packages import complete_runtime
 
 
 ROOT = Path(__file__).resolve().parents[2]
-REQUIRED = (
-    "midnight-thumbnail-image.exe", "midnight-thumbnail-image.json",
-    "midnight-thumbnail-video.exe", "midnight-thumbnail-video.json",
-    "avcodec-63.dll", "avformat-63.dll", "avutil-61.dll", "swscale-10.dll",
-    "notices/midnight-thumbnail-image/inventory.json",
-    "notices/midnight-thumbnail-video/inventory.json",
-    "notices/ffmpeg-9.0.2/ffmpeg-9.0.2.tar.xz", "notices/ffmpeg-9.0.2/COPYING.LGPLv2.1",
-    "notices/ffmpeg-9.0.2/build-options.txt", "notices/ffmpeg-9.0.2/config.h", "notices/ffmpeg-9.0.2/config.mak",
-)
 
 
 @unittest.skipUnless(os.name == "nt", "Windows normal deployment helper")
@@ -34,8 +29,9 @@ class NormalDeploymentTests(unittest.TestCase):
         shutil.copyfile(ROOT / "scripts/package-release.py", self.root / "scripts/package-release.py")
         (self.root / "scripts/deploy-private.ps1").write_text(
             'param([string]$SourceDirectory,[switch]$RegisterRuntime,[switch]$IncludeFilesystems,'
-            '[switch]$IncludeThumbnailers)\n'
-            'if (-not $IncludeThumbnailers -or -not $IncludeFilesystems -or -not $RegisterRuntime) { throw "Missing required deployment flags" }\n'
+            '[switch]$IncludeThumbnailers,[switch]$ReplaceBuildDeployment)\n'
+            'if (-not $IncludeThumbnailers -or -not $IncludeFilesystems -or -not $RegisterRuntime -or '
+            '-not $ReplaceBuildDeployment) { throw "Missing required deployment flags" }\n'
             '[IO.File]::WriteAllText($env:DEPLOY_TEST_LOG,$SourceDirectory)\n')
         self.source = self.root / "_build/custom/debug"
         self.thumbnails = self.source / "thumbnailers"
@@ -46,40 +42,18 @@ class NormalDeploymentTests(unittest.TestCase):
     def deploy(self):
         return subprocess.run(["powershell.exe", "-NoLogo", "-NoProfile", "-File",
                                str(self.root / "scripts/deploy-build.ps1")], env=self.environment,
-                              capture_output=True, text=True, timeout=30)
+                              capture_output=True, text=True, timeout=60)
 
-    def test_complete_thumbnail_installation_is_always_deployed(self):
+    def test_complete_runtime_replaces_the_build_deployment(self):
         result = self.deploy()
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(self.log.read_text(), str(self.source))
 
-    def test_every_required_thumbnail_artifact_is_checked_before_deployment(self):
-        for relative in REQUIRED:
-            with self.subTest(missing=relative):
-                path = self.thumbnails / relative
-                original = path.read_bytes()
-                path.unlink()
-                result = self.deploy()
-                self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
-                self.assertFalse(self.log.exists(), "Partial build reached deployment")
-                path.write_bytes(original)
-
-    def test_missing_viewer_filesystem_or_elevation_never_reaches_deployment(self):
-        for relative in [
-            *(f'viewers/midnight-viewer-{name}' for name in ('basic', 'source', 'markdown', 'image', 'pdf', 'html')),
-            *(f'filesystems/{name}' for name in ('native', 'network', 'archive')),
-            'midnight-elevated-listing.exe',
-        ]:
-            with self.subTest(missing=relative):
-                original = self.source / relative
-                backup = self.root / 'removed'
-                original.rename(backup)
-                try:
-                    result = self.deploy()
-                    self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
-                    self.assertFalse(self.log.exists(), 'Partial runtime reached deployment')
-                finally:
-                    backup.rename(original)
+    def test_missing_ffmpeg_runtime_library_never_reaches_deployment(self):
+        (self.thumbnails / "avcodec-63.dll").unlink()
+        result = self.deploy()
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertFalse(self.log.exists(), "Partial build reached deployment")
 
     def test_missing_thumbnail_directory_never_becomes_an_optional_deployment(self):
         shutil.rmtree(self.thumbnails)
