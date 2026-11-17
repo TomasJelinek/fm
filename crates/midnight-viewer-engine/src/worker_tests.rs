@@ -117,7 +117,6 @@ fn worker() -> (Worker, Mailbox) {
         captured: None,
         prefetch: None,
         capture_request: None,
-        orphan_failure: None,
         web_backlog: false,
         basic: false,
         associations: Arc::default(),

@@ -94,6 +94,17 @@ Cancellation discards queued nonterminal results; generation, revision, requeste
 mode, source bounds, binary byte count, and model structure are checked before
 delivery. `Session::is_closed` reports completed backend instance cleanup.
 
+A session-fatal failure (host setup or plugin creation, malformed or mismatched
+plugin output, a failed plugin drain or read-service reply, the output budget)
+closes the session at once. `drain` returns it first, as a `Failed` event with
+`HostEvent::fatal` set (at most one per session) and the offending request's ID,
+or `OPEN_REQUEST_ID` (the Open request, 1) for the session itself. Older output
+can still follow it until the dispatcher discards the queue; those requests never
+complete. When the dispatcher finishes, it returns the session quota, sets
+`is_closed`, and then signals the `notify_on_ready` callback once more even if
+earlier output was never drained, so a consumer can wait for a closing session's
+cleanup without polling.
+
 ## Verification
 
 Normal host tests use the public API and generic native boundaries. Real-library

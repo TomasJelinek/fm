@@ -13,6 +13,11 @@ use std::{
     },
 };
 
+/// Request ID of every session's Open request. Failures of the session itself rather
+/// than of one request (host setup, plugin creation, drain or read-service failures and
+/// the output budget) are reported with this ID too. Other requests are numbered from
+/// the next ID upward.
+pub const OPEN_REQUEST_ID: u64 = 1;
 pub(crate) const MAX_REQUESTS: usize = 32;
 pub(crate) const MAX_EVENTS: usize = 64;
 pub(crate) const MAX_EVENT_BYTES: usize = 16 * 1024 * 1024;
@@ -38,13 +43,21 @@ pub(crate) struct State {
     pub requests: HashMap<u64, RequestState>,
     pub events: VecDeque<(HostEvent, usize)>,
     pub bytes: usize,
+    /// Reserved slot for the session-fatal failure (`HostEvent::fatal`). The
+    /// dispatcher's `discard_output` never drops it; only `drain` takes it.
     pub fatal: Option<HostEvent>,
+    /// A fatal failure was recorded. Later ones, such as failures of the teardown it
+    /// started, are not reported, even after the first was drained.
+    pub failed: bool,
 }
 pub(crate) struct Shared {
     pub state: Mutex<State>,
     pub dispatcher: crate::wake::Wake,
+    /// The consumer's wake: output became ready, or (`notify_final`) the dispatcher ended.
     pub ready: crate::wake::Wake,
     pub closing: AtomicBool,
+    /// Set by the dispatch thread after `dispatch::run` returned and the session quota
+    /// was released, immediately before the final `ready` signal.
     pub closed: AtomicBool,
     pub generation: u64,
     pub revision: u64,
@@ -104,9 +117,9 @@ impl Session {
         .map_err(|_| Error("Invalid open request".into()))?;
         lock(&shared.state)
             .requests
-            .insert(1, RequestState::default());
+            .insert(OPEN_REQUEST_ID, RequestState::default());
         send.try_send(Command {
-            id: 1,
+            id: OPEN_REQUEST_ID,
             kind: abi::REQUEST_OPEN,
             payload: open,
         })
@@ -115,14 +128,18 @@ impl Session {
         std::thread::Builder::new()
             .name("viewer-dispatch".into())
             .spawn(move || {
-                let _permit = permit;
-                crate::dispatch::run(loaded, reader, file, worker_shared.clone(), receive);
-                worker_shared.closed.store(true, Ordering::Release);
+                {
+                    let _permit = permit;
+                    crate::dispatch::run(loaded, reader, file, worker_shared.clone(), receive);
+                }
+                // The quota is free before anyone can observe the end, so a consumer that
+                // waited for it can open its next session at once.
+                worker_shared.ended();
             })?;
         Ok(Self {
             shared,
             commands: send,
-            ids: AtomicU64::new(2),
+            ids: AtomicU64::new(OPEN_REQUEST_ID + 1),
         })
     }
     pub fn viewport(&self, viewport: messages::Viewport) -> Result<u64, Error> {
@@ -187,9 +204,15 @@ impl Session {
     }
     /// Register a bounded consumer wake. It must only enqueue work, returning
     /// whether the signal was accepted; plugin callbacks never reenter consumers.
+    /// It runs on backend threads, including the dispatcher. Ready output signals it
+    /// at most once until the next `drain`. When the dispatcher has finished
+    /// (`is_closed` is true), it is signalled once more even if earlier output was
+    /// never drained, so a consumer can wait for a closing session without polling.
     pub fn notify_on_ready(&self, notify: Arc<dyn Fn() -> bool + Send + Sync>) {
         self.shared.ready.bind(notify);
     }
+    /// Take at most `maximum` events (64 at most per call). A session-fatal failure
+    /// (`HostEvent::fatal`) comes first, then older events in their order.
     pub fn drain(&self, maximum: usize) -> Vec<HostEvent> {
         if maximum == 0 {
             return Vec::new();
@@ -224,6 +247,9 @@ impl Session {
         self.shared.closing.store(true, Ordering::Release);
         self.shared.dispatcher.notify();
     }
+    /// The dispatcher finished: the plugin instance was destroyed, its workers and output
+    /// were released and the session quota was returned. Only an undrained fatal failure
+    /// can still be drained. The `notify_on_ready` callback is signalled after this.
     pub fn is_closed(&self) -> bool {
         self.shared.closed.load(Ordering::Acquire)
     }
@@ -235,6 +261,12 @@ impl Drop for Session {
 }
 
 impl Shared {
+    /// Runs once on the dispatch thread after `dispatch::run` returned and the session
+    /// permit was dropped. The final signal reaches a consumer that stopped draining.
+    pub(crate) fn ended(&self) {
+        self.closed.store(true, Ordering::Release);
+        self.ready.notify_final();
+    }
     pub fn discard_output(&self) {
         let discarded = {
             let mut state = lock(&self.state);
@@ -254,17 +286,24 @@ impl Shared {
         }
         let mut state = lock(&self.state);
         state.requests.remove(&id);
-        state.fatal.get_or_insert(HostEvent {
-            request_id: id.max(1),
-            generation: self.generation,
-            kind: EventKind::Failed(messages::Failure {
-                code: abi::INVALID,
-                message,
-            }),
-        });
+        let first = !std::mem::replace(&mut state.failed, true);
+        if first {
+            state.fatal = Some(HostEvent {
+                request_id: id.max(OPEN_REQUEST_ID),
+                generation: self.generation,
+                kind: EventKind::Failed(messages::Failure {
+                    code: abi::INVALID,
+                    message,
+                }),
+                fatal: true,
+            });
+        }
+        // Under the state lock: `push` queues nothing newer than the fatal failure.
         self.closing.store(true, Ordering::Release);
         drop(state);
-        self.ready.notify();
+        if first {
+            self.ready.notify();
+        }
         self.dispatcher.notify();
     }
     pub fn cancelled(&self, id: u64) -> bool {
@@ -274,6 +313,7 @@ impl Shared {
                 .get(&id)
                 .is_none_or(|request| request.cancelled)
     }
+    /// A request-scoped failure: the session continues.
     pub fn failure(&self, id: u64, message: String) {
         self.push(
             HostEvent {
@@ -283,6 +323,7 @@ impl Shared {
                     code: abi::INVALID,
                     message,
                 }),
+                fatal: false,
             },
             8192,
         );
@@ -303,14 +344,17 @@ impl Shared {
             state.bytes += bytes;
             state.events.push_back((event, bytes));
         } else {
-            state.fatal.get_or_insert(HostEvent {
-                request_id: 1,
-                generation: self.generation,
-                kind: EventKind::Failed(messages::Failure {
-                    code: abi::QUEUE_FULL,
-                    message: "Viewer output budget exceeded".into(),
-                }),
-            });
+            if !std::mem::replace(&mut state.failed, true) {
+                state.fatal = Some(HostEvent {
+                    request_id: OPEN_REQUEST_ID,
+                    generation: self.generation,
+                    kind: EventKind::Failed(messages::Failure {
+                        code: abi::QUEUE_FULL,
+                        message: "Viewer output budget exceeded".into(),
+                    }),
+                    fatal: true,
+                });
+            }
             self.closing.store(true, Ordering::Release);
         }
         drop(state);
@@ -406,6 +450,7 @@ pub(crate) mod tests {
                     total: Some(10),
                     phase: 0,
                 }),
+                fatal: false,
             },
             1024,
         );
@@ -418,6 +463,143 @@ pub(crate) mod tests {
         session.cancel(1);
         assert!(session.drain(64).is_empty());
         assert_eq!(lock(&shared.state).bytes, 0);
+    }
+
+    fn detached(shared: &Arc<Shared>) -> Session {
+        let (commands, _) = mpsc::sync_channel(1);
+        Session {
+            shared: shared.clone(),
+            commands,
+            ids: AtomicU64::new(OPEN_REQUEST_ID + 1),
+        }
+    }
+
+    /// Queue an ordinary event of a tracked request, as dispatch does for plugin output.
+    fn queue(shared: &Shared, id: u64, kind: EventKind) {
+        lock(&shared.state)
+            .requests
+            .insert(id, RequestState::default());
+        shared.push(
+            HostEvent {
+                request_id: id,
+                generation: 7,
+                kind,
+                fatal: false,
+            },
+            1024,
+        );
+    }
+
+    #[test]
+    fn fatal_failure_is_marked_and_drained_ahead_of_older_output_beyond_one_drain() {
+        let shared = shared();
+        let session = detached(&shared);
+        // More older output than a consumer's 32-event drain, including a request-scoped
+        // failure the session survives.
+        shared.failure(41, "Plugin rejected request (3)".into());
+        for id in 0..39 {
+            queue(&shared, 100 + id, EventKind::Completed);
+        }
+        assert!(!shared.closing.load(Ordering::Acquire));
+        shared.fatal(9, "Malformed plugin output".into());
+        shared.fatal(10, "a later fatal report".into());
+        queue(&shared, 200, EventKind::Completed);
+        let first = session.drain(32);
+        assert_eq!(first.len(), 32);
+        match &first[0] {
+            HostEvent {
+                request_id: 9,
+                generation: 7,
+                kind: EventKind::Failed(failure),
+                fatal: true,
+            } => {
+                assert_eq!(failure.code, abi::INVALID);
+                assert_eq!(failure.message, "Malformed plugin output");
+            }
+            other => panic!("the fatal failure must lead the drain: {other:?}"),
+        }
+        assert!(matches!(
+            &first[1],
+            HostEvent {
+                request_id: 41,
+                kind: EventKind::Failed(_),
+                fatal: false,
+                ..
+            }
+        ));
+        // A failure of the teardown it started is not reported as another fatal failure.
+        shared.fatal(OPEN_REQUEST_ID, "Plugin drain failed (3)".into());
+        // Until the dispatcher discards it, older output follows unmarked; nothing newer
+        // than the fatal failure was queued.
+        let second = session.drain(32);
+        assert_eq!(second.len(), 40 - 31);
+        assert!(
+            first[1..]
+                .iter()
+                .chain(&second)
+                .all(|event| !event.fatal && event.request_id < 200)
+        );
+        assert!(session.drain(32).is_empty());
+    }
+
+    #[test]
+    fn output_overflow_and_session_failures_use_the_open_request_id() {
+        let shared = shared();
+        let session = detached(&shared);
+        for id in 0..MAX_EVENTS as u64 {
+            queue(&shared, 100 + id, EventKind::Completed);
+        }
+        queue(&shared, 999, EventKind::Completed);
+        let drained = session.drain(1);
+        assert!(matches!(
+            drained.as_slice(),
+            [HostEvent {
+                request_id: OPEN_REQUEST_ID,
+                kind: EventKind::Failed(messages::Failure {
+                    code: abi::QUEUE_FULL,
+                    ..
+                }),
+                fatal: true,
+                ..
+            }]
+        ));
+        let other = self::shared();
+        other.fatal(0, "Host callback registration failed".into());
+        assert!(matches!(
+            detached(&other).drain(64).as_slice(),
+            [HostEvent {
+                request_id: OPEN_REQUEST_ID,
+                fatal: true,
+                ..
+            }]
+        ));
+    }
+
+    #[test]
+    fn the_end_of_dispatch_signals_a_consumer_that_stopped_draining() {
+        let shared = shared();
+        let session = detached(&shared);
+        let (signal, signals) = mpsc::sync_channel(4);
+        session.notify_on_ready(Arc::new(move || signal.try_send(()).is_ok()));
+        queue(&shared, 5, EventKind::Completed);
+        queue(&shared, 6, EventKind::Completed);
+        assert_eq!(signals.try_iter().count(), 1, "ready output signals once");
+        // The consumer closed the session and waits for its end without draining it.
+        session.close();
+        assert!(!session.is_closed());
+        shared.ended();
+        assert!(session.is_closed());
+        assert_eq!(
+            signals.try_iter().count(),
+            1,
+            "the end is signalled although earlier output was never drained"
+        );
+        // A consumer that binds after the end still learns about it.
+        let late = self::shared();
+        late.ended();
+        let (signal, signals) = mpsc::sync_channel(1);
+        detached(&late).notify_on_ready(Arc::new(move || signal.try_send(()).is_ok()));
+        assert_eq!(signals.try_iter().count(), 1);
     }
 
     #[test]

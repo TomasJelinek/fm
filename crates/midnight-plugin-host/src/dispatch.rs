@@ -5,7 +5,7 @@ use crate::{
     content::Reader,
     loaded::{self, Loaded},
     replies::PendingReply,
-    session::{self, Command, Shared, lock},
+    session::{self, Command, OPEN_REQUEST_ID, Shared, lock},
 };
 use std::{
     sync::{
@@ -46,7 +46,7 @@ pub(crate) fn run(
     }));
     let (bridge, receivers) = Bridge::new(shared.clone());
     let Ok((_registration, host)) = bridge.register() else {
-        shared.fatal(1, "Host callback registration failed".into());
+        shared.fatal(OPEN_REQUEST_ID, "Host callback registration failed".into());
         return;
     };
     let (replies, reply_rx) = mpsc::sync_channel(32);
@@ -60,7 +60,7 @@ pub(crate) fn run(
         {
             Ok(worker) => workers.push(worker),
             Err(error) => {
-                shared.fatal(1, error.to_string());
+                shared.fatal(OPEN_REQUEST_ID, error.to_string());
                 break;
             }
         }
@@ -72,7 +72,7 @@ pub(crate) fn run(
             .spawn(move || services(bridge, reader, file, receivers.service, replies))
         {
             Ok(worker) => workers.push(worker),
-            Err(error) => shared.fatal(1, error.to_string()),
+            Err(error) => shared.fatal(OPEN_REQUEST_ID, error.to_string()),
         }
     }
     if workers.len() != 3 {
@@ -84,7 +84,7 @@ pub(crate) fn run(
     // SAFETY: host callbacks remain registered until joined workers and destroyed instance.
     let status = unsafe { api.create.unwrap()(&host, loaded::slice(&[]), &mut instance) };
     if status != abi::OK || instance == 0 {
-        shared.fatal(1, format!("Plugin create failed ({status})"));
+        shared.fatal(OPEN_REQUEST_ID, format!("Plugin create failed ({status})"));
         stop(&bridge, reply_rx, workers);
         return;
     }
@@ -179,6 +179,7 @@ fn submit_commands(
                     request_id: command.id,
                     generation: shared.generation,
                     kind: EventKind::Cancelled,
+                    fatal: false,
                 },
                 0,
             );
@@ -209,6 +210,7 @@ fn submit_commands(
                         code: status,
                         message: format!("Plugin rejected optional location request ({status})"),
                     }),
+                    fatal: false,
                 },
                 8192,
             );
@@ -259,9 +261,10 @@ fn deliver_replies(
         } else {
             bridge.release(buffer.id);
             bridge.services.fetch_sub(1, Ordering::Release);
-            bridge
-                .shared
-                .fatal(1, "Host read service produced an invalid reply".into());
+            bridge.shared.fatal(
+                OPEN_REQUEST_ID,
+                "Host read service produced an invalid reply".into(),
+            );
         }
     }
     true
@@ -283,14 +286,17 @@ fn drain_events(api: &abi::PluginApi, instance: u64, shared: &Shared) -> bool {
             // Only one slot was supplied; release what it names, then fail closed.
             // Unreleased plugin buffers would otherwise keep destroy NOT_QUIESCENT.
             release_event_buffers(api, instance, &event);
-            shared.fatal(1, "Plugin drain exceeded supplied event capacity".into());
+            shared.fatal(
+                OPEN_REQUEST_ID,
+                "Plugin drain exceeded supplied event capacity".into(),
+            );
             return false;
         }
         if written == 1 {
             receive_event(api, instance, shared, event);
         }
         if status != abi::OK {
-            shared.fatal(1, format!("Plugin drain failed ({status})"));
+            shared.fatal(OPEN_REQUEST_ID, format!("Plugin drain failed ({status})"));
             return false;
         }
         if written == 0 {
@@ -405,11 +411,13 @@ fn receive_event(api: &abi::PluginApi, instance: u64, shared: &Shared, event: ab
             if shared.cancelled(event.request_id) && matches!(kind, EventKind::Completed) {
                 kind = EventKind::Cancelled;
             }
+            // A plugin's own Failed event ends only its request, never the session.
             shared.push(
                 HostEvent {
                     request_id: event.request_id,
                     generation: event.generation,
                     kind,
+                    fatal: false,
                 },
                 bytes,
             );
