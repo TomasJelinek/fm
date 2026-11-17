@@ -1105,6 +1105,67 @@ fn one_hundred_thousand_metadata_pins_do_not_retain_leaf_descriptors() {
     assert_ne!(first[0].object, last[0].object);
 }
 
+/// Per-child cost of recursive Copy/Move preparation inside a copy job's namespace
+/// context. Run: `cargo test -p midnight-platform-linux --lib child_preparation_timing
+/// -- --ignored --nocapture`.
+#[test]
+#[ignore = "timing harness for recursive child preparation; prints measurements"]
+fn child_preparation_timing() {
+    const DEPTH: usize = 8;
+    const CHILDREN: usize = 2000;
+    let temp = tempfile::tempdir().unwrap();
+    let mut deepest = temp.path().to_owned();
+    for level in 0..DEPTH {
+        deepest.push(format!("level-{level}"));
+    }
+    std::fs::create_dir_all(&deepest).unwrap();
+    for index in 0..CHILDREN {
+        std::fs::write(deepest.join(index.to_string()), []).unwrap();
+    }
+    let root = temp.path().join("level-0");
+    let context: Arc<dyn TransferNamespaceChanges> = Arc::new(Changes(Arc::new(Events::default())));
+    with_transfer_namespace_changes(context, || {
+        let cancel = Cancellation::default();
+        let fs = crate::LinuxFileSystem::new(None);
+        let descend = |mut directory: Box<dyn midnight_core::TransferSource>| {
+            for _ in 1..DEPTH {
+                directory = directory.next_child(&cancel).unwrap().unwrap();
+            }
+            directory
+        };
+        let mut copy = descend(fs.prepare_transfer_source(&root, &cancel).unwrap());
+        let start = std::time::Instant::now();
+        let mut count = 0;
+        while let Some(child) = copy.next_child(&cancel).unwrap() {
+            drop(child);
+            count += 1;
+        }
+        let elapsed = start.elapsed();
+        assert_eq!(count, CHILDREN);
+        eprintln!(
+            "TIMING copy children at depth {}: {count} in {elapsed:?} ({:?}/child)",
+            DEPTH + temp.path().components().count(),
+            elapsed / count as u32
+        );
+        let mut moving = fs.prepare_move_source(&root, &cancel).unwrap().source;
+        for _ in 1..DEPTH {
+            moving = moving.next_move_child(&cancel).unwrap().unwrap().source;
+        }
+        let start = std::time::Instant::now();
+        let mut count = 0;
+        while let Some(child) = moving.next_move_child(&cancel).unwrap() {
+            drop(child);
+            count += 1;
+        }
+        let elapsed = start.elapsed();
+        assert_eq!(count, CHILDREN);
+        eprintln!(
+            "TIMING move children: {count} in {elapsed:?} ({:?}/child)",
+            elapsed / count as u32
+        );
+    });
+}
+
 #[derive(Default)]
 struct Events {
     begun: AtomicUsize,

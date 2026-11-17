@@ -114,6 +114,12 @@ fn fixture() -> tempfile::TempDir {
 }
 
 fn stage(path: &Path) -> Stage {
+    stage_with(path, OFlags::empty())
+}
+
+/// `O_EXCL` makes the anonymous inode unlinkable, so `linkat` fails after the
+/// private recovery directory already exists.
+fn stage_with(path: &Path, extra: OFlags) -> Stage {
     let cancel = Cancellation::default();
     let directory = Directory::from_file(
         File::from(openat(CWD, path, DIRECTORY, Mode::empty()).unwrap()),
@@ -127,7 +133,7 @@ fn stage(path: &Path) -> Stage {
         openat(
             &*directory.file,
             ".",
-            OFlags::RDWR | OFlags::TMPFILE | OFlags::CLOEXEC,
+            OFlags::RDWR | OFlags::TMPFILE | OFlags::CLOEXEC | extra,
             Mode::RUSR | Mode::WUSR,
         )
         .unwrap(),
@@ -152,6 +158,29 @@ fn stage(path: &Path) -> Stage {
         )
         .unwrap();
     stage
+}
+
+#[test]
+fn a_failed_recovery_link_removes_the_empty_recovery_directory() {
+    let temp = fixture();
+    let target = temp.path().join("target");
+    fs::write(&target, b"consented original").unwrap();
+    let mut stage = stage_with(temp.path(), OFlags::EXCL);
+    for _ in 0..2 {
+        let failure = stage
+            .replace(OsStr::new("target"), &Cancellation::default(), || {
+                panic!("an unlinked stage must not reach the exchange")
+            })
+            .expect_err("the stage link failed before any destination mutation");
+        assert_eq!(failure.kind, io::ErrorKind::NotFound);
+    }
+    drop(stage);
+    assert_eq!(fs::read(&target).unwrap(), b"consented original");
+    let entries: Vec<_> = fs::read_dir(temp.path())
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .collect();
+    assert_eq!(entries, [OsStr::new("target")]);
 }
 
 #[test]

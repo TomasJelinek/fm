@@ -607,3 +607,77 @@ fn xdg_trash_location_uses_only_absolute_environment_paths() {
     }
     assert_eq!(super::trash::home_trash(None, None), None);
 }
+
+fn staging_residue(directory: &Path) -> Vec<OsString> {
+    fs::read_dir(directory)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .filter(|name| name.as_encoded_bytes().starts_with(b".midnight-mutation"))
+        .collect()
+}
+
+fn rename_and_delete_in(directory: &Path) {
+    let cancel = Cancellation::default();
+    let service = LinuxFileSystem::new(None);
+    let original = directory.join("photo.jpg");
+    fs::write(&original, b"pixels").unwrap();
+    let renamed = service
+        .prepare(&original, &cancel)
+        .unwrap()
+        .rename(OsStr::new("photo-2026.jpg"), &cancel)
+        .unwrap();
+    assert_eq!(fs::read(&renamed).unwrap(), b"pixels");
+    let tree = directory.join("album");
+    fs::create_dir_all(tree.join("nested")).unwrap();
+    fs::write(tree.join("nested/one.jpg"), b"one").unwrap();
+    service
+        .prepare(&tree, &cancel)
+        .unwrap()
+        .delete(DeleteMode::Permanent, &cancel, &mut |_| {})
+        .unwrap();
+    assert!(!tree.exists());
+    assert!(staging_residue(directory).is_empty());
+}
+
+#[test]
+fn rename_and_permanent_delete_accept_mount_provided_staging_permissions() {
+    // vfat/exfat mounted by udisks report 0755 directories and ignore chmod.
+    let fixture = tempfile::tempdir().unwrap();
+    crate::ownership::simulation::with_mount_mode(0o755, || rename_and_delete_in(fixture.path()));
+}
+
+#[test]
+fn refused_staging_directories_are_removed_and_the_source_is_untouched() {
+    let fixture = tempfile::tempdir().unwrap();
+    let original = fixture.path().join("photo.jpg");
+    fs::write(&original, b"pixels").unwrap();
+    let cancel = Cancellation::default();
+    let prepared = LinuxFileSystem::new(None)
+        .prepare(&original, &cancel)
+        .unwrap();
+    for _ in 0..3 {
+        let refused = crate::ownership::simulation::with_foreign_owner(|| {
+            prepared.rename(OsStr::new("renamed.jpg"), &cancel)
+        });
+        assert_eq!(refused.unwrap_err().kind, ErrorKind::PermissionDenied);
+        let refused = crate::ownership::simulation::with_foreign_owner(|| {
+            prepared.delete(DeleteMode::Permanent, &cancel, &mut |_| {})
+        });
+        assert_eq!(refused.unwrap_err().kind, ErrorKind::PermissionDenied);
+    }
+    assert_eq!(fs::read(&original).unwrap(), b"pixels");
+    assert!(staging_residue(fixture.path()).is_empty());
+    assert_eq!(fs::read_dir(fixture.path()).unwrap().count(), 1);
+}
+
+#[test]
+#[ignore = "requires MIDNIGHT_MODELESS_TEST_DIR on a writable vfat/exfat/ntfs/CIFS mount owned by this user"]
+fn rename_and_permanent_delete_work_on_a_filesystem_without_posix_modes() {
+    let root = std::env::var_os("MIDNIGHT_MODELESS_TEST_DIR")
+        .expect("MIDNIGHT_MODELESS_TEST_DIR names a writable mode-less mount directory");
+    let fixture = tempfile::Builder::new()
+        .prefix("midnight-modeless-")
+        .tempdir_in(root)
+        .unwrap();
+    rename_and_delete_in(fixture.path());
+}

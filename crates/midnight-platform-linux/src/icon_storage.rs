@@ -94,7 +94,12 @@ fn save_at(parent: &Path, pixels: &SnapshotPixels, cancel: &Cancellation) -> io:
 
 fn private_directory(directory: &impl std::os::fd::AsFd) -> io::Result<()> {
     let metadata = rustix::fs::fstat(directory)?;
-    if metadata.st_uid != rustix::process::geteuid().as_raw() || metadata.st_mode & 0o022 != 0 {
+    // Group write is accepted only for this user's private group.
+    if !crate::ownership::writable_only_by_caller(
+        metadata.st_uid,
+        metadata.st_gid,
+        metadata.st_mode,
+    ) {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
             "Managed icon directories must be owned by this user and not writable by other users.",
@@ -119,6 +124,14 @@ mod tests {
         );
         fs::set_permissions(application.join("icons"), fs::Permissions::from_mode(0o777)).unwrap();
         assert!(save_at(&application, &pixels, &Cancellation::default()).is_err());
+        // Group write is accepted only for this user's private group.
+        fs::set_permissions(application.join("icons"), fs::Permissions::from_mode(0o775)).unwrap();
+        let group =
+            std::os::unix::fs::MetadataExt::gid(&fs::metadata(application.join("icons")).unwrap());
+        assert_eq!(
+            save_at(&application, &pixels, &Cancellation::default()).is_ok(),
+            crate::ownership::caller_private_group(group)
+        );
         fs::set_permissions(application.join("icons"), fs::Permissions::from_mode(0o700)).unwrap();
         let outside = root.path().join("outside");
         fs::write(&outside, b"untouched").unwrap();

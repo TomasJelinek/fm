@@ -32,6 +32,7 @@ mod metadata;
 mod mounts;
 mod mutation;
 mod open;
+mod ownership;
 mod path_picker;
 mod settings;
 mod shell_menu;

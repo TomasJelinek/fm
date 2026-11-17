@@ -48,16 +48,19 @@ fn prepare_native(
     let parent_file = Arc::new(File::from(
         openat(CWD, parent_path, DIRECTORY, Mode::empty()).map_err(|e| error(&path, e.into()))?,
     ));
-    prepare_native_child(parent_file, parent_path.to_owned(), name, cancel)
+    prepare_native_child(parent_file, parent_path.to_owned(), name, None, cancel)
 }
 
+/// `namespace` is the parent directory's bindings, shared by all of its children.
 pub(super) fn prepare_child(
     parent_file: Arc<File>,
     parent_path: PathBuf,
     name: &OsStr,
+    namespace: Arc<namespace::Bindings>,
     cancel: &Cancellation,
 ) -> Result<PreparedTransferMove, FsError> {
-    let (source, capture) = prepare_native_child(parent_file, parent_path, name, cancel)?;
+    let (source, capture) =
+        prepare_native_child(parent_file, parent_path, name, Some(namespace), cancel)?;
     Ok(PreparedTransferMove {
         source: Box::new(source),
         capture,
@@ -68,12 +71,19 @@ fn prepare_native_child(
     parent_file: Arc<File>,
     parent_path: PathBuf,
     name: &OsStr,
+    namespace: Option<Arc<namespace::Bindings>>,
     cancel: &Cancellation,
 ) -> Result<(source::Source, Arc<Capture>), FsError> {
     let path = parent_path.join(name);
-    let parent = destination::Directory::from_file(
+    // The parent directory and the source share one computation of its bindings.
+    let namespace = match namespace {
+        Some(namespace) => namespace,
+        None => namespace::Bindings::for_parent(&parent_file, &parent_path)?,
+    };
+    let parent = destination::Directory::from_file_with(
         parent_file.try_clone().map_err(|e| error(&path, e))?,
         parent_path.to_owned(),
+        Some(namespace.clone()),
     )?;
     native::qualify(&parent)?;
     parent.check_recovery_parent(cancel)?;
@@ -81,7 +91,13 @@ fn prepare_native_child(
         rustix::fs::Access::WRITE_OK | rustix::fs::Access::EXEC_OK, rustix::fs::AtFlags::EACCESS)
         .map_err(|failure| unsupported(&path,
             &format!("The source parent cannot create temporary staging: {failure}. Choose Copy to retain the source; no fallback is performed.")))?;
-    let mut source = source::Source::open_move(parent_file, parent_path.to_owned(), name, cancel)?;
+    let mut source = source::Source::open_move_with(
+        parent_file,
+        parent_path.to_owned(),
+        name,
+        Some(namespace),
+        cancel,
+    )?;
     source.enable_move();
     let parent_metadata = parent
         .native_file()

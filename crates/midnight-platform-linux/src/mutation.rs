@@ -2,7 +2,10 @@
 //!
 //! Linux has no conditional unlink/rename by inode. We first move the selected
 //! name, without replacement, into a newly created owner-only directory and
-//! verify its identity there. A raced replacement is restored without overwrite;
+//! verify its identity there. Filesystems that cannot store POSIX modes (vfat,
+//! exfat, NTFS, CIFS without Unix extensions, FUSE) keep their mount-provided
+//! permissions on that owned directory, so other users are excluded only as far
+//! as the mount excludes them. A raced replacement is restored without overwrite;
 //! if restoration collides it remains in staging and the error gives its path.
 //! This prevents deleting a replacement raced into the original parent. It is
 //! not an isolation boundary against root or another process of the same uid,
@@ -230,14 +233,7 @@ impl PreparedMutation for Prepared {
         visit: &mut dyn FnMut(&MutationItem),
     ) -> Result<(), FsError> {
         self.revalidate(cancel)?;
-        discovery::walk(
-            &self.parent,
-            &self._source,
-            &self.name,
-            &self.item.path,
-            cancel,
-            visit,
-        )?;
+        discovery::walk(&self._source, &self.item.path, cancel, visit)?;
         self.revalidate(cancel)
     }
     fn prepare_rename_replacement(
@@ -412,6 +408,16 @@ impl Staged {
                 Err(rustix::io::Errno::EXIST) => continue,
                 Err(e) => return Err(native_error(&path, e)),
             }
+            return Self::adopt(prepared, name, path);
+        }
+    }
+
+    /// Pins the staging directory just created. Mount-provided permissions are
+    /// accepted where the filesystem cannot store 0700 (see `crate::ownership`);
+    /// a directory refused after creation is removed rather than left behind.
+    fn adopt(prepared: &Prepared, name: OsString, path: PathBuf) -> Result<Self, FsError> {
+        let mut pinned = None;
+        let adopted = (|| -> Result<(File, Identity), FsError> {
             let directory = File::from(
                 openat(
                     &*prepared.parent,
@@ -421,15 +427,31 @@ impl Staged {
                 )
                 .map_err(|e| native_error(&path, e))?,
             );
-            verify_private_directory(&directory, &path)?;
             let identity = Identity::of(&directory, &path)?;
-            return Ok(Self {
+            pinned = Some((identity.device, identity.inode));
+            crate::ownership::check_created_directory(&directory)
+                .map_err(|e| FsError::from_io(OPERATION, &path, e))?;
+            Ok((directory, identity))
+        })();
+        match adopted {
+            Ok((directory, identity)) => Ok(Self {
                 parent: prepared.parent.clone(),
                 directory: Arc::new(directory),
                 name,
                 path,
                 identity,
-            });
+            }),
+            Err(mut failure) => {
+                if let Err(cleanup) =
+                    crate::ownership::remove_refused_directory(&*prepared.parent, &name, pinned)
+                {
+                    failure.message.push_str(&format!(
+                        "; the unused staging directory remains at {}: {cleanup}",
+                        path.display()
+                    ));
+                }
+                Err(failure)
+            }
         }
     }
 
@@ -506,6 +528,7 @@ fn validate_name(name: &OsStr, path: &Path) -> Result<(), FsError> {
     }
 }
 
+/// Trash infrastructure must already be exactly owner-only (freedesktop trash).
 fn verify_private_directory(directory: &File, path: &Path) -> Result<(), FsError> {
     let stat = fstat(directory).map_err(|e| native_error(path, e))?;
     if FileType::from_raw_mode(stat.st_mode) != FileType::Directory

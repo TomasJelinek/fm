@@ -97,7 +97,7 @@ impl TransferService for crate::LinuxFileSystem {
             openat(CWD, parent_path, DIRECTORY, Mode::empty())
                 .map_err(|e| error(&path, e.into()))?,
         ));
-        Ok(Box::new(source::Source::open(
+        Ok(Box::new(source::Source::open_root(
             parent,
             parent_path.to_owned(),
             name,
@@ -148,17 +148,20 @@ fn validate_name(name: &OsStr, path: &Path) -> Result<(), FsError> {
     }
 }
 fn identity(file: &File, path: &Path) -> Result<TransferIdentity, FsError> {
-    let metadata = file.metadata().map_err(|e| error(path, e))?;
+    file.metadata()
+        .map(|metadata| identity_of(&metadata))
+        .map_err(|e| error(path, e))
+}
+fn identity_of(metadata: &std::fs::Metadata) -> TransferIdentity {
     let mut object = [0; 16];
     object[..8].copy_from_slice(&metadata.ino().to_le_bytes());
-    Ok(TransferIdentity {
+    TransferIdentity {
         device: metadata.dev(),
         object,
-    })
+    }
 }
-fn entry(file: &File, path: &Path) -> Result<TransferEntry, FsError> {
-    let metadata = file.metadata().map_err(|e| error(path, e))?;
-    let kind = if metadata.is_file() {
+fn kind_of(metadata: &std::fs::Metadata) -> EntryKind {
+    if metadata.is_file() {
         EntryKind::File
     } else if metadata.is_dir() {
         EntryKind::Directory
@@ -166,9 +169,13 @@ fn entry(file: &File, path: &Path) -> Result<TransferEntry, FsError> {
         EntryKind::Symlink
     } else {
         EntryKind::Other
-    };
+    }
+}
+fn entry(file: &File, path: &Path) -> Result<TransferEntry, FsError> {
+    let metadata = file.metadata().map_err(|e| error(path, e))?;
+    let kind = kind_of(&metadata);
     Ok(TransferEntry {
-        identity: identity(file, path)?,
+        identity: identity_of(&metadata),
         item: MutationItem {
             path: path.to_owned(),
             kind,

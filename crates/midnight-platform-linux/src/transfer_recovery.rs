@@ -264,30 +264,10 @@ fn create_named_directory(
                 continue;
             }
         }
-        match directory.create_directory_in(&name, cancel, change) {
-            Ok(created) => {
-                let file = File::from(
-                    openat2(
-                        &*directory.file,
-                        &name,
-                        DIRECTORY | OFlags::NOFOLLOW,
-                        Mode::empty(),
-                        RESOLVE,
-                    )
-                    .map_err(|e| error(&directory.path, e.into()))?,
-                );
-                let metadata = file.metadata().map_err(|e| error(&directory.path, e))?;
-                if identity(&file, &directory.path)? != created.identity()
-                    || metadata.uid() != rustix::process::geteuid().as_raw()
-                    || metadata.mode() & 0o077 != 0
-                {
-                    return Err(unsupported(
-                        &directory.path,
-                        "recovery directory lost private ownership",
-                    ));
-                }
-                return Directory::from_file(file, directory.path.join(name));
-            }
+        // The created directory is pinned, owned and exactly owner-only; it is used
+        // directly rather than reopened and rebuilt.
+        match directory.create_child_directory(&name, cancel, change, NewDirectory::Private) {
+            Ok(created) => return Ok(created),
             Err(failure) if failure.kind == io::ErrorKind::AlreadyExists => continue,
             Err(failure) => return Err(failure),
         }
@@ -414,18 +394,45 @@ impl Stage {
             });
         }
         let retained = recovery.path.join("item");
-        let file = self.file().map_err(|e| error(&retained, e))?;
-        let staged_identity = identity(file, &retained)?;
-        let descriptor = format!("/proc/self/fd/{}", file.as_raw_fd());
-        checked(cancel, &retained)?;
-        linkat(
-            CWD,
-            descriptor.as_str(),
-            &*recovery.file,
-            "item",
-            AtFlags::SYMLINK_FOLLOW,
-        )
-        .map_err(|e| error(&retained, e.into()))?;
+        let linked = (|| {
+            let file = self.file().map_err(|e| error(&retained, e))?;
+            let staged_identity = identity(file, &retained)?;
+            let descriptor = format!("/proc/self/fd/{}", file.as_raw_fd());
+            checked(cancel, &retained)?;
+            linkat(
+                CWD,
+                descriptor.as_str(),
+                &*recovery.file,
+                "item",
+                AtFlags::SYMLINK_FOLLOW,
+            )
+            .map_err(|e| error(&retained, e.into()))?;
+            Ok(staged_identity)
+        })();
+        let staged_identity = match linked {
+            Ok(identity) => identity,
+            Err(mut failure) => {
+                // Nothing was linked, so the private recovery directory is still empty:
+                // remove it, or report it as a residual instead of leaking it silently.
+                let residual = TransferRecovery {
+                    path: recovery.path.clone(),
+                    identity: Some(recovery.identity),
+                };
+                return match self.directory.remove_empty_stage_in(recovery, change) {
+                    Ok(()) => Err(failure),
+                    Err(cleanup) => {
+                        failure
+                            .message
+                            .push_str(&format!("; empty recovery directory cleanup: {cleanup}"));
+                        Ok(TransferPublication::RecoveryRequired {
+                            published: None,
+                            recovery: vec![residual],
+                            error: failure,
+                        })
+                    }
+                };
+            }
+        };
         // The linked verified bytes now belong to persistent recovery. No subsequent error
         // or Drop may silently remove this link. Retrying requires an explicit new job.
         self.published = true;

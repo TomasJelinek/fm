@@ -329,3 +329,74 @@ fn capture_drop_without_explicit_finalization_preserves_the_original() {
     drop(source);
     assert_eq!(fs::read(recovery.path).unwrap(), b"original");
 }
+
+/// Ubuntu's default umask 002 makes every folder the user creates 0775 with the
+/// user's private group; such parents are protected like 0755 ones.
+#[test]
+fn private_group_writable_parents_allow_move_and_copied_folders() {
+    use std::{ffi::OsStr, os::unix::fs::MetadataExt, os::unix::fs::PermissionsExt};
+    let (_temp, parent) = fixture();
+    fs::set_permissions(&parent, fs::Permissions::from_mode(0o775)).unwrap();
+    let group = fs::metadata(&parent).unwrap().gid();
+    if !crate::ownership::caller_private_group(group) {
+        eprintln!("SKIP private-group parents: group {group} is not this user's private group");
+        return;
+    }
+    let source = parent.join("source");
+    fs::write(&source, b"original").unwrap();
+    let provider = crate::LinuxFileSystem::new(None);
+    let cancel = Cancellation::default();
+    let prepared = provider.prepare_move_source(&source, &cancel).unwrap();
+    prepared.capture.revalidate(&cancel).unwrap();
+    drop(prepared);
+    let target = provider
+        .prepare_transfer_destination(&parent, &cancel)
+        .unwrap();
+    let copied = target
+        .create_directory(OsStr::new("copied"), &cancel)
+        .unwrap();
+    assert_eq!(fs::metadata(copied.path()).unwrap().mode() & 0o777, 0o700);
+    assert_eq!(fs::read(&source).unwrap(), b"original");
+}
+
+#[test]
+fn shared_group_writable_parents_are_refused_with_operation_specific_advice() {
+    use std::{ffi::OsStr, os::unix::fs::PermissionsExt};
+    let (_temp, parent) = fixture();
+    let caller = rustix::process::getegid().as_raw();
+    let status = fs::read_to_string("/proc/self/status").unwrap();
+    let shared = status
+        .lines()
+        .find_map(|line| line.strip_prefix("Groups:"))
+        .into_iter()
+        .flat_map(str::split_whitespace)
+        .filter_map(|group| group.parse::<u32>().ok())
+        .find(|group| *group != caller);
+    let Some(shared) = shared else {
+        eprintln!("SKIP shared-group parents: this user has no supplementary group");
+        return;
+    };
+    std::os::unix::fs::chown(&parent, None, Some(shared)).unwrap();
+    fs::set_permissions(&parent, fs::Permissions::from_mode(0o775)).unwrap();
+    let source = parent.join("source");
+    fs::write(&source, b"original").unwrap();
+    let provider = crate::LinuxFileSystem::new(None);
+    let cancel = Cancellation::default();
+    let refused = match provider.prepare_move_source(&source, &cancel) {
+        Ok(_) => panic!("a shared group-writable source parent was admitted"),
+        Err(error) => error,
+    };
+    assert_eq!(refused.kind, std::io::ErrorKind::Unsupported);
+    assert!(refused.message.contains("Choose Copy"));
+    let target = provider
+        .prepare_transfer_destination(&parent, &cancel)
+        .unwrap();
+    let refused = match target.create_directory(OsStr::new("copied"), &cancel) {
+        Ok(_) => panic!("a shared group-writable copy parent was admitted"),
+        Err(error) => error,
+    };
+    assert_eq!(refused.kind, std::io::ErrorKind::Unsupported);
+    assert!(refused.message.contains("Copy creates folders"));
+    assert!(!refused.message.contains("Choose Copy"));
+    assert_eq!(fs::read_dir(&parent).unwrap().count(), 1);
+}
