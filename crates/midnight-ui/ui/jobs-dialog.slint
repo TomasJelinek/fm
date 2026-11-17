@@ -100,7 +100,7 @@ export component OperationsBody inherits Rectangle {
     callback open-progress(string);
     callback clear-finished(bool);
     callback close();
-    callback move-dialog(length, length);
+    // Hosted only by the native JobsWindow: the system title bar moves it.
     public function select-job(identity: string) {
         root.selected-identity = identity;
         list-focus.focus();
@@ -124,7 +124,6 @@ export component OperationsBody inherits Rectangle {
                 fallback-icon: FallbackIcons.folder-sizes;
                 detail: root.rows.length == 1 ? "1 operation" : root.rows.length + " operations";
                 close-label: "Close dialog"; close => { root.close(); }
-                dragged(dx, dy) => { root.move-dialog(dx, dy); }
             }
             list-frame := Rectangle {
                 min-height: 20px; min-width: 0px; vertical-stretch: 1;
