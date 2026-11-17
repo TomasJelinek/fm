@@ -46,10 +46,12 @@ The SDK verifies AppContainer and job restrictions before ready.
 Pipe and `NUL` handles are created non-inheritable. The three child handles become
 inheritable only for the worker's `CreateProcessW` call, under a process-wide
 creation lock (`midnight_worker_platform::lock_process_creation`), and are closed
-before it is released; the browser broker launch follows the same rule. An
-in-process launcher that inherits every inheritable handle, such as
+before it is released on every exit path; the browser broker launch follows the same
+rule. An in-process launcher that inherits every inheritable handle, such as
 `std::process::Command`, can capture a worker's pipe ends only if it runs during
-that single call; launchers that hold the creation lock while spawning cannot.
+that single call. `midnight_worker_platform::spawn_command` spawns such a command
+under the lock, which it holds for the creation call only, never while the child
+runs or while its output or exit status is awaited.
 
 The optional FFmpeg provider requires ReadAndExecute access for that fixed
 worker SID on exactly `avcodec-63.dll`, `avformat-63.dll`, `avutil-61.dll` and

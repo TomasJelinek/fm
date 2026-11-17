@@ -11,7 +11,8 @@ mod platform;
 #[path = "linux.rs"]
 mod platform;
 pub use platform::Process;
-/// Hold while spawning a child that inherits every inheritable handle (Windows only).
+/// Hold while spawning a child that inherits every inheritable handle (Windows only), and only
+/// for the creation call itself; [`spawn_command`] does both for `std::process::Command`.
 #[cfg(windows)]
 pub use platform::lock_process_creation;
 pub mod browser;
@@ -47,6 +48,17 @@ pub fn spawn_with_policy(executable: &Path, policy: ResourcePolicy) -> io::Resul
     let mut worker = platform::spawn(executable, policy)?;
     midnight_worker_sdk::write_policy(&mut worker.input, policy)?;
     Ok(worker)
+}
+
+/// Spawn an unrelated child process (an editor, a custom command, a restarted app) from a
+/// process that may also be starting workers. On Windows `std::process::Command` lets the
+/// child inherit every inheritable handle, so the spawn waits for any worker or browser
+/// creation that briefly holds inheritable pipe ends. The lock covers only the `spawn` call,
+/// never the child's lifetime: wait for the child or read its output after this returns.
+pub fn spawn_command(command: &mut std::process::Command) -> io::Result<std::process::Child> {
+    #[cfg(windows)]
+    let _creation = platform::lock_process_creation();
+    command.spawn()
 }
 
 fn validate_path(executable: &Path) -> io::Result<()> {

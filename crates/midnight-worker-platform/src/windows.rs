@@ -109,16 +109,21 @@ pub fn lock_process_creation() -> MutexGuard<'static, ()> {
 }
 
 /// Run `create` (one `CreateProcessW` restricted by `PROC_THREAD_ATTRIBUTE_HANDLE_LIST`) while
-/// exactly `handles` are inheritable, then close them before releasing the creation lock. The
-/// child holds its own duplicates; no inheritable copy remains in this process afterwards.
-pub(super) fn create_with_inherited<const N: usize, R>(
-    handles: [File; N],
+/// exactly `handles` are inheritable. The handles are closed before the creation lock is
+/// released on every exit path: success, a failed `SetHandleInformation`, a failed `create`
+/// and unwinding out of it. The child holds its own duplicates; no inheritable copy remains in
+/// this process afterwards.
+pub(super) fn create_with_inherited<H: AsRawHandle, const N: usize, R>(
+    handles: [H; N],
     create: impl FnOnce() -> io::Result<R>,
 ) -> io::Result<R> {
     let _creation = lock_process_creation();
+    // Locals drop in reverse declaration order and before parameters, so this rebinding closes
+    // the handles while `_creation` still holds the lock, whichever way the function exits.
+    let handles = handles;
     for handle in &handles {
-        // SAFETY: an owned live handle; only its inheritance flag changes. On failure the
-        // handles are closed below, so none can remain inheritable.
+        // SAFETY: an owned live handle; only its inheritance flag changes. An early return
+        // closes every handle under the creation lock, so none stays inheritable outside it.
         check(unsafe {
             SetHandleInformation(
                 handle.as_raw_handle(),
@@ -127,9 +132,7 @@ pub(super) fn create_with_inherited<const N: usize, R>(
             )
         })?;
     }
-    let created = create();
-    drop(handles);
-    created
+    create()
 }
 
 struct Sid(*mut std::ffi::c_void);
@@ -383,7 +386,13 @@ mod tests {
     use super::*;
     use std::{
         io::{Read, Write},
+        os::windows::io::RawHandle,
+        panic::AssertUnwindSafe,
         process::{Child, ChildStderr, Command, Stdio},
+        sync::{
+            Arc, TryLockError,
+            atomic::{AtomicBool, Ordering},
+        },
         time::{Duration, Instant},
     };
     use windows_sys::Win32::{
@@ -431,6 +440,99 @@ mod tests {
             create_with_inherited([read, write], || Err::<(), _>(io::Error::other("fixture")))
                 .is_err()
         );
+        drop(lock_process_creation());
+    }
+
+    #[test]
+    fn unrelated_spawns_hold_the_creation_lock_only_while_spawning() {
+        use std::os::windows::process::CommandExt;
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        command
+            .args(["--exact", "no-such-test"])
+            .creation_flags(CREATE_SUSPENDED)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        let mut child = crate::spawn_command(&mut command).unwrap();
+        // The suspended child keeps running, yet the lock is free again. Other tests may hold
+        // it for a moment, so retry until a deadline that elapses only on failure.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let acquired = loop {
+            match PROCESS_CREATION.try_lock() {
+                Err(TryLockError::WouldBlock) if Instant::now() < deadline => {
+                    std::thread::yield_now()
+                }
+                other => break !matches!(other, Err(TryLockError::WouldBlock)),
+            }
+        };
+        let _ = child.kill();
+        let _ = child.wait();
+        assert!(acquired, "the creation lock outlived the spawn call");
+    }
+
+    /// A child handle that records whether the creation lock was still held when it closed.
+    struct Probe {
+        file: Option<File>,
+        closed_under_lock: Arc<AtomicBool>,
+    }
+
+    impl Probe {
+        fn new(file: Option<File>) -> (Self, Arc<AtomicBool>) {
+            let closed_under_lock = Arc::new(AtomicBool::new(false));
+            let probe = Self {
+                file,
+                closed_under_lock: closed_under_lock.clone(),
+            };
+            (probe, closed_under_lock)
+        }
+    }
+
+    impl AsRawHandle for Probe {
+        fn as_raw_handle(&self) -> RawHandle {
+            // Without a file, the null handle makes SetHandleInformation fail.
+            self.file
+                .as_ref()
+                .map_or(null_mut(), AsRawHandle::as_raw_handle)
+        }
+    }
+
+    impl Drop for Probe {
+        fn drop(&mut self) {
+            // WouldBlock while any thread, including this one, holds the lock. A free (even
+            // poisoned) lock is acquired and released again at once.
+            let held = matches!(PROCESS_CREATION.try_lock(), Err(TryLockError::WouldBlock));
+            self.closed_under_lock.store(held, Ordering::SeqCst);
+            drop(self.file.take());
+        }
+    }
+
+    #[test]
+    fn child_handles_are_closed_before_the_creation_lock_on_every_exit_path() {
+        let (read, write) = pipe().unwrap();
+        // Success and a failed creation.
+        for result in [Ok(()), Err(io::Error::other("fixture"))] {
+            let (probe, closed) = Probe::new(Some(read.try_clone().unwrap()));
+            let created = create_with_inherited([probe], || result);
+            assert!(closed.load(Ordering::SeqCst));
+            drop(created);
+        }
+        // SetHandleInformation fails on the second handle after marking the first one.
+        let (marked, marked_closed) = Probe::new(Some(read.try_clone().unwrap()));
+        let (invalid, invalid_closed) = Probe::new(None);
+        let refused = create_with_inherited([marked, invalid], || -> io::Result<()> {
+            unreachable!("creation must not run after a failed inheritance change")
+        });
+        assert!(refused.is_err());
+        assert!(marked_closed.load(Ordering::SeqCst));
+        assert!(invalid_closed.load(Ordering::SeqCst));
+        // Unwinding out of the creation call.
+        let (probe, closed) = Probe::new(Some(write.try_clone().unwrap()));
+        let unwound = std::panic::catch_unwind(AssertUnwindSafe(|| {
+            create_with_inherited([probe], || -> io::Result<()> { panic!("fixture") })
+        }));
+        assert!(unwound.is_err());
+        assert!(closed.load(Ordering::SeqCst));
+        // The panic poisoned the lock; production callers recover, other tests start clean.
+        PROCESS_CREATION.clear_poison();
         drop(lock_process_creation());
     }
 
