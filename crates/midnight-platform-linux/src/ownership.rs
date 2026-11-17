@@ -13,19 +13,27 @@
 //! other users. Group write is accepted only for the caller's user-private group:
 //! the effective GID, named like the effective user in the local account database,
 //! with no other listed member and no other local account using it as its primary
-//! group. Shared groups and world-writable non-sticky parents remain refused.
-//! Accounts outside `/etc/passwd`/`/etc/group` (directory services) keep the strict
-//! rule. Same-UID and root interference remain outside this boundary.
+//! group, and only on a directory without a POSIX access ACL. With an access ACL the
+//! group mode bits are the ACL mask, which also bounds the named users and groups
+//! the ACL lets write. Shared-group, ACL-shared and world-writable non-sticky parents
+//! remain refused. Accounts outside `/etc/passwd`/`/etc/group` (directory services)
+//! keep the strict rule. Same-UID and root interference remain outside this boundary.
 
-use rustix::fs::{AtFlags, FileType, Mode, OFlags, fchmod, fstat, openat, statat, unlinkat};
+use rustix::fs::{
+    AtFlags, FileType, Mode, OFlags, fchmod, fgetxattr_query, fstat, getxattr_query, openat,
+    statat, unlinkat,
+};
 use std::{
     ffi::OsStr,
     fs::File,
     io::{self, Read},
-    os::fd::AsFd,
+    os::fd::{AsFd, AsRawFd},
     sync::Mutex,
     time::{Duration, Instant},
 };
+
+/// The extended attribute that holds an inode's POSIX access ACL.
+const ACCESS_ACL: &str = "system.posix_acl_access";
 
 /// How a directory created by this process with mode 0700 may be used.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -122,52 +130,126 @@ pub(crate) fn remove_refused_directory(
     Ok(())
 }
 
-/// Whether other users can neither replace nor remove names in a directory with
-/// this owner, group and mode (see the module documentation).
-pub(crate) fn protected_parent(uid: u32, gid: u32, mode: u32) -> bool {
-    let caller = rustix::process::geteuid().as_raw();
-    if uid != caller && uid != 0 {
-        return false;
-    }
-    if mode & 0o1000 != 0 {
-        return true;
-    }
-    mode & 0o002 == 0 && (mode & 0o020 == 0 || caller_private_group(gid))
+/// Whether other users can neither replace nor remove names in `directory`
+/// (see the module documentation).
+pub(crate) fn protected_parent(directory: impl AsFd) -> io::Result<bool> {
+    let stat = fstat(&directory)?;
+    Ok(protected_mode(
+        stat.st_uid,
+        stat.st_gid,
+        stat.st_mode,
+        || may_have_access_acl(&directory),
+    ))
 }
 
-/// Whether only the caller can write to a directory owned by the effective UID:
-/// never world-writable, and group-writable only for its user-private group.
-pub(crate) fn writable_only_by_caller(uid: u32, gid: u32, mode: u32) -> bool {
-    uid == rustix::process::geteuid().as_raw()
-        && mode & 0o002 == 0
-        && (mode & 0o020 == 0 || caller_private_group(gid))
+/// Whether only the caller can write to `directory`: owned by the effective UID,
+/// never world-writable, and group-writable only as a protected parent may be.
+pub(crate) fn writable_only_by_caller(directory: impl AsFd) -> io::Result<bool> {
+    let stat = fstat(&directory)?;
+    Ok(writable_only_mode(
+        stat.st_uid,
+        stat.st_gid,
+        stat.st_mode,
+        || may_have_access_acl(&directory),
+    ))
+}
+
+/// `protected_parent` for a directory's owner, group and mode. `acl` reports
+/// whether the directory may carry an access ACL; it is asked only when group
+/// write is what would admit the directory.
+fn protected_mode(uid: u32, gid: u32, mode: u32, acl: impl FnOnce() -> bool) -> bool {
+    let caller = rustix::process::geteuid().as_raw();
+    (uid == caller || uid == 0) && (mode & 0o1000 != 0 || private_writers_only(gid, mode, acl))
+}
+
+/// `writable_only_by_caller` for a directory's owner, group and mode; `acl` as
+/// for `protected_mode`.
+fn writable_only_mode(uid: u32, gid: u32, mode: u32, acl: impl FnOnce() -> bool) -> bool {
+    uid == rustix::process::geteuid().as_raw() && private_writers_only(gid, mode, acl)
+}
+
+/// No write access for other users, and group write only for the caller's
+/// private group on a directory whose group bits are not an ACL mask.
+fn private_writers_only(gid: u32, mode: u32, acl: impl FnOnce() -> bool) -> bool {
+    mode & 0o002 == 0 && (mode & 0o020 == 0 || (caller_private_group(gid) && !acl()))
+}
+
+/// Whether `directory` may carry a POSIX access ACL. Only a missing attribute
+/// (ENODATA) or a filesystem without POSIX ACLs (EOPNOTSUPP) proves that it has
+/// none; any other failure counts as an ACL, which refuses group write.
+fn may_have_access_acl(directory: impl AsFd) -> bool {
+    let directory = directory.as_fd();
+    let query = match fgetxattr_query(directory, ACCESS_ACL) {
+        // Kernels that refuse xattr calls on O_PATH descriptors read the same
+        // pinned inode through its descriptor link instead.
+        Err(rustix::io::Errno::BADF) => getxattr_query(
+            format!("/proc/self/fd/{}", directory.as_raw_fd()).as_str(),
+            ACCESS_ACL,
+        ),
+        query => query,
+    };
+    !matches!(
+        query,
+        Err(rustix::io::Errno::NODATA | rustix::io::Errno::OPNOTSUPP)
+    )
 }
 
 /// Whether `gid` is the effective user's private group. Results are cached briefly
 /// because recursive transfers check the same parents' group for every child.
 pub(crate) fn caller_private_group(gid: u32) -> bool {
     const VALIDITY: Duration = Duration::from_secs(10);
-    static CACHE: Mutex<Option<(u32, u32, Instant, bool)>> = Mutex::new(None);
+    static CACHE: VerdictCache = VerdictCache::new();
     if gid != rustix::process::getegid().as_raw() {
         return false;
     }
     let uid = rustix::process::geteuid().as_raw();
-    let mut cache = CACHE.lock().unwrap_or_else(|error| error.into_inner());
-    if let Some((cached_uid, cached_gid, checked, verdict)) = *cache
-        && (cached_uid, cached_gid) == (uid, gid)
-        && checked.elapsed() < VALIDITY
-    {
-        return verdict;
+    CACHE.get((uid, gid), VALIDITY, || {
+        match (
+            read_account_file("/etc/passwd"),
+            read_account_file("/etc/group"),
+        ) {
+            (Some(passwd), Some(group)) => private_group_in(&passwd, &group, uid, gid),
+            _ => false,
+        }
+    })
+}
+
+/// One briefly cached verdict. Its lock is never held while a verdict is
+/// computed, so concurrent checks never queue behind another check's I/O; a
+/// concurrent miss may compute the same verdict twice.
+struct VerdictCache(Mutex<Option<Verdict>>);
+
+/// A verdict, its key and when it was computed.
+#[derive(Clone, Copy)]
+struct Verdict {
+    key: (u32, u32),
+    computed: Instant,
+    value: bool,
+}
+
+impl VerdictCache {
+    const fn new() -> Self {
+        Self(Mutex::new(None))
     }
-    let verdict = match (
-        read_account_file("/etc/passwd"),
-        read_account_file("/etc/group"),
-    ) {
-        (Some(passwd), Some(group)) => private_group_in(&passwd, &group, uid, gid),
-        _ => false,
-    };
-    *cache = Some((uid, gid, Instant::now(), verdict));
-    verdict
+
+    /// The verdict cached for `key` while it is younger than `validity`;
+    /// otherwise `compute()`, which is then cached.
+    fn get(&self, key: (u32, u32), validity: Duration, compute: impl FnOnce() -> bool) -> bool {
+        let cached = *self.0.lock().unwrap_or_else(|error| error.into_inner());
+        if let Some(cached) = cached
+            && cached.key == key
+            && cached.computed.elapsed() < validity
+        {
+            return cached.value;
+        }
+        let value = compute();
+        *self.0.lock().unwrap_or_else(|error| error.into_inner()) = Some(Verdict {
+            key,
+            computed: Instant::now(),
+            value,
+        });
+        value
+    }
 }
 
 fn read_account_file(path: &str) -> Option<Vec<u8>> {

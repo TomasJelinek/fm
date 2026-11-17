@@ -408,7 +408,9 @@ directory keeps the mount-provided permissions. Creation requires a protected pa
 owned by the user or root, and either sticky or not writable by other users. Group
 write is accepted only for the user's private group: the effective group, named
 after the user in `/etc/group`, with no other member and no other `/etc/passwd`
-account using it as its primary group. Shared-group or world-writable parents
+account using it as its primary group, and only while the folder has no POSIX
+access ACL (with one, the group permission bits are the ACL mask, which can let
+named users or groups write). Shared-group, ACL-shared or world-writable parents
 without sticky protection are refused. A selected mount point may be a Copy root;
 Copy never enters another mount below a selected folder and reports such mount
 points as unsupported. mkdir/open is not an atomic operation; same-UID/root

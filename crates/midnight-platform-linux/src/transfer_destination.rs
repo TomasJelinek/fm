@@ -75,8 +75,7 @@ impl Directory {
     /// directory; see `crate::ownership::protected_parent` for the exact rule.
     fn check_protected_parent(&self, cancel: &Cancellation, refusal: &str) -> Result<(), FsError> {
         self.revalidate(cancel)?;
-        let parent = self.file.metadata().map_err(|e| error(&self.path, e))?;
-        if !crate::ownership::protected_parent(parent.uid(), parent.gid(), parent.mode()) {
+        if !crate::ownership::protected_parent(&*self.file).map_err(|e| error(&self.path, e))? {
             return Err(unsupported(&self.path, refusal));
         }
         Ok(())
