@@ -14,7 +14,10 @@ use midnight_core::*;
 use slint::{Model, platform::Key};
 use std::{
     fs,
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
+    },
     thread::{self, ThreadId},
 };
 
@@ -29,6 +32,14 @@ struct ClipboardState {
 struct MemoryClipboard {
     ui_thread: ThreadId,
     state: Arc<Mutex<ClipboardState>>,
+    trace: Arc<ClipboardActorTrace>,
+}
+
+#[derive(Default)]
+struct ClipboardActorTrace {
+    opens: AtomicUsize,
+    copy_calls: AtomicUsize,
+    copies: AtomicUsize,
 }
 
 impl MemoryClipboard {
@@ -36,6 +47,7 @@ impl MemoryClipboard {
         Self {
             ui_thread: thread::current().id(),
             state: Arc::new(Mutex::new(ClipboardState::default())),
+            trace: Arc::new(ClipboardActorTrace::default()),
         }
     }
 }
@@ -43,6 +55,7 @@ impl MemoryClipboard {
 struct ClipboardOwner {
     worker: ThreadId,
     state: Arc<Mutex<ClipboardState>>,
+    trace: Arc<ClipboardActorTrace>,
 }
 
 impl ClipboardService for MemoryClipboard {
@@ -52,9 +65,11 @@ impl ClipboardService for MemoryClipboard {
             worker, self.ui_thread,
             "clipboard opening must run off the UI thread"
         );
+        self.trace.opens.fetch_add(1, Ordering::Relaxed);
         Ok(Box::new(ClipboardOwner {
             worker,
             state: self.state.clone(),
+            trace: self.trace.clone(),
         }))
     }
 }
@@ -66,10 +81,13 @@ impl ClipboardSession for ClipboardOwner {
 
     fn copy_files(&mut self, files: &FileClipboard) -> Result<(), FsError> {
         assert_eq!(thread::current().id(), self.worker);
+        self.trace.copy_calls.fetch_add(1, Ordering::Relaxed);
         files.validate()?;
         let mut state = self.state.lock().unwrap();
         state.files = Some(files.clone());
         state.writes.push(files.clone());
+        drop(state);
+        self.trace.copies.fetch_add(1, Ordering::Relaxed);
         Ok(())
     }
 
@@ -119,9 +137,24 @@ fn focus(h: &support::Harness, pane: PaneId, name: &str, select: bool) {
     h.ui.window.invoke_focus_files();
 }
 
-fn published(h: &mut support::Harness) {
+fn published(h: &mut support::Harness, clipboard: &MemoryClipboard) {
     let expected = h.clipboard_publications + 1;
-    h.until(|h| h.clipboard_publications == expected);
+    if let Err(panic) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        h.until(|h| h.clipboard_publications == expected);
+    })) {
+        let state = clipboard
+            .state
+            .try_lock()
+            .ok()
+            .map(|state| (state.writes.len(), state.reads, state.dropped));
+        eprintln!(
+            "clipboard actor: opens={}, copy_calls={}, copies={}, state(writes,reads,dropped)={state:?}",
+            clipboard.trace.opens.load(Ordering::Relaxed),
+            clipboard.trace.copy_calls.load(Ordering::Relaxed),
+            clipboard.trace.copies.load(Ordering::Relaxed),
+        );
+        std::panic::resume_unwind(panic);
+    }
 }
 
 fn exercise(pane: PaneId, intent: FileClipboardIntent) {
@@ -171,6 +204,7 @@ fn exercise(pane: PaneId, intent: FileClipboardIntent) {
     }
     // Deliberately send the chord before draining the selection ACK: capture
     // must wait for these marks rather than copying an older selection.
+    h.clipboard_checkpoint("before_copy_chord");
     ui::chord(
         &h.ui.window,
         &[Key::Control],
@@ -180,7 +214,8 @@ fn exercise(pane: PaneId, intent: FileClipboardIntent) {
             "c"
         },
     );
-    published(&mut h);
+    h.clipboard_checkpoint("after_copy_chord");
+    published(&mut h, &clipboard);
     {
         let state = clipboard.state.lock().unwrap();
         assert_eq!(
@@ -364,7 +399,7 @@ fn unselected_parent_is_excluded_and_focused_nested_folder_is_the_fallback() {
     ui::chord(&h.ui.window, &[Key::Control], "x");
     focus(&h, PaneId::Left, "small", false);
     ui::chord(&h.ui.window, &[Key::Control], "c");
-    published(&mut h);
+    published(&mut h, &clipboard);
     assert_eq!(
         clipboard.state.lock().unwrap().writes,
         vec![FileClipboard {

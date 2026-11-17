@@ -17,6 +17,7 @@ use slint::{
 };
 use std::{
     cell::RefCell,
+    collections::VecDeque,
     path::{Path, PathBuf},
     rc::Rc,
     sync::{
@@ -249,10 +250,193 @@ impl ArchiveMount for Archive {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default)]
+struct ClipboardStep {
+    stage: &'static str,
+    stamp: Option<TreeViewStamp>,
+    // Allocation identity only: no owner retained and no pointer dereferenced.
+    projection_ptr: Option<usize>,
+    request: Option<u64>,
+    selection: Option<u64>,
+    selected: Option<usize>,
+    cancelled: Option<bool>,
+    accepted: Option<bool>,
+    ok: Option<bool>,
+    active_pane: Option<i32>,
+    focused_pane: Option<i32>,
+    notice_generation: Option<i32>,
+    modal: Option<bool>,
+    blocked: Option<bool>,
+    scope_claims: Option<usize>,
+    scope_denials: Option<usize>,
+}
+
+impl ClipboardStep {
+    fn command(command: &Command) -> Option<Self> {
+        Some(match command {
+            Command::Tree(tree) => match tree.as_ref() {
+                TreeCommand::Commit(view) => Self {
+                    stage: "commit_send",
+                    stamp: Some(view.stamp),
+                    projection_ptr: Some(Arc::as_ptr(view) as usize),
+                    ..Self::default()
+                },
+                TreeCommand::Select(request) => Self {
+                    stage: "select_send",
+                    stamp: Some(request.view.stamp),
+                    projection_ptr: Some(Arc::as_ptr(&request.view) as usize),
+                    selection: Some(request.revision.0),
+                    ..Self::default()
+                },
+                TreeCommand::Clipboard(request) => Self {
+                    stage: "capture_send",
+                    stamp: Some(request.view.stamp),
+                    projection_ptr: Some(Arc::as_ptr(&request.view) as usize),
+                    request: Some(request.request.0),
+                    selection: Some(request.selection_revision.0),
+                    selected: Some(request.selection.len()),
+                    cancelled: Some(request.cancel.is_cancelled()),
+                    ..Self::default()
+                },
+                _ => return None,
+            },
+            Command::CopyCapturedFiles {
+                request, cancel, ..
+            } => Self {
+                stage: "publish_send",
+                request: Some(request.0),
+                cancelled: Some(cancel.is_cancelled()),
+                ..Self::default()
+            },
+            _ => return None,
+        })
+    }
+
+    fn event(event: &Event) -> Option<Self> {
+        Some(match event {
+            Event::Tree(tree) => match tree.as_ref() {
+                TreeEvent::Published(publication) | TreeEvent::Reprojected { publication, .. } => {
+                    Self {
+                        stage: "view",
+                        stamp: Some(publication.view.stamp),
+                        projection_ptr: Some(Arc::as_ptr(&publication.view) as usize),
+                        selection: Some(publication.selection_revision.0),
+                        selected: Some(publication.selection.len()),
+                        ..Self::default()
+                    }
+                }
+                TreeEvent::SelectionChanged {
+                    view,
+                    revision,
+                    selection,
+                } => Self {
+                    stage: "select_reply",
+                    stamp: Some(view.stamp),
+                    projection_ptr: Some(Arc::as_ptr(view) as usize),
+                    selection: Some(revision.0),
+                    selected: Some(selection.len()),
+                    ok: Some(true),
+                    ..Self::default()
+                },
+                TreeEvent::SelectionFailed {
+                    stamp, revision, ..
+                } => Self {
+                    stage: "select_reply",
+                    stamp: Some(*stamp),
+                    selection: Some(revision.0),
+                    ok: Some(false),
+                    ..Self::default()
+                },
+                TreeEvent::Clipboard {
+                    stamp,
+                    request,
+                    result,
+                } => Self {
+                    stage: "capture_reply",
+                    stamp: Some(*stamp),
+                    request: Some(request.0),
+                    ok: Some(result.is_ok()),
+                    ..Self::default()
+                },
+                _ => return None,
+            },
+            Event::DesktopActionFinished { request, result } => Self {
+                stage: match result {
+                    Ok(DesktopActionResult::ClipboardCopied) => "desktop_copied",
+                    Err(_) => "desktop_error",
+                    _ => "desktop_other",
+                },
+                request: Some(request.0),
+                ok: Some(result.is_ok()),
+                ..Self::default()
+            },
+            _ => return None,
+        })
+    }
+}
+
+#[derive(Debug)]
+struct ClipboardTrace {
+    started: Instant,
+    parallelism: Option<usize>,
+    // Each array is ordered selection, capture, publication.
+    attempts: [usize; 3],
+    refusals: [usize; 3],
+    replies: [usize; 3],
+    scope_claims: usize,
+    scope_denials: usize,
+    steps: VecDeque<(u128, ClipboardStep)>,
+}
+
+impl ClipboardTrace {
+    fn new() -> Self {
+        Self {
+            started: Instant::now(),
+            parallelism: std::thread::available_parallelism()
+                .ok()
+                .map(|value| value.get()),
+            attempts: [0; 3],
+            refusals: [0; 3],
+            replies: [0; 3],
+            scope_claims: 0,
+            scope_denials: 0,
+            steps: VecDeque::with_capacity(16),
+        }
+    }
+
+    fn record(&mut self, step: ClipboardStep) {
+        let command = match step.stage {
+            "select_send" => Some(0),
+            "capture_send" => Some(1),
+            "publish_send" => Some(2),
+            _ => None,
+        };
+        if let Some(index) = command {
+            self.attempts[index] += 1;
+            self.refusals[index] += usize::from(step.accepted == Some(false));
+        }
+        let reply = match step.stage {
+            "select_reply" => Some(0),
+            "capture_reply" => Some(1),
+            "desktop_copied" | "desktop_error" | "desktop_other" => Some(2),
+            _ => None,
+        };
+        if let Some(index) = reply {
+            self.replies[index] += 1;
+        }
+        if self.steps.len() == 16 {
+            self.steps.pop_front();
+        }
+        self.steps
+            .push_back((self.started.elapsed().as_millis(), step));
+    }
+}
+
 struct Routing {
     calls: Arc<Calls>,
     requests: Rc<RefCell<Vec<TreeReprojectRequest>>>,
     rejected: Rc<RefCell<bool>>,
+    clipboard_trace: Rc<RefCell<ClipboardTrace>>,
 }
 
 impl Routing {
@@ -296,11 +480,18 @@ struct ObservedScope {
 
 impl OwnedCommandScope for ObservedScope {
     fn send(&self, mut command: Command) -> bool {
-        if !self.routing.prepare(&mut command) {
+        let metadata = ClipboardStep::command(&command);
+        let accepted = if !self.routing.prepare(&mut command) {
             self.inner.retire(Box::new(command));
-            return false;
+            false
+        } else {
+            self.inner.send(command)
+        };
+        if let Some(mut metadata) = metadata {
+            metadata.accepted = Some(accepted);
+            self.routing.clipboard_trace.borrow_mut().record(metadata);
         }
-        self.inner.send(command)
+        accepted
     }
 
     fn retire(&self, value: DeferredDrop) {
@@ -322,6 +513,7 @@ pub struct Harness {
     pub size_finished: usize,
     pub copy_progress: Vec<Arc<CopyProgress>>,
     pub clipboard_publications: usize,
+    clipboard_trace: Rc<RefCell<ClipboardTrace>>,
     pub watch_hints: [usize; 2],
     pub send: Rc<dyn Fn(Command) -> bool>,
     pub pane: PaneId,
@@ -574,16 +766,31 @@ impl Harness {
         let presenter = Rc::new(RefCell::new(Presenter::new(path.clone(), path.clone())));
         let requests = Rc::new(RefCell::new(Vec::new()));
         let reject_reproject = Rc::new(RefCell::new(false));
+        let clipboard_trace = Rc::new(RefCell::new(ClipboardTrace::new()));
         let routing = Rc::new(Routing {
             calls: calls.clone(),
             requests: requests.clone(),
             rejected: reject_reproject.clone(),
+            clipboard_trace: clipboard_trace.clone(),
         });
         let begin = command_reclaim.factory(commands.clone());
         let observed_routing = routing.clone();
+        let trace_begin = clipboard_trace.clone();
         let begin_owned: BeginOwned = Rc::new(move || {
+            let Some(inner) = begin() else {
+                let mut trace = trace_begin.borrow_mut();
+                trace.scope_denials += 1;
+                if trace.scope_denials == 1 {
+                    trace.record(ClipboardStep {
+                        stage: "scope_denied",
+                        ..ClipboardStep::default()
+                    });
+                }
+                return None;
+            };
+            trace_begin.borrow_mut().scope_claims += 1;
             Some(Box::new(ObservedScope {
-                inner: begin()?,
+                inner,
                 routing: observed_routing.clone(),
             }))
         });
@@ -617,6 +824,7 @@ impl Harness {
             size_finished: 0,
             copy_progress: Vec::new(),
             clipboard_publications: 0,
+            clipboard_trace,
             watch_hints: [0; 2],
             send,
             pane,
@@ -855,6 +1063,9 @@ impl Harness {
         presenter: &mut Presenter,
         send: &dyn Fn(Command) -> bool,
     ) {
+        if let Some(metadata) = ClipboardStep::event(&event) {
+            self.clipboard_trace.borrow_mut().record(metadata);
+        }
         if matches!(
             &event,
             Event::DesktopActionFinished {
@@ -945,6 +1156,31 @@ impl Harness {
         });
     }
 
+    pub fn clipboard_checkpoint(&self, stage: &'static str) {
+        let active_pane = self.ui.window.get_active_pane();
+        let focused_pane = self.ui.window.get_focused_pane();
+        let notice_generation = self.ui.window.get_message_generation();
+        let modal = self.ui.window.get_embedded_modal_open();
+        let blocked = self.ui.window.get_dialog_input_blocked();
+        let mut trace = self.clipboard_trace.borrow_mut();
+        let scope_claims = trace.scope_claims;
+        let scope_denials = trace.scope_denials;
+        trace.record(ClipboardStep {
+            stage,
+            stamp: self.view.as_ref().map(|view| view.stamp),
+            projection_ptr: self.view.as_ref().map(|view| Arc::as_ptr(view) as usize),
+            selected: self.selection.as_ref().map(|selection| selection.len()),
+            active_pane: Some(active_pane),
+            focused_pane: Some(focused_pane),
+            notice_generation: Some(notice_generation),
+            modal: Some(modal),
+            blocked: Some(blocked),
+            scope_claims: Some(scope_claims),
+            scope_denials: Some(scope_denials),
+            ..ClipboardStep::default()
+        });
+    }
+
     #[track_caller]
     pub fn until(&mut self, condition: impl Fn(&Self) -> bool) {
         let deadline = Instant::now() + Duration::from_secs(5);
@@ -972,7 +1208,7 @@ impl Harness {
             }
         }
         panic!(
-            "condition did not settle within five seconds: copy={:?}, clipboard_publications={}, desktop_status={}, left_error={}, right_error={}, selected={:?}, loading={:?}, folder_disclosures={:?}",
+            "condition did not settle within five seconds: copy={:?}, clipboard_publications={}, desktop_status={}, left_error={}, right_error={}, selected={:?}, loading={:?}, folder_disclosures={:?}, notice=({},{:?},{:?}), active_pane={}, modal={}, dialog_blocked={}, clipboard_trace={:?}",
             self.copy_progress.last(),
             self.clipboard_publications,
             self.ui.window.get_desktop_status(),
@@ -991,7 +1227,24 @@ impl Harness {
                 .iter()
                 .filter(|row| row.name == "folder")
                 .map(|row| (row.name.to_string(), row.tree_disclosure))
-                .collect::<Vec<_>>())
+                .collect::<Vec<_>>()),
+            self.ui.window.get_message_generation(),
+            self.ui
+                .window
+                .get_message_title()
+                .chars()
+                .take(64)
+                .collect::<String>(),
+            self.ui
+                .window
+                .get_message_body()
+                .chars()
+                .take(256)
+                .collect::<String>(),
+            self.ui.window.get_active_pane(),
+            self.ui.window.get_embedded_modal_open(),
+            self.ui.window.get_dialog_input_blocked(),
+            self.clipboard_trace.borrow(),
         );
     }
 }
