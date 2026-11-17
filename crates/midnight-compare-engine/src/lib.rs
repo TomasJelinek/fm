@@ -10,6 +10,8 @@ mod worker;
 
 #[cfg(test)]
 mod capture_tests;
+#[cfg(test)]
+mod mailbox_tests;
 
 use midnight_core::{
     Cancellation, FileCompareLaunch, PathPickerOwner, PathPickerService, ViewerAppearance,
@@ -118,18 +120,54 @@ pub struct FileChoice {
     pub is_error: bool,
 }
 
-/// A latest-output slot bounds memory even when the UI is paused.
+/// Inputs a session queues for its worker; `Session::send` refuses more until the worker
+/// takes some.
+pub const INPUT_QUEUE: usize = 32;
+
+/// Called on the worker thread when an output is ready and no earlier call is outstanding.
+/// Returns whether the consumer will be woken; when it will not, the next output calls
+/// again. It must not block: the UI uses it to schedule one event-loop callback.
+pub type Wake = Arc<dyn Fn() -> bool + Send + Sync>;
+
+/// A latest-output slot bounds memory even when the UI is paused. With a wake, a burst of
+/// outputs calls it once: the call stays outstanding until the consumer's next `take`.
 #[derive(Default)]
-pub struct Mailbox(Mutex<Option<Output>>);
+pub struct Mailbox {
+    output: Mutex<Option<Output>>,
+    wake: Option<Wake>,
+    /// Whether a wake is outstanding. `take` clears it before it locks the slot and `put`
+    /// sets it after it unlocks the slot, so the slot's lock orders the two: either the
+    /// take sees the output, or its clear came first and the put wakes again.
+    woken: AtomicBool,
+}
 impl Mailbox {
+    fn with_wake(wake: Option<Wake>) -> Self {
+        Self {
+            wake,
+            ..Self::default()
+        }
+    }
+    /// Takes the latest output. It first ends the outstanding wake, so an output stored
+    /// after this point wakes the consumer again.
     pub fn take(&self) -> Option<Output> {
-        self.0
+        self.woken.swap(false, Ordering::AcqRel);
+        self.output
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .take()
     }
     fn put(&self, output: Output) {
-        *self.0.lock().unwrap_or_else(|error| error.into_inner()) = Some(output);
+        *self
+            .output
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = Some(output);
+        if let Some(wake) = &self.wake
+            && !self.woken.swap(true, Ordering::AcqRel)
+            && !wake()
+        {
+            // Nobody will take this output now: let the next one try again.
+            self.woken.swap(false, Ordering::AcqRel);
+        }
     }
 }
 
@@ -232,11 +270,32 @@ impl Service {
     pub fn has_path_picker(&self) -> bool {
         self.picker.is_some()
     }
+    /// A session whose consumer polls `Session::mailbox`.
     pub fn open(
         &self,
         launch: FileCompareLaunch,
         appearance: ViewerAppearance,
         geometry: ViewerGeometry,
+    ) -> Result<Session, String> {
+        self.start(launch, appearance, geometry, None)
+    }
+    /// A session that calls `wake` on its worker when an output is ready (see `Mailbox`),
+    /// so the consumer sleeps until then instead of polling the mailbox.
+    pub fn open_with_wake(
+        &self,
+        launch: FileCompareLaunch,
+        appearance: ViewerAppearance,
+        geometry: ViewerGeometry,
+        wake: Wake,
+    ) -> Result<Session, String> {
+        self.start(launch, appearance, geometry, Some(wake))
+    }
+    fn start(
+        &self,
+        launch: FileCompareLaunch,
+        appearance: ViewerAppearance,
+        geometry: ViewerGeometry,
+        wake: Option<Wake>,
     ) -> Result<Session, String> {
         self.active
             .try_update(Ordering::AcqRel, Ordering::Relaxed, |count| {
@@ -244,8 +303,8 @@ impl Service {
             })
             .map_err(|_| "Close a comparator before opening another (maximum two).")?;
         let permit = Permit(self.active.clone());
-        let (sender, receiver) = mpsc::sync_channel(32);
-        let mailbox = Arc::new(Mailbox::default());
+        let (sender, receiver) = mpsc::sync_channel(INPUT_QUEUE);
+        let mailbox = Arc::new(Mailbox::with_wake(wake));
         let cancelled = Arc::new(AtomicBool::new(false));
         let output = mailbox.clone();
         let stop = cancelled.clone();

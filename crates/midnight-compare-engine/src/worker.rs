@@ -277,7 +277,7 @@ fn compare(
                 )
             }
         }
-        for input in receiver.try_iter().take(31) {
+        for input in receiver.try_iter().take(crate::INPUT_QUEUE - 1) {
             if matches!(input, Input::Close) {
                 return Ok(());
             }
