@@ -110,8 +110,17 @@ py -3 -B -m unittest discover -s scripts/tests -p test_targeted_test_runner.py -
 All build, packaging, deployment and CI-planner script tests run with
 `py -3 -B -m unittest discover -s scripts/tests` (Linux: `python3 -B ...`); each
 test module can also run on its own (`py -3 -B scripts/tests/test_deploy_build.py`).
-On Windows, CI also runs the PowerShell deployment, registration, build-deployment
-retirement and shortcut checks (`scripts/tests/test-*.ps1`) under both PowerShell 7
-and Windows PowerShell 5.1.
+Windows script tests that run PowerShell helpers use PowerShell 7 when it is installed
+and Windows PowerShell 5.1 otherwise. On Windows, CI also runs the PowerShell
+deployment, registration, build-deployment retirement and shortcut checks
+(`scripts/tests/test-*.ps1`) under both PowerShell 7 and Windows PowerShell 5.1.
+
+The native user-command tests of the platform crates and `midnight-ui` share one
+argv/cwd/environment probe executable. It is cached in
+`_build/goal/commands/native/<key>/`, where the key hashes the compiler, its version,
+the compile flags and the probe sources. The first test to need it compiles it once,
+holding an OS file lock that other test threads and processes wait for; every
+requested probe name is then a hard link to that file. A cold run therefore compiles
+the probe once per key, and a warm run does not compile it at all.
 
 Those tests use actual subprocesses and a socket rendezvous to prove simultaneous execution, bounded admission, output isolation and cleanup of owned processes while an unrelated process stays alive. They also cover filter coalescing, no-match refusal, receipt/path and independent-workspace validation, changed artifacts and anchored result parsing. They demonstrate runner behavior, not a Rust throughput improvement; report measured elapsed times with the actual selected suite and cache state when comparing runs.
