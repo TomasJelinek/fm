@@ -629,24 +629,35 @@ impl Presenter {
             remember_command(&mut baseline.command_history, entry.clone());
         }
         let command = entry.command.clone();
-        if !remember_command(&mut state.values.command_history, entry) {
-            return;
-        }
+        let recalled = remember_command(&mut state.values.command_history, entry);
         if state.values.remember_command_history {
-            // Running a command while remembering authorizes its persistence.
-            state.session_commands.remove(&command);
+            // Running a command while remembering authorizes its persistence,
+            // also when its session-only run already heads the recall list.
+            let authorized = state.session_commands.remove(&command);
+            if !recalled && !authorized {
+                return;
+            }
             state.edited.command_history = true;
             state.unsaved = true;
             state.flush_after_load = true;
         } else {
+            if !recalled {
+                return;
+            }
             // Recall only: the stored (empty) history is unchanged, so no save.
             state.session_commands.insert(command);
             let history = &state.values.command_history;
             state
                 .session_commands
                 .retain(|command| history.iter().any(|entry| entry.command == *command));
+            // `revision` also identifies saves: once it moves on, the result of
+            // a save still in flight no longer completes `unsaved`. Save the
+            // same content again under the new revision to supersede it.
+            if state.pending_save_revision.is_some() {
+                state.flush_after_load = true;
+            }
         }
-        // The recall list follows the in-memory history either way.
+        // The recall list follows the in-memory history and its revision.
         state.revision.0 = state.revision.0.saturating_add(1);
     }
 
