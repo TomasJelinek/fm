@@ -127,6 +127,10 @@ Unsupported, never a host-native fallback. Failed responses carry a typed error,
 optional OS code and bounded diagnostic. Rename also carries failures inside
 Unchanged and RecoveryRequired outcomes. C status errors cover framing, admission,
 unknown instance/buffer, incompatibility, shutdown and panic.
+Diagnostics are at most 4096 UTF-8 bytes and the public encoder rejects longer
+ones. The SDK therefore cuts a longer author diagnostic (failure or volume
+diagnostic) at a character boundary and ends it with `…` before encoding, so a
+deep path in a message cannot replace the typed error with a framing status.
 
 ### Optional volume information (ABI minor 1)
 

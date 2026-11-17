@@ -279,6 +279,37 @@ impl Permit {
         Ok(buffer)
     }
 }
+/// Author diagnostics are display text. One beyond the wire bound (for example
+/// with an embedded long native path) is cut at a UTF-8 boundary and marked, so
+/// the typed code and OS code still reach the host instead of a framing status.
+pub(crate) fn bound_diagnostics(response: &mut Response) {
+    use crate::api::RenameOutcome;
+    match response {
+        Response::Failed(failure) => bound_diagnostic(&mut failure.message),
+        Response::RenameState(state) => match &mut state.outcome {
+            RenameOutcome::Unchanged(failure)
+            | RenameOutcome::RecoveryRequired { error: failure, .. } => {
+                bound_diagnostic(&mut failure.message)
+            }
+            _ => {}
+        },
+        Response::VolumeInformation(information) => {
+            information
+                .unavailable
+                .iter_mut()
+                .for_each(bound_diagnostic);
+        }
+        _ => {}
+    }
+}
+fn bound_diagnostic(message: &mut String) {
+    const CUT: char = '…';
+    if message.len() > crate::api::MAX_DIAGNOSTIC {
+        let end = message.floor_char_boundary(crate::api::MAX_DIAGNOSTIC - CUT.len_utf8());
+        message.truncate(end);
+        message.push(CUT);
+    }
+}
 #[cfg(test)]
 pub(crate) fn fail_next_publish<F: Filesystem>(id: u64) {
     lock(&acquire::<F>(id).unwrap().state).fail_publish = true;

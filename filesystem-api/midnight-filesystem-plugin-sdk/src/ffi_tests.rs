@@ -219,6 +219,89 @@ fn retained_replies_are_charged_their_exact_length_not_a_grown_capacity() {
     assert_eq!(destroy(&api, instance), OK);
 }
 
+/// A diagnostic that embeds a deep native path: 6,002 bytes of two-byte characters.
+fn long_diagnostic() -> String {
+    format!("x/{}", "é".repeat(3000))
+}
+struct Verbose;
+impl Filesystem for Verbose {
+    fn create(_: Config) -> Result<Self, Failure> {
+        Ok(Self)
+    }
+    fn handle(&self, request: Request, _: &CallContext<'_>) -> Result<Reply, Failure> {
+        let failure = |code| Failure {
+            code,
+            os_code: Some(13),
+            message: long_diagnostic(),
+        };
+        match request {
+            Request::GetRenameState { prepared } => {
+                Reply::stateless(Response::RenameState(RenameState {
+                    prepared,
+                    attempt: 1,
+                    outcome: RenameOutcome::RecoveryRequired {
+                        source_location: RenameSourceLocation::Unknown,
+                        destination_name: None,
+                        recovery: vec![],
+                        error: failure(ErrorCode::Io),
+                    },
+                }))
+            }
+            Request::VolumeInformation { .. } => {
+                Reply::stateless(Response::VolumeInformation(VolumeInformation {
+                    unavailable: vec!["a".repeat(MAX_DIAGNOSTIC), long_diagnostic()],
+                    ..VolumeInformation::default()
+                }))
+            }
+            _ => Err(failure(ErrorCode::PermissionDenied)),
+        }
+    }
+}
+#[test]
+fn over_long_author_diagnostics_are_truncated_instead_of_failing_the_call() {
+    let api = descriptor::<Verbose>();
+    let instance = create_instance(&api, Config::default());
+    let truncated = |message: &str| {
+        let kept = message.strip_suffix('…').unwrap();
+        assert!(message.len() <= MAX_DIAGNOSTIC && message.len() > MAX_DIAGNOSTIC - 8);
+        assert!(long_diagnostic().starts_with(kept));
+    };
+    let address = Address {
+        encoding: AddressEncoding::Opaque,
+        bytes: b"volume".to_vec(),
+    };
+    for request in [
+        Request::Stat { mount: 1, node: 1 },
+        Request::GetRenameState { prepared: 1 },
+        Request::VolumeInformation { address },
+    ] {
+        let (status, buffer) = invoke(&api, instance, request, Cancellation::default());
+        assert_eq!(status, OK);
+        match read(buffer) {
+            Response::Failed(failure) => {
+                assert_eq!(failure.code, ErrorCode::PermissionDenied);
+                assert_eq!(failure.os_code, Some(13));
+                truncated(&failure.message);
+            }
+            Response::RenameState(RenameState {
+                outcome: RenameOutcome::RecoveryRequired { error, .. },
+                ..
+            }) => {
+                assert_eq!((error.code, error.os_code), (ErrorCode::Io, Some(13)));
+                truncated(&error.message);
+            }
+            Response::VolumeInformation(information) => {
+                // A diagnostic exactly at the bound is kept unchanged.
+                assert_eq!(information.unavailable[0], "a".repeat(MAX_DIAGNOSTIC));
+                truncated(&information.unavailable[1]);
+            }
+            other => panic!("unexpected response {other:?}"),
+        }
+        assert_eq!(release(&api, instance, buffer.id), OK);
+    }
+    assert_eq!(destroy(&api, instance), OK);
+}
+
 #[test]
 fn a_foreign_descriptor_cannot_use_another_authors_valid_instance_or_buffer() {
     let first = descriptor::<Fake>();
