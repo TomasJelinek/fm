@@ -1,4 +1,228 @@
-use crate::{TextOptions, TextRenderer, Viewport};
+use crate::{
+    CellAlignment, ColorSpan, TableCell, TableRow, TextOptions, TextPage, TextRenderer, Viewport,
+};
+
+#[test]
+fn culling_far_lines_and_glyphs_never_changes_raster_pixels() {
+    // Stacked marks reach far above their line box, the long line and wide
+    // ligature far beside their origins. Culling must still keep all their ink.
+    let text = format!(
+        "top line\n{}\nfiller\na{} base\nfiller\n{} \u{fdfd} wide 👩\u{200d}💻\n{}",
+        "abcdefgh ".repeat(300),
+        "\u{301}".repeat(24),
+        "e\u{302}\u{303}".repeat(8),
+        "tail line\n".repeat(8)
+    );
+    let mut culled = TextRenderer::default();
+    let mut reference = TextRenderer::default();
+    reference.glyphs.unculled = true;
+    for size in [12.0, 31.5] {
+        let options = TextOptions {
+            family: "sans-serif",
+            size,
+            ..TextOptions::default()
+        };
+        let a = culled.layout_with_options(&text, &options, &[]).unwrap();
+        let b = reference.layout_with_options(&text, &options, &[]).unwrap();
+        let mut origins = vec![(-200.0, 20.0), (1500.25, 10.75), (4000.5, size * 1.3)];
+        let mut y = -160.0;
+        while y < a.height() + 40.0 {
+            origins.push((0.0, y));
+            y += 19.25;
+        }
+        for (x, y) in origins {
+            assert_eq!(
+                culled.rasterize(&a, view(x, y), None).unwrap().rgba,
+                reference.rasterize(&b, view(x, y), None).unwrap().rgba,
+                "size={size} origin={x},{y}"
+            );
+        }
+    }
+}
+
+/// A page whose decorations sit far from their lines, as a malformed font's
+/// underline/strikeout metrics or style-supplied offsets can place them.
+fn far_decorations(renderer: &mut TextRenderer, text: &str) -> TextPage {
+    use parley::StyleProperty;
+    let (shaped, source_map) = crate::source_map::SourceMap::prepare(text, 4).unwrap();
+    let mut builder = renderer
+        .layouts
+        .ranged_builder(&mut renderer.fonts, &shaped, 1.0, false);
+    builder.push_default(StyleProperty::FontSize(16.0));
+    builder.push_default(StyleProperty::Brush([200, 200, 200, 255]));
+    builder.push(StyleProperty::Underline(true), 0..5);
+    builder.push(StyleProperty::UnderlineOffset(Some(-300.0)), 0..5);
+    builder.push(StyleProperty::UnderlineSize(Some(4.0)), 0..5);
+    builder.push(
+        StyleProperty::UnderlineBrush(Some([250, 40, 40, 255])),
+        0..5,
+    );
+    builder.push(StyleProperty::Strikethrough(true), 6..12);
+    builder.push(StyleProperty::StrikethroughOffset(Some(260.0)), 6..12);
+    builder.push(
+        StyleProperty::StrikethroughBrush(Some([40, 250, 40, 255])),
+        6..12,
+    );
+    let mut layout = builder.build(&shaped);
+    layout.break_all_lines(None);
+    TextPage {
+        text: text.into(),
+        line_bounds: super::line_bounds(&layout),
+        layout,
+        source_map,
+        composite: None,
+    }
+}
+
+#[test]
+fn culling_keeps_decorations_that_lie_far_from_their_line() {
+    let text = "first\nsecond\nthird";
+    let mut culled = TextRenderer::default();
+    let mut reference = TextRenderer::default();
+    reference.glyphs.unculled = true;
+    let a = far_decorations(&mut culled, text);
+    let b = far_decorations(&mut reference, text);
+    let mut seen = [false; 2];
+    let mut y = -330.0;
+    while y < 420.0 {
+        let expected = reference.rasterize(&b, view(0.0, y), None).unwrap().rgba;
+        for (index, color) in [[250, 40, 40, 255], [40, 250, 40, 255]].iter().enumerate() {
+            seen[index] |= expected.as_chunks::<4>().0.contains(color);
+        }
+        let actual = culled.rasterize(&a, view(0.0, y), None).unwrap().rgba;
+        assert!(actual == expected, "culling changed pixels at origin y={y}");
+        y += 19.25;
+    }
+    assert_eq!(seen, [true; 2], "both far decorations must be painted");
+}
+
+#[test]
+fn culling_keeps_ink_that_leaves_its_table_cell_box() {
+    // A tight line height puts stacked capital accents above the cell's box.
+    // Part culling must use the same ink reach as line culling.
+    let cell = "\u{1ed6}\u{302}\u{303}\u{301} tall";
+    let text = format!("intro\n\n{cell}\tx\n\noutro");
+    let start = text.find('\u{1ed6}').unwrap();
+    let end = start + cell.len() + 2;
+    let rows = [TableRow {
+        range: start..end,
+        header: false,
+        cells: vec![
+            TableCell {
+                range: start..start + cell.len(),
+                alignment: CellAlignment::Left,
+            },
+            TableCell {
+                range: end - 1..end,
+                alignment: CellAlignment::Left,
+            },
+        ],
+    }];
+    let spans = [ColorSpan {
+        range: start..start + cell.len(),
+        color: [255, 0, 0, 255],
+    }];
+    let options = TextOptions {
+        family: "sans-serif",
+        size: 24.0,
+        line_height: Some(1.0),
+        ..TextOptions::default()
+    };
+    let mut culled = TextRenderer::default();
+    let mut reference = TextRenderer::default();
+    reference.glyphs.unculled = true;
+    let a = culled
+        .layout_with_tables(&text, &options, &spans, &[], &rows)
+        .unwrap();
+    let b = reference
+        .layout_with_tables(&text, &options, &spans, &[], &rows)
+        .unwrap();
+    let cell_top = a
+        .composite
+        .as_ref()
+        .unwrap()
+        .parts
+        .iter()
+        .find(|part| part.range.start == start)
+        .unwrap()
+        .origin[1];
+    let red = |rgba: &[u8]| {
+        rgba.as_chunks::<4>()
+            .0
+            .iter()
+            .any(|pixel| pixel[0] > 100 && pixel[1] < 40 && pixel[2] < 40)
+    };
+    let mut visible = false;
+    // Each raster ends just above the cell box, inside the accents' ink.
+    for gap in [0.5, 1.5, 2.5, 4.0] {
+        let origin = view(0.0, cell_top - gap - 130.0);
+        let expected = reference.rasterize(&b, origin, None).unwrap().rgba;
+        visible |= red(&expected);
+        let actual = culled.rasterize(&a, origin, None).unwrap().rgba;
+        assert!(actual == expected, "culling changed pixels at gap={gap}");
+    }
+    assert!(visible, "the fixture must put ink above the cell box");
+}
+
+#[test]
+fn repainting_a_large_proportional_raster_reuses_every_cached_glyph_image() {
+    // Fractional advances give every glyph instance its own phase. Syntax colors
+    // must not multiply coverage masks, and the working set must fit the cache.
+    // Indent each line differently so that lines do not repeat glyph phases.
+    let text: String = (0..100)
+        .map(|line| {
+            format!(
+                "{}Proportional prose keeps fractional advances, so each glyph has its phase.\n",
+                "i".repeat(line % 17)
+            )
+        })
+        .collect();
+    let palette = [
+        [86, 156, 214, 255],
+        [206, 145, 120, 255],
+        [181, 206, 168, 255],
+    ];
+    let mut spans = Vec::new();
+    let mut start = 0;
+    for (index, word) in text.split_inclusive(' ').enumerate() {
+        spans.push(ColorSpan {
+            range: start..start + word.len(),
+            color: palette[index % palette.len()],
+        });
+        start += word.len();
+    }
+    let mut renderer = TextRenderer::default();
+    let page = renderer
+        .layout_with_options(
+            &text,
+            &TextOptions {
+                family: "sans-serif",
+                size: 15.0,
+                ..TextOptions::default()
+            },
+            &spans,
+        )
+        .unwrap();
+    let view = Viewport {
+        width: 1000,
+        height: 2400,
+        origin: [0.0, 0.25],
+        background: [23, 27, 31, 255],
+        selection_color: [41, 72, 98, 255],
+    };
+    let first = renderer.rasterize(&page, view, None).unwrap();
+    let misses = renderer.glyphs.misses;
+    assert!(
+        misses > 4096,
+        "the fixture exceeds the former 4096-entry bound"
+    );
+    let repaint = renderer.rasterize(&page, view, None).unwrap();
+    assert_eq!(first.rgba, repaint.rgba);
+    assert_eq!(
+        renderer.glyphs.misses, misses,
+        "an unchanged repaint must reuse every cached glyph image"
+    );
+}
 
 fn view(x: f32, y: f32) -> Viewport {
     Viewport {
@@ -99,7 +323,9 @@ fn synthesized_bold_and_skew_match_swash_mask_data_and_placement() {
                 let key = GlyphKey {
                     font: (data.data.id(), data.index),
                     size: size.to_bits(),
-                    coordinates: run.normalized_coords().to_vec(),
+                    // Variation coordinates reach the scaler directly; the key
+                    // only needs a stable interned id for them.
+                    coordinates: 1,
                     glyph: glyph.id as u16,
                     fraction: fraction.map(f32::to_bits),
                     color: [133, 177, 209, 255],
@@ -136,14 +362,16 @@ fn synthesized_bold_and_skew_match_swash_mask_data_and_placement() {
                     .hint(true)
                     .normalized_coords(run.normalized_coords())
                     .build();
-                let actual = outlines
+                let rendered = outlines
                     .get(&key, [50.0, 80.0], [200, 200])
                     .unwrap_or_else(|| {
                         outlines
                             .build(&key, &mut cached_scaler, [50.0, 80.0], [200, 200])
                             .unwrap()
-                    })
-                    .unwrap();
+                    });
+                let super::outlines::Outline::Ink(actual) = rendered else {
+                    panic!("visible glyph without ink");
+                };
                 assert_eq!(
                     (
                         actual.placement.left,

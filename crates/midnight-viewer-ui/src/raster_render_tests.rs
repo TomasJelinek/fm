@@ -166,6 +166,38 @@ impl Bitmap {
         );
         bounds
     }
+    /// The physical `[x0, y0, x1, y1)` region shows a one-pixel checkerboard of
+    /// `colors`: a resampled texel blends colors, a stretched one repeats. Full
+    /// rows and columns are scanned at a stride; every repeated column crosses
+    /// each scanned row and every repeated row each scanned column.
+    fn assert_checker(&self, region: [usize; 4], colors: [[u8; 3]; 2], what: &str) {
+        const STRIDE: usize = 23;
+        assert!(
+            region[0] + 16 < region[2] && region[1] + 16 < region[3],
+            "{what}: region {region:?} is too small to check"
+        );
+        let check = |x: usize, y: usize, next: [usize; 2], direction: &str| {
+            let rgb = self.rgb(x, y);
+            assert!(
+                colors.contains(&rgb),
+                "{what}: resampled texel {rgb:?} at {x},{y}"
+            );
+            assert!(
+                next[0] == region[2] || next[1] == region[3] || rgb != self.rgb(next[0], next[1]),
+                "{what}: repeated {direction} at {x},{y}"
+            );
+        };
+        for y in (region[1]..region[3]).step_by(STRIDE) {
+            for x in region[0]..region[2] {
+                check(x, y, [x + 1, y], "column");
+            }
+        }
+        for x in (region[0]..region[2]).step_by(STRIDE) {
+            for y in region[1]..region[3] {
+                check(x, y, [x, y + 1], "row");
+            }
+        }
+    }
     fn assert_clipped(&self, open: &OpenWindow, scale: f32) {
         let left = (open.window.get_content_left() * scale).floor() as usize;
         let top = (open.window.get_content_top() * scale).floor() as usize;
@@ -234,6 +266,250 @@ fn retained_rendered_body_moves_beside_fixed_gutter_and_both_share_vertical_moti
             open.window.get_raster_upload_count(),
             uploads,
             "camera movement must reuse the same uploaded pixels"
+        );
+    }
+    manager.close_all();
+}
+
+/// The retained fixture with its guards around a `viewport` of physical pixels.
+fn sized(revision: u64, viewport: [u32; 2]) -> Box<ViewerFrame> {
+    let mut frame = frame(revision);
+    let body = viewport.map(|extent| extent + 105);
+    frame.width = body[0];
+    frame.height = body[1];
+    frame.pixels = pixels(body[0], body[1], false);
+    let info = frame.raster.as_mut().unwrap();
+    info.viewport = viewport;
+    let gutter = info.gutter.as_mut().unwrap();
+    gutter.height = body[1];
+    gutter.pixels = pixels(GUTTER, body[1], true);
+    frame
+}
+
+#[test]
+fn native_rasters_map_each_texel_to_one_physical_pixel_on_fractional_canvases() {
+    let (_runtime, manager, open, service) = image_presentation_tests::open();
+    open.timer.stop();
+    *open.input.borrow_mut() = Rc::new(|_| true);
+    let content = || {
+        [
+            open.window.get_content_width(),
+            open.window.get_content_height(),
+        ]
+    };
+    let fractional = |extent: f32| ((extent - extent.round()).abs()) > 0.01;
+    // Chrome makes the canvas a fraction of a physical pixel at these scales.
+    let logical = open
+        .window
+        .window()
+        .size()
+        .to_logical(open.window.window().scale_factor());
+    let scale = [1.1_f32, 1.3, 1.15, 1.7]
+        .into_iter()
+        .find(|&scale| {
+            open.window
+                .window()
+                .dispatch_event(WindowEvent::ScaleFactorChanged {
+                    scale_factor: scale,
+                });
+            open.window.window().set_size(logical);
+            Bitmap::capture();
+            content().iter().all(|extent| fractional(extent * scale))
+        })
+        .expect("a scale with a fractional physical canvas");
+    let canvas = content();
+    let geometry = window_geometry(&open.window);
+    let native = [geometry.width, geometry.height];
+    assert_eq!(native, canvas.map(|extent| (extent * scale).round() as u32));
+    let mapped = || {
+        [
+            open.window.get_raster_viewport_width() * scale,
+            open.window.get_raster_viewport_height() * scale,
+        ]
+    };
+    let one_to_one =
+        |mapped: [f32; 2]| (0..2).all(|axis| (mapped[axis] - native[axis] as f32).abs() < 1e-3);
+
+    // Retained text at native resolution: the canvas clips the sub-pixel rest.
+    present_outputs(
+        &open,
+        &service,
+        &|_| {},
+        vec![ViewerOutput::Frame(sized(open.frame.get() + 1, native))],
+    );
+    assert!(open.window.get_retained_raster());
+    assert!(
+        one_to_one(mapped()),
+        "{:?} stretched over {native:?}",
+        mapped()
+    );
+    // A budget-reduced raster still covers the whole canvas.
+    present_outputs(
+        &open,
+        &service,
+        &|_| {},
+        vec![ViewerOutput::Frame(sized(
+            open.frame.get() + 1,
+            native.map(|extent| extent / 2),
+        ))],
+    );
+    assert_eq!(
+        [
+            open.window.get_raster_viewport_width(),
+            open.window.get_raster_viewport_height()
+        ],
+        canvas
+    );
+    // Viewport-only (legacy and HTML) frames use the same native mapping.
+    let ViewerOutput::Frame(mut legacy) =
+        text_presentation_tests::frame(open.frame.get() + 1, 0, 0.2)
+    else {
+        unreachable!()
+    };
+    legacy.generation = 8;
+    legacy.width = native[0];
+    legacy.height = native[1];
+    legacy.pixels = vec![255; native[0] as usize * native[1] as usize * 4].into();
+    present_outputs(&open, &service, &|_| {}, vec![ViewerOutput::Frame(legacy)]);
+    assert!(!open.window.get_retained_raster());
+    assert!(
+        one_to_one(mapped()),
+        "{:?} stretched over {native:?}",
+        mapped()
+    );
+    manager.close_all();
+}
+
+const CHECKER_BODY: [[u8; 3]; 2] = [[200, 40, 40], [40, 200, 220]];
+const CHECKER_GUTTER: [[u8; 3]; 2] = [[250, 250, 60], [60, 60, 250]];
+
+fn checker(width: u32, height: u32, colors: [[u8; 3]; 2]) -> std::sync::Arc<[u8]> {
+    let row = |phase: usize| -> Vec<u8> {
+        (0..width as usize)
+            .flat_map(|x| {
+                let [r, g, b] = colors[(x + phase) % 2];
+                [r, g, b, 255]
+            })
+            .collect()
+    };
+    let rows = [row(0), row(1)];
+    let mut pixels = Vec::with_capacity(rows[0].len() * height as usize);
+    for y in 0..height as usize {
+        pixels.extend_from_slice(&rows[y % 2]);
+    }
+    pixels.into()
+}
+
+/// Rendered pixels, not only the mapping: no texel is resampled or repeated
+/// although the canvas origin falls between physical pixels (the 6 px padding
+/// is 6.6 px at 110% and exactly half a pixel at 125% and 175%) and the canvas
+/// size can be fractional. The software renderer cannot show a stretch below
+/// half a pixel (the mapping test above covers it); `examples/texel_alignment.rs`
+/// repeats this check natively, also with FemtoVG.
+#[test]
+fn native_rasters_draw_one_pixel_checkerboards_exactly_at_fractional_canvas_origins() {
+    let (_runtime, manager, open, service) = image_presentation_tests::open();
+    open.timer.stop();
+    *open.input.borrow_mut() = Rc::new(|_| true);
+    // Enter the retained text layout first: its controls decide the canvas.
+    present_outputs(
+        &open,
+        &service,
+        &|_| {},
+        vec![ViewerOutput::Frame(frame(open.frame.get() + 1))],
+    );
+    let logical = open
+        .window
+        .window()
+        .size()
+        .to_logical(open.window.window().scale_factor());
+    for (index, scale) in [1.1_f32, 1.25, 1.75].into_iter().enumerate() {
+        open.window
+            .window()
+            .dispatch_event(WindowEvent::ScaleFactorChanged {
+                scale_factor: scale,
+            });
+        open.window.window().set_size(logical);
+        Bitmap::capture();
+        let [left, top, width, height] = [
+            open.window.get_content_left(),
+            open.window.get_content_top(),
+            open.window.get_content_width(),
+            open.window.get_content_height(),
+        ]
+        .map(|value| value * scale);
+        assert!(
+            (left - left.round()).abs() > 0.01,
+            "{scale}: the canvas origin must fall between physical pixels"
+        );
+        let geometry = window_geometry(&open.window);
+        let native = [geometry.width, geometry.height];
+        // Inner physical pixels of the canvas; partially covered edges are clipped.
+        let inner = [
+            left.ceil() as usize + 1,
+            top.ceil() as usize + 1,
+            (left + width).floor() as usize - 1,
+            (top + height).floor() as usize - 1,
+        ];
+        let mut generation = 10 + 100 * index as u64;
+
+        // Guard bands start the retained images far above and left of the canvas,
+        // at offsets whose logical value is inexact. A half-pixel canvas origin
+        // must not let rounding grow such an image by a row or column.
+        for guard in [64_u32, 100, 128, 200, 256, 300] {
+            generation += 1;
+            let body = native.map(|extent| extent + 2 * guard);
+            let mut retained = frame(open.frame.get() + 1);
+            retained.generation = generation;
+            retained.width = body[0];
+            retained.height = body[1];
+            retained.pixels = checker(body[0], body[1], CHECKER_BODY);
+            let info = retained.raster.as_mut().unwrap();
+            info.viewport = native;
+            info.origin = info.raster_origin.map(|edge| edge + f64::from(guard));
+            info.coverage_max = info.raster_origin.map(|edge| edge + f64::from(2 * guard));
+            let gutter = info.gutter.as_mut().unwrap();
+            gutter.height = body[1];
+            gutter.pixels = checker(GUTTER, body[1], CHECKER_GUTTER);
+            present_outputs(
+                &open,
+                &service,
+                &|_| {},
+                vec![ViewerOutput::Frame(retained)],
+            );
+            assert!(open.window.get_retained_raster());
+            let image = Bitmap::capture();
+            let split = left + GUTTER as f32;
+            image.assert_checker(
+                [inner[0], inner[1], split.floor() as usize - 1, inner[3]],
+                CHECKER_GUTTER,
+                &format!("{scale} guard {guard}: retained gutter"),
+            );
+            image.assert_checker(
+                [split.ceil() as usize + 1, inner[1], inner[2], inner[3]],
+                CHECKER_BODY,
+                &format!("{scale} guard {guard}: retained body"),
+            );
+        }
+
+        let ViewerOutput::Frame(mut legacy) =
+            text_presentation_tests::frame(open.frame.get() + 1, 0, 0.2)
+        else {
+            unreachable!()
+        };
+        legacy.generation = generation + 1;
+        // The same mode keeps the same controls, and therefore the same canvas.
+        legacy.mode = 2;
+        legacy.modes = vec![1, 2];
+        legacy.width = native[0];
+        legacy.height = native[1];
+        legacy.pixels = checker(native[0], native[1], CHECKER_BODY);
+        present_outputs(&open, &service, &|_| {}, vec![ViewerOutput::Frame(legacy)]);
+        assert!(!open.window.get_retained_raster());
+        Bitmap::capture().assert_checker(
+            inner,
+            CHECKER_BODY,
+            &format!("{scale}: viewport-only frame"),
         );
     }
     manager.close_all();

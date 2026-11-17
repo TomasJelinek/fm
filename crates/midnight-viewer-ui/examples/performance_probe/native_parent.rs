@@ -54,7 +54,10 @@ pub(super) fn run<T: 'static>(
     let delivered = result.clone();
     let mut setup = Some(setup);
     let started = Instant::now();
-    let timer = slint::Timer::default();
+    let timer = Rc::new(slint::Timer::default());
+    // Stop polling once the viewer starts: a leftover 4 ms timer would add
+    // event-loop wakeups to the very latency and frame gaps the probe reports.
+    let readiness = Rc::downgrade(&timer);
     timer.start(slint::TimerMode::Repeated, Duration::from_millis(4), move || {
         if setup.is_none() {
             return;
@@ -88,6 +91,9 @@ pub(super) fn run<T: 'static>(
         };
         eprintln!("probe_parent native_window=true physical={size:?} native_scale={scale} slint_scale={}", parent.window().scale_factor());
         let placement = WindowPlacement::capture(parent.window());
+        if let Some(timer) = readiness.upgrade() {
+            timer.stop();
+        }
         let running = setup.take().expect("parent setup runs once")(placement);
         let failed = running.is_err();
         if terminal_logging && let Err(error) = &running {

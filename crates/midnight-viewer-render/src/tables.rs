@@ -71,6 +71,7 @@ impl TextRenderer {
             return self.layout_with_styles(text, options, spans, styles);
         }
         validate_tables(text, options, spans, styles, tables)?;
+        let styles = &Styles::new(styles);
         let mut result = self.layout_with_styles("", options, &[], &[])?;
         let mut grid = Composite {
             parts: Vec::new(),
@@ -256,7 +257,7 @@ impl TextRenderer {
         &mut self,
         text: &str,
         options: &TextOptions<'_>,
-        styles: &[StyleSpan],
+        styles: &Styles<'_>,
         rows: &[&TableRow],
         padding: f32,
     ) -> Result<Vec<f32>, LayoutError> {
@@ -305,14 +306,14 @@ impl TextRenderer {
         range: Range<usize>,
         options: &TextOptions<'_>,
         spans: &[ColorSpan],
-        styles: &[StyleSpan],
+        styles: &Styles<'_>,
         grid: &mut Composite,
     ) -> Result<(), LayoutError> {
         let page = self.layout_with_styles(
             &text[range.clone()],
             options,
             &clipped_colors(spans, &range),
-            &clipped_styles(styles, &range),
+            &styles.clip(&range),
         )?;
         grid.width = grid.width.max(page.width());
         let top = grid.height;
@@ -329,13 +330,13 @@ impl TextRenderer {
 }
 
 fn table_styles(
-    styles: &[StyleSpan],
+    styles: &Styles<'_>,
     range: &Range<usize>,
     header: bool,
     github: bool,
     size: f32,
 ) -> Vec<StyleSpan> {
-    let mut styles = clipped_styles(styles, range);
+    let mut styles = styles.clip(range);
     for style in &mut styles {
         if header {
             style.weight = style.weight.max(if github { 600 } else { 700 });
@@ -356,8 +357,32 @@ fn rect(x0: f32, y0: f32, x1: f32, y1: f32) -> Rect {
     }
 }
 
+/// Items that can intersect `range`. Sorted, non-overlapping ranges need only two
+/// binary searches; any other order keeps the complete slice (and its order).
+fn window<'a, T>(
+    items: &'a [T],
+    range: &Range<usize>,
+    sorted: bool,
+    of: impl Fn(&T) -> &Range<usize>,
+) -> &'a [T] {
+    if !sorted {
+        return items;
+    }
+    let start = items.partition_point(|item| of(item).end <= range.start);
+    let end = start + items[start..].partition_point(|item| of(item).start < range.end);
+    &items[start..end]
+}
+
+fn sorted_disjoint<'a>(ranges: impl IntoIterator<Item = &'a Range<usize>>) -> bool {
+    let mut end = 0;
+    ranges
+        .into_iter()
+        .all(|range| std::mem::replace(&mut end, range.end) <= range.start)
+}
+
+/// Color spans are validated sorted and non-overlapping before any layout.
 pub(crate) fn clipped_colors(spans: &[ColorSpan], range: &Range<usize>) -> Vec<ColorSpan> {
-    spans
+    window(spans, range, true, |span| &span.range)
         .iter()
         .filter_map(|span| {
             intersection(&span.range, range).map(|local| ColorSpan {
@@ -368,16 +393,41 @@ pub(crate) fn clipped_colors(spans: &[ColorSpan], range: &Range<usize>) -> Vec<C
         .collect()
 }
 
+/// One clip of page styles, scanning them in order (document blocks).
 pub(crate) fn clipped_styles(styles: &[StyleSpan], range: &Range<usize>) -> Vec<StyleSpan> {
-    styles
-        .iter()
-        .filter_map(|style| {
-            intersection(&style.range, range).map(|local| StyleSpan {
-                range: local,
-                ..style.clone()
+    Styles {
+        all: styles,
+        sorted: false,
+    }
+    .clip(range)
+}
+
+/// Page styles prepared once for clipping into many table cells. Overlapping or
+/// unordered styles remain valid input and keep their application order.
+pub(crate) struct Styles<'a> {
+    all: &'a [StyleSpan],
+    sorted: bool,
+}
+
+impl<'a> Styles<'a> {
+    pub(crate) fn new(all: &'a [StyleSpan]) -> Self {
+        Self {
+            all,
+            sorted: sorted_disjoint(all.iter().map(|style| &style.range)),
+        }
+    }
+
+    pub(crate) fn clip(&self, range: &Range<usize>) -> Vec<StyleSpan> {
+        window(self.all, range, self.sorted, |style| &style.range)
+            .iter()
+            .filter_map(|style| {
+                intersection(&style.range, range).map(|local| StyleSpan {
+                    range: local,
+                    ..style.clone()
+                })
             })
-        })
-        .collect()
+            .collect()
+    }
 }
 
 fn intersection(span: &Range<usize>, range: &Range<usize>) -> Option<Range<usize>> {
@@ -527,5 +577,69 @@ fn translate(rect: Rect, origin: [f32; 2]) -> Rect {
         x1: rect.x1 + f64::from(origin[0]),
         y0: rect.y0 + f64::from(origin[1]),
         y1: rect.y1 + f64::from(origin[1]),
+    }
+}
+
+#[cfg(test)]
+mod clip_tests {
+    use super::*;
+
+    fn style(range: Range<usize>, weight: u16) -> StyleSpan {
+        StyleSpan {
+            range,
+            weight,
+            italic: false,
+            underline: false,
+            strikethrough: false,
+            monospace: false,
+            size: 16.0,
+        }
+    }
+
+    fn linear(styles: &[StyleSpan], range: &Range<usize>) -> Vec<(Range<usize>, u16)> {
+        styles
+            .iter()
+            .filter_map(|style| Some((intersection(&style.range, range)?, style.weight)))
+            .collect()
+    }
+
+    #[test]
+    fn indexed_clipping_matches_a_linear_scan_and_keeps_style_order() {
+        let sorted: Vec<_> = (0..200)
+            .map(|index| style(index * 5..index * 5 + 3, index as u16 + 1))
+            .collect();
+        // Overlapping and unordered styles are valid; later ones override earlier.
+        let overlapping = vec![
+            style(40..400, 1),
+            style(0..10, 2),
+            style(5..60, 3),
+            style(30..31, 4),
+        ];
+        let colors: Vec<_> = sorted
+            .iter()
+            .map(|style| ColorSpan {
+                range: style.range.clone(),
+                color: [style.weight as u8; 4],
+            })
+            .collect();
+        assert!(Styles::new(&sorted).sorted && !Styles::new(&overlapping).sorted);
+        for start in (0..1010).step_by(7) {
+            for length in [0, 1, 3, 4, 9, 70] {
+                let range = start..start + length;
+                for styles in [&sorted, &overlapping] {
+                    let clipped: Vec<_> = Styles::new(styles)
+                        .clip(&range)
+                        .into_iter()
+                        .map(|style| (style.range, style.weight))
+                        .collect();
+                    assert_eq!(clipped, linear(styles, &range), "{range:?}");
+                }
+                let clipped: Vec<_> = clipped_colors(&colors, &range)
+                    .into_iter()
+                    .map(|span| (span.range, u16::from(span.color[0])))
+                    .collect();
+                assert_eq!(clipped, linear(&sorted, &range), "{range:?}");
+            }
+        }
     }
 }

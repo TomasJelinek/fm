@@ -3,6 +3,8 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 mod bindings;
+#[cfg(test)]
+mod test_gpu;
 mod uploads;
 mod viewports;
 use bindings::BindGroupCache;
@@ -69,7 +71,8 @@ use super::Vertex;
 
 const UNIFORMARRAY_SIZE: usize = 14;
 const UNIFORM_BYTES: u64 = (UNIFORMARRAY_SIZE * 4 * 4) as u64;
-// A concave fill and a stencil stroke record two sets of params, every other command one.
+// A concave fill, a stencil stroke and a Gaussian blur record two sets of params,
+// every other command at most one (see `uniform_slots`).
 const UNIFORM_SLOTS_PER_COMMAND: u64 = 2;
 const MIN_UNIFORM_SLOTS: u64 = 64;
 const MIN_VERTEX_BYTES: u64 = 4096;
@@ -501,6 +504,22 @@ impl WGPURenderer {
     }
 }
 
+/// Upper bound of uniform slots one command stages in `update_renderpass`. Every
+/// distinct parameter set stages one slot; repeated parameters share it.
+fn uniform_slots(command: &super::Command) -> u64 {
+    match &command.cmd_type {
+        super::CommandType::SetRenderTarget(_) => 0,
+        // Stencil plus cover/stroke passes, or horizontal plus vertical blur.
+        super::CommandType::ConcaveFill { .. }
+        | super::CommandType::StencilStroke { .. }
+        | super::CommandType::RenderFilteredImage {
+            filter: crate::ImageFilter::GaussianBlur { .. },
+            ..
+        } => UNIFORM_SLOTS_PER_COMMAND,
+        _ => 1,
+    }
+}
+
 impl Renderer for WGPURenderer {
     type Image = Image;
     type NativeTexture = wgpu::Texture;
@@ -522,7 +541,9 @@ impl Renderer for WGPURenderer {
         }
 
         // The bind groups recorded below hold this buffer, so it cannot grow mid-frame.
-        let needed_slots = commands.len() as u64 * UNIFORM_SLOTS_PER_COMMAND;
+        // Reserve each command's actual bound, not two slots for every command:
+        // the reservation is also copied and counts against the upload pool limit.
+        let needed_slots: u64 = commands.iter().map(uniform_slots).sum();
         grow_buffer(
             &self.device,
             &mut self.uniform_buffer,
@@ -630,8 +651,15 @@ impl Renderer for WGPURenderer {
         );
 
         let mut current_render_target = RenderTarget::Screen;
+        #[cfg(debug_assertions)]
+        let uniform_stride = self.uniform_stride as usize;
 
         for command in commands {
+            #[cfg(debug_assertions)]
+            let (staged, reserved) = (
+                pipeline_and_bindgroup_mapper.uniform_staging.len(),
+                uniform_slots(&command) as usize * uniform_stride,
+            );
             match command.cmd_type {
                 super::CommandType::SetRenderTarget(render_target) => {
                     current_render_target = render_target;
@@ -729,6 +757,11 @@ impl Renderer for WGPURenderer {
                     }
                 },
             }
+            #[cfg(debug_assertions)]
+            debug_assert!(
+                pipeline_and_bindgroup_mapper.uniform_staging.len() - staged <= reserved,
+                "a command staged more uniform slots than uniform_slots reserves for its type"
+            );
         }
 
         drop(render_pass_builder);
@@ -737,9 +770,9 @@ impl Renderer for WGPURenderer {
         let uniform_staging = &pipeline_and_bindgroup_mapper.uniform_staging;
         debug_assert!(
             uniform_staging.len() as u64 <= self.uniform_buffer.size(),
-            "a command recorded more than UNIFORM_SLOTS_PER_COMMAND uniform slots"
+            "commands recorded more uniform slots than reserved"
         );
-        upload.finish(&encoder, uniform_staging);
+        upload.finish(uniform_staging);
 
         self.bind_group_cache.borrow_mut().prune_replaced_images(images);
 

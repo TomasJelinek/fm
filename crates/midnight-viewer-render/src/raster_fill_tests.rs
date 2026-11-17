@@ -2,7 +2,7 @@ use super::*;
 
 // Preserve the original scalar coverage/compositing as a pixel oracle. The fast
 // path must match every byte, including clipped arcs and translucent edge pixels.
-fn scalar_reference(raster: &mut Raster, fill: &Fill, origin: [f32; 2]) {
+fn scalar_reference(raster: &mut RasterMut<'_>, fill: &Fill, origin: [f32; 2]) {
     let x0 = stable_pixel(fill.rect.x0 - f64::from(origin[0]));
     let x1 = stable_pixel(fill.rect.x1 - f64::from(origin[0]));
     let y0 = stable_pixel(fill.rect.y0 - f64::from(origin[1]));
@@ -72,20 +72,18 @@ fn batched_backgrounds_are_pixel_identical_at_fractional_and_clipped_edges() {
                         radius,
                         color: [32, 89, 170, alpha],
                     };
-                    let mut actual = Raster {
-                        width: 32,
-                        height: 24,
-                        rgba: [11, 23, 47, 101].repeat(32 * 24),
-                    };
-                    let mut expected = Raster {
-                        width: 32,
-                        height: 24,
-                        rgba: actual.rgba.clone(),
-                    };
-                    actual.fill_rounded(&fill, origin);
-                    scalar_reference(&mut expected, &fill, origin);
+                    let mut actual = [11, 23, 47, 101].repeat(32 * 24);
+                    let mut expected = actual.clone();
+                    RasterMut::new(32, 24, &mut actual)
+                        .unwrap()
+                        .fill_rounded(&fill, origin);
+                    scalar_reference(
+                        &mut RasterMut::new(32, 24, &mut expected).unwrap(),
+                        &fill,
+                        origin,
+                    );
                     assert_eq!(
-                        actual.rgba, expected.rgba,
+                        actual, expected,
                         "radius={radius} origin={origin:?} alpha={alpha}"
                     );
                 }

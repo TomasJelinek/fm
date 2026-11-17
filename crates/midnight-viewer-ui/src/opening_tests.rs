@@ -77,6 +77,28 @@ fn closing_before_initial_content_notifies_cancellation_once() {
 }
 
 #[test]
+fn cancellation_callback_may_reenter_the_manager_while_closing_all_windows() {
+    let manager_slot: Rc<RefCell<std::rc::Weak<ViewerWindows>>> = Rc::default();
+    let reentered = Rc::new(Cell::new(false));
+    let (slot, flag) = (manager_slot.clone(), reentered.clone());
+    let (_runtime, manager, open, _service) = opening(Box::new(move |result| {
+        assert!(result.is_err());
+        if let Some(manager) = slot.borrow().upgrade() {
+            // OpenReady runs synchronously inside close_all and may use the manager.
+            manager.restore_preferences(Arc::default());
+            manager.close_all();
+            flag.set(true);
+        }
+    }));
+    let manager = Rc::new(manager);
+    *manager_slot.borrow_mut() = Rc::downgrade(&manager);
+    manager.close_all();
+    assert!(reentered.get());
+    assert!(open.closed.get());
+    assert!(manager.windows.borrow().is_empty());
+}
+
+#[test]
 fn initial_backend_failure_is_delivered_once_and_closing_cannot_replace_it() {
     let results = Rc::new(RefCell::new(Vec::new()));
     let received = results.clone();

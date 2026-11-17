@@ -19,6 +19,14 @@ export component ViewerWindow inherits Window {
     // Keep the frame's logical viewport while mode controls change the canvas.
     in property <length> raster-viewport-width: canvas.width;
     in property <length> raster-viewport-height: canvas.height;
+    // Sub-pixel phase of the canvas origin, within half a physical pixel. Raster
+    // images subtract it so that their texels start on whole physical pixels: at
+    // a half-pixel origin, rounding noise otherwise lets the software renderer
+    // grow an image by one row or column, which repeats a row of texels.
+    private property <physical-length> canvas-left: canvas.absolute-position.x;
+    private property <physical-length> canvas-top: canvas.absolute-position.y;
+    private property <length> canvas-phase-x: (root.canvas-left / 1phx - round(root.canvas-left / 1phx)) * 1phx;
+    private property <length> canvas-phase-y: (root.canvas-top / 1phx - round(root.canvas-top / 1phx)) * 1phx;
     in property <float> raster-offset-x;
     in property <float> raster-offset-y;
     in property <int> raster-upload-count;
@@ -41,7 +49,6 @@ export component ViewerWindow inherits Window {
     in property <color> accent: #8bb7ef;
     in property <float> position;
     in property <float> displayed-position;
-    out property <float> displayed-vertical-position: root.displayed-position;
     out property <float> vertical-thumb-position: vbar.shown-position;
     out property <length> vertical-bar-left: vbar.absolute-position.x;
     out property <length> vertical-bar-top: vbar.absolute-position.y;
@@ -51,13 +58,16 @@ export component ViewerWindow inherits Window {
     in property <float> horizontal-position;
     in property <float> horizontal-extent: 1;
     in property <[string]> modes;
-    in property <int> mode-index;
+    // Widgets that assign their own value (ComboBox selection, CheckBox toggle,
+    // model resets) drop one-way bindings. These stay two-way bound, and Rust
+    // re-sets them to the state actually in force after every change.
+    in-out property <int> mode-index;
     in-out property <bool> wrap-enabled;
     in property <bool> wrap-available;
     in property <bool> image-mode;
     in property <bool> web-mode;
-    in property <bool> web-network;
-    in property <bool> web-scripts;
+    in-out property <bool> web-network;
+    in-out property <bool> web-scripts;
     in property <bool> source-mode;
     in property <bool> markdown-mode;
     in property <bool> font-available: true;
@@ -94,8 +104,8 @@ export component ViewerWindow inherits Window {
     out property <bool> content-focused: content-focus.has-focus;
     callback input-key(KeyEvent, bool) -> bool;
     callback scroll(float, float);
-    callback seek(float);
-    callback pan(float);
+    // Scrollbar seeks: drag-seek(horizontal, position) arrives between
+    // position-drag-began and position-drag-ended, which settles the position.
     callback position-drag-began(bool);
     callback position-drag-ended(bool);
     callback drag-seek(bool, float);
@@ -113,7 +123,6 @@ export component ViewerWindow inherits Window {
     callback image-drag(float, float);
     callback document-turn(int);
     callback web-policy(bool, bool);
-    callback close-viewer();
     callback deliver-output();
     callback frame-presented();
     public function focus-search() { root.search-visible = true; search-edit.focus(); }
@@ -146,11 +155,11 @@ export component ViewerWindow inherits Window {
             }
             if root.web-mode: HorizontalLayout {
                     spacing: 4px; height: max(32px, root.control-height);
-                    CheckBox { text: "Online"; checked: root.web-network; horizontal-stretch: 0;
+                    CheckBox { text: "Online"; checked <=> root.web-network; horizontal-stretch: 0;
                         accessible-label: "Allow network for this document only";
                         Tooltip { text: @markdown("Allow network for this document only. This creates a fresh browser context and removes access to local assets. Turning Online off also disables JavaScript."); }
                         toggled => { root.web-policy(self.checked, root.web-scripts && self.checked); content-focus.focus(); } }
-                    CheckBox { text: root.compact ? "JS" : "JavaScript"; checked: root.web-scripts; enabled: root.web-network; horizontal-stretch: 0;
+                    CheckBox { text: root.compact ? "JS" : "JavaScript"; checked <=> root.web-scripts; enabled: root.web-network; horizontal-stretch: 0;
                         accessible-label: "Allow scripts to read and transmit this document";
                         Tooltip { text: @markdown("Allow JavaScript to read and transmit this document. Requires Online. Local assets remain unavailable."); }
                         toggled => { root.web-policy(root.web-network, self.checked); content-focus.focus(); } }
@@ -205,20 +214,20 @@ export component ViewerWindow inherits Window {
                     accessible-value: root.accessible-text;
                     Image {
                         source: root.surface;
-                        x: root.image-mode ? (canvas.width - root.image-width) / 2 : 0px;
-                        y: root.image-mode ? (canvas.height - root.image-height) / 2 : 0px;
+                        x: root.image-mode ? (canvas.width - root.image-width) / 2 : -root.canvas-phase-x;
+                        y: root.image-mode ? (canvas.height - root.image-height) / 2 : -root.canvas-phase-y;
                         width: root.image-mode ? root.image-width : root.raster-viewport-width;
                         height: root.image-mode ? root.image-height : root.raster-viewport-height;
                         image-fit: fill;
                         visible: !root.tiled && !root.retained-raster;
                     }
                     if root.retained-raster: Rectangle {
-                        x: root.raster-gutter-width * root.raster-viewport-width;
+                        x: root.raster-gutter-width * root.raster-viewport-width - root.canvas-phase-x;
                         width: canvas.width - self.x; height: canvas.height; clip: true;
                         Image {
                             source: root.surface;
                             x: root.raster-offset-x * root.raster-viewport-width;
-                            y: root.raster-offset-y * root.raster-viewport-height;
+                            y: root.raster-offset-y * root.raster-viewport-height - root.canvas-phase-y;
                             width: root.raster-width * root.raster-viewport-width;
                             height: root.raster-height * root.raster-viewport-height;
                             image-fit: fill;
@@ -226,8 +235,8 @@ export component ViewerWindow inherits Window {
                     }
                     if root.retained-raster && root.raster-gutter-width > 0: Image {
                         source: root.raster-gutter;
-                        x: 0px;
-                        y: root.raster-offset-y * root.raster-viewport-height;
+                        x: -root.canvas-phase-x;
+                        y: root.raster-offset-y * root.raster-viewport-height - root.canvas-phase-y;
                         width: root.raster-gutter-width * root.raster-viewport-width;
                         height: root.raster-height * root.raster-viewport-height;
                         image-fit: fill;
@@ -380,9 +389,16 @@ export component ViewerWindow inherits Window {
                     accessible-label: "Font and presentation";
                     clicked => { root.typography-visible = !root.typography-visible; }
                 }
-                if !root.image-mode: ComboBox { model: root.modes; current-index: root.mode-index;
+                if !root.image-mode: ComboBox { model: root.modes; current-index <=> root.mode-index;
                     accessible-label: "Viewer mode"; width: 130px;
-                    selected(value) => { root.change-mode(self.current-index); } }
+                    selected(value) => {
+                        root.change-mode(self.current-index);
+                        // A refused request restores mode-index. The ComboBox would
+                        // otherwise re-resolve its index from the chosen value later.
+                        if root.mode-index >= 0 && root.mode-index < root.modes.length {
+                            self.current-value = root.modes[root.mode-index];
+                        }
+                    } }
             }
         }
     }

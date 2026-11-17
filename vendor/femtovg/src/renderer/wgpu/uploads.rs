@@ -38,11 +38,14 @@ impl Drop for Completion {
     }
 }
 
+/// Staging for one command encoder. `finish` must run before that encoder's
+/// command buffer is submitted; a dropped upload leaves its source mapped, which
+/// makes the submit fail instead of reading unwritten uniforms.
+#[must_use = "finish the upload before submitting its command buffer"]
 pub(super) struct Upload {
     buffer: wgpu::Buffer,
     uniform_offset: u64,
     uniform_bytes: u64,
-    completion: Option<Completion>,
 }
 
 fn source(device: &wgpu::Device, size: u64) -> wgpu::Buffer {
@@ -61,6 +64,9 @@ impl UploadPool {
             .position(|slot| slot.state.load(Ordering::Acquire) == MAPPED && slot.buffer.size() >= needed)
     }
 
+    /// Records the copies into `encoder` and registers the slot's remap on that
+    /// same encoder, so the slot cannot be reused before these copies completed.
+    #[must_use = "a returned upload must be finished before submission"]
     pub(super) fn begin(
         &mut self,
         device: &wgpu::Device,
@@ -126,7 +132,6 @@ impl UploadPool {
             buffer: slot.buffer.clone(),
             uniform_offset,
             uniform_bytes,
-            completion: Some(Completion(slot.state.clone())),
         };
         if vertex_len != 0 {
             upload
@@ -139,6 +144,13 @@ impl UploadPool {
         if uniform_bytes != 0 {
             encoder.copy_buffer_to_buffer(&upload.buffer, uniform_offset, uniforms, 0, uniform_bytes);
         }
+        // The source stays unavailable until this command buffer is submitted,
+        // all GPU reads finish, and WGPU successfully maps it again. The deferred
+        // map runs only at submit, after `Upload::finish` unmapped the source.
+        let completion = Completion(slot.state.clone());
+        encoder.map_buffer_on_submit(&upload.buffer, wgpu::MapMode::Write, .., move |result| {
+            completion.complete(result.is_ok());
+        });
         Some(upload)
     }
 
@@ -170,19 +182,21 @@ impl Upload {
             buffer.unmap();
             encoder.copy_buffer_to_buffer(&buffer, 0, vertices, 0, vertex_bytes.len() as u64);
         }
-        // Nonempty renderer command lists always reserve at least one slot.
-        assert!(uniform_bytes != 0);
-        let buffer = source(device, uniform_bytes);
-        encoder.copy_buffer_to_buffer(&buffer, 0, uniforms, 0, uniform_bytes);
+        // A frame of only render-target switches reserves no uniform slots.
+        // Its source is never copied; `finish` then accepts only empty staging.
+        let buffer = source(device, uniform_bytes.max(wgpu::COPY_BUFFER_ALIGNMENT));
+        if uniform_bytes != 0 {
+            encoder.copy_buffer_to_buffer(&buffer, 0, uniforms, 0, uniform_bytes);
+        }
         Self {
             buffer,
             uniform_offset: 0,
             uniform_bytes,
-            completion: None,
         }
     }
 
-    pub(super) fn finish(self, encoder: &wgpu::CommandEncoder, uniforms: &[u8]) {
+    /// Writes the staged uniforms into the reserved region and unmaps the source.
+    pub(super) fn finish(self, uniforms: &[u8]) {
         assert!(uniforms.len() as u64 <= self.uniform_bytes);
         if !uniforms.is_empty() {
             self.buffer
@@ -191,13 +205,6 @@ impl Upload {
                 .copy_from_slice(uniforms);
         }
         self.buffer.unmap();
-        if let Some(completion) = self.completion {
-            // The source stays unavailable until this command buffer is submitted,
-            // all GPU reads finish, and WGPU successfully maps it again.
-            encoder.map_buffer_on_submit(&self.buffer, wgpu::MapMode::Write, .., move |result| {
-                completion.complete(result.is_ok());
-            });
-        }
     }
 }
 

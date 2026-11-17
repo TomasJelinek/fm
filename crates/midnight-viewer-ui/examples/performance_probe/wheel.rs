@@ -14,18 +14,6 @@ fn send(_: &ViewerWindow, _: i16, _: &super::timeline::Trace) -> Result<(), Stri
     Err("native wheel injection is implemented for Windows only".into())
 }
 
-#[cfg(target_os = "windows")]
-pub(super) fn real_paths() -> std::io::Result<Vec<std::path::PathBuf>> {
-    Ok(native::real_paths())
-}
-#[cfg(not(target_os = "windows"))]
-pub(super) fn real_paths() -> std::io::Result<Vec<std::path::PathBuf>> {
-    Err(std::io::Error::new(
-        std::io::ErrorKind::Unsupported,
-        "Personal real-file cases are configured only for the native Windows wheel probe",
-    ))
-}
-
 #[derive(Clone, Copy, Default)]
 pub(super) struct Options {
     pub sustained: bool,
@@ -365,7 +353,10 @@ impl Probe {
             if self.options.tail || start.is_some() {
                 let Some(sent) = self.tail_sent else {
                     self.tail_sent = Some(Instant::now());
-                    window.invoke_seek(start.unwrap_or(1.0));
+                    // A complete scrollbar gesture: grab, move, release.
+                    window.invoke_position_drag_began(false);
+                    window.invoke_drag_seek(false, start.unwrap_or(1.0));
+                    window.invoke_position_drag_ended(false);
                     self.timeline
                         .record("tail_seek", f64::from(start.unwrap_or(1.0)));
                     return Ok(None);

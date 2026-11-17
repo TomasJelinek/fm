@@ -22,24 +22,37 @@ as a scrolling bottleneck: each sampler binding creates an internal GPU buffer.
 The upstream mapper retained only the current group and rebuilt groups each frame.
 
 Cache entries validate actual texture identities and sampler flags, not just
-image ids (reallocation can preserve an id). Changing the uniform buffer clears
-old bindings; image deletion removes all references to that image. Reallocated
-unused images are pruned after the next nonempty rendered frame or renderer drop.
-Pixel-only image updates retain their
-bindings. Transient unmanaged filter textures bypass the cache. Least-recently
-used eviction caps the cache at 512 bindings per renderer. There is no cross-thread
-or cross-device cache, and WGPU retains resources needed by submitted commands.
+image ids (reallocation can preserve an id); hits compare them by reference.
+Changing the uniform buffer clears old bindings; image deletion removes all
+references to that image. Reallocated or deleted unused images are pruned after the
+next nonempty rendered frame or renderer drop, and a draw that still references an
+id deleted before the flush is bound without caching it. Pixel-only image updates
+retain their bindings. Transient unmanaged filter textures bypass the cache. The
+cache holds at most 512 bindings per renderer and evicts the least recently used
+binding of an earlier frame. A frame that uses more distinct bindings than that
+keeps its cached set and binds the overflow uncached, as upstream does, instead of
+evicting bindings it is about to reuse. On DX12 each cached binding also owns a
+64 KiB upload-heap placement for its sampler indices, so the cap retains at most
+about 32 MiB of CPU-visible memory per renderer. There is no cross-thread or
+cross-device cache, and WGPU retains resources needed by submitted commands.
 
 A second local change reuses upload staging for vertices and fragment uniforms.
 Correlated native idle-redraw stacks reached DX12 committed-buffer allocation
 through `Queue::write_buffer`, even when the first redraw still showed unchanged
 content. `wgpu/uploads.rs` retains at most eight mapped COPY_SRC buffers of at
 most 2 MiB each (16 MiB cache cap). It records copies before the render passes,
-then fills the reserved uniform region and unmaps before command submission.
-WGPU 30's `map_buffer_on_submit` makes a slot reusable only after successful GPU
-completion and remapping. A dropped deferred callback or failed mapping retires
-the slot; it is never treated as mapped. Polling is nonblocking and occurs only
-when pending slots could prevent reuse.
+then fills the reserved uniform region and unmaps before command submission. The
+uniform reservation is each command's upper bound (none for a render-target
+switch, two for concave fills, stencil strokes and Gaussian blurs, otherwise
+one); debug builds check every command against it. WGPU 30's
+`map_buffer_on_submit` makes a slot reusable only after successful GPU completion
+and remapping; `begin` registers it on the encoder that records the slot's
+copies, and the returned upload must be finished before that encoder's submit. A
+dropped deferred callback or failed mapping retires the slot; it is never treated
+as mapped. Polling never waits for the GPU. In the usual steady state the previous
+frame's slot is still in flight at the next render, so there is typically one
+nonblocking `device.poll` per render; it can run WGPU's deferred resource
+destruction and pending callbacks inside `render`.
 
 Busy or oversized uploads use uncached staging with copies in the same command
 buffer, preserving ordering when several deferred renders share destinations.
@@ -48,22 +61,29 @@ caller-owned unsubmitted command buffers and their one-shot sources. Those
 sources remain alive until their GPU commands finish or are discarded. The
 application submits frames promptly; the renderer does not add submissions,
 block for completion, or change GPU/driver workarounds. Texture allocation reuse
-and pipeline retention are not part of this change.
+and pipeline retention are not part of this change. GPU device loss remains fatal
+as upstream: mapping a staging range after loss panics in `render`.
 
 A third change retains at most 32 immutable viewport bind groups per renderer,
 keyed by the exact two viewport float bit patterns. The fixed bind-group layout
 belongs to that renderer/device. Each entry owns its original 16-byte uniform
-resource through the bind group; hits never rewrite buffers. Least-recently-used
+resource through the bind group (a 64 KiB placement on DX12, so at most about
+2 MiB per renderer); hits never rewrite buffers. Least-recently-used
 eviction drops only cache ownership, so deferred/in-flight GPU commands retain
 their bindings safely. This removes the measured per-render viewport buffer
 allocation without changing device polling or texture lifetimes.
 
-The source patch is in `src/renderer/wgpu.rs`, `wgpu/bindings.rs`, and
-wgpu/uploads.rs and wgpu/viewports.rs. The added code remains under the upstream
+The source patch is in `src/renderer/wgpu.rs`, `wgpu/bindings.rs`,
+`wgpu/uploads.rs` and `wgpu/viewports.rs`, with its tests in `wgpu/*_tests.rs` and
+their shared validated test device in `wgpu/test_gpu.rs`. The added code remains under the upstream
 MIT OR Apache-2.0
 license choice; application packaging continues to select MIT.
 Upstream tests remain alongside the source. The packaged book, GitHub workflows
-and Cargo extraction marker are omitted; they are not needed to build or test.
+and Cargo extraction marker are omitted; they are not needed to build the library
+or run its tests. The unchanged published manifest still declares three
+`[[example]]` targets under the omitted `book/`, so build or test the vendored
+package with `--lib`, `--tests` or `--test <name>`; `--all-targets`, `--examples`
+and an unfiltered `cargo test` fail to find those example sources.
 The standalone lockfile starts from the published lock. Its Windows API family
 is unified at `windows` 0.62.2 to match WGPU 30 and gpu-allocator; the original
 0.58 selection did not compile their DX12 interface types together. This affects
@@ -79,13 +99,16 @@ cargo test --manifest-path vendor/femtovg/Cargo.toml --lib `
   renderer::wgpu:: -- --ignored --test-threads=1
 ```
 
+All of them run with the backend validation layer (`InstanceFlags::VALIDATION`).
 They check actual output pixels, unchanged-frame reuse, pixel updates, same-id
-texture replacement, deletion, uniform-buffer growth, eviction and pruning.
-Upload cases additionally cover GPU-completion reuse, unsubmitted-buffer isolation,
-discarded submissions, renderer drop, growth, cache bounds, ordered mixed cached/
-uncached deferred commands, and oversized uploads. Viewport cases verify repeat
-reuse, exact-bit key separation, bounded eviction, and correct GPU reads after
-eviction/cache drop with deferred command submission.
+texture replacement, deletion (including deletion before a flush), uniform-buffer
+growth, eviction between frames, frames with more bindings than the cap, and
+pruning. Upload cases additionally cover GPU-completion reuse through `begin`'s
+own nonblocking poll, unsubmitted-buffer isolation, discarded submissions,
+renderer drop, growth, cache bounds, ordered mixed cached/uncached deferred
+commands, and oversized uploads. Viewport cases verify repeat reuse, exact-bit key
+separation, bounded eviction, and correct GPU reads after eviction/cache drop with
+deferred command submission.
 Upstream font tests requiring the excluded example assets need the upstream
 checkout; they are not claimed as part of this focused GPU validation.
 

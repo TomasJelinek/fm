@@ -91,26 +91,7 @@ fn displacement(
     let errors: Vec<_> = (-(maximum as isize)..=maximum as isize)
         .map(error)
         .collect();
-    let (index, best) = errors
-        .iter()
-        .enumerate()
-        .min_by(|a, b| a.1.total_cmp(b.1))
-        .unwrap();
-    let mut shift = index as f64 - maximum as f64;
-    if index > 0 && index + 1 < errors.len() {
-        let curvature = errors[index - 1] - 2.0 * best + errors[index + 1];
-        if curvature > 0.0 {
-            shift += ((errors[index - 1] - errors[index + 1]) / (2.0 * curvature)).clamp(-0.5, 0.5);
-        }
-    }
-    Ok((
-        shift,
-        if errors[maximum] == 0.0 {
-            1.0
-        } else {
-            best / errors[maximum]
-        },
-    ))
+    super::shift::fit(&errors, maximum).ok_or_else(|| "GPU proof has no candidate shift".into())
 }
 
 pub(super) fn capture(window: &ViewerWindow, stage: usize) -> Result<Proof, String> {

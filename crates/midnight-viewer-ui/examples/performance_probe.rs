@@ -13,6 +13,8 @@ mod opening_proof;
 mod render_observer;
 #[path = "performance_probe/scrollbar.rs"]
 mod scrollbar;
+#[path = "performance_probe/shift.rs"]
+mod shift;
 #[path = "performance_probe/timeline.rs"]
 mod timeline;
 #[path = "performance_probe/wheel.rs"]

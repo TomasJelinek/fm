@@ -38,11 +38,32 @@ pub(super) fn paths(
         paths.extend([markdown, binary]);
     }
     if extended || real_only {
-        for path in super::wheel::real_paths()? {
-            // Never silently replace a user's case with a synthetic file.
-            std::fs::metadata(&path)?;
-            paths.push(path);
+        let real = real_paths()?;
+        if real_only && real.is_empty() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("--real-wheel needs read-only files listed in {REAL_FILES}"),
+            ));
         }
+        paths.extend(real);
+    }
+    Ok(paths)
+}
+
+/// Optional read-only user files, as a platform path list (`;` on Windows, `:`
+/// elsewhere). Without it, extended runs use only the generated fixtures.
+const REAL_FILES: &str = "MIDNIGHT_VIEWER_PROBE_REAL_FILES";
+
+fn real_paths() -> std::io::Result<Vec<PathBuf>> {
+    let Some(list) = std::env::var_os(REAL_FILES) else {
+        return Ok(Vec::new());
+    };
+    let paths: Vec<PathBuf> = std::env::split_paths(&list)
+        .filter(|path| !path.as_os_str().is_empty())
+        .collect();
+    for path in &paths {
+        // Never silently replace a user's case with a synthetic file.
+        std::fs::metadata(path)?;
     }
     Ok(paths)
 }

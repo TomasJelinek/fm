@@ -40,6 +40,43 @@ pub struct Raster {
     pub rgba: Vec<u8>,
 }
 
+/// A borrowed premultiplied RGBA surface of exactly `width * height` pixels,
+/// for example the still unique buffer of a frame shared later as `Arc<[u8]>`.
+/// Painting into it avoids a second allocation and copy of the whole surface.
+pub struct RasterMut<'a> {
+    pub(crate) width: u32,
+    pub(crate) height: u32,
+    pub(crate) rgba: &'a mut [u8],
+}
+
+impl<'a> RasterMut<'a> {
+    /// Borrow `rgba` as a `width` x `height` surface. Fails with
+    /// [`LayoutError::InvalidGeometry`] unless it holds exactly that many pixels.
+    pub fn new(width: u32, height: u32, rgba: &'a mut [u8]) -> Result<Self, LayoutError> {
+        if pixel_bytes(width, height) != Some(rgba.len()) {
+            return Err(LayoutError::InvalidGeometry);
+        }
+        Ok(Self {
+            width,
+            height,
+            rgba,
+        })
+    }
+
+    pub fn width(&self) -> u32 {
+        self.width
+    }
+
+    pub fn height(&self) -> u32 {
+        self.height
+    }
+
+    /// Premultiplied RGBA rows, `width * 4` bytes each.
+    pub fn rgba_mut(&mut self) -> &mut [u8] {
+        self.rgba
+    }
+}
+
 pub(crate) struct Fill {
     pub rect: Rect,
     pub color: [u8; 4],
@@ -48,13 +85,31 @@ pub(crate) struct Fill {
 
 const MAX_PIXELS: usize = 16 * 1024 * 1024;
 
+fn pixel_bytes(width: u32, height: u32) -> Option<usize> {
+    (width as usize)
+        .checked_mul(height as usize)?
+        .checked_mul(4)
+}
+
 impl TextRenderer {
     /// Paint a prepared annotation into an existing surface, without reshaping or
     /// allocating another viewport. Annotation coordinates are physical pixels.
+    /// Fails without painting when `rgba` does not match the raster dimensions.
     pub fn paint_over(
         &mut self,
         page: &TextPage,
         raster: &mut Raster,
+        origin: [f32; 2],
+    ) -> Result<(), LayoutError> {
+        let mut target = RasterMut::new(raster.width, raster.height, &mut raster.rgba)?;
+        self.paint_over_into(page, &mut target, origin)
+    }
+
+    /// [`Self::paint_over`] for a borrowed surface.
+    pub fn paint_over_into(
+        &mut self,
+        page: &TextPage,
+        target: &mut RasterMut<'_>,
         origin: [f32; 2],
     ) -> Result<(), LayoutError> {
         if origin.iter().any(|value| !value.is_finite()) {
@@ -63,13 +118,13 @@ impl TextRenderer {
         self.glyphs.paint(
             page,
             Viewport {
-                width: raster.width,
-                height: raster.height,
+                width: target.width,
+                height: target.height,
                 origin,
                 background: [0; 4],
                 selection_color: [0; 4],
             },
-            raster,
+            target,
         )
     }
 
@@ -79,44 +134,100 @@ impl TextRenderer {
         viewport: Viewport,
         selection: Option<Range<usize>>,
     ) -> Result<Raster, LayoutError> {
-        let pixels = (viewport.width as usize)
-            .checked_mul(viewport.height as usize)
-            .filter(|&n| n > 0 && n <= MAX_PIXELS)
-            .ok_or(LayoutError::LimitExceeded)?;
-        if viewport.origin.iter().any(|value| !value.is_finite()) {
+        let (bytes, rectangles) = validate(page, viewport, selection)?;
+        let mut rgba = vec![0; bytes];
+        self.paint_viewport(
+            page,
+            viewport,
+            rectangles,
+            &mut RasterMut {
+                width: viewport.width,
+                height: viewport.height,
+                rgba: &mut rgba,
+            },
+        )?;
+        Ok(Raster {
+            width: viewport.width,
+            height: viewport.height,
+            rgba,
+        })
+    }
+
+    /// [`Self::rasterize`] into a caller-owned buffer of exactly
+    /// `viewport.width * viewport.height * 4` bytes, which is overwritten
+    /// completely with the same bytes. A buffer of another length fails with
+    /// [`LayoutError::InvalidGeometry`] before anything is written; after the
+    /// errors that `rasterize` can report, the buffer contents are unspecified.
+    pub fn rasterize_into(
+        &mut self,
+        page: &TextPage,
+        viewport: Viewport,
+        selection: Option<Range<usize>>,
+        rgba: &mut [u8],
+    ) -> Result<(), LayoutError> {
+        let (bytes, rectangles) = validate(page, viewport, selection)?;
+        if rgba.len() != bytes {
             return Err(LayoutError::InvalidGeometry);
         }
-        let rectangles = selection
-            .map(|range| page.selection_geometry(range))
-            .transpose()?;
+        self.paint_viewport(
+            page,
+            viewport,
+            rectangles,
+            &mut RasterMut {
+                width: viewport.width,
+                height: viewport.height,
+                rgba,
+            },
+        )
+    }
+
+    fn paint_viewport(
+        &mut self,
+        page: &TextPage,
+        viewport: Viewport,
+        selection: Option<Vec<Rect>>,
+        raster: &mut RasterMut<'_>,
+    ) -> Result<(), LayoutError> {
         let mut trace = cfg!(debug_assertions)
             .then(|| std::env::var_os("MIDNIGHT_VIEWER_SCROLL_TRACE"))
             .flatten()
             .map(|_| std::time::Instant::now());
-        let mut raster = Raster {
-            width: viewport.width,
-            height: viewport.height,
-            rgba: vec![0; pixels * 4],
-        };
         let background = premultiply(viewport.background);
-        for pixel in raster.rgba.as_chunks_mut::<4>().0 {
-            pixel.copy_from_slice(&background);
-        }
+        raster.rgba.as_chunks_mut::<4>().0.fill(background);
         trace_phase("clear", &mut trace);
-        paint_backgrounds(page, viewport, &mut raster);
-        if let Some(rectangles) = rectangles {
-            for rect in rectangles {
-                raster.fill(rect, viewport.origin, viewport.selection_color);
-            }
+        paint_backgrounds(page, viewport, raster);
+        for rect in selection.into_iter().flatten() {
+            raster.fill(rect, viewport.origin, viewport.selection_color);
         }
         trace_phase("backgrounds", &mut trace);
-        self.glyphs.paint(page, viewport, &mut raster)?;
+        self.glyphs.paint(page, viewport, raster)?;
         trace_phase("glyphs", &mut trace);
-        Ok(raster)
+        Ok(())
     }
 }
 
-impl Raster {
+/// Byte length of a viewport raster and its selection rectangles, validated
+/// before any pixel is allocated or written.
+fn validate(
+    page: &TextPage,
+    viewport: Viewport,
+    selection: Option<Range<usize>>,
+) -> Result<(usize, Option<Vec<Rect>>), LayoutError> {
+    let bytes = (viewport.width as usize)
+        .checked_mul(viewport.height as usize)
+        .filter(|&n| n > 0 && n <= MAX_PIXELS)
+        .ok_or(LayoutError::LimitExceeded)?
+        * 4;
+    if viewport.origin.iter().any(|value| !value.is_finite()) {
+        return Err(LayoutError::InvalidGeometry);
+    }
+    let rectangles = selection
+        .map(|range| page.selection_geometry(range))
+        .transpose()?;
+    Ok((bytes, rectangles))
+}
+
+impl RasterMut<'_> {
     fn fill_rounded(&mut self, fill: &Fill, origin: [f32; 2]) {
         if fill.radius <= 0.0 {
             self.fill(fill.rect, origin, fill.color);
@@ -214,7 +325,7 @@ pub(crate) fn blend_pixel(target: &mut [u8; 4], color: [u8; 4]) {
     }
 }
 
-fn paint_backgrounds(page: &TextPage, view: Viewport, raster: &mut Raster) {
+fn paint_backgrounds(page: &TextPage, view: Viewport, raster: &mut RasterMut<'_>) {
     if let Some(grid) = &page.composite {
         for fill in &grid.backgrounds {
             raster.fill_rounded(fill, view.origin);

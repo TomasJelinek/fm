@@ -82,12 +82,23 @@ The frontend moves covered pixels without waiting for a new backend raster and
 keeps the gutter horizontally fixed. Each guard targets 256 logical pixels per
 side, converted using the effective raster scale, including the initial parent
 DPI. The combined body and gutter still fit the 24 MiB snapshot cap, so guards
-shrink when necessary. Guard refills retain the existing 12 KiB text and 512-line
-request ceilings; a higher DPI does not enlarge those source budgets. An uncovered
+shrink when necessary. Guard refills retain the existing request ceilings: 12 KiB
+for text and source, 64 KiB for Markdown and 4 KiB for binary, at most 512 lines;
+a higher DPI does not enlarge those source budgets. An uncovered
 frontier pauses displayed motion until usable pixels arrive; it is not an inferred
 end of file. Settling can request exact fractional glyph phase.
 The [retained-raster contract](../superpowers/plans/2026-11-11-retained-viewer-raster.md)
 defines coverage, continuation and snapshot budgets.
+
+A refill paints only the lines, Markdown blocks, table cells and glyphs whose ink
+can reach the raster. That reach is a conservative bound, not a font guarantee:
+4 em vertically and 8 em horizontally around each glyph origin (stacked marks
+carry their own origins), plus the exact extent of every underline and
+strikethrough. It covers the glyphs of real text fonts; a malformed or unusual
+font whose ink extends further can lose that ink at raster edges. The renderer
+can paint directly into a caller-owned buffer of the exact raster size
+(`rasterize_into`, `paint_over_into`), so a frame can be shared without a second
+full-surface copy.
 
 Raster pixel coordinates map through the frame's retained logical viewport,
 not through the current clipping canvas. Source/Markdown controls appearing with
@@ -111,7 +122,12 @@ At most one prepared batch waits for UI consumption. Until it is taken, the
 worker does not drain another batch, so the source mailbox retains its existing
 eight-output bound, latest-frame coalescing and reserved raster-control slot.
 There is no task or growing queue per frame. A failed event-loop wake is retried
-without requiring another source frame. The conversion cache reuses shared
+without requiring another source frame. Delivery is event driven; in addition,
+each open viewer runs one 16 ms UI timer for the work that has no completion
+event: it acknowledges layout geometry and detects canvas or DPI changes, takes
+a prepared batch whose wake was lost, retries position requests that a full input
+queue refused, advances image motion fallback and presents the late font catalog.
+An empty poll does not wake the preparation worker. The conversion cache reuses shared
 body/gutter buffers for the same generation, surface, pixel identity, dimensions
 and viewport; it does not retain the source pixel Arcs or their backend reservation.
 Frontend shared buffers remain separate from the backend raster storage budget.
@@ -132,7 +148,10 @@ without uploading all pixels for every input event. The visible camera and a
 pending requested camera are separate: a thumb can point at a target whose pixels
 are still loading. A visible camera advances only when its required tiles exist.
 Surface identity and sequence checks prevent a late reply from moving a new view.
-Decoder work and cache preparation remain on backend workers.
+Decoder work and tile caching remain on backend workers. The UI texture cache
+copies each newly arriving 256×256 tile into a Slint buffer on the event loop (at
+most 128 tiles, 32 MiB, per frame) and reuses it by tile identity, so panning
+copies only newly exposed tiles.
 
 ## Verification
 
@@ -143,8 +162,12 @@ delayed frames. Engine tests check bounded ingress, input barriers and exact
 viewport completion. Opening regressions compare actual body/gutter marker bounds
 before and after source controls appear, including retained activation and hit
 testing. Placement tests check captured DPI before the first physical sizing and
-preserve later native scale changes. Pixel-preparation tests exercise one-batch
-backpressure, metadata buffer reuse, failed wakes, invalid buffers and cancellation.
+preserve later native scale changes. One-pixel checkerboards at a fractional scale
+and canvas origin prove texel-exact retained and viewport-only presentation; the
+`texel_alignment` example repeats that check in a native window. Pixel-preparation
+tests exercise one-batch backpressure, metadata buffer reuse, failed wakes,
+invalid buffers and cancellation. Renderer tests compare culled painting with
+unculled painting, including far decorations and ink above table cells.
 Generated fixtures and logs belong under `_build/`.
 
 For native measurements, build the `midnight-viewer-ui` example
@@ -160,6 +183,9 @@ each measured thumb position to the latest pointer target, records visible conte
 updates while dragging, and measures final content readiness separately. Image
 readiness uses the displayed camera, not the optimistic scrollbar target. Use
 `--count` separately for source-read counts and `--load` for synthetic CPU load.
+Wheel runs with `--extended-wheel` add generated Markdown and binary fixtures plus
+any read-only files listed in `MIDNIGHT_VIEWER_PROBE_REAL_FILES` (a platform path
+list); `--real-wheel` measures only those listed files and requires the variable.
 Do not compare debug measurements with release results or report thumb latency as
 document-render latency. Native measurements must not access user preferences.
 The native test fails if content changes fewer than twice during the gesture;

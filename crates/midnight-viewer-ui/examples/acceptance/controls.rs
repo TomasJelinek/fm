@@ -1,6 +1,13 @@
 //! Native widgets must change the rendered content, not just stored properties.
 use super::*;
 
+/// A complete vertical scrollbar gesture: grab, move to `position`, release.
+fn scrollbar_seek(window: &ViewerWindow, position: f32) {
+    window.invoke_position_drag_began(false);
+    window.invoke_drag_seek(false, position);
+    window.invoke_position_drag_ended(false);
+}
+
 #[derive(Default)]
 pub struct Controls {
     source_stage: usize,
@@ -72,12 +79,12 @@ impl Controls {
                     !self.markdown_initial.contains("# Heading"),
                     "First page must remain rich despite later blocks",
                 )?;
-                window.invoke_seek(0.12);
+                scrollbar_seek(window, 0.12);
                 self.markdown_scroll_stage = 1;
                 return Ok(false);
             }
             1 if !window.get_accessible_text().starts_with("Heading") => {
-                window.invoke_seek(0.0);
+                scrollbar_seek(window, 0.0);
                 self.markdown_scroll_stage = 2;
                 return Ok(false);
             }

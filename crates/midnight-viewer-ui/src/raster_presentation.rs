@@ -25,7 +25,7 @@ pub(super) fn receive(open: &OpenWindow, frame: &ViewerFrame) -> bool {
         || body_len != frame.pixels.len() as u64
         || body_len
             .checked_add(gutter_len)
-            .is_none_or(|bytes| bytes > 6 * 1024 * 1024 * 4)
+            .is_none_or(|bytes| bytes > pixel_preparation::RETAINED_BYTES)
         || info.gutter.as_ref().is_some_and(|g| {
             g.width >= info.viewport[0]
                 || g.height != frame.height
@@ -61,13 +61,10 @@ pub(super) fn receive(open: &OpenWindow, frame: &ViewerFrame) -> bool {
             open.window.get_raster_viewport_width(),
             open.window.get_raster_viewport_height(),
         ]
+        .map(|extent| extent.max(1.0))
     } else {
-        [
-            open.window.get_content_width(),
-            open.window.get_content_height(),
-        ]
-    }
-    .map(|extent| extent.max(1.0));
+        logical_viewport(open, info.viewport)
+    };
     let scale =
         std::array::from_fn(|axis| f64::from(info.viewport[axis]) / f64::from(viewport[axis]));
     if !state.camera.receive(info, scale) {
@@ -100,6 +97,27 @@ pub(super) fn receive(open: &OpenWindow, frame: &ViewerFrame) -> bool {
     );
     open.window.set_retained_raster(true);
     true
+}
+
+/// Logical extent onto which a new raster viewport of `pixels` is mapped. A raster
+/// rendered for the current canvas at native resolution maps 1:1 to physical
+/// pixels: a canvas that is not a whole number of physical pixels clips the
+/// sub-pixel remainder instead of resampling every texel. A raster whose
+/// resolution the backend budget reduced keeps stretching over the canvas.
+pub(super) fn logical_viewport(open: &OpenWindow, pixels: [u32; 2]) -> [f32; 2] {
+    let scale = open.window.window().scale_factor();
+    let content = [
+        open.window.get_content_width(),
+        open.window.get_content_height(),
+    ];
+    std::array::from_fn(|axis| {
+        let pixels = pixels[axis] as f32;
+        if scale.is_finite() && scale > 0.0 && (pixels - content[axis] * scale).abs() <= 1.0 {
+            pixels / scale
+        } else {
+            content[axis].max(1.0)
+        }
+    })
 }
 
 fn pixel_bytes(width: u32, height: u32) -> Option<u64> {
@@ -175,9 +193,10 @@ fn request(open: &OpenWindow) {
     }
 }
 
-/// A partial page has its own byte/height mapping. Never guess a global row or
-/// clamp an uncovered normalized target into the last cached pixel.
-pub(super) fn seek(open: &OpenWindow, horizontal: bool, position: f64, dragging: bool) -> bool {
+/// A scrollbar drag step. A partial page has its own byte/height mapping. Never
+/// guess a global row or clamp an uncovered normalized target into the last
+/// cached pixel. The drag's end settles the camera (see `end_seek`).
+pub(super) fn seek(open: &OpenWindow, horizontal: bool, position: f64) -> bool {
     if !open.window.get_retained_raster()
         || raster_rebase::waiting(open)
         || open.text_position.borrow().has_pending()
@@ -199,7 +218,7 @@ pub(super) fn seek(open: &OpenWindow, horizontal: bool, position: f64, dragging:
         let mut state = open.retained_raster.borrow_mut();
         let axis = usize::from(!horizontal);
         let baseline = state.positions[axis];
-        state.camera.seek(axis, position, baseline, dragging)
+        state.camera.seek(axis, position, baseline)
     };
     if !accepted {
         return false;

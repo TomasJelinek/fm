@@ -193,7 +193,9 @@ mod opening_trace {
     }
 }
 
-const RETAINED_BYTES: u64 = 6 * 1024 * 1024 * 4;
+/// Retained body plus gutter bytes. Must match the engine's retained raster
+/// budget (`worker_raster.rs`, `raster_budget.rs`); larger frames are refused.
+pub(super) const RETAINED_BYTES: u64 = 6 * 1024 * 1024 * 4;
 const LEGACY_BYTES: u64 = 16 * 1024 * 1024 * 4;
 const WAKE_RETRY: Duration = Duration::from_millis(50);
 type Notify = Arc<dyn Fn() -> bool + Send + Sync>;
@@ -355,7 +357,11 @@ impl Preparation {
 
     pub fn take(&self) -> Option<PreparedBatch> {
         let batch = lock(&self.shared.state).batch.take();
-        self.shared.ready.notify_one();
+        // Only a consumed batch can release the worker's delivery wait. The UI
+        // polls this every frame; an empty poll must not wake an idle worker.
+        if batch.is_some() {
+            self.shared.ready.notify_one();
+        }
         batch
     }
 

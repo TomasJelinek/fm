@@ -57,12 +57,3 @@ pub(super) fn send(
         })
         .ok_or("probe has no native window")?
 }
-
-// These user-provided files are read-only diagnostic inputs on this Windows host.
-// Platform-neutral fixture generation must not assume a personal drive layout.
-pub(super) fn real_paths() -> Vec<std::path::PathBuf> {
-    let directory = std::path::Path::new("D:/temp/ovclash/results/2026-09-07-mfg");
-    ["manifest.json", "post-merge-backend-timings.md"]
-        .map(|name| directory.join(name))
-        .to_vec()
-}

@@ -3,6 +3,8 @@
 //! DX12 allocates an internal sampler-index buffer for each bind group. Creating
 //! the same groups for every alternating image/text draw causes allocation and
 //! GPU synchronization work even when the underlying images have not changed.
+//! That buffer is a separate 64 KiB upload-heap placement on DX12, so the cap
+//! below also bounds retained CPU-visible memory (512 x 64 KiB = 32 MiB).
 use super::{BindGroupState, CommandToPipelineAndBindGroupMapper, Image, ImageOrTexture, Texture};
 use crate::{image::ImageStore, ImageFlags, ImageId};
 use std::collections::HashMap;
@@ -40,6 +42,8 @@ struct Entry {
     group: wgpu::BindGroup,
     resources: [Option<Resource>; 2],
     last_used: u64,
+    /// Render in which this entry was last used.
+    frame: u64,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -48,24 +52,33 @@ struct Resource {
     flags: ImageFlags,
 }
 
+/// Owned resource identity for a new entry. External textures and ids that are
+/// no longer in the store (deleted before this flush) are never cached.
 fn resource(images: &ImageStore<Image>, id: Option<ImageId>) -> Result<Option<Resource>, ()> {
-    match id.and_then(|id| images.get(id)) {
-        Some(image) => match &image.texture {
-            Texture::Internal(texture) => Ok(Some(Resource {
-                texture: texture.clone(),
-                flags: image.info.flags(),
-            })),
-            Texture::External(_) => Err(()),
-        },
-        None => Ok(None),
+    let Some(id) = id else {
+        return Ok(None);
+    };
+    match images.get(id) {
+        Some(Image {
+            texture: Texture::Internal(texture),
+            info,
+            ..
+        }) => Ok(Some(Resource {
+            texture: texture.clone(),
+            flags: info.flags(),
+        })),
+        _ => Err(()),
     }
 }
 
+/// Validates a cached resource by reference, without cloning texture handles.
 fn matches_resource(images: &ImageStore<Image>, id: Option<ImageId>, saved: &Option<Resource>) -> bool {
-    match (id.and_then(|id| images.get(id)), saved) {
+    match (id, saved) {
         (None, None) => true,
-        (Some(image), Some(saved)) => matches!(&image.texture, Texture::Internal(texture)
-            if *texture == saved.texture && image.info.flags() == saved.flags),
+        (Some(id), Some(saved)) => images.get(id).is_some_and(|image| {
+            matches!(&image.texture, Texture::Internal(texture)
+                if *texture == saved.texture && image.info.flags() == saved.flags)
+        }),
         _ => false,
     }
 }
@@ -75,8 +88,13 @@ pub(super) struct BindGroupCache {
     entries: HashMap<Key, Entry>,
     uniform_buffer: Option<wgpu::Buffer>,
     clock: u64,
+    frame: u64,
+    /// Number of entries already used in the current frame.
+    used_this_frame: usize,
     #[cfg(test)]
     materializations: usize,
+    #[cfg(test)]
+    uncached: usize,
 }
 
 impl BindGroupCache {
@@ -99,61 +117,110 @@ impl BindGroupCache {
         let Some(key) = Key::from_state(state) else {
             return materialize();
         };
-        let (Ok(image), Ok(glyph)) = (resource(images, key.image), resource(images, key.glyph)) else {
-            return materialize();
-        };
-        let resources = [image, glyph];
         // Growing the uniform arena replaces its GPU buffer. Cached bindings
         // must reference the replacement before any new dynamic offsets are used.
         if self.uniform_buffer.as_ref() != Some(&mapper.uniform_buffer) {
-            self.entries.clear();
+            self.clear();
             self.uniform_buffer = Some(mapper.uniform_buffer.clone());
         }
         if self.clock == u64::MAX {
-            self.entries.clear();
+            self.clear();
             self.clock = 0;
         }
         self.clock += 1;
         if let Some(entry) = self.entries.get_mut(&key) {
-            if entry.resources == resources {
-                entry.last_used = self.clock;
-                return entry.group.clone();
-            }
             // ImageStore::realloc preserves the id and directly replaces the
             // renderer image. Validate handles and sampler flags, not only ids.
-            self.entries.remove(&key);
+            if matches_resource(images, key.image, &entry.resources[0])
+                && matches_resource(images, key.glyph, &entry.resources[1])
+            {
+                entry.last_used = self.clock;
+                if entry.frame != self.frame {
+                    entry.frame = self.frame;
+                    self.used_this_frame += 1;
+                }
+                return entry.group.clone();
+            }
+            if let Some(entry) = self.entries.remove(&key) {
+                self.forget(&entry);
+            }
         }
+        let (Ok(image), Ok(glyph)) = (resource(images, key.image), resource(images, key.glyph)) else {
+            return self.uncached(materialize);
+        };
         if self.entries.len() >= MAX_BIND_GROUPS {
-            let oldest = *self.entries.iter().min_by_key(|(_, e)| e.last_used).unwrap().0;
-            self.entries.remove(&oldest);
+            // A frame that uses more distinct bindings than the cap accesses them
+            // cyclically. Evicting one used in this frame would only force its
+            // rebuild later in the same frame; leave the overflow uncached as
+            // upstream does. Otherwise the least recently used entry is from an
+            // earlier frame.
+            if self.used_this_frame >= self.entries.len() {
+                return self.uncached(materialize);
+            }
+            if let Some(oldest) = self
+                .entries
+                .iter()
+                .min_by_key(|(_, e)| e.last_used)
+                .map(|(key, _)| *key)
+            {
+                if let Some(entry) = self.entries.remove(&oldest) {
+                    self.forget(&entry);
+                }
+            }
         }
         let group = materialize();
         #[cfg(test)]
         {
             self.materializations += 1;
         }
+        self.used_this_frame += 1;
         self.entries.insert(
             key,
             Entry {
                 group: group.clone(),
-                resources,
+                resources: [image, glyph],
                 last_used: self.clock,
+                frame: self.frame,
             },
         );
         group
     }
 
-    pub(super) fn remove_image(&mut self, image: ImageId) {
-        self.entries.retain(|key, _| !key.references(image));
+    fn uncached(&mut self, materialize: impl FnOnce() -> wgpu::BindGroup) -> wgpu::BindGroup {
+        #[cfg(test)]
+        {
+            self.uncached += 1;
+        }
+        materialize()
     }
 
+    fn forget(&mut self, entry: &Entry) {
+        if entry.frame == self.frame {
+            self.used_this_frame -= 1;
+        }
+    }
+
+    fn clear(&mut self) {
+        self.entries.clear();
+        self.used_this_frame = 0;
+    }
+
+    pub(super) fn remove_image(&mut self, image: ImageId) {
+        self.entries.retain(|key, _| !key.references(image));
+        let frame = self.frame;
+        self.used_this_frame = self.entries.values().filter(|entry| entry.frame == frame).count();
+    }
+
+    /// Called once after each render: ends the current frame.
     pub(super) fn prune_replaced_images(&mut self, images: &ImageStore<Image>) {
-        // Also release bindings for reallocated ids that were not drawn again.
-        // Pixel-only updates keep the same resource and remain cache hits.
+        // Also release bindings for reallocated or deleted ids that were not drawn
+        // again. Pixel-only updates keep the same resource and remain cache hits.
         self.entries.retain(|key, entry| {
             matches_resource(images, key.image, &entry.resources[0])
                 && matches_resource(images, key.glyph, &entry.resources[1])
         });
+        self.frame = self.frame.wrapping_add(1);
+        self.used_this_frame = 0;
     }
 }
 

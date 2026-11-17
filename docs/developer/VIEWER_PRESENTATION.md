@@ -17,7 +17,8 @@ the renderer uses its usual glyph fallback. Programmatic restoration does not
 save a new edit.
 
 Markdown always wraps to its reading width. GitHub is the default with 1.5 font
-size line spacing, 16-pixel side padding and a maximum 980-pixel reading width.
+size line spacing, 32-pixel side padding (16 pixels below 768 logical pixels of
+window width) and a maximum 980-pixel reading width.
 Compact uses 1.25 spacing and 8-pixel padding. Comfortable uses 1.8 spacing,
 28-pixel padding and a 760-pixel maximum reading width. Dimensions are logical
 pixels and scale with display DPI. Preset changes and font changes reflow the
@@ -81,13 +82,41 @@ updates retain it for the same surface, and initial viewport-only pixels pass it
 to retained presentation when the generation and effective viewport match. A new
 layout surface uses the replacement viewport. This mapping preserves the backend's
 effective raster scale when its pixel budget reduces resolution below native DPI.
+At native resolution one texel maps to one physical pixel. The canvas size sent
+to the backend is rounded to whole physical pixels, and a canvas that is not a
+whole number of physical pixels (fractional DPI, or 22.5 pixels of chrome at
+125%) clips the remaining fraction instead of resampling every glyph. A canvas
+origin between physical pixels (the 6-pixel padding is 7.5 pixels at 125%) does
+not resample either: the window offsets the retained body, gutter and
+viewport-only images by the origin's sub-pixel phase, so their texels start on
+whole physical pixels. FemtoVG in Slint 1.18 also aligns an image's draw origin
+itself; the software renderer only rounds the image rectangle, and floating-point
+noise at a half-pixel origin could grow a raster by one row and repeat a row of
+texels. Software-rendered tests check one-pixel checkerboards at 110%, 125% and
+175% with several guard sizes. The `texel_alignment` example checks a native
+window with either renderer, including a control with the former stretched
+mapping, for example after `$env:SLINT_SCALE_FACTOR = '1.25'`:
+`cargo run -p midnight-viewer-ui --example texel_alignment -- --femtovg`.
 
 The UI crate's bounded pixel-preparation worker converts immutable backend RGBA
-into safe shared Slint pixel buffers off the event loop. Slint images and window
-state remain on the UI thread; the engine and independent plugins do not acquire
-a Slint dependency. The worker reuses converted buffers for metadata-only updates.
-Its delivery bounds, retirement and stale-frame rules are described in
+of text and legacy surfaces into safe shared Slint pixel buffers off the event
+loop. Slint images and window state remain on the UI thread; the engine and
+independent plugins do not acquire a Slint dependency. The worker reuses converted
+buffers for metadata-only updates. Image and PDF tiles are the exception: the UI
+texture cache copies each new 256×256 tile (256 KiB) into a Slint buffer on the
+event loop when it first arrives, at most 128 tiles and 32 MiB per frame, and
+reuses it by tile identity afterwards. Panning therefore copies only newly exposed
+tiles. Delivery bounds, retirement and stale-frame rules are described in
 [Viewer scrolling](VIEWER_SCROLLING.md#retained-text-pixels-and-delivery).
+
+Window controls whose widgets assign their own state (mode chooser, Online and
+JavaScript, wrap, case, line numbers, font and Markdown choosers, size) are bound
+two-way to window properties; a one-way binding would be dropped by the first
+click, selection or model reset. Rust re-sets these properties from the state in
+force with every presented frame. The mode chooser and the Online/JavaScript boxes
+also follow document changes and backend state replies immediately, and restore
+the state in force when a request cannot be delivered, so they never show a mode
+or web permission that is not applied.
 
 All three text plugins prepare bounded windows rather than loading complete files.
 The basic plugin gathers at most 8 KiB per viewport; source and Markdown gather at

@@ -6,14 +6,7 @@ struct Gpu {
 }
 impl Gpu {
     fn new() -> Self {
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::from_env().unwrap_or(wgpu::Backends::PRIMARY),
-            flags: wgpu::InstanceFlags::VALIDATION | wgpu::InstanceFlags::VALIDATION_INDIRECT_CALL,
-            ..wgpu::InstanceDescriptor::new_without_display_handle()
-        });
-        let adapter = pollster::block_on(instance.request_adapter(&Default::default())).expect("GPU adapter required");
-        eprintln!("upload pool GPU adapter: {:?}", adapter.get_info());
-        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).unwrap();
+        let (device, queue) = super::super::test_gpu::device();
         Self { device, queue }
     }
     fn target(&self, size: u64) -> wgpu::Buffer {
@@ -66,7 +59,7 @@ fn uploads_recycle_after_completion_and_preserve_both_regions() {
         if let Some(previous) = old.replace(upload.buffer.clone()) {
             assert_eq!(upload.buffer, previous);
         }
-        upload.finish(&encoder, &[value + 1; 64]);
+        upload.finish(&[value + 1; 64]);
         gpu.queue.submit([encoder.finish()]);
         gpu.wait();
         assert_eq!(gpu.read(&vertices, 16), [value; 16]);
@@ -95,7 +88,7 @@ fn unsubmitted_uploads_remain_distinct_and_the_pool_is_bounded() {
             "unsubmitted data must never be overwritten"
         );
         buffers.push(upload.buffer.clone());
-        upload.finish(&encoder, &[index as u8 + 10; 64]);
+        upload.finish(&[index as u8 + 10; 64]);
         commands.push(encoder.finish());
         targets.push((vertices, uniforms));
     }
@@ -115,6 +108,50 @@ fn unsubmitted_uploads_remain_distinct_and_the_pool_is_bounded() {
 
 #[test]
 #[ignore = "requires an actual GPU adapter"]
+fn nonblocking_poll_in_begin_recycles_a_completed_slot() {
+    // Production renders never wait for the GPU: the previous frame's slot is
+    // still pending at the next `begin`, which must reuse it only after its own
+    // nonblocking poll observed the completed remap.
+    let gpu = Gpu::new();
+    let mut pool = UploadPool::default();
+    let vertices = gpu.target(64);
+    let uniforms = gpu.target(64);
+    let mut encoder = gpu.encoder();
+    let upload = pool
+        .begin(&gpu.device, &mut encoder, &vertices, &uniforms, &[1; 16], 64)
+        .unwrap();
+    let first = upload.buffer.clone();
+    upload.finish(&[2; 64]);
+    gpu.queue.submit([encoder.finish()]);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let mut discarded = 0;
+    loop {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "a completed slot was never recycled by begin's poll"
+        );
+        let mut encoder = gpu.encoder();
+        let upload = pool
+            .begin(&gpu.device, &mut encoder, &vertices, &uniforms, &[3; 16], 64)
+            .expect("discarded attempts release their slots");
+        let reused = upload.buffer == first;
+        upload.finish(&[4; 64]);
+        if reused {
+            gpu.queue.submit([encoder.finish()]);
+            break;
+        }
+        // Not completed yet: discard this attempt; its slot fails and leaves.
+        drop(encoder.finish());
+        discarded += 1;
+    }
+    gpu.wait();
+    assert_eq!(gpu.read(&vertices, 16), [3; 16]);
+    assert_eq!(gpu.read(&uniforms, 64), [4; 64]);
+    assert_eq!(pool.statistics().0, 1 + discarded, "only discarded attempts allocate");
+}
+
+#[test]
+#[ignore = "requires an actual GPU adapter"]
 fn discarded_commands_and_renderer_drop_do_not_recycle_unmapped_memory() {
     let gpu = Gpu::new();
     let vertices = gpu.target(64);
@@ -125,14 +162,14 @@ fn discarded_commands_and_renderer_drop_do_not_recycle_unmapped_memory() {
         .begin(&gpu.device, &mut encoder, &vertices, &uniforms, &[4; 16], 64)
         .unwrap();
     let abandoned = upload.buffer.clone();
-    upload.finish(&encoder, &[5; 64]);
+    upload.finish(&[5; 64]);
     drop(encoder.finish());
     let mut encoder = gpu.encoder();
     let upload = pool
         .begin(&gpu.device, &mut encoder, &vertices, &uniforms, &[8; 16], 64)
         .unwrap();
     assert_ne!(upload.buffer, abandoned, "a dropped submission never completed its map");
-    upload.finish(&encoder, &[9; 64]);
+    upload.finish(&[9; 64]);
     let command = encoder.finish();
     drop(pool);
     gpu.queue.submit([command]);
@@ -153,7 +190,7 @@ fn completed_slots_grow_without_exceeding_the_size_budget() {
         .begin(&gpu.device, &mut encoder, &vertices, &uniforms, &[1; 16], 64)
         .unwrap();
     let small = upload.buffer.clone();
-    upload.finish(&encoder, &[2; 64]);
+    upload.finish(&[2; 64]);
     gpu.queue.submit([encoder.finish()]);
     gpu.wait();
     let mut encoder = gpu.encoder();
@@ -161,7 +198,7 @@ fn completed_slots_grow_without_exceeding_the_size_budget() {
         .begin(&gpu.device, &mut encoder, &vertices, &uniforms, &[7; 8192], 8192)
         .unwrap();
     assert_ne!(upload.buffer, small);
-    upload.finish(&encoder, &[8; 8192]);
+    upload.finish(&[8; 8192]);
     gpu.queue.submit([encoder.finish()]);
     gpu.wait();
     assert_eq!(gpu.read(&vertices, 8192), [7; 8192]);
@@ -197,7 +234,7 @@ fn cached_and_fallback_uploads_keep_deferred_command_order() {
         let upload = cached.unwrap_or_else(|| {
             Upload::one_shot(&gpu.device, &mut encoder, &vertices, &uniforms, &[index as u8; 16], 64)
         });
-        upload.finish(&encoder, &[index as u8 + 20; 64]);
+        upload.finish(&[index as u8 + 20; 64]);
         let vertex_copy = gpu.target(16);
         let uniform_copy = gpu.target(64);
         encoder.copy_buffer_to_buffer(&vertices, 0, &vertex_copy, 0, 16);
@@ -227,7 +264,7 @@ fn oversized_uploads_use_correct_uncached_storage() {
         .begin(&gpu.device, &mut encoder, &vertices, &uniforms, &[42; 16], size)
         .is_none());
     let upload = Upload::one_shot(&gpu.device, &mut encoder, &vertices, &uniforms, &[42; 16], size);
-    upload.finish(&encoder, &vec![73; size as usize]);
+    upload.finish(&vec![73; size as usize]);
     gpu.queue.submit([encoder.finish()]);
     gpu.wait();
     assert_eq!(gpu.read(&vertices, 16), [42; 16]);

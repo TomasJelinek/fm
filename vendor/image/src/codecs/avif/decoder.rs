@@ -667,12 +667,23 @@ impl<R: Read> AvifDecoder<R> {
 /// `get_picture` and `send_pending_data` yield `Again` as a non-fatal error requesting more data is sent to the decoder
 /// This ensures that in the case of `Again` all pending data is submitted
 /// This should be called after `send_data` (which does not yield `Again` when called the first time)
+///
+/// Midnight patch: an AV1 item can contain no displayable frame (for example only
+/// a sequence header). With nothing left to send, dav1d then reports `Again`
+/// forever. Its first `get_picture` after `send_data` only enables draining; the
+/// second drains every frame thread. A second `Again` with nothing pending is
+/// therefore final, and the loop fails instead of spinning without a bound.
 fn read_until_ready(decoder: &mut dav1d::Decoder) -> ImageResult<dav1d::Picture> {
+    let mut drained = false;
     loop {
         match decoder.get_picture() {
             Err(dav1d::Error::Again) => match decoder.send_pending_data() {
-                Ok(()) => {}
-                Err(dav1d::Error::Again) => {}
+                Ok(()) if drained => {
+                    return Err(error_map("AV1 item produced no displayable frame"));
+                }
+                Ok(()) => drained = true,
+                // Input was still pending; the decoder made progress on it.
+                Err(dav1d::Error::Again) => drained = false,
                 Err(e) => return Err(error_map(e)),
             },
             r => return r.map_err(error_map),

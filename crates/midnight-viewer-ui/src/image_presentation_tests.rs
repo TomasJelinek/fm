@@ -39,6 +39,14 @@ pub(super) fn bitmap() -> (slint::PhysicalSize, Vec<slint::Rgb8Pixel>) {
     (size, pixels)
 }
 
+/// One complete scrollbar gesture through the callbacks the `PositionBar`
+/// drives: grab, move to `position`, release.
+pub(super) fn drag_seek(window: &ViewerWindow, horizontal: bool, position: f32) {
+    window.invoke_position_drag_began(horizontal);
+    window.invoke_drag_seek(horizontal, position);
+    window.invoke_position_drag_ended(horizontal);
+}
+
 #[derive(Debug)]
 struct Pixels;
 impl ViewerPixelOwner for Pixels {}
@@ -106,9 +114,25 @@ fn frame() -> ViewerFrame {
     }
 }
 
+/// The fixture's viewer windows. Dropping them closes every session, also while
+/// a failed assertion unwinds the test, so that the runtime can shut down and
+/// the failure is reported instead of hanging.
+pub(super) struct TestWindows(ViewerWindows);
+impl std::ops::Deref for TestWindows {
+    type Target = ViewerWindows;
+    fn deref(&self) -> &ViewerWindows {
+        &self.0
+    }
+}
+impl Drop for TestWindows {
+    fn drop(&mut self) {
+        self.0.close_all();
+    }
+}
+
 pub(super) fn open() -> (
     tokio::runtime::Runtime,
-    ViewerWindows,
+    TestWindows,
     Rc<OpenWindow>,
     Service,
 ) {
@@ -160,7 +184,7 @@ pub(super) fn open() -> (
         &|_| {},
         vec![ViewerOutput::Frame(Box::new(frame()))],
     );
-    (runtime, manager, open, service)
+    (runtime, TestWindows(manager), open, service)
 }
 
 #[test]
@@ -193,8 +217,8 @@ fn image_drag_and_cached_scroll_reposition_before_backend_and_do_not_upload_agai
 #[test]
 fn scrollbar_latest_target_survives_stale_reply_and_only_new_frontier_uploads() {
     let (_runtime, manager, open, service) = open();
-    open.window.invoke_seek(0.75);
-    open.window.invoke_seek(0.9);
+    drag_seek(&open.window, false, 0.75);
+    drag_seek(&open.window, false, 0.9);
     assert!((open.window.get_position() - 0.9).abs() < 0.0001);
     let viewport = [
         open.window.get_image_viewport_width(),
@@ -1021,8 +1045,8 @@ fn untiled_document_keeps_captured_raster_metrics_and_routes_both_scrollbars_to_
     );
     assert!(!open.window.get_tiled());
     assert!((open.window.get_displayed_position() - 0.3).abs() < 0.0001);
-    open.window.invoke_seek(0.7);
-    open.window.invoke_pan(0.8);
+    drag_seek(&open.window, false, 0.7);
+    drag_seek(&open.window, true, 0.8);
     assert!(
         matches!(submitted.borrow().as_slice(),[ViewerInput::Seek(vertical),ViewerInput::Pan(horizontal)]
         if (*vertical-0.7).abs()<0.0001 && (*horizontal-0.8).abs()<0.0001)
