@@ -44,6 +44,11 @@ struct Calls {
     residue: Mutex<Option<MutationResidue>>,
     /// The error of the next rename, which then does not complete.
     rename_failure: Mutex<Option<FsError>>,
+    /// The target whose delete fails after reporting its progress.
+    failing_delete: Mutex<Option<PathBuf>>,
+    /// Entries each target's discovery reports beyond the target itself, as if
+    /// another program removed them before the deletion.
+    discovered_extra: AtomicUsize,
 }
 struct FakeService(Arc<Calls>);
 struct FakeTarget {
@@ -110,6 +115,33 @@ impl PreparedDirectory for FakeDirectory {
     }
 }
 impl PreparedMutation for FakeTarget {
+    /// The trait's default, plus `Calls::discovered_extra` entries after a file.
+    fn discover(
+        &self,
+        cancel: &Cancellation,
+        visit: &mut dyn FnMut(&MutationItem),
+    ) -> Result<(), FsError> {
+        let refused = if !cancel.wait_if_paused() {
+            Some(std::io::ErrorKind::Interrupted)
+        } else {
+            (self.item.kind == EntryKind::Directory).then_some(std::io::ErrorKind::Unsupported)
+        };
+        if let Some(kind) = refused {
+            return Err(FsError::from_io(
+                "discover operation",
+                &self.item.path,
+                kind.into(),
+            ));
+        }
+        visit(&self.item);
+        for index in 0..self.calls.discovered_extra.load(Ordering::Relaxed) {
+            visit(&MutationItem {
+                path: self.item.path.join(index.to_string()),
+                ..self.item.clone()
+            });
+        }
+        Ok(())
+    }
     fn item(&self) -> &MutationItem {
         &self.item
     }
@@ -155,7 +187,9 @@ impl PreparedMutation for FakeTarget {
         while self.calls.blocked_after_progress.load(Ordering::Acquire) && !cancel.is_cancelled() {
             std::thread::park_timeout(Duration::from_millis(5));
         }
-        if self.calls.fail_after_progress.load(Ordering::Acquire) {
+        if self.calls.fail_after_progress.load(Ordering::Acquire)
+            || self.calls.failing_delete.lock().unwrap().as_ref() == Some(&self.item.path)
+        {
             return Err(FsError::from_io(
                 "delete",
                 &self.item.path,

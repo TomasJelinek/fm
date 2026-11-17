@@ -63,8 +63,15 @@ pub struct OperationProgress {
     pub paused: bool,
     /// Top-level accepted targets; not the unknown recursive number of entries.
     pub total: u64,
+    /// Top-level targets whose change completed. A Rename or Delete target that also
+    /// reports an issue (a leftover staging folder or a required recovery) counts here
+    /// and in `failed`, so `completed + failed` may exceed `total`. A metadata edit
+    /// counts a failed target, including one whose rename left a staging folder,
+    /// only in `failed`.
     pub completed: u64,
     pub discovery: crate::OperationDiscovery,
+    /// Top-level targets with an issue: targets that did not complete, plus completed
+    /// targets that reported one (see `completed`).
     pub failed: u64,
     /// Removed nodes for deletion; the final entry for rename/create (not intermediate dirs).
     pub processed_entries: u64,
@@ -72,7 +79,8 @@ pub struct OperationProgress {
     pub throughput: Arc<crate::OperationThroughput>,
     pub current_path: Option<PathBuf>,
     pub message: String,
-    /// At most 16 errors; failed remains the full top-level failure count.
+    /// At most 16 errors; `failed` remains the full top-level issue count. An error may
+    /// describe a completed target's leftover staging folder or required recovery.
     pub errors: Vec<FsError>,
     pub source_directory: PathBuf,
     pub renamed_to: Option<PathBuf>,

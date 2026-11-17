@@ -191,6 +191,68 @@ fn a_residue_of_one_target_never_hides_that_every_target_completed() {
     assert!(!progress.message.contains("have not been undone"));
 }
 
+#[test]
+fn a_residue_and_a_failed_target_keep_the_partial_work_notice() {
+    let calls = Arc::new(Calls::default());
+    let left = residue(false, io::ErrorKind::DirectoryNotEmpty);
+    *calls.residue.lock().unwrap() = Some(left.clone());
+    let failing = std::env::temp_dir()
+        .join("midnight-residue-fixture")
+        .join("second");
+    *calls.failing_delete.lock().unwrap() = Some(failing.clone());
+    let progress = delete_selection(&["first", "second"], calls);
+    assert_eq!(progress.state, OperationState::CompletedWithErrors);
+    assert_eq!(
+        (progress.total, progress.completed, progress.failed),
+        (2, 1, 2)
+    );
+    let paths: Vec<_> = progress.errors.iter().map(|issue| &issue.path).collect();
+    assert_eq!(paths, [&left.path, &failing]);
+    // The target that did not complete leaves partial work; the residue alone would not.
+    assert!(
+        progress.message.ends_with("have not been undone."),
+        "{}",
+        progress.message
+    );
+}
+
+#[test]
+fn a_residue_never_skips_checking_completed_work_against_discovery() {
+    // Discovery saw an entry that the completed deletion did not remove (another
+    // program removed it first). With only a residue as its issue the job must still
+    // stop presenting that snapshot as exact.
+    let calls = Arc::new(Calls::default());
+    calls.discovered_extra.store(1, Ordering::Relaxed);
+    *calls.residue.lock().unwrap() = Some(residue(false, io::ErrorKind::DirectoryNotEmpty));
+    let progress = delete_selection(&["only"], calls);
+    assert_eq!(progress.state, OperationState::CompletedWithErrors);
+    assert_eq!(
+        (
+            progress.completed,
+            progress.failed,
+            progress.processed_entries
+        ),
+        (1, 1, 1)
+    );
+    let discovery = &progress.discovery;
+    assert_eq!(discovery.scope, DiscoveryScope::Recursive);
+    assert_eq!(discovery.entries(), Some(2));
+    assert_eq!(
+        discovery.state,
+        DiscoveryState::Unavailable,
+        "{discovery:?}"
+    );
+    assert!(
+        discovery
+            .message
+            .contains("differs from the metadata discovery snapshot"),
+        "{discovery:?}"
+    );
+}
+
+/// A contract test: the engine never treated kind Other as a conflict. It pins the
+/// platform guarantee that a failed restoration is kind Other, so its preserved
+/// location stays the job's error.
 #[tokio::test]
 async fn a_rename_that_stranded_its_entry_fails_without_a_prompt_and_keeps_the_location() {
     // Linux reports a failed restoration as kind Other: the preserved location must
