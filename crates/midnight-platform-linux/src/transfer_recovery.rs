@@ -6,6 +6,7 @@ use rustix::fs::{RenameFlags, renameat_with};
 use std::ffi::OsString;
 
 impl Directory {
+    #[cfg(test)]
     pub(in crate::transfer) fn source_stage(&self, cancel: &Cancellation) -> Result<Self, FsError> {
         namespace::change(cancel, |mut change| {
             self.source_stage_in(cancel, &mut change)

@@ -1411,6 +1411,33 @@ fn symlinked_parent_uses_unknown_geometry_instead_of_path_alias_authority() {
 }
 
 #[test]
+fn ordinary_file_parent_does_not_become_unknown_geometry() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("parent");
+    std::fs::create_dir(&path).unwrap();
+    let parent = Arc::new(File::open(&path).unwrap());
+    let bindings = Bindings::for_parent(&parent, &path).unwrap();
+    let moved = temp.path().join("retained");
+    std::fs::rename(&path, &moved).unwrap();
+    std::fs::write(&path, b"ordinary file").unwrap();
+
+    let Err(failure) = bindings.pin(
+        &parent,
+        &path,
+        OsStr::new("item"),
+        EntryKind::File,
+        false,
+        &Cancellation::default(),
+    ) else {
+        panic!("an ordinary parent file must not become unknown namespace geometry");
+    };
+    assert_eq!(failure.kind, io::ErrorKind::NotADirectory);
+    assert_eq!(failure.path, path);
+    assert_eq!(std::fs::read(&path).unwrap(), b"ordinary file");
+    assert!(moved.is_dir());
+}
+
+#[test]
 fn subdirectory_bind_mounts_do_not_hide_ancestry_behind_known_geometry() {
     let mounts = b"41 1 8:1 / /home rw - ext4 /dev/root rw\n42 41 8:1 /hidden/subtree /alias rw - ext4 /dev/root rw\n";
     assert!(mount_is_filesystem_root(mounts, 41));

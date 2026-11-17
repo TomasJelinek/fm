@@ -20,16 +20,15 @@ pub(super) struct Change<'a> {
 }
 impl<'a> Change<'a> {
     pub(super) fn as_mut(&mut self) -> Option<&mut (dyn TransferNamespaceChange + 'a)> {
-        self.inner.as_mut().map(|inner| &mut **inner)
+        self.inner.as_deref_mut()
     }
     fn incomplete(&mut self, path: &Path, cancel: &Cancellation) -> Result<(), FsError> {
         self.complete = false;
-        if self.opted {
-            if let Some(transaction) = self.as_mut() {
-                if !transaction.reserve_private_child(None, cancel)? {
-                    return Err(invalid(path, "incomplete namespace announcement refused"));
-                }
-            }
+        if self.opted
+            && let Some(transaction) = self.as_mut()
+            && !transaction.reserve_private_child(None, cancel)?
+        {
+            return Err(invalid(path, "incomplete namespace announcement refused"));
         }
         Ok(())
     }
@@ -374,12 +373,12 @@ impl Job {
             return;
         }
         let mut data = self.data.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(before) = before.filter(|id| Some(*id) != pin.original) {
-            if let Some(entries) = data.objects.get_mut(&before) {
-                entries.remove(&(Arc::as_ptr(pin) as usize));
-                if entries.is_empty() {
-                    data.objects.remove(&before);
-                }
+        if let Some(before) = before.filter(|id| Some(*id) != pin.original)
+            && let Some(entries) = data.objects.get_mut(&before)
+        {
+            entries.remove(&(Arc::as_ptr(pin) as usize));
+            if entries.is_empty() {
+                data.objects.remove(&before);
             }
         }
         if let Some(after) = after.filter(|id| Some(*id) != pin.original) {
@@ -416,6 +415,12 @@ impl Drop for Job {
     }
 }
 
+struct PinOptions {
+    kind: EntryKind,
+    source: bool,
+    private: bool,
+}
+
 pub(super) struct Pin {
     _bindings: Arc<Bindings>,
     parent: Option<Arc<Parent>>,
@@ -435,11 +440,14 @@ impl Pin {
         parent: &Arc<File>,
         parent_path: &Path,
         name: &OsStr,
-        kind: EntryKind,
-        source: bool,
-        private: bool,
+        options: PinOptions,
         cancel: &Cancellation,
     ) -> Result<Arc<Self>, FsError> {
+        let PinOptions {
+            kind,
+            source,
+            private,
+        } = options;
         validate_name(name, parent_path)?;
         checked(cancel, parent_path)?;
         let witness = inspect(parent, name, &parent_path.join(name))?;
@@ -482,6 +490,12 @@ impl Pin {
                 pooled_parent(parent, parent_path, cancel)?
             }
             Err(rustix::io::Errno::LOOP) => None,
+            Err(rustix::io::Errno::NOTDIR)
+                if std::fs::symlink_metadata(parent_path)
+                    .is_ok_and(|metadata| metadata.file_type().is_symlink()) =>
+            {
+                None
+            }
             Err(e) => return Err(error(parent_path, e.into())),
         };
         let parent_path = pooled.as_ref().map_or_else(
@@ -725,7 +739,17 @@ impl Bindings {
         source: bool,
         cancel: &Cancellation,
     ) -> Result<Arc<Pin>, FsError> {
-        self.pin_with_kind(parent, path, name, kind, source, false, cancel)
+        self.pin_with_kind(
+            parent,
+            path,
+            name,
+            PinOptions {
+                kind,
+                source,
+                private: false,
+            },
+            cancel,
+        )
     }
 
     pub(super) fn private_pin(
@@ -739,9 +763,11 @@ impl Bindings {
             parent,
             path,
             name,
-            EntryKind::Directory,
-            false,
-            true,
+            PinOptions {
+                kind: EntryKind::Directory,
+                source: false,
+                private: true,
+            },
             cancel,
         )
     }
@@ -756,7 +782,17 @@ impl Bindings {
         name: &OsStr,
         cancel: &Cancellation,
     ) -> Result<Arc<Pin>, FsError> {
-        self.pin_with_kind(parent, path, name, EntryKind::File, false, true, cancel)
+        self.pin_with_kind(
+            parent,
+            path,
+            name,
+            PinOptions {
+                kind: EntryKind::File,
+                source: false,
+                private: true,
+            },
+            cancel,
+        )
     }
 
     fn pin_with_kind(
@@ -764,21 +800,10 @@ impl Bindings {
         parent: &Arc<File>,
         path: &Path,
         name: &OsStr,
-        kind: EntryKind,
-        source: bool,
-        private: bool,
+        options: PinOptions,
         cancel: &Cancellation,
     ) -> Result<Arc<Pin>, FsError> {
-        let pin = Pin::capture(
-            self.clone(),
-            parent,
-            path,
-            name,
-            kind,
-            source,
-            private,
-            cancel,
-        )?;
+        let pin = Pin::capture(self.clone(), parent, path, name, options, cancel)?;
         {
             let mut bindings = self.pins.lock().unwrap_or_else(|e| e.into_inner());
             let entries = bindings.entry(name.to_owned()).or_default();

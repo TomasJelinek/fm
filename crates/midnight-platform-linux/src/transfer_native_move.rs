@@ -47,8 +47,7 @@ fn execute(
     namespace::change(cancel, |mut change| {
         execute_in(
             capture,
-            destination,
-            name,
+            (destination, name),
             replace,
             cancel,
             hooks,
@@ -60,8 +59,7 @@ fn execute(
 
 fn execute_in(
     capture: &Capture,
-    destination: &dyn TransferDirectory,
-    name: &OsStr,
+    (destination, name): (&dyn TransferDirectory, &OsStr),
     replace: Replacement,
     cancel: &Cancellation,
     hooks: (impl FnOnce(), impl FnOnce()),
