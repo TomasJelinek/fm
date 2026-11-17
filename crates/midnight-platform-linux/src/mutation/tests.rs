@@ -788,30 +788,29 @@ fn a_stage_wider_than_its_parent_is_refused_and_removed() {
 }
 
 #[test]
-fn a_failed_capture_reports_where_the_item_may_be_instead_of_an_unused_stage() {
+fn a_failed_capture_names_a_stage_it_cannot_remove_by_what_the_stage_holds() {
     let fixture = tempfile::tempdir().unwrap();
     let source = fixture.path().join("source");
     fs::write(&source, b"selected").unwrap();
     let cancel = Cancellation::default();
     let prepared = super::Prepared::new(&source, None, &cancel).unwrap();
-    // A failed capture request may still have moved the item into the stage (a
-    // lost reply on a network or FUSE filesystem). Here an entry already at the
-    // staged name makes it fail and keeps the stage from being removed.
+    // Another object at the staged name (in a stage as open as its parent, one
+    // another user may have planted) refuses the capture and keeps the stage.
     let staged = super::Staged::create(&prepared).unwrap();
-    let occupied = staged.path.join(super::STAGED_NAME);
-    fs::write(&occupied, b"occupant").unwrap();
+    let occupant = staged.path.join(super::STAGED_NAME);
+    fs::write(&occupant, b"occupant").unwrap();
     let failure = staged.capture(&prepared, &cancel).unwrap_err();
     assert_eq!(failure.kind, ErrorKind::AlreadyExists);
     assert!(
         failure.message.contains(&format!(
-            "the item may have been moved into {}",
-            occupied.display()
+            "the staging directory remains at {} and holds an entry that is not the selected item",
+            staged.path.display()
         )),
         "{}",
         failure.message
     );
-    assert!(!failure.message.contains("unused"), "{}", failure.message);
     assert_eq!(fs::read(&source).unwrap(), b"selected");
+    assert_eq!(fs::read(&occupant).unwrap(), b"occupant");
     // Without a capture request the stage cannot hold the item.
     let staged = super::Staged::create(&prepared).unwrap();
     fs::write(staged.path.join("other"), b"other").unwrap();
@@ -825,6 +824,41 @@ fn a_failed_capture_reports_where_the_item_may_be_instead_of_an_unused_stage() {
         "{}",
         failure.message
     );
+}
+
+#[test]
+fn an_item_moved_by_a_capture_that_reported_failure_is_restored() {
+    let fixture = tempfile::tempdir().unwrap();
+    let source = fixture.path().join("source");
+    fs::write(&source, b"selected").unwrap();
+    let cancel = Cancellation::default();
+    let prepared = super::Prepared::new(&source, None, &cancel).unwrap();
+    let no_reply = || super::error(&source, ErrorKind::TimedOut, "no reply");
+    // The capture request moved the item, but its reply was lost (a network or
+    // FUSE filesystem): the item goes back to its name and the stage is removed.
+    let staged = super::Staged::create(&prepared).unwrap();
+    fs::rename(&source, staged.path.join(super::STAGED_NAME)).unwrap();
+    let failure = staged.abandon(&prepared, no_reply());
+    assert_eq!(failure.message, "no reply");
+    assert_eq!(fs::read(&source).unwrap(), b"selected");
+    assert!(staging_residue(fixture.path()).is_empty());
+    // If another entry took the name meanwhile, the item stays in the stage,
+    // which the error names.
+    let staged = super::Staged::create(&prepared).unwrap();
+    let recovery = staged.path.join(super::STAGED_NAME);
+    fs::rename(&source, &recovery).unwrap();
+    fs::write(&source, b"replacement").unwrap();
+    let failure = staged.abandon(&prepared, no_reply());
+    assert!(
+        failure.message.contains(&format!(
+            "remaining entry preserved at {}",
+            recovery.display()
+        )),
+        "{}",
+        failure.message
+    );
+    assert_eq!(fs::read(&recovery).unwrap(), b"selected");
+    assert_eq!(fs::read(&source).unwrap(), b"replacement");
 }
 
 #[test]

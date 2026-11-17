@@ -7,7 +7,8 @@
 //! permissions on that owned directory, accepted only while no other user can
 //! write to it or while it is exactly as open as its unprotected parent (see
 //! `crate::ownership`), so staging never lets other users change more than the
-//! parent does. A raced replacement is restored without overwrite;
+//! parent does. A raced replacement, like the item a failed capture request still
+//! moved (a lost reply on network or FUSE storage), is restored without overwrite;
 //! if restoration collides it remains in staging and the error gives its path.
 //! This prevents deleting a replacement raced into the original parent. It is
 //! not an isolation boundary against root or another process of the same uid,
@@ -488,7 +489,7 @@ impl Staged {
 
     fn capture(&self, prepared: &Prepared, cancel: &Cancellation) -> Result<(), FsError> {
         if let Err(failure) = prepared.revalidate(cancel) {
-            return Err(self.abandon(failure, false));
+            return Err(self.abandon(prepared, failure));
         }
         if let Err(e) = renameat_with(
             &*prepared.parent,
@@ -497,7 +498,7 @@ impl Staged {
             STAGED_NAME,
             RenameFlags::NOREPLACE,
         ) {
-            return Err(self.abandon(native_error(&prepared.item.path, e), true));
+            return Err(self.abandon(prepared, native_error(&prepared.item.path, e)));
         }
         if let Err(failure) = prepared.identity.verify(
             &self.directory,
@@ -509,27 +510,37 @@ impl Staged {
         Ok(())
     }
 
-    /// Removes the stage after a capture failed and returns `failure`, which names
-    /// a stage that cannot be removed. A capture request that returned an error
-    /// may still have moved the item there (a lost reply on a network or FUSE
-    /// filesystem), so a stage holding the staged name after such a request is
-    /// reported as possibly holding the item rather than as unused.
-    fn abandon(&self, mut failure: FsError, capture_requested: bool) -> FsError {
+    /// Removes the stage after a capture failed and returns `failure`. A capture
+    /// request that returned an error may still have moved the item there (a lost
+    /// reply on a network or FUSE filesystem): the selected item found at the
+    /// staged name is restored to its name, as after any later failure. A stage
+    /// that cannot be removed is named in `failure`, including whether another
+    /// object holds the staged name.
+    fn abandon(&self, prepared: &Prepared, mut failure: FsError) -> FsError {
+        if prepared
+            .identity
+            .verify(
+                &self.directory,
+                OsStr::new(STAGED_NAME),
+                &prepared.item.path,
+            )
+            .is_ok()
+        {
+            return self.restore(prepared, failure);
+        }
         if let Err(cleanup) = self.cleanup() {
-            let staged = self.path.join(STAGED_NAME);
-            if capture_requested
-                && statat(&*self.directory, STAGED_NAME, AtFlags::SYMLINK_NOFOLLOW).is_ok()
-            {
-                failure.message.push_str(&format!(
-                    "; the item may have been moved into {}: {cleanup}",
-                    staged.display()
-                ));
+            let held = statat(&*self.directory, STAGED_NAME, AtFlags::SYMLINK_NOFOLLOW).is_ok();
+            failure.message.push_str(&if held {
+                format!(
+                    "; the staging directory remains at {} and holds an entry that is not the selected item: {cleanup}",
+                    self.path.display()
+                )
             } else {
-                failure.message.push_str(&format!(
+                format!(
                     "; the unused staging directory remains at {}: {cleanup}",
                     self.path.display()
-                ));
-            }
+                )
+            });
         }
         failure
     }
