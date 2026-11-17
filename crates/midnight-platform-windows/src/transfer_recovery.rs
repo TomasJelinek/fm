@@ -448,17 +448,33 @@ impl Stage {
             identity: Some(original_identity),
         };
         after_capture();
-        // A new final entry created during the explicit gap wins; never remove it.
-        let commit = self.directory.revalidate(cancel).and_then(|()| {
+        // The original is captured: a later cancellation no longer interrupts the
+        // commit, which would leave the final name empty. A new final entry created
+        // during the explicit gap wins; never remove it.
+        let settled = Cancellation::default();
+        let commit = self.directory.revalidate(&settled).and_then(|()| {
             mutation
-                .rename(&self.file, &self.directory.file, name, cancel)
+                .rename(&self.file, &self.directory.file, name, &settled)
                 .map_err(|e| error(&path, e))
         });
-        if let Err(error) = commit {
+        if let Err(mut failure) = commit {
+            // As native Move does: restore the original only into an absent final name.
+            // Then only the verified stage remains recovery data; a gap winner keeps
+            // both prior objects in recovery.
+            let restore = mutation.rename(&original, &self.directory.file, name, &settled);
+            let recovery = match restore {
+                Ok(()) => vec![staged_receipt],
+                Err(restore) => {
+                    failure
+                        .message
+                        .push_str(&format!("; original retained for recovery: {restore}"));
+                    vec![original_receipt, staged_receipt]
+                }
+            };
             return Ok(TransferPublication::RecoveryRequired {
                 published: None,
-                recovery: vec![original_receipt, staged_receipt],
-                error,
+                recovery,
+                error: failure,
             });
         }
         self.path = path.clone();

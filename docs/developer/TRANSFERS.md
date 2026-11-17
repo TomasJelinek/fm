@@ -206,7 +206,13 @@ Windows captures the exact guarded old file into a private same-volume directory
 then publishes the verified stage without replacement. This has an explicit
 namespace gap. A concurrent new destination wins; both the old file and the
 verified stage are retained instead of deleting that winner or rolling back over
-it. Linux links its verified anonymous inode into a private directory and uses
+it. Once the old file is captured, a later cancellation no longer interrupts the
+publication, which completes as `Replaced`. Should the publication itself fail after
+the capture (for example because the destination path was rebound), the captured old
+file is renamed back into its still-absent name through the pinned destination
+directory, without replacement, and only the verified stage remains recovery data; if
+a new entry took that name, both objects stay in recovery. Native Move restores a
+staged source the same way. Linux links its verified anonymous inode into a private directory and uses
 an exchange; it checks the displaced identity/revision and retains unexpected
 objects, including links or trees, without following or removing them.
 
@@ -227,7 +233,8 @@ delete recovery data during cleanup:
 
 Before mutation, an ordinary error leaves the existing target untouched. After
 recovery ownership transfers, Drop closes handles but never removes retained
-objects. No implicit rollback or recovery garbage collection is performed.
+objects. Apart from that no-replace restore of a captured old file, no implicit
+rollback or recovery garbage collection is performed.
 
 Jobs shows the exact recovery count and the first 16 paths. Transfer and deletion
 receipts remain throughout the session until explicitly cleared; history is not
