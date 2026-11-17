@@ -52,9 +52,10 @@ destination, then delete that exact source before continuing. Recursive ordinary
 folders use the same per-file checks and remove emptied source folders last.
 There is no source-recovery mode or journal. See the
 [current accepted follow-ups](docs/superpowers/specs/2026-11-07-panel-viewer-followups.md).
-Link/provider moves, link copying in the UI and full metadata preservation remain
-pending (the engine already offers link-preserving Copy to API clients); required
-modified-time preservation currently accepts regular files only.
+Link/provider moves, link copying and full metadata preservation remain pending
+(the engine has an internal link-preserving Copy path that no UI command or public
+API exposes yet); required modified-time preservation currently accepts regular
+files only.
 See [the transfer capabilities and implementation limits](docs/developer/TRANSFERS.md).
 
 Copy/Move pauses for supported Retry/Skip/Cancel decisions on I/O errors, including

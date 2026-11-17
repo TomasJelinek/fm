@@ -293,7 +293,10 @@ fix has targeted passes while broader concurrency/retirement acceptance remains
 open. Independent Copy/Move jobs with disjoint namespaces run concurrently up to
 the configured disk-I/O limit on every storage class; each job copies one file at
 a time and holds its disk slot only while it executes native steps (not while
-paused or waiting for a decision). Endpoint qualification and device budgets for
+paused or waiting for a decision). A namespace change that a running peer refuses
+before any mutation is repeated automatically, without a prompt, once that peer
+changes (a refused Move source capture is still offered as an error). Endpoint
+qualification and device budgets for
 streams within one job remain required. Details are in the repository's security
 and architecture documents.
 

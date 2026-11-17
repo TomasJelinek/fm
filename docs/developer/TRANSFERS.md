@@ -14,8 +14,12 @@ exact length and first/middle/last 64 KiB (all bytes for files up to 192 KiB), r
 at most 192 KiB of source evidence gathered during streaming. It cannot detect
 corruption between samples. It revalidates the opened source
 before accepting replacement consent and immediately before publishing. A failed
-copy stays stopped until an explicitly supported Retry restores its checkpoint;
-cancelled and recovery-terminal copies cannot publish again. A late no-replace
+copy stays stopped until an explicitly supported Retry restores its checkpoint. The
+one automatic retry repeats a namespace change (stage, directory or link creation,
+publication, a Move's source or empty-directory removal) that granted peers refused
+before any mutation, once a refusing peer changes; see
+[operation progress](OPERATION_PROGRESS.md#admission-policy-and-waits). Cancelled
+and recovery-terminal copies cannot publish again. A late no-replace
 collision leaves the verified stage available for a different name or explicit
 replacement; the consumed source stream is not replayed.
 
@@ -118,14 +122,20 @@ Retry retains native identities and the original source/stage handles:
   checks. Readback
   retry restores the verified offset, including after an error advances a cursor.
 - Publication retry is allowed only before namespace mutation. A late collision
-  becomes a fresh name conflict. Integrity failures, changed identities and
-  uncertain publication never authorize retry or deletion.
+  (`AlreadyExists` from publication, replacement binding, directory creation or
+  native rename at the chosen name) becomes a fresh name conflict; an existing
+  private stage or recovery name is an ordinary error, never a silent retry.
+  Integrity failures, changed identities and uncertain publication never authorize
+  retry or deletion. A different name that the destination cannot represent
+  (reserved, invalid or overlong) asks again before it reaches publication.
 - Enumeration errors cannot replay a cursor safely and offer Skip/Cancel, with
   Skip All scoped to this error type. Move retains the skipped subtree/ancestors.
 - File-source deletion Retry keeps the verified destination, obtains a fresh
   native finalizer and rehashes both held objects before another removal attempt.
   It never recopies the file. Directory removal retries the exhausted frame,
-  revalidating bindings without enumerating that directory again.
+  revalidating bindings without enumerating that directory again. When granted
+  peers refused either removal, its retry runs automatically (the file removal
+  still with the full rehash).
 
 Skip All is scoped by phase, native error kind and operation name within one job.
 Successful retries do not increment failed counts; skipped errors and cleanup or
@@ -235,6 +245,12 @@ delete recovery data during cleanup:
 - `RecoveryRequired`: an actual mutation occurred, with an optional published
   path, retained recovery objects and the failure. This is not complete success.
   An unknown post-mutation identity remains `None`, never an invented identity.
+
+For regular files as for links, a `PublishedDurabilityUnconfirmed` file and a
+`RecoveryRequired` outcome with a published path count as completed files (and
+bytes), but never as Move proofs; the failure is recorded, and either outcome stops
+the job: later files would otherwise keep publishing into a destination whose state
+is uncertain.
 
 Before mutation, an ordinary error leaves the existing target untouched. After
 recovery ownership transfers, Drop closes handles but never removes retained
@@ -471,9 +487,9 @@ Remaining times/attributes, permissions, ACLs, extended attributes and alternate
 streams need their declared metadata capability matrix. By default, existing source
 link/special entries are refused.
 
-The engine also implements link-preserving Copy behind
-`Command::EnqueueCopyWithOptions` with `CopyLinkPolicy::Preserve`; the UI does not
-offer it yet. It accepts native sources only, Copy (never Move) with content-only
+The engine also implements link-preserving Copy behind the internal engine command
+`Command::EnqueueCopyWithOptions` with `CopyLinkPolicy::Preserve`; neither the UI nor
+a public API or SDK offers it yet. It accepts native sources only, Copy (never Move) with content-only
 metadata, and recreates each symbolic/directory link from its exact representation:
 stage, sync, independent readback of the staged link, then no-replace publication.
 Special entries stay unsupported. A link cleanup failure or an uncertain link

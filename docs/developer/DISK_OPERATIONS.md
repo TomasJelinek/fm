@@ -26,7 +26,10 @@ waiting for a user decision or for a namespace grant; at each step boundary it
 yields the slot while a call-scoped request is queued; and it readmits the slot
 through the FIFO queue before its next step. A queued exclusive request therefore
 waits for at most one step of each transfer, not for whole transfers, and later
-requests are not stuck behind it. Retained requests queued for a slot never force a
+requests are not stuck behind it. Most steps are bounded (one 256 KiB chunk, one
+name change), but discovering one selected root's tree for progress totals is a
+single native step: a large or slow tree delays the yield (and an acknowledged
+pause) until that discovery returns. Retained requests queued for a slot never force a
 yield. Teardown reclaims a released slot at once, so cancellation cleanup never
 queues (it may briefly exceed the limit). The limit thus bounds how many transfers
 execute native steps at once; it does not enable streams within one transfer or
