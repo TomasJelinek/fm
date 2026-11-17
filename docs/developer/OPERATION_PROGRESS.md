@@ -102,9 +102,10 @@ namespace changes (stage creation, publication, directory creation, removal) of 
 jobs are serialized by one registry turn, which spans the native call. A change of
 a running job that granted peers refuse (opaque, latched or intersecting) mutated
 nothing; the job records those peers and repeats the refused step, without a prompt,
-once one of them changes (its turn, a re-probe, removal or quarantine) or after the
-one-second revalidation, holding no disk slot. Its own turns never end that wait, and
-a peer latched opaque clears only by its removal. This covers stage creation,
+once one of them changes (its turn, a re-probe, removal or quarantine), holding no disk
+slot. Its own turns never end that wait. A peer latched opaque clears only by its
+removal; while any refusing peer is not latched, the step is also revalidated once per
+second for external changes the registry cannot see. This covers stage creation,
 publication, directory creation, empty-directory removal of a Move and its verified
 source removal (whose retry rebuilds the finalizer and rehashes both files first); a
 refused Move source capture is still offered as an error. A refusal by a quarantined
