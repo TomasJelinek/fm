@@ -16,16 +16,24 @@ Options can override suffixes and priority. Removing the package removes this
 provider; Alt+F3 still selects the basic text viewer. SVG retains image routing.
 
 `midnight-web-viewer-host` validates package identity and dependencies, owns the
-browser supervisor and brokers reads on background workers. Source lengths and
-offsets are `u64`; reads are at most 256 KiB. Resource IDs grant access only to
-captured content. Native source labels, archive paths and temporary filenames do
-not grant authority. The optional `ContentResources` capability captures relative
-assets against pinned directories or an archive mount. Native descendants reject
-links and revalidate held ancestors/source revisions. Archive descendants use
-mount/node identities and raw names. Generated documents have no implicit scope.
+browser supervisor and brokers reads on the session's backend actor thread, the
+same thread that forwards input and acknowledges frames (never a UI thread). Source
+lengths and offsets are `u64`; reads are at most 256 KiB. Resource IDs grant access
+only to captured content. Native source labels, archive paths and temporary
+filenames do not grant authority. The optional `ContentResources` capability
+captures relative assets against pinned directories or an archive mount. Relative
+URLs resolve lexically like a browser: `../img/logo.png` from `css/site.css` names
+`img/logo.png`, while any path that would leave the captured scope root is denied.
+Native descendants reject links and revalidate held ancestors/source revisions.
+Archive descendants use mount/node identities and raw names. Generated documents
+have no implicit scope.
 
 Every message has a session, document generation and sequence. Resize and mouse
 move coalesce only when adjacent; key/button transitions preserve ordering. The
+input queue holds 64 commands. Rather than drop a key or button release and leave
+the page with stuck input, a command that does not fit stops the browser session
+and publishes one terminal error (*Browser input overflowed while the page was busy;
+reopen the document.*) that the viewer reports like any browser failure. The
 host retains at most one pending painted frame. Replaced document generations and
 viewport revisions cannot publish stale pixels. Transport budgets bound messages
 and viewport memory, not complete file sizes. Frame acknowledgements and close/EOF

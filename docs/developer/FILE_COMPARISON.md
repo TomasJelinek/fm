@@ -59,6 +59,39 @@ worker. The UI stores original PathBuf values separately from lossy display stri
 an unchanged field keeps the exact native bytes/UTF-16. An edited field explicitly
 supplies a new Unicode path. No MAX_PATH buffer is introduced.
 
+## Reading, fonts and input
+
+Text is read in 256 KiB blocks and image sources by the restricted image viewers;
+every read is admitted by the process-wide I/O gate. The application installs
+`Service::with_storage_hint`, which answers on the worker from the installed native
+filesystem's storage kind of each file's folder: only a positively identified local
+SSD is admitted as shared I/O, so a long copy cannot hold back such comparisons.
+Unknown, rotational and network storage, and a service without a hint, stay
+exclusive. Installed image viewers are discovered once per service by the first
+comparison that needs them (status *Checking installed image viewers…*); opening an
+image session still revalidates its package.
+
+Text must be UTF-8, or UTF-16 with a byte order mark. Tab, line breaks, vertical tab,
+form feed (page breaks in sources) and escape (coloured logs) are text; the last three
+are shown as the control pictures ␋, ␌ and ␛. NUL and other control characters
+mark the file as binary.
+
+The installed fixed-pitch families are scanned on their own thread; the scan reads
+every installed family and can take seconds on a loaded machine. The first frame is
+therefore painted in the generic monospace family. When the catalog arrives, the
+preferred family is resolved (case-insensitive match, else Consolas, else generic
+monospace), the frame is repainted and the font chooser leaves its disabled
+*Loading fonts…* state. The catalog is cached for the rest of the process.
+
+Arrow keys move exactly one row (`Input::Lines`), Page Up/Down move by the rows that
+were fully visible (`Input::Pages`), and wheel distances are converted with the painted
+row height, so paging neither skips nor repeats lines at any font size. Images pan 24
+logical pixels per line and one viewport per page. The UI keeps at most 64 inputs
+while the worker is busy: repeated line, page and scroll steps accumulate, the newest
+geometry replaces a queued one and is never dropped, and the oldest navigation input
+is shed first. An idle worker blocks on its input queue instead of polling; only a
+pending font catalog bounds that wait.
+
 ## Presentation and tests
 
 The same native comparator window hosts the File A / File B form and the resulting

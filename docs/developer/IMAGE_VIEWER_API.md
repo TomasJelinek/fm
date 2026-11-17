@@ -1,15 +1,16 @@
 # Restricted image and document viewer API
 
 Image and paginated document viewers are independent executable packages. The public workspace is
-`image-viewer-api/`, containing `midnight-image-viewer-api` and
-`midnight-image-viewer-sdk` version 0.2.0. Plugins consume immutable released
+`image-viewer-api/`, containing `midnight-image-viewer-api` version 0.2.0 and
+`midnight-image-viewer-sdk` version 0.3.0. Plugins consume immutable released
 registry packages; they never depend on or patch application crates. The SDK
-uses the shared public `midnight-worker-sdk` for sandbox startup. The separate
-host crate is `midnight-image-viewer-host`.
+uses the shared public `midnight-worker-sdk` (0.2.0) for sandbox startup. The
+separate host crate is `midnight-image-viewer-host`.
 
-Version 0.2.0 preserves every existing MIV1 image message and adds paginated
-document messages. Existing 0.1.0 release archives remain immutable; migrated
-plugins explicitly pin SDK 0.2.0 and its new lockfile checksums.
+API version 0.2.0 preserves every existing MIV1 image message and adds paginated
+document messages. SDK 0.3.0 keeps that protocol and builds on
+`midnight-worker-sdk` 0.2.0. Existing 0.1.0 release archives remain immutable; the
+image and PDF plugins explicitly pin SDK 0.3.0 and its lockfile checksums.
 Both public member manifests declare their version explicitly. They must not
 inherit `version.workspace`: Cargo also adopts the API as a host path dependency,
 where the root application workspace has an independent version. Release archive
