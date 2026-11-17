@@ -12,14 +12,21 @@ struct Bridge<'a> {
     source: &'a mut dyn ReadSeek,
     length: u64,
 }
+/// Largest single brokered read.
+const MAX_READ: usize = 256 * 1024;
 unsafe extern "C" fn read(opaque: *mut c_void, buffer: *mut u8, length: c_int) -> c_int {
-    if opaque.is_null() || buffer.is_null() || length <= 0 || length > 256 * 1024 {
+    if opaque.is_null() || buffer.is_null() || length <= 0 {
         return -22;
     }
+    // avio_read hands a request larger than its 64 KiB buffer (a whole AVI chunk or
+    // Matroska block) directly to this callback. A short count is valid for
+    // read_packet and FFmpeg continues reading, so clamp instead of failing.
+    let length = (length as usize).min(MAX_READ);
     catch_unwind(AssertUnwindSafe(|| {
-        // SAFETY: with_input retains Bridge and the decoder-owned writable AVIO buffer until input drop.
+        // SAFETY: with_input retains Bridge and the decoder-owned writable AVIO buffer until
+        // input drop. FFmpeg provides at least the requested length; `length` is clamped below it.
         let bridge = unsafe { &mut *opaque.cast::<Bridge<'_>>() };
-        let buffer = unsafe { std::slice::from_raw_parts_mut(buffer, length as usize) };
+        let buffer = unsafe { std::slice::from_raw_parts_mut(buffer, length) };
         match bridge.source.read(buffer) {
             Ok(0) => ffi::AVERROR_EOF,
             Ok(count) => count as c_int,
@@ -143,6 +150,16 @@ pub(super) fn with_input<T>(
         decode(&mut input)
     }
 }
+/// Container start time in AV_TIME_BASE units; zero when the container leaves it unset.
+pub(super) fn start_time(input: &ffmpeg::format::context::Input) -> i64 {
+    // SAFETY: Input owns a live, opened format context for the duration of this borrow.
+    let start = unsafe { (*input.as_ptr()).start_time };
+    if start == ffi::AV_NOPTS_VALUE {
+        0
+    } else {
+        start
+    }
+}
 pub(super) fn limit_decoder(context: &mut ffmpeg::codec::context::Context) {
     // SAFETY: the caller exclusively owns this unopened codec context. Native decode is single
     // threaded; the host supplies bounded CPU parallelism across independent restricted helpers.
@@ -196,17 +213,24 @@ pub(super) fn rotation(stream: &ffmpeg::Stream<'_>) -> io::Result<i32> {
         .rem_euclid(360))
 }
 
+/// AVColorPrimaries/AVColorTransferCharacteristic values shown without gamut or tone
+/// mapping: BT.709 (1), unspecified (2) and the SD gamuts BT.470BG (5) and SMPTE 170M
+/// (6), which differ only slightly from BT.709; BT.709/unspecified/BT.601 and sRGB
+/// transfers. Wide-gamut and HDR input waits for a reviewed tone mapper.
+fn displayable(primaries: i32, transfer: i32) -> bool {
+    matches!(primaries, 1 | 2 | 5 | 6) && matches!(transfer, 1 | 2 | 6 | 13)
+}
 pub(super) fn color_conversion(
     frame: &ffmpeg::frame::Video,
     scaling: &mut ffmpeg::software::scaling::context::Context,
 ) -> io::Result<bool> {
     // SAFETY: both borrowed objects are live and scaling is exclusively owned. Coefficient pointers
-    // are static FFmpeg tables. Reject wide-gamut/HDR input until a reviewed tone mapper is available.
+    // are static FFmpeg tables.
     unsafe {
         let frame = &*frame.as_ptr();
         let primaries = frame.color_primaries as i32;
         let transfer = frame.color_trc as i32;
-        if !matches!(primaries, 1 | 2) || !matches!(transfer, 1 | 2 | 6 | 13) {
+        if !displayable(primaries, transfer) {
             return Err(io::Error::new(
                 io::ErrorKind::Unsupported,
                 "Video color space requires unsupported gamut or HDR conversion",
@@ -249,5 +273,20 @@ pub(super) fn color_conversion(
             return Err(io::Error::other("Video color conversion failed"));
         }
         Ok(transfer != 13 && !(transfer == 2 && rgb))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn sd_tagged_streams_are_displayable_but_wide_gamut_and_hdr_are_not() {
+        // The full BT.601 triplet that ffmpeg/libvpx write for smpte170m sources.
+        assert!(super::displayable(6, 6));
+        assert!(super::displayable(5, 6));
+        assert!(super::displayable(1, 1) && super::displayable(2, 13));
+        // BT.2020 gamut, PQ and HLG transfers.
+        assert!(!super::displayable(9, 1));
+        assert!(!super::displayable(1, 16));
+        assert!(!super::displayable(9, 18));
     }
 }

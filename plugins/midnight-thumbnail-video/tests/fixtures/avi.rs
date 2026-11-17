@@ -17,40 +17,51 @@ fn list(kind: &[u8; 4], chunks: &[Vec<u8>]) -> Vec<u8> {
 fn word(bytes: &mut [u8], offset: usize, value: u32) {
     bytes[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
 }
+/// The BGR color of uncompressed frame `index`.
+pub fn color(index: u8) -> [u8; 3] {
+    [index.wrapping_mul(40), 255 - index.wrapping_mul(40), 30]
+}
 /// Authored 2x2, six-frame uncompressed AVI fixture; no downloaded media or external encoder.
 pub fn video() -> Vec<u8> {
+    sized_video(2, 2, 6, 6)
+}
+/// Authored uncompressed 6 fps AVI with `frames` solid-color frames. Its headers
+/// declare `declared` frames, which may overstate the content like a partial download.
+pub fn sized_video(width: u32, height: u32, frames: u8, declared: u32) -> Vec<u8> {
+    let row = (width as usize * 3).next_multiple_of(4);
+    let frame_bytes = (row * height as usize) as u32;
     let mut header = vec![0; 56];
     word(&mut header, 0, 166_667);
-    word(&mut header, 16, 6);
+    word(&mut header, 16, declared);
     word(&mut header, 24, 1);
-    word(&mut header, 32, 2);
-    word(&mut header, 36, 2);
+    word(&mut header, 32, width);
+    word(&mut header, 36, height);
     let mut stream = vec![0; 56];
     stream[..4].copy_from_slice(b"vids");
     stream[4..8].copy_from_slice(b"DIB ");
     word(&mut stream, 20, 1);
     word(&mut stream, 24, 6);
-    word(&mut stream, 32, 6);
-    word(&mut stream, 36, 16);
-    stream[52..54].copy_from_slice(&2u16.to_le_bytes());
-    stream[54..56].copy_from_slice(&2u16.to_le_bytes());
+    word(&mut stream, 32, declared);
+    word(&mut stream, 36, frame_bytes);
+    stream[52..54].copy_from_slice(&(width as u16).to_le_bytes());
+    stream[54..56].copy_from_slice(&(height as u16).to_le_bytes());
     let mut bitmap = vec![0; 40];
     word(&mut bitmap, 0, 40);
-    word(&mut bitmap, 4, 2);
-    word(&mut bitmap, 8, 2);
+    word(&mut bitmap, 4, width);
+    word(&mut bitmap, 8, height);
     bitmap[12..14].copy_from_slice(&1u16.to_le_bytes());
     bitmap[14..16].copy_from_slice(&24u16.to_le_bytes());
-    word(&mut bitmap, 20, 16);
+    word(&mut bitmap, 20, frame_bytes);
     let streams = list(b"strl", &[chunk(b"strh", &stream), chunk(b"strf", &bitmap)]);
     let headers = list(b"hdrl", &[chunk(b"avih", &header), streams]);
-    let frames: Vec<_> = (0u8..6)
+    let frames: Vec<_> = (0..frames)
         .map(|index| {
-            let mut pixels = Vec::new();
-            for _ in 0..2 {
-                for _ in 0..2 {
-                    pixels.extend_from_slice(&[index * 40, 255 - index * 40, 30]);
+            let mut pixels = Vec::with_capacity(frame_bytes as usize);
+            for _ in 0..height {
+                for _ in 0..width {
+                    pixels.extend_from_slice(&color(index));
                 }
-                pixels.extend_from_slice(&[0, 0]);
+                pixels.resize(pixels.len().next_multiple_of(4), 0);
             }
             chunk(b"00db", &pixels)
         })

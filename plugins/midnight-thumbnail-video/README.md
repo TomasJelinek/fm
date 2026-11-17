@@ -34,6 +34,14 @@ visible videos request up to five additional samples. The host queues all visibl
 selected videos fairly, gives hover priority, cancels offscreen work and persists
 each successfully generated frame in its ordinary bounded disk cache.
 
+Samples sit at 10% to 85% of the container duration, counted from the container
+start time. When no frame at or after a sample target decodes (a header overstating
+a partial download, or sparse keyframes exhausting the 4096-packet budget), the
+latest decoded frame is used instead. Packets larger than one 256 KiB brokered read
+(uncompressed and FFV1 frames, large VP8/VP9 keyframes) are read in several reads.
+BT.709, unspecified and SD (BT.470BG, SMPTE 170M) primaries are shown without gamut
+mapping; wide-gamut and HDR streams are rejected.
+
 Primary sources checked 6 November 2026:
 
 - [FFmpeg release versions](https://www.ffmpeg.org/download.html)
