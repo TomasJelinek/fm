@@ -1,13 +1,11 @@
 #![cfg(windows)]
+#[path = "support/junction_windows.rs"]
+mod junction;
 use midnight_worker_platform::store::PrivateStore;
 use std::{
     ffi::OsString,
     fs,
-    os::windows::{
-        ffi::{OsStrExt, OsStringExt},
-        process::CommandExt,
-    },
-    path::Path,
+    os::windows::ffi::{OsStrExt, OsStringExt},
 };
 
 fn directory() -> tempfile::TempDir {
@@ -72,27 +70,7 @@ fn buckets_reject_junctions_nonprivate_directories_and_ordinary_files() {
     let outside = fixture.path().join("outside");
     fs::create_dir(&outside).unwrap();
     let store = PrivateStore::open(&path).unwrap();
-    let helper = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../midnight-platform/tests/create-junction.ps1");
-    let units: Vec<u16> = outside.as_os_str().encode_wide().collect();
-    let target = if units.starts_with(&[92, 92, 63, 92]) {
-        OsString::from_wide(&units[4..])
-    } else {
-        outside.clone().into_os_string()
-    };
-    let output = std::process::Command::new("pwsh")
-        .args(["-NoProfile", "-File"])
-        .arg(helper)
-        .arg(path.join("ab"))
-        .arg(target)
-        .creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW)
-        .output()
-        .unwrap();
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
+    junction::create(&path.join("ab"), &outside).unwrap();
     assert!(store.bucket("ab", false).is_err());
     assert!(store.bucket("ab", true).is_err());
     assert!(PrivateStore::open(&path.join("ab")).is_err());

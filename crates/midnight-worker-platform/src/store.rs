@@ -25,19 +25,32 @@ pub struct Transaction {
     file: File,
     generation: Option<u64>,
 }
+/// A generation no cache instance can have remembered: randomly keyed per call.
+fn fresh_generation() -> u64 {
+    use std::hash::{BuildHasher, Hasher};
+    let mut hasher = std::collections::hash_map::RandomState::new().build_hasher();
+    hasher.write_u128(
+        SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .map_or(0, |elapsed| elapsed.as_nanos()),
+    );
+    hasher.write_u32(std::process::id());
+    hasher.finish()
+}
 impl Transaction {
     /// Invalid or interrupted generation writes require a fresh directory snapshot.
     pub fn generation(&self) -> Option<u64> {
         self.generation
     }
     /// Call before any mutation. A failed transaction must not publish its index generation.
+    /// A missing or torn record (for example after a crash between its two writes) is
+    /// repaired with a fresh random generation, so later transactions can synchronize again
+    /// and no instance can mistake a value it remembers for the repaired one.
     pub fn advance(&mut self) -> io::Result<()> {
-        let Some(generation) = self.generation else {
-            return Ok(());
+        let next = match self.generation {
+            Some(generation) => generation.wrapping_add(1),
+            None => fresh_generation(),
         };
-        let next = generation
-            .checked_add(1)
-            .ok_or_else(|| io::Error::other("Cache generation exhausted"))?;
         self.write_generation(next)
     }
     fn write_generation(&mut self, value: u64) -> io::Result<()> {
@@ -70,10 +83,18 @@ impl PrivateStore {
         }
         self.0.bucket(prefix, create).map(|root| root.map(Self))
     }
-    /// Backend only. The persistent lock inode is never renamed or removed.
+    /// Backend only. The persistent lock inode is never renamed or removed. Waits up to one
+    /// second for another instance or process, then reports `WouldBlock`.
     pub fn transaction(&self) -> io::Result<Transaction> {
+        self.transaction_within(Duration::from_secs(1))
+    }
+    /// Like [`Self::transaction`], but reports `WouldBlock` at once when the store is busy.
+    pub fn try_transaction(&self) -> io::Result<Transaction> {
+        self.transaction_within(Duration::ZERO)
+    }
+    fn transaction_within(&self, wait: Duration) -> io::Result<Transaction> {
         let (mut file, created) = self.0.lock_file()?;
-        let deadline = Instant::now() + Duration::from_secs(1);
+        let deadline = Instant::now() + wait;
         loop {
             match file.try_lock() {
                 Ok(()) => {
@@ -89,7 +110,8 @@ impl PrivateStore {
                     };
                     let mut transaction = Transaction { file, generation };
                     if created {
-                        transaction.write_generation(0)?;
+                        // A recreated store must not repeat a value an instance remembers.
+                        transaction.write_generation(fresh_generation())?;
                     }
                     return Ok(transaction);
                 }

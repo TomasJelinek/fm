@@ -76,24 +76,45 @@ fn independent_store_transactions_wait_for_the_current_owner() {
     let first = PrivateStore::open(&path).unwrap();
     let second = PrivateStore::open(&path).unwrap();
     let transaction = first.transaction().unwrap();
-    let (started, ready) = std::sync::mpsc::channel();
+    // Exclusion is observed directly instead of waiting for a timeout to elapse.
+    assert_eq!(
+        second.try_transaction().err().unwrap().kind(),
+        std::io::ErrorKind::WouldBlock
+    );
     let (done, completed) = std::sync::mpsc::channel();
     let worker = std::thread::spawn(move || {
-        started.send(()).unwrap();
+        // Usually still owned here: the bounded wait then ends when the owner releases it.
         let _transaction = second.transaction().unwrap();
         done.send(()).unwrap();
     });
-    ready.recv().unwrap();
-    assert!(
-        completed
-            .recv_timeout(std::time::Duration::from_millis(100))
-            .is_err()
-    );
     drop(transaction);
     completed
         .recv_timeout(std::time::Duration::from_secs(2))
         .unwrap();
     worker.join().unwrap();
+}
+
+#[test]
+fn torn_generation_record_is_repaired_and_synchronizes_again() {
+    let root = directory();
+    let path = root.path().join("cache");
+    let store = PrivateStore::open(&path).unwrap();
+    let created = store.transaction().unwrap().generation().unwrap();
+    for torn in [&[0xa5; 16][..], &[1; 8][..], &[][..]] {
+        // A process killed between the two halves of a generation write, or before it.
+        std::fs::write(path.join("store.lock"), torn).unwrap();
+        let mut transaction = store.transaction().unwrap();
+        assert_eq!(transaction.generation(), None);
+        transaction.advance().unwrap();
+        let repaired = transaction.generation().unwrap();
+        drop(transaction);
+        // The repair persists, and differs from a value an instance could remember.
+        let mut transaction = store.transaction().unwrap();
+        assert_eq!(transaction.generation(), Some(repaired));
+        assert_ne!(repaired, created);
+        transaction.advance().unwrap();
+        assert_eq!(transaction.generation(), Some(repaired.wrapping_add(1)));
+    }
 }
 
 #[test]
@@ -131,11 +152,12 @@ fn store_transaction_child() {
     let path = std::env::var_os("MIDNIGHT_STORE_LOCK_TEST").unwrap();
     let store = PrivateStore::open(std::path::Path::new(&path)).unwrap();
     if std::env::var("MIDNIGHT_STORE_LOCK_BUSY").unwrap() == "1" {
+        // Report the other process's ownership at once instead of spinning for a second.
         assert_eq!(
-            store.transaction().err().unwrap().kind(),
+            store.try_transaction().err().unwrap().kind(),
             std::io::ErrorKind::WouldBlock
         );
     } else {
-        assert!(store.transaction().is_ok());
+        assert!(store.try_transaction().is_ok());
     }
 }

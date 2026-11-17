@@ -22,7 +22,8 @@ fn no_additional_cpu_limit_keeps_inherited_job_policy() {
         .unwrap();
         midnight_worker_sdk::read_policy_ready(&mut worker.output).unwrap();
         worker.process.kill().unwrap();
-        let _ = worker.process.wait();
+        // A killed worker reports its nonzero exit as Ok(false), exactly as on Linux.
+        assert!(!worker.process.wait().unwrap());
         return;
     }
     // SAFETY: a new unnamed job; acquire ownership only after successful creation.

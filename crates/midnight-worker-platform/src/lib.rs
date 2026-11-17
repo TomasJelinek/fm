@@ -11,6 +11,9 @@ mod platform;
 #[path = "linux.rs"]
 mod platform;
 pub use platform::Process;
+/// Hold while spawning a child that inherits every inheritable handle (Windows only).
+#[cfg(windows)]
+pub use platform::lock_process_creation;
 pub mod browser;
 pub mod spool;
 pub mod store;

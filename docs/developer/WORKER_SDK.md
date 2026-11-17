@@ -34,6 +34,8 @@ Both launch forms return a process guard and pipes. Each service enforces its
 wall deadline, cancellation and wire
 bounds separately. Guards kill and reap unfinished children. CPU limits apply
 to a process lifetime; bounded scheduling controls concurrent processes.
+`Process::wait` returns `Ok(false)` for a nonzero exit status on every platform
+(including a killed worker); `wait_terminated` confirms reaping regardless of status.
 
 Windows uses the fixed `MidnightExplorer.RestrictedWorker.v1` AppContainer,
 without capabilities, and an explicit inherited-handle list. A suspended process
@@ -41,6 +43,13 @@ is assigned to a Job Object with memory, the selected aggregate CPU policy,
 single-process and kill-on-close
 limits before resuming. Only required system loader environment survives.
 The SDK verifies AppContainer and job restrictions before ready.
+Pipe and `NUL` handles are created non-inheritable. The three child handles become
+inheritable only for the worker's `CreateProcessW` call, under a process-wide
+creation lock (`midnight_worker_platform::lock_process_creation`), and are closed
+before it is released; the browser broker launch follows the same rule. An
+in-process launcher that inherits every inheritable handle, such as
+`std::process::Command`, can capture a worker's pipe ends only if it runs during
+that single call; launchers that hold the creation lock while spawning cannot.
 
 The optional FFmpeg provider requires ReadAndExecute access for that fixed
 worker SID on exactly `avcodec-63.dll`, `avformat-63.dll`, `avutil-61.dll` and
@@ -64,7 +73,7 @@ deadline termination. Cross-compilation alone does not qualify a platform.
 
 ## Thumbnail protocol and backend
 
-The separate `midnight-thumbnail-api` 0.1.0 and `midnight-thumbnail-sdk` 0.2.0 crates
+The separate `midnight-thumbnail-api` 0.1.0 and `midnight-thumbnail-sdk` 0.2.1 crates
 define `MTH1` framed messages and a broker `Read + Seek` adapter. Helpers receive
 request ID, source byte length, requested dimensions and sample index, never a
 pathname, credentials or URL. Offset/length reads use a backend source lease
@@ -84,12 +93,17 @@ Offscreen jobs cancel. Decode failures retry after 30 seconds. Every accepted
 sample must persist before presentation. Private atomic cache records include
 opaque identity, revision, decoder version and dimensions. Clear-cache waits
 for cancelled workers, removes old records and starts a new visible generation
-so late results cannot resurrect cleared entries.
+so late results cannot resurrect cleared entries. The shared store's generation
+record is advanced under an exclusive cross-process transaction before each
+mutation; a torn or missing record (for example after a crash between its two
+writes) is rewritten with a fresh random generation by the next mutation, so cache
+instances synchronize again instead of rescanning the store on every write.
 
 ## Independent builds and deployment
 
 The `worker-packages` binary in `api/tools/package` produces a separate registry
-bundle containing worker, thumbnail, image-viewer and optional filesystem APIs. Its
+bundle containing the worker, thumbnail, filesystem and image-viewer APIs/SDKs; it
+fails if any of them is missing. Its
 `.cargo/registry.toml` declares the registry without redirecting third-party
 dependencies. Independent plugins pin registry versions and have no host path
 dependencies. Existing viewer registry artifacts remain unchanged.
