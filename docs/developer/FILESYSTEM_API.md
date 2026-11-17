@@ -15,6 +15,10 @@ worker package. Filesystem mutation remains outside this read-only worker API.
 The authoritative public definitions are [lib.rs](../../filesystem-api/midnight-filesystem-api/src/lib.rs)
 and [wire.rs](../../filesystem-api/midnight-filesystem-api/src/wire.rs). The
 [wire reference](../../filesystem-api/PROTOCOL.md) specifies every tag and field.
+It is packaged in the released 0.4.0 crate and therefore not edited in place: its
+statement that cancellation terminates the worker predates the current host, whose
+behavior is described under [errors, cancellation and resource bounds](#errors-cancellation-and-resource-bounds).
+Workers must still tolerate termination at any time.
 The independent [archive plugin](../../plugins/midnight-fs-archive/README.md) is a
 working implementation. Its parser owns no native file authority and imports no
 application crates.
