@@ -1,0 +1,28 @@
+name: Rust setup
+description: Install the rust-toolchain.toml toolchain explicitly and restore the Cargo download cache.
+runs:
+  using: composite
+  steps:
+    # Current rustup no longer installs the active toolchain through `rustup show`;
+    # an explicit install also fails clearly instead of relying on proxy downloads.
+    - name: Install pinned toolchain
+      shell: pwsh
+      run: |
+        $toolchain = Get-Content -LiteralPath rust-toolchain.toml -Raw
+        $channel = [regex]::Match($toolchain, '(?m)^channel = "([^"]+)"').Groups[1].Value
+        $toolchainProfile = [regex]::Match($toolchain, '(?m)^profile = "([^"]+)"').Groups[1].Value
+        $listed = [regex]::Match($toolchain, '(?m)^components = \[([^\]]*)\]').Groups[1].Value
+        $components = @([regex]::Matches($listed, '"([^"]+)"') | ForEach-Object { '--component'; $_.Groups[1].Value })
+        if (-not $channel -or -not $toolchainProfile) { throw 'rust-toolchain.toml lacks a channel or profile' }
+        rustup toolchain install $channel --profile $toolchainProfile @components
+        if ($LASTEXITCODE -ne 0) { throw 'Pinned toolchain installation failed' }
+    # Registry and Git downloads only; build outputs stay job-local.
+    - uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/registry/index/
+          ~/.cargo/registry/cache/
+          ~/.cargo/git/db/
+        key: cargo-${{ runner.os }}-${{ github.job }}-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
+        restore-keys: |
+          cargo-${{ runner.os }}-${{ github.job }}-

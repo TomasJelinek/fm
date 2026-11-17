@@ -49,13 +49,19 @@ optimization always improves performance.
 
 Run `build.bat release` or `./build.sh release` (Cargo uses `--release`), then smoke-test that actual
 executable. These helpers also build the platform's independent native and network
-filesystem packages and five viewer packages against the public APIs/SDKs and stage them under
-`filesystems/` and `viewers/` beside the executable.
+filesystem packages, the six viewer packages, both thumbnail workers and the archive
+worker against the public APIs/SDKs and stage them under `filesystems/`, `viewers/`
+and `thumbnailers/` beside the executable. Every module is required.
 Text/binary, source and Markdown use the native C ABI; image and PDF viewers use
-the restricted process protocol and its separate worker SDK release.
+the restricted process protocol and its separate worker SDK release; the HTML
+viewer is a restricted web worker with its CEF runtime.
 Direct Cargo builds compile only the host; use `scripts/build-native-filesystem.ps1`
-or `.sh`, `scripts/build-network-filesystem.ps1` or `.sh`, and
-`scripts/build-viewers.ps1` or `.sh` to build its packages separately.
+or `.sh`, `scripts/build-network-filesystem.ps1` or `.sh`,
+`scripts/build-viewers.ps1` or `.sh`, `scripts/build-default-thumbnailers.ps1` or
+`.sh` and `scripts/build-archive-filesystem.ps1` or `.sh` to build its packages
+separately. Each rebuild replaces a package's generated notices (and the whole
+thumbnail directory), so files of a dependency or FFmpeg version that is no longer
+shipped never reach a deployment or archive.
 The native helper's test and offline options are documented in the
 [native filesystem build instructions](developer/NATIVE_FILESYSTEM_API.md#building-the-native-package).
 The network helper has the same staging/test/offline options; its
@@ -81,7 +87,10 @@ is unsigned. Archive checksums establish download integrity, not code signing.
 
 `scripts/package-release.py` uses Python 3.11+ standard-library tools to package an
 already built/verified executable. It neither builds nor publishes. All output must
-be under `_build`; it refuses an existing staging directory or archive. Generate
+be under `_build`; it refuses an existing staging directory or archive. Every module
+input and the README version are validated before the staging directory is created,
+so a refused run leaves nothing that blocks the next attempt. The `--readme` file
+must begin with `Midnight Explorer VERSION ` for the workspace version. Generate
 target-filtered metadata with `cargo metadata --locked --format-version 1
 --filter-platform TARGET` and provide it using `--metadata`. Metadata source paths
 must be accessible from the packaging host.
@@ -119,19 +128,26 @@ build directories separate when sharing one checkout.
 
 Archives include run instructions, feature/shortcut/security requirements,
 `BUILD-INFO.json` with the source revision and executable SHA-256, the lockfile,
-dependency inventory and original license texts. The packager requires all five
+dependency inventory and original license texts. The packager requires all six
 viewer packages under `viewers/` (or `--viewers-root`), validates their platform,
-native ABI or image-worker protocol, code entry and package paths, and records
-their manifests, file sizes and SHA-256 values in `BUILD-INFO.json`. Plugin-owned
-notices remain inside each package.
-The packager also requires one compatible native and one network filesystem provider under
-`filesystems/` (or `--filesystems-root`). It validates the native protocol, ABI,
-target, address encoding, capabilities, library entry and embedded notices before
-copying any filesystem packages. Network manifests require ABI 1.2, opaque addresses
-and explicit activate/refresh/resolve-text capabilities. Optional archive workers
-can share that root; library entries and archive executable entries remain distinct in
-`BUILD-INFO.json`. Optional thumbnail workers use `thumbnailers/` (or
-`--thumbnailers-root`). Native providers run with application authority.
+native ABI, image-worker or web-worker protocol, code entry and package paths (and
+the HTML viewer's complete CEF runtime inventory), and records their manifests, file
+sizes and SHA-256 values in `BUILD-INFO.json`. Plugin-owned notices remain inside
+each package. The packager also requires and ships `midnight-elevated-listing`
+(`.exe` on Windows) beside the executable. **Retry with authorization** uses it only
+when an administrator (Windows, for example below `C:\Program Files`) or root (Linux,
+for example `/opt/midnight-explorer`) installs the extracted folder where standard
+users cannot change it; the bundled README explains this. Private per-user
+installations, including `build.bat`'s, do not offer it.
+The packager also requires one compatible native and one network filesystem provider
+and the `midnight.fs.archive` worker under `filesystems/` (or `--filesystems-root`).
+It validates the native protocol, ABI, target, address encoding, capabilities,
+library entry and embedded notices before copying any filesystem packages. Network
+manifests require ABI 1.2, opaque addresses and explicit activate/refresh/resolve-text
+capabilities. Library entries and archive executable entries remain distinct in
+`BUILD-INFO.json`. Both the image and the video thumbnail worker are required under
+`thumbnailers/` (or `--thumbnailers-root`), with the FFmpeg runtime, its corresponding
+source and build notices. Native providers run with application authority.
 It rejects symlinks, escaped paths and missing notices. Package hashes establish
 integrity, not publisher authenticity. Native C ABI viewers retain application
 authority; image decoding additionally runs in the required restricted worker.

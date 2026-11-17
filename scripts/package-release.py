@@ -604,12 +604,17 @@ def write_archive(stage, archive, binary_name, archive_format, executables=()):
             bundle.add(stage, arcname=stage.name, filter=safe_tar_member)
 
 
-def copy_authorization_helper(stage, binary, target):
+def authorization_helper(binary, target):
     name = "midnight-elevated-listing.exe" if target.endswith("windows-msvc") else "midnight-elevated-listing"
     source = (Path(binary).parent / name).absolute()
     metadata = plain_metadata(source)
     if source.resolve() != source or not stat.S_ISREG(metadata.st_mode) or metadata.st_size > 512 * 1024 * 1024:
         raise ValueError("Authorization helper must be a regular, bounded, unredirected sibling executable")
+    return name, source, metadata
+
+
+def copy_authorization_helper(stage, binary, target):
+    name, source, metadata = authorization_helper(binary, target)
     destination = stage / name
     shutil.copyfile(source, destination)
     destination.chmod(0o755)
@@ -655,6 +660,19 @@ def main():
     if not output.is_relative_to(root / "_build"):
         raise ValueError("Release output must remain under the repository's _build directory")
     stage = output / name
+    readme = args.readme.read_text(encoding="utf-8")
+    if not readme.startswith(f"Midnight Explorer {version} "):
+        raise ValueError(f"{args.readme} must begin with 'Midnight Explorer {version} '")
+    viewers_root = args.viewers_root or args.binary.parent / "viewers"
+    filesystem_root = args.filesystems_root or args.binary.parent / "filesystems"
+    thumbnail_root = args.thumbnailers_root or args.binary.parent / "thumbnailers"
+    # Validate every module before creating the stage: a refused input leaves no
+    # partial staging directory that would block the next attempt.
+    authorization_helper(args.binary, args.target)
+    copy_viewer_packages(stage, viewers_root, args.target, required_ids=REQUIRED_VIEWERS, validate_only=True)
+    copy_filesystem_packages(stage, filesystem_root, args.target, require_native=True, require_network=True,
+                             require_archive=True, validate_only=True)
+    copy_thumbnail_packages(stage, thumbnail_root, args.target, require_media=True, validate_only=True)
     stage.mkdir(parents=True, exist_ok=False)
     binary = stage / args.binary.name
     shutil.copyfile(args.binary, binary)
@@ -668,10 +686,7 @@ def main():
         shutil.copyfile(root / relative, stage / Path(relative).name)
     if args.desktop_entry:
         shutil.copyfile(args.desktop_entry, stage / args.desktop_entry.name)
-    plugins = copy_viewer_packages(stage, args.viewers_root or args.binary.parent / "viewers",
-                                  args.target, required_ids=REQUIRED_VIEWERS)
-    filesystem_root = args.filesystems_root or args.binary.parent / "filesystems"
-    thumbnail_root = args.thumbnailers_root or args.binary.parent / "thumbnailers"
+    plugins = copy_viewer_packages(stage, viewers_root, args.target, required_ids=REQUIRED_VIEWERS)
     filesystems = copy_filesystem_packages(stage, filesystem_root, args.target,
                                           require_native=True, require_network=True, require_archive=True)
     thumbnails = copy_thumbnail_packages(stage, thumbnail_root, args.target, require_media=True)

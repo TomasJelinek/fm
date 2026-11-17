@@ -238,22 +238,41 @@ def validate_prefix(value, platform_name):
     return paths
 
 
-def find_libclang(environ):
+def llvm_version(path):
+    """Numeric LLVM major version of an `llvm-N/lib` directory (llvm-18 before llvm-9)."""
+    suffix = path.parent.name.removeprefix('llvm-')
+    return int(suffix) if suffix.isdigit() else -1
+
+
+def has_libclang(directory):
+    return (any(directory.glob('libclang.so*')) or any(directory.glob('libclang-*.so*'))
+            or (directory / 'libclang.dll').is_file())
+
+
+def find_libclang(environ, root=Path('/usr')):
     requested = environ.get('LIBCLANG_PATH')
-    candidates = [Path(requested)] if requested else []
-    if not requested:
-        candidates.extend(sorted(Path('/usr/lib').glob('llvm-*/lib'), reverse=True))
-        candidates.extend((Path('/usr/lib/x86_64-linux-gnu'), Path('/usr/local/lib')))
-        llvm_config = shutil.which('llvm-config')
+    if requested:
+        # An explicit choice must itself be an ordinary path; it is never replaced.
+        candidate = ordinary_path(Path(requested))
+        if has_libclang(candidate):
+            return candidate
+    else:
+        candidates = sorted((root / 'lib').glob('llvm-*/lib'), key=llvm_version, reverse=True)
+        candidates.extend(root / name for name in (
+            'lib/x86_64-linux-gnu', 'lib/aarch64-linux-gnu', 'lib64', 'local/lib'))
+        llvm_config = shutil.which('llvm-config', path=environ.get('PATH'))
         if llvm_config:
             result = subprocess.run([llvm_config, '--libdir'], text=True, check=True,
                                     stdout=subprocess.PIPE)
             candidates.append(Path(result.stdout.strip()))
-    for candidate in candidates:
-        candidate = ordinary_path(candidate)
-        if any(candidate.glob('libclang.so*')) or any(candidate.glob('libclang-*.so*')) \
-                or (candidate / 'libclang.dll').is_file():
-            return candidate
+        for candidate in candidates:
+            try:
+                # Distribution symlinks (for example a linked lib64) are skipped, not fatal.
+                candidate = ordinary_path(candidate)
+            except ValueError:
+                continue
+            if has_libclang(candidate):
+                return candidate
     raise ValueError('libclang is required for video bindings; run scripts/setup-linux.sh '
                      'or set LIBCLANG_PATH to its library directory')
 

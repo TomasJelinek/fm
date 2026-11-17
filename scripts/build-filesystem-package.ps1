@@ -19,13 +19,19 @@ $savedEnvironment = @{}
 foreach ($name in @('CARGO_TARGET_DIR', 'CARGO_HOME', 'RUSTUP_HOME', 'PATH')) {
     $savedEnvironment[$name] = [Environment]::GetEnvironmentVariable($name)
 }
+# Resolve caller paths against the PowerShell location before Push-Location;
+# [IO.Path]::GetFullPath would use the unrelated process working directory.
+if (-not $BuildRoot) { $BuildRoot = [Environment]::GetEnvironmentVariable($environmentPrefix + '_BUILD_ROOT') }
+if ($AppDirectory) { $AppDirectory = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($AppDirectory) }
+if ($BuildRoot) { $BuildRoot = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($BuildRoot) }
 Push-Location -LiteralPath $projectRoot
 try {
     if (-not $AppDirectory) {
+        # Cargo resolves a relative CARGO_TARGET_DIR from the project root here too.
         $targetRoot = if ($env:CARGO_TARGET_DIR) { $env:CARGO_TARGET_DIR } else { '_build' }
+        if (-not [IO.Path]::IsPathRooted($targetRoot)) { $targetRoot = Join-Path $projectRoot $targetRoot }
         $AppDirectory = [IO.Path]::GetFullPath((Join-Path $targetRoot $Profile))
     }
-    if (-not $BuildRoot) { $BuildRoot = [Environment]::GetEnvironmentVariable($environmentPrefix + '_BUILD_ROOT') }
     if (-not $BuildRoot) { $BuildRoot = Join-Path $projectRoot "_build/$Provider-filesystems/windows" }
     $env:CARGO_TARGET_DIR = [IO.Path]::GetFullPath($BuildRoot)
     $manifest = Join-Path $pluginRoot 'Cargo.toml'

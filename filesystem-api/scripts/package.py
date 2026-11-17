@@ -1,7 +1,10 @@
-"""Create an offline public API directory source from Cargo's package artifact."""
+"""Create an offline public API directory source from Cargo's package artifact.
+
+Development tool only: distribution uses the canonical worker SDK bundle, whose
+archive checksums differ (see docs/developer/FILESYSTEM_API.md).
+"""
 import hashlib
 import json
-import os
 import pathlib
 import subprocess
 import sys
@@ -20,7 +23,8 @@ metadata = json.loads(subprocess.check_output([
     "cargo", "metadata", "--manifest-path", str(root / "Cargo.toml"),
     "--format-version", "1", "--no-deps", "--offline"], text=True))
 version = next(p["version"] for p in metadata["packages"] if p["name"] == name)
-artifact = pathlib.Path(os.environ["CARGO_TARGET_DIR"]) / f"package/{name}-{version}.crate"
+# Cargo reports the effective target directory (CARGO_TARGET_DIR, configuration or default).
+artifact = pathlib.Path(metadata["target_directory"]) / f"package/{name}-{version}.crate"
 package = out / f"packages/{name}-{version}"
 digest = hashlib.sha256(artifact.read_bytes()).hexdigest()
 if package.exists():

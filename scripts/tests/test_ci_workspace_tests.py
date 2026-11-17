@@ -22,8 +22,10 @@ def target(name, kind='test', test=True, required=()):
 
 def graph(root, first, second=()):
     return {'target_directory': str(root / '_build'), 'workspace_members': ['a-id', 'b-id'],
-            'packages': [{'id': 'a-id', 'name': 'a', 'targets': list(first)},
-                         {'id': 'b-id', 'name': 'b', 'targets': list(second)}],
+            'packages': [{'id': 'a-id', 'name': 'a', 'targets': list(first),
+                          'manifest_path': str(root / 'a/Cargo.toml')},
+                         {'id': 'b-id', 'name': 'b', 'targets': list(second),
+                          'manifest_path': str(root / 'b/Cargo.toml')}],
             'ci_active_features': {'a-id': {'enabled'}, 'b-id': set()},
             'resolve': {'nodes': [{'id': 'a-id', 'features': ['enabled']},
                                   {'id': 'b-id', 'features': []}]}}
@@ -361,6 +363,105 @@ class WorkspaceTests(unittest.TestCase):
         (directory / 'config').write_text('include = "another.toml"\n')
         with self.assertRaisesRegex(ValueError, 'include'):
             runner.require_native_configuration(self.root, environment)
+
+    def test_consolidated_integration_binaries_form_one_atomic_retired_gate(self):
+        # Most crates link their tests into one `integration` binary; the same-name
+        # group is larger than the batch bound but must stay one Cargo selection.
+        names = [f'crate{index}' for index in range(10)]
+        metadata = {'target_directory': str(self.root / '_build'),
+                    'workspace_members': [name + '-id' for name in names],
+                    'packages': [{'id': name + '-id', 'name': name, 'targets': [target('integration')]
+                                  + ([target('native'), target('pdf_native')] if name == 'crate0' else [])}
+                                 for name in names],
+                    'ci_active_features': {name + '-id': set() for name in names}}
+        gates = runner.batch_integrations(runner.plan(metadata), runner.DEFAULT_BATCH_SIZE)
+        self.assertEqual([gate['name'] for gate in gates], ['integration', 'native, pdf_native'])
+        self.assertEqual(gates[0]['targets'], {'integration': {name + '-id' for name in names}})
+        reported, created = [], []
+        def invoke(command, root, gate):
+            artifacts = []
+            for name, packages in sorted(gate['targets'].items()):
+                for package in sorted(packages):
+                    # Cargo hashes each package's same-name target to a distinct file.
+                    path = self.deps / f'{name}-{len(created):016x}.exe'
+                    created.append(path)
+                    artifacts.append(self.artifact(name, package, path))
+            reported.append((command, artifacts))
+            return 0, artifacts
+        self.assertEqual(runner.execute(self.root, metadata, invoke), 0)
+        self.assertEqual(reported[0][0].count('--test'), 1)
+        self.assertEqual(len(reported[0][1]), 10)
+        self.assertEqual(list(self.deps.iterdir()), [])
+
+    def artifact_graph(self):
+        return graph(self.root, [target('a', 'lib'), target('tool', 'bin'), target('integration')],
+                     [target('b', 'lib', False), target('integration')])
+
+    def cargo_output(self, *events, code=0):
+        lines = ['{invalid', *map(json.dumps, events)]
+        return mock.Mock(returncode=code, stdout='\n'.join(lines) + '\n')
+
+    def test_artifact_build_reuses_the_gate_selection_instead_of_a_package_selection(self):
+        metadata = self.artifact_graph()
+        for selector, args, kind, name in [
+            ('lib', ['--lib', '--exclude', 'b'], 'lib', 'a'),
+            ('test:integration', ['--test', 'integration'], 'test', 'integration'),
+            ('bin:tool', ['--bin', 'tool'], 'bin', 'tool'),
+        ]:
+            with self.subTest(selector=selector):
+                wanted = {'reason': 'compiler-artifact', 'package_id': 'a-id', 'profile': {'test': True},
+                          'target': {'name': name, 'kind': [kind]}, 'executable': str(self.deps / 'wanted')}
+                other = dict(wanted, package_id='b-id', executable=str(self.deps / 'other'))
+                built = dict(wanted, profile={'test': False}, executable=str(self.deps / 'plain'))
+                calls = []
+                def invoke(command, **options):
+                    calls.append((command, options))
+                    return self.cargo_output(wanted, other, built)
+                executable, directory = runner.build_artifact(self.root, metadata, 'a', selector, invoke)
+                self.assertEqual(executable, self.deps / 'wanted')
+                self.assertEqual(directory, self.root / 'a')
+                self.assertEqual(calls[0][0], ['cargo', 'test', '--workspace', '--locked', '--features',
+                                               'a/enabled', *args, '--no-run', '--message-format=json'])
+                self.assertEqual(calls[0][1]['cwd'], self.root)
+
+    def test_artifact_build_refuses_unknown_disabled_or_ambiguous_targets(self):
+        metadata = self.artifact_graph()
+        for package, selector in [('missing', 'lib'), ('b', 'lib'), ('a', 'test:missing'),
+                                  ('a', 'example:tool'), ('a', 'lib:extra'), ('a', 'test')]:
+            with self.subTest(package=package, selector=selector):
+                calls = []
+                with self.assertRaises(ValueError):
+                    runner.build_artifact(self.root, metadata, package, selector,
+                                          lambda *args, **options: calls.append(args))
+                self.assertEqual(calls, [])
+        event = {'reason': 'compiler-artifact', 'package_id': 'a-id', 'profile': {'test': True},
+                 'target': {'name': 'a', 'kind': ['lib']}, 'executable': str(self.deps / 'first')}
+        for output in [self.cargo_output(), self.cargo_output(event, dict(event, executable='second')),
+                       self.cargo_output(event, code=101)]:
+            with self.subTest(output=output.stdout, code=output.returncode):
+                with self.assertRaises(ValueError):
+                    runner.build_artifact(self.root, metadata, 'a', 'lib', lambda *args, **options: output)
+
+    def test_run_mode_executes_from_the_package_directory_with_libtest_arguments(self):
+        metadata = self.artifact_graph()
+        event = {'reason': 'compiler-artifact', 'package_id': 'a-id', 'profile': {'test': True},
+                 'target': {'name': 'integration', 'kind': ['test']}, 'executable': str(self.deps / 'native')}
+        calls = []
+        def invoke(command, **options):
+            calls.append((command, options))
+            return self.cargo_output(event) if command[0] == 'cargo' else mock.Mock(returncode=7)
+        code = runner.artifact_main(['run', 'a', 'test:integration', '--ignored', '--test-threads=1'],
+                                    invoke, lambda root: metadata)
+        self.assertEqual(code, 7)
+        self.assertEqual(calls[1], ([str(self.deps / 'native'), '--ignored', '--test-threads=1'],
+                                    {'cwd': self.root / 'a'}))
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            self.assertEqual(runner.artifact_main(['artifact', 'a', 'test:integration'], invoke,
+                                                  lambda root: metadata), 0)
+        self.assertEqual(output.getvalue().strip(), str(self.deps / 'native'))
+        with contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(runner.artifact_main(['artifact', 'a'], invoke, lambda root: metadata), 2)
 
 if __name__ == '__main__':
     unittest.main()

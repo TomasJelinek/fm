@@ -13,6 +13,9 @@ foreach ($entry in [Environment]::GetEnvironmentVariables('Process').GetEnumerat
     $savedEnvironment[$entry.Key] = $entry.Value
 }
 $projectRoot = Split-Path -Parent $PSScriptRoot
+# Resolve caller paths against the PowerShell location, not the process directory.
+if ($AppDirectory) { $AppDirectory = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($AppDirectory) }
+if ($WorkerSdkConfig) { $WorkerSdkConfig = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($WorkerSdkConfig) }
 $buildRoot = Join-Path $projectRoot '_build/archive-filesystems/windows'
 Push-Location -LiteralPath $projectRoot
 try {
@@ -23,7 +26,9 @@ try {
         $env:PATH = $localCargo + [IO.Path]::PathSeparator + $env:PATH
     }
     if (-not $AppDirectory) {
+        # Cargo resolves a relative CARGO_TARGET_DIR from the project root here too.
         $targetRoot = if ($env:CARGO_TARGET_DIR) { $env:CARGO_TARGET_DIR } else { '_build' }
+        if (-not [IO.Path]::IsPathRooted($targetRoot)) { $targetRoot = Join-Path $projectRoot $targetRoot }
         $AppDirectory = [IO.Path]::GetFullPath((Join-Path $targetRoot $Profile))
     }
     if (-not $WorkerSdkConfig) {
@@ -33,7 +38,7 @@ try {
         } | Sort-Object FullName | ForEach-Object {
             $_.FullName.Substring($projectRoot.Length) + ':' + (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash
         }) -join "`n"
-        foreach ($cache in @('thumbnailers', 'image-viewer')) {
+        foreach ($cache in @('thumbnailers', 'image-viewer', 'pdf-viewer')) {
             $statePath = Join-Path $projectRoot "_build/$cache/sdk-state.json"
             if (Test-Path -LiteralPath $statePath) {
                 $state = Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json

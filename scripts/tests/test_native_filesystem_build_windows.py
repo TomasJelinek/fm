@@ -103,6 +103,26 @@ class NativeFilesystemBuildWindows(unittest.TestCase):
         self.assertEqual(calls[0][0], "test")
         self.assertEqual(self.snapshot(), before)
 
+    def test_relative_paths_follow_the_powershell_location_not_the_process_directory(self):
+        # PowerShell's location differs from the process working directory after
+        # Set-Location; packages must not land in the unrelated process directory.
+        elsewhere = self.root / "elsewhere"
+        elsewhere.mkdir()
+        command = (f"Set-Location -LiteralPath '{self.root}'; "
+                   f"& '{self.script}' -AppDirectory 'application'; exit $LASTEXITCODE")
+        result = subprocess.run(["powershell.exe", "-NoProfile", "-Command", command], cwd=elsewhere,
+                                env=self.environment, capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.library.read_bytes(), b"new DLL")
+        self.assertFalse((elsewhere / "application").exists())
+        # The default output is the project's _build, wherever the caller stands.
+        result = subprocess.run(["powershell.exe", "-NoProfile", "-File", str(self.script)], cwd=elsewhere,
+                                env=self.environment, capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        package = self.root / f"_build/debug/filesystems/{self.provider}.windows"
+        self.assertEqual((package / self.library.name).read_bytes(), b"new DLL")
+        self.assertFalse((elsewhere / "_build").exists())
+
     def test_locked_installed_library_keeps_previous_package(self):
         before = self.snapshot()
         with self.library.open("rb") as running_host:

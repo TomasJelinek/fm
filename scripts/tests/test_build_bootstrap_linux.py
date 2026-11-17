@@ -1,4 +1,7 @@
-"""Exercise build setup without installing packages or downloading a toolchain."""
+"""build.sh bootstraps Rust, selects its backend and cleans output without installing packages.
+
+Argument, backend, Docker and clean-planning edge cases live in test_build_setup_linux.py,
+test_build_docker_linux.py and test_build_clean_linux.py."""
 
 from pathlib import Path
 import shutil
@@ -8,7 +11,7 @@ import tempfile
 import unittest
 
 
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = Path(__file__).resolve().parents[2]
 
 
 @unittest.skipUnless(sys.platform.startswith("linux"), "Linux build bootstrap")
@@ -25,7 +28,7 @@ class BuildSetupTests(unittest.TestCase):
         self.repo.mkdir()
         shutil.copy2(ROOT / "build.sh", self.repo / "build.sh")
         (self.repo / "scripts").mkdir()
-        for name in ("build-docker.sh", "docker-install-deps.sh", "clean-build.sh",
+        for name in ("build-docker.sh", "docker-install-deps.sh", "install-rust-toolchain.sh", "clean-build.sh",
                      "check-clean-mounts-linux.sh", "setup-linux.sh"):
             shutil.copy2(ROOT / "scripts" / name, self.repo / "scripts" / name)
         # Package builds are separate from these host bootstrap tests.
@@ -99,22 +102,6 @@ class BuildSetupTests(unittest.TestCase):
         self.assertEqual((outside / "keep").read_text(), "keep")
         self.assertEqual(self.output, "")
 
-    def test_clean_is_safe_before_first_build_and_on_repeated_runs(self):
-        for _ in range(2):
-            result = self.run_build("clean")
-            self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertFalse((self.repo / "_build").exists())
-            self.assertEqual(self.output, "")
-
-    def test_clean_rejects_symlinked_build_root(self):
-        outside = self.root / "outside"
-        outside.mkdir()
-        (outside / "keep").write_text("keep")
-        (self.repo / "_build").symlink_to(outside, target_is_directory=True)
-        result = self.run_build("clean")
-        self.assertEqual(result.returncode, 1)
-        self.assertEqual((outside / "keep").read_text(), "keep")
-
     def test_clean_reports_deletion_failures(self):
         output = self.repo / "_build/release/app"
         output.parent.mkdir(parents=True)
@@ -143,25 +130,6 @@ class BuildSetupTests(unittest.TestCase):
         self.assertIn("docker run", self.output)
         self.assertNotIn("--release", self.output)
 
-    def test_dns_override_reaches_image_setup_and_build(self):
-        self.missing_packages()
-        self.env["FM_DOCKER_DNS"] = "1.1.1.1"
-        self.env["IMAGE_MISSING"] = "1"
-        result = self.run_build()
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("docker create --dns 1.1.1.1", self.output)
-        self.assertIn("docker commit setup-container", self.output)
-        self.assertIn("--dns 1.1.1.1", self.output)
-
-    def test_missing_docker_stops_with_actionable_error(self):
-        self.missing_packages()
-        (self.bin / "docker").unlink()
-        result = self.run_build()
-        self.assertEqual(result.returncode, 1)
-        self.assertIn("Docker", result.stderr)
-        self.assertNotIn("cargo build", self.output)
-        self.assertNotIn("UNEXPECTED", self.output)
-
     def test_existing_setup_does_not_reinstall_and_preserves_exit_status(self):
         self.env["CARGO_STATUS"] = "42"
         result = self.run_build()
@@ -169,21 +137,6 @@ class BuildSetupTests(unittest.TestCase):
         self.assertNotIn("apt-get", self.output)
         self.assertIn("cargo build -p midnight-explorer -p midnight-elevation --locked\n", self.output)
         self.assertIn(f"cwd={self.repo} tmp={self.repo}/_build/tmp", self.output)
-
-    def test_finds_cargo_in_custom_home_without_reinstall(self):
-        (self.bin / "cargo").unlink()
-        self.cargo(Path(self.env["CARGO_HOME"]) / "bin/cargo")
-        result = self.run_build()
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("cargo build", self.output)
-
-    def test_finds_cargo_in_default_home_without_reinstall(self):
-        (self.bin / "cargo").unlink()
-        del self.env["CARGO_HOME"]
-        self.cargo(Path(self.env["HOME"]) / ".cargo/bin/cargo")
-        result = self.run_build()
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("cargo build", self.output)
 
     def test_prefers_cargo_already_on_path(self):
         other_cargo = Path(self.env["CARGO_HOME"]) / "bin/cargo"
@@ -195,13 +148,16 @@ class BuildSetupTests(unittest.TestCase):
 
     def rust_installer(self):
         (self.bin / "cargo").unlink()
+        # The pinned toolchain is read from rust-toolchain.toml with python3.
+        (self.bin / "python3").symlink_to(shutil.which("python3"))
         installer = self.root / "installer"
         installer.write_text(
-            '#!/bin/sh\nset -eu\necho "rustup $*" >> "$TEST_LOG"\n'
+            '#!/bin/sh\nset -eu\necho "rustup-init $*" >> "$TEST_LOG"\n'
             'mkdir -p "$CARGO_HOME/bin"\n'
-            'cat > "$CARGO_HOME/bin/cargo" <<\'CARGO\'\n'
-            '#!/bin/sh\necho "cargo $*" >> "$TEST_LOG"\nCARGO\n'
-            'chmod +x "$CARGO_HOME/bin/cargo"\n'
+            'for tool in cargo rustup; do\n'
+            '    printf \'#!/bin/sh\\necho "%s $*" >> "$TEST_LOG"\\n\' "$tool" > "$CARGO_HOME/bin/$tool"\n'
+            '    chmod +x "$CARGO_HOME/bin/$tool"\n'
+            'done\n'
         )
         self.env["INSTALLER"] = str(installer)
         self.command("curl", 'while [ "$#" -gt 0 ]; do\nif [ "$1" = -o ]; then cat "$INSTALLER" > "$2"; exit; fi\nshift\ndone\nexit 1\n')
@@ -210,9 +166,21 @@ class BuildSetupTests(unittest.TestCase):
         self.rust_installer()
         result = self.run_build("release")
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("rustup -y --profile minimal --default-toolchain none\n", self.output)
-        self.assertIn("cargo build -p midnight-explorer -p midnight-elevation --locked --release\n", self.output)
+        self.assertIn("rustup-init -y --profile minimal --default-toolchain none\n", self.output)
+        # Explicitly, not through proxy auto-install, which users can disable.
+        install = "rustup toolchain install 1.99.1 --profile minimal --component rustfmt --component clippy\n"
+        build = "cargo build -p midnight-explorer -p midnight-elevation --locked --release\n"
+        self.assertIn(install, self.output)
+        self.assertLess(self.output.index(install), self.output.index(build))
         self.assertEqual(list((self.repo / "_build/tmp").iterdir()), [])
+
+    def test_failed_toolchain_installation_stops_before_build(self):
+        self.rust_installer()
+        (self.repo / "rust-toolchain.toml").write_text('[toolchain]\nchannel = "--force"\n')
+        result = self.run_build()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("invalid channel", result.stderr)
+        self.assertNotIn("cargo build", self.output)
 
     def test_unconfigured_rust_bootstrap_uses_repository_tool_cache(self):
         self.rust_installer()
@@ -233,28 +201,6 @@ class BuildSetupTests(unittest.TestCase):
         self.assertFalse((self.repo / "_build").exists())
         self.assertFalse((self.repo / ".tools").exists())
 
-    def test_image_failure_stops_before_container_run(self):
-        self.missing_packages()
-        self.env["IMAGE_STATUS"] = "23"
-        self.env["IMAGE_MISSING"] = "1"
-        result = self.run_build()
-        self.assertEqual(result.returncode, 23)
-        self.assertNotIn("docker run", self.output)
-        self.assertNotIn("docker commit", self.output)
-        self.assertIn("docker rm -f setup-container", self.output)
-
-    def test_container_exit_status_is_preserved(self):
-        self.missing_packages()
-        self.env["BUILD_STATUS"] = "42"
-        result = self.run_build()
-        self.assertEqual(result.returncode, 42)
-
-    def test_invalid_backend_stops_before_setup(self):
-        self.env["FM_BUILD_BACKEND"] = "invalid"
-        result = self.run_build()
-        self.assertEqual(result.returncode, 2)
-        self.assertEqual(self.output, "")
-
     def test_download_failure_stops_before_build(self):
         (self.bin / "cargo").unlink()
         self.command("curl", "exit 22\n")
@@ -263,12 +209,21 @@ class BuildSetupTests(unittest.TestCase):
         self.assertNotIn("cargo build", self.output)
         self.assertEqual(list((self.repo / "_build/tmp").iterdir()), [])
 
-    def test_invalid_arguments_do_not_install_anything(self):
-        self.missing_packages()
-        result = self.run_build("invalid")
-        self.assertEqual(result.returncode, 2)
-        self.assertEqual(self.output, "")
+    def test_missing_module_prerequisites_are_reported_before_the_host_build(self):
+        # GUI libraries alone select a native build; the module tools are named
+        # up front instead of failing after the complete host build.
+        result = self.run_build()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("missing native module build prerequisites: python3 gpg perl make xz cmake",
+                      result.stderr)
+        for name in ("python3", "gpg", "perl", "make", "xz", "cmake"):
+            self.command(name, "exit 0\n")
+        self.env["LIBCLANG_PATH"] = str(self.root)
+        result = self.run_build()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("missing native module build prerequisites", result.stderr)
 
 
 if __name__ == "__main__":
     unittest.main()
+

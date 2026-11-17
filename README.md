@@ -105,8 +105,10 @@ currently build. Slint's own macOS support does not change Midnight Explorer's p
 For Windows or direct native Cargo commands, install [Rust with rustup](https://rust-lang.org/tools/install/),
 then reopen your terminal so `cargo` and `rustup` are on `PATH`. The Linux helper
 can bootstrap Rust as described below. The repository pins **Rust 1.99.1**
-with rustfmt and Clippy in [rust-toolchain.toml](rust-toolchain.toml). From the
-repository root, `rustup show` selects/downloads that toolchain. Cargo downloads
+with rustfmt and Clippy in [rust-toolchain.toml](rust-toolchain.toml). Install it
+once with `rustup toolchain install 1.99.1 --profile minimal --component rustfmt --component clippy`;
+current rustup no longer installs a pinned toolchain through `rustup show`, and
+Cargo then selects it from the repository automatically. Cargo downloads
 Slint and the other locked dependencies on the first build; no separate Slint SDK
 installation is needed. The first build takes longer than subsequent builds.
 
@@ -153,7 +155,23 @@ the independent Rust modules too.
 The HTML build acquires the exact pinned CEF archive, verifies its SHA-256 and
 retains the complete runtime, license and Chromium credits. Set `CEF_PATH` to an
 already verified SDK or use the build helper cache under `.tools/cef/`.
-Chromium renderer sandboxing remains enabled.
+Chromium renderer sandboxing remains enabled. On Windows the verified SDK stays in the
+checkout's `_build`: the provider compiles against it in place, the package copies its
+runtime files from it and checks them against the SDK's verification receipt, and a
+rebuild with unchanged inputs keeps the installed package. MSVC cannot compile CEF's
+C++ wrapper objects below a deep Windows checkout (260-character paths). Set
+`MIDNIGHT_HTML_TARGET_DIR` to a short absolute directory for the provider's Cargo
+output, for example a junction such as `D:\mh` into the checkout's `_build\mh`; inside
+the checkout it must lie below `_build`. The wrapper sources stay in the SDK, which
+needs a checkout path of at most about 125 characters.
+
+The web SDK archives that the HTML provider pins are classic-zlib deflate output.
+Python 3.14+ on Windows bundles zlib-ng, and so does the system zlib of some Linux
+distributions (Fedora's zlib-ng-compat, which its Python uses). The web SDK packager
+then stops with that explanation instead of producing archives that fail the pinned
+checksums. On Windows it prefers an installed `py -3.13`/`-3.12`; on such a Linux
+host build with `FM_BUILD_BACKEND=docker` (the Ubuntu build image has classic zlib).
+On either platform `MIDNIGHT_HTML_SDK_CONFIG` can name an existing web SDK bundle instead.
 
 Linux thumbnail builds acquire and verify the pinned FFmpeg 9.0.2 source and
 signature, then build the existing restricted LGPL configuration. GPG and libclang
@@ -190,7 +208,9 @@ does not elevate ordinary file operations, change ACLs or store passwords. See
 ### Windows x64
 
 Install 64-bit PowerShell 7 (`pwsh.exe`) and Python 3.12+ with its `py` launcher
-for the native worker build helpers. `build.bat` checks PowerShell before building.
+for the native worker build helpers; they run Python through `py -3` (falling back
+to a real `python` only when the launcher is absent). `build.bat` checks both
+before building.
 
 Install the Visual Studio **Desktop development with C++** workload, including
 the MSVC x64/x86 tools and a Windows SDK, as described in the
@@ -220,10 +240,15 @@ changing these profiles recompiles the affected dependencies under `_build`.
 
 Run either executable directly, or let Cargo build and run it. `build.bat` also
 deploys the completed Windows bundle to a new private installation and registers
-it for the exact host executable's SHA-256. This lets `_build\release\me.exe`
-use protected plugins even when its checkout is on a shared drive. Plugin code
-is never loaded from an unsafe shared directory. After a raw Cargo build, or after
-adding/removing plugin packages, deploy and register explicitly:
+it for that build output (its launch path and the host executable's SHA-256).
+This lets `_build\release\me.exe` use protected plugins even when its checkout
+is on a shared drive. Plugin code is never loaded from an unsafe shared directory.
+Each `build.bat` run then removes the earlier installations it deployed for the
+same build output, keeping any that is still running or selected by another
+registration; installations made directly with `scripts/deploy-private.ps1` are
+never removed. Concurrent `build.bat` runs for the same build output in one logon
+session deploy one at a time (the second waits). After a raw Cargo build, or after adding/removing plugin packages,
+deploy and register explicitly:
 
 ```powershell
 powershell -NoProfile -File scripts/deploy-private.ps1 -SourceDirectory _build/release -IncludeFilesystems -IncludeThumbnailers -RegisterRuntime -CreateDesktopShortcut
@@ -231,9 +256,15 @@ powershell -NoProfile -File scripts/deploy-private.ps1 -SourceDirectory _build/r
 
 Use the original build EXE, the **Midnight Explorer** desktop shortcut, or the
 private installation path printed by that command. Restart after deployment.
+Private installations omit `midnight-elevated-listing.exe` and so cannot offer
+**Retry with authorization**, which needs an installation that only administrators
+can change (see the authorization helper above); the deployment says so.
 `-IncludeFilesystems` includes the filesystem packages. Keep `-IncludeThumbnailers`
 to deploy the image/video workers; normal build deployment includes both flags
-and rejects incomplete module installations.
+and rejects incomplete module installations. To point the desktop shortcut at an
+existing persistent installation without redeploying, run
+`scripts/update-desktop-shortcut.ps1 -InstallationDirectory <installation> -ExpectedExecutableSha256 <sha256>`;
+it refuses `build.bat` deployments because later builds remove them.
 The helper does not launch the app or change saved settings. Direct launches:
 
 ```powershell
@@ -947,7 +978,12 @@ and native F3 content use separate Windows/Linux filesystem libraries. Other
 native operations and watches still use explicit host platform services; the
 generic provider migration remains in progress.
 Plugins share this Git repository but have independent Cargo workspaces under
-`plugins/`, with their own builds, dependencies, tests and CI. They share only the
+`plugins/`, with their own builds, dependencies and tests. CI checks the basic,
+source, Markdown, image and PDF viewers, the image thumbnailer, the viewer ABI
+conformance fixture and the native, network and archive filesystems from exported
+plugin directories, plus all public API workspaces; the HTML viewer and the video
+thumbnailer are built and validated by the normal build helpers but have no CI job
+yet (their pinned CEF and FFmpeg inputs need a cached CI setup). Plugins share only the
 public API/SDK and must build from an exported plugin directory without host
 sources. Plugins cannot depend on private
 application crates or modify the main application's sources; API extensions are

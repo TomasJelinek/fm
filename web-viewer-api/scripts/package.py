@@ -11,11 +11,28 @@ import sys
 import tarfile
 import time
 import tomllib
+import zlib
 
 ROOT = Path(__file__).resolve().parents[1]
 REPOSITORY = ROOT.parent
 REGISTRY = "https://midnight-explorer.invalid/api-index"
 PACKAGES = ("midnight-web-viewer-api", "midnight-web-viewer-sdk")
+
+
+def require_classic_zlib(version=None):
+    """The pinned release archives are classic zlib level-9 deflate output.
+
+    The canonical tar is identical on every Python version, but zlib-ng (bundled by
+    Python 3.14+ on Windows and the system zlib of some distributions) encodes it
+    differently, so the HTML viewer's locked checksum would not match.
+    """
+    version = zlib.ZLIB_RUNTIME_VERSION if version is None else version
+    if "ng" in version.lower():
+        raise SystemExit(
+            f"Python {sys.version.split()[0]} uses zlib-ng ({version}), whose deflate output differs "
+            "from the canonical web SDK archives pinned by the HTML viewer. Run this packager with a "
+            "Python built against classic zlib (for example `py -3.13` on Windows), or set "
+            "MIDNIGHT_HTML_SDK_CONFIG to an existing web SDK bundle.")
 
 
 def canonical_package(artifact, prefix):
@@ -53,6 +70,7 @@ def canonical_package(artifact, prefix):
 
 
 def main():
+    require_classic_zlib()
     output = (Path(sys.argv[1]) if len(sys.argv) > 1 else
               REPOSITORY / "_build/html-viewer/sdk" / f"release-{time.time_ns()}").resolve()
     if not output.is_relative_to((REPOSITORY / "_build").resolve()):
@@ -67,8 +85,14 @@ def main():
         'replace-with = "web-viewer-releases"\n[source.web-viewer-releases]\n'
         f'local-registry = {json.dumps(str(registry))}\n', encoding="utf-8")
     environment = os.environ.copy()
-    environment.setdefault("CARGO_HOME", str(REPOSITORY / ".tools/cargo"))
-    environment.setdefault("RUSTUP_HOME", str(REPOSITORY / ".tools/rustup"))
+    # Standard rustup installations export neither home. Select the repository-
+    # local toolchain only when it exists; never redirect rustup to an empty
+    # checkout directory, which would download a second toolchain there.
+    local_home = REPOSITORY / ".tools/cargo"
+    local_cargo = local_home / "bin" / ("cargo.exe" if os.name == "nt" else "cargo")
+    if "CARGO_HOME" not in environment and local_cargo.is_file():
+        environment["CARGO_HOME"] = str(local_home)
+        environment.setdefault("RUSTUP_HOME", str(REPOSITORY / ".tools/rustup"))
     cargo = environment.get("CARGO", "cargo")
     target = REPOSITORY / "_build/html-viewer/api-target"
     artifacts = []

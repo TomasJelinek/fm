@@ -1,0 +1,63 @@
+name: Private test installation
+description: >-
+  Create the job's build temporary directory and a protected installation of the
+  independently built viewer and filesystem packages downloaded to _build/.
+runs:
+  using: composite
+  steps:
+    - name: Prepare private native test installation
+      shell: pwsh
+      run: |
+        $temporaryDirectory = Join-Path $env:GITHUB_WORKSPACE '_build/tmp'
+        New-Item -ItemType Directory -Path $temporaryDirectory -Force | Out-Null
+        @("TEMP=$temporaryDirectory", "TMP=$temporaryDirectory", "TMPDIR=$temporaryDirectory") |
+          Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+        if ($IsWindows) {
+          $testRoot = Join-Path $env:USERPROFILE ('MidnightViewerTests-' + [guid]::NewGuid().ToString('N'))
+          New-Item -ItemType Directory -Path $testRoot | Out-Null
+          $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+          $acl = New-Object Security.AccessControl.DirectorySecurity
+          $acl.SetSecurityDescriptorSddlForm("D:P(A;OICI;FA;;;$sid)(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)",
+            [Security.AccessControl.AccessControlSections]::Access)
+          Set-Acl -LiteralPath $testRoot -AclObject $acl
+          $library = 'midnight_viewer_basic.dll'
+        } else {
+          $testRoot = Join-Path $env:RUNNER_TEMP ('_build/viewer-tests-' + [guid]::NewGuid().ToString('N'))
+          New-Item -ItemType Directory -Path $testRoot -Force | Out-Null
+          chmod 700 $testRoot
+          $library = 'libmidnight_viewer_basic.so'
+        }
+        "HOST_TEST_INSTALL_ROOT=$testRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+        $plugin = Join-Path $env:GITHUB_WORKSPACE "_build/viewer-packages/midnight-viewer-basic/$library"
+        "HOST_TEST_PLUGIN=$plugin" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+        # Private modes: directories and worker executables 700, other files 600.
+        function Protect-Tree([string]$Root, [string[]]$Executables) {
+          if ($IsWindows) { return }
+          find $Root -type d -exec chmod 700 '{}' '+'
+          if ($LASTEXITCODE -ne 0) { throw "Private installation permissions failed: $Root" }
+          find $Root -type f -exec chmod 600 '{}' '+'
+          if ($LASTEXITCODE -ne 0) { throw "Private installation permissions failed: $Root" }
+          foreach ($name in $Executables) {
+            find $Root -type f -name $name -exec chmod 700 '{}' '+'
+            if ($LASTEXITCODE -ne 0) { throw "Private installation permissions failed: $Root" }
+          }
+        }
+        $installedViewers = Join-Path $testRoot 'viewers'
+        Copy-Item -LiteralPath '_build/viewer-packages' -Destination $installedViewers -Recurse
+        Protect-Tree $installedViewers @('midnight-viewer-image', 'midnight-viewer-pdf')
+        "MIDNIGHT_VIEWER_TEST_INSTALL=$testRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+        $installedFilesystems = Join-Path $testRoot 'filesystems'
+        Copy-Item -LiteralPath '_build/filesystem-packages' -Destination $installedFilesystems -Recurse
+        Protect-Tree $installedFilesystems @('midnight-fs-archive')
+        "MIDNIGHT_NATIVE_TEST_INSTALLATION=$testRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+        $testApplication = Join-Path $testRoot 'midnight-explorer.exe'
+        "MIDNIGHT_IMAGE_VIEWER_TEST_APPLICATION=$testApplication" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+        "MIDNIGHT_PDF_VIEWER_TEST_APPLICATION=$testApplication" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+        $archiveExecutable = if ($IsWindows) { 'midnight-fs-archive.exe' } else { 'midnight-fs-archive' }
+        $archiveWorker = Join-Path $env:GITHUB_WORKSPACE "_build/filesystem-packages/archive/$archiveExecutable"
+        if (-not $IsWindows) {
+          chmod 700 -- $archiveWorker
+          if ($LASTEXITCODE -ne 0) { throw 'Archive worker executable permissions failed' }
+        }
+        "ARCHIVE_WORKER=$archiveWorker" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+        "ARCHIVE_TEST_INSTALL_ROOT=$testRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append

@@ -1,6 +1,6 @@
 # Targeted test execution
 
-Use `scripts/run-targeted-tests.py` for independent **headless Rust libtest** targets that have already been built. It does not change CI coverage, compile code, discover executables by glob, or delete build artifacts. Native dialogs, desktop input, renderer pacing and profiling are unsupported: run their dedicated tools serially, with compilers and other test processes idle.
+Use `scripts/run-targeted-tests.py` for independent **headless Rust libtest** targets that have already been built. It does not change CI coverage, compile code, discover executables by glob, or delete build artifacts. Native dialogs, desktop input, renderer pacing and profiling are unsupported: run their dedicated tools serially, with compilers and other test processes idle. For example, `scripts/probe-keyboard-search.ps1` drives the release `native_keyboard_search` example with real Windows keyboard input on a desktop session (see its [verification record](../verification/2026-11-07-keyboard-native-input.md)).
 
 Build the exact affected package/target set once, using the normal repository environment and feature flags. Save Cargo metadata and successful `--no-run --message-format=json` output under `_build`. Do not start concurrent Cargo processes against a shared target directory. For example, from the repository root:
 
@@ -31,6 +31,23 @@ with different features. Retain the exact commands and resolved graph/features
 with the receipt, state any differences and limit qualification to that scope.
 Independent plugins still use their own workspace and normal configuration;
 this does not require blanket workspace builds for independent plugin checks.
+
+CI's `check` job runs the workspace in `scripts/ci-workspace-tests.py` gates
+(`cargo test --workspace` with every member's active features, one gate per
+target kind and bounded batches of integration names; a same-name group such as
+the ten `integration` binaries stays one indivisible gate). Successful
+integration executables are retired to bound disk use. Its later ignored-test
+steps keep that selection instead of `cargo test -p`, which would rebuild shared
+dependencies with one package's narrower features:
+
+```text
+python -B scripts/ci-workspace-tests.py run midnight-image-viewer-host test:native --ignored --test-threads=1
+python -B scripts/ci-workspace-tests.py artifact midnight-explorer bin:me
+```
+
+`run PACKAGE lib|test:NAME|bin:NAME [LIBTEST ARGS...]` reuses (or relinks) that
+package's test executable and runs it from the package directory; `artifact`
+prints its path. Neither mode retires anything or needs `CI=true`.
 
 Fixture readiness is not a maintenance-quiescence fence. Exact pre-ACK capture
 fixtures must account for independent startup maintenance without weakening
@@ -69,8 +86,9 @@ that workspace. Artifacts and logs still belong to the repository's common
 `rustc` from the selected workspace so its toolchain override is respected.
 
 Each runner invocation owns its own budget. If three independent plugin runners
-execute together on this 20-logical-CPU machine, assign `--thread-budget 6` to each
-(18 libtest workers total); do not give each the full default 20-thread budget.
+execute together on an N-logical-CPU machine, divide N between them (for example
+`--thread-budget 6` each on 20 CPUs, 18 libtest workers in total); do not give each
+the full default budget of N threads.
 Coordinate the compilation first, especially when plugins share a target tree.
 
 Multiple filters for the same artifact share one listing process and one test process. Libtest treats those filters as OR; overlapping tests execute once. Every requested filter must match at least one listed test, even if another selector requests the whole target. Ignored tests remain ignored. A missing match, an all-ignored selection, a nonzero child exit, or an absent/inconsistent libtest result is a failure. Matching uses the executable's own `--list` output, and summary counts are parsed at the start of complete libtest summary lines.
@@ -88,5 +106,21 @@ The focused regression command is:
 ```text
 py -3 -B -m unittest discover -s scripts/tests -p test_targeted_test_runner.py -v
 ```
+
+All build, packaging, deployment and CI-planner script tests run with
+`py -3 -B -m unittest discover -s scripts/tests` (Linux: `python3 -B ...`); each
+test module can also run on its own (`py -3 -B scripts/tests/test_deploy_build.py`).
+Windows script tests that run PowerShell helpers use PowerShell 7 when it is installed
+and Windows PowerShell 5.1 otherwise. On Windows, CI also runs the PowerShell
+deployment, registration, build-deployment retirement and shortcut checks
+(`scripts/tests/test-*.ps1`) under both PowerShell 7 and Windows PowerShell 5.1.
+
+The native user-command tests of the platform crates and `midnight-ui` share one
+argv/cwd/environment probe executable. It is cached in
+`_build/goal/commands/native/<key>/`, where the key hashes the compiler, its version,
+the compile flags and the probe sources. The first test to need it compiles it once,
+holding an OS file lock that other test threads and processes wait for; every
+requested probe name is then a hard link to that file. A cold run therefore compiles
+the probe once per key, and a warm run does not compile it at all.
 
 Those tests use actual subprocesses and a socket rendezvous to prove simultaneous execution, bounded admission, output isolation and cleanup of owned processes while an unrelated process stays alive. They also cover filter coalescing, no-match refusal, receipt/path and independent-workspace validation, changed artifacts and anchored result parsing. They demonstrate runner behavior, not a Rust throughput improvement; report measured elapsed times with the actual selected suite and cache state when comparing runs.

@@ -15,6 +15,11 @@ Ubuntu 24.04 / Mint 22 runtime packages:
     libx11-6 libxcursor1 libxi6 libxrandr2 libxcb1 libwayland-client0 libudev1 \
     libvulkan1 xdg-utils xterm
 Use the graphics driver and Vulkan implementation supplied for your hardware.
+The HTML viewer's Chromium (CEF) runtime also loads common desktop libraries
+(NSS/NSPR, ALSA, ATK/AT-SPI, CUPS, GBM/DRM, Pango/Cairo and X11 extensions).
+Minimal systems may additionally need:
+  sudo apt install libnss3 libasound2t64 libatk1.0-0t64 libatk-bridge2.0-0t64 \
+    libcups2t64 libgbm1 libxcomposite1 libxdamage1 libpango-1.0-0 libcairo2
 
 Local network discovery and mounted SMB share browsing additionally need:
   sudo apt install gvfs-backends gvfs-fuse wsdd
@@ -41,6 +46,16 @@ Optional per-user desktop installation from the extracted folder:
   install -Dm644 midnight-explorer.png \
     "$HOME/.local/share/icons/hicolor/256x256/apps/io.github.TomasJelinek.MidnightExplorer.png"
 Ensure "$HOME/.local/bin" is on PATH when using the desktop launcher.
+
+Retry with authorization for a folder you cannot open runs the included
+midnight-elevated-listing as root through pkexec and the desktop's polkit agent.
+It is used only from an installation that only root can change (root-owned, not
+group- or world-writable, not on a nosuid mount), so the per-user installation
+above cannot offer it. System-wide installation from the extracted folder:
+  sudo install -d -m 755 /opt/midnight-explorer
+  sudo cp -R . /opt/midnight-explorer/
+Then run /opt/midnight-explorer/me. For the desktop launcher, install the desktop
+entry and icon as above and put /opt/midnight-explorer on PATH instead.
 
 Settings: $XDG_CONFIG_HOME/midnight-explorer/preferences.json, normally
 $HOME/.config/midnight-explorer/preferences.json.

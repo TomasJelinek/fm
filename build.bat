@@ -27,6 +27,17 @@ where pwsh.exe >nul 2>nul
 if errorlevel 1 goto missing_pwsh
 pwsh.exe -NoLogo -NoProfile -NonInteractive -Command "if ($PSVersionTable.PSVersion.Major -lt 7 -or -not $IsWindows -or -not [Environment]::Is64BitProcess) { exit 1 }"
 if errorlevel 1 goto missing_pwsh
+rem The module helpers run Python through the py launcher, or a real python.exe
+rem when the launcher is absent; a Store alias stub fails this check, not a late step.
+where py.exe >nul 2>nul
+if errorlevel 1 goto check_python_exe
+py.exe -3 -c "import sys; sys.exit(sys.version_info < (3, 12))" >nul 2>nul
+if errorlevel 1 goto missing_python
+goto python_ready
+:check_python_exe
+python.exe -c "import sys; sys.exit(sys.version_info < (3, 12))" >nul 2>nul
+if errorlevel 1 goto missing_python
+:python_ready
 if not exist "_build\tmp\" mkdir "_build\tmp"
 if errorlevel 1 goto temporary_failure
 set "TEMP=%CD%\_build\tmp"
@@ -50,6 +61,11 @@ goto done
 
 :missing_pwsh
 >&2 echo 64-bit PowerShell 7 ^(pwsh.exe^) is required. Install PowerShell 7 and reopen your terminal.
+set "MIDNIGHT_BUILD_EXIT=127"
+goto exit_build
+
+:missing_python
+>&2 echo Python 3.12 or newer is required. Install it with the py launcher and reopen your terminal.
 set "MIDNIGHT_BUILD_EXIT=127"
 goto exit_build
 

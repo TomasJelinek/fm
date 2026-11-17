@@ -6,6 +6,22 @@ param(
     [switch]$Offline
 )
 $ErrorActionPreference = 'Stop'
+
+function Test-HtmlPackageCurrent([string]$StatePath, [string]$Fingerprint, [string]$Destination) {
+    if (-not (Test-Path -LiteralPath $StatePath -PathType Leaf)) { return $false }
+    $state = Get-Content -LiteralPath $StatePath -Raw -Encoding UTF8 | ConvertFrom-Json
+    $inventory = Join-Path $Destination 'runtime-files.json'
+    if ($state.fingerprint -cne $Fingerprint -or -not [IO.File]::Exists($inventory) -or
+        (Get-FileHash -LiteralPath $inventory -Algorithm SHA256).Hash -cne $state.runtime) { return $false }
+    # Deployment re-hashes every file against this inventory; here a missing or
+    # resized file is enough to package again.
+    foreach ($file in (Get-Content -LiteralPath $inventory -Raw | ConvertFrom-Json).files) {
+        $path = Join-Path $Destination $file.path
+        if (-not [IO.File]::Exists($path) -or [IO.FileInfo]::new($path).Length -ne $file.bytes) { return $false }
+    }
+    return $true
+}
+
 if (-not $SdkConfig) { $SdkConfig = $env:MIDNIGHT_HTML_SDK_CONFIG }
 if ($env:MIDNIGHT_VIEWERS_OFFLINE -eq '1') { $Offline = $true }
 $savedEnvironment = [Collections.Generic.Dictionary[string,string]]::new([StringComparer]::OrdinalIgnoreCase)
@@ -16,6 +32,17 @@ $projectRoot = Split-Path -Parent $PSScriptRoot
 $buildRoot = Join-Path $projectRoot '_build/html-viewer'
 $staging = $null
 $cleanStaging = $true
+# Resolve caller paths against the PowerShell location before Push-Location;
+# [IO.Path]::GetFullPath would use the unrelated process working directory.
+if ($AppDirectory) { $AppDirectory = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($AppDirectory) }
+if ($SdkConfig) { $SdkConfig = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($SdkConfig) }
+# Python 3.12+ runs through the documented py launcher; python may be a Store alias.
+$python = 'python'
+$pythonArguments = @('-B')
+if (Get-Command py -CommandType Application -ErrorAction Ignore) {
+    $python = 'py'
+    $pythonArguments = @('-3', '-B')
+}
 Push-Location -LiteralPath $projectRoot
 try {
     $localCargo = Join-Path $projectRoot '.tools/cargo/bin'
@@ -25,7 +52,9 @@ try {
         $env:PATH = $localCargo + [IO.Path]::PathSeparator + $env:PATH
     }
     if (-not $AppDirectory) {
+        # Cargo resolves a relative CARGO_TARGET_DIR from the project root here too.
         $targetRoot = if ($env:CARGO_TARGET_DIR) { $env:CARGO_TARGET_DIR } else { '_build' }
+        if (-not [IO.Path]::IsPathRooted($targetRoot)) { $targetRoot = Join-Path $projectRoot $targetRoot }
         $AppDirectory = Join-Path $targetRoot $Profile
     }
     $AppDirectory = [IO.Path]::GetFullPath($AppDirectory)
@@ -67,28 +96,76 @@ try {
         }
     }
     $SdkConfig = (Resolve-Path -LiteralPath $SdkConfig).Path
-    $target = Join-Path $buildRoot 'provider-target/windows'
-    $nativeArguments = @('-B', (Join-Path $PSScriptRoot 'prepare-html-cef.py'), '--output', (Join-Path $target 'cef-sdk'))
+    # cl.exe cannot address paths beyond 260 characters, and CEF's C++ wrapper objects
+    # lie about 170 characters below the Cargo target directory. A deep checkout can
+    # select a short target for Cargo's output (for example a junction such as D:\mh
+    # into its _build). The verified CEF SDK stays under _build (no links there) and is
+    # used in place; the package copies its runtime files only from there.
+    $defaultTarget = [IO.Path]::GetFullPath((Join-Path $buildRoot 'provider-target/windows'))
+    $target = $defaultTarget
+    if ($env:MIDNIGHT_HTML_TARGET_DIR) {
+        $target = $env:MIDNIGHT_HTML_TARGET_DIR.Replace('/', '\').TrimEnd('\')
+        if ($target -notmatch '^[A-Za-z]:\\.' -or @($target.Substring(3).Split('\') | Where-Object {
+                $_ -in @('', '.', '..') -or $_ -match '[<>:"|?*\x00-\x1f]' -or $_ -match '[. ]$' }).Count) {
+            throw 'MIDNIGHT_HTML_TARGET_DIR must be an absolute drive path of plain directory names, such as D:\mh'
+        }
+        $projectPrefix = $projectRoot.TrimEnd('\') + '\'
+        if (($target + '\').StartsWith($projectPrefix, [StringComparison]::OrdinalIgnoreCase) -and
+            -not ($target + '\').StartsWith($projectPrefix + '_build\', [StringComparison]::OrdinalIgnoreCase)) {
+            throw "MIDNIGHT_HTML_TARGET_DIR inside the checkout must be below its _build directory: $target"
+        }
+    }
+    if ($target.Length -gt 80) {
+        Write-Warning ("The HTML provider target directory has $($target.Length) characters; CEF wrapper " +
+            'objects may then exceed the 260-character MSVC path limit. Set MIDNIGHT_HTML_TARGET_DIR to a ' +
+            "shorter directory (for example a junction such as D:\mh to this checkout's _build\mh) if cl.exe fails.")
+    }
+    $nativeArguments = $pythonArguments + @((Join-Path $PSScriptRoot 'prepare-html-cef.py'), '--output', (Join-Path $defaultTarget 'cef-sdk'))
     if ($Offline) { $nativeArguments += '--offline' }
-    $nativeOutput = & python @nativeArguments
+    $nativeOutput = & $python @nativeArguments
     if ($LASTEXITCODE -ne 0) { throw 'Required CEF SDK preparation failed' }
     $native = ($nativeOutput -join "`n") | ConvertFrom-Json
     if ($native.cef_path -isnot [string] -or -not (Test-Path -LiteralPath $native.cef_path -PathType Container)) {
         throw 'CEF preparation returned an invalid SDK directory'
+    }
+    # The wrapper sources are compiled in place, at most 80 characters below the SDK.
+    if ($native.cef_path.Length + 81 -gt 259) {
+        Write-Warning ("The verified CEF SDK path has $($native.cef_path.Length) characters; its wrapper sources " +
+            'may then exceed the 260-character MSVC path limit. Build from a checkout with a shorter path if cl.exe fails.')
     }
     $fetch = @('--config', $SdkConfig, 'fetch', '--manifest-path',
         (Join-Path $projectRoot 'plugins/midnight-viewer-html/Cargo.toml'), '--locked')
     if ($Offline) { $fetch += '--offline' }
     & cargo @fetch
     if ($LASTEXITCODE -ne 0) { throw 'Cannot fetch HTML provider dependencies' }
+    $pluginRoot = Join-Path $projectRoot 'plugins/midnight-viewer-html'
+    $release = $Profile -eq 'release'
+    & (Join-Path $pluginRoot 'scripts/build-windows.ps1') -SdkConfig $SdkConfig -CefSdk $native.cef_path `
+        -TargetDirectory $target -Release:$release -BuildOnly
+    if ($LASTEXITCODE -ne 0) { throw 'HTML provider build failed' }
+    # Packaging copies and hashes about 370 MB. An installed package made from the same
+    # inputs (provider library, verified CEF SDK receipt, SDK configuration, packaging
+    # scripts, manifest and notices) is kept while its runtime inventory is unchanged.
+    $receipt = $native.cef_path + '.verified.json'
+    $inputs = @((Join-Path $target "$Profile/midnight_viewer_html.dll"), $receipt, $SdkConfig) +
+        @('Cargo.toml', 'Cargo.lock', '.cargo/config.toml', 'web-viewer.json', 'THIRD_PARTY.md', 'README.md' |
+            ForEach-Object { Join-Path $pluginRoot $_ }) +
+        @(Get-ChildItem -LiteralPath (Join-Path $pluginRoot 'scripts'), (Join-Path $pluginRoot 'notices') -Recurse -File |
+            Sort-Object FullName | ForEach-Object FullName)
+    $fingerprint = (@("profile=$Profile", "destination=$destination") + @($inputs | ForEach-Object {
+        $_ + ':' + (Get-FileHash -LiteralPath $_ -Algorithm SHA256).Hash })) -join "`n"
+    $packageState = Join-Path $buildRoot "windows-package-state.$Profile.json"
+    if (Test-HtmlPackageCurrent $packageState $fingerprint $destination) {
+        Write-Output "HTML viewer package is current: $destination"
+        return
+    }
     New-Item -ItemType Directory -Force (Join-Path $AppDirectory 'viewers') | Out-Null
     $staging = Join-Path $AppDirectory ('.html-build.' + [Guid]::NewGuid().ToString('N'))
     New-Item -ItemType Directory -Path $staging | Out-Null
     $package = Join-Path $staging 'package'
-    & (Join-Path $projectRoot 'plugins/midnight-viewer-html/scripts/build-windows.ps1') `
-        -SdkConfig $SdkConfig -CefDistribution $native.cef_path -TargetDirectory $target `
-        -OutputDirectory $package -Release:($Profile -eq 'release')
-    if ($LASTEXITCODE -ne 0) { throw 'HTML provider build failed' }
+    & (Join-Path $pluginRoot 'scripts/package-windows.ps1') -SdkConfig $SdkConfig -TargetDirectory $target `
+        -CefDirectory $native.cef_path -CefReceipt $receipt -OutputDirectory $package -Release:$release
+    if ($LASTEXITCODE -ne 0) { throw 'HTML provider packaging failed' }
     foreach ($name in @('runtime-files.json', 'web-viewer.json')) {
         if (-not (Test-Path -LiteralPath (Join-Path $package $name) -PathType Leaf)) {
             throw 'HTML package is missing its runtime inventory or viewer manifest'
@@ -104,6 +181,10 @@ try {
         }
         throw
     }
+    # Recorded after the swap only: a failure above keeps describing the previous package.
+    @{ fingerprint = $fingerprint
+       runtime = (Get-FileHash -LiteralPath (Join-Path $destination 'runtime-files.json') -Algorithm SHA256).Hash } |
+        ConvertTo-Json | Set-Content -LiteralPath $packageState -Encoding UTF8
     Write-Output "HTML viewer package: $destination"
 } finally {
     if ($staging -and $cleanStaging -and (Test-Path -LiteralPath $staging)) {

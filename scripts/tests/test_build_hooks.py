@@ -8,7 +8,14 @@ import unittest
 
 
 class BuildHookTests(unittest.TestCase):
+    # build.bat refuses to start without PowerShell 7; these cases need no pwsh.
+    WITHOUT_POWERSHELL = {"test_missing_powershell_seven_fails_before_cargo_or_plugin_builds",
+                          "test_invalid_profile_does_not_start_any_build"}
+
     def setUp(self):
+        if (os.name == "nt" and shutil.which("pwsh") is None
+                and self._testMethodName not in self.WITHOUT_POWERSHELL):
+            self.skipTest("build.bat requires PowerShell 7 (pwsh.exe)")
         repository = Path(__file__).resolve().parents[2]
         temporary = repository / "_build" / "tmp"
         temporary.mkdir(parents=True, exist_ok=True)
@@ -122,6 +129,20 @@ class BuildHookTests(unittest.TestCase):
                                 capture_output=True, text=True, timeout=30)
         self.assertEqual(result.returncode, 127, result.stdout + result.stderr)
         self.assertIn("64-bit PowerShell 7", result.stderr)
+        self.assertFalse(self.log.exists(), "Missing prerequisite started a build")
+
+    @unittest.skipUnless(os.name == "nt", "Windows Python prerequisite")
+    def test_missing_python_fails_before_cargo_or_plugin_builds(self):
+        # A python.exe Store alias or a missing launcher used to fail only after the
+        # complete host build, in the thumbnail/HTML/deployment steps.
+        environment = dict(self.environment)
+        environment["PATH"] = os.pathsep.join([
+            str(self.root / "bin"), str(Path(os.environ["SystemRoot"]) / "System32"),
+            os.path.dirname(shutil.which("pwsh"))])
+        result = subprocess.run(self.command, cwd=self.root, env=environment,
+                                capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.returncode, 127, result.stdout + result.stderr)
+        self.assertIn("Python 3.12", result.stderr)
         self.assertFalse(self.log.exists(), "Missing prerequisite started a build")
 
     def test_application_failure_skips_viewer_build(self):

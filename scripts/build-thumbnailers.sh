@@ -26,7 +26,15 @@ LIBCLANG_PATH=$(realpath "$7")
 export FFMPEG_DIR LIBCLANG_PATH
 source_archive=$(realpath "$6")
 echo "8c3850283eb25fa026482078a04051e0be17347b09ef81a0849bec15a96e002e  $source_archive" | sha256sum --check --status
-mkdir -p "$destination" "$build_root"
+mkdir -p "$(dirname -- "$destination")" "$build_root"
+# Assemble a complete package beside the destination and swap directories: files
+# from an earlier FFmpeg or dependency set never survive, and a running worker
+# keeps its mapped libraries (they are renamed away, never truncated in place).
+staging=$(mktemp -d -- "$(dirname -- "$destination")/.thumbnailers-build.XXXXXXXX")
+clean_staging=1
+trap 'if [[ $clean_staging == 1 ]]; then rm -rf -- "$staging"; fi' EXIT
+package="$staging/package"
+mkdir -- "$package"
 native_offline=()
 [[ ${MIDNIGHT_IMAGE_NATIVE_OFFLINE:-0} != 1 ]] || native_offline+=(--offline)
 native_jobs=${CARGO_BUILD_JOBS:-2}
@@ -41,13 +49,13 @@ for name in "${plugins[@]}"; do
     else
         env -u PKG_CONFIG_SYSROOT_DIR cargo "${arguments[@]}"
     fi
-    cp "$CARGO_TARGET_DIR/$profile/$name" "$destination/$name"
-    cp "$repository/plugins/$name/thumbnailer.json" "$destination/$name.json"
+    cp "$CARGO_TARGET_DIR/$profile/$name" "$package/$name"
+    cp "$repository/plugins/$name/thumbnailer.json" "$package/$name.json"
     if [[ -d $notices_root/$name ]]; then
-        mkdir -p "$destination/notices/$name"
-        cp -R "$notices_root/$name/." "$destination/notices/$name/"
+        mkdir -p "$package/notices/$name"
+        cp -R "$notices_root/$name/." "$package/notices/$name/"
         if [[ $name == midnight-thumbnail-image ]]; then
-            cp -R "$repository/plugins/image-decoder/notices/." "$destination/notices/$name/"
+            cp -R "$repository/plugins/image-decoder/notices/." "$package/notices/$name/"
         fi
     else
         echo "Missing distribution notices for $name; stage pinned dependency license notices first" >&2
@@ -55,9 +63,17 @@ for name in "${plugins[@]}"; do
     fi
 done
 for name in libavcodec.so.63 libavformat.so.63 libavutil.so.61 libswscale.so.10; do
-    cp -L "$FFMPEG_DIR/lib/$name" "$destination/$name"
+    cp -L "$FFMPEG_DIR/lib/$name" "$package/$name"
 done
-mkdir -p "$destination/notices/ffmpeg-9.0.2"
-cp -R "$FFMPEG_DIR/share/midnight-ffmpeg/." "$destination/notices/ffmpeg-9.0.2/"
-cp "$source_archive" "$destination/notices/ffmpeg-9.0.2/ffmpeg-9.0.2.tar.xz"
+mkdir -p "$package/notices/ffmpeg-9.0.2"
+cp -R "$FFMPEG_DIR/share/midnight-ffmpeg/." "$package/notices/ffmpeg-9.0.2/"
+cp "$source_archive" "$package/notices/ffmpeg-9.0.2/ffmpeg-9.0.2.tar.xz"
+if [[ -e $destination ]]; then mv -T -- "$destination" "$staging/previous"; fi
+if ! mv -T -- "$package" "$destination"; then
+    if [[ -e $staging/previous ]] && ! mv -T -- "$staging/previous" "$destination"; then
+        clean_staging=0
+        printf 'Previous thumbnail package retained at %s; restoration failed\n' "$staging/previous" >&2
+    fi
+    exit 1
+fi
 printf 'Built installed thumbnail providers: %s\n' "$destination"

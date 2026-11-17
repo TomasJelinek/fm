@@ -38,7 +38,8 @@ mount_root=$(printf '%s' "$build_root" | sed 's/"/""/g')
 base_image=ubuntu:24.04
 tool_path=/opt/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 # Cache the image by setup recipe, base image tag, and pinned toolchain.
-image_key=$({ printf '%s\n' "$base_image"; cat "$build_root/scripts/docker-install-deps.sh" "$build_root/rust-toolchain.toml"; } | sha256sum)
+image_key=$({ printf '%s\n' "$base_image"; cat "$build_root/scripts/docker-install-deps.sh" \
+    "$build_root/scripts/install-rust-toolchain.sh" "$build_root/rust-toolchain.toml"; } | sha256sum)
 build_image="midnight-explorer-build:${image_key%% *}"
 build_user="$(id -u):$(id -g)"
 
@@ -93,7 +94,9 @@ else
     fi
 fi
 
-# Keep source read-only and write caches/artifacts as the invoking user.
+# Keep source read-only and write caches/artifacts as the invoking user. The image
+# contains the pinned toolchain; the read-only RUSTUP_HOME cannot gain another, so
+# a mismatch fails with rustup's "not installed" message instead of a permission error.
 set -- docker run --rm --user "$build_user" \
     --mount "type=bind,\"src=$mount_root\",dst=/workspace,readonly" \
     --mount "type=bind,\"src=$mount_root/_build\",dst=/workspace/_build" \
@@ -103,6 +106,7 @@ set -- docker run --rm --user "$build_user" \
     --env HOME=/workspace/.tools/docker/home \
     --env CARGO_HOME=/workspace/.tools/docker/cargo \
     --env RUSTUP_HOME=/opt/rustup \
+    --env RUSTUP_AUTO_INSTALL=0 \
     --env "PATH=$tool_path" \
     --env CARGO_TARGET_DIR=/workspace/_build \
     --env TMPDIR=/workspace/_build/tmp

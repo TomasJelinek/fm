@@ -14,6 +14,36 @@ print_command() {
     printf '\n'
 }
 
+# The same library locations scripts/prepare-thumbnail-ffmpeg.py searches.
+libclang_available() {
+    if [ -n "${LIBCLANG_PATH:-}" ]; then return 0; fi
+    for directory in /usr/lib/llvm-*/lib /usr/lib/x86_64-linux-gnu /usr/lib/aarch64-linux-gnu \
+        /usr/lib64 /usr/local/lib; do
+        for library in "$directory"/libclang.so* "$directory"/libclang-*.so*; do
+            if [ -e "$library" ]; then return 0; fi
+        done
+    done
+    if command -v llvm-config >/dev/null 2>&1; then
+        directory=$(llvm-config --libdir)
+        for library in "$directory"/libclang.so* "$directory"/libclang-*.so*; do
+            if [ -e "$library" ]; then return 0; fi
+        done
+    fi
+    return 1
+}
+
+# Report missing module prerequisites before the host build, not after it.
+warn_missing_module_prerequisites() {
+    missing=
+    for tool in python3 gpg perl make xz cmake; do
+        if ! command -v "$tool" >/dev/null 2>&1; then missing="$missing $tool"; fi
+    done
+    if ! libclang_available; then missing="$missing libclang"; fi
+    if [ -n "$missing" ]; then
+        printf 'Warning: missing native module build prerequisites:%s. Install them with ./build.sh --install-deps or build with FM_BUILD_BACKEND=docker.\n' "$missing" >&2
+    fi
+}
+
 build_profile=debug
 profile_chosen=0
 install_deps=0
@@ -95,6 +125,7 @@ mkdir -p -- "$build_root/_build/tmp"
 TMPDIR="$build_root/_build/tmp"
 export TMPDIR
 if [ "$install_deps" = 1 ]; then sh scripts/setup-linux.sh --install; fi
+warn_missing_module_prerequisites
 
 # Reuse existing Rust before preserving main's native bootstrap fallback.
 if ! command -v cargo >/dev/null 2>&1; then
@@ -118,7 +149,7 @@ if ! command -v cargo >/dev/null 2>&1; then
     RUSTUP_HOME=${RUSTUP_HOME:-"$build_root/.tools/rustup"}
     PATH="$CARGO_HOME/bin:$PATH"
     export CARGO_HOME RUSTUP_HOME PATH
-    printf '%s\n' 'Installing Rust with rustup; Cargo will select rust-toolchain.toml.'
+    printf '%s\n' 'Installing Rust with rustup and the toolchain that rust-toolchain.toml pins.'
     rustup_installer=$(mktemp "$TMPDIR/rustup-init.XXXXXX")
     trap 'rm -f -- "$rustup_installer"' EXIT
     trap 'exit 1' HUP INT TERM
@@ -126,6 +157,9 @@ if ! command -v cargo >/dev/null 2>&1; then
     sh "$rustup_installer" -y --profile minimal --default-toolchain none
     rm -f -- "$rustup_installer"
     trap - EXIT HUP INT TERM
+    # Explicitly, so the build does not depend on proxy auto-install (which
+    # RUSTUP_AUTO_INSTALL=0 or `rustup set auto-install disable` turns off).
+    sh scripts/install-rust-toolchain.sh rust-toolchain.toml
 fi
 
 if [ "$build_profile" = release ]; then

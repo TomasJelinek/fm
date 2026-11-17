@@ -3,7 +3,7 @@ from pathlib import Path
 import shutil
 import unittest
 
-from scripts.tests import test_native_filesystem_package as native
+import test_native_filesystem_package as native
 
 packaging = native.packaging
 

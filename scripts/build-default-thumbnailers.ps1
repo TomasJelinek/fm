@@ -13,6 +13,16 @@ foreach ($entry in [Environment]::GetEnvironmentVariables('Process').GetEnumerat
     $savedEnvironment[$entry.Key] = $entry.Value
 }
 $projectRoot = Split-Path -Parent $PSScriptRoot
+# Resolve caller paths against the PowerShell location, not the process directory.
+if ($AppDirectory) { $AppDirectory = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($AppDirectory) }
+if ($WorkerSdkConfig) { $WorkerSdkConfig = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($WorkerSdkConfig) }
+# Python 3.12+ runs through the documented py launcher; python may be a Store alias.
+$python = 'python'
+$pythonArguments = @('-B')
+if (Get-Command py -CommandType Application -ErrorAction Ignore) {
+    $python = 'py'
+    $pythonArguments = @('-3', '-B')
+}
 $buildRoot = Join-Path $projectRoot '_build/thumbnailers'
 $temporaryRoot = Join-Path $projectRoot '_build/tmp'
 New-Item -ItemType Directory -Force $buildRoot, $temporaryRoot | Out-Null
@@ -27,7 +37,9 @@ if (Test-Path -LiteralPath (Join-Path $localCargo 'cargo.exe')) {
 Push-Location -LiteralPath $projectRoot
 try {
     if (-not $AppDirectory) {
+        # Cargo resolves a relative CARGO_TARGET_DIR from the project root here too.
         $targetRoot = if ($env:CARGO_TARGET_DIR) { $env:CARGO_TARGET_DIR } else { '_build' }
+        if (-not [IO.Path]::IsPathRooted($targetRoot)) { $targetRoot = Join-Path $projectRoot $targetRoot }
         $AppDirectory = [IO.Path]::GetFullPath((Join-Path $targetRoot $Profile))
     }
     if (-not $WorkerSdkConfig) {
@@ -37,7 +49,8 @@ try {
         } | Sort-Object FullName | ForEach-Object {
             $_.FullName.Substring($projectRoot.Length) + ':' + (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash
         }) -join "`n"
-        foreach ($cache in @($buildRoot, (Join-Path $projectRoot '_build/image-viewer'))) {
+        foreach ($cache in @($buildRoot, (Join-Path $projectRoot '_build/image-viewer'),
+                (Join-Path $projectRoot '_build/pdf-viewer'))) {
             $statePath = Join-Path $cache 'sdk-state.json'
             if (Test-Path -LiteralPath $statePath) {
                 $state = Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json
@@ -74,10 +87,10 @@ try {
         & cargo @fetch
         if ($LASTEXITCODE -ne 0) { throw "Cannot fetch $name thumbnail dependencies" }
     }
-    $nativeArguments = @('-B', (Join-Path $PSScriptRoot 'prepare-thumbnail-ffmpeg.py'),
+    $nativeArguments = $pythonArguments + @((Join-Path $PSScriptRoot 'prepare-thumbnail-ffmpeg.py'),
         '--build-root', (Join-Path $buildRoot 'ffmpeg'))
     if ($Offline) { $nativeArguments += '--offline' }
-    $nativeOutput = & python @nativeArguments
+    $nativeOutput = & $python @nativeArguments
     if ($LASTEXITCODE -ne 0) { throw 'Cannot prepare required thumbnail FFmpeg runtime' }
     $native = ($nativeOutput -join "`n") | ConvertFrom-Json
     foreach ($key in @('prefix', 'source_archive', 'libclang_path')) {
@@ -86,7 +99,7 @@ try {
         }
     }
     $notices = Join-Path $buildRoot 'notices'
-    & python -B (Join-Path $PSScriptRoot 'thumbnail-notices.py') --config $WorkerSdkConfig --output $notices
+    & $python @pythonArguments (Join-Path $PSScriptRoot 'thumbnail-notices.py') --config $WorkerSdkConfig --output $notices
     if ($LASTEXITCODE -ne 0) { throw 'Cannot prepare thumbnail dependency notices' }
     & (Join-Path $PSScriptRoot 'build-thumbnailers.ps1') -ApiConfig $WorkerSdkConfig `
         -Destination (Join-Path $AppDirectory 'thumbnailers') -BuildRoot (Join-Path $buildRoot 'plugins') `

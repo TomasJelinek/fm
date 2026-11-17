@@ -31,13 +31,17 @@ try {
     }
     [IO.File]::WriteAllText((Join-Path $source 'unrelated.pdb'), 'must not be deployed')
     $destination = Join-Path $testRoot 'installed'
-    & $deploy -SourceDirectory $source -Destination $destination | Out-Null
+    $output = @(& $deploy -SourceDirectory $source -Destination $destination) -join "`n"
     if ((Get-FileHash "$destination/me.exe").Hash -ne (Get-FileHash "$source/me.exe").Hash) {
         throw 'Executable contents changed during deployment'
     }
-    if ((Get-FileHash "$destination/midnight-elevated-listing.exe").Hash -ne
-        (Get-FileHash "$source/midnight-elevated-listing.exe").Hash) {
-        throw 'Authorization helper contents changed during deployment'
+    # The Administrator helper is accepted only from a folder standard users cannot
+    # change, so a private installation must neither contain nor require it.
+    if (Test-Path -LiteralPath "$destination/midnight-elevated-listing.exe") {
+        throw 'Administrator authorization helper deployed to a private installation'
+    }
+    if ($output -notmatch 'Retry with authorization is not available from a private installation') {
+        throw 'Deployment did not explain that authorized listing needs an administrator-managed installation'
     }
     if (Test-Path -LiteralPath "$destination/unrelated.pdb") { throw 'Unrelated artifact copied' }
     foreach ($name in @('basic', 'source', 'markdown')) {
@@ -53,6 +57,11 @@ try {
         }
     }
     if (-not (Get-Acl -LiteralPath $destination).AreAccessRulesProtected) { throw 'Installation DACL is not protected' }
+    Remove-Item -LiteralPath (Join-Path $source 'midnight-elevated-listing.exe')
+    & $deploy -SourceDirectory $source -Destination "$testRoot/without-helper" | Out-Null
+    if (-not (Test-Path -LiteralPath "$testRoot/without-helper/me.exe" -PathType Leaf)) {
+        throw 'A build input without the authorization helper was not deployed'
+    }
     $before = (Get-Acl -LiteralPath $destination).Sddl
     Expect-Refusal { & $deploy -SourceDirectory $source -Destination $destination } 'existing destination'
     if ((Get-Acl -LiteralPath $destination).Sddl -ne $before) { throw 'Existing destination ACL changed' }
@@ -78,7 +87,7 @@ try {
     Remove-Item -LiteralPath $library
     Expect-Refusal { & $deploy -SourceDirectory $source -Destination "$testRoot/missing" } 'missing package library'
     if (Test-Path "$testRoot/missing") { throw 'Missing package left an installation' }
-    Write-Output 'Private deployment checks passed: copy/hash, notices, protected ACL, existing target, unsafe ancestor, reparse, missing library.'
+    Write-Output 'Private deployment checks passed: copy/hash, administrator helper omitted, notices, protected ACL, existing target, unsafe ancestor, reparse, missing library.'
 } finally {
     # Both absolute paths are fresh fixtures created above, never a caller-provided directory.
     if ((Split-Path -Parent $testRoot) -ne [IO.Path]::GetFullPath($testParent).TrimEnd('\')) {

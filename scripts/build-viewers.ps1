@@ -14,6 +14,11 @@ foreach ($variable in @('TEMP','TMP','CARGO_HOME','RUSTUP_HOME','PATH','CARGO_TA
     $savedEnvironment[$variable] = [Environment]::GetEnvironmentVariable($variable)
 }
 $projectRoot = Split-Path -Parent $PSScriptRoot
+# Resolve caller paths against the PowerShell location before Push-Location;
+# [IO.Path]::GetFullPath would use the unrelated process working directory.
+if ($AppDirectory) { $AppDirectory = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($AppDirectory) }
+if ($SdkConfig) { $SdkConfig = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($SdkConfig) }
+if ($WorkerSdkConfig) { $WorkerSdkConfig = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($WorkerSdkConfig) }
 $buildRoot = Join-Path $projectRoot '_build/viewers'
 $temporaryRoot = Join-Path $projectRoot '_build/tmp'
 New-Item -ItemType Directory -Force $buildRoot, $temporaryRoot | Out-Null
@@ -28,7 +33,9 @@ if (Test-Path -LiteralPath (Join-Path $localCargo 'cargo.exe')) {
 Push-Location -LiteralPath $projectRoot
 try {
     if (-not $AppDirectory) {
+        # Cargo resolves a relative CARGO_TARGET_DIR from the project root here too.
         $targetRoot = if ($env:CARGO_TARGET_DIR) { $env:CARGO_TARGET_DIR } else { '_build' }
+        if (-not [IO.Path]::IsPathRooted($targetRoot)) { $targetRoot = Join-Path $projectRoot $targetRoot }
         $AppDirectory = [IO.Path]::GetFullPath((Join-Path $targetRoot $Profile))
     }
     if (-not $SdkConfig) {
