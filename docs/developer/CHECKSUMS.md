@@ -98,9 +98,13 @@ directory of each selected entry once (consecutive entries of one directory shar
 the query) and a recursively selected directory by its own path: a walk never
 leaves the root's volume, but the root itself can be a mount point. Verification
 classifies the manifest's directory once, because every entry is confined to its
-volume. An Exclusive call waits until no Shared holder remains (see the
-[transfer contract](TRANSFERS.md) for how long a running transfer keeps its slot)
-and, once queued, is served before later gate requests. A manifest save keeps
+volume. An Exclusive call waits until no Shared holder remains and, once queued, is
+served before later gate requests. A running transfer holds its retained slot only
+while it executes a native step and yields it at its next step boundary while a
+call-scoped request such as a checksum call is queued, so a queued checksum call
+waits for at most one step of each running transfer, not for whole transfers (see
+[disk operations](DISK_OPERATIONS.md#meaning-and-storage-policy) for the steps that
+can take longer). A manifest save keeps
 Exclusive admission for its few namespace calls and waits for the mutation gate
 with one queued acquisition, so later Delete/Rename requests cannot overtake it.
 Idle checksum actors do not poll; shutdown wakes them.

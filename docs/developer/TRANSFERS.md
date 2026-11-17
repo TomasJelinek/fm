@@ -241,7 +241,7 @@ The recovery directory is `.midnight-recovery-<random>` beneath the destination
 folder. Windows uses a protected owner-only DACL; Linux requires owned private
 recovery and a parent protected against other-user name replacement (owned by the
 user or root, and sticky or writable only by the user and the user's private
-group). These are
+group, the latter only without a POSIX access ACL). These are
 not isolation from root/administrators or malicious processes of the same user.
 An error after namespace mutation is a structured outcome, never a request to
 delete recovery data during cleanup:
@@ -501,10 +501,10 @@ an external change to one of their bindings is a job namespace error. Private pi
 witness the stages a job creates and then their published outputs; once every native
 owner of such an object has closed, the next refresh retires that alias, so published
 outputs neither accumulate claims nor turn later external changes into job errors.
-Their names stay covered by the original destination pins. A retired output's object
-identity no longer takes part in peer admission: another job that reaches the same
-object through a different hard-link name is not excluded by it (this job never
-touches that object again). This retirement ruling awaits Architect/F1 confirmation.
+Their names stay covered by the original destination pins. By design, a retired
+output's object identity no longer takes part in peer admission: another job that
+reaches the same object through a different hard-link name is not excluded by it,
+because this job never touches that object again.
 
 Windows Copy and Move require 128-bit `FileIdInfo` identities, because they compare
 identities across their own stage publications, Move captures and namespace pins.
