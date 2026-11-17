@@ -1,7 +1,7 @@
 use crate::{policy, system};
 use midnight_filesystem_plugin_api::*;
 use midnight_filesystem_plugin_sdk::CallContext;
-use std::{collections::HashSet, path::Path};
+use std::path::Path;
 
 fn field(value: &[libc::c_char]) -> Result<Vec<u8>, Failure> {
     policy::native_field(&value.iter().map(|byte| *byte as u8).collect::<Vec<_>>())
@@ -71,27 +71,30 @@ pub(crate) fn list(context: &CallContext<'_>) -> Result<Vec<Volume>, Failure> {
         values.truncate(count as usize);
         Ok(values)
     })?;
-    let mut seen = HashSet::new();
+    let fields: Vec<Vec<u8>> = snapshot
+        .iter()
+        .map(|mount| mount.f_mntonname.iter().map(|byte| *byte as u8).collect())
+        .collect();
     let mut result = Vec::new();
-    for mount in snapshot {
+    for bytes in policy::mount_roots(fields.iter().map(Vec::as_slice)) {
         system::cancel(context)?;
-        let root = root(&mount)?;
-        if !seen.insert(root.bytes.clone()) {
-            continue;
-        }
         let id = format!(
             "mount:{}",
-            root.bytes
+            bytes
                 .iter()
                 .map(|byte| format!("{byte:02x}"))
                 .collect::<String>()
         );
         result.push(Volume {
             id,
-            display: String::from_utf8_lossy(&root.bytes).into_owned(),
-            root,
+            display: String::from_utf8_lossy(&bytes).into_owned(),
+            root: Address {
+                encoding: AddressEncoding::UnixBytes,
+                bytes,
+            },
         });
     }
+    system::cancel(context)?;
     Ok(result)
 }
 
