@@ -42,6 +42,9 @@ pub(crate) fn child_status(code: Option<i32>) -> u8 {
 /// Threads of the failed attempt that outlived its bounded runtime shutdown may still start
 /// workers, and the child inherits every inheritable handle, so it is spawned under the
 /// worker process-creation lock. The lock covers only the spawn, never the child's session.
+/// Tests show only that the lock is free while the child runs. This crate forbids unsafe
+/// code, so no test here can observe the spawn waiting for the lock; that it does rests on
+/// the `spawn_command` call below alone.
 pub(crate) fn run_child(command: &mut Command) -> Result<u8, String> {
     let mut child =
         midnight_worker_platform::spawn_command(command).map_err(|error| error.to_string())?;
@@ -207,8 +210,7 @@ mod tests {
             .recv_timeout(DEADLINE)
             .expect("the software child did not start");
         // run_child now waits for the running child; worker creations must not wait with it.
-        // (That a `spawn_command` spawn waits for a locked creation is observed natively by the
-        // midnight-platform-windows launch tests; this crate forbids unsafe code.)
+        // This does not show that the spawn itself waited for the lock (see run_child).
         #[cfg(windows)]
         {
             let (acquired, lock) = mpsc::channel();

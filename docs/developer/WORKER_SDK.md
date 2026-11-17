@@ -52,10 +52,17 @@ rule. An in-process launcher that inherits every inheritable handle, such as
 that single call. `midnight_worker_platform::spawn_command` spawns such a command
 under the lock, which it holds for the creation call only, never while the child
 runs or while its output or exit status is awaited. The application starts external
-editors, Custom Command programs and the software-rendering restart through it.
+editors, Custom Command programs and the software-rendering restart through it, so
+worker and browser creation waits while such a program is being created, which can
+take a while for a program on a network share or one that antivirus software scans
+on its first start. Tests in `midnight-platform-windows` observe the editor and
+Custom Command launches waiting for the lock; no test observes this for the restart.
 Terminal launches call `CreateProcessW` without handle inheritance, and Shell
-launches (`ShellExecuteEx`) pass no handles; code that third-party Shell extensions
-run inside the process is outside this rule.
+launches (`ShellExecuteEx`) pass no handles. Third-party code that starts processes
+inside the application cannot take the lock and is outside this rule: Shell
+extensions run by a context-menu command or a `DelegateExecute` verb, and the link in
+Slint's `AboutSlint` attribution in the About window, which Slint's winit backend
+opens with the `webbrowser` crate's `std::process::Command::spawn` on the UI thread.
 
 The optional FFmpeg provider requires ReadAndExecute access for that fixed
 worker SID on exactly `avcodec-63.dll`, `avformat-63.dll`, `avutil-61.dll` and
