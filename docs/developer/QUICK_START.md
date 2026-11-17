@@ -84,10 +84,13 @@ bash scripts/ci.sh /sdk/.cargo/config.toml /qa/basic/_build
 bash scripts/build.sh /sdk/.cargo/config.toml /qa/basic/_build /app/viewers/midnight-viewer-basic
 ```
 
-CI runs formatting, independent plugin tests, strict all-target Clippy and an
-optimized native build. Build scripts write the actual native target and DLL/SO
-filename into the installed manifest, and copy the plugin's notices. They install
-only that package. They do not edit application code or another plugin.
+CI runs formatting, independent plugin tests, strict all-target Clippy and a
+Debug native package build; tests, lints and the package share one native-target
+dependency build. Pass `release` as the build script's profile argument for an
+optimized package. Build scripts write the actual native target and DLL/SO
+filename into the installed manifest, and replace the package's copy of the
+plugin's notices. They install only that package. They do not edit application
+code or another plugin.
 
 The [Source](../../plugins/midnight-viewer-source/README.md) and
 [Markdown](../../plugins/midnight-viewer-markdown/README.md) plugins use the same
@@ -98,8 +101,9 @@ dependency. On an uncached machine, run `cargo fetch --locked --config GENERATED
 with permitted network access before the offline build. Linux preparation requires
 Python 3.11+ for reading the SDK config.
 
-For application maintainers building all three shipped packages from the shared
-repository, the existing orchestration helpers are:
+For application maintainers building all six shipped viewer packages (basic,
+source, Markdown, image, PDF and HTML) from the shared repository, the existing
+orchestration helpers are:
 
 ```powershell
 ./scripts/build-viewers.ps1 -Profile release -SdkConfig C:/sdk/.cargo/config.toml -AppDirectory C:/app -Test -Offline

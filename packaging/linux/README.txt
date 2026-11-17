@@ -15,6 +15,11 @@ Ubuntu 24.04 / Mint 22 runtime packages:
     libx11-6 libxcursor1 libxi6 libxrandr2 libxcb1 libwayland-client0 libudev1 \
     libvulkan1 xdg-utils xterm
 Use the graphics driver and Vulkan implementation supplied for your hardware.
+The HTML viewer's Chromium (CEF) runtime also loads common desktop libraries
+(NSS/NSPR, ALSA, ATK/AT-SPI, CUPS, GBM/DRM, Pango/Cairo and X11 extensions).
+Minimal systems may additionally need:
+  sudo apt install libnss3 libasound2t64 libatk1.0-0t64 libatk-bridge2.0-0t64 \
+    libcups2t64 libgbm1 libxcomposite1 libxdamage1 libpango-1.0-0 libcairo2
 
 Local network discovery and mounted SMB share browsing additionally need:
   sudo apt install gvfs-backends gvfs-fuse wsdd
