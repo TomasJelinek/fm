@@ -12,6 +12,8 @@ struct Harness {
     events: mpsc::Receiver<Event>,
     tasks: JoinSet<()>,
     request: PrepareOperation,
+    /// The controller's mutation gate; a held share stands in for a running Copy.
+    gate: Arc<Semaphore>,
 }
 
 impl Harness {
@@ -64,6 +66,7 @@ impl Harness {
         ]);
         let (sender, events) = mpsc::channel(64);
         let mut tasks = JoinSet::new();
+        let gate = crate::transfer_leases::namespace_gate();
         let controller = Controller::new(
             crate::worker_retirement::ActorRetirement::testing(),
             Services {
@@ -75,7 +78,7 @@ impl Harness {
                 sender,
                 wakeup: Arc::new(|| {}),
             },
-            crate::transfer_leases::namespace_gate(),
+            gate.clone(),
             CopyFence::default(),
             &mut tasks,
         );
@@ -98,6 +101,7 @@ impl Harness {
             events,
             tasks,
             request,
+            gate,
         }
     }
     async fn preview(&mut self, revision: u64) -> Arc<MetadataPreview> {
@@ -555,12 +559,18 @@ async fn recursive_budget_is_checked_before_any_child_is_renamed() {
         fs::write(h.directory.path().join("PARENT").join(name), b"unchanged").unwrap();
     }
     let cancel = Cancellation::default();
+    let budget = Arc::new(Semaphore::new(MAX_METADATA_TARGETS));
+    // Other pending jobs leave one free shared target besides this job's root pin.
+    let _others = budget
+        .clone()
+        .try_acquire_many_owned(MAX_METADATA_TARGETS as u32 - 2)
+        .unwrap();
     let mut job = worker::prepare(
         h.request.clone(),
         Some(Arc::new(LocalFileSystem::new(None))),
         cancel.clone(),
         Arc::new(Mutex::new(worker::initial(&h.request))),
-        Arc::new(Semaphore::new(2)),
+        budget,
     )
     .unwrap();
     job.metadata.as_mut().unwrap().update(
@@ -594,6 +604,18 @@ async fn recursive_budget_is_checked_before_any_child_is_renamed() {
     assert_eq!(
         fs::read(h.directory.path().join("PARENT/SECOND")).unwrap(),
         b"unchanged"
+    );
+    // Without a traversal reserve the single free shared target is borrowed. The refusal
+    // names the jobs holding the rest and then keeps the native adapter's own text.
+    let message = &progress.errors[0].message;
+    assert!(
+        message.contains("more entries than the 1 that could be pinned")
+            && message.contains("other pending metadata jobs hold 254 of the 256")
+            && message.ends_with(
+                "The file system reported: metadata directory snapshot exceeds its \
+                 resource budget"
+            ),
+        "{message}"
     );
 }
 
@@ -772,5 +794,7 @@ async fn metadata_preview_captures_native_locale_on_worker_for_current_and_propo
     assert_eq!(reviewed.id, initial.id);
 }
 
+#[path = "operation_metadata_pin_tests.rs"]
+mod pins;
 #[path = "tree_metadata_operation_tests.rs"]
 mod tree_metadata;
