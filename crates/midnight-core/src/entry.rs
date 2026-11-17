@@ -48,7 +48,9 @@ pub struct Entry {
     pub path: PathBuf,
     /// Virtual identities never use `path`; it is empty for these entries.
     /// Native services must require `native_path()` rather than interpreting display names.
-    /// Provider nodes are boxed: native rows, the common case, carry one empty pointer.
+    /// Provider nodes are boxed: native rows, the common case, carry one empty pointer;
+    /// an archive or network row pays one more allocation per build, clone and drop
+    /// (`tests/listing_performance.rs` measures native and archive rows).
     pub virtual_node: Option<Box<crate::ArchiveNode>>,
     pub network_node: Option<Box<crate::NetworkNode>>,
     /// Literal custom suffix hints prepared during backend enumeration.

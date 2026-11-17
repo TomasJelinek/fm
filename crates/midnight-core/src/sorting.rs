@@ -144,8 +144,9 @@ pub fn sort_entries(entries: &mut [Entry], sort: SortSpec) {
 }
 
 /// Use immutable calculated sizes without replacing provider metadata. The lookup
-/// is called once per entry, must be stable for this call and do no I/O; all other
-/// ordering rules are shared.
+/// is called only when sorting by [`SortColumn::Size`], and then at most once per
+/// entry, never per comparison; it must be stable for this call and do no I/O. All
+/// other ordering rules are shared.
 pub fn sort_entries_with_sizes(
     entries: &mut [Entry],
     sort: SortSpec,
@@ -297,5 +298,31 @@ mod tests {
                 .enumerate()
                 .all(|(rank, entry)| entry.metadata.size == Some(rank as u64))
         );
+    }
+
+    #[test]
+    fn size_lookup_is_not_called_for_other_columns() {
+        let mut entries: Vec<_> = (0..64_u64)
+            .map(|id| {
+                let extension = if id.is_multiple_of(2) { "txt" } else { "rs" };
+                let mut entry = Entry::new(
+                    EntryId(id),
+                    PathBuf::from(format!("{:02}.{extension}", 63 - id)),
+                    EntryKind::File,
+                );
+                entry.metadata.size = Some(id);
+                entry
+            })
+            .collect();
+        let calls = Cell::new(0);
+        for column in [SortColumn::Name, SortColumn::Modified, SortColumn::Type] {
+            for descending in [false, true] {
+                sort_entries_with_sizes(&mut entries, SortSpec { column, descending }, |entry| {
+                    calls.set(calls.get() + 1);
+                    entry.metadata.size
+                });
+            }
+        }
+        assert_eq!(calls.get(), 0, "only a Size sort reads calculated sizes");
     }
 }
