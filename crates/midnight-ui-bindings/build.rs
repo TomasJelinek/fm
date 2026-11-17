@@ -1,15 +1,33 @@
 #[path = "build/tooltip.rs"]
 mod tooltip;
 
+/// Environment that changes Slint's compilation, as tracked by `slint_build`.
+const SLINT_ENVIRONMENT: [&str; 9] = [
+    "SLINT_STYLE",
+    "SLINT_FONT_SIZES",
+    "SLINT_SCALE_FACTOR",
+    "SLINT_ASSET_SECTION",
+    "SLINT_EMBED_RESOURCES",
+    "SLINT_EMIT_DEBUG_INFO",
+    "SLINT_LIVE_PREVIEW",
+    "SLINT_BUNDLE_TRANSLATIONS",
+    "SLINT_COMPILER_DENY_WARNINGS",
+];
+
 fn main() {
     let manifest = std::path::PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").unwrap());
     let input = manifest.join("../midnight-ui/ui/main.slint");
-    // Keep Slint's normal resource, imported-file and environment tracking.
-    slint_build::compile_with_config(
-        &input,
-        slint_build::CompilerConfiguration::new().with_style("fluent".into()),
-    )
-    .unwrap();
     let output = std::path::PathBuf::from(std::env::var_os("OUT_DIR").unwrap()).join("main.rs");
-    tooltip::compile(&input, &output).unwrap();
+    // The UI is compiled once: the tooltip adapter emits slint_build's dependency,
+    // environment and include tracking itself instead of a second full compile.
+    for dependency in tooltip::compile(&input, &output).unwrap() {
+        println!("cargo:rerun-if-changed={}", dependency.display());
+    }
+    for variable in SLINT_ENVIRONMENT {
+        println!("cargo:rerun-if-env-changed={variable}");
+    }
+    println!(
+        "cargo:rustc-env=SLINT_INCLUDE_GENERATED={}",
+        output.display()
+    );
 }

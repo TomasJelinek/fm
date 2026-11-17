@@ -9,14 +9,22 @@ use i_slint_compiler::{
     object_tree::{Document, ElementRc, PropertyDeclaration, PropertyVisibility},
     parser,
 };
-use std::{collections::HashSet, path::Path, rc::Rc, sync::Arc};
+use std::{
+    collections::HashSet,
+    path::{Path, PathBuf},
+    rc::Rc,
+    sync::Arc,
+};
 
-pub fn compile(input: &Path, output: &Path) -> Result<(), String> {
+/// Compile `input` to formatted Rust at `output` and return every file it depends on,
+/// exactly as `slint_build::compile_with_config` reports them for Cargo.
+pub fn compile(input: &Path, output: &Path) -> Result<Vec<PathBuf>, String> {
     let mut diagnostics = BuildDiagnostics::default();
     let syntax = parser::parse_file(input, &mut diagnostics)
         .ok_or_else(|| diagnostics.to_string_vec().join("\n"))?;
-    // This is the same constructor/style/domain used by slint_build above,
-    // including environment/target settings and embedded resources for Rust.
+    // This is the constructor/style/domain slint_build uses, including environment/target
+    // settings and embedded resources for Rust. The unused slint-build build dependency
+    // keeps i-slint-compiler's features identical to a slint_build compile.
     let mut config = CompilerConfiguration::new(OutputFormat::Rust);
     config.style = Some("fluent".into());
     config.translation_domain = std::env::var("CARGO_PKG_NAME").ok();
@@ -30,13 +38,38 @@ pub fn compile(input: &Path, output: &Path) -> Result<(), String> {
     {
         return Err(diagnostics.to_string_vec().join("\n"));
     }
+    let mut dependencies: Vec<PathBuf> = diagnostics
+        .all_loaded_files
+        .iter()
+        .filter(|path| path.is_absolute())
+        .cloned()
+        .collect();
+    for warning in diagnostics.diagnostics_as_string().lines() {
+        if !warning.is_empty() {
+            println!(
+                "cargo:warning={}",
+                warning.strip_prefix("warning: ").unwrap_or(warning)
+            );
+        }
+    }
+    dependencies.push(input.to_path_buf());
+    dependencies.extend(
+        document
+            .embedded_file_resources
+            .borrow()
+            .iter()
+            .filter_map(|resource| resource.path.as_deref())
+            .filter(|path| !path.starts_with("builtin:"))
+            .map(PathBuf::from),
+    );
     adapt(&document, "TooltipPlacement", "TipBody")?;
     let generated = i_slint_compiler::generator::rust::generate(&document, &loader.compiler_config)
         .map_err(|error| error.to_string())?;
     // Format the generated Rust AST normally. A multi-megabyte single source
     // line makes debug spans and diagnostics expensive for the downstream build.
     let syntax = syn::parse2::<syn::File>(generated).map_err(|error| error.to_string())?;
-    std::fs::write(output, prettyplease::unparse(&syntax)).map_err(|error| error.to_string())
+    std::fs::write(output, prettyplease::unparse(&syntax)).map_err(|error| error.to_string())?;
+    Ok(dependencies)
 }
 
 fn binary(lhs: Expression, rhs: Expression, op: char) -> Expression {
