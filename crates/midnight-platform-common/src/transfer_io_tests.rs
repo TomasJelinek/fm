@@ -210,6 +210,29 @@ fn wrong_gate_and_exclusive_witnesses_refuse_before_callback() {
     assert!(configured_gate().is_none());
 }
 
+/// A retained permit released for a pause, decision or wait holds no capacity: it never
+/// installs a borrow context, so nested calls cannot run unadmitted beside a queued
+/// exclusive request. Readmitted, the same permit is accepted again.
+#[test]
+fn released_witness_refuses_before_callback_until_readmitted() {
+    let gate = Arc::new(Gate::new(1));
+    let owner = gate.try_acquire_retained(Admission::Shared).unwrap();
+    assert!(owner.release());
+    assert!(with_gate(&gate, &owner, || panic!("released witness callback")).is_err());
+    assert!(
+        with_transfer_io_permit_from(&gate, &owner, || panic!("public released callback")).is_err()
+    );
+    assert!(configured_gate().is_none());
+    assert_eq!(gate.snapshot().active_shared, 0);
+    assert!(owner.try_reacquire());
+    with_gate(&gate, &owner, || {
+        assert!(configured_gate().is_some_and(|configured| Arc::ptr_eq(&configured, &gate)));
+    })
+    .unwrap();
+    assert!(configured_gate().is_none());
+    assert_eq!(gate.snapshot().active_shared, 1);
+}
+
 #[test]
 fn cancellation_refuses_borrowed_and_standalone_calls_before_admission() {
     let gate = Arc::new(Gate::new(1));

@@ -32,8 +32,11 @@ impl Drop for CallPermit {
 /// Trusted backend composition only: use the controller's actual configured
 /// gate, never a new per-job budget or a user-requested admission override.
 /// Production controllers pass the process-global gate; isolated fixtures may
-/// supply their own configured gate. The caller retains the permit throughout
-/// the closure; nested calls borrow it instead of acquiring a second admission.
+/// supply their own configured gate. The permit must be held: a retained permit
+/// released for a pause, decision or wait consumes no capacity, so it is refused
+/// rather than letting nested calls borrow capacity it does not have. The caller
+/// retains the permit throughout the closure; nested calls borrow it instead of
+/// acquiring a second admission.
 /// TLS retains only the gate's identity, not capacity, and nothing may rely on
 /// this context after the closure returns, on another thread, or across an await.
 #[doc(hidden)]
@@ -50,13 +53,13 @@ fn with_gate<R>(
     permit: &Permit,
     operation: impl FnOnce() -> R,
 ) -> Result<R, FsError> {
-    if !permit.belongs_to(gate) || !permit.is_shared() {
+    if !permit.belongs_to(gate) || !permit.is_shared() || !permit.is_held() {
         return Err(FsError::from_io(
             "transfer I/O admission",
             Path::new(""),
             io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "Transfer calls require a Shared permit from the configured I/O gate.",
+                "Transfer calls require a held Shared permit from the configured I/O gate.",
             ),
         ));
     }
