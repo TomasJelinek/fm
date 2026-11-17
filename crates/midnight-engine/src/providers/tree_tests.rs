@@ -6,6 +6,8 @@ use std::{collections::HashMap, num::NonZeroU32, sync::Mutex};
 mod failure_tests;
 #[path = "tree_link_tests.rs"]
 mod link_tests;
+#[path = "tree_probe_tests.rs"]
+mod probe_tests;
 
 #[derive(Default)]
 struct Graph(Mutex<HashMap<u64, Result<Vec<ProviderEntry>, ProviderError>>>);
