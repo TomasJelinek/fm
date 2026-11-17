@@ -785,9 +785,10 @@ Directory links and junctions have distinct link artwork. Windows uses the
 system link overlay; other platforms prefer host-theme icons and fall back to
 application artwork. Recursive folder-size scans count links inside the measured
 folder as skipped and never follow them, so aliases such as profile junctions are
-not counted twice; only a selected folder row that is itself a link is measured
-through its target. Browsing a folder does not inspect a link target merely to
-choose its icon.
+not counted twice. A scanned row that is itself a directory link (a selected row,
+or any row of a full-pane scan without a selection) is measured through its
+target. Browsing a folder does not inspect a link target merely to choose its
+icon.
 
 Paths and file identities are kept separately from their displayed text. A failed
 navigation preserves the last usable directory and reports the failed operation.

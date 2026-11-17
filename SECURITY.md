@@ -203,9 +203,10 @@ is made. Tests mutate fresh, owned fixtures only; they never empty a user's Tras
   properties fall back to read-only metadata rather than opening/executing files.
 - Read-only native size scans never follow links met inside the measured tree:
   file links, directory links and junctions are counted as skipped without
-  resolving their targets, so aliases cannot double-count or escape the selected
-  folder. Only a selected root that is itself a directory link is resolved
-  through its OS-resolved target. Stable volume/file identities and an active
+  resolving their targets, so aliases cannot double-count or escape the measured
+  folder. Only a scanned root that is itself a directory link (a selected row,
+  or any row of a full-pane scan without a selection) is resolved through its
+  OS-resolved target. Stable volume/file identities and an active
   ancestry set still stop non-link cycles (for example bind mounts) before
   recounting contents. Special-file contents are skipped. Resolution acquires the
   existing bounded I/O capacity, and ordinary directories retain the

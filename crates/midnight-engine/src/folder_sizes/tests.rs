@@ -710,6 +710,61 @@ fn frontier_budget_reports_omitted_subtree_as_partial() {
 }
 
 #[test]
+fn an_over_budget_link_is_counted_as_skipped_without_a_warning() {
+    for kind in [EntryKind::DirectoryLink, EntryKind::Symlink] {
+        let mut tree = Tree::default();
+        tree.directory(
+            "root/dir",
+            vec![
+                item(2, "root/dir/first", EntryKind::Directory),
+                item(3, "root/dir/link", kind),
+            ],
+        );
+        tree.directory(
+            "root/dir/first",
+            vec![item(4, "root/dir/first/a", EntryKind::File)],
+        );
+        tree.length("root/dir/first/a", 17);
+        let mut results = vec![];
+        compute_with_limits(
+            &tree,
+            &[item(1, "root/dir", EntryKind::Directory)],
+            &Cancellation::default(),
+            &mut |_, size| {
+                if size.finished {
+                    results.push(size);
+                }
+                true
+            },
+            ScanLimits {
+                pending_path_budget: 0,
+                ..SCAN_LIMITS
+            },
+        );
+        // The link is over the frontier budget, but it is never followed, so
+        // nothing is missing from the total: no error and no warning report.
+        assert_eq!(
+            results,
+            vec![FolderSize {
+                bytes: 17,
+                files: 1,
+                skipped_links: 1,
+                finished: true,
+                ..FolderSize::default()
+            }],
+            "{kind:?}"
+        );
+        assert!(
+            !tree
+                .reads
+                .lock()
+                .unwrap()
+                .contains(&PathBuf::from("root/dir/link"))
+        );
+    }
+}
+
+#[test]
 fn frontier_budget_does_not_limit_one_native_path_length() {
     let mut tree = Tree::default();
     let long_name = "文档".repeat(20_000);

@@ -226,6 +226,10 @@ fn scan_root<F: ScanSource + ?Sized>(
                             } else {
                                 Pending::SkipLink(entry.path)
                             });
+                        } else if entry.kind != EntryKind::Directory {
+                            // A link is never followed, so no content is lost:
+                            // count it as skipped now rather than as an error.
+                            count_skipped(&report, &mut size, &entry.path);
                         } else {
                             report.issue(
                                 &mut size,
