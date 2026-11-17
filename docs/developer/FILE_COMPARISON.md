@@ -116,9 +116,10 @@ Escape and the close button. Each input has Browse; Enter submits both nonempty
 fields. Short forms center within the window, scroll at 320×200 and keep Compare and
 Cancel outside the scrolling area. File fields own their editing/navigation keys.
 
-Nothing runs while a comparison window is idle. When the worker stores an output and no
-earlier wake is outstanding, its `Mailbox` calls the wake that `Service::open_with_wake`
-installed; the window's wake schedules one `output-ready` callback on the event loop
+Apart from Slint's text-cursor blink while a file field has focus, nothing runs while a
+comparison window is idle. When the worker stores an output and no earlier wake is
+outstanding, its `Mailbox` calls the wake that `Service::open_with_wake` installed; the
+window's wake schedules one `output-ready` callback on the event loop
 (`slint::Weak::upgrade_in_event_loop`). That callback's `Mailbox::take` ends the
 outstanding wake before it takes the output, so a burst of outputs costs one callback
 and no output is left without one. The wake holds only a weak window handle: a worker
@@ -133,15 +134,17 @@ integration-test platforms) the window polls its mailbox every 16 ms instead.
 prints the event-loop wakeups while it is idle.
 
 `midnight-compare-ui/src/wake_tests.rs` runs the wake path on a platform with an
-event-loop proxy and a frozen clock: outputs are presented by wakes alone, idle windows
-arm no timer and cause no wakeup in a simulated second, inputs held behind a full
-session queue are retried until delivered, a resize and a DPI change each send one
-`Resize`, inputs for a worker that stopped after an internal error are dropped without
-a retry timer, and closed windows are released while their worker still runs. Slint
-keeps that proxy process-wide, so it is the only test in that binary that installs a
-platform. `midnight-compare-engine/src/mailbox_tests.rs` covers the wake gate, including
-a race of `take` against a concurrent output, and `capture_tests.rs` the two refusal
-reasons of `Session::send`.
+event-loop proxy and a frozen clock: outputs are presented by wakes alone; idle windows
+in the file form, and a presented comparison once its font catalog has arrived, arm no
+timer and cause no wakeup in a simulated second; inputs held behind a full session
+queue are retried until delivered; a resize and a DPI change each send one `Resize`;
+inputs for a worker that stopped after an internal error are dropped without a retry
+timer; and closed windows are released while their worker still runs. Waiting for the
+installed fixed-pitch font scan dominates its run time. Slint keeps that proxy
+process-wide, so it is the only test in that binary that installs a platform.
+`midnight-compare-engine/src/mailbox_tests.rs` covers the wake gate, including a race of
+`take` against a concurrent output, and `capture_tests.rs` the two refusal reasons of
+`Session::send`.
 
 Tests cover existing automatic Unicode/raw-native pairing, partial physical order,
 empty/ambiguous/pending panel inputs, repeated invalid paths and retry, unchanged

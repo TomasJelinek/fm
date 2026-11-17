@@ -1,7 +1,8 @@
 //! The production wake path on a platform with a cross-thread event-loop proxy and a
 //! frozen clock: worker outputs are presented by wakes alone, an idle comparator arms no
-//! timer, inputs held behind a full session queue are retried until delivered, inputs for
-//! a worker that stopped are dropped without a retry, and a closed window is neither kept
+//! timer (in the file form, and once a comparison and its font catalog are presented),
+//! inputs held behind a full session queue are retried until delivered, inputs for a
+//! worker that stopped are dropped without a retry, and a closed window is neither kept
 //! alive by its worker nor touched by a late wake.
 //!
 //! Slint keeps the event-loop proxy process-wide (`set_platform` refuses a second platform
@@ -370,6 +371,19 @@ fn worker_outputs_wake_the_window_and_an_idle_comparator_arms_no_timer() {
         ((logical.0 * 2.0) as u32, (logical.1 * 2.0) as u32)
     );
 
+    // A presented comparison is idle too, once its font catalog has arrived (the worker
+    // repaints with it) and its last batch interval has passed.
+    event_loop.wait_for(&window, "present the font catalog", false, || {
+        window.get_fonts_ready()
+    });
+    event_loop.advance(BATCH_INTERVAL);
+    assert!(!open.batch.running() && !open.poll.running() && open.pending.borrow().is_empty());
+    assert_eq!(
+        event_loop.wakeups(Duration::from_secs(1)),
+        0,
+        "an idle comparison must not wake the event loop"
+    );
+
     // A worker that stopped after an internal error takes no more input: what waits is
     // dropped and no timer retries it.
     let stopping = ComparatorWindows::new(Service::with_native_capture(
@@ -415,8 +429,11 @@ fn worker_outputs_wake_the_window_and_an_idle_comparator_arms_no_timer() {
     assert!(!broken.batch.running(), "a stopped worker is not retried");
     event_loop.advance(BATCH_INTERVAL);
     assert!(!broken.batch.running() && broken.pending.borrow().is_empty());
-    // The first window's font catalog may still arrive by a wake; no timer is armed.
-    assert_eq!(slint::platform::duration_until_next_timer_update(), None);
+    assert_eq!(
+        event_loop.wakeups(Duration::from_secs(1)),
+        0,
+        "the window of a stopped worker must not wake the event loop"
+    );
     stopping.close_all();
     drop((stopped, stopped_native, broken, stopping));
 

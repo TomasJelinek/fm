@@ -34,9 +34,10 @@ pub struct ComparatorWindows {
     picker_owner: file_choice::PickerOwner,
     font_listener: Rc<RefCell<Option<FontListener>>>,
 }
-/// One comparison window. Nothing runs while it is idle: the worker's outputs arrive
-/// through `output-ready`, geometry through `geometry-changed`, and the batch timer runs
-/// only while inputs arrive or wait for room in the queue of a running worker.
+/// One comparison window. It arms no timer while idle (Slint's own text cursor still
+/// blinks in a focused file field): the worker's outputs arrive through `output-ready`,
+/// geometry through `geometry-changed`, and the batch timer runs only while inputs arrive
+/// or wait for room in the queue of a running worker.
 struct OpenWindow {
     window: ComparatorWindow,
     session: Session,
