@@ -83,13 +83,16 @@ generic content adapter can support future virtual providers.
 Reads are at most 256 KiB and must return the exact checked length. RGBA output
 is bounded to 512 by 512 (1 MiB), with six sample indices. Host limits also cover
 total traffic, read count, deadline, generation and dimensions. The service asks
-for 96 by 96 and admits two decoders. The shared I/O gate admits one unknown,
-HDD or network source or a bounded batch of confirmed SSD reads, releasing
-permits before decoding, hashing and waiting.
+for the DPI-scaled resolution bucket (96, 128, 192, 256, 384 or 512 px) that
+covers the displayed thumbnail edge and admits two decoders. The shared I/O gate
+admits one unknown, HDD or network source or a bounded batch of confirmed SSD
+reads, releasing permits before decoding, hashing and waiting.
 
 Videos use one static sample normally. Hover or selection admits five more;
 hover has priority while every visible selected video progresses in rotation.
-Offscreen jobs cancel. Decode failures retry after 30 seconds. Every accepted
+Offscreen jobs cancel. Decode failures retry after 30 seconds, including an
+interruption the view did not request (for example a stopped archive mount);
+only cancellations the view requested are abandoned without backoff. Every accepted
 sample must persist before presentation. Private atomic cache records include
 opaque identity, revision, decoder version and dimensions. Clear-cache waits
 for cancelled workers, removes old records and starts a new visible generation
