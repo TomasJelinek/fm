@@ -391,6 +391,32 @@ fn copied_folders_wider_than_their_protected_parent_are_refused_and_removed() {
     assert!(parent.join("copied").is_dir());
 }
 
+/// A new copied folder must be on its parent's filesystem.
+#[test]
+fn copied_folders_on_another_filesystem_than_their_parent_are_refused_and_removed() {
+    use std::ffi::OsStr;
+    let (_temp, parent) = fixture();
+    let provider = crate::LinuxFileSystem::new(None);
+    let cancel = Cancellation::default();
+    let target = provider
+        .prepare_transfer_destination(&parent, &cancel)
+        .unwrap();
+    let refused = crate::ownership::simulation::with_foreign_device(|| {
+        target.create_directory(OsStr::new("copied"), &cancel)
+    });
+    let refused = match refused {
+        Ok(_) => panic!("a copied folder on another filesystem was admitted"),
+        Err(error) => error,
+    };
+    assert_eq!(refused.kind, std::io::ErrorKind::Unsupported);
+    assert!(
+        refused.message.contains("another filesystem"),
+        "{}",
+        refused.message
+    );
+    assert_eq!(fs::read_dir(&parent).unwrap().count(), 0);
+}
+
 /// With a POSIX access ACL the group bits are its mask, so a 0775 parent of the
 /// user's private group can still let other users replace or remove names.
 #[test]

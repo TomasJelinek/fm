@@ -182,17 +182,23 @@ fn a_verdict_being_computed_never_blocks_cached_checks() {
     assert!(cache.get((2, 2), validity, || false));
 }
 
-fn created(parent: &Path, name: &str) -> File {
-    rustix::fs::mkdir(parent.join(name), Mode::RWXU).unwrap();
+/// An O_PATH pin of the directory `path`, as Rename and Delete pin their parent
+/// and their new staging directory.
+fn pinned(path: &Path) -> File {
     File::from(
         openat(
             rustix::fs::CWD,
-            parent.join(name),
+            path,
             OFlags::PATH | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
             Mode::empty(),
         )
         .unwrap(),
     )
+}
+
+fn created(parent: &Path, name: &str) -> File {
+    rustix::fs::mkdir(parent.join(name), Mode::RWXU).unwrap();
+    pinned(&parent.join(name))
 }
 
 #[test]
@@ -312,7 +318,9 @@ fn equally_open_parent_supported(parent: &File, test: &str) -> bool {
 #[test]
 fn mount_provided_modes_are_admitted_only_as_far_as_the_parent_allows() {
     let temp = tempfile::tempdir().unwrap();
-    let parent = File::open(temp.path()).unwrap();
+    // Pinned with O_PATH like the mutation parent: its ACL is read through a
+    // readable reopen.
+    let parent = pinned(temp.path());
     let directory = created(temp.path(), "fat");
     let check =
         |mode| simulation::with_mount_mode(mode, || check_created_directory(&parent, &directory));
@@ -336,6 +344,19 @@ fn mount_provided_modes_are_admitted_only_as_far_as_the_parent_allows() {
             check(0o777).unwrap(),
             CreatedDirectory::MountProvided(0o777)
         );
+        // With an access ACL the parent's group bits are only the ACL mask: a stage
+        // of the same mode without an ACL would grant the owning group those bits
+        // in full, and named entries may restrict users the stage would not.
+        let test = "mount-provided modes as open as an ACL-shared parent";
+        if crate::test_support::share_through_access_acl(temp.path(), test) {
+            fs::set_permissions(temp.path(), fs::Permissions::from_mode(0o777)).unwrap();
+            assert_eq!(check(0o777).unwrap_err().kind(), io::ErrorKind::Unsupported);
+            crate::test_support::remove_access_acl(temp.path());
+            assert_eq!(
+                check(0o777).unwrap(),
+                CreatedDirectory::MountProvided(0o777)
+            );
+        }
         // A sticky parent is protected, so nothing wider than the caller's is admitted.
         fs::set_permissions(temp.path(), fs::Permissions::from_mode(0o1777)).unwrap();
         for mode in [0o777, 0o1777] {
@@ -351,6 +372,11 @@ fn mount_provided_modes_are_admitted_only_as_far_as_the_parent_allows() {
         check_created_directory(&parent, &directory).unwrap_err()
     });
     assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+    let error = simulation::with_foreign_device(|| {
+        check_created_directory(&parent, &directory).unwrap_err()
+    });
+    assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    assert!(error.to_string().contains("another filesystem"), "{error}");
     fs::write(temp.path().join("file"), b"not a directory").unwrap();
     let file = File::open(temp.path().join("file")).unwrap();
     assert_eq!(
@@ -367,6 +393,14 @@ fn a_mount_provided_stage_shared_through_an_access_acl_is_refused() {
     let parent = File::open(temp.path()).unwrap();
     let path = temp.path().join("shared");
     let directory = created(temp.path(), "shared");
+    // Any other group refuses a group-writable stage whether or not it has an ACL.
+    let group = fs::metadata(&path).unwrap().gid();
+    if !caller_private_group(group) {
+        eprintln!(
+            "SKIP ACL-shared mount-provided modes: group {group} is not this user's private group"
+        );
+        return;
+    }
     if !crate::test_support::share_through_access_acl(&path, "ACL-shared mount-provided modes") {
         return;
     }
@@ -375,8 +409,7 @@ fn a_mount_provided_stage_shared_through_an_access_acl_is_refused() {
     assert_eq!(check().unwrap_err().kind(), io::ErrorKind::Unsupported);
     // The ACL alone made the difference: without it the private group may write.
     crate::test_support::remove_access_acl(&path);
-    let group = fs::metadata(&path).unwrap().gid();
-    assert_eq!(check().is_ok(), caller_private_group(group));
+    assert_eq!(check().unwrap(), CreatedDirectory::MountProvided(0o775));
 }
 
 #[test]

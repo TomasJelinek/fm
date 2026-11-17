@@ -801,6 +801,46 @@ fn a_stage_wider_than_its_parent_is_refused_and_removed() {
     assert_eq!(fs::read_dir(fixture.path()).unwrap().count(), 1);
 }
 
+/// With a POSIX access ACL the parent's group bits are only the ACL mask, so a
+/// stage of the same mode without an ACL would grant the owning group those bits
+/// in full. The parent's ACL is read through the O_PATH parent pin of Rename and
+/// Delete.
+#[test]
+fn a_stage_as_open_as_a_parent_shared_through_an_access_acl_is_refused() {
+    use std::os::unix::fs::PermissionsExt;
+    let fixture = tempfile::tempdir().unwrap();
+    let test = "stages as open as an ACL-shared parent";
+    if !equally_open_parent_supported(fixture.path(), test)
+        || !crate::test_support::share_through_access_acl(fixture.path(), test)
+    {
+        return;
+    }
+    // chmod keeps the ACL; the mode now reads like that of a dir_mode=0777 share.
+    fs::set_permissions(fixture.path(), fs::Permissions::from_mode(0o777)).unwrap();
+    let original = fixture.path().join("photo.jpg");
+    fs::write(&original, b"pixels").unwrap();
+    let cancel = Cancellation::default();
+    let prepared = LinuxFileSystem::new(None)
+        .prepare(&original, &cancel)
+        .unwrap();
+    crate::ownership::simulation::with_mount_mode(0o777, || {
+        let refused = prepared.rename(OsStr::new("renamed.jpg"), &cancel);
+        assert_refused_for(&original, refused.unwrap_err(), ErrorKind::Unsupported);
+        let refused = prepared.delete(DeleteMode::Permanent, &cancel, &mut |_| {});
+        assert_refused_for(&original, refused.unwrap_err(), ErrorKind::Unsupported);
+    });
+    assert_eq!(fs::read(&original).unwrap(), b"pixels");
+    assert!(staging_residue(fixture.path()).is_empty());
+    // The ACL alone made the difference.
+    crate::test_support::remove_access_acl(fixture.path());
+    let renamed = crate::ownership::simulation::with_mount_mode(0o777, || {
+        prepared.rename(OsStr::new("renamed.jpg"), &cancel)
+    })
+    .unwrap();
+    assert_eq!(fs::read(renamed).unwrap(), b"pixels");
+    assert!(staging_residue(fixture.path()).is_empty());
+}
+
 #[test]
 fn a_staging_folder_that_cannot_be_created_is_reported_for_the_item() {
     use std::os::unix::fs::PermissionsExt;
@@ -909,7 +949,7 @@ fn an_item_moved_by_a_capture_that_reported_failure_is_restored() {
 
 #[test]
 fn refused_staging_directories_are_removed_and_the_source_is_untouched() {
-    use crate::ownership::simulation::with_foreign_owner;
+    use crate::ownership::simulation::{with_foreign_device, with_foreign_owner};
     let fixture = tempfile::tempdir().unwrap();
     let original = fixture.path().join("photo.jpg");
     fs::write(&original, b"pixels").unwrap();
@@ -918,11 +958,17 @@ fn refused_staging_directories_are_removed_and_the_source_is_untouched() {
         .prepare(&original, &cancel)
         .unwrap();
     for _ in 0..3 {
+        // Another owner, or another filesystem than the parent's.
         let refused = with_foreign_owner(|| prepared.rename(OsStr::new("renamed.jpg"), &cancel));
         assert_refused_for(&original, refused.unwrap_err(), ErrorKind::PermissionDenied);
         let refused =
             with_foreign_owner(|| prepared.delete(DeleteMode::Permanent, &cancel, &mut |_| {}));
         assert_refused_for(&original, refused.unwrap_err(), ErrorKind::PermissionDenied);
+        let refused = with_foreign_device(|| prepared.rename(OsStr::new("renamed.jpg"), &cancel));
+        assert_refused_for(&original, refused.unwrap_err(), ErrorKind::InvalidData);
+        let refused =
+            with_foreign_device(|| prepared.delete(DeleteMode::Permanent, &cancel, &mut |_| {}));
+        assert_refused_for(&original, refused.unwrap_err(), ErrorKind::InvalidData);
     }
     assert_eq!(fs::read(&original).unwrap(), b"pixels");
     assert!(staging_residue(fixture.path()).is_empty());

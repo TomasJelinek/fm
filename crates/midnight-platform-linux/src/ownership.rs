@@ -110,18 +110,19 @@ pub(crate) fn check_created_directory(
 /// the effective UID on the filesystem `device` of its parent.
 fn owned_directory(directory: &File, device: u64) -> io::Result<Stat> {
     let stat = fstat(directory)?;
+    #[cfg(test)]
+    let stat = simulation::reported(stat);
     if FileType::from_raw_mode(stat.st_mode) != FileType::Directory {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "the new private directory is not a directory",
         ));
     }
-    #[cfg(test)]
-    if simulation::foreign_owner() {
-        return Err(foreign_owner());
-    }
     if stat.st_uid != rustix::process::geteuid().as_raw() {
-        return Err(foreign_owner());
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "the new private directory is not owned by this user",
+        ));
     }
     if stat.st_dev != device {
         return Err(io::Error::new(
@@ -129,22 +130,7 @@ fn owned_directory(directory: &File, device: u64) -> io::Result<Stat> {
             "the new private directory is on another filesystem",
         ));
     }
-    #[cfg(test)]
-    let stat = {
-        let mut stat = stat;
-        if let Some(simulated) = simulation::mount_mode() {
-            stat.st_mode = (stat.st_mode & !0o7777) | simulated;
-        }
-        stat
-    };
     Ok(stat)
-}
-
-fn foreign_owner() -> io::Error {
-    io::Error::new(
-        io::ErrorKind::PermissionDenied,
-        "the new private directory is not owned by this user",
-    )
 }
 
 /// A readable descriptor of exactly the directory `directory` refers to.
@@ -403,23 +389,33 @@ fn number(field: &[u8]) -> Option<u32> {
     std::str::from_utf8(field).ok()?.parse().ok()
 }
 
-/// Test-only simulation of filesystems that cannot represent POSIX modes or
-/// that report a foreign owner, on the calling thread only.
+/// Test-only simulation of filesystems that cannot represent POSIX modes, that
+/// report a foreign owner or that place a new directory on another filesystem,
+/// on the calling thread only. Each alters the status reported for a new private
+/// directory, so the real checks decide.
 #[cfg(test)]
 pub(crate) mod simulation {
-    use std::cell::Cell;
+    use rustix::fs::Stat;
+    use std::{cell::Cell, thread::LocalKey};
 
     thread_local! {
         static MOUNT_MODE: Cell<Option<u32>> = const { Cell::new(None) };
         static FOREIGN_OWNER: Cell<bool> = const { Cell::new(false) };
+        static FOREIGN_DEVICE: Cell<bool> = const { Cell::new(false) };
     }
 
-    pub(crate) fn mount_mode() -> Option<u32> {
-        MOUNT_MODE.with(Cell::get)
-    }
-
-    pub(crate) fn foreign_owner() -> bool {
-        FOREIGN_OWNER.with(Cell::get)
+    /// The status of a new private directory as the simulated filesystem reports it.
+    pub(crate) fn reported(mut stat: Stat) -> Stat {
+        if let Some(mode) = MOUNT_MODE.with(Cell::get) {
+            stat.st_mode = (stat.st_mode & !0o7777) | mode;
+        }
+        if FOREIGN_OWNER.with(Cell::get) {
+            stat.st_uid = stat.st_uid.wrapping_add(1);
+        }
+        if FOREIGN_DEVICE.with(Cell::get) {
+            stat.st_dev = stat.st_dev.wrapping_add(1);
+        }
+        stat
     }
 
     /// Newly created private directories report the permission bits `mode`
@@ -434,9 +430,19 @@ pub(crate) mod simulation {
 
     /// Newly created private directories report another owner.
     pub(crate) fn with_foreign_owner<T>(run: impl FnOnce() -> T) -> T {
-        FOREIGN_OWNER.with(|cell| cell.set(true));
+        with(&FOREIGN_OWNER, run)
+    }
+
+    /// Newly created private directories report another filesystem than their
+    /// parent's.
+    pub(crate) fn with_foreign_device<T>(run: impl FnOnce() -> T) -> T {
+        with(&FOREIGN_DEVICE, run)
+    }
+
+    fn with<T>(flag: &'static LocalKey<Cell<bool>>, run: impl FnOnce() -> T) -> T {
+        flag.with(|cell| cell.set(true));
         let result = run();
-        FOREIGN_OWNER.with(|cell| cell.set(false));
+        flag.with(|cell| cell.set(false));
         result
     }
 }
