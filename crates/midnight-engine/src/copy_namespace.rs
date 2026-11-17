@@ -877,6 +877,16 @@ impl Inner {
         let mut errors = diagnostics
             .lock()
             .unwrap_or_else(|error| error.into_inner());
+        // A persistent failure seen again (a later turn, or the final revalidation before
+        // close) is reported once.
+        if errors.iter().any(|known| {
+            known.operation == error.operation
+                && known.kind == error.kind
+                && known.path == error.path
+                && known.message == error.message
+        }) {
+            return;
+        }
         if errors.len() == DIAGNOSTICS {
             errors.remove(0);
         }

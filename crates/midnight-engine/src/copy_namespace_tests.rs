@@ -2399,6 +2399,8 @@ fn final_revalidation_reports_an_untouched_pin_change_of_a_lone_job() {
     ));
     job.claim().revalidate_before_close();
     assert!(untouched_control.calls.load(Ordering::SeqCst) > before);
+    // The same persistent failure seen again is reported once.
+    job.claim().revalidate_before_close();
     let diagnostics = job.claim().take_diagnostics();
     assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
     assert!(diagnostics[0].message.contains("ancestry changed"));
