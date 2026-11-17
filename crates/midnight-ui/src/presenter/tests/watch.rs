@@ -191,7 +191,7 @@ fn caret_stays_near_a_focused_entry_that_a_refresh_removed() {
 }
 
 #[test]
-fn watch_refresh_keeps_computed_folder_sizes_but_explicit_refresh_recomputes() {
+fn watch_refresh_keeps_computed_folder_sizes_but_explicit_refresh_discards_them() {
     let size = FolderSize {
         bytes: 42,
         files: 1,
@@ -222,7 +222,134 @@ fn watch_refresh_keeps_computed_folder_sizes_but_explicit_refresh_recomputes() {
     );
     assert!(p.panes[0].size_scan_attempted);
     begin(&mut p, PaneId::Left, "left");
-    assert!(p.panes[0].folder_sizes.is_empty(), "Ctrl+R recomputes");
+    assert!(p.panes[0].folder_sizes.is_empty(), "Ctrl+R discards them");
+}
+
+#[test]
+fn folders_the_attempted_scan_never_covered_are_not_reported_as_unfinished() {
+    let presented = |p: &Presenter, path: &str| {
+        let pane = &p.panes[0];
+        let entry = pane
+            .entries
+            .iter()
+            .find(|e| e.path.as_path() == Path::new(path))
+            .unwrap();
+        crate::size_presentation::folder_size(
+            pane.folder_size(entry),
+            pane.folder_size_running(entry),
+            pane.size_scan_attempted && pane.tree_view().is_none(),
+            p.preferences.values.size_display,
+            &p.number_locale,
+        )
+        .0
+    };
+    // (scan scope retained after cancellation, folders listed by the re-read, attempted after it)
+    for (cancelled, relisted, attempted) in [
+        (false, &["left/sized", "left/new"][..], false),
+        (true, &["left/sized", "left/unreached"][..], true),
+        (
+            true,
+            &["left/sized", "left/unreached", "left/new"][..],
+            false,
+        ),
+    ] {
+        let mut p = Presenter::new("left".into(), "right".into());
+        let first = begin(&mut p, PaneId::Left, "left");
+        finish(
+            &mut p,
+            PaneId::Left,
+            first,
+            vec![entry(1, "left/sized"), entry(2, "left/unreached")],
+        );
+        let pane = &mut p.panes[0];
+        pane.folder_sizes.insert(
+            "left/sized".into(),
+            FolderSize {
+                bytes: 42,
+                files: 1,
+                finished: true,
+                ..Default::default()
+            },
+        );
+        pane.size_scan_attempted = true;
+        if cancelled {
+            pane.size_scan_scope = Some(SizeScanScope {
+                navigation: first,
+                path: "left".into(),
+                entries: pane.entries.clone(),
+                index: pane.index.clone(),
+                selection: None,
+            });
+        }
+        let refresh = watch_refresh(&mut p);
+        let rows = relisted
+            .iter()
+            .enumerate()
+            .map(|(id, path)| entry(id as u64 + 1, path))
+            .collect();
+        finish(&mut p, PaneId::Left, refresh, rows);
+        assert_eq!(p.panes[0].size_scan_attempted, attempted, "{relisted:?}");
+        if relisted.contains(&"left/new") {
+            assert_eq!(presented(&p, "left/new"), "<DIR>", "never part of a scan");
+        }
+        if attempted {
+            assert_eq!(
+                presented(&p, "left/unreached"),
+                "—",
+                "the cancelled scan did not finish it"
+            );
+        }
+        assert_ne!(
+            presented(&p, "left/sized"),
+            "<DIR>",
+            "the computed size stays"
+        );
+    }
+}
+
+#[test]
+fn resort_keeps_a_retained_watch_hint_until_the_folder_is_read_again() {
+    let mut p = Presenter::new("left".into(), "right".into());
+    let first = begin(&mut p, PaneId::Left, "left");
+    finish(&mut p, PaneId::Left, first, vec![entry(1, "left/a")]);
+    let committed = p.panes[0].successful_generation.unwrap();
+    assert!(
+        !p.refresh_if_changed(PaneId::Left, committed, &|_| false),
+        "a full queue retains the hint"
+    );
+    let sent = RefCell::new(Vec::new());
+    let send = |command| {
+        sent.borrow_mut().push(command);
+        true
+    };
+    assert!(p.sort(PaneId::Left, SortColumn::Size, &send));
+    let resort = sent
+        .borrow()
+        .iter()
+        .find_map(|command| match command {
+            Command::Resort { navigation, .. } => Some(*navigation),
+            _ => None,
+        })
+        .expect("a re-sort of the committed rows");
+    let reread = |sent: &RefCell<Vec<Command>>| {
+        sent.borrow().iter().any(|command| {
+            matches!(
+                command,
+                Command::Refresh {
+                    pane: PaneId::Left,
+                    ..
+                }
+            )
+        })
+    };
+    p.flush_selection(&send);
+    assert!(!reread(&sent), "nothing is re-read while the re-sort loads");
+    finish(&mut p, PaneId::Left, resort, vec![entry(1, "left/a")]);
+    p.flush_selection(&send);
+    assert!(
+        reread(&sent),
+        "the hint re-reads the folder after the re-sort"
+    );
 }
 
 #[test]

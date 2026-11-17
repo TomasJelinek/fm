@@ -191,6 +191,29 @@ impl Presenter {
         p.rectangle_preview = None;
     }
 
+    /// Leave an adopted tree whose backend session was dropped. A native panel
+    /// re-reads its folder like other automatic re-reads; an archive panel
+    /// re-lists its archive folder. Both retire the tree and start a fresh
+    /// selection context. A refused request stays owed: the native re-read as the
+    /// pane's refresh hint, the archive re-list through `flush_background_refreshes`.
+    pub(super) fn leave_unavailable_tree(&mut self, pane: PaneId, send: &dyn Fn(Command) -> bool) {
+        let p = &self.panes[pane.index()];
+        if !p.tree.unavailable || p.loading {
+            return;
+        }
+        if let Some(archive) = &p.archive {
+            let location = archive.location.clone();
+            self.archive_navigate_impl(
+                pane,
+                ArchiveAction::List(location),
+                Reload::Background,
+                send,
+            );
+        } else if let Some(navigation) = p.successful_generation {
+            self.refresh_if_changed(pane, navigation, send);
+        }
+    }
+
     /// Temporary typed-action boundary. A display index never grants native operation authority.
     pub(super) fn tree_action_allowed(&mut self, pane: PaneId) -> bool {
         if self.panes[pane.index()].tree_view().is_none() {
@@ -811,20 +834,19 @@ impl Presenter {
                         .is_some_and(|view| view.root.same_snapshot(&root))
                 {
                     // The backend dropped the adopted session. Re-sending its
-                    // Commit/Viewport observations would only be rejected again;
-                    // return to the flat folder, which retires the tree and
-                    // establishes a fresh flat selection context.
+                    // Commit/Viewport observations would only be rejected again.
                     p.tree.unavailable = true;
                     self.desktop.report(
                         "Tree unavailable",
                         format!(
-                            "{}\n\nThe folder is shown again without its expanded branches.",
+                            "{}\n\nThe folder is listed again without its expanded branches.",
                             error.as_str()
                         ),
                     );
-                    if let Some(navigation) = self.panes[pane.index()].successful_generation {
-                        self.refresh_if_changed(pane, navigation, send);
-                    }
+                    // A comparison waiting for or running against this tree can
+                    // never finish; cancel it first so it cannot hold the re-read.
+                    self.flush_comparison(send);
+                    self.leave_unavailable_tree(pane, send);
                 }
                 self.retired.push(Box::new(root));
             }

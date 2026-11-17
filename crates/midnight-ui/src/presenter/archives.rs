@@ -66,6 +66,18 @@ impl Presenter {
         action: ArchiveAction,
         send: &dyn Fn(Command) -> bool,
     ) -> bool {
+        self.archive_navigate_impl(pane, action, Reload::Navigate, send)
+    }
+
+    /// `Reload::Background` requests are retried by their owner, so a full
+    /// queue does not report an error on the panel.
+    pub(super) fn archive_navigate_impl(
+        &mut self,
+        pane: PaneId,
+        action: ArchiveAction,
+        mode: Reload,
+        send: &dyn Fn(Command) -> bool,
+    ) -> bool {
         let p = &mut self.panes[pane.index()];
         let Some(navigation) = p.generation.checked_add(1).map(NavigationId) else {
             return false;
@@ -101,7 +113,9 @@ impl Presenter {
             action,
             sort: p.sort,
         }) {
-            p.set_error("Archive navigation queue is busy", &mut self.retired);
+            if mode != Reload::Background {
+                p.set_error("Archive navigation queue is busy", &mut self.retired);
+            }
             return false;
         }
         self.clear_tree(pane, Some(navigation));

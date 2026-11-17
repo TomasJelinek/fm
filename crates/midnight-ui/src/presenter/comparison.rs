@@ -141,6 +141,15 @@ impl Presenter {
                 return;
             };
             let p = &self.panes[pane.index()];
+            if p.tree.unavailable {
+                // A dropped tree session never becomes ready; the panel is listed
+                // again instead, and that re-read must not wait for this request.
+                self.comparison.waiting = false;
+                self.comparison.busy = false;
+                self.comparison.error =
+                    "Comparison cancelled because a panel or selection changed.".into();
+                return;
+            }
             if p.search.pending || p.search_view_waiting() || !tree::selection_ready(p) {
                 return;
             }

@@ -106,9 +106,10 @@ const MAX_HISTORY: usize = 128;
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Reload {
     /// A user navigation, including an explicit same-folder refresh (Ctrl+R),
-    /// which recomputes folder sizes unless a scan is still running.
+    /// which discards computed folder sizes unless a scan continues across it.
     Navigate,
-    /// A re-sort of the committed listing.
+    /// A re-sort of the committed listing. It does not re-read the folder, so a
+    /// retained watch hint survives it.
     Resort,
     /// An automatic re-read of the committed folder after a watch hint or a
     /// finished operation. It keeps computed folder sizes and never reports a
@@ -413,14 +414,17 @@ impl Presenter {
     /// Retry retained watch hints and post-operation refreshes once unblocked.
     fn flush_background_refreshes(&mut self, send: &dyn Fn(Command) -> bool) {
         for pane in [PaneId::Left, PaneId::Right] {
+            // An archive panel whose tree session was dropped still owes its re-list.
+            if self.panes[pane.index()].archive.is_some() {
+                self.leave_unavailable_tree(pane, send);
+            }
             let p = &self.panes[pane.index()];
-            if !p.refresh_hint || self.background_refresh_blocked(pane) {
+            // A hint survives a loading re-sort (it reuses the committed rows) and
+            // is retried once that request commits.
+            if !p.refresh_hint || p.loading || self.background_refresh_blocked(pane) {
                 continue;
             }
-            match p
-                .successful_generation
-                .filter(|_| !p.loading && p.native_capabilities())
-            {
+            match p.successful_generation.filter(|_| p.native_capabilities()) {
                 Some(navigation) => {
                     self.refresh_if_changed(pane, navigation, send);
                 }
@@ -703,7 +707,11 @@ impl Presenter {
         self.search_navigation_accepted(pane, !same_location, send);
         self.selection_navigation_accepted(pane, navigation, &path);
         let p = &mut self.panes[pane.index()];
-        p.refresh_hint = false;
+        // A re-sort reuses the committed snapshot; a retained hint still needs
+        // its re-read once the re-sort commits.
+        if mode != Reload::Resort {
+            p.refresh_hint = false;
+        }
         if !same_location && let Some(scan) = p.size_scan.take() {
             // Navigate is also a cancellation boundary in the backend; this explicit
             // request keeps intent visible when the navigation queue has room.
@@ -715,9 +723,9 @@ impl Presenter {
             self.retired
                 .push(Box::new(mem::take(&mut p.entry_size_scans)));
         }
-        // An explicit re-read recomputes sizes unless a scan continues across it.
-        // Resorts and automatic re-reads keep them; vanished folders are pruned
-        // when the listing commits.
+        // An explicit re-read discards computed sizes unless a scan continues
+        // across it. Resorts and automatic re-reads keep them; vanished folders
+        // are pruned when the listing commits.
         if !same_location
             || (mode == Reload::Navigate && p.size_scan.is_none() && p.entry_size_scans.is_empty())
         {
@@ -1323,6 +1331,18 @@ impl Presenter {
                 }
                 if request.keep_rows {
                     retain_listed_folder_sizes(&mut p.folder_sizes, &index, &mut self.retired);
+                    // A folder the attempted scan never covered (created after it)
+                    // is not calculated rather than unfinished.
+                    if p.size_scan_attempted
+                        && lists_unscanned_folder(
+                            &entries,
+                            &index,
+                            &p.folder_sizes,
+                            p.size_scan_scope.as_ref(),
+                        )
+                    {
+                        p.size_scan_attempted = false;
+                    }
                 }
                 self.retired
                     .push(Box::new(mem::replace(&mut p.entries, entries)));
@@ -1999,6 +2019,29 @@ fn retain_listed_folder_sizes(
     if !vanished.is_empty() {
         retired.push(Box::new(vanished));
     }
+}
+
+/// Whether the listing has a folder without a size that the last full scan did
+/// not cover. Without a retained scope the scan finished and sized every folder
+/// it listed. `sizes` holds only listed folders, so counting the directory bits
+/// avoids a per-entry pass when every folder has a size.
+fn lists_unscanned_folder(
+    entries: &[Entry],
+    index: &DirectoryIndex,
+    sizes: &HashMap<PathBuf, FolderSize>,
+    scope: Option<&SizeScanScope>,
+) -> bool {
+    let folders: usize = index
+        .directory_bits
+        .iter()
+        .map(|bits| bits.count_ones() as usize)
+        .sum();
+    sizes.len() < folders
+        && entries.iter().any(|entry| {
+            matches!(entry.kind, EntryKind::Directory | EntryKind::DirectoryLink)
+                && !sizes.contains_key(&entry.path)
+                && scope.is_none_or(|scope| !scope.contains(&entry.path))
+        })
 }
 
 /// Navigation uses logical parents: `link/..` goes to the link's lexical parent,
