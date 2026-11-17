@@ -6,6 +6,7 @@ use std::{
     path::{Path, PathBuf},
     process::Child,
     sync::Arc,
+    time::Duration,
 };
 
 /// Shell syntax used by the intentionally user-submitted command line.
@@ -484,7 +485,14 @@ pub trait LocationService: Send + Sync + 'static {
     }
 }
 
+/// Ends a [`ClipboardSession::wait_pending`] from any thread; see [`ClipboardSession::waker`].
+pub type ClipboardWaker = Arc<dyn Fn() + Send + Sync>;
+
 /// A thread-affine native clipboard owner. Create, use and drop it on one backend worker.
+///
+/// Threading contract: the backend thread that opened the session (its owner thread)
+/// makes every call on it and drops it. Only the [`ClipboardWaker`] returned by
+/// [`waker`](Self::waker) may be used on other threads.
 pub trait ClipboardSession {
     fn copy_text(&mut self, text: &str) -> Result<(), FsError>;
     /// Read strict Unicode text on this session's backend worker. Native adapters
@@ -508,6 +516,41 @@ pub trait ClipboardSession {
     /// Pump bounded native clipboard-owner events on the session's own backend thread.
     fn service_pending(&mut self) -> Result<(), FsError> {
         Ok(())
+    }
+    /// Whether the session still owns clipboard content or delayed rendering that other
+    /// applications may need it to serve. Once false, dropping the session leaves the
+    /// clipboard that other applications see unchanged, so an idle owner thread may close
+    /// it instead of pumping it. The default, true, keeps a session open and pumped.
+    fn owns_clipboard(&self) -> bool {
+        true
+    }
+    /// Block the owner thread until native owner events may be pending, the session's
+    /// [`waker`](Self::waker) was called, or `timeout` elapsed. An implementation services
+    /// the pending owner events (as [`service_pending`](Self::service_pending) does)
+    /// before it returns.
+    ///
+    /// A wake made at any time after the previous `wait_pending` returned, including
+    /// before this call started, ends this wait immediately; no wake is lost between the
+    /// caller's last check of its own state and the wait. Spurious early returns are
+    /// allowed, so callers re-check their requests, cancellation and
+    /// [`owns_clipboard`](Self::owns_clipboard) after every return.
+    ///
+    /// The default parks the thread for at most `timeout` (`std::thread::park_timeout`)
+    /// and services nothing; callers keep calling `service_pending` between waits.
+    fn wait_pending(&mut self, timeout: Duration) -> Result<(), FsError> {
+        std::thread::park_timeout(timeout);
+        Ok(())
+    }
+    /// A waker that ends the current or the next [`wait_pending`](Self::wait_pending) of
+    /// this session, or None (the default) when nothing but the timeout ends that wait;
+    /// such a session needs short timeouts to stay responsive.
+    ///
+    /// The owner thread obtains the waker; any thread may clone, keep and call it, any
+    /// number of times (calls may coalesce into one wakeup). A call must be cheap and
+    /// non-blocking, because it may run on an async executor, and stays safe after the
+    /// session was dropped, when it has no effect.
+    fn waker(&self) -> Option<ClipboardWaker> {
+        None
     }
 }
 
@@ -578,5 +621,37 @@ mod tests {
         assert_ne!(key, IconKey::folder());
         assert_eq!(key.drive_root, None);
         assert_eq!(key.extension, None);
+    }
+
+    /// A session written before the event-driven wait existed.
+    struct TextOnly;
+    impl ClipboardSession for TextOnly {
+        fn copy_text(&mut self, _: &str) -> Result<(), FsError> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn clipboard_session_defaults_assume_ownership_and_offer_no_waker() {
+        let session: Box<dyn ClipboardSession> = Box::new(TextOnly);
+        // Unknown sessions keep being pumped instead of being closed while they may own data.
+        assert!(session.owns_clipboard());
+        assert!(session.waker().is_none());
+    }
+
+    #[test]
+    fn default_clipboard_wait_is_a_bounded_park_that_an_unpark_ends() {
+        let mut session: Box<dyn ClipboardSession> = Box::new(TextOnly);
+        assert!(session.wait_pending(Duration::ZERO).is_ok());
+        // The default is `park_timeout`: an unpark before or during the wait ends it.
+        let owner = std::thread::current();
+        let unparker = std::thread::spawn(move || owner.unpark());
+        let started = std::time::Instant::now();
+        assert!(session.wait_pending(Duration::from_secs(60)).is_ok());
+        unparker.join().unwrap();
+        assert!(
+            started.elapsed() < Duration::from_secs(60),
+            "the default wait must return when its thread is unparked"
+        );
     }
 }
