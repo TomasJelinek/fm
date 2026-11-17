@@ -74,6 +74,7 @@ pub(crate) async fn reconcile(
     commands: &CommandSender,
     deadline: Instant,
     retired: &mut Vec<DeferredDrop>,
+    read_requested: bool,
 ) {
     reconcile_reserved(
         presenter,
@@ -82,6 +83,7 @@ pub(crate) async fn reconcile(
         |permit, command| permit.try_send(command),
         deadline,
         retired,
+        read_requested,
     )
     .await;
 }
@@ -93,8 +95,11 @@ async fn reconcile_reserved<P, E>(
     publish: impl Fn(P, Command) -> Result<(), CommandSendError>,
     deadline: Instant,
     retired: &mut Vec<DeferredDrop>,
+    read_requested: bool,
 ) {
-    if !presenter.borrow().needs_initial_preferences() {
+    // A read refused at startup will never answer: do not spend the shared exit grace,
+    // which the engine needs for shutdown, waiting for it. Saves stay blocked as before.
+    if !read_requested || !presenter.borrow().needs_initial_preferences() {
         return;
     }
     // Reserve before applying the read so a saturated command queue cannot
@@ -208,16 +213,27 @@ mod tests {
         .await;
     }
 
-    #[expect(
-        clippy::result_large_err,
-        reason = "Match the inline publication result contract in reservation/backpressure tests."
-    )]
     async fn reconcile_fake(
         presenter: &RefCell<Presenter>,
         events: &mut mpsc::Receiver<Event>,
         commands: &mpsc::Sender<Command>,
         deadline: Instant,
         retired: &mut Vec<DeferredDrop>,
+    ) {
+        reconcile_requested(presenter, events, commands, deadline, retired, true).await;
+    }
+
+    #[expect(
+        clippy::result_large_err,
+        reason = "Match the inline publication result contract in reservation/backpressure tests."
+    )]
+    async fn reconcile_requested(
+        presenter: &RefCell<Presenter>,
+        events: &mut mpsc::Receiver<Event>,
+        commands: &mpsc::Sender<Command>,
+        deadline: Instant,
+        retired: &mut Vec<DeferredDrop>,
+        read_requested: bool,
     ) {
         reconcile_reserved(
             presenter,
@@ -229,8 +245,34 @@ mod tests {
             },
             deadline,
             retired,
+            read_requested,
         )
         .await;
+    }
+
+    #[tokio::test]
+    async fn an_unrequested_initial_read_does_not_consume_the_exit_grace() {
+        let presenter = editing();
+        assert!(presenter.borrow().needs_initial_preferences());
+        let (_sender, mut events) = mpsc::channel(1);
+        let (commands, mut received) = mpsc::channel(1);
+        let mut retired = Vec::new();
+        // The grace would elapse long after the guard: returning at all proves no wait.
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            reconcile_requested(
+                &presenter,
+                &mut events,
+                &commands,
+                Instant::now() + Duration::from_secs(60),
+                &mut retired,
+                false,
+            ),
+        )
+        .await
+        .expect("waited for a settings read that was never requested");
+        assert!(received.try_recv().is_err(), "no save without a read");
+        assert!(presenter.borrow().needs_initial_preferences());
     }
 
     fn editing() -> RefCell<Presenter> {

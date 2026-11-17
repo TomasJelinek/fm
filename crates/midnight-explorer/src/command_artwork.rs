@@ -22,13 +22,25 @@ pub(crate) fn installed(
     native: Arc<dyn PathPickerService>,
     filesystem: Arc<midnight_native_filesystem_host::InstalledProvider>,
 ) -> Arc<dyn PathPickerService> {
+    with_installation(native, filesystem, || {
+        midnight_plugin_host::installed_executable().map_err(io::Error::other)
+    })
+}
+
+/// Thumbnailers are discovered relative to the resolved plugin installation, like every
+/// other host, never relative to the running executable.
+fn with_installation(
+    native: Arc<dyn PathPickerService>,
+    filesystem: Arc<midnight_native_filesystem_host::InstalledProvider>,
+    installation: impl Fn() -> io::Result<PathBuf> + Send + Sync + 'static,
+) -> Arc<dyn PathPickerService> {
     Arc::new(Picker {
         native,
         decode: Arc::new(move |path, cancel| {
+            let executable = installation()?;
             let source = filesystem
                 .capture(path, &|| cancel.is_cancelled())
                 .map_err(io::Error::other)?;
-            let executable = std::env::current_exe()?;
             let extension = path
                 .extension()
                 .and_then(|suffix| suffix.to_str())

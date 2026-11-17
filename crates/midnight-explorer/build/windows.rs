@@ -1,16 +1,46 @@
 //! Windows linker configuration stays separate from application composition.
+const MANIFEST_VERSION: &str = "@MIDNIGHT_VERSION_NUMBERS@";
+
 pub fn configure() {
     if std::env::var("CARGO_CFG_TARGET_ENV").as_deref() != Ok("msvc") {
         panic!("The supported Windows build uses the MSVC toolchain.");
     }
-    let manifest = std::path::PathBuf::from(
+    let template = std::path::PathBuf::from(
         std::env::var_os("CARGO_MANIFEST_DIR").expect("Cargo supplies the package directory"),
     )
     .join("build/windows/application.manifest");
-    println!("cargo:rerun-if-changed={}", manifest.display());
+    println!("cargo:rerun-if-changed={}", template.display());
+    let manifest = write_manifest(&template);
     println!("cargo:rustc-link-arg=/MANIFEST:EMBED");
     println!("cargo:rustc-link-arg=/MANIFESTINPUT:{}", manifest.display());
     compile_resources();
+}
+
+/// The assembly identity carries the same Cargo-derived version as the resources.
+fn write_manifest(template: &std::path::Path) -> std::path::PathBuf {
+    let text = std::fs::read_to_string(template).expect("Read the Windows manifest template.");
+    assert_eq!(
+        text.matches(MANIFEST_VERSION).count(),
+        1,
+        "The Windows manifest template must name its version as {MANIFEST_VERSION} once."
+    );
+    let [major, minor, patch] = version_numbers();
+    let output =
+        std::path::PathBuf::from(std::env::var_os("OUT_DIR").unwrap()).join("application.manifest");
+    std::fs::write(
+        &output,
+        text.replace(MANIFEST_VERSION, &format!("{major}.{minor}.{patch}.0")),
+    )
+    .expect("Write the generated Windows manifest.");
+    output
+}
+
+fn version_numbers() -> [u16; 3] {
+    [
+        version_component("major", env!("CARGO_PKG_VERSION_MAJOR")),
+        version_component("minor", env!("CARGO_PKG_VERSION_MINOR")),
+        version_component("patch", env!("CARGO_PKG_VERSION_PATCH")),
+    ]
 }
 
 fn compile_resources() {
@@ -52,9 +82,7 @@ fn compile_resources() {
 }
 
 fn write_version_header(output_dir: &std::path::Path) {
-    let major = version_component("major", env!("CARGO_PKG_VERSION_MAJOR"));
-    let minor = version_component("minor", env!("CARGO_PKG_VERSION_MINOR"));
-    let patch = version_component("patch", env!("CARGO_PKG_VERSION_PATCH"));
+    let [major, minor, patch] = version_numbers();
     let version = env!("CARGO_PKG_VERSION");
     let header = format!(
         "#define MIDNIGHT_VERSION_NUMBERS {major},{minor},{patch},0\n\

@@ -71,6 +71,35 @@ pub(super) fn restore(
     restored
 }
 
+/// A maximized or fullscreen window keeps its previous normal bounds. When it now lives
+/// on another monitor, move those bounds by the monitors' origin difference and fit them
+/// to the new monitor, so the saved pair stays consistent and restores where it was.
+pub(super) fn retarget_normal(
+    normal: WindowRect,
+    from: Option<&WindowMonitor>,
+    to: Option<&WindowMonitor>,
+) -> WindowRect {
+    let (Some(from), Some(to)) = (from, to) else {
+        return normal;
+    };
+    if from == to {
+        return normal;
+    }
+    let area = to.bounds;
+    let width = normal.width.min(area.width.max(1));
+    let height = normal.height.min(area.height.max(1));
+    let x = i64::from(area.x) + i64::from(normal.x) - i64::from(from.bounds.x);
+    let y = i64::from(area.y) + i64::from(normal.y) - i64::from(from.bounds.y);
+    let right = i64::from(area.x) + i64::from(area.width.saturating_sub(width));
+    let bottom = i64::from(area.y) + i64::from(area.height.saturating_sub(height));
+    WindowRect {
+        x: x.clamp(i64::from(area.x), right) as i32,
+        y: y.clamp(i64::from(area.y), bottom) as i32,
+        width,
+        height,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -154,6 +183,57 @@ mod tests {
                 height: 610
             }
         );
+    }
+
+    #[test]
+    fn maximized_window_moved_to_another_monitor_restores_there() {
+        let displays = [
+            display("left", -1920, 1920, false),
+            display("main", 0, 1280, true),
+        ];
+        let original = saved(&displays[0]);
+        // Win+Shift+Right moves the maximized window to "main": the next capture keeps
+        // the previous normal rectangle but must move it along with the monitor.
+        let normal = retarget_normal(
+            original.normal,
+            original.monitor.as_ref(),
+            Some(&displays[1].identity),
+        );
+        assert_eq!(
+            normal,
+            WindowRect {
+                x: 120,
+                y: 123,
+                width: 970,
+                height: 610
+            }
+        );
+        let captured = WindowGeometry {
+            normal,
+            monitor: Some(displays[1].identity.clone()),
+            ..original.clone()
+        };
+        let restored = restore(&captured, &displays, (16, 39));
+        assert_eq!(restored.monitor, Some(displays[1].identity.clone()));
+        assert!(restored.normal.x >= 0 && restored.normal.x < 1280);
+        assert!(restored.maximized);
+        // An unchanged or unknown monitor keeps the saved rectangle.
+        for to in [original.monitor.as_ref(), None] {
+            assert_eq!(
+                retarget_normal(original.normal, original.monitor.as_ref(), to),
+                original.normal
+            );
+        }
+        // A larger rectangle is fitted inside a smaller destination.
+        let fitted = retarget_normal(
+            WindowRect {
+                width: 1900,
+                ..original.normal
+            },
+            original.monitor.as_ref(),
+            Some(&displays[1].identity),
+        );
+        assert_eq!((fitted.x, fitted.width), (0, 1280));
     }
 
     #[test]

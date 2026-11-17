@@ -39,6 +39,14 @@ use tokio::sync::mpsc;
 use visible_sync::VisibleSync;
 use wake_gate::WakeGate;
 
+/// Settings reconciliation, the final save and engine shutdown share this exit grace.
+const EXIT_GRACE: Duration = Duration::from_millis(2500);
+/// The engine always gets at least this long to process `Shutdown` and accepted saves.
+const ENGINE_MINIMUM_GRACE: Duration = Duration::from_millis(500);
+/// The last reclamation is awaited at most this long; blocked destructors are left to
+/// the bounded runtime shutdown instead of keeping the hidden process alive.
+const RECLAIM_GRACE: Duration = Duration::from_millis(500);
+
 struct Options {
     explicit_paths: [bool; 2],
     left: PathBuf,
@@ -122,7 +130,7 @@ fn main() -> std::process::ExitCode {
         .init();
     let result = run();
     match result {
-        Ok(()) => std::process::ExitCode::SUCCESS,
+        Ok(status) => std::process::ExitCode::from(status),
         Err(error) => {
             eprintln!("Midnight Explorer: {error}");
             std::process::ExitCode::FAILURE
@@ -130,9 +138,10 @@ fn main() -> std::process::ExitCode {
     }
 }
 
-fn run() -> Result<(), String> {
+/// The process exit status: 0, or the software-rendering child's own status.
+fn run() -> Result<u8, String> {
     let Some(options) = options()? else {
-        return Ok(());
+        return Ok(0);
     };
     let engine_lifetime = Engine::lifetime().map_err(|error| error.to_string())?;
     let local = Arc::new(LocalFileSystem::new(home_directory()));
@@ -149,10 +158,11 @@ fn run() -> Result<(), String> {
     if options.smoke {
         let result = runtime.block_on(smoke_test(engine_lifetime, filesystem, &options));
         runtime.shutdown_timeout(Duration::from_secs(1));
-        return result;
+        return result.map(|()| 0);
     }
     let restart_arguments = std::env::args_os().skip(1).collect::<Vec<_>>();
     let restart_cwd = std::env::current_dir().map_err(|error| error.to_string())?;
+    let software_status = Cell::new(0);
     let mut image_spare_retirement = None;
     // Keep runtime ownership and the registered spare fence outside UI unwinding,
     // so a panic cannot enter Tokio's unbounded blocking-pool destructor first.
@@ -185,17 +195,17 @@ fn run() -> Result<(), String> {
         |runtime| runtime.shutdown_timeout(Duration::from_secs(1)),
         || {
             let executable = std::env::current_exe().map_err(|error| error.to_string())?;
+            // The parent stays until the child exits so launchers and scripts observe the
+            // whole session; the child reports its own errors, and its status is forwarded.
             let status =
                 startup_recovery::software_command(&executable, &restart_arguments, &restart_cwd)
                     .status()
                     .map_err(|error| error.to_string())?;
-            if status.success() {
-                Ok(())
-            } else {
-                Err(format!("Software process exited with {status}"))
-            }
+            software_status.set(startup_recovery::child_status(status.code()));
+            Ok(())
         },
     )
+    .map(|()| software_status.get())
 }
 
 async fn smoke_test(
@@ -441,7 +451,12 @@ fn run_window(
             }
         }
     });
-    let engine = runtime.spawn(engine.run(command_receiver));
+    // Dropped when the engine returns or unwinds; a hidden startup then stops waiting.
+    let (engine_stopped, engine_stop) = tokio::sync::oneshot::channel::<()>();
+    let engine = runtime.spawn(async move {
+        let _stopped = engine_stopped;
+        engine.run(command_receiver).await
+    });
 
     let completed = Rc::new(Cell::new([false; 2]));
     let smoke_scheduled = Rc::new(Cell::new(false));
@@ -479,6 +494,7 @@ fn run_window(
         window_state.clone(),
         startup_owner.gate(),
     )?);
+    startup.arm(startup::DEADLINE, engine_stop)?;
     let startup_ready = startup.clone();
     window.on_backend_ready(move || {
         let Some(window) = weak.upgrade() else {
@@ -608,16 +624,21 @@ fn run_window(
 
     let send_controls = control_send.clone();
     let startup_request = startup.clone();
+    let preferences_requested = Rc::new(Cell::new(false));
+    let initial_read = preferences_requested.clone();
     midnight_ui::install_with_owned(
         &window,
         presenter.clone(),
         Rc::new(move |command| {
             let initial_preferences = matches!(&command, Command::LoadPreferences);
             let sent = send_controls(command);
-            if initial_preferences && !sent {
-                // install reports the rejected request and refreshes before
-                // returning to the event loop. Do not leave startup waiting.
-                startup_request.preferences_applied();
+            if initial_preferences {
+                initial_read.set(initial_read.get() || sent);
+                if !sent {
+                    // install reports the rejected request and refreshes before
+                    // returning to the event loop. Do not leave startup waiting.
+                    startup_request.preferences_applied();
+                }
             }
             sent
         }),
@@ -758,7 +779,7 @@ fn run_window(
     drop(receiver);
     let mut retired: Vec<midnight_ui::DeferredDrop> = Vec::new();
     runtime.block_on(async {
-        let deadline = tokio::time::Instant::now() + Duration::from_millis(2500);
+        let deadline = tokio::time::Instant::now() + EXIT_GRACE;
         if revealed {
             shutdown_preferences::reconcile(
                 &presenter,
@@ -766,6 +787,7 @@ fn run_window(
                 &commands,
                 deadline,
                 &mut retired,
+                preferences_requested.get(),
             )
             .await;
             shutdown_preferences::flush_final(
@@ -784,22 +806,22 @@ fn run_window(
             retired.extend(pending);
         }
         let sent_shutdown = commands.try_send(Command::Shutdown).is_ok();
-        // Reconciliation and accepted-save draining share one total deadline.
-        let _ = tokio::time::timeout_at(deadline, async {
+        // Reconciliation and accepted-save draining share one total deadline, but a slow
+        // settings read cannot take the engine's own minimum shutdown grace.
+        let engine_deadline = deadline.max(tokio::time::Instant::now() + ENGINE_MINIMUM_GRACE);
+        let _ = tokio::time::timeout_at(engine_deadline, async {
             if !sent_shutdown {
                 let _ = commands.send(Command::Shutdown).await;
             }
             let _ = engine.await;
         })
         .await;
-        match final_retire_queue.send(std::mem::take(&mut retired)).await {
-            Ok(()) => {
-                let _ = reclaim::barrier(&final_retire_queue).await;
-            }
-            Err(error) => {
-                let _ = tokio::task::spawn_blocking(move || drop(error.0)).await;
-            }
-        }
+        shutdown::retire_final(
+            &final_retire_queue,
+            std::mem::take(&mut retired),
+            tokio::time::Instant::now() + RECLAIM_GRACE,
+        )
+        .await;
     });
     if let Err(error) = result {
         return startup_recovery::native_failure(error, retry);

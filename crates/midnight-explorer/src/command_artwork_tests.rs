@@ -215,3 +215,34 @@ fn platform_resource_import_keeps_the_resource_chooser_and_publishes_a_copy() {
         .unwrap();
     assert_eq!(native.stored.load(Ordering::Relaxed), 0);
 }
+
+#[test]
+fn artwork_import_discovers_thumbnailers_from_the_resolved_installation() {
+    let native = Native::fixture();
+    let resolved = Arc::new(AtomicUsize::new(0));
+    let count = resolved.clone();
+    // An unusable filesystem provider proves the installation is resolved first and that
+    // its failure is reported instead of falling back to the running executable.
+    let filesystem = Arc::new(
+        midnight_native_filesystem_host::InstalledProvider::from_installation(
+            std::env::temp_dir().join("no-native-provider"),
+            None,
+        ),
+    );
+    let picker = with_installation(native.clone(), filesystem, move || {
+        count.fetch_add(1, Ordering::Relaxed);
+        Err(io::Error::other("registered runtime marker"))
+    });
+    let error = picker
+        .pick_path(
+            &request(PathPickerKind::CommandIconImage),
+            &Cancellation::default(),
+        )
+        .unwrap_err();
+    assert!(
+        format!("{error}").contains("registered runtime marker"),
+        "{error}"
+    );
+    assert_eq!(resolved.load(Ordering::Relaxed), 1);
+    assert_eq!(native.stored.load(Ordering::Relaxed), 0);
+}

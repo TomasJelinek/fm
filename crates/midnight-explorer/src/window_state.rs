@@ -205,7 +205,13 @@ fn capture(window: &MainWindow, previous: Option<&WindowGeometry>) -> Option<Win
                 height: size.height,
             };
             let normal = if maximized || fullscreen {
-                previous.map_or(current, |geometry| geometry.normal)
+                previous.map_or(current, |geometry| {
+                    policy::retarget_normal(
+                        geometry.normal,
+                        geometry.monitor.as_ref(),
+                        monitor.as_ref(),
+                    )
+                })
             } else {
                 current
             };
