@@ -568,10 +568,15 @@ the live namespace and proceed while maintenance waits for a transfer.
 
 A refresh request is never refused because branch work is running: a pass
 accepted while a listing is in flight starts after that listing is installed,
-so it reconciles that branch too. Each loaded branch is listed separately; a
+so it reconciles that branch too. Each loaded branch is listed separately. A
 listing that changes no child, entry, disclosure or error publishes nothing and
-needs no projection rebuild. When a pass ends without a newer publication, its
-watch fence settles against the already acknowledged projection.
+needs no projection rebuild. A refresh also discards measured folder sizes, so a
+projection built while sizes were known is rebuilt once. Each changed branch
+still costs one full projection build and one publication that the UI adopts
+and acknowledges; a pass lists at most one branch ahead of those
+acknowledgements, so changing many loaded branches costs that many round trips.
+When a pass ends without a newer publication, its watch fence settles against
+the already acknowledged projection.
 
 See the [watch design](../superpowers/specs/2026-11-10-tree-watch-design.md).
 The earlier [verification record](../verification/2026-11-10-tree-watch.md) retains

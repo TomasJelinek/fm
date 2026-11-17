@@ -104,8 +104,13 @@ generation cancellation rules and prevent canceled option publications.
 - One refresh pass runs or waits per session. A `RefreshLoaded` accepted while a
   branch listing is in flight starts after that listing is installed instead of
   being refused as busy. A branch whose re-listing changes nothing displayed
-  publishes nothing; a pass that ends without a newer publication settles its
-  watch fence against the already acknowledged projection.
+  publishes nothing and needs no projection build; the size lookup counts as
+  unchanged when it is equal, so the new empty lookup a refresh installs forces a
+  rebuild only if the projection was built with measured sizes. Each changed
+  branch still costs one full projection build and one publication round trip;
+  changed branches are not batched. A pass that ends without a newer
+  publication settles its watch fence against the already acknowledged
+  projection.
 - Only provider-supplied failure text gets a details report. Admission,
   staleness, capacity and cancellation outcomes carry just their bounded
   message, so routine command races create no spool files. Reports live in a

@@ -195,7 +195,7 @@ impl Session {
             }
             return Ok(false);
         }
-        if Arc::ptr_eq(&self.built_sizes, &self.options.sizes)
+        if self.built_with_current_sizes()
             && let (Some(before), Some(after)) = (&before, self.tree.listing_state(branch))
             && before.unchanged(&after)
         {
@@ -240,6 +240,13 @@ impl Session {
         // The completion owns the mutation/listing permits through installation,
         // then drops them before the controller can wait on its event outbox.
         Ok(true)
+    }
+
+    /// The current projection was sorted with an equal size lookup. Every refresh
+    /// installs a new empty lookup; replacing an empty one changes no order.
+    fn built_with_current_sizes(&self) -> bool {
+        Arc::ptr_eq(&self.built_sizes, &self.options.sizes)
+            || *self.built_sizes == *self.options.sizes
     }
 
     fn refresh_failed(&mut self, branch: BranchId, error: ProviderError) {

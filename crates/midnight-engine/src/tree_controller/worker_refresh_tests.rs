@@ -300,6 +300,138 @@ async fn explicit_expand_completes_while_maintenance_waits_for_a_copy_share() {
     ));
 }
 
+/// Watch probes observe an empty directory; the fixture's gated provider and
+/// its `entry_metadata` guard stay private to the model worker.
+struct Unobserved;
+impl DirectoryService for Unobserved {
+    fn read_directory(
+        &self,
+        _: &Path,
+        _: &Cancellation,
+        _: &mut dyn FnMut(Entry) -> bool,
+    ) -> Result<(), FsError> {
+        Ok(())
+    }
+    fn entry_metadata(&self, _: &Path) -> Result<EntryMetadata, FsError> {
+        Ok(EntryMetadata::default())
+    }
+}
+impl VolumeService for Unobserved {
+    fn list_volumes(&self) -> Result<Vec<Volume>, FsError> {
+        Ok(vec![])
+    }
+}
+impl StorageService for Unobserved {
+    fn space_info(&self, _: &Path) -> Result<SpaceInfo, FsError> {
+        Ok(SpaceInfo {
+            total: 0,
+            available: 0,
+        })
+    }
+}
+
+/// A production watch controller (15 s polling); nobody reads its hints.
+fn watch_controller() -> (
+    crate::watch::Controller,
+    tokio::task::JoinSet<()>,
+    mpsc::Receiver<Event>,
+) {
+    let domain =
+        crate::retirement::RetirementDomain::try_start(crate::watch::RETIREMENT_CAPACITY, 0)
+            .unwrap();
+    let retirement = crate::watch::Retirement {
+        panes: std::array::from_fn(|_| domain.try_reserve().unwrap()),
+    };
+    let (sender, hints) = mpsc::channel(8);
+    let mut tasks = tokio::task::JoinSet::new();
+    let watch = crate::watch::Controller::new(
+        retirement,
+        crate::task_lifetime::TaskLifetime::testing(()),
+        Arc::new(Unobserved),
+        None,
+        Outbox {
+            sender,
+            wakeup: Arc::new(|| {}),
+        },
+        &mut tasks,
+    );
+    (watch, tasks, hints)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn unchanged_refresh_loaded_publishes_nothing_and_settles_the_watch_without_commit() {
+    // The held share parks the fixture's pass; the root lists unchanged.
+    let (mut fixture, held) = fixture_with_gate(true);
+    fixture.receiver.try_recv().unwrap(); // Output filler.
+    fixture.gate.release();
+    drop(held);
+    // Finish the fixture's own pass, which started without a size swap.
+    fixture.worker.pump();
+    assert!(fixture.worker.maintenance_inflight);
+    let completion = next_completion(&fixture.lane).await;
+    assert!(fixture.worker.complete(completion).is_none());
+    fixture.worker.pump();
+    assert!(matches!(
+        tree_event(&mut fixture.receiver),
+        TreeEvent::Refreshed { result: Ok(()), .. }
+    ));
+    let (watch, mut tasks, _hints) = watch_controller();
+    let handle = watch.handle();
+    fixture.worker.watch = Some(handle.clone());
+    // The exact Commit installs watch authority for the acknowledged view.
+    fixture
+        .worker
+        .command(TreeCommand::Commit(fixture.view.clone()));
+    let session = fixture.worker.session.as_ref().unwrap();
+    let (stamp, eligible) = (session.projection().stamp, session.watch_eligibility());
+    // A scope diagnostic persists until a complete scope is installed again.
+    let failure = TreeDiagnostic::new("fixture scope failure");
+    assert!(handle.scope_failed(stamp, eligible.clone(), failure.clone()));
+    assert!(!handle.scope_failed(stamp, eligible.clone(), failure.clone()));
+    // The production command also installs a new, still empty, size lookup.
+    fixture
+        .worker
+        .command(TreeCommand::RefreshLoaded(TreeRefreshRequest {
+            view: fixture.view.clone(),
+            request: TreeRequestId(2),
+        }));
+    fixture.worker.pump();
+    assert!(fixture.worker.maintenance_inflight);
+    let completion = next_completion(&fixture.lane).await;
+    assert!(
+        fixture.worker.complete(completion).is_none(),
+        "an unchanged listing neither rebuilds nor publishes"
+    );
+    fixture.worker.pump();
+    assert!(matches!(
+        tree_event(&mut fixture.receiver),
+        TreeEvent::Refreshed { result: Ok(()), .. }
+    ));
+    assert!(
+        fixture.receiver.try_recv().is_err(),
+        "neither a publication nor a watch failure follows"
+    );
+    assert!(Arc::ptr_eq(
+        fixture.worker.session.as_ref().unwrap().projection(),
+        &fixture.view
+    ));
+    // No Commit followed, yet the finished pass installed a complete scope for
+    // the acknowledged view after closing its ticket: that installation settles
+    // the refresh fence, and it also cleared the diagnostic.
+    assert!(
+        handle.scope_failed(stamp, eligible, failure),
+        "the finished pass reinstalled the complete watch scope"
+    );
+    watch.shutdown();
+    tokio::time::timeout(Duration::from_secs(3), async {
+        while let Some(result) = tasks.join_next().await {
+            result.unwrap();
+        }
+    })
+    .await
+    .expect("watch workers stop");
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn observations_after_terminal_session_failure_are_ignored() {
     let mut fixture = fixture();

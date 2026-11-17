@@ -867,6 +867,30 @@ fn refresh_after_size_invalidation_rebuilds_even_when_listings_are_unchanged() {
 }
 
 #[test]
+fn replacing_an_empty_size_lookup_keeps_an_unchanged_refresh_free() {
+    let mut fixture = fixture();
+    branch(&mut fixture, "z-parent", BranchAction::Expand);
+    let before = fixture.session.projection().clone();
+    // Each RefreshLoaded command installs a new, still empty, size lookup.
+    fixture.session.size_sort(Arc::default());
+    refresh(&mut fixture);
+    while let Some(job) = fixture.session.take_work().unwrap() {
+        assert!(
+            !fixture
+                .session
+                .apply(job.run(), &Cancellation::default())
+                .unwrap(),
+            "an empty lookup orders nothing; unchanged listings need no projection"
+        );
+    }
+    assert!(matches!(
+        fixture.session.finish_refresh(),
+        Some(TreeEvent::Refreshed { result: Ok(()), .. })
+    ));
+    assert!(Arc::ptr_eq(fixture.session.projection(), &before));
+}
+
+#[test]
 fn refresh_requested_during_a_branch_listing_starts_after_it_without_rejection() {
     let mut fixture = fixture();
     let view = fixture.session.projection().clone();

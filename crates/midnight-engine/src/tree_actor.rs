@@ -77,7 +77,7 @@ pub(crate) struct Session {
     accepted: Option<Arc<TreeProjection>>,
     options: ProjectionOptions,
     // Size lookup the current projection was sorted with; a size invalidation
-    // replaces `options.sizes` without rebuilding.
+    // replaces `options.sizes` without rebuilding. Compared by content.
     built_sizes: Arc<HashMap<TreeRowId, midnight_core::FolderSize>>,
     queue: VecDeque<PendingBranch>,
     versions: HashMap<BranchId, u64>,
