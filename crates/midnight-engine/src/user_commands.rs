@@ -276,7 +276,7 @@ async fn execute(work: WorkerOwned<Work>, context: &Arc<Context>) {
                 .native
                 .validate_user_command(process, &work.cancel)?;
         }
-        prepared.revalidate(&work.cancel)?;
+        prepared.revalidate(context_owner.files.as_ref(), &work.cancel)?;
         Ok::<_, FsError>(Arc::new(ownership.own(PreparedOwner {
             plan: prepared,
             services: context_owner.services.clone(),
@@ -380,7 +380,9 @@ async fn execute(work: WorkerOwned<Work>, context: &Arc<Context>) {
         let launched = tokio::task::spawn_blocking(move || {
             // Both permits and metadata pins survive an async cancellation until native return.
             let _launch = reservation.launch;
-            pinned.plan.revalidate_for(index, &stopping)?;
+            pinned
+                .plan
+                .revalidate_for(index, context_owner.files.as_ref(), &stopping)?;
             context_owner
                 .native
                 .launch_user_command(&pinned.plan.processes[index], &stopping)
