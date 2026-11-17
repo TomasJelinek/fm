@@ -133,8 +133,10 @@ Unchanged and RecoveryRequired outcomes. C status errors cover framing, admissio
 unknown instance/buffer, incompatibility, shutdown and panic.
 Diagnostics are at most 4096 UTF-8 bytes and the public encoder rejects longer
 ones. The SDK therefore cuts a longer author diagnostic (failure or volume
-diagnostic) at a character boundary and ends it with `…` before encoding, so a
-deep path in a message cannot replace the typed error with a framing status.
+diagnostic) at a character boundary and ends it with `…` before encoding, and
+before its Rename ledger validates a receipt. A deep path in a message cannot
+replace the typed error with a framing status or an Unchanged receipt with an
+unknown outcome.
 
 ### Wire values and field order
 

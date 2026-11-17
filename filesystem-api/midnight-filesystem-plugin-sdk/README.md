@@ -5,9 +5,10 @@ and buffer admission, borrowed cancellation and panic containment. Implement
 `Filesystem::create(Config)` to construct bounded state without a private worker
 pool, and `Filesystem::handle(Request, &CallContext)` to return `Result<Reply,
 Failure>`. Export the descriptor with `export_filesystem!`. Calls, encoding and
-native cleanup belong on host backend workers. Failure messages and volume
-diagnostics longer than the 4096-byte wire bound are cut at a UTF-8 character
-boundary and end with `…`; the typed error and OS codes are preserved.
+native cleanup belong on host backend workers. Failure messages (including Rename
+receipt failures) and volume diagnostics longer than the 4096-byte wire bound are
+cut at a UTF-8 character boundary and end with `…`; the typed error and OS codes
+are preserved.
 
 `native::NativeFilesystem<A>` provides shared mount, node, cursor, reader and
 prepared-rename policy around an OS-specific `NativeAdapter`. Native operations

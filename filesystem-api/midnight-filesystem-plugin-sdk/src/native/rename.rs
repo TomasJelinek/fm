@@ -392,6 +392,7 @@ impl<A: NativeAdapter> NativeFilesystem<A> {
             }
         };
         let mut outcome = outcome;
+        crate::runtime::bound_outcome_diagnostics(&mut outcome);
         if let RenameOutcome::Conflict(value) = &mut outcome {
             value.token = conflict_token;
             value.can_replace &= lease.replace
