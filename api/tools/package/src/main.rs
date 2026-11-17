@@ -1,18 +1,19 @@
-use flate2::read::GzDecoder;
-use midnight_api_package::{REGISTRY, canonical_package, index_record};
+use midnight_api_package::{
+    bundle_configuration, canonical_package, crate_member, index_record, packaged_crate, run_cargo,
+};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::{
     error::Error,
     ffi::OsString,
     fs,
-    io::{Cursor, Read},
-    path::Path,
-    process::Command,
     time::{SystemTime, UNIX_EPOCH},
 };
 
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
+
+/// Local registry source name inside the viewer API/SDK bundle configuration.
+const SOURCE: &str = "midnight-releases";
 
 fn main() -> Result<()> {
     let root = std::path::absolute(
@@ -34,12 +35,12 @@ fn main() -> Result<()> {
     fs::create_dir_all(registry.join("index"))?;
     fs::create_dir(output.join(".cargo"))?;
     let config = output.join(".cargo/config.toml");
-    fs::write(&config, configuration(false))?;
+    fs::write(&config, bundle_configuration(SOURCE, false))?;
     let cargo = std::env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo"));
     let manifest = root.join("api/Cargo.toml");
     let mut records = Vec::new();
     for name in ["midnight-plugin-api", "midnight-plugin-sdk"] {
-        run(
+        run_cargo(
             &cargo,
             &root,
             &output,
@@ -58,18 +59,7 @@ fn main() -> Result<()> {
                 "--offline".into(),
             ],
         )?;
-        let packages = output.join("cargo/package");
-        let archive = fs::read_dir(&packages)?
-            .filter_map(std::result::Result::ok)
-            .map(|entry| entry.path())
-            .find(|path| {
-                path.file_name()
-                    .and_then(|name| name.to_str())
-                    .is_some_and(|file| {
-                        file.starts_with(&format!("{name}-")) && file.ends_with(".crate")
-                    })
-            })
-            .ok_or("Cargo did not produce the expected package")?;
+        let archive = packaged_crate(&output, name)?;
         let bytes = fs::read(&archive)?;
         if bytes.len() > 16 * 1024 * 1024 {
             return Err("API package exceeds distribution budget".into());
@@ -78,9 +68,9 @@ fn main() -> Result<()> {
         let archive_name = filename.to_str().ok_or("non-Unicode Cargo package name")?;
         let prefix = archive_name.trim_end_matches(".crate");
         let cargo_checksum = format!("{:x}", Sha256::digest(&bytes));
-        let provenance = member(&bytes, &format!("{prefix}/.cargo_vcs_info.json"))?;
+        let provenance = crate_member(&bytes, &format!("{prefix}/.cargo_vcs_info.json"))?;
         let bytes = canonical_package(&bytes, prefix)?;
-        let manifest_bytes = member(&bytes, &format!("{prefix}/Cargo.toml"))?;
+        let manifest_bytes = crate_member(&bytes, &format!("{prefix}/Cargo.toml"))?;
         let manifest: toml::Value = toml::from_str(std::str::from_utf8(&manifest_bytes)?)?;
         let checksum = format!("{:x}", Sha256::digest(&bytes));
         let record = index_record(&manifest, &checksum)?;
@@ -93,7 +83,7 @@ fn main() -> Result<()> {
             fs::create_dir(&include)?;
             fs::write(
                 include.join("midnight_plugin_v1.h"),
-                member(&bytes, &format!("{prefix}/include/midnight_plugin_v1.h"))?,
+                crate_member(&bytes, &format!("{prefix}/include/midnight_plugin_v1.h"))?,
             )?;
         }
         let vcs: serde_json::Value = serde_json::from_slice(&provenance)?;
@@ -103,7 +93,7 @@ fn main() -> Result<()> {
         }));
     }
     let vendor = output.join("vendor");
-    run(
+    run_cargo(
         &cargo,
         &root,
         &output,
@@ -117,67 +107,11 @@ fn main() -> Result<()> {
             vendor.clone().into_os_string(),
         ],
     )?;
-    fs::write(&config, configuration(true))?;
+    fs::write(&config, bundle_configuration(SOURCE, true))?;
     fs::write(
         output.join("artifacts.json"),
         serde_json::to_vec_pretty(&records)?,
     )?;
     println!("Public API/SDK release bundle: {}", output.display());
     Ok(())
-}
-
-fn run<const N: usize>(
-    cargo: &OsString,
-    root: &Path,
-    output: &Path,
-    args: [OsString; N],
-) -> Result<()> {
-    let status = Command::new(cargo)
-        .current_dir(root)
-        .args(args)
-        .env("CARGO_TARGET_DIR", output.join("cargo"))
-        .status()?;
-    if !status.success() {
-        return Err(format!("Cargo packaging command failed: {status}").into());
-    }
-    Ok(())
-}
-
-fn configuration(include_vendor: bool) -> String {
-    let mut config = format!(
-        concat!(
-            "[registries.midnight]\nindex = {registry:?}\n\n",
-            "[source.midnight]\nregistry = {registry:?}\n",
-            "replace-with = 'midnight-releases'\n\n",
-            "[source.midnight-releases]\nlocal-registry = 'registry'\n",
-        ),
-        registry = REGISTRY,
-    );
-    if include_vendor {
-        config.push_str(concat!(
-            "\n[source.crates-io]\nreplace-with = 'third-party'\n\n",
-            "[source.third-party]\ndirectory = 'vendor'\n",
-        ));
-    }
-    config
-}
-
-fn member(archive: &[u8], name: &str) -> Result<Vec<u8>> {
-    let mut tar = tar::Archive::new(GzDecoder::new(Cursor::new(archive)));
-    for entry in tar.entries()? {
-        let entry = entry?;
-        if entry.path()?.as_ref() != Path::new(name) {
-            continue;
-        }
-        if !entry.header().entry_type().is_file() || entry.size() > 1024 * 1024 {
-            return Err("invalid release metadata member".into());
-        }
-        let mut bytes = Vec::new();
-        entry.take(1024 * 1024 + 1).read_to_end(&mut bytes)?;
-        if bytes.len() > 1024 * 1024 {
-            return Err("oversized release metadata".into());
-        }
-        return Ok(bytes);
-    }
-    Err(format!("missing release member {name}").into())
 }

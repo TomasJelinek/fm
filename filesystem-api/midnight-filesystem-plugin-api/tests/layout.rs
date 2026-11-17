@@ -118,6 +118,79 @@ fn borrowed_memory_metadata_and_config_limits_fail_closed() {
     );
 }
 
+extern "C" fn create(_: *const Config, _: *mut u64) -> Status {
+    INVALID
+}
+extern "C" fn call(_: u64, _: *const Call, _: *mut Buffer) -> Status {
+    INVALID
+}
+extern "C" fn release(_: u64, _: u64) -> Status {
+    INVALID
+}
+extern "C" fn destroy(_: u64) -> Status {
+    INVALID
+}
+/// A complete hand-written descriptor, as a C plugin or another host would build it.
+fn descriptor(capabilities: u64, minor: u16) -> Api {
+    Api {
+        header: Header {
+            abi_minor: minor,
+            minimum_host_minor: minor,
+            ..Header::v1(size_of::<Api>() as u32)
+        },
+        capabilities,
+        id: Slice {
+            data: b"test.fs".as_ptr(),
+            len: 7,
+        },
+        version: Slice {
+            data: b"1".as_ptr(),
+            len: 1,
+        },
+        create: Some(create),
+        call: Some(call),
+        release_buffer: Some(release),
+        destroy: Some(destroy),
+    }
+}
+
+#[test]
+fn extensions_require_their_defining_minor_and_unknown_capabilities_are_incompatible() {
+    let size = size_of::<Api>() as u32;
+    let legacy = CAP_BROWSE | CAP_READ | CAP_STAT | CAP_VOLUMES | CAP_STORAGE | CAP_NATIVE_ADDRESS;
+    assert_eq!(descriptor(legacy, 0).validate(size), Ok(()));
+    // ABI minor 1 defines VolumeDetails. Older hosts reject its manifest capability
+    // before loading, so minimum host minor 0 stays valid, but a minor-0 layout does not.
+    let mut details = descriptor(legacy | CAP_VOLUME_DETAILS, 1);
+    details.header.minimum_host_minor = 0;
+    assert_eq!(details.validate(size), Ok(()));
+    details.header.abi_minor = 0;
+    assert_eq!(details.validate(size), Err(INCOMPATIBLE));
+    for capability in [CAP_ACTIVATE, CAP_REFRESH, CAP_RESOLVE_TEXT] {
+        assert_eq!(
+            descriptor(CAP_BROWSE | capability, 2).validate(size),
+            Ok(())
+        );
+        let low_host = descriptor(CAP_BROWSE | capability, 1);
+        assert_eq!(low_host.validate(size), Err(INCOMPATIBLE));
+        let mut old_layout = descriptor(CAP_BROWSE | capability, 2);
+        old_layout.header.abi_minor = 1;
+        assert_eq!(old_layout.validate(size), Err(INCOMPATIBLE));
+    }
+    assert_eq!(descriptor(CAP_PREPARED_RENAME, 3).validate(size), Ok(()));
+    assert_eq!(
+        descriptor(CAP_PREPARED_RENAME | CAP_ACTIVATE, 2).validate(size),
+        Err(INCOMPATIBLE)
+    );
+    for unknown in [1 << 11, 1 << 20, 1 << 63] {
+        assert_eq!(
+            descriptor(legacy | CAP_VOLUME_DETAILS | unknown, ABI_MINOR).validate(size),
+            Err(INCOMPATIBLE),
+            "{unknown:#x}"
+        );
+    }
+}
+
 #[test]
 fn prepared_rename_is_additive_and_requires_an_honest_minor_three_descriptor() {
     assert_eq!(ABI_MAJOR, 1);

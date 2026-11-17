@@ -1,8 +1,11 @@
 use crate::*;
 use api::{abi::*, *};
 use std::{
-    sync::atomic::{AtomicBool, AtomicUsize, Ordering},
-    time::{Duration, Instant},
+    sync::{
+        Condvar, Mutex, MutexGuard, PoisonError,
+        atomic::{AtomicUsize, Ordering},
+    },
+    time::Duration,
 };
 
 struct Fake {
@@ -169,6 +172,139 @@ fn buffer_quota_refuses_before_handler_and_resumes_after_release() {
     assert_eq!(destroy(&api, instance), OK);
 }
 
+struct Echo;
+impl Filesystem for Echo {
+    fn create(_: Config) -> Result<Self, Failure> {
+        Ok(Self)
+    }
+    fn handle(&self, request: Request, _: &CallContext<'_>) -> Result<Reply, Failure> {
+        let Request::ReadAt { length, .. } = request else {
+            return Reply::stateless(Response::Unit);
+        };
+        Reply::stateless(Response::Content {
+            bytes: vec![7; length as usize],
+            eof: false,
+        })
+    }
+}
+#[test]
+fn retained_replies_are_charged_their_exact_length_not_a_grown_capacity() {
+    let api = descriptor::<Echo>();
+    // Each 2,119-byte reply is charged exactly, so the third call's 4 KiB reservation
+    // fits beside two retained replies. Charging a grown 4 KiB capacity would refuse it.
+    let instance = create_instance(
+        &api,
+        Config {
+            reply_bytes: 4096,
+            retained_buffer_bytes: 2 * 2119 + 4096,
+            ..Config::default()
+        },
+    );
+    let read = Request::ReadAt {
+        reader: 1,
+        offset: 0,
+        length: 2100,
+    };
+    let mut held = vec![];
+    for _ in 0..3 {
+        let (status, buffer) = invoke(&api, instance, read.clone(), Cancellation::default());
+        assert_eq!(status, OK);
+        assert_eq!(buffer.bytes.len, 2119);
+        held.push(buffer);
+    }
+    assert_eq!(
+        invoke(&api, instance, read, Cancellation::default()).0,
+        RESOURCE_LIMIT
+    );
+    for buffer in held {
+        assert_eq!(release(&api, instance, buffer.id), OK);
+    }
+    assert_eq!(destroy(&api, instance), OK);
+}
+
+/// A diagnostic that embeds a deep native path: 6,002 bytes of two-byte characters.
+fn long_diagnostic() -> String {
+    format!("x/{}", "é".repeat(3000))
+}
+struct Verbose;
+impl Filesystem for Verbose {
+    fn create(_: Config) -> Result<Self, Failure> {
+        Ok(Self)
+    }
+    fn handle(&self, request: Request, _: &CallContext<'_>) -> Result<Reply, Failure> {
+        let failure = |code| Failure {
+            code,
+            os_code: Some(13),
+            message: long_diagnostic(),
+        };
+        match request {
+            Request::GetRenameState { prepared } => {
+                Reply::stateless(Response::RenameState(RenameState {
+                    prepared,
+                    attempt: 1,
+                    outcome: RenameOutcome::RecoveryRequired {
+                        source_location: RenameSourceLocation::Unknown,
+                        destination_name: None,
+                        recovery: vec![],
+                        error: failure(ErrorCode::Io),
+                    },
+                }))
+            }
+            Request::VolumeInformation { .. } => {
+                Reply::stateless(Response::VolumeInformation(VolumeInformation {
+                    unavailable: vec!["a".repeat(MAX_DIAGNOSTIC), long_diagnostic()],
+                    ..VolumeInformation::default()
+                }))
+            }
+            _ => Err(failure(ErrorCode::PermissionDenied)),
+        }
+    }
+}
+#[test]
+fn over_long_author_diagnostics_are_truncated_instead_of_failing_the_call() {
+    let api = descriptor::<Verbose>();
+    let instance = create_instance(&api, Config::default());
+    let truncated = |message: &str| {
+        let kept = message.strip_suffix('…').unwrap();
+        assert!(message.len() <= MAX_DIAGNOSTIC && message.len() > MAX_DIAGNOSTIC - 8);
+        assert!(long_diagnostic().starts_with(kept));
+    };
+    let address = Address {
+        encoding: AddressEncoding::Opaque,
+        bytes: b"volume".to_vec(),
+    };
+    for request in [
+        Request::Stat { mount: 1, node: 1 },
+        Request::GetRenameState { prepared: 1 },
+        Request::VolumeInformation { address },
+    ] {
+        let (status, buffer) = invoke(&api, instance, request, Cancellation::default());
+        assert_eq!(status, OK);
+        match read(buffer) {
+            Response::Failed(failure) => {
+                assert_eq!(failure.code, ErrorCode::PermissionDenied);
+                assert_eq!(failure.os_code, Some(13));
+                truncated(&failure.message);
+            }
+            Response::RenameState(RenameState {
+                outcome: RenameOutcome::RecoveryRequired { error, .. },
+                ..
+            }) => {
+                assert_eq!((error.code, error.os_code), (ErrorCode::Io, Some(13)));
+                truncated(&error.message);
+            }
+            Response::VolumeInformation(information) => {
+                // A diagnostic exactly at the bound is kept unchanged.
+                assert_eq!(information.unavailable[0], "a".repeat(MAX_DIAGNOSTIC));
+                truncated(&information.unavailable[1]);
+            }
+            other => panic!("unexpected response {other:?}"),
+        }
+        assert_eq!(release(&api, instance, buffer.id), OK);
+    }
+    assert_eq!(destroy(&api, instance), OK);
+}
+
 #[test]
 fn a_foreign_descriptor_cannot_use_another_authors_valid_instance_or_buffer() {
     let first = descriptor::<Fake>();
@@ -266,32 +402,63 @@ fn author_panic_does_not_unwind_the_abi_and_poisoned_instance_can_be_destroyed()
     assert_eq!(destroy(&api, instance), OK);
 }
 
-static STARTED: AtomicBool = AtomicBool::new(false);
-static FINISH: AtomicBool = AtomicBool::new(false);
+/// Holds `Blocking::handle` until the test opens it: (entered, opened).
+struct Gate {
+    state: Mutex<(bool, bool)>,
+    changed: Condvar,
+}
+impl Gate {
+    fn state(&self) -> MutexGuard<'_, (bool, bool)> {
+        self.state.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+    fn enter(&self) {
+        let mut state = self.state();
+        state.0 = true;
+        self.changed.notify_all();
+        while !state.1 {
+            state = self
+                .changed
+                .wait(state)
+                .unwrap_or_else(PoisonError::into_inner);
+        }
+    }
+    fn wait_entered(&self) {
+        let (state, _) = self
+            .changed
+            .wait_timeout_while(self.state(), Duration::from_secs(5), |state| !state.0)
+            .unwrap_or_else(PoisonError::into_inner);
+        assert!(state.0, "the handler did not start");
+    }
+    fn open(&self) {
+        self.state().1 = true;
+        self.changed.notify_all();
+    }
+}
+static BLOCKING: Gate = Gate {
+    state: Mutex::new((false, false)),
+    changed: Condvar::new(),
+};
 struct Blocking;
 impl Filesystem for Blocking {
     fn create(_: Config) -> Result<Self, Failure> {
         Ok(Self)
     }
     fn handle(&self, _: Request, _: &CallContext<'_>) -> Result<Reply, Failure> {
-        STARTED.store(true, Ordering::Release);
-        while !FINISH.load(Ordering::Acquire) {
-            std::thread::sleep(Duration::from_millis(1));
-        }
+        BLOCKING.enter();
         Reply::stateless(Response::Unit)
     }
 }
 #[test]
 fn active_call_keeps_owner_alive_and_holds_admission_until_actual_return() {
-    STARTED.store(false, Ordering::Release);
-    FINISH.store(false, Ordering::Release);
-    struct Finish;
-    impl Drop for Finish {
+    *BLOCKING.state() = (false, false);
+    struct Open;
+    impl Drop for Open {
         fn drop(&mut self) {
-            FINISH.store(true, Ordering::Release);
+            // A failed assertion must not leave the worker blocked.
+            BLOCKING.open();
         }
     }
-    let _finish = Finish;
+    let _open = Open;
     let api = descriptor::<Blocking>();
     let instance = create_instance(
         &api,
@@ -321,17 +488,13 @@ fn active_call_keeps_owner_alive_and_holds_admission_until_actual_return() {
         }
         status
     });
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while !STARTED.load(Ordering::Acquire) {
-        assert!(Instant::now() < deadline);
-        std::thread::yield_now();
-    }
+    BLOCKING.wait_entered();
     assert_eq!(destroy(&api, instance), BUSY);
     assert_eq!(
         invoke(&api, instance, Request::Volumes, Cancellation::default()).0,
         BUSY
     );
-    FINISH.store(true, Ordering::Release);
+    BLOCKING.open();
     assert_eq!(worker.join().unwrap(), OK);
     assert_eq!(destroy(&api, instance), OK);
 }

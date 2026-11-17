@@ -297,6 +297,12 @@ impl NativeRename for Pin {
             }
             2 => RenameOutcome::Ready, // Invalid author result: outcome must become unknown.
             3 => RenameOutcome::Unchanged(failure(ErrorCode::PermissionDenied)),
+            // A diagnostic embedding a deep path exceeds the 4096-byte wire bound.
+            10 => RenameOutcome::Unchanged(Failure {
+                code: ErrorCode::PermissionDenied,
+                os_code: Some(5),
+                message: format!("cannot rename {}", "é".repeat(3000)),
+            }),
             4 => {
                 self.ns.writes.fetch_add(1, Ordering::AcqRel);
                 RenameOutcome::RecoveryRequired {
@@ -995,6 +1001,29 @@ fn adapter_cannot_report_sdk_only_states_as_unchanged_or_execute_again() {
         ErrorCode::StaleReference,
     );
     assert_eq!(f.ns.executes.load(Ordering::Acquire), 1);
+}
+#[test]
+fn over_long_receipt_diagnostic_keeps_the_unchanged_outcome() {
+    let f = Fixture::new();
+    let pin = f.pin();
+    f.ns.mode.store(10, Ordering::Release);
+    let result = state(f.attempt(pin.handle, 1, b"renamed", RenamePolicy::NoReplace));
+    let RenameOutcome::Unchanged(error) = &result.outcome else {
+        panic!("a long diagnostic must not become an unknown outcome")
+    };
+    assert_eq!(
+        (error.code, error.os_code),
+        (ErrorCode::PermissionDenied, Some(5))
+    );
+    assert!(error.message.len() <= crate::api::MAX_DIAGNOSTIC);
+    assert!(error.message.ends_with('…'));
+    assert!(error.message.starts_with("cannot rename é"));
+    assert_eq!(
+        f.call(Request::GetRenameState {
+            prepared: pin.handle
+        }),
+        Response::RenameState(result)
+    );
 }
 #[test]
 fn exact_recovery_locator_and_actual_source_location_survive_query_and_replay() {

@@ -20,6 +20,11 @@ minor are compatible. Function pointers are nullable in the representation;
 required null callbacks fail validation.
 The host must reject incompatible major/minimum-host-minor values, unsupported
 capability bits and invalid bounded ID/version metadata before creating instances.
+The public `abi::Api::validate` performs these descriptor checks. It also returns
+INCOMPATIBLE when the descriptor ABI minor is below the minor that defines an
+advertised extension: 1 for VolumeDetails, 2 for Activate, Refresh and ResolveText,
+3 for PreparedRename. The minimum host minor must reach 2 or 3 for those later
+extensions; VolumeDetails may keep 0 (see ABI minor 1 below).
 
 Callbacks are synchronous: create, call, release_buffer, destroy. All calls,
 encoding and resource destruction run on backend workers. The host retains the
@@ -127,6 +132,52 @@ Unsupported, never a host-native fallback. Failed responses carry a typed error,
 optional OS code and bounded diagnostic. Rename also carries failures inside
 Unchanged and RecoveryRequired outcomes. C status errors cover framing, admission,
 unknown instance/buffer, incompatibility, shutdown and panic.
+Diagnostics are at most 4096 UTF-8 bytes and the public encoder rejects longer
+ones. The SDK therefore cuts a longer author diagnostic (failure or volume
+diagnostic) at a character boundary and ends it with `…` before encoding, and
+before its Rename ledger validates a receipt. A deep path in a message cannot
+replace the typed error with a framing status or an Unchanged receipt with an
+unknown outcome.
+
+### Wire values and field order
+
+Request fields follow the table's order: IDs, ordinals and offsets are u64;
+`max_entries` and the ReadAt length are u32; an address uses the Address encoding
+below; ResolveText carries one text. Every response is the u16 tag and its fields:
+
+| Tag | Response | Fields after the tag |
+| --- | --- | --- |
+| 1 | Unit | none |
+| 2 | Resolved | mount u64, Node |
+| 3 | Node | Node |
+| 4 | Page | cursor u64, page ordinal u64, done bool, u32 count, that many Nodes |
+| 5 | Parent | present bool, then a Node when present |
+| 6 | Opened | reader u64, length u64, revision blob |
+| 7 | Content | bytes blob, eof bool |
+| 8 | Volumes | u32 count; each volume: ID text, display text, root Address |
+| 9 | StorageKind | storage kind u8 |
+| 10 | SpaceInfo | available u64, total u64 |
+| 11 | Failed | Failure |
+| 12–13 | VolumeLabel, VolumeInformation | see ABI minor 1 below |
+| 14 | Activated | see ABI minor 2 below |
+| 15–16 | RenamePrepared, RenameState | see ABI minor 3 below |
+
+- **Address:** encoding u8 (0 Opaque, 1 Windows UTF-16LE, 2 Unix bytes), byte blob.
+- **Node:** ID u64, Address, name encoding u8 (0 Opaque, 1 UTF-8, 2 Windows
+  UTF-16LE, 3 Unix bytes), raw-name blob, display text, kind u8 (1 Directory,
+  2 File, 3 DirectoryLink, 4 Symlink, 5 Other), Metadata.
+- **Metadata:** u16 presence bits (1 size, 2 modified, 4 native attributes, 8 Unix
+  mode); each present field in bit order (size u64; modified i64 Unix seconds then
+  u32 nanoseconds; attributes u32; mode u32); then compression u8 (0 Unknown,
+  1 Uncompressed, 2 Compressed).
+- **Failure:** code u16, OS-code present bool, i32 OS code when present, diagnostic
+  text. Codes 1–10 are Invalid, Unsupported, NotFound, PermissionDenied,
+  SourceChanged, Cancelled, ResourceLimit, Io, StaleReference and Busy; ABI minor 2
+  adds 11–15.
+- **Storage kind:** 0 Unknown, 1 LocalSsd, 2 Rotational, 3 Network.
+
+The C header declares every tag and value in this document as an `ME_FS_*`
+constant; a test checks them against the public encoder.
 
 ### Optional volume information (ABI minor 1)
 
@@ -135,7 +186,8 @@ host checks this capability before operations 15 or 16. ABI major, descriptor
 layout, operations 1–14 and response tags 1–11 are unchanged. Existing plugins
 remain accepted by new hosts; existing SDK adapters inherit Unsupported defaults.
 Packages using only this extension may retain minimum-host-minor 0 because old
-hosts reject the unknown manifest capability before loading. Other extensions
+hosts reject the unknown manifest capability before loading; their descriptor ABI
+minor must still be at least 1. Other extensions
 can require a higher minimum. Hosts that recognize the capability
 must implement these payloads. An older plugin is never sent an optional query
 without advertising support. Missing support is explicit, with no native fallback.
@@ -154,7 +206,10 @@ filesystem and source; optional u64 physical total, filesystem free and caller
 available; storage-kind byte; optional read-only boolean; u32 property count and
 property bytes; u32 diagnostic count and UTF-8 diagnostic strings. Optional scalar
 fields use a present boolean followed by their value. Properties use the public
-`VolumeProperty` values 1–14, appear at most once, and number at most 14. At most
+`VolumeProperty` values 1–14 (1 CasePreservedNames, 2 CaseSensitiveLookup,
+3 UnicodeNames, 4 PersistentAcls, 5 FileCompression, 6 SparseFiles, 7 NamedStreams,
+8 HardLinks, 9 ReparsePoints, 10 Encryption, 11 Quotas, 12 NoExecute, 13 NoSetId,
+14 NoDeviceFiles), appear at most once, and number at most 14. At most
 16 diagnostics of at most 4096 bytes describe partial failures. Present free or
 available cannot exceed a present total. Unknown and absent values are preserved;
 availability is never substituted for filesystem free or physical total.

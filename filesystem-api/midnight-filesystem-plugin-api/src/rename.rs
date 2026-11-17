@@ -135,59 +135,48 @@ impl NativeText {
     /// A newly proposed destination additionally follows the platform's normal
     /// Rename policy. Existing extended Windows spellings remain observable.
     pub fn validate_rename_basename(&self) -> Result<(), WireError> {
+        // Shared bounds, encoding, NUL/separator and `.`/`..` checks. Only the
+        // Windows destination policy is stricter than an observed name.
         self.validate_rename_observed_basename()?;
-        bounded(self.bytes.len(), MAX_RENAME_NAME_BYTES)?;
-        require(!self.bytes.is_empty())?;
-        match self.encoding {
-            NameEncoding::Opaque => Err(WireError::Unsupported),
-            NameEncoding::Utf8 | NameEncoding::UnixBytes => {
-                if self.encoding == NameEncoding::Utf8 {
-                    require(std::str::from_utf8(&self.bytes).is_ok())?;
-                }
-                require(
-                    !self.bytes.contains(&0)
-                        && !self.bytes.contains(&b'/')
-                        && self.bytes != b"."
-                        && self.bytes != b"..",
-                )
-            }
-            NameEncoding::WindowsUtf16Le => {
-                let (pairs, remainder) = self.bytes.as_chunks::<2>();
-                require(remainder.is_empty())?;
-                let units = || pairs.iter().copied().map(u16::from_le_bytes);
-                require(!units().any(|unit| {
-                    unit < 32 || b"<>:\"/\\|?*".iter().any(|byte| unit == u16::from(*byte))
-                }))?;
-                require(
-                    !units()
-                        .next_back()
-                        .is_some_and(|unit| unit == 46 || unit == 32),
-                )?;
-                let stem = || {
-                    units().take_while(|unit| *unit != 46).map(|unit| {
-                        if (97..=122).contains(&unit) {
-                            unit - 32
-                        } else {
-                            unit
-                        }
-                    })
-                };
-                require(
-                    !["CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"]
-                        .iter()
-                        .any(|value| stem().eq(value.encode_utf16())),
-                )?;
-                if stem().count() == 4 {
-                    let port = stem().take(3).eq("COM".encode_utf16())
-                        || stem().take(3).eq("LPT".encode_utf16());
-                    let digit = stem().nth(3).is_some_and(|unit| {
-                        (49..=57).contains(&unit) || [0xb9, 0xb2, 0xb3].contains(&unit)
-                    });
-                    require(!port || !digit)?;
-                }
-                Ok(())
-            }
+        if self.encoding != NameEncoding::WindowsUtf16Le {
+            return Ok(());
         }
+        // The observed check already rejected an odd byte length.
+        let (pairs, _) = self.bytes.as_chunks::<2>();
+        let units = || pairs.iter().copied().map(u16::from_le_bytes);
+        require(
+            !units().any(|unit| {
+                unit < 32 || b"<>:\"/\\|?*".iter().any(|byte| unit == u16::from(*byte))
+            }),
+        )?;
+        require(
+            !units()
+                .next_back()
+                .is_some_and(|unit| unit == 46 || unit == 32),
+        )?;
+        let stem = || {
+            units().take_while(|unit| *unit != 46).map(|unit| {
+                if (97..=122).contains(&unit) {
+                    unit - 32
+                } else {
+                    unit
+                }
+            })
+        };
+        require(
+            !["CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"]
+                .iter()
+                .any(|value| stem().eq(value.encode_utf16())),
+        )?;
+        if stem().count() == 4 {
+            let port =
+                stem().take(3).eq("COM".encode_utf16()) || stem().take(3).eq("LPT".encode_utf16());
+            let digit = stem().nth(3).is_some_and(|unit| {
+                (49..=57).contains(&unit) || [0xb9, 0xb2, 0xb3].contains(&unit)
+            });
+            require(!port || !digit)?;
+        }
+        Ok(())
     }
 }
 impl RenameObject {

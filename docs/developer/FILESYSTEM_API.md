@@ -15,6 +15,10 @@ worker package. Filesystem mutation remains outside this read-only worker API.
 The authoritative public definitions are [lib.rs](../../filesystem-api/midnight-filesystem-api/src/lib.rs)
 and [wire.rs](../../filesystem-api/midnight-filesystem-api/src/wire.rs). The
 [wire reference](../../filesystem-api/PROTOCOL.md) specifies every tag and field.
+It is packaged in the released 0.4.0 crate and therefore not edited in place: its
+statement that cancellation terminates the worker predates the current host, whose
+behavior is described under [errors, cancellation and resource bounds](#errors-cancellation-and-resource-bounds).
+Workers must still tolerate termination at any time.
 The independent [archive plugin](../../plugins/midnight-fs-archive/README.md) is a
 working implementation. Its parser owns no native file authority and imports no
 application crates.
@@ -143,7 +147,7 @@ separate from lossy UTF-8 display labels.
 | --- | --- | --- |
 | `Open` | `Opened` or `Failed` | One source and one immutable mount per worker |
 | `List { directory, after }` | `Entries` or `Failed` | `after` is the exclusive last node ID; continue while `more` is true |
-| `Read { entry, offset, length }` | `ContentReady` (v2), `Content` (v1) or `Failed` | Checked `u64` byte offsets, requested length 1–256 KiB |
+| `Read { entry, offset, length }` | `ContentReady` (v2/v3), `Content` (v1) or `Failed` | Checked `u64` byte offsets, requested length 1–256 KiB |
 | `SourceRead` | `SourceData` or failure/closure | Nested worker-to-host read within the current request |
 | `Close` | Worker exit | No terminal protocol reply required |
 
@@ -153,7 +157,8 @@ StageProgress/Ack reports strictly increasing actual decoded work while validati
 discarded solid siblings. Every exchange retains its active request ID; member
 stages cannot escape their request/member authority. Scratch stages can be reused
 within the mount after complete verification. The codec helpers require explicit
-Protocol::V2; default helpers retain exact protocol-1 bytes. See the wire reference
+`Protocol::V2` or `Protocol::V3` (same staging messages, plus cooperative member
+cancellation); default helpers retain exact protocol-1 bytes. See the wire reference
 for all fields. No native path or file handle crosses this interface.
 
 Root ID is `1`; member IDs start at `2` and are opaque within that mount. Listing
