@@ -41,7 +41,8 @@ impl Wake {
     /// The producer's last signal, such as the end of a session. Unlike `notify`, it
     /// fires even while an earlier signal is pending: a consumer waiting for this end
     /// (for example for a closing session's teardown) no longer drains, so it never
-    /// resets that earlier signal. It stays pending, so a later `bind` fires once.
+    /// resets that earlier signal. Without a bound callback the signal stays pending,
+    /// so a later `bind` fires once.
     pub fn notify_final(&self) {
         let callback = {
             let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
