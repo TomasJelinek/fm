@@ -8,7 +8,8 @@ use midnight_core::{
     SizeDirectoryIdentity, TreeDiagnostic, TreeEvent, TreeRequestId, TreeRevision, TreeViewStamp,
 };
 use std::{
-    collections::{HashMap, HashSet},
+    cmp::Reverse,
+    collections::{BinaryHeap, HashMap, HashSet},
     path::PathBuf,
 };
 
@@ -108,6 +109,10 @@ pub(super) struct TreeControl {
     active_request: Option<TreeRequestId>,
     retry_at: Instant,
     batch: u64,
+    /// The replaced batch while its native subscription is still registered:
+    /// its callbacks count until the subscription is released, so swapping
+    /// batches leaves no registration gap.
+    retiring: Option<u64>,
     diagnostic: Option<TreeDiagnostic>,
     exhausted: bool,
 }
@@ -134,6 +139,7 @@ impl TreeControl {
             active_request: None,
             retry_at: Instant::now() + timing.poll,
             batch: 0,
+            retiring: None,
             diagnostic: None,
             exhausted: false,
         }
@@ -366,9 +372,12 @@ pub(super) struct Runtime {
     scope: Arc<TreeScope>,
     cancel: Cancellation,
     observed: HashMap<BranchId, Observed>,
+    /// Next poll deadline of every scope target (by index), rebuilt whenever
+    /// the scope changes. With up to 10,000 eligible branches, finding the
+    /// next due target and the park deadline is O(log T) instead of O(T).
+    due: BinaryHeap<Reverse<(Instant, usize)>>,
     slots: Vec<Arc<ScopeTarget>>,
     batch: u64,
-    cursor: usize,
     epoch: u64,
     debounce: Debouncer,
     hint_pending: bool,
@@ -381,10 +390,10 @@ impl Runtime {
             scope,
             cancel,
             observed: HashMap::new(),
+            due: BinaryHeap::new(),
             slots: Vec::new(),
             subscription: None,
             batch: 0,
-            cursor: 0,
             epoch: 0,
             debounce: Debouncer::default(),
             hint_pending: false,
@@ -394,6 +403,25 @@ impl Runtime {
 
     pub(super) fn same(&self, scope: &TreeScope) -> bool {
         same_session(self.scope.stamp, scope.stamp)
+    }
+
+    /// Unobserved targets and `due_now` are due now, in scope order; other
+    /// observed ones keep their next poll time.
+    fn schedule(&mut self, due_now: &[Arc<ScopeTarget>]) {
+        let now = Instant::now();
+        self.due = self
+            .scope
+            .targets
+            .iter()
+            .enumerate()
+            .map(|(index, target)| {
+                let at = match self.observed.get(&target.branch) {
+                    Some(old) if !due_now.iter().any(|due| Arc::ptr_eq(due, target)) => old.poll_at,
+                    _ => now,
+                };
+                Reverse((at, index))
+            })
+            .collect();
     }
 
     pub(super) fn update(
@@ -462,11 +490,26 @@ impl Runtime {
                 .any(|(old, new)| !old.same_notification_directory(new));
         self.scope = scope;
         if !changed {
+            self.schedule(&[]);
             // A surviving alias may represent the same physical slot. Retain
             // only its current provider context while keeping the subscription.
             self.slots = slots;
             return;
         }
+        // A directory joining the batch was only polled (or not observed yet),
+        // so probe it at once instead of requesting a sweep of every branch.
+        // Directories in both batches stay covered by the overlap below.
+        let joined = slots
+            .iter()
+            .filter(|new| {
+                !self
+                    .slots
+                    .iter()
+                    .any(|old| old.same_notification_directory(new))
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        self.schedule(&joined);
         let stamp = self.scope.stamp;
         let batch = {
             let mut state = shared.state.lock().unwrap_or_else(|e| e.into_inner());
@@ -480,16 +523,42 @@ impl Runtime {
             else {
                 return;
             };
+            let replaced = tree.batch;
             tree.batch = tree
                 .batch
                 .checked_add(1)
                 .expect("watch batch revision exhausted");
-            tree.dirty(); // Covers the registration gap, including callbacks during setup.
+            // Callbacks during setup count for the new batch; those of the
+            // replaced one count until its subscription is released below.
+            tree.retiring = self.subscription.is_some().then_some(replaced);
             tree.batch
         };
         self.batch = batch;
-        drop(self.subscription.take());
-        self.slots = slots;
+        // The new subscription is registered before the old one is released,
+        // and old slots keep their provider scope until their callbacks end.
+        let replaced = self.subscription.take();
+        let retired = std::mem::replace(&mut self.slots, slots);
+        self.subscribe(stamp, batch, shared, native);
+        // Destruction can join native watcher threads; it stays on this worker.
+        drop(replaced);
+        drop(retired);
+        let mut state = shared.state.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(tree) = state
+            .tree
+            .as_mut()
+            .filter(|tree| same_session(tree.scope.stamp, stamp) && tree.batch == batch)
+        {
+            tree.retiring = None;
+        }
+    }
+
+    fn subscribe(
+        &mut self,
+        stamp: TreeViewStamp,
+        batch: u64,
+        shared: &SharedOwner,
+        native: Option<&dyn WatchService>,
+    ) {
         if self.slots.is_empty() {
             return;
         }
@@ -513,11 +582,10 @@ impl Runtime {
             {
                 return;
             }
-            let Some(tree) = state
-                .tree
-                .as_mut()
-                .filter(|tree| same_session(tree.scope.stamp, stamp) && tree.batch == batch)
-            else {
+            let Some(tree) = state.tree.as_mut().filter(|tree| {
+                same_session(tree.scope.stamp, stamp)
+                    && (tree.batch == batch || tree.retiring == Some(batch))
+            }) else {
                 return;
             };
             if keys
@@ -602,17 +670,15 @@ impl Runtime {
             }
         }
         // Exactly one due target per iteration: control and due output run between
-        // probes, and the cursor advances regardless of ongoing native callbacks.
-        let count = self.scope.targets.len();
-        let due = (0..count)
-            .map(|offset| (self.cursor + offset) % count)
-            .find(|index| {
-                self.observed
-                    .get(&self.scope.targets[*index].branch)
-                    .is_none_or(|old| now >= old.poll_at)
-            });
+        // probes, and targets are served in deadline order regardless of
+        // ongoing native callbacks.
+        let due = self
+            .due
+            .peek()
+            .filter(|Reverse((at, _))| now >= *at)
+            .map(|Reverse((_, index))| *index);
         if let Some(index) = due {
-            self.cursor = (index + 1) % count;
+            self.due.pop();
             let target = &self.scope.targets[index];
             let result = target.probe(filesystem, &self.cancel);
             let checked_scope = {
@@ -678,17 +744,16 @@ impl Runtime {
                 }
             };
             old.poll_at = Instant::now() + timing.poll;
+            self.due.push(Reverse((old.poll_at, index)));
             if changed {
                 tree.dirty();
             }
             return Duration::ZERO;
         }
         let mut deadline = self
-            .observed
-            .values()
-            .map(|old| old.poll_at)
-            .min()
-            .unwrap_or(now + timing.poll);
+            .due
+            .peek()
+            .map_or(now + timing.poll, |Reverse((at, _))| *at);
         if let Some(debounce) = self.debounce.deadline(timing.quiet, timing.maximum) {
             deadline = deadline.min(debounce);
         }

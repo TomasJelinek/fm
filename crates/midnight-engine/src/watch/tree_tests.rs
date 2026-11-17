@@ -88,6 +88,45 @@ async fn same_navigation_success_then_exact_commit_quiets_watch() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn persistently_unreadable_entry_metadata_quiets_after_acknowledgement() {
+    let files = Arc::new(Files::default());
+    let path = std::env::current_dir()
+        .unwrap()
+        .join("_build/watch-tree-unreadable")
+        .to_str()
+        .unwrap()
+        .to_owned();
+    files.put(&path, 7);
+    files
+        .directories
+        .lock()
+        .unwrap()
+        .get_mut(Path::new(&path))
+        .unwrap()[0]
+        .metadata = EntryMetadata::default();
+    // The tree listing keeps the enumerated row with unknown metadata; every
+    // later stat keeps failing in exactly the same way.
+    files.metadata_failed.store(true, Ordering::SeqCst);
+    let (_session, scope) = scope(&files, &path);
+    let (controller, mut tasks, mut events) =
+        controller(files.clone(), None, Duration::from_millis(30));
+    let handle = controller.handle();
+    handle.set_tree_scope(scope.clone());
+    let stamp = tree_changed(&mut events).await;
+    let ticket = handle.begin_refresh(stamp, TreeRequestId(1)).unwrap();
+    handle.finish_refresh(ticket, true, stamp.revision);
+    handle.set_tree_scope(scope);
+    while events.try_recv().is_ok() {}
+    let probes = files.probes.load(Ordering::SeqCst);
+    files.wait_probes(probes + 3).await;
+    assert!(
+        events.try_recv().is_err(),
+        "an unreadable but unchanged entry must not request maintenance every poll"
+    );
+    stop(&controller, &mut tasks).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn file_only_poll_between_sweep_and_commit_survives() {
     let files = Arc::new(Files::default());
     let path = std::env::current_dir()
@@ -137,6 +176,8 @@ type BatchCallback = Arc<dyn Fn(u32) + Send + Sync>;
 struct Batches {
     callbacks: Mutex<Vec<(Vec<PathBuf>, BatchCallback)>>,
     ready: Notify,
+    /// Fire the previous batch's callback while the next batch registers.
+    fire_previous_on_register: AtomicBool,
 }
 struct BatchGuard;
 impl WatchSubscription for BatchGuard {}
@@ -153,6 +194,12 @@ impl WatchService for Batches {
         paths: &[PathBuf],
         changed: BatchCallback,
     ) -> Result<Box<dyn WatchSubscription>, FsError> {
+        if self.fire_previous_on_register.load(Ordering::SeqCst) {
+            let previous = self.callbacks.lock().unwrap().last().cloned();
+            if let Some((_, previous)) = previous {
+                previous(u32::MAX);
+            }
+        }
         self.callbacks
             .lock()
             .unwrap()
@@ -505,7 +552,9 @@ async fn failed_probe_retries_after_a_successful_listing_ack_without_losing_hist
         .to_owned();
     files.put(&path, 7);
     let (_session, scope) = scope(&files, &path);
-    files.metadata_failed.store(true, Ordering::SeqCst);
+    // The directory itself becomes unreadable. (An unreadable entry inside a
+    // readable directory is not a probe failure; the listing keeps that row.)
+    files.listing_failed.store(true, Ordering::SeqCst);
     let (controller, mut tasks, mut events) =
         controller(files.clone(), None, Duration::from_millis(80));
     let handle = controller.handle();
@@ -515,7 +564,7 @@ async fn failed_probe_retries_after_a_successful_listing_ack_without_losing_hist
     handle.finish_refresh(ticket, true, stamp.revision);
     handle.set_tree_scope(scope.clone());
     assert_eq!(tree_changed(&mut events).await.session, stamp.session);
-    files.metadata_failed.store(false, Ordering::SeqCst);
+    files.listing_failed.store(false, Ordering::SeqCst);
     let probes = files.probes.load(Ordering::SeqCst);
     files.wait_probes(probes + 1).await;
     // Drain the recovery interval before acknowledging the now-readable listing.
@@ -1102,4 +1151,83 @@ fn tree_link_watch_unknown_identities_keep_distinct_slots_and_ordinary_polling()
         "root must remain polled too"
     );
     assert_eq!(runtime.native.callbacks.lock().unwrap().len(), 1);
+}
+
+/// Settle a two-branch scope (polls only on demand), then collapse its last branch.
+fn settled_then_collapsed(
+    suffix: &str,
+) -> (Arc<Files>, Session, LinkWatchRuntime, tree::TreeScope) {
+    let files = Arc::new(Files::default());
+    let (session, scope) = expanded_scope(&files, 2, suffix);
+    let mut runtime = LinkWatchRuntime::with_timing(
+        &scope,
+        Timing {
+            quiet: Duration::ZERO,
+            maximum: Duration::ZERO,
+            poll: Duration::from_secs(3600),
+        },
+    );
+    runtime.settle(files.as_ref(), &scope, 100);
+    let mut collapsed = scope.clone();
+    let removed = collapsed.targets.pop().unwrap();
+    collapsed.eligible.remove(&removed.branch);
+    (files, session, runtime, collapsed)
+}
+
+impl LinkWatchRuntime {
+    fn adopt(&mut self, scope: &tree::TreeScope) {
+        self.handle.set_tree_scope(scope.clone());
+        self.runtime.update(
+            Arc::new(scope.clone()),
+            &self.handle.panes[scope.stamp.pane.index()],
+            Some(self.native.as_ref()),
+        );
+    }
+}
+
+#[test]
+fn collapsing_a_watched_branch_without_changes_requests_no_sweep() {
+    let (files, _session, mut runtime, collapsed) = settled_then_collapsed("watch-tree-collapse");
+    let probes = files.probes.load(Ordering::SeqCst);
+    runtime.adopt(&collapsed);
+    {
+        let batches = runtime.native.callbacks.lock().unwrap();
+        assert_eq!(batches.len(), 2, "the smaller slot set has its own batch");
+        assert_eq!(batches[1].0.len(), 2);
+    }
+    runtime.tick(files.as_ref(), collapsed.targets.len() + 1);
+    assert!(
+        runtime.changed().is_none(),
+        "a slot change without any change requests no maintenance sweep"
+    );
+    assert_eq!(
+        files.probes.load(Ordering::SeqCst),
+        probes,
+        "directories watched by both batches need no probe"
+    );
+}
+
+#[test]
+fn the_replaced_batch_counts_until_its_subscription_is_released() {
+    let (files, _session, mut runtime, collapsed) = settled_then_collapsed("watch-tree-overlap");
+    // A change the old batch reports while the new batch registers is kept.
+    runtime
+        .native
+        .fire_previous_on_register
+        .store(true, Ordering::SeqCst);
+    runtime.adopt(&collapsed);
+    runtime
+        .native
+        .fire_previous_on_register
+        .store(false, Ordering::SeqCst);
+    runtime.tick(files.as_ref(), 1);
+    assert_eq!(runtime.changed(), Some(collapsed.stamp));
+    runtime.acknowledge(&collapsed, 101);
+    runtime.tick(files.as_ref(), collapsed.targets.len() + 1);
+    assert!(runtime.changed().is_none());
+    // Once released, the old batch can no longer dirty the scope.
+    let old = runtime.native.callbacks.lock().unwrap()[0].1.clone();
+    old(u32::MAX);
+    runtime.tick(files.as_ref(), 1);
+    assert!(runtime.changed().is_none());
 }

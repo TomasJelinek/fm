@@ -74,7 +74,9 @@ impl Controller {
             let receiver = receiver.clone();
             let stop = self.stop.clone();
             let outbox = self.outbox.clone();
-            tasks.spawn_blocking(move || {
+            // Readers live until shutdown drops the sender: keep them off the
+            // bounded blocking pool that listings and scans need.
+            crate::actor_thread::spawn("midnight-report-reader", tasks, move || {
                 loop {
                     // The mutex serializes dequeue only, not snapshot I/O.
                     let request = receiver

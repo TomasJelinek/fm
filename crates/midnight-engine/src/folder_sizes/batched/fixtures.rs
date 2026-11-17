@@ -92,6 +92,8 @@ struct Files {
     conservative: Counter,
     metadata_delay: Duration,
     fairness_probe: Option<Arc<FairnessProbe>>,
+    /// Native devices of resolvable directories; without one, resolution is unsupported.
+    devices: HashMap<PathBuf, u64>,
 }
 impl Files {
     fn files(&mut self, path: &str, count: usize) {
@@ -110,6 +112,29 @@ impl Files {
     }
 }
 impl DirectoryService for Files {
+    fn resolve_size_directory(
+        &self,
+        path: &Path,
+        _: &Cancellation,
+    ) -> Result<Option<SizeDirectoryTarget>, FsError> {
+        use std::hash::{Hash, Hasher};
+        let Some(&device) = self.devices.get(path) else {
+            return Err(FsError::from_io(
+                "test size directory",
+                path,
+                io::ErrorKind::Unsupported.into(),
+            ));
+        };
+        let mut object = std::collections::hash_map::DefaultHasher::new();
+        path.hash(&mut object);
+        Ok(Some(SizeDirectoryTarget {
+            path: path.into(),
+            identity: SizeDirectoryIdentity {
+                device,
+                object: u128::from(object.finish()).to_le_bytes(),
+            },
+        }))
+    }
     fn read_directory(
         &self,
         path: &Path,
@@ -503,6 +528,52 @@ fn nested_mount_hint_errors_use_conservative_io_without_losing_totals() {
 }
 
 #[test]
+fn storage_is_classified_once_per_resolved_device_on_a_lane() {
+    let mut files = Files {
+        kind: StorageKind::LocalSsd,
+        ..Files::default()
+    };
+    files.directories.insert(
+        "root".into(),
+        vec![root(10, "root/a"), root(11, "root/mounted")],
+    );
+    files
+        .directories
+        .insert("root/a".into(), vec![root(12, "root/a/b")]);
+    files.files("root/a/b", 2);
+    files
+        .directories
+        .insert("root/mounted".into(), vec![root(13, "root/mounted/inner")]);
+    files.files("root/mounted/inner", 1);
+    files.overrides.insert("root/mounted".into(), None);
+    for (path, device) in [
+        ("root", 1),
+        ("root/a", 1),
+        ("root/a/b", 1),
+        ("root/mounted", 2),
+        ("root/mounted/inner", 2),
+    ] {
+        files.devices.insert(path.into(), device);
+    }
+    let files = Arc::new(files);
+    let results = start(
+        files.clone(),
+        vec![root(1, "root")],
+        Arc::new(IoBudget::isolated()),
+    )
+    .join()
+    .unwrap();
+    assert_eq!(results.len(), 1);
+    assert_eq!((results[0].1.bytes, results[0].1.errors), (3, 0));
+    // Five directories on two devices need two serialized classifications,
+    // not one before resolution and another before enumeration of each.
+    assert_eq!(
+        *files.queries.lock().unwrap(),
+        [PathBuf::from("root"), PathBuf::from("root/mounted")]
+    );
+}
+
+#[test]
 fn rejected_progress_cancels_queued_and_running_workers_without_leaking_io_slots() {
     let mut files = Files {
         kind: StorageKind::LocalSsd,
@@ -582,13 +653,15 @@ fn batched_unicode_totals_preserve_each_root_identity_and_partial_errors() {
     .unwrap()
     .into_iter()
     .collect::<HashMap<_, _>>();
+    // The two links inside the root are skipped without resolution, so the
+    // provider's unsupported link resolution adds no error there.
     assert_eq!(
         results[&EntryId(1)],
         FolderSize {
             bytes: 4,
             files: 4,
             skipped_links: 2,
-            errors: 3,
+            errors: 1,
             finished: true,
             warnings: results[&EntryId(1)].warnings.clone(),
         }
@@ -600,7 +673,7 @@ fn batched_unicode_totals_preserve_each_root_identity_and_partial_errors() {
             .unwrap()
             .summary()
             .observed,
-        3
+        1
     );
     assert_eq!(
         results.len(),

@@ -18,9 +18,12 @@ pub(super) struct Tree {
     lengths: HashMap<PathBuf, u64>,
     pub(super) unreadable: HashSet<PathBuf>,
     reads: Mutex<Vec<PathBuf>>,
+    resolutions: Mutex<Vec<PathBuf>>,
     metadata_reads: Mutex<Vec<PathBuf>>,
     pub(super) cancel_on_metadata: Option<Cancellation>,
     metadata_delay: Duration,
+    /// Enumeration returns lengths and reports complete listing metadata.
+    complete_listing: bool,
 }
 
 impl Tree {
@@ -40,6 +43,7 @@ impl DirectoryService for Tree {
         _: &Cancellation,
     ) -> Result<Option<SizeDirectoryTarget>, FsError> {
         use std::hash::{Hash, Hasher};
+        self.resolutions.lock().unwrap().push(path.into());
         let resolved = self.links.get(path).map_or(path, PathBuf::as_path);
         if self.unreadable.contains(resolved) {
             return Err(FsError::from_io(
@@ -79,11 +83,19 @@ impl DirectoryService for Tree {
             FsError::from_io("test read directory", path, io::ErrorKind::NotFound.into())
         })?;
         for entry in entries {
-            if cancel.is_cancelled() || !emit(entry.clone()) {
+            let mut entry = entry.clone();
+            if self.complete_listing {
+                entry.metadata.size = self.lengths.get(&entry.path).copied();
+            }
+            if cancel.is_cancelled() || !emit(entry) {
                 break;
             }
         }
         Ok(())
+    }
+
+    fn listing_metadata_complete(&self, _: &Entry) -> bool {
+        self.complete_listing
     }
 
     fn entry_metadata(&self, path: &Path) -> Result<EntryMetadata, FsError> {
@@ -226,22 +238,29 @@ fn non_directory_symlinks_and_special_files_are_not_opened() {
     );
     assert_eq!(*tree.reads.lock().unwrap(), vec![PathBuf::from("root/dir")]);
     assert!(tree.metadata_reads.lock().unwrap().is_empty());
+    assert_eq!(
+        *tree.resolutions.lock().unwrap(),
+        [PathBuf::from("root/dir")],
+        "a link child is skipped without resolving its target"
+    );
 }
 
 #[test]
-fn directory_links_count_target_contents_in_recursive_and_explicit_root_scans() {
+fn directory_links_are_sized_only_as_explicitly_selected_roots() {
     let mut tree = Tree::default();
     tree.directory(
         "root/dir",
         vec![item(2, "root/dir/junction", EntryKind::DirectoryLink)],
     );
     tree.directory(
-        "root/dir/junction",
-        vec![item(3, "root/dir/junction/payload", EntryKind::File)],
+        "root/target",
+        vec![item(3, "root/target/payload", EntryKind::File)],
     );
-    tree.length("root/dir/junction/payload", 999);
+    tree.length("root/target/payload", 999);
     tree.links
-        .insert("root/direct-link".into(), "root/dir/junction".into());
+        .insert("root/dir/junction".into(), "root/target".into());
+    tree.links
+        .insert("root/direct-link".into(), "root/target".into());
     let result = finished(
         &tree,
         &[
@@ -255,8 +274,7 @@ fn directory_links_count_target_contents_in_recursive_and_explicit_root_scans() 
             (
                 EntryId(1),
                 FolderSize {
-                    bytes: 999,
-                    files: 1,
+                    skipped_links: 1,
                     finished: true,
                     ..FolderSize::default()
                 }
@@ -272,11 +290,19 @@ fn directory_links_count_target_contents_in_recursive_and_explicit_root_scans() 
             )
         ]
     );
-    assert_eq!(tree.metadata_reads.lock().unwrap().len(), 2);
+    assert!(
+        !tree
+            .resolutions
+            .lock()
+            .unwrap()
+            .contains(&PathBuf::from("root/dir/junction")),
+        "a link met during traversal is never resolved"
+    );
+    assert_eq!(tree.metadata_reads.lock().unwrap().len(), 1);
 }
 
 #[test]
-fn size_link_ancestor_and_self_cycles_stop_before_recounting_files() {
+fn size_links_inside_the_tree_are_skipped_including_ancestor_and_self_links() {
     let mut tree = Tree::default();
     tree.directory(
         "root",
@@ -311,18 +337,50 @@ fn size_link_ancestor_and_self_cycles_stop_before_recounting_files() {
     assert_eq!(
         tree.reads.lock().unwrap().len(),
         2,
-        "cycles are never enumerated again"
+        "links are never enumerated"
+    );
+    assert_eq!(
+        *tree.resolutions.lock().unwrap(),
+        [PathBuf::from("root"), PathBuf::from("root/child")]
     );
 }
 
 #[test]
-fn size_link_noncyclic_aliases_keep_their_independent_logical_contents() {
+fn ordinary_directory_identity_cycles_are_still_skipped() {
+    // A Linux bind mount of an ancestor is an ordinary directory, not a link.
+    let mut tree = Tree::default();
+    tree.directory(
+        "root",
+        vec![
+            item(2, "root/file", EntryKind::File),
+            item(3, "root/bound", EntryKind::Directory),
+        ],
+    );
+    tree.links.insert("root/bound".into(), "root".into());
+    tree.length("root/file", 7);
+    let results = finished(&tree, &[item(1, "root", EntryKind::Directory)]);
+    assert_eq!(
+        results[0].1,
+        FolderSize {
+            bytes: 7,
+            files: 1,
+            skipped_links: 1,
+            finished: true,
+            ..FolderSize::default()
+        }
+    );
+    assert_eq!(tree.reads.lock().unwrap().len(), 1);
+}
+
+#[test]
+fn size_link_noncyclic_aliases_are_skipped_instead_of_double_counted() {
     let mut tree = Tree::default();
     tree.directory(
         "root",
         vec![
             item(2, "root/first", EntryKind::DirectoryLink),
             item(3, "root/second", EntryKind::DirectoryLink),
+            item(5, "root/own", EntryKind::File),
         ],
     );
     tree.directory(
@@ -332,15 +390,23 @@ fn size_link_noncyclic_aliases_keep_their_independent_logical_contents() {
     tree.links.insert("root/first".into(), "elsewhere".into());
     tree.links.insert("root/second".into(), "elsewhere".into());
     tree.length("elsewhere/file", 5);
+    tree.length("root/own", 3);
     let results = finished(&tree, &[item(1, "root", EntryKind::Directory)]);
-    assert_eq!(results[0].1.bytes, 10);
-    assert_eq!(results[0].1.files, 2);
-    assert_eq!(results[0].1.skipped_links, 0);
-    assert_eq!(results[0].1.errors, 0);
+    assert_eq!(
+        results[0].1,
+        FolderSize {
+            bytes: 3,
+            files: 1,
+            skipped_links: 2,
+            finished: true,
+            ..FolderSize::default()
+        }
+    );
+    assert_eq!(*tree.reads.lock().unwrap(), [PathBuf::from("root")]);
 }
 
 #[test]
-fn size_link_inaccessible_target_keeps_partial_bytes_and_warning_details() {
+fn size_link_inaccessible_target_warns_only_when_the_link_is_the_selected_root() {
     let mut tree = Tree::default();
     tree.directory(
         "root",
@@ -353,26 +419,78 @@ fn size_link_inaccessible_target_keeps_partial_bytes_and_warning_details() {
     tree.links
         .insert("root/denied".into(), "inaccessible".into());
     tree.unreadable.insert("inaccessible".into());
-    let mut last = None;
+    let mut last = HashMap::new();
     compute(
         &tree,
-        &[item(1, "root", EntryKind::Directory)],
+        &[
+            item(1, "root", EntryKind::Directory),
+            item(4, "root/denied", EntryKind::DirectoryLink),
+        ],
         &Cancellation::default(),
-        &mut |_, size| {
-            last = Some(size);
+        &mut |id, size| {
+            last.insert(id, size);
             true
         },
     );
-    let size = last.unwrap();
-    assert!(size.finished);
+    let inner = &last[&EntryId(1)];
+    assert!(inner.finished);
     assert_eq!(
-        (size.bytes, size.files, size.errors, size.skipped_links),
-        (7, 1, 1, 1)
+        (inner.bytes, inner.files, inner.errors, inner.skipped_links),
+        (7, 1, 0, 1)
     );
-    let warnings = size.warnings.unwrap();
+    assert!(
+        inner.warnings.is_none(),
+        "a skipped link is not an access failure"
+    );
+    let selected = &last[&EntryId(4)];
+    assert!(selected.finished);
+    assert_eq!(
+        (
+            selected.bytes,
+            selected.files,
+            selected.errors,
+            selected.skipped_links
+        ),
+        (0, 0, 1, 1)
+    );
+    let warnings = selected.warnings.as_ref().unwrap();
     assert_eq!(warnings.summary().observed, 1);
     assert!(warnings.summary().tooltip.contains("PermissionDenied"));
     assert!(warnings.summary().tooltip.contains("denied"));
+}
+
+#[test]
+fn complete_enumeration_lengths_are_summed_without_per_file_metadata_reads() {
+    let mut tree = Tree {
+        complete_listing: true,
+        ..Tree::default()
+    };
+    tree.directory(
+        "root/dir",
+        vec![
+            item(2, "root/dir/a", EntryKind::File),
+            item(3, "root/dir/b", EntryKind::File),
+            item(4, "root/dir/unknown-length", EntryKind::File),
+        ],
+    );
+    tree.length("root/dir/a", 10);
+    tree.length("root/dir/b", 20);
+    let result = finished(&tree, &[item(1, "root/dir", EntryKind::Directory)]);
+    assert_eq!(
+        result[0].1,
+        FolderSize {
+            bytes: 30,
+            files: 2,
+            errors: 1,
+            finished: true,
+            ..FolderSize::default()
+        }
+    );
+    // Only the entry whose enumeration lacked a length needs a native stat.
+    assert_eq!(
+        *tree.metadata_reads.lock().unwrap(),
+        [PathBuf::from("root/dir/unknown-length")]
+    );
 }
 
 #[test]
@@ -555,7 +673,7 @@ fn frontier_budget_reports_omitted_subtree_as_partial() {
     );
     tree.length("root/dir/first/a", 17);
     let mut results = vec![];
-    compute_with_budget(
+    compute_with_limits(
         &tree,
         &[item(1, "root/dir", EntryKind::Directory)],
         &Cancellation::default(),
@@ -567,7 +685,10 @@ fn frontier_budget_reports_omitted_subtree_as_partial() {
             }
             true
         },
-        0,
+        ScanLimits {
+            pending_path_budget: 0,
+            ..SCAN_LIMITS
+        },
     );
     assert_eq!(
         results,
@@ -589,6 +710,61 @@ fn frontier_budget_reports_omitted_subtree_as_partial() {
 }
 
 #[test]
+fn an_over_budget_link_is_counted_as_skipped_without_a_warning() {
+    for kind in [EntryKind::DirectoryLink, EntryKind::Symlink] {
+        let mut tree = Tree::default();
+        tree.directory(
+            "root/dir",
+            vec![
+                item(2, "root/dir/first", EntryKind::Directory),
+                item(3, "root/dir/link", kind),
+            ],
+        );
+        tree.directory(
+            "root/dir/first",
+            vec![item(4, "root/dir/first/a", EntryKind::File)],
+        );
+        tree.length("root/dir/first/a", 17);
+        let mut results = vec![];
+        compute_with_limits(
+            &tree,
+            &[item(1, "root/dir", EntryKind::Directory)],
+            &Cancellation::default(),
+            &mut |_, size| {
+                if size.finished {
+                    results.push(size);
+                }
+                true
+            },
+            ScanLimits {
+                pending_path_budget: 0,
+                ..SCAN_LIMITS
+            },
+        );
+        // The link is over the frontier budget, but it is never followed, so
+        // nothing is missing from the total: no error and no warning report.
+        assert_eq!(
+            results,
+            vec![FolderSize {
+                bytes: 17,
+                files: 1,
+                skipped_links: 1,
+                finished: true,
+                ..FolderSize::default()
+            }],
+            "{kind:?}"
+        );
+        assert!(
+            !tree
+                .reads
+                .lock()
+                .unwrap()
+                .contains(&PathBuf::from("root/dir/link"))
+        );
+    }
+}
+
+#[test]
 fn frontier_budget_does_not_limit_one_native_path_length() {
     let mut tree = Tree::default();
     let long_name = "文档".repeat(20_000);
@@ -596,7 +772,7 @@ fn frontier_budget_does_not_limit_one_native_path_length() {
     tree.directory("root/dir", vec![item(2, &child, EntryKind::Directory)]);
     tree.directory(&child, vec![]);
     let mut result = None;
-    compute_with_budget(
+    compute_with_limits(
         &tree,
         &[item(1, "root/dir", EntryKind::Directory)],
         &Cancellation::default(),
@@ -606,7 +782,10 @@ fn frontier_budget_does_not_limit_one_native_path_length() {
             }
             true
         },
-        1,
+        ScanLimits {
+            pending_path_budget: 1,
+            ..SCAN_LIMITS
+        },
     );
     assert_eq!(
         result,
@@ -631,9 +810,17 @@ fn a_closed_progress_receiver_prevents_all_filesystem_calls() {
 }
 
 #[test]
-fn slow_scan_emits_intermediate_progress_at_most_four_times_per_second() {
+fn production_progress_is_published_at_most_four_times_per_second() {
+    assert_eq!(SCAN_LIMITS.progress_interval, Duration::from_millis(250));
+}
+
+#[test]
+fn slow_scan_emits_intermediate_progress_no_more_often_than_its_interval() {
+    // A shortened interval keeps the real-time pacing check fast; the production
+    // constant is asserted separately.
+    let interval = Duration::from_millis(30);
     let mut tree = Tree {
-        metadata_delay: PROGRESS_INTERVAL + Duration::from_millis(10),
+        metadata_delay: interval + Duration::from_millis(5),
         ..Tree::default()
     };
     tree.directory(
@@ -646,13 +833,17 @@ fn slow_scan_emits_intermediate_progress_at_most_four_times_per_second() {
     tree.length("root/dir/a", 10);
     tree.length("root/dir/b", 20);
     let mut events = vec![];
-    compute(
+    compute_with_limits(
         &tree,
         &[item(1, "root/dir", EntryKind::Directory)],
         &Cancellation::default(),
         &mut |_, size| {
             events.push((Instant::now(), size));
             true
+        },
+        ScanLimits {
+            progress_interval: interval,
+            ..SCAN_LIMITS
         },
     );
     assert!(
@@ -670,7 +861,7 @@ fn slow_scan_emits_intermediate_progress_at_most_four_times_per_second() {
         .filter(|(_, size)| !size.finished)
         .collect::<Vec<_>>();
     for pair in progress.windows(2) {
-        assert!(pair[1].0.duration_since(pair[0].0) >= PROGRESS_INTERVAL);
+        assert!(pair[1].0.duration_since(pair[0].0) >= interval);
     }
     assert!(events.last().unwrap().1.finished);
 }

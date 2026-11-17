@@ -14,11 +14,15 @@ captures input and displays shared results.
 
 Each of at most four modeless windows owns a monotonic session ID. Every accepted
 search increments its generation. Up to two workers stream ordinary batches of at
-most 64 stable-ID results through bounded channels. Duplicate groups publish as
+most 64 stable-ID results through bounded channels; a smaller pending batch is
+published with each progress sample (at most every 250 ms), so sparse matches
+appear while traversal continues. Duplicate groups publish as
 one complete batch, bounded by the 10,000-result limit, so Stop cannot leave half
 a group. Presenter and controller both
-reject late generations. Stop retains results; Close releases the session, and
-host shutdown closes the windows. Queue rejection never pretends cancellation
+reject late generations. Stop retains results: the final partial batch found
+before the worker observed Stop is still published for the same generation, and
+the retained results receive one automatic sort in the current header order.
+Close releases the session, and host shutdown closes the windows. Queue rejection never pretends cancellation
 or close succeeded. Large result allocations are reclaimed on backend workers.
 Replaced row-model order owners enter a small interior-mutable retirement queue:
 refresh already holds a shared presenter borrow, so it must not request a mutable
@@ -37,6 +41,13 @@ reused across files. Optional whole-word matching checks both surrounding word
 boundaries, including Unicode combining marks/connectors and case-fold expansions;
 plain substring matching remains the default. A found match never skips trailing
 encoding validation or native revision checks.
+On Linux a chosen location may be reached through symbolic links in its ancestors
+(merged-/usr `/lib`, a folder entered through a directory link); procfs magic
+links are refused and the location itself must not be a link. On Linux a
+directory's visible binding is checked once when its enumeration starts, so
+entries created, removed or renamed inside it during the search do not end its
+traversal; directory results stay valid while their contents change, and each
+result is still revalidated by its own path, identity and (for files) revision.
 See the [backend design](../superpowers/specs/2026-11-07-recursive-find-design.md)
 for budgets, skipped mount/link policy, revisions and sampled diagnostics.
 
@@ -65,7 +76,8 @@ ownership are charged before retention. Hashing and comparison use two reusable
 64 KiB buffers, never whole-file allocations or one open handle per candidate.
 Every actual read counts against the shared 16 GiB content budget; each file is
 limited to 1 GiB. All limits can be lowered. A group that exceeds remaining result
-capacity is omitted as a whole with an explicit limit. Group size describes the
+capacity is omitted as a whole with an explicit limit; later (larger-size) groups
+that still fit are compared and published. Group size describes the
 eligible identities discovered by this search, whose incomplete status remains
 visible when traversal or resource limits omit part of the requested scope.
 Duplicate results use the same explicit navigation, View, Edit and Open actions as
@@ -103,7 +115,9 @@ Duplicate groups stay adjacent under every column sort: the first member in the
 selected sort order positions the group, and members follow that same order.
 Immutable group numbers/counts stay attached to rows when ordering changes.
 One fixed, coalescing backend sort task per session prepares keys, bounded to
-16 MiB aggregate and 4 MiB per key. The 10,000-result authority remains in discovery
+16 MiB aggregate and 4 MiB per key. Keys prepared for a generation and column are
+reused by its later re-sorts, so a streaming search derives native locale keys
+only for new results. The 10,000-result authority remains in discovery
 order for revalidation. A separate immutable ID permutation and inverse index
 lets the UI preserve the selected stable ID in constant time during reorder,
 including newly streamed tails. Stale generation/revision/count orders are
@@ -146,9 +160,11 @@ check or edits by another writer. The existing platform launch limits remain.
 Sixteen retained action captures share the startup-reserved engine retirement
 domain. Each capture holds its admission permit until actual worker disposal,
 including stale replies, failed launches and runtime shutdown. The existing
-16-request validation queue and single worker admit capture requests too. Stop
-retains file action availability; accepted restart, Close and shutdown invalidate
-obsolete generations. UI generation/token checks and cancellation prevent a late
+16-request validation queue admits capture requests too; two backend workers
+validate concurrently, so one unresponsive network open cannot stall the actions
+of every Find window. Stop retains file action availability; accepted restart,
+Close and shutdown invalidate obsolete generations and cancel their queued
+validations' cooperative provider checks. UI generation/token checks and cancellation prevent a late
 capture from opening a different search result. Queue rejection leaves a visible
 retryable error. See the [action verification](../verification/2026-11-12-find-actions.md).
 

@@ -8,17 +8,18 @@ mod timing_tests;
 mod tree_tests;
 
 #[test]
-fn polling_fingerprint_includes_native_attributes_and_unix_permissions() {
+fn polling_signature_includes_native_attributes_and_unix_permissions() {
     let entry = Entry::new(EntryId(1), "root/file".into(), EntryKind::File);
+    let signature = |entry: &Entry| accepted_signature(std::slice::from_ref(entry));
     let mut changed = entry.clone();
     changed.metadata.native_attributes = Some(0x2);
-    assert!(Row::from_entry(&entry) != Row::from_entry(&changed));
+    assert_ne!(signature(&entry), signature(&changed));
     changed.metadata.native_attributes = None;
     changed.metadata.unix_mode = Some(0o100640);
-    assert!(Row::from_entry(&entry) != Row::from_entry(&changed));
-    let previous = Row::from_entry(&changed);
+    assert_ne!(signature(&entry), signature(&changed));
+    let previous = signature(&changed);
     changed.metadata.unix_mode = Some(0o100600);
-    assert!(previous != Row::from_entry(&changed));
+    assert_ne!(previous, signature(&changed));
 }
 use midnight_core::{
     Cancellation, DirectoryService, Entry, EntryId, EntryKind, EntryMetadata, Event, FsError,
@@ -38,7 +39,7 @@ use std::{
 use tokio::sync::{Notify, mpsc};
 
 #[test]
-fn native_burst_waits_for_one_second_of_quiet() {
+fn debouncer_waits_for_quiet_after_the_last_event() {
     let start = Instant::now();
     let quiet = Duration::from_secs(1);
     let maximum = Duration::from_secs(3);
@@ -55,7 +56,7 @@ fn native_burst_waits_for_one_second_of_quiet() {
 }
 
 #[test]
-fn continuous_native_events_cannot_defer_refresh_beyond_three_seconds() {
+fn debouncer_caps_continuous_events_at_the_maximum_delay() {
     let start = Instant::now();
     let quiet = Duration::from_secs(1);
     let maximum = Duration::from_secs(3);
@@ -69,7 +70,7 @@ fn continuous_native_events_cannot_defer_refresh_beyond_three_seconds() {
 }
 
 #[test]
-fn a_delivered_burst_does_not_leave_a_permanent_dirty_latch() {
+fn debouncer_resets_after_a_delivered_burst() {
     let start = Instant::now();
     let quiet = Duration::from_secs(1);
     let maximum = Duration::from_secs(3);
@@ -162,6 +163,11 @@ struct Files {
     release: std::sync::atomic::AtomicBool,
     ignore_cancel: bool,
     metadata_failed: AtomicBool,
+    /// The watched directory itself cannot be listed.
+    listing_failed: AtomicBool,
+    /// Enumeration reports complete listing metadata, as Windows and the plugin do.
+    complete: bool,
+    metadata_reads: AtomicUsize,
 }
 
 impl Files {
@@ -227,6 +233,15 @@ impl DirectoryService for Files {
                 std::thread::sleep(Duration::from_millis(2));
             }
         }
+        if self.listing_failed.load(Ordering::SeqCst) {
+            self.probes.fetch_add(1, Ordering::SeqCst);
+            self.probed.notify_one();
+            return Err(FsError::from_io(
+                "test listing",
+                path,
+                io::ErrorKind::PermissionDenied.into(),
+            ));
+        }
         let entries = self
             .directories
             .lock()
@@ -244,7 +259,12 @@ impl DirectoryService for Files {
         Ok(())
     }
 
+    fn listing_metadata_complete(&self, _: &Entry) -> bool {
+        self.complete
+    }
+
     fn entry_metadata(&self, path: &Path) -> Result<EntryMetadata, FsError> {
+        self.metadata_reads.fetch_add(1, Ordering::SeqCst);
         if self.metadata_failed.load(Ordering::SeqCst) {
             return Err(FsError::from_io(
                 "test metadata",
@@ -460,6 +480,93 @@ async fn recovered_metadata_refreshes_once_and_stable_unknown_metadata_stays_qui
     files.put("left", 8);
     assert_eq!(changed(&mut events).await, (PaneId::Left, NavigationId(2)));
     stop(&controller, &mut tasks).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn persistently_unreadable_entry_metadata_stays_quiet_after_acceptance() {
+    // Names are enumerable but every stat fails (an `r--` Linux directory, a
+    // failing FUSE entry or a Windows trailing-dot name). The listing keeps the
+    // row with unknown metadata, so the polling probe must do the same.
+    let files = Arc::new(Files::default());
+    files.put("left", 7);
+    files
+        .directories
+        .lock()
+        .unwrap()
+        .get_mut(Path::new("left"))
+        .unwrap()[0]
+        .metadata = EntryMetadata::default();
+    files.metadata_failed.store(true, Ordering::SeqCst);
+    let visible = files.visible(PaneId::Left, 1, "left");
+    let (controller, mut tasks, mut events) =
+        controller(files.clone(), None, Duration::from_millis(30));
+    controller.set_visible(visible);
+    files.wait_probes(4).await;
+    assert!(
+        events.try_recv().is_err(),
+        "an unreadable but unchanged entry must not refresh every poll"
+    );
+    stop(&controller, &mut tasks).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn complete_enumeration_metadata_is_compared_without_per_entry_stats() {
+    let files = Arc::new(Files {
+        complete: true,
+        ..Files::default()
+    });
+    files.put("left", 7);
+    let (controller, mut tasks, mut events) =
+        controller(files.clone(), None, Duration::from_millis(30));
+    controller.set_visible(files.visible(PaneId::Left, 1, "left"));
+    files.wait_probes(2).await;
+    assert!(events.try_recv().is_err());
+    assert_eq!(files.metadata_reads.load(Ordering::SeqCst), 0);
+    files.put("left", 8);
+    assert_eq!(changed(&mut events).await, (PaneId::Left, NavigationId(1)));
+    assert_eq!(files.metadata_reads.load(Ordering::SeqCst), 0);
+    stop(&controller, &mut tasks).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn events_during_a_same_path_refresh_are_checked_against_the_accepted_rows() {
+    let files = Arc::new(Files::default());
+    let native = Arc::new(Native::default());
+    files.put("left", 7);
+    // A long poll: only the immediate post-acceptance probe can report the
+    // change within the event wait.
+    let (controller, mut tasks, mut events) =
+        controller(files.clone(), Some(native.clone()), Duration::from_secs(30));
+    controller.set_visible(files.visible(PaneId::Left, 1, "left"));
+    native.registrations(1).await;
+    native.fire(0);
+    assert_eq!(changed(&mut events).await, (PaneId::Left, NavigationId(1)));
+    // The refresh lists the directory, then a final write lands and notifies
+    // before the UI accepts that already stale listing.
+    let stale = files.visible(PaneId::Left, 2, "left");
+    files.put("left", 8);
+    native.fire(0);
+    controller.set_visible(stale);
+    loop {
+        let (pane, navigation) = changed(&mut events).await;
+        assert_eq!(pane, PaneId::Left);
+        if navigation == NavigationId(2) {
+            break;
+        }
+        // A hint for the replaced navigation is ignored by the UI.
+        assert_eq!(navigation, NavigationId(1));
+    }
+    // The directory is subscribed again (it may have been replaced) before the
+    // previous subscription is released, and the new one reports the new
+    // navigation.
+    let callbacks = native.callbacks.lock().unwrap().clone();
+    assert_eq!(callbacks.len(), 2);
+    assert!(callbacks.iter().all(|(path, _)| path == Path::new("left")));
+    assert_eq!(native.drops.load(Ordering::SeqCst), 1);
+    native.fire(1);
+    assert_eq!(changed(&mut events).await, (PaneId::Left, NavigationId(2)));
+    stop(&controller, &mut tasks).await;
+    assert_eq!(native.drops.load(Ordering::SeqCst), 2);
 }
 
 async fn assert_polling_observes_compression_only_change(

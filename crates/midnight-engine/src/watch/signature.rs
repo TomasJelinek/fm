@@ -86,6 +86,19 @@ pub(crate) struct Observation {
     pub(crate) display: [u8; 32],
 }
 
+/// Probes compare exactly what the accepted listings show. Complete enumeration
+/// metadata is used as is, without one native open per entry. Otherwise a
+/// successful lookup replaces it, and a failed lookup keeps the entry with its
+/// enumeration (unknown) metadata, as the panel and tree listings do; a
+/// persistently unreadable entry therefore stays equal to its accepted row.
+pub(crate) fn listing_metadata(filesystem: &dyn FileSystem, entry: &mut Entry) {
+    if !filesystem.listing_metadata_complete(entry)
+        && let Ok(metadata) = filesystem.entry_metadata(&entry.path)
+    {
+        entry.metadata = metadata;
+    }
+}
+
 pub(crate) fn probe(
     filesystem: &dyn FileSystem,
     path: &Path,
@@ -109,13 +122,7 @@ pub(crate) fn probe(
                 failed = true;
                 return false;
             }
-            match filesystem.entry_metadata(&entry.path) {
-                Ok(metadata) => entry.metadata = metadata,
-                Err(_) => {
-                    failed = true;
-                    return false;
-                }
-            }
+            listing_metadata(filesystem, &mut entry);
             if full.add(&entry).is_err()
                 || ((!folders_only
                     || matches!(entry.kind, EntryKind::Directory | EntryKind::DirectoryLink))

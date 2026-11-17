@@ -73,5 +73,6 @@ between bounded chunks and preserves raw entry identities and selection indices.
 Preferences use schema 18 when either panel has Expression mode, including a
 disabled expression. Required schema 16/17 checksum and command fields remain
 present and round-trip unchanged. Old defaults retain the earlier encoding;
-schemas before 18 reject Expression mode. Name-only consumers such as Find
-masks and filename colors continue to accept only their existing modes.
+schemas before 18 reject Expression mode. Name-only consumers such as filename
+colors continue to accept only their existing modes; Find additionally accepts
+typed Expression mode through the same compiler (see [Find](FIND.md)).

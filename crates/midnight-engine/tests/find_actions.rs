@@ -110,6 +110,100 @@ fn engine() -> (
     (send, receive, tokio::spawn(engine.run(commands)))
 }
 
+/// Holds result validation of the `blocked` file inside its native open,
+/// like an unresponsive network share, until the test releases it.
+struct BlockingValidation {
+    native: Arc<LocalFileSystem>,
+    armed: std::sync::atomic::AtomicBool,
+    entered: tokio::sync::Notify,
+    released: (std::sync::Mutex<bool>, std::sync::Condvar),
+}
+impl BlockingValidation {
+    fn release(&self) {
+        *self.released.0.lock().unwrap() = true;
+        self.released.1.notify_all();
+    }
+}
+impl FindService for BlockingValidation {
+    fn open_find_source(
+        &self,
+        path: &Path,
+        cancel: &Cancellation,
+    ) -> Result<Box<dyn FindSource>, FsError> {
+        if self.armed.load(std::sync::atomic::Ordering::SeqCst)
+            && path.file_name() == Some(std::ffi::OsStr::new("blocked"))
+        {
+            self.entered.notify_one();
+            let released = self.released.0.lock().unwrap();
+            let _ = self
+                .released
+                .1
+                .wait_timeout_while(released, Duration::from_secs(10), |released| !*released)
+                .unwrap();
+        }
+        self.native.open_find_source(path, cancel)
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_blocked_result_validation_does_not_stall_another_validation() {
+    let root = tempfile::tempdir().unwrap();
+    for name in ["blocked", "free"] {
+        std::fs::write(root.path().join(name), name).unwrap();
+    }
+    let native = Arc::new(LocalFileSystem::new(None));
+    let service = Arc::new(BlockingValidation {
+        native: native.clone(),
+        armed: Default::default(),
+        entered: Default::default(),
+        released: Default::default(),
+    });
+    let (events, mut receive) = mpsc::channel(32);
+    let mut engine = Engine::new(Engine::lifetime().unwrap(), native, events);
+    let (send, commands) = engine.command_channel(32).unwrap();
+    engine.configure_find().unwrap().install(service.clone());
+    let engine = tokio::spawn(engine.run(commands));
+    let results = search(&send, &mut receive, root.path(), 1).await;
+    let id = |name: &str| {
+        results
+            .iter()
+            .find(|row| row.entry.path.file_name() == Some(std::ffi::OsStr::new(name)))
+            .unwrap()
+            .id
+    };
+    let request = |result, token| FindValidationRequest {
+        session: FindSessionId(1),
+        generation: FindGeneration(1),
+        result,
+        token,
+    };
+    service
+        .armed
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    send.send(Command::ValidateFindResult(request(id("blocked"), 1)))
+        .await
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(5), service.entered.notified())
+        .await
+        .expect("the first validation reaches its native open");
+    // The second request completes while the first is still blocked.
+    let free = tokio::time::timeout(
+        Duration::from_secs(5),
+        validate(&send, &mut receive, request(id("free"), 2)),
+    )
+    .await
+    .expect("another validation must not wait for the blocked native open");
+    assert!(free.is_ok());
+    service.release();
+    assert!(
+        validate(&send, &mut receive, request(id("blocked"), 3))
+            .await
+            .is_ok()
+    );
+    send.send(Command::Shutdown).await.unwrap();
+    engine.await.unwrap();
+}
+
 #[tokio::test]
 async fn captures_validate_changes_and_reject_directory_or_unknown_identity() {
     let root = tempfile::tempdir().unwrap();

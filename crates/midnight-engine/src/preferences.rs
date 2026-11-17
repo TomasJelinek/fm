@@ -32,6 +32,8 @@ struct State {
     loading: bool,
     save_pending: Option<Save>,
     latest: Option<Save>,
+    /// The native write of `latest` failed and nothing newer is pending.
+    latest_failed: bool,
     stopping: bool,
 }
 
@@ -106,6 +108,8 @@ impl Controller {
 
     /// True means accepted or an exact duplicate. A revision cannot be retargeted
     /// to different values; stale revisions cannot overwrite newer preferences.
+    /// An identical retry of a revision whose native write failed is written
+    /// again (the UI's explicit retry and shutdown flush resend that revision).
     pub(crate) fn save(&self, revision: PreferencesRevision, preferences: UserPreferences) -> bool {
         let mut state = self
             .shared
@@ -123,11 +127,12 @@ impl Controller {
             if revision < latest.revision {
                 return false;
             }
-            if revision == latest.revision {
+            if revision == latest.revision && (latest != &save || !state.latest_failed) {
                 return latest == &save;
             }
         }
         state.latest = Some(save.clone());
+        state.latest_failed = false;
         state.save_pending = Some(save);
         drop(state);
         self.shared.work.notify_one();
@@ -242,6 +247,20 @@ async fn run(
                 }))
                 .await
                 .unwrap_or_else(|_| Err(worker_error("save preferences")));
+                {
+                    let mut state = shared
+                        .state
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner());
+                    if state.save_pending.is_none()
+                        && state
+                            .latest
+                            .as_ref()
+                            .is_some_and(|latest| latest.revision == revision)
+                    {
+                        state.latest_failed = result.is_err();
+                    }
+                }
                 Event::PreferencesSaved { revision, result }
             }
             Work::Wait => {

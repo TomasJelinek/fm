@@ -354,3 +354,186 @@ fn a_failed_report_does_not_poison_another_file_in_the_same_arena() {
     assert!(good_text.contains("Stored details: 2"));
     assert!(!good_text.contains("Report storage failed"));
 }
+
+fn shared(path: PathBuf) -> SpoolRoot {
+    SpoolRoot {
+        path,
+        per_process: false,
+    }
+}
+
+fn per_process(path: PathBuf) -> SpoolRoot {
+    SpoolRoot {
+        path,
+        per_process: true,
+    }
+}
+
+#[test]
+fn spool_roots_prefer_the_runtime_directory_then_per_user_then_per_process_names() {
+    let temporary = std::env::temp_dir();
+    let runtime = temporary.join("runtime");
+    let roots = spool_roots(
+        Some(runtime.clone().into()),
+        Some("alice/../x".into()),
+        temporary.clone(),
+        42,
+        "size-warnings",
+    );
+    assert_eq!(
+        roots,
+        [
+            shared(runtime.join("MidnightExplorer").join("size-warnings")),
+            shared(temporary.join("MidnightExplorer-616c6963652f2e2e2f78-size-warnings")),
+            per_process(temporary.join("MidnightExplorer-size-warnings-42")),
+        ]
+    );
+    // A relative runtime directory and an empty account name are ignored.
+    let roots = spool_roots(
+        Some("relative".into()),
+        Some("".into()),
+        temporary.clone(),
+        7,
+        "size-warnings",
+    );
+    assert_eq!(
+        roots,
+        [per_process(
+            temporary.join("MidnightExplorer-size-warnings-7")
+        )]
+    );
+}
+
+#[test]
+fn per_user_spool_roots_keep_non_ascii_account_names_distinct() {
+    let temporary = std::env::temp_dir();
+    let per_user = |user: &str| {
+        let roots = spool_roots(
+            None,
+            Some(user.into()),
+            temporary.clone(),
+            7,
+            "size-warnings",
+        );
+        assert_eq!(roots.len(), 2, "{user} keeps a per-user root");
+        assert!(!roots[0].per_process && roots[1].per_process);
+        roots[0].path.clone()
+    };
+    assert_eq!(
+        per_user("Пользователь"),
+        temporary.join(
+            "MidnightExplorer-d09fd0bed0bbd18cd0b7d0bed0b2d0b0d182d0b5d0bbd18c-size-warnings"
+        )
+    );
+    assert_eq!(
+        per_user("山田"),
+        temporary.join("MidnightExplorer-e5b1b1e794b0-size-warnings")
+    );
+    // Names an ASCII filter would have merged, or dropped entirely, stay apart.
+    let names = [
+        "Пользователь",
+        "Пользователи",
+        "山田",
+        "山本",
+        "jöe",
+        "je",
+        "Bob",
+        "bob",
+    ];
+    let roots = names
+        .iter()
+        .map(|name| per_user(name))
+        .collect::<std::collections::HashSet<_>>();
+    assert_eq!(roots.len(), names.len());
+    // A name too long for one path component keeps only the per-process root.
+    let roots = spool_roots(
+        None,
+        Some("山".repeat(40).into()),
+        temporary.clone(),
+        7,
+        "size-warnings",
+    );
+    assert_eq!(
+        roots,
+        [per_process(
+            temporary.join("MidnightExplorer-size-warnings-7")
+        )]
+    );
+}
+
+#[test]
+fn a_per_process_root_is_removed_after_its_last_spool_closes() {
+    let temporary = tempfile::tempdir().unwrap();
+    let path = temporary.path().join("MidnightExplorer-size-warnings-7");
+    let roots = [per_process(path.clone())];
+    let first = create_private_spool(&roots, PrivateSpoolDirectory::create_append_only).unwrap();
+    let mut second =
+        create_private_spool(&roots, PrivateSpoolDirectory::create_append_only).unwrap();
+    assert!(path.is_dir());
+    drop(first);
+    // The other spool still uses the root: it stays and accepts new spools.
+    assert!(path.is_dir());
+    second.append(0, b"kept").unwrap();
+    let third = create_private_spool(&roots, PrivateSpoolDirectory::create_append_only).unwrap();
+    drop((second, third));
+    assert!(
+        !path.exists(),
+        "the last spool removes its per-process root"
+    );
+    // A shared or per-user root is kept for later runs.
+    let kept = temporary.path().join("per-user");
+    drop(
+        create_private_spool(
+            &[shared(kept.clone())],
+            PrivateSpoolDirectory::create_append_only,
+        )
+        .unwrap(),
+    );
+    assert!(kept.is_dir());
+}
+
+#[test]
+fn a_per_process_report_root_is_removed_after_its_last_log_and_snapshot() {
+    let temporary = tempfile::tempdir().unwrap();
+    let path = temporary.path().join("MidnightExplorer-size-warnings-8");
+    let arena = ReportArena::testing();
+    let log = ReportLog::with_candidates(&arena, vec![per_process(path.clone())], DEFAULT_TITLE);
+    let range = log.mark().report();
+    record(&log, "kept 資料 record");
+    range.finish(false);
+    let snapshot = range.snapshot(&Cancellation::default()).unwrap();
+    drop((log, range));
+    // The snapshot keeps the storage, its root and the record readable.
+    assert!(path.is_dir());
+    assert!(text(snapshot.as_ref()).contains("kept 資料 record"));
+    drop(snapshot);
+    // The report cleanup worker closes the storage and then removes the root.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while path.exists() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the per-process root outlived its last report"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+}
+
+#[test]
+fn an_unusable_shared_root_falls_back_to_the_next_private_candidate() {
+    let temporary = tempfile::tempdir().unwrap();
+    // Stands in for a shared root that another account created first.
+    let occupied = temporary.path().join("occupied");
+    std::fs::write(&occupied, b"not a private directory").unwrap();
+    let log = ReportLog::with_candidates(
+        &ReportArena::testing(),
+        vec![shared(occupied), shared(temporary.path().join("private"))],
+        DEFAULT_TITLE,
+    );
+    let range = log.mark().report();
+    record(&log, "kept 資料 record");
+    range.finish(false);
+    let report = text(range.snapshot(&Cancellation::default()).unwrap().as_ref());
+    assert!(report.contains("kept 資料 record"));
+    assert!(report.contains("Stored details: 1"));
+    assert!(!report.contains("Report storage failed"));
+}

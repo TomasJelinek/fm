@@ -14,6 +14,7 @@ struct Probe {
     released: Mutex<bool>,
     wake: Condvar,
     threads: Mutex<Vec<std::thread::ThreadId>>,
+    names: Mutex<Vec<Option<String>>>,
     drops: Mutex<Vec<std::thread::ThreadId>>,
 }
 impl Probe {
@@ -40,6 +41,11 @@ impl SizeWarningSource for Source {
             .lock()
             .unwrap()
             .push(std::thread::current().id());
+        self.0
+            .names
+            .lock()
+            .unwrap()
+            .push(std::thread::current().name().map(str::to_owned));
         let active = self.0.active.fetch_add(1, Ordering::SeqCst) + 1;
         self.0.peak.fetch_max(active, Ordering::SeqCst);
         self.0.entered.fetch_add(1, Ordering::SeqCst);
@@ -153,6 +159,15 @@ async fn snapshots_run_on_two_workers_and_full_queue_retires_ownership_off_calle
             .iter()
             .all(|thread| *thread != caller)
     );
+    // Session-long readers run on their own threads, not the blocking pool.
+    let names = probe.names.lock().unwrap();
+    assert!(
+        names
+            .iter()
+            .all(|name| name.as_deref() == Some("midnight-report-reader")),
+        "{names:?}"
+    );
+    drop(names);
     assert_eq!(probe.drops.lock().unwrap().len(), WORKERS + PENDING + 1);
     assert!(
         probe

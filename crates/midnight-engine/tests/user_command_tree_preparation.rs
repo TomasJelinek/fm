@@ -192,7 +192,7 @@ fn tree_user_command_selected_kind_and_late_provider_revocation_fail_before_laun
     valid.store(false, Ordering::Release);
     assert!(
         prepared
-            .revalidate_for(0, &Cancellation::default())
+            .revalidate_for(0, &service, &Cancellation::default())
             .is_err()
     );
 }
@@ -273,14 +273,20 @@ fn tree_user_command_per_item_revalidates_only_its_immutable_native_scope() {
     request.captured = Some(counted.clone());
     let native = midnight_platform::LocalFileSystem::new(None);
     let prepared = prepare::prepare(&request, &native, &Cancellation::default()).unwrap();
-    let before = counted.full.load(Ordering::SeqCst);
-    assert!(
-        before > 0,
-        "initial preparation must validate the whole capture"
+    assert_eq!(
+        counted.full.load(Ordering::SeqCst),
+        0,
+        "pinning does not repeat a complete pass the actor runs after preflight"
     );
+    // The actor's single complete pass after native preflight.
+    prepared
+        .revalidate(&native, &Cancellation::default())
+        .unwrap();
+    let before = counted.full.load(Ordering::SeqCst);
+    assert_eq!(before, 1);
     for index in 0..256 {
         prepared
-            .revalidate_for(index, &Cancellation::default())
+            .revalidate_for(index, &native, &Cancellation::default())
             .unwrap();
     }
     assert_eq!(
@@ -296,7 +302,7 @@ fn tree_user_command_per_item_revalidates_only_its_immutable_native_scope() {
     Arc::make_mut(&mut request.configuration)[0].launch = UserCommandLaunch::Single;
     let prepared = prepare::prepare(&request, &native, &Cancellation::default()).unwrap();
     prepared
-        .revalidate_for(0, &Cancellation::default())
+        .revalidate_for(0, &native, &Cancellation::default())
         .unwrap();
     assert_eq!(
         counted.scopes.lock().unwrap().last().unwrap(),
@@ -339,7 +345,7 @@ fn tree_user_command_directory_display_metadata_is_not_identity_but_pinned_chang
         let service = midnight_platform::LocalFileSystem::new(None);
         let prepared = prepare::prepare(&request, &service, &Cancellation::default()).unwrap();
         prepared
-            .revalidate_for(0, &Cancellation::default())
+            .revalidate_for(0, &service, &Cancellation::default())
             .unwrap();
         if replace {
             fs::rename(&selected, directory.path().join("old-directory")).unwrap();
@@ -367,7 +373,7 @@ fn tree_user_command_directory_display_metadata_is_not_identity_but_pinned_chang
         }
         assert!(
             prepared
-                .revalidate_for(0, &Cancellation::default())
+                .revalidate_for(0, &service, &Cancellation::default())
                 .is_err(),
             "after-pin change must fail"
         );

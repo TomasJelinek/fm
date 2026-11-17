@@ -14,8 +14,35 @@ struct Files {
     rows: HashMap<PathBuf, Vec<Entry>>,
     visited: Mutex<Vec<PathBuf>>,
     emitted: AtomicUsize,
+    /// Storage of a path (Unknown when absent) and every classified path.
+    kinds: Mutex<HashMap<PathBuf, StorageKind>>,
+    classified: Mutex<Vec<PathBuf>>,
+    /// Resolved device of a directory (unsupported when absent) and every query.
+    devices: Mutex<HashMap<PathBuf, u64>>,
+    identified: Mutex<Vec<PathBuf>>,
+    /// The I/O gate whose state each probe records as exclusive or shared.
+    gate: Mutex<Option<Arc<Gate>>>,
+    exclusive: Mutex<Vec<(PathBuf, bool)>>,
+}
+fn isolated() -> Admissions {
+    Admissions::new(Arc::new(Gate::new(1)), Arc::new(Gate::new(1)))
 }
 impl DirectoryService for Files {
+    fn browse_directory_identity(
+        &self,
+        path: &Path,
+        _: &Cancellation,
+    ) -> Result<Option<SizeDirectoryIdentity>, FsError> {
+        self.identified.lock().unwrap().push(path.into());
+        let device = self.devices.lock().unwrap().get(path).copied();
+        let device = device.ok_or_else(|| {
+            FsError::from_io("identity", path, std::io::ErrorKind::Unsupported.into())
+        })?;
+        Ok(Some(SizeDirectoryIdentity {
+            device,
+            object: [0; 16],
+        }))
+    }
     fn read_directory(
         &self,
         path: &Path,
@@ -23,6 +50,13 @@ impl DirectoryService for Files {
         emit: &mut dyn FnMut(Entry) -> bool,
     ) -> Result<(), FsError> {
         self.visited.lock().unwrap().push(path.into());
+        if let Some(gate) = &*self.gate.lock().unwrap() {
+            let exclusive = gate.snapshot().exclusive;
+            self.exclusive
+                .lock()
+                .unwrap()
+                .push((path.into(), exclusive));
+        }
         let rows = self.rows.get(path).ok_or_else(|| {
             FsError::from_io("probe", path, std::io::ErrorKind::PermissionDenied.into())
         })?;
@@ -50,6 +84,16 @@ impl VolumeService for Files {
     }
 }
 impl StorageService for Files {
+    fn storage_kind(&self, path: &Path) -> Result<StorageKind, FsError> {
+        self.classified.lock().unwrap().push(path.into());
+        Ok(self
+            .kinds
+            .lock()
+            .unwrap()
+            .get(path)
+            .copied()
+            .unwrap_or_default())
+    }
     fn space_info(&self, _: &Path) -> Result<SpaceInfo, FsError> {
         panic!("no space query")
     }
@@ -146,6 +190,7 @@ fn flat_presence_checks_only_requested_folders_and_stops_at_first_subfolder() {
         &NativeProvider::new(files.clone()),
         &Arc::new(Semaphore::new(1)),
         &crate::ReportArena::testing(),
+        &mut isolated(),
     )
     .unwrap();
     assert_eq!(
@@ -194,7 +239,8 @@ fn foreign_snapshot_navigation_side_files_and_oversized_requests_do_no_io() {
                 &snapshots,
                 &NativeProvider::new(files.clone()),
                 &Arc::new(Semaphore::new(1)),
-                &crate::ReportArena::testing()
+                &crate::ReportArena::testing(),
+                &mut isolated()
             )
             .is_none()
         );
@@ -213,6 +259,7 @@ fn native_mixed_directory_and_link_presence_retains_every_requested_hint() {
         &NativeProvider::new(files.clone()),
         &Arc::new(Semaphore::new(1)),
         &crate::ReportArena::testing(),
+        &mut isolated(),
     )
     .expect("one native directory link must not discard the whole visible batch");
     assert_eq!(
@@ -254,6 +301,7 @@ fn native_empty_and_denied_links_preserve_their_ordinary_sibling_hint() {
             &NativeProvider::new(files.clone()),
             &Arc::new(Semaphore::new(1)),
             &crate::ReportArena::testing(),
+            &mut isolated(),
         )
     };
     let result = probe().expect("link availability is an individual hint result");
@@ -292,6 +340,7 @@ fn unavailable_directory_is_never_reported_empty_and_cancelled_requests_do_no_io
         &NativeProvider::new(files.clone()),
         &Arc::new(Semaphore::new(1)),
         &crate::ReportArena::testing(),
+        &mut isolated(),
     )
     .unwrap();
     assert!(
@@ -306,7 +355,8 @@ fn unavailable_directory_is_never_reported_empty_and_cancelled_requests_do_no_io
             &snapshots,
             &NativeProvider::new(files.clone()),
             &Arc::new(Semaphore::new(1)),
-            &crate::ReportArena::testing()
+            &crate::ReportArena::testing(),
+            &mut isolated()
         )
         .is_none()
     );
@@ -398,6 +448,7 @@ fn archive_presence_uses_captured_member_identity_without_native_fallback() {
         &NativeProvider::new(files.clone()),
         &Arc::new(Semaphore::new(1)),
         &crate::ReportArena::testing(),
+        &mut isolated(),
     )
     .unwrap();
     assert_eq!(result, [(EntryId(2), FolderPresence::HasFolders)]);
@@ -417,6 +468,7 @@ fn archive_presence_keeps_directory_links_and_files_out_of_probe_batches() {
                 &NativeProvider::new(files.clone()),
                 &Arc::new(Semaphore::new(1)),
                 &crate::ReportArena::testing(),
+                &mut isolated(),
             )
             .is_none(),
             "archive presence retains the ordinary-directory-only contract: {kind:?}"
@@ -424,4 +476,157 @@ fn archive_presence_keeps_directory_links_and_files_out_of_probe_batches() {
         assert_eq!(mount.0.load(Ordering::SeqCst), 0);
         assert!(files.visited.lock().unwrap().is_empty());
     }
+}
+
+fn probe_with(
+    request: &FolderPresenceRequest,
+    snapshots: &Snapshots,
+    files: &Arc<Files>,
+    admissions: &mut Admissions,
+) -> Option<Vec<(EntryId, FolderPresence)>> {
+    run(
+        request,
+        &request.cancel,
+        snapshots,
+        &NativeProvider::new(files.clone()),
+        &Arc::new(Semaphore::new(1)),
+        &crate::ReportArena::testing(),
+        admissions,
+    )
+}
+
+#[test]
+fn ssd_listing_rows_share_the_gate_only_on_proven_ssd_devices_and_scrolling_reuses_classes() {
+    let (mut request, snapshots, files) = fixture();
+    let root = request.root.entries[0].path.parent().unwrap().to_owned();
+    let gate = Arc::new(Gate::new(4));
+    *files.gate.lock().unwrap() = Some(gate.clone());
+    files.kinds.lock().unwrap().extend([
+        (root.clone(), StorageKind::LocalSsd),
+        (root.join("files"), StorageKind::Rotational),
+        (root.join("link"), StorageKind::LocalSsd),
+    ]);
+    // "files" is a mount point of a rotational disk that "empty-link" also
+    // reaches; "link" leads to another SSD and "denied-link" has no identity.
+    files.devices.lock().unwrap().extend([
+        (root.clone(), 1),
+        (root.join("empty"), 1),
+        (root.join("folders"), 1),
+        (root.join("offscreen"), 1),
+        (root.join("files"), 2),
+        (root.join("link"), 3),
+        (root.join("empty-link"), 2),
+    ]);
+    request.visible = [1, 2, 3, 4, 6, 7].map(EntryId).to_vec();
+    let mut admissions = Admissions::new(gate, Arc::new(Gate::new(1)));
+    let result = probe_with(&request, &snapshots, &files, &mut admissions).unwrap();
+    assert_eq!(result.len(), 6);
+    assert_eq!(
+        *files.exclusive.lock().unwrap(),
+        [
+            (root.join("empty"), false),
+            (root.join("files"), true),
+            (root.join("folders"), false),
+            (root.join("link"), false),
+            (root.join("empty-link"), true),
+            (root.join("denied-link"), true),
+        ]
+    );
+    // The listing and each other device are classified once.
+    assert_eq!(
+        *files.classified.lock().unwrap(),
+        [root.clone(), root.join("files"), root.join("link")]
+    );
+    // Scrolling the same listing reuses its class and device.
+    files.exclusive.lock().unwrap().clear();
+    request.visible = vec![EntryId(5)];
+    request.revision = FolderPresenceRevision(2);
+    probe_with(&request, &snapshots, &files, &mut admissions).unwrap();
+    assert_eq!(
+        *files.exclusive.lock().unwrap(),
+        [(root.join("offscreen"), false)]
+    );
+    assert_eq!(files.classified.lock().unwrap().len(), 3);
+    let identified = files.identified.lock().unwrap();
+    assert_eq!(identified.iter().filter(|path| **path == root).count(), 1);
+}
+
+#[test]
+fn rows_of_an_unproven_listing_stay_exclusive_without_row_identity_queries() {
+    for (kind, device) in [
+        (StorageKind::Rotational, Some(1)),
+        (StorageKind::LocalSsd, None),
+    ] {
+        let (mut request, snapshots, files) = fixture();
+        let root = request.root.entries[0].path.parent().unwrap().to_owned();
+        let gate = Arc::new(Gate::new(4));
+        *files.gate.lock().unwrap() = Some(gate.clone());
+        files.kinds.lock().unwrap().extend([
+            (root.clone(), kind),
+            (root.join("link"), StorageKind::LocalSsd),
+        ]);
+        let mut devices = files.devices.lock().unwrap();
+        devices.extend(device.map(|device| (root.clone(), device)));
+        devices.insert(root.join("link"), 3);
+        drop(devices);
+        request.visible = vec![EntryId(1), EntryId(4)];
+        let mut admissions = Admissions::new(gate, Arc::new(Gate::new(1)));
+        probe_with(&request, &snapshots, &files, &mut admissions).unwrap();
+        assert_eq!(
+            *files.exclusive.lock().unwrap(),
+            [(root.join("empty"), true), (root.join("link"), true)],
+            "{kind:?}"
+        );
+        assert_eq!(
+            *files.classified.lock().unwrap(),
+            std::slice::from_ref(&root)
+        );
+        // Only a shared listing queries its own device; rows are never queried.
+        let identified = files.identified.lock().unwrap();
+        assert_eq!(identified.len(), usize::from(kind == StorageKind::LocalSsd));
+    }
+}
+
+/// Cost of the per-row identity query that proves a shared row's device,
+/// next to the presence probe itself, on real native directories. Run with
+/// `cargo test -p midnight-engine --lib -- folder_presence::tests::presence_identity_cost_probe --ignored --nocapture`.
+#[test]
+#[ignore = "timing probe for manual measurements"]
+fn presence_identity_cost_probe() {
+    let owned = tempfile::tempdir().unwrap();
+    let rows = (0..200)
+        .map(|index| {
+            let row = owned.path().join(format!("row-{index:03}"));
+            std::fs::create_dir_all(row.join("child")).unwrap();
+            for file in 0..10 {
+                std::fs::write(row.join(format!("file-{file}")), [7; 3]).unwrap();
+            }
+            row
+        })
+        .collect::<Vec<_>>();
+    let filesystem: Arc<dyn FileSystem> = Arc::new(midnight_platform::LocalFileSystem::new(None));
+    let native = NativeProvider::new(filesystem.clone());
+    let cancel = Cancellation::default();
+    let median = |run: &dyn Fn()| {
+        let mut samples = (0..5)
+            .map(|_| {
+                let started = std::time::Instant::now();
+                run();
+                started.elapsed()
+            })
+            .collect::<Vec<_>>();
+        samples.sort();
+        samples[samples.len() / 2]
+    };
+    let probes = median(&|| {
+        for row in &rows {
+            assert!(native.has_subfolders(row, &cancel).unwrap());
+        }
+    });
+    let identities = median(&|| {
+        for row in &rows {
+            assert!(device(filesystem.as_ref(), row, &cancel).is_some());
+        }
+    });
+    println!("200 rows: presence probes median {probes:?}, identity queries median {identities:?}");
 }

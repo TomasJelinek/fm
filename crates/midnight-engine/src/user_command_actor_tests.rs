@@ -32,14 +32,11 @@ pub(super) fn request(id: u64, directory: &Path) -> UserCommandRequest {
 #[tokio::test]
 async fn full_queue_rejects_visibly_and_consumes_the_request_id_without_losing_original_cancel() {
     let (input, mut queued) = mpsc::channel(1);
-    let controller = Controller {
+    let controller = Controller::queue_only(
         input,
-        retirement: RetirementDomain::try_start(MAX_JOBS, 0).unwrap(),
-        state: Arc::default(),
-        stop: Cancellation::default(),
-        available: true,
-        task: None,
-    };
+        RetirementDomain::try_start(MAX_JOBS, 0).unwrap(),
+        true,
+    );
     let directory = std::env::current_dir().unwrap();
     controller.start(request(1, &directory), false).unwrap();
     assert_eq!(
@@ -53,6 +50,31 @@ async fn full_queue_rejects_visibly_and_consumes_the_request_id_without_losing_o
     assert!(queued.recv().await.unwrap().cancel.is_cancelled());
     assert!(controller.start(request(2, &directory), false).is_err());
     assert_eq!(controller.state.lock().unwrap().requests.len(), 1);
+}
+
+#[tokio::test]
+async fn each_actor_owns_its_job_and_memory_budget() {
+    let directory = std::env::current_dir().unwrap();
+    let (input, _queued) = mpsc::channel(8);
+    let full = Controller::queue_only(
+        input,
+        RetirementDomain::try_start(MAX_JOBS, 0).unwrap(),
+        true,
+    );
+    // Four 16 MiB reservations exhaust one actor's 64 MiB budget.
+    for id in 1..=4 {
+        full.start(request(id, &directory), false).unwrap();
+    }
+    let error = full.start(request(5, &directory), false).unwrap_err();
+    assert_eq!(error.kind, io::ErrorKind::WouldBlock);
+    // Another engine's actor (or a concurrently running test) is unaffected.
+    let (input, _other_queue) = mpsc::channel(8);
+    let other = Controller::queue_only(
+        input,
+        RetirementDomain::try_start(MAX_JOBS, 0).unwrap(),
+        true,
+    );
+    other.start(request(1, &directory), false).unwrap();
 }
 
 #[tokio::test]
@@ -304,14 +326,11 @@ async fn blocked_native_launch(captured: bool) {
 #[test]
 fn separator_preview_and_execution_never_enter_the_worker_queue() {
     let (input, mut queued) = mpsc::channel(1);
-    let controller = Controller {
+    let controller = Controller::queue_only(
         input,
-        retirement: RetirementDomain::try_start(MAX_JOBS, 0).unwrap(),
-        state: Arc::default(),
-        stop: Cancellation::default(),
-        available: true,
-        task: None,
-    };
+        RetirementDomain::try_start(MAX_JOBS, 0).unwrap(),
+        true,
+    );
     for (id, preview) in [(1, true), (2, false)] {
         let mut request = request(id, &std::env::current_dir().unwrap());
         let command = &mut Arc::make_mut(&mut request.configuration)[0];

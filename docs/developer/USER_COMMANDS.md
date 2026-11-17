@@ -209,9 +209,24 @@ PerItem checks its own relevant guards before spawn, avoiding quadratic whole-jo
 metadata revalidation.
 
 Native target/directory pins detect changes after backend preparation; captured
-kind/size/modified facts reject known earlier changes. The first backend open
-establishes native identity. Neither panel listings nor arbitrary external tools
-are promised immutable path snapshots. Archive/provider argument exports and
+facts reject known earlier changes: a tree capture compares kind, size and
+modified time, and a flat panel selection compares its listed file size and
+whether the row was a directory (a file replaced by a directory, or the reverse,
+is rejected; links keep their target-independent tolerance). The first backend
+open establishes native identity. One plan holds at most 256 native pins at a
+time (each is an open descriptor on Linux, whose common soft limit is 1024).
+Later targets/directories are pinned once to capture their identity and facts,
+released, and pinned again for each revalidation. A released target must find the
+same native identity, kind, size, modification time, native attributes and Unix
+mode, for a directory target as well as a file; a released working or context
+directory must find the same identity, as a held one does. Unlike a held pin, a
+released target cannot compare the change time (Linux ctime, Windows ChangeTime)
+or the Windows creation time, so a change that restores every compared fact
+before the check goes undetected for a released target. Preparation pins and
+checks every target once; the actor then runs one complete revalidation after
+native preflight, and each process revalidates only its own scope before
+spawning. Neither panel listings
+nor arbitrary external tools are promised immutable path snapshots. Archive/provider argument exports and
 native macOS implementation/validation remain outside this backend increment.
 
 Implementation and evidence are recorded in

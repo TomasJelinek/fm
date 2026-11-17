@@ -7,11 +7,11 @@ use std::{
     collections::HashMap,
     io,
     path::Path,
-    sync::{Arc, Mutex, OnceLock},
+    sync::{Arc, Mutex},
     time::Duration,
 };
 use tokio::{
-    sync::{OwnedSemaphorePermit, Semaphore, mpsc},
+    sync::{Notify, OwnedSemaphorePermit, Semaphore, mpsc},
     task::JoinHandle,
 };
 
@@ -46,22 +46,17 @@ struct Lease {
     _job: OwnedSemaphorePermit,
     _memory: OwnedSemaphorePermit,
 }
-fn jobs() -> Arc<Semaphore> {
-    static JOBS: OnceLock<Arc<Semaphore>> = OnceLock::new();
-    JOBS.get_or_init(|| Arc::new(Semaphore::new(MAX_JOBS)))
-        .clone()
-}
-fn memory() -> Arc<Semaphore> {
-    static MEMORY: OnceLock<Arc<Semaphore>> = OnceLock::new();
-    MEMORY
-        .get_or_init(|| Arc::new(Semaphore::new(64 * 1024 * 1024)))
-        .clone()
-}
+const MEMORY_BUDGET: usize = 64 * 1024 * 1024;
 pub(crate) struct Controller {
     input: mpsc::Sender<WorkerOwned<Work>>,
     retirement: RetirementDomain,
     state: Arc<Mutex<State>>,
     stop: Cancellation,
+    /// Wakes the idle actor for `stop`; it otherwise sleeps until work arrives.
+    stopped: Arc<Notify>,
+    /// This actor's admitted/retained work leases and target/result budget.
+    jobs: Arc<Semaphore>,
+    memory: Arc<Semaphore>,
     available: bool,
     task: Option<JoinHandle<()>>,
 }
@@ -76,6 +71,7 @@ impl Controller {
         let (input, incoming) = mpsc::channel(MAX_JOBS);
         let state = Arc::new(Mutex::new(State::default()));
         let stop = Cancellation::default();
+        let stopped = Arc::new(Notify::new());
         let available = native.is_some() && files.is_some();
         let services = Arc::new(retirement.service.own(Services { native, files }));
         let task = tokio::spawn(run(
@@ -85,12 +81,16 @@ impl Controller {
             incoming,
             state.clone(),
             stop.clone(),
+            stopped.clone(),
         ));
         Self {
             input,
             retirement: retirement.domain,
             state,
             stop,
+            stopped,
+            jobs: Arc::new(Semaphore::new(MAX_JOBS)),
+            memory: Arc::new(Semaphore::new(MEMORY_BUDGET)),
             available,
             task: Some(task),
         }
@@ -125,13 +125,15 @@ impl Controller {
         if self.stop.is_cancelled() {
             return Err(cancelled());
         }
-        let job = jobs().try_acquire_owned().map_err(|_| {
+        let job = self.jobs.clone().try_acquire_owned().map_err(|_| {
             failure(
                 io::ErrorKind::WouldBlock,
                 "Custom Command job/result budget is full (32).",
             )
         })?;
-        let memory = memory()
+        let memory = self
+            .memory
+            .clone()
             .try_acquire_many_owned(16 * 1024 * 1024)
             .map_err(|_| {
                 failure(
@@ -178,18 +180,39 @@ impl Controller {
         }
     }
     pub(crate) async fn shutdown(mut self) {
-        self.stop.cancel();
+        self.stop();
         if let Some(task) = self.task.take() {
             let _ = task.await;
         }
     }
     pub(crate) fn stop(&self) {
         self.stop.cancel();
+        // A stored permit wakes the actor even if it is not waiting yet.
+        self.stopped.notify_one();
+    }
+    /// A controller whose admitted work stays in `input` for inspection.
+    #[cfg(test)]
+    fn queue_only(
+        input: mpsc::Sender<WorkerOwned<Work>>,
+        retirement: RetirementDomain,
+        available: bool,
+    ) -> Self {
+        Self {
+            input,
+            retirement,
+            state: Arc::default(),
+            stop: Cancellation::default(),
+            stopped: Arc::default(),
+            jobs: Arc::new(Semaphore::new(MAX_JOBS)),
+            memory: Arc::new(Semaphore::new(MEMORY_BUDGET)),
+            available,
+            task: None,
+        }
     }
 }
 impl Drop for Controller {
     fn drop(&mut self) {
-        self.stop.cancel();
+        self.stop();
     }
 }
 struct Context {
@@ -207,6 +230,7 @@ async fn run(
     mut input: mpsc::Receiver<WorkerOwned<Work>>,
     state: Arc<Mutex<State>>,
     stop: Cancellation,
+    stopped: Arc<Notify>,
 ) {
     let (Some(native), Some(files)) = (services.native.clone(), services.files.clone()) else {
         return;
@@ -223,19 +247,21 @@ async fn run(
         if context.stop.is_cancelled() {
             break;
         }
-        match tokio::time::timeout(Duration::from_millis(25), input.recv()).await {
-            Ok(Some(work)) => {
-                let id = work.request.id;
-                execute(work, &context).await;
-                state
-                    .lock()
-                    .unwrap_or_else(|error| error.into_inner())
-                    .requests
-                    .remove(&id);
-            }
-            Ok(None) => break,
-            Err(_) => {}
-        }
+        // Idle without a timer: work or an explicit stop wakes the actor.
+        let work = tokio::select! {
+            work = input.recv() => work,
+            () = stopped.notified() => continue,
+        };
+        let Some(work) = work else {
+            break;
+        };
+        let id = work.request.id;
+        execute(work, &context).await;
+        state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .requests
+            .remove(&id);
     }
     input.close();
     while input.try_recv().is_ok() {}
@@ -276,7 +302,7 @@ async fn execute(work: WorkerOwned<Work>, context: &Arc<Context>) {
                 .native
                 .validate_user_command(process, &work.cancel)?;
         }
-        prepared.revalidate(&work.cancel)?;
+        prepared.revalidate(context_owner.files.as_ref(), &work.cancel)?;
         Ok::<_, FsError>(Arc::new(ownership.own(PreparedOwner {
             plan: prepared,
             services: context_owner.services.clone(),
@@ -380,7 +406,9 @@ async fn execute(work: WorkerOwned<Work>, context: &Arc<Context>) {
         let launched = tokio::task::spawn_blocking(move || {
             // Both permits and metadata pins survive an async cancellation until native return.
             let _launch = reservation.launch;
-            pinned.plan.revalidate_for(index, &stopping)?;
+            pinned
+                .plan
+                .revalidate_for(index, context_owner.files.as_ref(), &stopping)?;
             context_owner
                 .native
                 .launch_user_command(&pinned.plan.processes[index], &stopping)

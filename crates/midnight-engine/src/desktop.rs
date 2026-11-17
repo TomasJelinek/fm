@@ -934,7 +934,12 @@ async fn reap_children(mut receiver: mpsc::Receiver<TrackedChild>, outbox: Outbo
     loop {
         tokio::select! {
             child = receiver.recv() => match child {
-                Some(child) => children.push(child),
+                Some(child) => {
+                    children.push(child);
+                    // Openers commonly hand off and exit at once: observe a
+                    // new helper promptly instead of up to a full period later.
+                    tick.reset_immediately();
+                }
                 None => return,
             },
             _ = tick.tick(), if !children.is_empty() => {
@@ -1529,7 +1534,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn icon_cache_deduplicates_and_stops_at_256_types() {
+    async fn icon_cache_deduplicates_and_keeps_loading_new_types_beyond_256() {
         let (sender, mut events) = mpsc::channel(512);
         let outbox = Outbox {
             sender,
@@ -1554,13 +1559,15 @@ mod tests {
         worker.await.unwrap();
         let mut keys = HashSet::new();
         while let Some(Event::IconLoaded { key, pixels }) = events.recv().await {
+            // Immediate repeats are deduplicated; the bounded cache forgets old
+            // types instead of refusing every type after the 256th.
             assert!(keys.insert(key));
             assert_eq!(
                 pixels.rgba.len(),
                 (pixels.width * pixels.height * 4) as usize
             );
         }
-        assert_eq!(keys.len(), 256);
+        assert_eq!(keys.len(), 300);
     }
 }
 

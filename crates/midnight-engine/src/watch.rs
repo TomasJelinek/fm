@@ -6,18 +6,17 @@ use crate::{
     task_lifetime::TaskLifetime,
 };
 use midnight_core::{
-    Cancellation, CompressionStatus, Entry, EntryKind, Event, FileSystem, NavigationId, PaneId,
-    VisibleDirectory, WatchService, WatchSubscription,
+    Cancellation, Entry, Event, FileSystem, NavigationId, PaneId, VisibleDirectory, WatchService,
+    WatchSubscription,
 };
 use std::{
-    ffi::OsString,
     path::{Component, Path},
     sync::{
         Arc, Mutex, OnceLock,
         atomic::{AtomicBool, AtomicU64, Ordering},
     },
     thread::{self, Thread},
-    time::{Duration, Instant, SystemTime},
+    time::{Duration, Instant},
 };
 use tokio::{sync::mpsc::error::TrySendError, task::JoinSet};
 
@@ -62,6 +61,14 @@ struct Timing {
     maximum: Duration,
     poll: Duration,
 }
+
+/// Bursts settle after 150 ms of quiet, at most 500 ms after their first event;
+/// polling catches missed notifications every 15 s.
+const PRODUCTION_TIMING: Timing = Timing {
+    quiet: Duration::from_millis(150),
+    maximum: Duration::from_millis(500),
+    poll: Duration::from_secs(15),
+};
 
 struct Control {
     visible: Option<VisibleDirectory>,
@@ -114,11 +121,7 @@ impl Controller {
             native,
             outbox,
             tasks,
-            Timing {
-                quiet: Duration::from_millis(150),
-                maximum: Duration::from_millis(500),
-                poll: Duration::from_secs(15),
-            },
+            PRODUCTION_TIMING,
         )
     }
 
@@ -152,10 +155,13 @@ impl Controller {
             let native = native.clone();
             let outbox = outbox.clone();
             let native_scope = scope.clone();
+            // The worker starts when its task first runs; an unpolled task
+            // leaves the captured scope to the retained handles.
             tasks.spawn(scope.future(async move {
-                let _ = tokio::task::spawn_blocking(native_scope.blocking(move || {
-                    run(shared, filesystem, native, outbox, timing);
-                }))
+                crate::actor_thread::run(
+                    "midnight-watch",
+                    native_scope.blocking(move || run(shared, filesystem, native, outbox, timing)),
+                )
                 .await;
             }));
         }
@@ -253,19 +259,83 @@ struct Target {
     navigation: NavigationId,
     path: std::path::PathBuf,
     cancel: Cancellation,
-    baseline: Vec<Row>,
+    /// Constant-space multiset signature of the accepted rows (`None` only if
+    /// it could not be represented, which makes every probe a change).
+    baseline: Option<[u8; 32]>,
     dirty: Arc<AtomicU64>,
     observed: u64,
+    /// Native event count when this navigation's target was accepted.
+    accepted_at: u64,
     active: Arc<AtomicBool>,
     _subscription: Option<Box<dyn WatchSubscription>>,
     debounce: Debouncer,
     poll_at: Instant,
 }
 
+impl Target {
+    /// A refresh/resort of the same directory keeps its event counter. A new
+    /// native subscription (the directory may have been replaced) is in place
+    /// before the old one is released, so there is no registration gap. Events
+    /// during the replaced generation can postdate the new listing; their hints
+    /// carried the old navigation and were discarded by the UI, so probe once
+    /// immediately against the newly accepted rows instead of waiting for the
+    /// next poll.
+    fn retarget(
+        &mut self,
+        shared: &SharedOwner,
+        native: Option<&dyn WatchService>,
+        visible: VisibleDirectory,
+        revision: u64,
+        cancel: Cancellation,
+        timing: Timing,
+    ) {
+        let subscription = subscribe(shared, native, &self.path, &self.dirty, &self.active);
+        // Destruction can join native watcher threads; it stays on this worker.
+        drop(std::mem::replace(&mut self._subscription, subscription));
+        let version = self.dirty.load(Ordering::Relaxed);
+        let activity = version != self.accepted_at
+            || self
+                .debounce
+                .deadline(timing.quiet, timing.maximum)
+                .is_some();
+        self.revision = revision;
+        self.navigation = visible.navigation;
+        self.cancel = cancel;
+        self.baseline = accepted_signature(&visible.entries);
+        self.observed = version;
+        self.accepted_at = version;
+        self.debounce = Debouncer::default();
+        let now = Instant::now();
+        self.poll_at = if activity { now } else { now + timing.poll };
+    }
+}
+
 impl Drop for Target {
     fn drop(&mut self) {
         self.active.store(false, Ordering::Release);
     }
+}
+
+/// A native subscription that counts notifications for one target.
+fn subscribe(
+    shared: &SharedOwner,
+    native: Option<&dyn WatchService>,
+    path: &Path,
+    dirty: &Arc<AtomicU64>,
+    active: &Arc<AtomicBool>,
+) -> Option<Box<dyn WatchSubscription>> {
+    let callback_dirty = dirty.clone();
+    let callback_active = active.clone();
+    let callback_shared = Arc::downgrade(shared);
+    let callback = Arc::new(move || {
+        if callback_active.load(Ordering::Acquire) {
+            callback_dirty.fetch_add(1, Ordering::Relaxed);
+            if let Some(shared) = callback_shared.upgrade() {
+                shared.wake();
+            }
+        }
+    });
+    native.and_then(|native| native.watch_directory(path, callback).ok())
 }
 
 fn register(
@@ -278,34 +348,17 @@ fn register(
 ) -> Target {
     let dirty = Arc::new(AtomicU64::new(0));
     let active = Arc::new(AtomicBool::new(true));
-    let callback_dirty = dirty.clone();
-    let callback_active = active.clone();
-    let callback_shared = Arc::downgrade(shared);
-    let callback = Arc::new(move || {
-        if callback_active.load(Ordering::Acquire) {
-            callback_dirty.fetch_add(1, Ordering::Relaxed);
-            if let Some(shared) = callback_shared.upgrade() {
-                shared.wake();
-            }
-        }
-    });
-    let subscription =
-        native.and_then(|native| native.watch_directory(&visible.path, callback).ok());
-    let mut baseline = visible
-        .entries
-        .iter()
-        .map(Row::from_entry)
-        .collect::<Vec<_>>();
-    baseline.sort_unstable_by(|a, b| a.name.cmp(&b.name));
+    let subscription = subscribe(shared, native, &visible.path, &dirty, &active);
     Target {
         revision,
         pane: visible.pane,
         navigation: visible.navigation,
+        baseline: accepted_signature(&visible.entries),
         path: visible.path,
         cancel,
-        baseline,
         dirty,
         observed: 0,
+        accepted_at: 0,
         active,
         _subscription: subscription,
         debounce: Debouncer::default(),
@@ -383,6 +436,17 @@ fn run(
             }
         };
         if let Some((visible, revision, cancel)) = update {
+            if let Some(current) = target.as_mut().filter(|old| old.path == visible.path) {
+                current.retarget(
+                    &shared,
+                    native.as_deref(),
+                    visible,
+                    revision,
+                    cancel,
+                    timing,
+                );
+                continue;
+            }
             // Destruction can join native watcher threads; it always stays here.
             drop(target.take());
             target = Some(register(
@@ -411,8 +475,11 @@ fn run(
             target.debounce.record(Instant::now());
         }
         if Instant::now() >= target.poll_at {
+            // Recovery of unknown metadata is also a visible change. Baselines
+            // stay until UI acceptance, so ignored hints and failed refreshes
+            // are periodically retried.
             let changed = match probe(filesystem.as_ref(), &target.path, &target.cancel) {
-                Ok(rows) => differs(&target.baseline, &rows),
+                Ok(current) => target.baseline != Some(current),
                 Err(()) => true,
             };
             if !shared.is_current(target.revision) {
@@ -483,36 +550,19 @@ fn send_hint(shared: &Shared, target: &Target, outbox: &Outbox) -> bool {
     }
 }
 
-#[derive(PartialEq, Eq)]
-struct Row {
-    name: OsString,
-    kind: EntryKind,
-    size: Option<u64>,
-    modified: Option<SystemTime>,
-    compression: CompressionStatus,
-    native_attributes: Option<u32>,
-    unix_mode: Option<u32>,
-}
-
-impl Row {
-    fn from_entry(entry: &Entry) -> Self {
-        Self {
-            name: entry.name.clone(),
-            kind: entry.kind,
-            // Directory size can be a computed recursive total after sorting.
-            size: (entry.kind == EntryKind::File)
-                .then_some(entry.metadata.size)
-                .flatten(),
-            modified: entry.metadata.modified,
-            compression: entry.metadata.compression,
-            native_attributes: entry.metadata.native_attributes,
-            unix_mode: entry.metadata.unix_mode,
-        }
+/// Order-independent signature of the rows a listing shows: name, kind, file
+/// length, time, compression, attributes and mode. Directory sizes are
+/// excluded because they can be computed recursive totals.
+fn accepted_signature(entries: &[Entry]) -> Option<[u8; 32]> {
+    let mut accepted = signature::Signature::default();
+    for entry in entries {
+        accepted.add(entry).ok()?;
     }
+    Some(accepted.digest(false))
 }
 
-fn probe(filesystem: &dyn FileSystem, path: &Path, cancel: &Cancellation) -> Result<Vec<Row>, ()> {
-    let mut rows = Vec::new();
+fn probe(filesystem: &dyn FileSystem, path: &Path, cancel: &Cancellation) -> Result<[u8; 32], ()> {
+    let mut current = signature::Signature::default();
     let mut failed = false;
     filesystem
         .read_directory(path, cancel, &mut |mut entry| {
@@ -527,28 +577,18 @@ fn probe(filesystem: &dyn FileSystem, path: &Path, cancel: &Cancellation) -> Res
                 failed = true;
                 return false;
             }
-            match filesystem.entry_metadata(&entry.path) {
-                Ok(metadata) => entry.metadata = metadata,
-                Err(_) => {
-                    failed = true;
-                    return false;
-                }
+            signature::listing_metadata(filesystem, &mut entry);
+            if current.add(&entry).is_err() {
+                failed = true;
+                return false;
             }
-            rows.push(Row::from_entry(&entry));
             !cancel.is_cancelled()
         })
         .map_err(|_| ())?;
     if cancel.is_cancelled() || failed {
         return Err(());
     }
-    rows.sort_unstable_by(|a, b| a.name.cmp(&b.name));
-    Ok(rows)
-}
-
-/// Recovery of unknown metadata is also a visible change. Keep baselines until
-/// UI acceptance so ignored hints or failed refreshes are periodically retried.
-fn differs(baseline: &[Row], current: &[Row]) -> bool {
-    baseline != current
+    Ok(current.digest(false))
 }
 
 #[cfg(test)]

@@ -9,12 +9,24 @@ struct Keys {
     name: Option<Vec<u8>>,
 }
 
+/// Locale keys prepared for one search generation and column. The caller keeps
+/// one cache per generation. Results are append-only within a generation and
+/// keys depend only on (path, column), so a re-sort of a streaming search
+/// derives keys only for new results; the key budget still covers all of them.
+#[derive(Default)]
+pub(crate) struct KeyCache {
+    column: Option<FindSortColumn>,
+    keys: Vec<Keys>,
+    used: usize,
+}
+
 pub(crate) fn order(
     results: &[Arc<FindResult>],
     sort: FindSortSpec,
     revision: u64,
     locale: Option<&dyn LocaleService>,
     cancel: &Cancellation,
+    cache: &mut KeyCache,
 ) -> Result<FindOrder, FsError> {
     if results.len() > FindLimits::default().max_results {
         return Err(find_error(
@@ -23,8 +35,11 @@ pub(crate) fn order(
             "Find sort exceeds the result budget.",
         ));
     }
-    let mut used = 0usize;
-    let mut keys = Vec::with_capacity(results.len());
+    if cache.column != Some(sort.column) || cache.keys.len() > results.len() {
+        cache.column = Some(sort.column);
+        cache.keys.clear();
+        cache.used = 0;
+    }
     for (index, result) in results.iter().enumerate() {
         check(cancel)?;
         if result.id.0 != index as u64 + 1 {
@@ -34,15 +49,25 @@ pub(crate) fn order(
                 "Find discovery IDs are not contiguous.",
             ));
         }
+        if index < cache.keys.len() {
+            continue;
+        }
         let path = &result.entry.path;
-        let primary = prepare_key(locale, value(path, sort.column), path, &mut used, cancel)?;
+        let primary = prepare_key(
+            locale,
+            value(path, sort.column),
+            path,
+            &mut cache.used,
+            cancel,
+        )?;
         let name = if sort.column == FindSortColumn::Extension {
-            prepare_key(locale, Some(filename(path)), path, &mut used, cancel)?
+            prepare_key(locale, Some(filename(path)), path, &mut cache.used, cancel)?
         } else {
             None
         };
-        keys.push(Keys { primary, name });
+        cache.keys.push(Keys { primary, name });
     }
+    let keys = &cache.keys[..results.len()];
     let mut indices: Vec<_> = (0..results.len()).collect();
     indices.sort_unstable_by(|&left, &right| {
         let a = &results[left].entry;
@@ -111,8 +136,10 @@ fn prepare_key(
     };
     check(cancel)?;
     if let Some(key) = &key {
-        *used = used.saturating_add(key.len());
-        if key.len() > MAX_COLLATION_KEY_BYTES || *used > KEY_BUDGET {
+        let total = used.saturating_add(key.len());
+        if key.len() <= MAX_COLLATION_KEY_BYTES && total <= KEY_BUDGET {
+            *used = total;
+        } else {
             return Err(find_error(
                 path,
                 io::ErrorKind::InvalidData,

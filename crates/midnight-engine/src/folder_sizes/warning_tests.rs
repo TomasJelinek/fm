@@ -107,7 +107,7 @@ fn unavailable_report_storage_never_stops_counting_or_hides_missing_details() {
             last = size;
             true
         },
-        PENDING_PATH_BUDGET,
+        SCAN_LIMITS,
         &log
     ));
     assert_eq!((last.bytes, last.errors), (42, 300));
@@ -143,7 +143,7 @@ fn batched_cancel_drains_the_final_partial_report() {
             last = size;
             true
         },
-        &std::sync::Arc::new(IoBudget::new()),
+        &std::sync::Arc::new(IoBudget::isolated()),
         &crate::ReportArena::testing(),
     );
     assert!(!last.finished);

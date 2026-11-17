@@ -12,11 +12,13 @@ use std::{
 };
 use tokio::sync::{Notify, mpsc};
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn network_rejections_apply_backpressure_when_event_consumer_stops() {
-    for available in [false, true] {
-        assert_network_backpressure(available).await;
-    }
+    // Independent engines share one 200 ms detection window.
+    tokio::join!(
+        assert_network_backpressure(false),
+        assert_network_backpressure(true)
+    );
 }
 
 async fn assert_network_backpressure(available: bool) {
@@ -271,7 +273,10 @@ impl PropertyService for Services {
     }
 }
 async fn next(events: &mut mpsc::Receiver<Event>) -> Event {
-    tokio::time::timeout(Duration::from_secs(4), events.recv())
+    // Only a failure reaches this bound. Helper children are this (large) test
+    // binary; the first launches after a build can wait several seconds for
+    // on-access malware scanning.
+    tokio::time::timeout(Duration::from_secs(20), events.recv())
         .await
         .unwrap()
         .unwrap()

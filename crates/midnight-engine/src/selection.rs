@@ -662,31 +662,19 @@ pub(crate) async fn prepare_properties(
     tasks.spawn(async move {
         let _delivery_permit = delivery_permit;
         let result = tokio::task::spawn_blocking(move || {
-            let paths: Vec<PathBuf> = if selection.is_empty() {
-                fallback.into_iter().collect()
-            } else {
-                selection
-                    .selected_paths()
-                    .filter(|path| view.by_path.contains_key(*path))
-                    .cloned()
-                    .collect()
-            };
-            if paths.is_empty() {
-                Err(FsError::from_io(
-                    "prepare Properties",
-                    std::path::Path::new(""),
-                    std::io::Error::new(
-                        std::io::ErrorKind::NotFound,
-                        "No selected entries remain in the captured folder.",
-                    ),
-                ))
-            } else {
-                Ok(PreparedProperties {
-                    request,
-                    paths,
-                    _permit: permit,
-                })
-            }
+            // Captured display order, bounded like every other selection
+            // consumer, so the native dialog's leading item is stable.
+            crate::file_targets::resolve(
+                &selection,
+                &view,
+                fallback.as_deref(),
+                &Cancellation::default(),
+            )
+            .map(|paths| PreparedProperties {
+                request,
+                paths,
+                _permit: permit,
+            })
         })
         .await;
         match result {
@@ -1273,6 +1261,44 @@ mod tests {
             })
         ));
         assert!(prepared.try_recv().is_err());
+        while tasks.join_next().await.is_some() {}
+    }
+
+    #[tokio::test]
+    async fn properties_receive_selected_paths_in_captured_display_order() {
+        let names = ["c", "文档 a", "b", "d", "e", "f", "g", "h"];
+        let index = view(&names);
+        // Every other row: c, b, e, g in display order.
+        let selection =
+            Arc::new(SelectionSnapshot::from_bits(index.clone(), vec![0b0101_0101]).unwrap());
+        let (sender, _events) = mpsc::channel(2);
+        let (ready, mut prepared) = mpsc::channel(2);
+        let mut tasks = JoinSet::new();
+        prepare_properties(
+            PropertiesInput {
+                request: DesktopRequestId(7),
+                selection,
+                view: index,
+                fallback: None,
+            },
+            Arc::new(tokio::sync::Semaphore::new(2)),
+            Outbox {
+                sender,
+                wakeup: Arc::new(|| {}),
+            },
+            ready,
+            &mut tasks,
+        )
+        .await;
+        let prepared = tokio::time::timeout(Duration::from_secs(3), prepared.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            prepared.paths,
+            ["c", "b", "e", "g"].map(PathBuf::from).to_vec()
+        );
+        drop(prepared);
         while tasks.join_next().await.is_some() {}
     }
 

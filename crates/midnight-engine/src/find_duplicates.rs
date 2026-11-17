@@ -243,8 +243,10 @@ fn publish_group(bucket: &[Candidate], members: &[usize], work: &mut Work<'_>) -
         .max_results
         .saturating_sub(work.progress.results as usize);
     if members.len() > remaining {
+        // Omit only this whole group: a later, smaller group can still fit.
+        // No group fits once fewer than two result slots remain.
         work.budget(FindBudget::Results);
-        return false;
+        return remaining >= 2;
     }
     let bytes = members.iter().try_fold(0usize, |cost, &index| {
         cost.checked_add(entry_cost(&bucket[index].entry))

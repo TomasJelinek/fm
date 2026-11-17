@@ -12,7 +12,7 @@ use std::{
     time::{Duration, Instant, SystemTime},
 };
 use tokio::{
-    sync::{Semaphore, mpsc, watch},
+    sync::{Notify, Semaphore, mpsc, watch},
     task::JoinSet,
 };
 
@@ -23,6 +23,8 @@ pub(crate) struct Retirement {
 pub(crate) struct Controller {
     slots: Vec<Slot>,
     validations: mpsc::Sender<Validation>,
+    /// Replaced result authorities are dropped on a backend worker.
+    retired: mpsc::Sender<Vec<Arc<FindResult>>>,
     lifetime: Cancellation,
     highest_session: Option<FindSessionId>,
     available: bool,
@@ -30,8 +32,12 @@ pub(crate) struct Controller {
 struct Slot {
     input: watch::Sender<Intent>,
     sorts: watch::Sender<u64>,
+    /// Wakes a session waiting for a worker when its generation is cancelled.
+    wake: Arc<Notify>,
     state: Arc<Mutex<State>>,
 }
+/// Concurrent result validations/captures; a hung network open keeps the others usable.
+const VALIDATION_WORKERS: usize = 2;
 #[derive(Clone, Default)]
 struct Intent {
     request: Option<Arc<FindRequest>>,
@@ -42,6 +48,8 @@ struct Intent {
 struct State {
     owner: Option<(FindSessionId, FindGeneration)>,
     cancel: Cancellation,
+    /// Cancelled by restart and Close but not by Stop, which keeps file actions.
+    generation: Cancellation,
     results: Vec<Arc<FindResult>>,
     sort: FindSortSpec,
     sort_revision: u64,
@@ -52,6 +60,7 @@ struct Validation {
     capture: bool,
     result: Arc<FindResult>,
     state: Arc<Mutex<State>>,
+    cancel: Cancellation,
 }
 
 #[derive(Clone)]
@@ -59,6 +68,8 @@ struct Services {
     native: Option<Arc<dyn FindService>>,
     captures: crate::retirement::RetirementDomain,
     capture_slots: Arc<Semaphore>,
+    /// At most two searches traverse at once; other sessions wait for a permit.
+    searches: Arc<Semaphore>,
     scope: TaskLifetime,
 }
 
@@ -75,15 +86,19 @@ impl Controller {
             native: service.clone(),
             captures: retirement.domain,
             capture_slots: Arc::new(Semaphore::new(RETIREMENT_CAPACITY)),
+            searches: Arc::new(Semaphore::new(2)),
             scope: scope.clone(),
         };
         let lifetime = Cancellation::default();
-        let budget = Arc::new(Semaphore::new(2));
         let slots = (0..MAX_FIND_SESSIONS)
             .map(|_| {
                 let (input, receiver) = watch::channel(Intent::default());
                 let (sorts, sort_input) = watch::channel(0);
-                let state = Arc::new(Mutex::new(State::default()));
+                let wake = Arc::new(Notify::new());
+                let state = Arc::new(Mutex::new(State {
+                    generation: lifetime.child(),
+                    ..State::default()
+                }));
                 tasks.spawn(scope.future(sorting::run(
                     scope.clone(),
                     state.clone(),
@@ -97,13 +112,14 @@ impl Controller {
                     outbox.clone(),
                     state.clone(),
                     receiver,
-                    budget.clone(),
                     lifetime.clone(),
                     sorts.clone(),
+                    wake.clone(),
                 )));
                 Slot {
                     input,
                     sorts,
+                    wake,
                     state,
                 }
             })
@@ -115,12 +131,29 @@ impl Controller {
             receiver,
             lifetime.clone(),
         )));
+        let (retired, mut retiring) = mpsc::channel::<Vec<Arc<FindResult>>>(MAX_FIND_SESSIONS);
+        let retire_scope = scope.clone();
+        tasks.spawn(scope.future(async move {
+            while let Some(results) = retiring.recv().await {
+                let _ =
+                    tokio::task::spawn_blocking(retire_scope.blocking(move || drop(results))).await;
+            }
+        }));
         Self {
             slots,
             validations,
+            retired,
             lifetime,
             highest_session: None,
             available: service.is_some(),
+        }
+    }
+
+    /// Up to 10,000 results (paths and metadata) are freed on a backend worker.
+    /// A full queue keeps the bounded fallback of dropping them here.
+    fn retire(&self, results: Vec<Arc<FindResult>>) {
+        if !results.is_empty() {
+            let _ = self.retired.try_send(results);
         }
     }
 
@@ -185,20 +218,25 @@ impl Controller {
         }
         state.cancel.cancel();
         state.order_cancel.cancel();
+        state.generation.cancel();
+        state.generation = self.lifetime.child();
         state.sort = request.sort;
         state.sort_revision = 0;
         state.order_cancel = self.lifetime.child();
         let cancel = self.lifetime.child();
         state.owner = Some((request.session, request.generation));
         state.cancel = cancel.clone();
-        state.results.clear();
+        let replaced = std::mem::take(&mut state.results);
         slot.input.send_replace(Intent {
             request: Some(Arc::new(request)),
             cancel,
             accepted_at: Some(SystemTime::now()),
         });
+        drop(state);
+        slot.wake.notify_one();
         slot.sorts
             .send_modify(|version| *version = version.wrapping_add(1));
+        self.retire(replaced);
         Ok(true)
     }
 
@@ -222,10 +260,17 @@ impl Controller {
 
     pub(crate) fn cancel(&self, session: FindSessionId, generation: FindGeneration) {
         for slot in &self.slots {
-            let state = slot.state.lock().unwrap_or_else(|error| error.into_inner());
+            let mut state = slot.state.lock().unwrap_or_else(|error| error.into_inner());
             if state.owner == Some((session, generation)) {
                 state.cancel.cancel();
+                // Retained results keep an automatic order: replace the sort token
+                // and request a final sort (a final batch requests another).
                 state.order_cancel.cancel();
+                state.order_cancel = self.lifetime.child();
+                drop(state);
+                slot.wake.notify_one();
+                slot.sorts
+                    .send_modify(|version| *version = version.wrapping_add(1));
             }
         }
     }
@@ -235,9 +280,13 @@ impl Controller {
             if state.owner.is_some_and(|(owner, _)| owner == session) {
                 state.cancel.cancel();
                 state.order_cancel.cancel();
+                state.generation.cancel();
                 state.owner = None;
-                state.results.clear();
+                let replaced = std::mem::take(&mut state.results);
                 slot.input.send_replace(Intent::default());
+                drop(state);
+                slot.wake.notify_one();
+                self.retire(replaced);
             }
         }
     }
@@ -279,6 +328,7 @@ impl Controller {
                     capture,
                     result,
                     state: slot.state.clone(),
+                    cancel: state.generation.clone(),
                 })
                 .map_err(|_| {
                     find_error(
@@ -300,9 +350,12 @@ impl Controller {
             let mut state = slot.state.lock().unwrap_or_else(|error| error.into_inner());
             state.cancel.cancel();
             state.order_cancel.cancel();
+            state.generation.cancel();
             state.owner = None;
-            state.results.clear();
+            let replaced = std::mem::take(&mut state.results);
             drop(state);
+            slot.wake.notify_one();
+            self.retire(replaced);
             // Wake an idle sorter once for shutdown; it needs no permanent poll.
             slot.sorts
                 .send_modify(|version| *version = version.wrapping_add(1));
@@ -320,9 +373,9 @@ async fn run_slot(
     outbox: Outbox,
     state: Arc<Mutex<State>>,
     mut input: watch::Receiver<Intent>,
-    budget: Arc<Semaphore>,
     lifetime: Cancellation,
     sorts: watch::Sender<u64>,
+    wake: Arc<Notify>,
 ) {
     while input.changed().await.is_ok() {
         let intent = input.borrow_and_update().clone();
@@ -340,21 +393,24 @@ async fn run_slot(
         let worker_state = state.clone();
         let worker_outbox = outbox.clone();
         let cancel = intent.cancel.clone();
-        let acquisition = budget.clone().acquire_owned();
+        let acquisition = services.searches.clone().acquire_owned();
         tokio::pin!(acquisition);
+        // A waiting session sleeps until a worker frees or its generation is
+        // stopped, restarted, closed or shut down (each of those wakes it).
         let permit = loop {
             if cancel.is_cancelled() {
                 break None;
             }
             tokio::select! {
                 permit = &mut acquisition => { break permit.ok(); }
-                _ = tokio::time::sleep(Duration::from_millis(10)) => {}
+                () = wake.notified() => {}
             }
         };
         let summary = if let Some(permit) = permit {
             let location = find_worker::CurrentDirectory::default();
             let worker_location = location.clone();
             let worker_sorts = sorts.clone();
+            let worker_lifetime = lifetime.clone();
             let mut worker = tokio::task::spawn_blocking(services.scope.blocking(move || {
                 let _permit = permit;
                 find_worker::search_with_location(
@@ -363,12 +419,14 @@ async fn run_slot(
                     &cancel,
                     &mut |update| {
                         let batch = matches!(&update, FindUpdate::Batch(_));
+                        // Stop retains results: matches found before the worker
+                        // observed Stop are still accepted for the same owner.
                         let accepted = publish(
                             &worker_outbox,
                             &worker_state,
                             &worker_request,
                             update,
-                            &cancel,
+                            if batch { &worker_lifetime } else { &cancel },
                         );
                         if accepted && batch {
                             worker_sorts.send_modify(|version| *version = version.wrapping_add(1));
@@ -508,17 +566,34 @@ async fn run_validations(
     mut input: mpsc::Receiver<Validation>,
     lifetime: Cancellation,
 ) {
-    while let Some(validation) = input.recv().await {
+    let mut running = JoinSet::new();
+    loop {
+        // At most VALIDATION_WORKERS native validations/captures run at once.
+        let validation = if running.len() < VALIDATION_WORKERS {
+            tokio::select! {
+                validation = input.recv() => validation,
+                Some(_) = running.join_next(), if !running.is_empty() => continue,
+            }
+        } else {
+            let _ = running.join_next().await;
+            continue;
+        };
+        let Some(validation) = validation else {
+            break;
+        };
         if lifetime.is_cancelled() {
-            return;
+            break;
         }
         let Some(service) = services.native.clone() else {
             continue;
         };
         let outbox = outbox.clone();
-        let cancel = lifetime.clone();
+        // Restart, Close and shutdown abandon cooperative provider checks of
+        // obsolete requests; Stop keeps them, like the retained file actions.
+        let cancel = validation.cancel.clone();
+        let capture_lifetime = lifetime.clone();
         let capture_services = services.clone();
-        let _ = tokio::task::spawn_blocking(services.scope.blocking(move || {
+        running.spawn_blocking(services.scope.blocking(move || {
             let request = validation.request;
             let current = || {
                 validation
@@ -547,7 +622,7 @@ async fn run_validations(
                         .map(Box::new);
                         let event = if validation.capture {
                             let result = result.and_then(|_| {
-                                capture::capture(&capture_services, &validation, &cancel)
+                                capture::capture(&capture_services, &validation, &capture_lifetime)
                             });
                             Event::FindFileCaptured(Box::new(FindFileCaptureResult {
                                 request,
@@ -579,7 +654,8 @@ async fn run_validations(
                     }
                 }
             }
-        }))
-        .await;
+        }));
     }
+    // Native calls keep their borrowed state until they return.
+    while running.join_next().await.is_some() {}
 }

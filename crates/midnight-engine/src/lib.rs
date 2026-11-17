@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 
+mod actor_thread;
 mod archive_selection;
 mod archive_shared;
 mod archive_sizes;

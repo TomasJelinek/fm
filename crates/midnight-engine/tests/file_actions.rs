@@ -155,18 +155,39 @@ async fn file_clipboard_preserves_captured_order_pumps_owner_and_reads_captured_
 struct Menu {
     calls: Mutex<Vec<ShellMenuRequest>>,
     worker: Mutex<Option<std::thread::ThreadId>>,
+    /// The native menu stays open until the test closes it.
+    closed: (Mutex<bool>, std::sync::Condvar),
+}
+impl Menu {
+    fn close(&self) {
+        *self.closed.0.lock().unwrap() = true;
+        self.closed.1.notify_all();
+    }
 }
 impl ShellMenuService for Menu {
     fn show_shell_menu(&self, request: &ShellMenuRequest) -> Result<ShellMenuOutcome, FsError> {
         *self.worker.lock().unwrap() = Some(std::thread::current().id());
         self.calls.lock().unwrap().push(request.clone());
-        std::thread::sleep(Duration::from_millis(150));
+        let closed = self.closed.0.lock().unwrap();
+        // Bounded so a failing test cannot leave a worker blocked forever.
+        let _ = self
+            .closed
+            .1
+            .wait_timeout_while(closed, Duration::from_secs(5), |closed| !*closed)
+            .unwrap();
         Ok(ShellMenuOutcome::Managed(ShellMenuVerb::Copy))
+    }
+}
+struct CloseMenu(Arc<Menu>);
+impl Drop for CloseMenu {
+    fn drop(&mut self) {
+        self.0.close();
     }
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn native_menu_is_bounded_and_does_not_block_other_engine_requests() {
     let menu = Arc::new(Menu::default());
+    let _close = CloseMenu(menu.clone());
 
     let (sender, mut events) = mpsc::channel(8);
     let mut engine = Engine::new(
@@ -194,14 +215,10 @@ async fn native_menu_is_bounded_and_does_not_block_other_engine_requests() {
     commands.send(Command::LoadLocale).await.unwrap();
     let mut locale = false;
     let mut busy = false;
-    let mut completed = false;
-    for _ in 0..3 {
+    // Both arrive while the first native menu is still open.
+    for _ in 0..2 {
         match receive(&mut events).await {
             Event::LocaleLoaded(Ok(_)) => locale = true,
-            Event::ShellMenuFinished {
-                request: DesktopRequestId(1),
-                result: Ok(ShellMenuOutcome::Managed(ShellMenuVerb::Copy)),
-            } => completed = true,
             Event::ShellMenuFinished {
                 request: DesktopRequestId(2),
                 result: Err(error),
@@ -209,10 +226,18 @@ async fn native_menu_is_bounded_and_does_not_block_other_engine_requests() {
                 assert_eq!(error.kind, std::io::ErrorKind::WouldBlock);
                 busy = true;
             }
-            event => panic!("unexpected event: {event:?}"),
+            event => panic!("unexpected event while the menu is open: {event:?}"),
         }
     }
-    assert!(locale && busy && completed);
+    assert!(locale && busy);
+    menu.close();
+    assert!(matches!(
+        receive(&mut events).await,
+        Event::ShellMenuFinished {
+            request: DesktopRequestId(1),
+            result: Ok(ShellMenuOutcome::Managed(ShellMenuVerb::Copy)),
+        }
+    ));
     assert_ne!(
         *menu.worker.lock().unwrap(),
         Some(std::thread::current().id())

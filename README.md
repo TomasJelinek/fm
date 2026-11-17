@@ -861,20 +861,41 @@ the remaining Slint expansion and measured optimization options.
 
 Directory links and junctions have distinct link artwork. Windows uses the
 system link overlay; other platforms prefer host-theme icons and fall back to
-application artwork. Recursive folder-size scans skip links. Browsing a folder
-does not inspect a link target merely to choose its icon.
+application artwork. Recursive folder-size scans count links inside the measured
+folder as skipped and never follow them, so aliases such as profile junctions are
+not counted twice. A scanned row that is itself a directory link (a selected row,
+or any row of a full-pane scan without a selection) is measured through its
+target. Browsing a folder does not inspect a link target merely to choose its
+icon.
 
 Paths and file identities are kept separately from their displayed text. A failed
 navigation preserves the last usable directory and reports the failed operation.
 Each pane remembers its last visited directory for each volume during this run.
 Visible directories are watched on the backend. Changes are batched after
-150 ms of quiet, with a 500 ms cap during continuous activity. A 15-second
-metadata check catches missing native/network notifications. Automatic refresh
-preserves the viewport, selection and command editing; it invalidates earlier
-recursive folder-size estimates.
-Folder sizing uses a bounded fair batch and a shared I/O budget: up to four reads
-only for proven local SSD, one stream for HDD/network/unknown storage. Detection
-errors remain conservative. Other navigation work has independent capacity.
+150 ms of quiet, with a 500 ms cap during continuous activity. A 15-second check
+re-lists each watched directory (in tree mode every eligible loaded branch) to
+catch missing native/network notifications. It compares the same enumeration
+metadata the listing shows and reads metadata separately only for entries whose
+enumeration lacks it; an entry whose metadata cannot be read stays unknown, as in
+the listing, instead of causing a refresh on every check. Notifications that
+arrive while an automatic refresh of the same directory is being accepted are
+checked against the new listing at once. The watcher cannot tell which of them
+the refresh listing already saw, so every refresh that follows notifications
+re-lists that directory once more right away (and reads metadata for each entry
+whose enumeration lacks it); a quiet directory is not re-listed. In tree mode, a
+changed set of watched branches registers its native watches before the old ones
+are released, so directories watched before and after stay covered; a directory
+that becomes natively watched is checked at once, and a collapse alone requests
+no refresh. A newly expanded branch still requests one refresh of the loaded
+branches, because its accepted listing records only the folders it shows.
+Automatic refresh preserves the viewport, selection and command editing; it
+invalidates earlier recursive folder-size estimates.
+Folder sizing uses a bounded fair batch and a shared I/O budget: up to the Disk
+operations limit (four by default) of parallel reads only for proven local SSD,
+one stream for HDD/network/unknown storage. Detection errors remain conservative;
+storage is classified once per device on each scan lane. File lengths come from
+complete directory enumeration data without opening each file. Other navigation
+work has independent capacity.
 An active size scan continues across sorting and same-directory refresh; moving
 the cursor, changing selection or working in the other pane does not cancel it.
 Running totals retain a contrasting color and `≈` without an exclamation prefix.

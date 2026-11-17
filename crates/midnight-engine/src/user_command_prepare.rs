@@ -9,6 +9,12 @@ use std::{
 };
 
 const MAX_PLAN_BYTES: usize = 8 * 1024 * 1024;
+/// Native pins (directories plus targets) held simultaneously by one plan. On
+/// Linux each pin is an open descriptor and the common soft `RLIMIT_NOFILE` is
+/// 1024, while a capture admits 4096 targets. Later pins record their captured
+/// identity/facts, are released at once, and are pinned again (then released)
+/// for every revalidation, so a large selection cannot exhaust descriptors.
+const MAX_HELD_PINS: usize = 256;
 #[derive(Clone)]
 pub(crate) struct Prepared {
     pub(crate) processes: Arc<Vec<UserCommandProcess>>,
@@ -18,13 +24,108 @@ pub(crate) struct Prepared {
 }
 struct Scope {
     source_ids: Vec<EntryId>,
-    directories: Vec<Arc<dyn TransferDirectory>>,
-    entries: Vec<Arc<dyn TransferTarget>>,
+    directories: Vec<DirectoryPin>,
+    entries: Vec<TargetPin>,
+}
+#[derive(Clone)]
+enum DirectoryPin {
+    Held(Arc<dyn TransferDirectory>),
+    Released {
+        path: PathBuf,
+        identity: TransferIdentity,
+    },
+}
+impl DirectoryPin {
+    fn path(&self) -> &Path {
+        match self {
+            Self::Held(directory) => directory.path(),
+            Self::Released { path, .. } => path,
+        }
+    }
+    fn revalidate(
+        &self,
+        service: &dyn TransferService,
+        cancel: &Cancellation,
+    ) -> Result<(), FsError> {
+        with_io(cancel, self.path(), || match self {
+            Self::Held(directory) => directory.revalidate(cancel),
+            Self::Released { path, identity } => {
+                reopen_directory(service, path, *identity, cancel)?.revalidate(cancel)
+            }
+        })
+    }
+}
+#[derive(Clone)]
+enum TargetPin {
+    Held(Arc<dyn TransferTarget>),
+    Released(Arc<TransferEntry>),
+}
+impl TargetPin {
+    fn entry(&self) -> &TransferEntry {
+        match self {
+            Self::Held(target) => target.entry(),
+            Self::Released(entry) => entry,
+        }
+    }
+    fn revalidate(
+        &self,
+        service: &dyn TransferService,
+        cancel: &Cancellation,
+    ) -> Result<(), FsError> {
+        let path = &self.entry().item.path;
+        with_io(cancel, path, || match self {
+            Self::Held(target) => target.revalidate(cancel),
+            Self::Released(captured) => {
+                let (parent, name) = parent_and_name(path)?;
+                let directory = service.prepare_transfer_destination(parent, cancel)?;
+                let target = directory
+                    .prepare_target(name, cancel)?
+                    .ok_or_else(|| disappeared(path))?;
+                if !same_target(target.entry(), captured) {
+                    return Err(metadata_changed(path));
+                }
+                target.revalidate(cancel)
+            }
+        })
+    }
+}
+/// A released pin must find the same native object with unchanged facts. Held
+/// pins compare the platform's whole native revision for every kind, so a
+/// directory target counts too: an entry created in it after the pin changes
+/// its modification time and fails either way. Only the revision facts a
+/// `TransferEntry` carries can be compared here: size (absent for directories),
+/// modification time, native attributes and Unix mode. The change time and
+/// the creation time are not carried, so a released pin cannot compare them.
+fn same_target(current: &TransferEntry, captured: &TransferEntry) -> bool {
+    let (current_item, captured_item) = (&current.item, &captured.item);
+    current.identity == captured.identity
+        && current_item.kind == captured_item.kind
+        && current_item.metadata.size == captured_item.metadata.size
+        && current_item.metadata.modified == captured_item.metadata.modified
+        && current_item.metadata.native_attributes == captured_item.metadata.native_attributes
+        && current_item.metadata.unix_mode == captured_item.metadata.unix_mode
+}
+fn reopen_directory(
+    service: &dyn TransferService,
+    path: &Path,
+    identity: TransferIdentity,
+    cancel: &Cancellation,
+) -> Result<Arc<dyn TransferDirectory>, FsError> {
+    let directory = service.prepare_transfer_destination(path, cancel)?;
+    if directory.identity() != identity {
+        return Err(fail(
+            path,
+            io::ErrorKind::InvalidData,
+            "Captured command directory changed.",
+        ));
+    }
+    Ok(directory)
 }
 impl Prepared {
     pub(crate) fn revalidate_for(
         &self,
         index: usize,
+        service: &dyn TransferService,
         cancel: &Cancellation,
     ) -> Result<(), FsError> {
         let scope = self
@@ -35,12 +136,10 @@ impl Prepared {
             sources.revalidate_for(&scope.source_ids, cancel)?;
         }
         for directory in &scope.directories {
-            with_io(cancel, directory.path(), || directory.revalidate(cancel))?;
+            directory.revalidate(service, cancel)?;
         }
         for target in &scope.entries {
-            with_io(cancel, &target.entry().item.path, || {
-                target.revalidate(cancel)
-            })?;
+            target.revalidate(service, cancel)?;
         }
         Ok(())
     }
@@ -73,22 +172,29 @@ impl Prepared {
             retention,
         }))
     }
-    pub(crate) fn revalidate(&self, cancel: &Cancellation) -> Result<(), FsError> {
+    /// One complete pass, run by the actor after native preflight and before
+    /// the first launch; every process then revalidates only its own scope.
+    pub(crate) fn revalidate(
+        &self,
+        service: &dyn TransferService,
+        cancel: &Cancellation,
+    ) -> Result<(), FsError> {
         if let Some(sources) = &self.sources {
             sources.revalidate(cancel)?;
         }
         for directory in self.pins.directories.values() {
-            with_io(cancel, directory.path(), || directory.revalidate(cancel))?;
+            directory.revalidate(service, cancel)?;
         }
-        for (path, target) in &self.pins.entries {
-            with_io(cancel, path, || target.revalidate(cancel))?;
+        for target in self.pins.entries.values() {
+            target.revalidate(service, cancel)?;
         }
         Ok(())
     }
 }
 struct Pins {
-    directories: HashMap<PathBuf, Arc<dyn TransferDirectory>>,
-    entries: HashMap<PathBuf, Arc<dyn TransferTarget>>,
+    directories: HashMap<PathBuf, DirectoryPin>,
+    entries: HashMap<PathBuf, TargetPin>,
+    held: usize,
     bytes: usize,
 }
 impl Pins {
@@ -96,8 +202,15 @@ impl Pins {
         Self {
             directories: HashMap::new(),
             entries: HashMap::new(),
+            held: 0,
             bytes: 0,
         }
+    }
+    /// Retain a pin while the descriptor budget allows it.
+    fn hold(&mut self) -> bool {
+        let held = self.held < MAX_HELD_PINS;
+        self.held += usize::from(held);
+        held
     }
     fn charge(&mut self, path: &Path) -> Result<(), FsError> {
         self.bytes = self
@@ -113,58 +226,75 @@ impl Pins {
         }
         Ok(())
     }
+    /// A usable directory handle; its pin is held or recorded as released.
     fn directory(
         &mut self,
         path: &Path,
         service: &dyn TransferService,
         cancel: &Cancellation,
     ) -> Result<Arc<dyn TransferDirectory>, FsError> {
-        if let Some(directory) = self.directories.get(path) {
-            return Ok(directory.clone());
+        match self.directories.get(path) {
+            Some(DirectoryPin::Held(directory)) => return Ok(directory.clone()),
+            Some(DirectoryPin::Released { identity, .. }) => {
+                let identity = *identity;
+                return with_io(cancel, path, || {
+                    reopen_directory(service, path, identity, cancel)
+                });
+            }
+            None => {}
         }
         native_path(path)?;
         self.charge(path)?;
         let directory = with_io(cancel, path, || {
             service.prepare_transfer_destination(path, cancel)
         })?;
-        self.directories.insert(path.to_owned(), directory.clone());
+        let pin = if self.hold() {
+            DirectoryPin::Held(directory.clone())
+        } else {
+            DirectoryPin::Released {
+                path: path.to_owned(),
+                identity: directory.identity(),
+            }
+        };
+        self.directories.insert(path.to_owned(), pin);
         Ok(directory)
     }
+    fn directory_pin(
+        &mut self,
+        path: &Path,
+        service: &dyn TransferService,
+        cancel: &Cancellation,
+    ) -> Result<DirectoryPin, FsError> {
+        self.directory(path, service, cancel)?;
+        self.directories
+            .get(path)
+            .cloned()
+            .ok_or_else(|| fail(path, io::ErrorKind::Other, "Command pin was not retained."))
+    }
+    /// `directory_class` is the captured directory/link class of a flat
+    /// listing row, which carries no complete entry.
     fn entry(
         &mut self,
         path: &Path,
         expected: Option<&Entry>,
         size: Option<u64>,
+        directory_class: Option<bool>,
         service: &dyn TransferService,
         cancel: &Cancellation,
     ) -> Result<(), FsError> {
         native_path(path)?;
         if !self.entries.contains_key(path) {
             self.charge(path)?;
-            let parent = path.parent().ok_or_else(|| {
-                fail(
-                    path,
-                    io::ErrorKind::InvalidInput,
-                    "A command target requires a parent.",
-                )
-            })?;
-            let name = path.file_name().ok_or_else(|| {
-                fail(
-                    path,
-                    io::ErrorKind::InvalidInput,
-                    "Parent/root navigation is not a command entry.",
-                )
-            })?;
+            let (parent, name) = parent_and_name(path)?;
             let directory = self.directory(parent, service, cancel)?;
             let target = with_io(cancel, path, || directory.prepare_target(name, cancel))?
-                .ok_or_else(|| {
-                    fail(
-                        path,
-                        io::ErrorKind::NotFound,
-                        "Captured command entry disappeared.",
-                    )
-                })?;
-            self.entries.insert(path.to_owned(), target);
+                .ok_or_else(|| disappeared(path))?;
+            let pin = if self.hold() {
+                TargetPin::Held(target)
+            } else {
+                TargetPin::Released(Arc::new(target.entry().clone()))
+            };
+            self.entries.insert(path.to_owned(), pin);
         }
         let captured = self
             .entries
@@ -176,8 +306,14 @@ impl Pins {
         // by enumeration. Native identity/revision authority starts at this pin;
         // every later launch still revalidates that exact target and revision.
         let directory = captured.item.kind == EntryKind::Directory;
-        if (!directory
-            && size.is_some_and(|expected| captured.item.metadata.size != Some(expected)))
+        // A file replaced by a directory (or the reverse) is a different target.
+        // Links stay tolerated: a listing may classify a link by its target.
+        let class_changed = directory_class.is_some_and(|expected_directory| {
+            !link(captured.item.kind) && expected_directory != directory
+        });
+        if class_changed
+            || (!directory
+                && size.is_some_and(|expected| captured.item.metadata.size != Some(expected)))
             || expected.is_some_and(|expected| {
                 (expected.kind != captured.item.kind
                     && !(link(expected.kind) && link(captured.item.kind)))
@@ -191,14 +327,41 @@ impl Pins {
                             })))
             })
         {
-            return Err(fail(
-                path,
-                io::ErrorKind::InvalidData,
-                "Captured command entry metadata changed.",
-            ));
+            return Err(metadata_changed(path));
         }
         Ok(())
     }
+}
+fn parent_and_name(path: &Path) -> Result<(&Path, &OsStr), FsError> {
+    let parent = path.parent().ok_or_else(|| {
+        fail(
+            path,
+            io::ErrorKind::InvalidInput,
+            "A command target requires a parent.",
+        )
+    })?;
+    let name = path.file_name().ok_or_else(|| {
+        fail(
+            path,
+            io::ErrorKind::InvalidInput,
+            "Parent/root navigation is not a command entry.",
+        )
+    })?;
+    Ok((parent, name))
+}
+fn disappeared(path: &Path) -> FsError {
+    fail(
+        path,
+        io::ErrorKind::NotFound,
+        "Captured command entry disappeared.",
+    )
+}
+fn metadata_changed(path: &Path) -> FsError {
+    fail(
+        path,
+        io::ErrorKind::InvalidData,
+        "Captured command entry metadata changed.",
+    )
 }
 
 pub(crate) fn prepare(
@@ -292,7 +455,7 @@ fn prepare_inner(
     let mut common_directories = Vec::new();
     if variables.contains(&UserCommandVariable::ActivePath) {
         common_directories.push(
-            pins.directory(
+            pins.directory_pin(
                 request
                     .context
                     .active
@@ -305,7 +468,7 @@ fn prepare_inner(
     }
     if variables.contains(&UserCommandVariable::OtherPath) {
         common_directories.push(
-            pins.directory(
+            pins.directory_pin(
                 request
                     .context
                     .other
@@ -331,17 +494,22 @@ fn prepare_inner(
                     .as_ref()
                     .filter(|entry| entry.path == *path)
             });
-        let size = request.context.files.as_ref().and_then(|files| {
+        let row = request
+            .context
+            .files
+            .as_ref()
+            .and_then(|files| Some((files, *files.view.by_path.get(path)?)));
+        let size = row.and_then(|(files, id)| {
             files
                 .view
-                .by_path
-                .get(path)
-                .and_then(|id| files.view.by_id.get(id))
+                .by_id
+                .get(&id)
                 .and_then(|position| files.view.file_sizes.get(*position))
                 .copied()
                 .flatten()
         });
-        pins.entry(path, expected, size, service, cancel)?;
+        let directory_class = row.map(|(files, id)| files.view.is_directory(id));
+        pins.entry(path, expected, size, directory_class, service, cancel)?;
     }
     let needs_file = variables.iter().any(|variable| {
         matches!(
@@ -362,7 +530,7 @@ fn prepare_inner(
         if needs_file {
             let entry = focus
                 .ok_or_else(|| invalid("A captured focused entry is required by this command."))?;
-            pins.entry(&entry.path, Some(entry), None, service, cancel)?;
+            pins.entry(&entry.path, Some(entry), None, None, service, cancel)?;
         }
         vec![focus.map(|entry| entry.path.as_path())]
     };
@@ -387,7 +555,7 @@ fn prepare_inner(
         }
         let lookup = |variable| value(variable, request, file);
         let cwd = PathBuf::from(directory.expand(lookup).map_err(invalid)?);
-        let cwd_guard = pins.directory(&cwd, service, cancel)?;
+        let cwd_guard = pins.directory_pin(&cwd, service, cancel)?;
         let mut scope = Scope {
             source_ids: Vec::new(),
             directories: common_directories.clone(),
@@ -497,14 +665,14 @@ fn prepare_inner(
         processes.push(process);
         scopes.push(scope);
     }
-    let prepared = Prepared {
+    // Every pin was captured and checked just above; the actor's complete pass
+    // after native preflight is the one that can observe later changes.
+    Ok(Prepared {
         processes: Arc::new(processes),
         pins: Arc::new(pins),
         scopes: Arc::new(scopes),
         sources,
-    };
-    prepared.revalidate(cancel)?;
-    Ok(prepared)
+    })
 }
 
 /// Adapt only worker-resolved native values to the existing flat template expansion contract.

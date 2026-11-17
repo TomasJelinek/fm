@@ -1558,8 +1558,10 @@ async fn aborting_engine_cancels_full_and_individual_directory_scans() {
         drop(events);
         // EngineRun cancellation reaches native workers through its retirement worker.
         let cancelled = tokio::time::timeout(Duration::from_secs(3), async {
+            // A short sleep instead of a yield spin: a regression must not burn
+            // a core for the whole deadline.
             while !cancellation.is_cancelled() {
-                tokio::task::yield_now().await;
+                tokio::time::sleep(Duration::from_millis(1)).await;
             }
         })
         .await

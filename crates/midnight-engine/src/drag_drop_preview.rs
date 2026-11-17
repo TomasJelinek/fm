@@ -156,9 +156,11 @@ pub(super) fn execute(
 ) {
     let cancel = &work.request.cancel;
     let result = (|| {
+        // The preview is advisory and the release revalidates everything, so
+        // it shares the gate instead of draining a running scan's lanes.
         let gate = midnight_work_budget::shared_io();
         let _permit = gate
-            .acquire(midnight_work_budget::Admission::Exclusive, || {
+            .acquire(midnight_work_budget::Admission::Shared, || {
                 cancel.is_cancelled()
             })
             .ok_or_else(|| error(io::ErrorKind::Interrupted, "Hover preview cancelled."))?;

@@ -375,3 +375,137 @@ fn permission_failures_are_counted_while_diagnostics_remain_bounded() {
             .all(|error| error.kind == std::io::ErrorKind::PermissionDenied)
     );
 }
+
+/// A root of matching files whose source logs every `next_child` call, so a
+/// test sees which batches were published before traversal continued.
+mod logged {
+    use midnight_core::*;
+    use std::{
+        path::{Path, PathBuf},
+        sync::{Arc, Mutex},
+    };
+
+    pub type Log = Arc<Mutex<Vec<String>>>;
+    pub struct Files {
+        pub count: usize,
+        pub log: Log,
+    }
+    struct Directory {
+        entry: FindEntry,
+        next: usize,
+        count: usize,
+        log: Log,
+    }
+    struct File(FindEntry);
+    fn entry(path: PathBuf, kind: EntryKind, object: u8) -> FindEntry {
+        FindEntry {
+            path,
+            kind,
+            metadata: EntryMetadata::default(),
+            identity: TransferIdentity {
+                device: 1,
+                object: [object; 16],
+            },
+            revision: FindRevision([0; 6]),
+        }
+    }
+    impl FindService for Files {
+        fn open_find_source(
+            &self,
+            path: &Path,
+            _: &Cancellation,
+        ) -> Result<Box<dyn FindSource>, FsError> {
+            Ok(Box::new(Directory {
+                entry: entry(path.to_owned(), EntryKind::Directory, 0),
+                next: 0,
+                count: self.count,
+                log: self.log.clone(),
+            }))
+        }
+    }
+    impl FindSource for Directory {
+        fn entry(&self) -> &FindEntry {
+            &self.entry
+        }
+        fn revalidate(&self, _: &Cancellation) -> Result<(), FsError> {
+            Ok(())
+        }
+        fn next_child(&mut self, _: &Cancellation) -> Result<Option<FindChild>, FsError> {
+            self.log
+                .lock()
+                .unwrap()
+                .push(format!("child {}", self.next));
+            if self.next == self.count {
+                return Ok(None);
+            }
+            self.next += 1;
+            let path = self.entry.path.join(format!("file-{}", self.next));
+            let file = entry(path, EntryKind::File, self.next as u8);
+            Ok(Some(FindChild::Entry(Box::new(File(file)))))
+        }
+        fn read_chunk(&mut self, _: &mut [u8], _: &Cancellation) -> Result<usize, FsError> {
+            panic!("a directory has no content stream")
+        }
+    }
+    impl FindSource for File {
+        fn entry(&self) -> &FindEntry {
+            &self.0
+        }
+        fn revalidate(&self, _: &Cancellation) -> Result<(), FsError> {
+            Ok(())
+        }
+        fn next_child(&mut self, _: &Cancellation) -> Result<Option<FindChild>, FsError> {
+            Ok(None)
+        }
+        fn read_chunk(&mut self, _: &mut [u8], _: &Cancellation) -> Result<usize, FsError> {
+            panic!("a name search reads no content")
+        }
+    }
+}
+
+fn logged_search(progress_interval: std::time::Duration) -> Vec<String> {
+    let log = logged::Log::default();
+    let service = logged::Files {
+        count: 3,
+        log: log.clone(),
+    };
+    let summary = find_worker::search_with_progress_interval(
+        &service,
+        &request(vec![std::env::current_dir().unwrap()]),
+        &Cancellation::default(),
+        &mut |update| {
+            if let FindUpdate::Batch(batch) = update {
+                log.lock().unwrap().push(format!("batch {}", batch.len()));
+            }
+            true
+        },
+        &find_worker::CurrentDirectory::default(),
+        std::time::SystemTime::now(),
+        progress_interval,
+    );
+    assert_eq!(summary.completion, FindCompletion::Completed);
+    assert_eq!(summary.progress.results, 3);
+    log.lock().unwrap().clone()
+}
+
+#[test]
+fn partial_batches_follow_the_progress_cadence_while_traversal_continues() {
+    // Production publishes at most four progress samples per second.
+    assert_eq!(
+        find_worker::PROGRESS_INTERVAL,
+        std::time::Duration::from_millis(250)
+    );
+    // A due sample publishes the matches found so far, below one 64-row batch,
+    // before the next child is read.
+    assert_eq!(
+        logged_search(std::time::Duration::ZERO),
+        [
+            "child 0", "batch 1", "child 1", "batch 1", "child 2", "batch 1", "child 3"
+        ]
+    );
+    // Before the interval elapses, partial matches wait for the end.
+    assert_eq!(
+        logged_search(std::time::Duration::from_secs(3600)),
+        ["child 0", "child 1", "child 2", "child 3", "batch 3"]
+    );
+}

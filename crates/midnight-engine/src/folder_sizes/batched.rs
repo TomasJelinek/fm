@@ -26,8 +26,9 @@ pub(crate) struct IoBudget {
 }
 
 impl IoBudget {
+    /// A private gate for tests that must not contend with the process-wide one.
     #[cfg(test)]
-    fn isolated() -> Self {
+    pub(super) fn isolated() -> Self {
         Self {
             io: Arc::new(Gate::new(midnight_work_budget::DEFAULT_IO_LIMIT)),
             classification: Arc::new(Gate::new(1)),
@@ -86,6 +87,8 @@ pub(crate) fn compute_batched(
                     cancel: local_cancel,
                     active: Cell::new(false),
                     resolution_permit: RefCell::new(None),
+                    devices: RefCell::new(Vec::new()),
+                    last: Cell::new(None),
                 };
                 while !local_cancel.is_cancelled() {
                     let Some(root) = roots.get(next.fetch_add(1, Ordering::Relaxed)) else {
@@ -97,7 +100,7 @@ pub(crate) fn compute_batched(
                             root,
                             local_cancel,
                             &mut |entry, size| send_progress(&progress, local_cancel, entry, size),
-                            PENDING_PATH_BUDGET,
+                            SCAN_LIMITS,
                             &report,
                         )
                     {
@@ -107,15 +110,10 @@ pub(crate) fn compute_batched(
             });
         }
         drop(progress);
-        loop {
-            match receiver.recv_timeout(WAIT_INTERVAL) {
-                Ok((entry, size)) => {
-                    if !emit(entry, size) {
-                        break;
-                    }
-                }
-                Err(mpsc::RecvTimeoutError::Timeout) => {}
-                Err(mpsc::RecvTimeoutError::Disconnected) => break,
+        // The channel disconnects once every lane has returned.
+        while let Ok((entry, size)) = receiver.recv() {
+            if !emit(entry, size) {
+                break;
             }
         }
         local_cancel.cancel();
@@ -151,8 +149,19 @@ struct BudgetedSource<'a> {
     budget: &'a Arc<IoBudget>,
     cancel: &'a Cancellation,
     active: Cell<bool>,
-    resolution_permit: RefCell<Option<(Admission, Permit)>>,
+    /// Admission verified for the next enumeration, with the resolution ticket
+    /// when that ticket already has the same admission.
+    resolution_permit: RefCell<Option<(Admission, Option<Permit>)>>,
+    /// Storage classification is an expensive serialized control query. A lane
+    /// classifies each resolved native device once; providers without
+    /// identities classify every enumerated directory.
+    devices: RefCell<Vec<(u64, Admission)>>,
+    /// Admission of the last resolved directory, used for the next identity query.
+    last: Cell<Option<Admission>>,
 }
+
+/// A lane rarely crosses more devices; older ones are classified again.
+const KNOWN_DEVICES: usize = 16;
 
 impl BudgetedSource<'_> {
     fn io_admission(&self, path: &Path, cancel: &Cancellation) -> Option<Admission> {
@@ -165,6 +174,21 @@ impl BudgetedSource<'_> {
             kind == StorageKind::LocalSsd,
         ))
     }
+
+    fn known_device(&self, device: u64) -> Option<Admission> {
+        self.devices
+            .borrow()
+            .iter()
+            .find_map(|&(known, admission)| (known == device).then_some(admission))
+    }
+
+    fn remember_device(&self, device: u64, admission: Admission) {
+        let mut devices = self.devices.borrow_mut();
+        if devices.len() == KNOWN_DEVICES {
+            devices.remove(0);
+        }
+        devices.push((device, admission));
+    }
 }
 
 impl ScanSource for BudgetedSource<'_> {
@@ -173,7 +197,13 @@ impl ScanSource for BudgetedSource<'_> {
         path: &Path,
         cancel: &Cancellation,
     ) -> Result<Option<SizeDirectoryTarget>, FsError> {
-        let Some((admission, permit)) = self.io_admission(path, cancel).and_then(|admission| {
+        // The identity query itself uses the previous directory's admission; a
+        // lane without one classifies this path first.
+        let (admission, classified) = match self.last.get() {
+            Some(admission) => (Some(admission), false),
+            None => (self.io_admission(path, cancel), true),
+        };
+        let Some((admission, permit)) = admission.and_then(|admission| {
             self.budget
                 .acquire_io(admission, cancel)
                 .map(|permit| (admission, permit))
@@ -185,10 +215,36 @@ impl ScanSource for BudgetedSource<'_> {
             ));
         };
         let result = self.filesystem.resolve_size_directory(path, cancel);
+        let target = match &result {
+            Ok(Some(target)) => {
+                let device = target.identity.device;
+                let known = self.known_device(device).or_else(|| {
+                    let known = if classified && target.path == path {
+                        Some(admission)
+                    } else {
+                        // A selected root link or a mount point can change device.
+                        self.io_admission(&target.path, cancel)
+                    };
+                    if let Some(known) = known {
+                        self.remember_device(device, known);
+                    }
+                    known
+                });
+                self.last.set(known);
+                known
+            }
+            // Without an identity every enumerated path keeps its own fresh
+            // classification (for example an unannounced nested mount).
+            _ => {
+                self.last.set(None);
+                classified.then_some(admission)
+            }
+        };
         // Keep the ticket through the following enumeration. Otherwise a small
         // waiting root spends its only fair turn resolving identity, then queues
         // behind the large iterator again without counting any contents.
-        *self.resolution_permit.borrow_mut() = Some((admission, permit));
+        *self.resolution_permit.borrow_mut() =
+            target.map(|target| (target, (target == admission).then_some(permit)));
         result
     }
     fn finish_size_resolution(&self) {
@@ -200,13 +256,13 @@ impl ScanSource for BudgetedSource<'_> {
         cancel: &Cancellation,
         emit: &mut dyn FnMut(Entry) -> bool,
     ) -> Result<(), FsError> {
-        let Some(admission) = self.io_admission(path, cancel) else {
-            return Ok(());
+        let (admission, mut permit) = match self.resolution_permit.take() {
+            Some(resolved) => resolved,
+            None => match self.io_admission(path, cancel) {
+                Some(admission) => (admission, None),
+                None => return Ok(()),
+            },
         };
-        let mut permit = self
-            .resolution_permit
-            .take()
-            .and_then(|(held_admission, permit)| (held_admission == admission).then_some(permit));
         if permit.is_none() {
             permit = self.budget.acquire_io(admission, cancel);
         }
@@ -234,6 +290,10 @@ impl ScanSource for BudgetedSource<'_> {
         self.active.set(false);
         drop(permit);
         result
+    }
+
+    fn listing_metadata_complete(&self, entry: &Entry) -> bool {
+        self.filesystem.listing_metadata_complete(entry)
     }
 
     fn entry_metadata(&self, path: &Path) -> Result<EntryMetadata, FsError> {

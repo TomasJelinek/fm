@@ -49,7 +49,7 @@ pub(super) async fn worker(
     mut icons: mpsc::Receiver<IconKey>,
     mut commands: watch::Receiver<View>,
 ) {
-    let mut cached = HashSet::new();
+    let mut cached = RecentIcons::default();
     let mut pending = Pending::default();
     let (mut icons_open, mut commands_open) = (true, true);
     let mut prefer_command = false;
@@ -71,10 +71,9 @@ pub(super) async fn worker(
             key = icons.recv(), if icons_open && (!prefer_command || pending.targets.is_empty()) => {
                 prefer_command = true;
                 let Some(key) = key else { icons_open = false; continue; };
-                if cached.contains(&key) || cached.len() == ICON_CAPACITY {
+                if !cached.admit(&key) {
                     continue;
                 }
-                cached.insert(key.clone());
                 let service = services.clone();
                 let worker_key = key.clone();
                 let kind = key.kind;
@@ -117,6 +116,38 @@ pub(super) async fn worker(
             }
             else => break,
         }
+    }
+}
+
+/// Icon keys already delivered this session, bounded by `ICON_CAPACITY`. The
+/// least recently requested key is forgotten when a new one arrives, so many
+/// one-off types (rotated logs, numbered archive parts) cannot stop later new
+/// types from ever loading; a forgotten key is simply loaded again if needed.
+#[derive(Default)]
+struct RecentIcons {
+    keys: std::collections::HashMap<IconKey, u64>,
+    clock: u64,
+}
+
+impl RecentIcons {
+    /// True when `key` must be loaded now.
+    fn admit(&mut self, key: &IconKey) -> bool {
+        self.clock += 1;
+        if let Some(used) = self.keys.get_mut(key) {
+            *used = self.clock;
+            return false;
+        }
+        if self.keys.len() >= ICON_CAPACITY
+            && let Some(oldest) = self
+                .keys
+                .iter()
+                .min_by_key(|(_, used)| **used)
+                .map(|(key, _)| key.clone())
+        {
+            self.keys.remove(&oldest);
+        }
+        self.keys.insert(key.clone(), self.clock);
+        true
     }
 }
 
