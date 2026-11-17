@@ -737,6 +737,11 @@ the current shared snapshot and immediately reserves actual capacity in the same
 permit until the UI supplies its normal operation ID and the backend enqueues it.
 Queue saturation, stale destinations and failed delivery are rejected. Shutdown
 and rejection release reservations; neither can leave an unbounded pending queue.
+When the Windows drop target refuses a drop it offered Copy for (an unreadable or
+over-limit file list, or failed admission), it still answers "no effect" and also
+reports the reason as a drag/drop failure without a gesture ID. That report is
+enqueued without waiting and is dropped under event backpressure or after the
+window closes. Linux X11 drops are still refused without a report.
 
 Pending drop admissions retain their ordering relative to later clipboard copies.
 Cancelling one before backend enqueue rejects its token rather than sending a

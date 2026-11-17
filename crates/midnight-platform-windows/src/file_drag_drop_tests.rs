@@ -105,9 +105,11 @@ fn timer_teardown_removes_an_unconsumed_cancel_wake_before_the_next_drag() {
     );
 }
 
+#[derive(Default)]
 struct Capture {
     refuse: AtomicBool,
     requests: Mutex<Vec<FileDropRequest>>,
+    rejected: Mutex<Vec<FsError>>,
 }
 impl FileDropSink for Capture {
     fn try_accept(&self, request: FileDropRequest) -> Result<(), FsError> {
@@ -117,109 +119,185 @@ impl FileDropSink for Capture {
         self.requests.lock().unwrap().push(request);
         Ok(())
     }
+    fn reject(&self, error: FsError) {
+        self.rejected.lock().unwrap().push(error);
+    }
+}
+
+/// An owned live window whose client columns 100..200 are the Right pane's drop target.
+struct DropFixture {
+    hwnd: windows_sys::Win32::Foundation::HWND,
+    host: DragHost,
+    sink: Arc<Capture>,
+    target: IDropTarget,
+    // Declared last: OLE is uninitialized only after the target is released.
+    _ole: Ole,
+}
+impl DropFixture {
+    fn new() -> Self {
+        let ole = Ole::new().unwrap();
+        let class: Vec<u16> = "STATIC\0".encode_utf16().collect();
+        let hwnd = unsafe {
+            CreateWindowExW(
+                0,
+                class.as_ptr(),
+                class.as_ptr(),
+                0,
+                0,
+                0,
+                200,
+                100,
+                ptr::null_mut(),
+                ptr::null_mut(),
+                ptr::null_mut(),
+                ptr::null_mut(),
+            )
+        };
+        assert!(!hwnd.is_null());
+        let host = DragHost {
+            generation: 1,
+            native: NativeDragWindow::Windows {
+                hwnd: hwnd as usize,
+            },
+            lifetime: Cancellation::default(),
+        };
+        let targets = Arc::new(Mutex::new(DropTargets {
+            host_generation: 1,
+            revision: 1,
+            targets: vec![FileDropTarget {
+                pane: PaneId::Right,
+                navigation: NavigationId(2),
+                directory: Arc::new(PathBuf::from("C:\\destination")),
+                rect: DropRect {
+                    x: 100,
+                    y: 0,
+                    width: 100,
+                    height: 100,
+                },
+            }],
+        }));
+        let sink = Arc::new(Capture::default());
+        let target = make_target(host.clone(), targets, sink.clone()).unwrap();
+        Self {
+            hwnd,
+            host,
+            sink,
+            target,
+            _ole: ole,
+        }
+    }
+    /// Screen coordinates of a client point, as OLE supplies them.
+    fn at(&self, x: i32, y: i32) -> POINTL {
+        let mut point = POINT { x, y };
+        assert_ne!(unsafe { ClientToScreen(self.hwnd, &mut point) }, 0);
+        POINTL {
+            x: point.x,
+            y: point.y,
+        }
+    }
+    fn enter(&self, data: &IDataObject, offered: DROPEFFECT, at: POINTL) -> DROPEFFECT {
+        let mut effect = offered;
+        unsafe {
+            self.target
+                .DragEnter(data, MODIFIERKEYS_FLAGS(1), at, &mut effect)
+                .unwrap();
+        }
+        effect
+    }
+    fn drop_files(&self, data: &IDataObject, keys: u32, at: POINTL) -> DROPEFFECT {
+        let mut effect = DROPEFFECT_COPY;
+        unsafe {
+            self.target
+                .Drop(data, MODIFIERKEYS_FLAGS(keys), at, &mut effect)
+                .unwrap();
+        }
+        effect
+    }
+}
+impl Drop for DropFixture {
+    fn drop(&mut self) {
+        unsafe {
+            DestroyWindow(self.hwnd);
+        }
+    }
 }
 
 #[test]
 fn ole_target_uses_drop_coordinates_and_reports_copy_only_after_sink_admission() {
-    unsafe {
-        OleInitialize(None).unwrap();
-    }
-    let class: Vec<u16> = "STATIC\0".encode_utf16().collect();
-    let hwnd = unsafe {
-        CreateWindowExW(
-            0,
-            class.as_ptr(),
-            class.as_ptr(),
-            0,
-            0,
-            0,
-            200,
-            100,
-            ptr::null_mut(),
-            ptr::null_mut(),
-            ptr::null_mut(),
-            ptr::null_mut(),
-        )
-    };
-    assert!(!hwnd.is_null());
-    let host = DragHost {
-        generation: 1,
-        native: NativeDragWindow::Windows {
-            hwnd: hwnd as usize,
-        },
-        lifetime: Cancellation::default(),
-    };
-    let targets = Arc::new(Mutex::new(DropTargets {
-        host_generation: 1,
-        revision: 1,
-        targets: vec![FileDropTarget {
-            pane: PaneId::Right,
-            navigation: NavigationId(2),
-            directory: Arc::new(PathBuf::from("C:\\destination")),
-            rect: DropRect {
-                x: 100,
-                y: 0,
-                width: 100,
-                height: 100,
-            },
-        }],
-    }));
-    let sink = Arc::new(Capture {
-        refuse: AtomicBool::new(false),
-        requests: Mutex::new(Vec::new()),
-    });
-    let target = make_target(host.clone(), targets, sink.clone()).unwrap();
+    let f = DropFixture::new();
     let data = make_data(&files()).unwrap();
-    let mut point = POINT { x: 150, y: 50 };
-    assert_ne!(unsafe { ClientToScreen(hwnd, &mut point) }, 0);
-    let at = POINTL {
-        x: point.x,
-        y: point.y,
-    };
-    let mut effect = DROPEFFECT_MOVE;
+    let at = f.at(150, 50);
+    assert_eq!(f.enter(&data, DROPEFFECT_MOVE, at), DROPEFFECT_NONE);
+    assert_eq!(f.enter(&data, DROPEFFECT_COPY, at), DROPEFFECT_COPY);
+    f.sink.refuse.store(true, Ordering::Relaxed);
+    assert_eq!(f.drop_files(&data, 0, at), DROPEFFECT_NONE);
+    assert!(f.sink.requests.lock().unwrap().is_empty());
+    let rejected = std::mem::take(&mut *f.sink.rejected.lock().unwrap());
+    assert_eq!(rejected.len(), 1, "the sink's refusal must reach the user");
+    assert_eq!(rejected[0].message, "queue full");
+    f.sink.refuse.store(false, Ordering::Relaxed);
+    assert_eq!(f.drop_files(&data, 0, at), DROPEFFECT_COPY);
+    assert_eq!(
+        f.sink.requests.lock().unwrap()[0].target.pane,
+        PaneId::Right
+    );
+    assert!(f.sink.rejected.lock().unwrap().is_empty());
+    f.host.lifetime.cancel();
+    let mut effect = DROPEFFECT_COPY;
     unsafe {
-        target
-            .DragEnter(&data, MODIFIERKEYS_FLAGS(1), at, &mut effect)
-            .unwrap();
-    }
-    assert_eq!(effect, DROPEFFECT_NONE);
-    effect = DROPEFFECT_COPY;
-    unsafe {
-        target
-            .DragEnter(&data, MODIFIERKEYS_FLAGS(1), at, &mut effect)
-            .unwrap();
-    }
-    assert_eq!(effect, DROPEFFECT_COPY);
-    sink.refuse.store(true, Ordering::Relaxed);
-    effect = DROPEFFECT_COPY;
-    unsafe {
-        target
-            .Drop(&data, MODIFIERKEYS_FLAGS(0), at, &mut effect)
-            .unwrap();
-    }
-    assert_eq!(effect, DROPEFFECT_NONE);
-    assert!(sink.requests.lock().unwrap().is_empty());
-    sink.refuse.store(false, Ordering::Relaxed);
-    effect = DROPEFFECT_COPY;
-    unsafe {
-        target
-            .Drop(&data, MODIFIERKEYS_FLAGS(0), at, &mut effect)
-            .unwrap();
-    }
-    assert_eq!(effect, DROPEFFECT_COPY);
-    assert_eq!(sink.requests.lock().unwrap()[0].target.pane, PaneId::Right);
-    host.lifetime.cancel();
-    effect = DROPEFFECT_COPY;
-    unsafe {
-        target
+        f.target
             .DragOver(MODIFIERKEYS_FLAGS(1), at, &mut effect)
             .unwrap();
     }
     assert_eq!(effect, DROPEFFECT_NONE);
-    drop(target);
-    drop(data);
-    unsafe {
-        DestroyWindow(hwnd);
-        OleUninitialize();
+}
+
+/// A CF_HDROP with `count` distinct paths; `wide: false` writes an ANSI header.
+fn hdrop(count: usize, wide: bool) -> Vec<u8> {
+    let mut bytes = 20u32.to_le_bytes().to_vec(); // DROPFILES.pFiles
+    bytes.extend([0u8; 12]); // pt and fNC
+    bytes.extend(u32::from(wide).to_le_bytes());
+    for index in 0..count {
+        for unit in format!("C:\\{index}").encode_utf16().chain([0]) {
+            bytes.extend(unit.to_le_bytes());
+        }
     }
+    bytes.extend([0u8; 2]);
+    bytes
+}
+
+#[test]
+fn ole_target_reports_a_file_list_it_cannot_read_instead_of_dropping_silently() {
+    let f = DropFixture::new();
+    let at = f.at(150, 50);
+    for (payload, reason) in [
+        (
+            hdrop(MAX_FILE_CLIPBOARD_PATHS + 1, true),
+            "4096-item resource budget",
+        ),
+        (hdrop(1, false), "valid Unicode DROPFILES header"),
+    ] {
+        let data = data::malformed_offer(payload);
+        // The cursor promises Copy for any CF_HDROP; only Drop decodes the list.
+        assert_eq!(f.enter(&data, DROPEFFECT_COPY, at), DROPEFFECT_COPY);
+        assert_eq!(f.drop_files(&data, 0, at), DROPEFFECT_NONE);
+        let rejected = std::mem::take(&mut *f.sink.rejected.lock().unwrap());
+        assert_eq!(
+            rejected.len(),
+            1,
+            "{reason}: the read failure was swallowed"
+        );
+        assert!(
+            rejected[0].message.contains(reason),
+            "{}",
+            rejected[0].message
+        );
+    }
+    assert!(f.sink.requests.lock().unwrap().is_empty());
+    // Drops the cursor never offered Copy for stay silent: Shift requests an
+    // unsupported Move, and the left half of the window is no drop target.
+    let data = data::malformed_offer(hdrop(1, false));
+    assert_eq!(f.drop_files(&data, 4, at), DROPEFFECT_NONE);
+    assert_eq!(f.drop_files(&data, 0, f.at(50, 50)), DROPEFFECT_NONE);
+    assert!(f.sink.rejected.lock().unwrap().is_empty());
 }

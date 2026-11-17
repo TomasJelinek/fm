@@ -5,6 +5,9 @@ use tokio::sync::Semaphore;
 #[path = "drag_drop_ownership_tests.rs"]
 mod ownership;
 
+#[path = "drag_drop_refusal_tests.rs"]
+mod refusal;
+
 struct Harness {
     sink: Sink,
     events: mpsc::Receiver<DragDropEvent>,

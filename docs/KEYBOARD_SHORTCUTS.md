@@ -232,7 +232,9 @@ remains Copy-only. Native Wayland currently supports internal dragging only.
 Incoming native transfers are Copy-only; use Ctrl/Copy in an external source application if it
 otherwise offers only Move. Legacy X11 sources without XDND proxy support cannot
 drop into the application. Incoming drops share the verified copy queue and its
-conflict prompts. An external destination application performs outgoing operations
+conflict prompts. On Windows, a refused incoming drop (for example more than 4,096
+items, or a full copy queue) shows its reason in the status line instead of
+ending silently. An external destination application performs outgoing operations
 under its own rules; Midnight Explorer never deletes sources merely because an
 external target requests deletion. Unoptimized targets that request source cleanup
 receive a retained-source notice; missing completion feedback is reported as

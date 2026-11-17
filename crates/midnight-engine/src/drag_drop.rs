@@ -209,6 +209,16 @@ impl FileDropSink for Sink {
     fn hover(&self, pane: Option<PaneId>) {
         *self.hover.lock().unwrap_or_else(|e| e.into_inner()) = Some((self.host.generation, pane));
     }
+    fn reject(&self, error: FsError) {
+        // Runs inside the native drop callback, so it never waits: a closed window needs
+        // no report, and a full event queue drops it. The drop itself is already refused.
+        if self.cancel.is_cancelled() || self.host.lifetime.is_cancelled() {
+            return;
+        }
+        let _ = self
+            .events
+            .try_send(DragDropEvent::Failed { id: None, error });
+    }
 }
 
 fn error(kind: io::ErrorKind, message: impl Into<String>) -> FsError {

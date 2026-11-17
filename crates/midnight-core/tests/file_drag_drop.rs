@@ -1,5 +1,9 @@
 use midnight_core::*;
-use std::sync::Arc;
+use std::{
+    io,
+    path::Path,
+    sync::{Arc, Mutex},
+};
 
 fn target(pane: PaneId, x: i32) -> FileDropTarget {
     FileDropTarget {
@@ -69,4 +73,33 @@ fn rectangle_arithmetic_does_not_wrap_and_drop_requests_are_copy_only() {
     request.validate().unwrap();
     request.target.directory = Arc::new("relative".into());
     assert!(request.validate().is_err());
+}
+
+/// A sink written before rejection reports existed: admission and hover only.
+#[derive(Default)]
+struct AdmissionOnly {
+    admitted: Mutex<Vec<FileDropRequest>>,
+    hovered: Mutex<Vec<Option<PaneId>>>,
+}
+impl FileDropSink for AdmissionOnly {
+    fn try_accept(&self, request: FileDropRequest) -> Result<(), FsError> {
+        self.admitted.lock().unwrap().push(request);
+        Ok(())
+    }
+    fn hover(&self, pane: Option<PaneId>) {
+        self.hovered.lock().unwrap().push(pane);
+    }
+}
+
+#[test]
+fn drop_sinks_without_a_rejection_handler_ignore_refused_drop_reports() {
+    let sink = Arc::new(AdmissionOnly::default());
+    let native: Arc<dyn FileDropSink> = sink.clone();
+    native.reject(FsError::from_io(
+        "file drag/drop",
+        Path::new(""),
+        io::Error::new(io::ErrorKind::InvalidData, "refused native file list"),
+    ));
+    assert!(sink.admitted.lock().unwrap().is_empty());
+    assert!(sink.hovered.lock().unwrap().is_empty());
 }

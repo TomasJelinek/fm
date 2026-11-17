@@ -448,21 +448,22 @@ impl IDropTarget_Impl for Target_Impl {
         if !copy_requested(offered, keys.0) {
             return Ok(());
         }
-        if let Some((target, targets_revision)) = self.at(point)
-            && let Some(data) = data.as_ref()
-            && let Ok(files) = read_files(data)
-            && self
-                .sink
-                .try_accept(FileDropRequest {
-                    files,
-                    target,
-                    targets_revision,
-                })
-                .is_ok()
-        {
-            unsafe {
+        let (Some((target, targets_revision)), Some(data)) = (self.at(point), data.as_ref()) else {
+            return Ok(());
+        };
+        // The cursor offered Copy for this drop: report a refusal instead of ending the
+        // gesture silently. The sink enqueues the report without waiting.
+        match read_files(data).and_then(|files| {
+            self.sink.try_accept(FileDropRequest {
+                files,
+                target,
+                targets_revision,
+            })
+        }) {
+            Ok(()) => unsafe {
                 *effect = DROPEFFECT_COPY;
-            }
+            },
+            Err(error) => self.sink.reject(error),
         }
         Ok(())
     }
