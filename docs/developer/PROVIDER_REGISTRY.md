@@ -59,15 +59,26 @@ cancelling either parent or unrelated requests.
 Initial bounds are 128 registrations, 64 in-flight/open/retained mounts per
 registry, 50,000 entries/32 MiB charged payload per complete list, and 100,000
 issued nodes per mount. The native adapter separately accounts for 32 MiB of raw
-path storage and 100,000 cached tokens. These are admission/cache budgets, not an
-OS path limit or an exact process RSS promise. A failure returns an explicit error.
+path storage and 100,000 cached tokens. Neither table evicts during a mount's
+lifetime: every node issued by a complete listing or `parent` counts until the
+mount closes. Folder-only listings and presence probes let the native adapter skip
+regular files before metadata, name encoding and token binding, so those files never
+count. These are admission/cache budgets, not an OS path limit or an exact process
+RSS promise. A failure returns an explicit error.
 Native stored addresses are admitted before codec allocation, using the cache
 budget and that codec's worst-case expansion; native encoding checks its raw
 charge first. The production cutover must also align caches across mounts with
 the shared application budget, rather than treating each per-mount limit as RSS.
 The registry's complete-list adapter is not yet the production streaming panel
-projection. Folder-only listings use a separate bounded token-validation ledger,
-so irrelevant regular files do not consume the retained-folder quota. See
+projection. Folder-only listings (`list_folders`) use a separate bounded
+token-validation ledger, so irrelevant regular files do not consume the
+retained-folder quota; a generic provider's default `list_folders` still emits its
+complete listing, so every returned token is validated. `has_folders` answers a
+disclosure probe at the first folder without issuing references; the tokens it
+inspects before that folder are charged to the same 32 MiB token ledger and
+one-million-callback ceiling, so a generic provider's long file prefix fails as
+resource-limited instead of growing the probe's duplicate set. Entries a provider
+emits after the stop cannot change the answer. See
 [inline provider branches](INLINE_TREES.md) for the backend tree model, ownership,
 limits and pending production projection.
 
@@ -85,6 +96,9 @@ captured length/version. The returned source also enforces the broker's bounded
 the mount owner and checks revocation around calls. Viewer consumers never receive
 a fabricated native member path. This is LiveValidated content, not a claim of
 an immutable snapshot. Unknown-length/sequential sources need an additive API.
+No production consumer calls `open_content` yet, and production
+`NativeProvider::audited` installs no capture, so native content through this route
+is `Unsupported`; F3 viewers, thumbnails and copy keep their existing capture routes.
 
 The native adapter delegates directory enumeration to an injected `FileSystem`.
 `NativeProvider::new` is browse-only: `with_capture` supplies the explicit native
@@ -114,8 +128,11 @@ and special archive members do not gain unsupported actions.
 `MountedTarget` validates the source registration and any enclosing tree
 contexts. Cloning an archive location or mount retains the same leases: list,
 read and validate reject revocation before and after provider calls. Resources
-are destroyed before their registrations. Cancellation propagates into running
-provider calls; a late successful reply cannot publish after cancellation.
+are destroyed before their registrations. Cancellation and revocation propagate into
+running listings, which the archive host ends between pages without stopping the
+shared worker. Member reads of a shared archive mount go through `read_cooperative`,
+because cancelling a plain protocol-1/2 read terminates the worker that other tabs,
+viewers and jobs use. A late successful reply cannot publish after cancellation.
 These are routing/lifetime checks, not immutable file identity, authorization
 to mutate, or proof that a row is still selected in the current panel snapshot.
 

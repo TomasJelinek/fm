@@ -48,10 +48,9 @@ pub struct Entry {
     pub path: PathBuf,
     /// Virtual identities never use `path`; it is empty for these entries.
     /// Native services must require `native_path()` rather than interpreting display names.
-    pub virtual_node: Option<crate::ArchiveNode>,
-    pub network_node: Option<crate::NetworkNode>,
-    /// Backend filename hint; usable only while a provider advertises this format.
-    pub archive_association: Option<&'static crate::ArchiveAssociation>,
+    /// Provider nodes are boxed: native rows, the common case, carry one empty pointer.
+    pub virtual_node: Option<Box<crate::ArchiveNode>>,
+    pub network_node: Option<Box<crate::NetworkNode>>,
     /// Literal custom suffix hints prepared during backend enumeration.
     pub archive_extensions: crate::ArchiveExtensionHints,
     pub kind: EntryKind,
@@ -61,10 +60,15 @@ pub struct Entry {
     pub(crate) collation: Option<Arc<crate::sorting::EntryCollationKeys>>,
 }
 
+// Listings hold, clone and sort 100,000+ rows. Rare per-row payloads belong behind a
+// pointer; review any growth (Windows 32-byte paths are the largest supported layout).
+const _: () = assert!(std::mem::size_of::<Entry>() <= 248);
+
 /// Built by a background worker so UI identity lookups never scan a full listing.
 #[derive(Clone, Debug, Default)]
 pub struct DirectoryIndex {
     pub by_id: HashMap<EntryId, usize>,
+    /// Native rows only: archive and Network Neighborhood rows have no native path.
     pub by_path: HashMap<PathBuf, EntryId>,
     /// Includes directory links; prepared with the index on a backend worker.
     pub directory_bits: Vec<u64>,
@@ -76,36 +80,60 @@ pub struct DirectoryIndex {
 }
 
 impl DirectoryIndex {
+    /// Index a complete listing, including its presentation column samples.
     pub fn from_entries(entries: &[Entry]) -> Self {
         Self::from_entry_refs(entries.iter())
     }
 
     pub(crate) fn from_entry_refs<'a>(entries: impl ExactSizeIterator<Item = &'a Entry>) -> Self {
-        let count = entries.len();
-        let mut index = Self {
-            by_id: HashMap::with_capacity(count),
-            by_path: HashMap::with_capacity(count),
-            directory_bits: vec![0; count.div_ceil(64)],
-            file_sizes: Vec::with_capacity(count),
-            column_samples: crate::MetadataColumnSamples::default(),
-        };
-        for (row, entry) in entries.enumerate() {
+        let mut index = Self::with_capacity(entries.len());
+        for entry in entries {
             index.column_samples.observe(entry);
-            index.by_id.insert(entry.id, row);
-            if let Some(path) = entry.native_path() {
-                index.by_path.insert(path.to_owned(), entry.id);
-            }
-            if matches!(entry.kind, EntryKind::Directory | EntryKind::DirectoryLink) {
-                index.directory_bits[row / 64] |= 1 << (row % 64);
-            }
-            index.file_sizes.push(
-                (entry.kind == EntryKind::File)
-                    .then_some(entry.metadata.size)
-                    .flatten(),
-            );
+            // Uniqueness is checked by the consumers that require it, such as
+            // selection snapshots and tree roots; a duplicate keeps its row here.
+            let _unique = index.push(entry);
         }
         index
     }
+
+    /// An empty index for a backend projection built row by row with `push`.
+    pub fn with_capacity(rows: usize) -> Self {
+        Self {
+            by_id: HashMap::with_capacity(rows),
+            by_path: HashMap::with_capacity(rows),
+            directory_bits: Vec::with_capacity(rows.div_ceil(64)),
+            file_sizes: Vec::with_capacity(rows),
+            column_samples: crate::MetadataColumnSamples::default(),
+        }
+    }
+
+    /// Append `entry` as the next row, indexing its id and only a native path
+    /// (`Entry::native_path`), exactly as `from_entries` does. Returns false when
+    /// the id or native path already identified an earlier row; the new row is still
+    /// appended and the later row wins, so a caller requiring unambiguous identities
+    /// must discard the index. Column samples are not collected: projections reuse
+    /// their source listing's samples.
+    #[must_use = "a false result means the index identifies some row ambiguously"]
+    pub fn push(&mut self, entry: &Entry) -> bool {
+        let row = self.file_sizes.len();
+        let mut unique = self.by_id.insert(entry.id, row).is_none();
+        if let Some(path) = entry.native_path() {
+            unique &= self.by_path.insert(path.to_owned(), entry.id).is_none();
+        }
+        if row.is_multiple_of(64) {
+            self.directory_bits.push(0);
+        }
+        if matches!(entry.kind, EntryKind::Directory | EntryKind::DirectoryLink) {
+            self.directory_bits[row / 64] |= 1 << (row % 64);
+        }
+        self.file_sizes.push(
+            (entry.kind == EntryKind::File)
+                .then_some(entry.metadata.size)
+                .flatten(),
+        );
+        unique
+    }
+
     pub fn is_directory(&self, id: EntryId) -> bool {
         self.by_id
             .get(&id)
@@ -122,9 +150,6 @@ impl Entry {
     pub fn new(id: EntryId, path: PathBuf, kind: EntryKind) -> Self {
         let name = path.file_name().unwrap_or(path.as_os_str()).to_os_string();
         let display_name = name.to_string_lossy().into_owned();
-        let archive_association = (kind == EntryKind::File)
-            .then(|| crate::archive_association(&path))
-            .flatten();
         let archive_extensions = if kind == EntryKind::File {
             crate::ArchiveExtensionHints::from_path(&path)
         } else {
@@ -136,7 +161,6 @@ impl Entry {
             path,
             virtual_node: None,
             network_node: None,
-            archive_association,
             archive_extensions,
             kind,
             metadata: EntryMetadata::default(),
@@ -144,7 +168,9 @@ impl Entry {
             collation: None,
         }
     }
-    pub fn from_archive(node: crate::ArchiveNode) -> Self {
+    /// Accepts an owned or already boxed provider node.
+    pub fn from_archive(node: impl Into<Box<crate::ArchiveNode>>) -> Self {
+        let node = node.into();
         let mut entry = Self::new(EntryId(node.id.entry), PathBuf::new(), node.kind);
         entry.name = OsString::from(&node.display_name);
         entry.display_name = node.display_name.clone();
@@ -187,7 +213,9 @@ impl Entry {
         self.native_path()?.extension()
     }
 
-    pub fn from_network(id: EntryId, node: crate::NetworkNode) -> Self {
+    /// Accepts an owned or already boxed discovery node.
+    pub fn from_network(id: EntryId, node: impl Into<Box<crate::NetworkNode>>) -> Self {
+        let node = node.into();
         let mut entry = Self::new(id, PathBuf::new(), EntryKind::Directory);
         entry.name = OsString::from(&node.display);
         entry.display_name = node.display.clone();
@@ -299,15 +327,72 @@ mod tests {
 
     #[test]
     fn index_resolves_identity_and_raw_path_after_sorting() {
-        let entries = vec![
-            entry(9, "first", EntryKind::File, None),
-            entry(2, "second", EntryKind::File, None),
+        let mut entries = vec![
+            entry(9, "second", EntryKind::File, Some(2)),
+            entry(2, "first", EntryKind::File, Some(1)),
+            entry(4, "folder", EntryKind::Directory, None),
         ];
+        sort_entries(&mut entries, SortSpec::default());
         let index = DirectoryIndex::from_entries(&entries);
+        assert_eq!(index.by_id.get(&EntryId(4)), Some(&0));
         assert_eq!(index.by_id.get(&EntryId(2)), Some(&1));
+        assert_eq!(index.by_id.get(&EntryId(9)), Some(&2));
         assert_eq!(
-            index.by_path.get(&PathBuf::from("first")),
+            index.by_path.get(&PathBuf::from("second")),
             Some(&EntryId(9))
         );
+        assert_eq!(index.directory_bits, [0b1]);
+        assert_eq!(index.file_sizes, [None, Some(1), Some(2)]);
+    }
+
+    fn network(id: u64, opaque: &[u8]) -> Entry {
+        Entry::from_network(
+            EntryId(id),
+            crate::NetworkNode {
+                address: crate::NetworkAddress {
+                    provider: "network".into(),
+                    opaque: opaque.into(),
+                    display: "Host".into(),
+                },
+                display: "Host".into(),
+            },
+        )
+    }
+
+    #[test]
+    fn incremental_index_matches_complete_index_and_skips_provider_paths() {
+        let entries: Vec<_> = (0..130)
+            .map(|row| match row % 3 {
+                0 => network(row, &row.to_le_bytes()),
+                1 => entry(row, &format!("folder-{row}"), EntryKind::Directory, None),
+                _ => entry(row, &format!("file-{row}"), EntryKind::File, Some(row)),
+            })
+            .collect();
+        let complete = DirectoryIndex::from_entries(&entries);
+        let mut incremental = DirectoryIndex::with_capacity(entries.len());
+        assert!(entries.iter().all(|entry| incremental.push(entry)));
+        assert_eq!(incremental.by_id, complete.by_id);
+        assert_eq!(incremental.by_path, complete.by_path);
+        assert_eq!(incremental.directory_bits, complete.directory_bits);
+        assert_eq!(incremental.file_sizes, complete.file_sizes);
+        // Network Neighborhood rows have empty provider paths, never native ones.
+        assert_eq!(complete.by_path.len(), 86);
+        assert!(!complete.by_path.contains_key(&PathBuf::new()));
+        assert!(complete.is_directory(EntryId(0)) && complete.is_directory(EntryId(1)));
+        assert!(!complete.is_directory(EntryId(2)));
+    }
+
+    #[test]
+    fn incremental_index_reports_duplicate_identities_and_keeps_row_alignment() {
+        let mut index = DirectoryIndex::with_capacity(0);
+        assert!(index.push(&network(1, b"a")));
+        assert!(index.push(&network(2, b"b")));
+        assert!(index.push(&entry(3, "same", EntryKind::File, Some(3))));
+        assert!(!index.push(&entry(4, "same", EntryKind::Directory, None)));
+        assert!(!index.push(&entry(1, "other", EntryKind::File, Some(5))));
+        assert_eq!(index.by_id.get(&EntryId(1)), Some(&4));
+        assert_eq!(index.by_path.get(&PathBuf::from("same")), Some(&EntryId(4)));
+        assert_eq!(index.directory_bits, [0b1011]);
+        assert_eq!(index.file_sizes, [None, None, Some(3), None, Some(5)]);
     }
 }

@@ -9,6 +9,9 @@ use std::{io, path::PathBuf};
 #[path = "native_tree_target_tests.rs"]
 mod tree_targets;
 
+#[path = "native_folder_tests.rs"]
+mod folders;
+
 struct Files;
 impl DirectoryService for Files {
     fn read_directory(

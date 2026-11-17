@@ -252,9 +252,14 @@ impl TransferSource for Source {
             return Ok(0);
         }
         let length = buffer.len().min(256 * 1024) as u32;
-        let bytes = self
-            .mount
-            .read(self.node.id.entry, self.offset, length, cancel);
+        // Cancelling a copy must not terminate the shared archive worker.
+        let bytes = crate::archive_shared::read(
+            &*self.mount,
+            self.node.id.entry,
+            self.offset,
+            length,
+            cancel,
+        );
         crate::copy_nested_retirement::observe_archive(&*self.mount);
         let bytes = bytes?;
         if bytes.len() > length as usize {
@@ -409,3 +414,7 @@ pub(crate) fn captured_root(
 #[cfg(test)]
 #[path = "archive_transfer_taint_tests.rs"]
 mod taint_tests;
+
+#[cfg(test)]
+#[path = "archive_transfer_cancel_tests.rs"]
+mod cancel_tests;

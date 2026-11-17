@@ -39,8 +39,8 @@ pub(super) fn preflight(entries: &[Entry], cancel: &Cancellation) -> Result<(), 
                     }),
             )
             .saturating_add(entry.virtual_node.as_ref().map_or(0, |node| {
-                node.raw_name
-                    .len()
+                std::mem::size_of::<midnight_core::ArchiveNode>()
+                    .saturating_add(node.raw_name.len())
                     .saturating_add(node.display_name.capacity())
             }));
         if bytes > MAX_BYTES {
@@ -144,6 +144,19 @@ impl MountedFilesystem for RootSeed {
         }
         self.source.resolve_target(&self.root, cancel)?;
         super::registry::check_cancel(cancel)
+    }
+
+    fn list_folders(
+        &self,
+        directory: &NodeToken,
+        cancel: &Cancellation,
+        emit: &mut dyn FnMut(ProviderEntry) -> bool,
+    ) -> Result<(), ProviderError> {
+        if directory == &self.root {
+            self.list(directory, cancel, emit)
+        } else {
+            self.source.list_folders(directory, cancel, emit)
+        }
     }
 
     fn resolve_target(

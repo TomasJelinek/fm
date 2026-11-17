@@ -21,7 +21,10 @@ pub(super) fn run(request: &Request, mounts: &Mounts) -> Result<ArchiveListing, 
                         &path,
                         std::io::Error::new(
                             std::io::ErrorKind::Unsupported,
-                            "Compatible archive filesystem plugin is unavailable",
+                            unavailable(
+                                "Compatible archive filesystem plugin is unavailable",
+                                request.catalog.get(),
+                            ),
                         ),
                     )
                 })?;
@@ -79,10 +82,16 @@ pub(super) fn run(request: &Request, mounts: &Mounts) -> Result<ArchiveListing, 
                     mount.source(),
                 )
             });
+    // A superseded listing of a shared mount ends between pages without stopping
+    // the worker that other tabs, trees, viewers and jobs use (archive_shared.rs).
     let nodes = mount.list(location.directory, &request.cancel)?;
     let mut entries: Vec<_> = nodes.into_iter().map(Entry::from_archive).collect();
     for entry in &mut entries {
         timestamps::localize(entry, request.locale.as_deref());
+    }
+    // Name and extension order use the same backend locale keys as native listings.
+    if let Some(locale) = request.locale.as_deref() {
+        prepare_sort_keys(&mut entries, locale, &request.cancel)?;
     }
     sort_entries_with_sizes(&mut entries, request.sort, |entry| {
         crate::archive_sizes::published::size(entry, sizes.as_deref())

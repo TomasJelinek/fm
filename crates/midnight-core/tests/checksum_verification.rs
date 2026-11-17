@@ -70,3 +70,18 @@ fn only_complete_reads_expose_calculated_digests() {
         assert!(row.digest(ChecksumAlgorithm::Crc32).is_none());
     }
 }
+
+#[test]
+fn digest_hex_is_two_lowercase_digits_per_byte_in_order() {
+    let digest = ChecksumDigest {
+        algorithm: ChecksumAlgorithm::Sha512,
+        bytes: (0..=255).collect(),
+    };
+    let expected: String = (0..=255_u8).map(|byte| format!("{byte:02x}")).collect();
+    assert_eq!(digest.hex(), expected);
+    let empty = ChecksumDigest {
+        algorithm: ChecksumAlgorithm::Crc32,
+        bytes: Vec::new(),
+    };
+    assert_eq!(empty.hex(), "");
+}

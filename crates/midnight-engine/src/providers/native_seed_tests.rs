@@ -282,7 +282,7 @@ fn native_seed_content_uses_injected_capture_and_never_a_fallback() {
 fn native_seed_refuses_virtual_rows_nul_paths_and_hidden_large_capacity() {
     let provider = NativeProvider::new(Arc::new(Files::default()));
     let mut bad = entries();
-    bad[0].virtual_node = Some(midnight_core::ArchiveNode {
+    bad[0].virtual_node = Some(Box::new(midnight_core::ArchiveNode {
         modified: None,
         id: midnight_core::VirtualEntryId { mount: 1, entry: 2 },
         parent: 1,
@@ -291,7 +291,7 @@ fn native_seed_refuses_virtual_rows_nul_paths_and_hidden_large_capacity() {
         kind: EntryKind::File,
         size: Some(5),
         readable: true,
-    });
+    }));
     assert!(matches!(
         provider.capture_root(&root(), &bad, &Cancellation::default()),
         Err(ProviderError::InvalidResponse(_))

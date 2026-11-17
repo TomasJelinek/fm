@@ -203,6 +203,8 @@ pub struct CopyProgress {
 }
 
 impl CopyProgress {
+    /// A placeholder snapshot with the default `verification` policy. A job's
+    /// publisher must set `verification` to the job's frozen choice first.
     pub fn queued(
         id: OperationId,
         destination: PathBuf,

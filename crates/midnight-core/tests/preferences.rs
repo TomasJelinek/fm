@@ -70,6 +70,62 @@ fn malformed_id_name_slot_path_and_duplicate_bookmarks_are_rejected() {
     assert!(preferences.validate().is_ok());
 }
 
+fn numbered_bookmarks(count: u64, distinct_paths: bool) -> Vec<Bookmark> {
+    let folder = std::env::current_dir().unwrap();
+    (1..=count)
+        .map(|id| Bookmark {
+            network: None,
+            archive: None,
+            id: BookmarkId(id),
+            name: "a".into(),
+            path: folder.join(if distinct_paths {
+                id.to_string()
+            } else {
+                "same".into()
+            }),
+            slot: None,
+        })
+        .collect()
+}
+
+#[test]
+fn legacy_duplicates_merge_but_damaged_bookmark_lists_are_not_merged_pairwise() {
+    let mut legacy = UserPreferences {
+        bookmarks: numbered_bookmarks(256, false),
+        ..Default::default()
+    };
+    assert!(legacy.deduplicate_bookmarks());
+    assert_eq!(legacy.bookmarks.len(), 1);
+    legacy.validate().unwrap();
+    // No saved file held more than 64 records; a damaged list keeps every record
+    // and fails validation instead of costing quadratic time at startup.
+    let mut damaged = UserPreferences {
+        bookmarks: numbered_bookmarks(257, false),
+        ..Default::default()
+    };
+    assert!(!damaged.deduplicate_bookmarks());
+    assert_eq!(damaged.bookmarks.len(), 257);
+    let error = damaged.validate().unwrap_err();
+    assert_eq!(error.message, "At most 64 bookmarks can be saved.");
+    damaged.bookmarks = numbered_bookmarks(10_000, true);
+    assert!(!damaged.deduplicate_bookmarks());
+    assert_eq!(damaged.bookmarks.len(), 10_000);
+}
+
+#[test]
+fn oversized_bookmark_lists_report_the_bound_before_pairwise_location_checks() {
+    let mut preferences = UserPreferences {
+        bookmarks: numbered_bookmarks(10_000, true),
+        ..Default::default()
+    };
+    preferences.bookmarks[1].path = preferences.bookmarks[0].path.clone();
+    let error = preferences.validate().unwrap_err();
+    assert_eq!(error.message, "At most 64 bookmarks can be saved.");
+    preferences.bookmarks.truncate(64);
+    let error = preferences.validate().unwrap_err();
+    assert_eq!(error.message, "Bookmark paths must be unique.");
+}
+
 #[test]
 fn automatic_preserves_the_existing_four_operation_default() {
     let preferences = UserPreferences::default();

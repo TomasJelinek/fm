@@ -14,23 +14,27 @@ The fallback archive icon already includes a zipper and receives no duplicate ov
 
 Archive indexing and decoding run in the restricted background worker. ZIP and
 7z open by indexing their metadata, without decompressing file payloads. A 7z
-compressed header still needs decoding at Open. The first ZIP member read checks
-its entire decoded content; the first 7z read checks the entire containing solid
-block before returning any bytes. Completed blocks are retained for later reads
-within the same mount. Damage to an unrelated 7z block is reported when that
-block is read, not while browsing intact metadata. Listing is not a full integrity
-test of the archive.
+compressed header still needs decoding at Open. The first ZIP member read decodes
+and checks that complete member; the first 7z read decodes only the requested
+compression block and checks its member lengths and available CRCs before
+returning any bytes. Damage to an unrelated 7z block is reported when that block is
+read, not while browsing intact metadata. Listing is not a full integrity test of
+the archive.
 
-TAR keeps one backing buffer and indexes validated member ranges rather than
-copying every file into a second buffer. Compressed TAR must still decode its
-outer sequential stream before indexing; the decoded backing buffer is reused.
-The host currently transfers the complete compressed source into the worker, so
-source I/O and first worker startup remain part of opening time. These changes
-do not remove resource limits, source revision validation or sandbox isolation.
-Copy-out still independently verifies destination bytes with SHA-256; archive
-CRC checks do not replace that verification.
-See the [measured opening results](verification/2026-11-08-archive-opening-performance.md)
-for the fixture sizes, cold-start limitation and regression coverage.
+TAR indexes checked member ranges without reading file payloads. Compressed TAR and
+standalone compressed streams first decode and validate their complete outer stream
+into one private scratch file; members then reuse checked ranges of it. The worker
+reads source bytes on demand through the host's revision-checked source broker and
+streams selected members into private host-owned spool files, so neither the
+complete archive nor a decoded member stays in worker memory. Each mount keeps
+recently read members for repeated reads (at most 16 members within 512 MiB of
+spool storage). Worker startup and indexing remain part of opening time. These
+changes do not remove resource limits, source revision validation or sandbox
+isolation. Copy-out still independently verifies destination bytes with SHA-256;
+archive CRC checks do not replace that verification. The
+[measured opening results](verification/2026-11-08-archive-opening-performance.md)
+record the fixture sizes, cold-start limitation and regression coverage of that
+earlier in-memory design.
 
 ## Associations
 
@@ -157,10 +161,14 @@ and presenter tests cover this implementation; final integrated UI qualification
 is tracked in the [current extension](superpowers/specs/2026-11-07-panel-viewer-followups.md#archive-hot-paths).
 
 ZIP support is currently Stored/Deflate without passwords; other codecs, encrypted
-Office containers, DRM and corrupt archives may fail explicitly. Source/member
-limits are 64 MiB each and the decoded mount total is 128 MiB. Nested mounts and
-RAR are unavailable. See [filesystem API](developer/FILESYSTEM_API.md) for exact
-limits and the plugin contract.
+Office containers, DRM and corrupt archives may fail explicitly. The current worker
+has no artificial source, member or expansion-ratio byte ceiling: available spool
+storage limits decoded content, while archive metadata stays bounded to 100,000
+entries and 8 MiB of names (protocol-1 workers keep their legacy 64 MiB source
+limit). Nested mounts and RAR are unavailable. See the
+[filesystem API](developer/FILESYSTEM_API.md) and the
+[archive worker](../plugins/midnight-fs-archive/README.md) for exact limits and the
+plugin contract.
 
 The canonical host table is
 [`archive_format.rs`](../crates/midnight-core/src/archive_format.rs).

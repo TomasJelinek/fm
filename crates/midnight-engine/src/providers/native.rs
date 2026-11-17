@@ -306,81 +306,19 @@ impl MountedFilesystem for NativeMount {
         cancel: &Cancellation,
         emit: &mut dyn FnMut(ProviderEntry) -> bool,
     ) -> Result<(), ProviderError> {
-        check_cancel(cancel)?;
-        let node = self
-            .nodes
-            .lock()
-            .map_err(|_| super::registry::poisoned())?
-            .get(directory)?;
-        if !matches!(node.kind, EntryKind::Directory | EntryKind::DirectoryLink) {
-            return Err(ProviderError::Unsupported);
-        }
-        let mut failure = None;
-        let mut stopped = false;
-        let result = self
-            .filesystem
-            .read_directory(&node.path, cancel, &mut |mut entry| {
-                if stopped {
-                    return false;
-                }
-                let result = (|| {
-                    check_cancel(cancel)?;
-                    let path = entry.native_path().ok_or(ProviderError::InvalidResponse(
-                        "virtual entry in native listing",
-                    ))?;
-                    if !path.is_absolute()
-                        || path.parent() != Some(node.path.as_path())
-                        || path.file_name().is_none_or(|name| name != entry.name)
-                    {
-                        return Err(ProviderError::InvalidResponse(
-                            "native entry outside its directory",
-                        ));
-                    }
-                    let path = path.to_owned();
-                    if !self.filesystem.listing_metadata_complete(&entry)
-                        && let Ok(metadata) = self.filesystem.entry_metadata(&path)
-                    {
-                        entry.metadata = metadata;
-                    }
-                    check_cancel(cancel)?;
-                    crate::localize_metadata(&mut entry.metadata, self.locale.as_deref());
-                    let token = self
-                        .nodes
-                        .lock()
-                        .map_err(|_| super::registry::poisoned())?
-                        .bind(path, entry.kind)?;
-                    Ok(ProviderEntry {
-                        token,
-                        raw_name: Arc::from(codec::encode(&entry.name)?),
-                        display_name: entry.display_name,
-                        kind: entry.kind,
-                        metadata: entry.metadata,
-                    })
-                })();
-                match result {
-                    Ok(entry) => {
-                        stopped = !emit(entry);
-                        !stopped
-                    }
-                    Err(error) => {
-                        failure = Some(error);
-                        stopped = true;
-                        false
-                    }
-                }
-            });
-        if let Some(error) = failure {
-            return Err(error);
-        }
-        result.map_err(|error| {
-            // Display alone replaces invalid native path units and omits kind.
-            // Retain both in the backend description before tree summaries shorten it.
-            ProviderError::Failed(format!(
-                "{error}\nNative path: {:?}\nError kind: {:?}",
-                error.path, error.kind,
-            ))
-        })?;
-        check_cancel(cancel)
+        self.enumerate(directory, cancel, false, emit)
+    }
+
+    /// Regular files are skipped before stat, locale formatting, name encoding and
+    /// token binding, so folder-only branches and probes do not spend the mount's
+    /// node budget on them.
+    fn list_folders(
+        &self,
+        directory: &NodeToken,
+        cancel: &Cancellation,
+        emit: &mut dyn FnMut(ProviderEntry) -> bool,
+    ) -> Result<(), ProviderError> {
+        self.enumerate(directory, cancel, true, emit)
     }
 
     fn parent(
@@ -415,6 +353,98 @@ impl MountedFilesystem for NativeMount {
         let source = capture(&node.path, cancel)?;
         check_cancel(cancel)?;
         Ok(Arc::new(NativeContent(source)))
+    }
+}
+
+impl NativeMount {
+    fn enumerate(
+        &self,
+        directory: &NodeToken,
+        cancel: &Cancellation,
+        folders_only: bool,
+        emit: &mut dyn FnMut(ProviderEntry) -> bool,
+    ) -> Result<(), ProviderError> {
+        check_cancel(cancel)?;
+        let node = self
+            .nodes
+            .lock()
+            .map_err(|_| super::registry::poisoned())?
+            .get(directory)?;
+        if !matches!(node.kind, EntryKind::Directory | EntryKind::DirectoryLink) {
+            return Err(ProviderError::Unsupported);
+        }
+        let mut failure = None;
+        let mut stopped = false;
+        let result = self
+            .filesystem
+            .read_directory(&node.path, cancel, &mut |mut entry| {
+                if stopped {
+                    return false;
+                }
+                let result = (|| {
+                    check_cancel(cancel)?;
+                    let path = entry.native_path().ok_or(ProviderError::InvalidResponse(
+                        "virtual entry in native listing",
+                    ))?;
+                    if !path.is_absolute()
+                        || path.parent() != Some(node.path.as_path())
+                        || path.file_name().is_none_or(|name| name != entry.name)
+                    {
+                        return Err(ProviderError::InvalidResponse(
+                            "native entry outside its directory",
+                        ));
+                    }
+                    if folders_only
+                        && !matches!(entry.kind, EntryKind::Directory | EntryKind::DirectoryLink)
+                    {
+                        return Ok(None);
+                    }
+                    let path = path.to_owned();
+                    if !self.filesystem.listing_metadata_complete(&entry)
+                        && let Ok(metadata) = self.filesystem.entry_metadata(&path)
+                    {
+                        entry.metadata = metadata;
+                    }
+                    check_cancel(cancel)?;
+                    crate::localize_metadata(&mut entry.metadata, self.locale.as_deref());
+                    let token = self
+                        .nodes
+                        .lock()
+                        .map_err(|_| super::registry::poisoned())?
+                        .bind(path, entry.kind)?;
+                    Ok(Some(ProviderEntry {
+                        token,
+                        raw_name: Arc::from(codec::encode(&entry.name)?),
+                        display_name: entry.display_name,
+                        kind: entry.kind,
+                        metadata: entry.metadata,
+                    }))
+                })();
+                match result {
+                    Ok(None) => true,
+                    Ok(Some(entry)) => {
+                        stopped = !emit(entry);
+                        !stopped
+                    }
+                    Err(error) => {
+                        failure = Some(error);
+                        stopped = true;
+                        false
+                    }
+                }
+            });
+        if let Some(error) = failure {
+            return Err(error);
+        }
+        result.map_err(|error| {
+            // Display alone replaces invalid native path units and omits kind.
+            // Retain both in the backend description before tree summaries shorten it.
+            ProviderError::Failed(format!(
+                "{error}\nNative path: {:?}\nError kind: {:?}",
+                error.path, error.kind,
+            ))
+        })?;
+        check_cancel(cancel)
     }
 }
 

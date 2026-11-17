@@ -81,7 +81,7 @@ pub(super) fn targets(
     for (index, entry) in snapshot.entries.iter().enumerate() {
         let node = entry
             .virtual_node
-            .as_ref()
+            .as_deref()
             .ok_or("Native row in an archive listing.")?;
         if !entry.path.as_os_str().is_empty()
             || node.id.mount != mount.id()

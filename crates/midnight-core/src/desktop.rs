@@ -23,73 +23,6 @@ pub enum TerminalMode {
     Elevated,
 }
 
-/// Format a literal shell argument without changing its Unicode spelling.
-/// Ordinary paths remain bare; shell syntax uses escaped double quotes.
-pub fn quote_shell_path(path: &Path, shell: ShellFlavor) -> Result<String, &'static str> {
-    let text = path
-        .to_str()
-        .ok_or("The path cannot be represented in shell Unicode text.")?;
-    if text.contains('\0') {
-        return Err("A shell path cannot contain NUL.");
-    }
-    if shell == ShellFlavor::Cmd {
-        // cmd expands percent expressions even inside double quotes. Refuse an
-        // unsafe literal instead of silently changing its identity; /V:OFF in
-        // the launcher keeps exclamation marks literal.
-        if text.chars().any(|ch| matches!(ch, '%' | '"' | '\r' | '\n')) {
-            return Err("This path cannot be inserted safely in cmd; choose PowerShell.");
-        }
-        // A quoted trailing backslash has incompatible meanings for cmd
-        // builtins and the CRT argv parser used by native programs.
-        if !bare_shell_path(text, shell) && text.ends_with('\\') {
-            return Err("This path cannot be inserted safely in cmd; choose PowerShell.");
-        }
-    }
-    if bare_shell_path(text, shell) {
-        return Ok(text.to_owned());
-    }
-    let mut quoted = String::with_capacity(text.len() + 2);
-    quoted.push('"');
-    for ch in text.chars() {
-        match (shell, ch) {
-            (ShellFlavor::PowerShell, '`' | '$' | '"' | '\u{201c}' | '\u{201d}' | '\u{201e}') => {
-                quoted.push('`');
-            }
-            (ShellFlavor::Posix, '\\' | '$' | '`' | '"') => quoted.push('\\'),
-            _ => {}
-        }
-        quoted.push(ch);
-    }
-    quoted.push('"');
-    Ok(quoted)
-}
-
-fn bare_shell_path(text: &str, shell: ShellFlavor) -> bool {
-    if text.is_empty() || text.starts_with('-') {
-        return false;
-    }
-    if shell == ShellFlavor::PowerShell
-        && (text.starts_with(['\u{2013}', '\u{2014}', '\u{2015}'])
-            || text.as_bytes()[0].is_ascii_digit()
-            || (text.starts_with('.') && text.as_bytes().get(1).is_some_and(u8::is_ascii_digit)))
-    {
-        // PowerShell can parse numeric basenames as values (001 becomes 1)
-        // and leading dash forms as parameter names instead of literal text.
-        return false;
-    }
-    text.chars().all(|ch| {
-        if ch.is_ascii() {
-            ch.is_ascii_alphanumeric()
-                || matches!(ch, '_' | '.' | '/' | '-')
-                || (shell != ShellFlavor::Posix && matches!(ch, '\\' | ':'))
-        } else {
-            !ch.is_whitespace()
-                && !ch.is_control()
-                && (shell != ShellFlavor::PowerShell || !matches!(ch, '\u{2018}'..='\u{201e}'))
-        }
-    })
-}
-
 /// Finite semantic roles for optional native control icons.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ActionIcon {
@@ -608,23 +541,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn powershell_quotes_preserve_unicode_and_all_apostrophes() {
-        let path = Path::new("Žluťoučký/文档/👩🏽‍💻 ' ‘ ’ $x;&");
-        assert_eq!(
-            quote_shell_path(path, ShellFlavor::PowerShell).unwrap(),
-            "\"Žluťoučký/文档/👩🏽‍💻 ' ‘ ’ `$x;&\""
-        );
-    }
-
-    #[test]
-    fn posix_quotes_preserve_curly_quotes_and_ascii_apostrophe() {
-        assert_eq!(
-            quote_shell_path(Path::new("a'文档 ’ $x;&"), ShellFlavor::Posix).unwrap(),
-            "\"a'文档 ’ \\$x;&\""
-        );
-    }
-
-    #[test]
     fn icon_shape_requires_exact_bounded_rgba_buffer() {
         assert!(IconPixels::new(2, 2, vec![0; 16]).is_ok());
         assert!(IconPixels::new(2, 2, vec![0; 15]).is_err());
@@ -662,17 +578,5 @@ mod tests {
         assert_ne!(key, IconKey::folder());
         assert_eq!(key.drive_root, None);
         assert_eq!(key.extension, None);
-    }
-
-    #[test]
-    fn cmd_quotes_unicode_metacharacters_and_rejects_percent_expansion() {
-        let path = Path::new("C:\\文档\\Žluťoučký & ! ^ (folder)");
-        assert_eq!(
-            quote_shell_path(path, ShellFlavor::Cmd).unwrap(),
-            "\"C:\\文档\\Žluťoučký & ! ^ (folder)\""
-        );
-        for input in ["C:\\%PATH%", "C:\\quoted\"path", "C:\\line\nnext"] {
-            assert!(quote_shell_path(Path::new(input), ShellFlavor::Cmd).is_err());
-        }
     }
 }

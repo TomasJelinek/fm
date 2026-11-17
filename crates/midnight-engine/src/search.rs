@@ -2,10 +2,13 @@
 
 use crate::{Outbox, Snapshots};
 use midnight_core::{
-    DirectoryIndex, Entry, EntryKind, Event, FsError, PaneId, SearchMatch, SearchRequest,
+    DirectoryIndex, Entry, Event, FsError, PaneId, PanelFilter, SearchMatch, SearchRequest,
     SearchResult, SearchRevision,
 };
-use std::{io, sync::Arc};
+use std::{
+    io,
+    sync::{Arc, Weak},
+};
 use tokio::{sync::watch, task::JoinSet};
 use unicase::UniCase;
 use unicode_segmentation::UnicodeSegmentation;
@@ -101,6 +104,9 @@ fn source_matches(snapshots: &Snapshots, request: &SearchRequest) -> bool {
 
 async fn run(snapshots: Snapshots, outbox: Outbox, mut input: watch::Receiver<Intent>) {
     let mut pending = false;
+    // The persistent-filter projection depends only on (source, filter); quick-search
+    // keystrokes reuse it instead of re-indexing the whole directory.
+    let mut projection: Option<Projection> = None;
     loop {
         if !pending && input.changed().await.is_err() {
             return;
@@ -108,23 +114,35 @@ async fn run(snapshots: Snapshots, outbox: Outbox, mut input: watch::Receiver<In
         pending = false;
         let intent = input.borrow_and_update().clone();
         let Some(request) = intent.request else {
+            // Cancellation or navigation: release the old listing's projection.
+            projection = None;
             continue;
         };
         let valid_source = source_matches(&snapshots, &request);
         let computation = if valid_source {
             let work_request = request.clone();
             let observer = input.clone();
-            tokio::task::spawn_blocking(move || {
-                compute(&work_request, &|| observer.has_changed().unwrap_or(true))
+            let cached = projection.take().filter(|cached| cached.serves(&request));
+            match tokio::task::spawn_blocking(move || {
+                compute(
+                    &work_request,
+                    cached,
+                    &|| observer.has_changed().unwrap_or(true),
+                    &|| projection_obsolete(&observer, &work_request),
+                )
             })
             .await
-            .unwrap_or_else(|error| {
-                Computation::Failed(FsError::from_io(
+            {
+                Ok((computation, kept)) => {
+                    projection = kept;
+                    computation
+                }
+                Err(error) => Computation::Failed(FsError::from_io(
                     "search filenames",
                     &request.location,
                     io::Error::other(error.to_string()),
-                ))
-            })
+                )),
+            }
         } else {
             Computation::Failed(FsError::from_io(
                 "search filenames",
@@ -179,106 +197,164 @@ enum Computation {
     Failed(FsError),
 }
 
-fn compute(request: &SearchRequest, cancelled: &dyn Fn() -> bool) -> Computation {
+/// Validated persistent-filter projection of one immutable source snapshot.
+struct Projection {
+    source: Weak<[Entry]>,
+    filter: PanelFilter,
+    filtered: Arc<[SearchMatch]>,
+    index: Arc<DirectoryIndex>,
+}
+
+impl Projection {
+    /// The weak source pins its allocation, so pointer equality cannot alias a
+    /// later listing allocated at the same address.
+    fn serves(&self, request: &SearchRequest) -> bool {
+        self.filter == request.filter
+            && Weak::ptr_eq(&self.source, &Arc::downgrade(&request.source))
+    }
+}
+
+/// Whether the newest intent can no longer reuse this request's projection: it was
+/// cancelled or navigated away (no request), refreshed (another source snapshot)
+/// or changed the persistent filter. A newer query alone keeps the build useful.
+fn projection_obsolete(observer: &watch::Receiver<Intent>, request: &SearchRequest) -> bool {
+    match observer.has_changed() {
+        Ok(false) => false,
+        Ok(true) => !observer.borrow().request.as_ref().is_some_and(|latest| {
+            Arc::ptr_eq(&latest.source, &request.source) && latest.filter == request.filter
+        }),
+        Err(_) => true,
+    }
+}
+
+/// Returns the computation and the projection worth keeping for the next revision.
+///
+/// `cancelled` reports any newer intent and stops query matching; `obsolete`
+/// reports one that cannot reuse this (source, filter) and alone stops the
+/// projection build. Fast typing therefore finishes one build that the later
+/// keystrokes reuse instead of restarting it on every keystroke.
+fn compute(
+    request: &SearchRequest,
+    cached: Option<Projection>,
+    cancelled: &dyn Fn() -> bool,
+    obsolete: &dyn Fn() -> bool,
+) -> (Computation, Option<Projection>) {
     if cancelled() {
-        return Computation::Cancelled;
+        return (Computation::Cancelled, cached);
+    }
+    let projection = match cached {
+        Some(projection) => projection,
+        None => match project(request, obsolete) {
+            Ok(projection) => projection,
+            Err(computation) => return (computation, None),
+        },
+    };
+    if cancelled() {
+        // Superseded by a query for the same listing and filter: keep the build.
+        return (Computation::Cancelled, Some(projection));
     }
     let query = UniCase::unicode(&request.query).to_folded_case();
-    let filter = match midnight_platform_common::filter::CompiledPanelFilter::new(&request.filter) {
-        Ok(filter) => filter,
-        Err(error) => {
-            return Computation::Failed(FsError::from_io(
+    if query.is_empty() {
+        let result = SearchResult {
+            source: request.source.clone(),
+            filtered: projection.filtered.clone(),
+            filtered_index: projection.index.clone(),
+            matches: projection.filtered.clone(),
+            index: projection.index.clone(),
+        };
+        return (Computation::Ready(result), Some(projection));
+    }
+    let mut matches = Vec::new();
+    let mut index = DirectoryIndex::default();
+    for (row, projected) in projection.filtered.iter().enumerate() {
+        if row.is_multiple_of(CANCEL_INTERVAL) && cancelled() {
+            return (Computation::Cancelled, Some(projection));
+        }
+        let entry = &request.source[projected.source_row];
+        let display_prefix_end = match entry_prefix_end(entry, &query, cancelled) {
+            Ok(Some(end)) => end,
+            Ok(None) => continue,
+            Err(()) => return (Computation::Cancelled, Some(projection)),
+        };
+        // Matches are a subset of the validated projection, so their identities
+        // stay unique and cannot alias an unmatched source row.
+        if !index.push(entry) {
+            return (ambiguous_projection(request), None);
+        }
+        matches.push(SearchMatch {
+            source_row: projected.source_row,
+            display_prefix_end,
+        });
+    }
+    if cancelled() {
+        return (Computation::Cancelled, Some(projection));
+    }
+    let result = SearchResult {
+        source: request.source.clone(),
+        filtered: projection.filtered.clone(),
+        filtered_index: projection.index.clone(),
+        matches: matches.into(),
+        index: Arc::new(index),
+    };
+    (Computation::Ready(result), Some(projection))
+}
+
+/// Build and validate the persistent-filter projection once per (source, filter).
+/// `obsolete` abandons it only when no newer intent can reuse it.
+fn project(
+    request: &SearchRequest,
+    obsolete: &dyn Fn() -> bool,
+) -> Result<Projection, Computation> {
+    let filter = midnight_platform_common::filter::CompiledPanelFilter::new(&request.filter)
+        .map_err(|error| {
+            Computation::Failed(FsError::from_io(
                 "filter filenames",
                 &request.location,
                 io::Error::new(io::ErrorKind::InvalidInput, error.message),
-            ));
-        }
-    };
-    let mut matches = Vec::new();
-    let mut index = DirectoryIndex::default();
+            ))
+        })?;
     let mut filtered = Vec::new();
-    let mut filtered_index = DirectoryIndex::default();
+    let mut index = DirectoryIndex::default();
     for (source_row, entry) in request.source.iter().enumerate() {
-        if source_row.is_multiple_of(CANCEL_INTERVAL) && cancelled() {
-            return Computation::Cancelled;
+        if source_row.is_multiple_of(CANCEL_INTERVAL) && obsolete() {
+            return Err(Computation::Cancelled);
         }
         if !filter.matches_entry(entry) {
             continue;
         }
-        if !append_entry(&mut filtered_index, entry, filtered.len()) {
-            return ambiguous_projection(request);
+        if !index.push(entry) {
+            return Err(ambiguous_projection(request));
         }
         filtered.push(SearchMatch {
             source_row,
             display_prefix_end: 0,
         });
-        let display_prefix_end = if query.is_empty() {
-            0
-        } else {
-            match entry_prefix_end(entry, &query, cancelled) {
-                Ok(Some(end)) => end,
-                Ok(None) => continue,
-                Err(()) => return Computation::Cancelled,
-            }
-        };
-        if !append_entry(&mut index, entry, matches.len()) {
-            return ambiguous_projection(request);
-        }
-        matches.push(SearchMatch {
-            source_row,
-            display_prefix_end,
-        });
     }
-    // A matching id/path must not also refer to an unmatched source row. Validate
+    // A projected id/path must not also refer to a filtered-out source row. Validate
     // against the source without allocating another full-directory identity map.
     for (source_row, entry) in request.source.iter().enumerate() {
-        if source_row.is_multiple_of(CANCEL_INTERVAL) && cancelled() {
-            return Computation::Cancelled;
+        if source_row.is_multiple_of(CANCEL_INTERVAL) && obsolete() {
+            return Err(Computation::Cancelled);
         }
-        if let Some(row) = filtered_index.by_id.get(&entry.id)
+        if let Some(row) = index.by_id.get(&entry.id)
             && filtered[*row].source_row != source_row
         {
-            return ambiguous_projection(request);
+            return Err(ambiguous_projection(request));
         }
-        if entry.virtual_node.is_none()
-            && let Some(id) = filtered_index.by_path.get(&entry.path)
-            && let Some(row) = filtered_index.by_id.get(id)
+        if let Some(path) = entry.native_path()
+            && let Some(id) = index.by_path.get(path)
+            && let Some(row) = index.by_id.get(id)
             && filtered[*row].source_row != source_row
         {
-            return ambiguous_projection(request);
+            return Err(ambiguous_projection(request));
         }
     }
-    if cancelled() {
-        return Computation::Cancelled;
-    }
-    Computation::Ready(SearchResult {
-        source: request.source.clone(),
+    Ok(Projection {
+        source: Arc::downgrade(&request.source),
+        filter: request.filter.clone(),
         filtered: filtered.into(),
-        filtered_index: Arc::new(filtered_index),
-        matches: matches.into(),
         index: Arc::new(index),
     })
-}
-
-fn append_entry(index: &mut DirectoryIndex, entry: &Entry, row: usize) -> bool {
-    if index.by_id.insert(entry.id, row).is_some()
-        || (entry.virtual_node.is_none()
-            && index.by_path.insert(entry.path.clone(), entry.id).is_some())
-    {
-        return false;
-    }
-    if row.is_multiple_of(64) {
-        index.directory_bits.push(0);
-    }
-    if matches!(entry.kind, EntryKind::Directory | EntryKind::DirectoryLink) {
-        index.directory_bits[row / 64] |= 1 << (row % 64);
-    }
-    index.file_sizes.push(if entry.kind == EntryKind::File {
-        entry.metadata.size
-    } else {
-        None
-    });
-    true
 }
 
 fn ambiguous_projection(request: &SearchRequest) -> Computation {

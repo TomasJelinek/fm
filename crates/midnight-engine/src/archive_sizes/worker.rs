@@ -8,17 +8,23 @@ use std::{
     time::{Duration, Instant},
 };
 
-const INTERVAL: Duration = Duration::from_millis(250);
-struct Throttle(Instant);
+pub(super) const INTERVAL: Duration = Duration::from_millis(250);
+struct Throttle {
+    last: Instant,
+    interval: Duration,
+}
 impl Throttle {
-    fn new(now: Instant) -> Self {
-        Self(now)
+    fn new(now: Instant, interval: Duration) -> Self {
+        Self {
+            last: now,
+            interval,
+        }
     }
     fn due(&mut self, now: Instant) -> bool {
-        if now.saturating_duration_since(self.0) < INTERVAL {
+        if now.saturating_duration_since(self.last) < self.interval {
             return false;
         }
-        self.0 = now;
+        self.last = now;
         true
     }
 }
@@ -78,6 +84,8 @@ pub(super) struct Worker {
     latest_navigation: NavigationId,
     latest_mount: Option<Weak<dyn ArchiveMount>>,
     deferred: Option<Publication>,
+    /// Progress publication period; tests shorten it instead of sleeping.
+    interval: Duration,
 }
 impl Worker {
     pub fn new(
@@ -85,6 +93,7 @@ impl Worker {
         outbox: Outbox,
         snapshots: Snapshots,
         reports: crate::ReportArena,
+        interval: Duration,
     ) -> Self {
         Self {
             reports,
@@ -98,6 +107,7 @@ impl Worker {
             latest_navigation: NavigationId(0),
             latest_mount: None,
             deferred: None,
+            interval,
         }
     }
     fn invalidate(&mut self, mount: &Arc<dyn ArchiveMount>, pane: PaneId) {
@@ -388,7 +398,7 @@ impl Worker {
                 .get(&root.id)
                 .is_some_and(|size| size.finished && size.errors == 0)
         });
-        let mut throttle = Throttle::new(Instant::now());
+        let mut throttle = Throttle::new(Instant::now(), self.interval);
         let ancestors: Vec<_> = location.trail.iter().map(|(id, _)| *id).collect();
         let reserved: Vec<_> = request
             .ready
@@ -462,7 +472,7 @@ mod tests {
     #[test]
     fn progress_is_coalesced_to_four_publications_per_second() {
         let now = Instant::now();
-        let mut throttle = Throttle::new(now);
+        let mut throttle = Throttle::new(now, INTERVAL);
         let mut count = 0;
         for millis in 0..=1000 {
             if throttle.due(now + Duration::from_millis(millis)) {
@@ -522,6 +532,7 @@ mod tests {
             },
             snapshots,
             crate::ReportArena::testing(),
+            INTERVAL,
         );
         assert!(worker.snapshot(
             &mount,
@@ -562,6 +573,7 @@ mod tests {
             },
             snapshots.clone(),
             crate::ReportArena::testing(),
+            INTERVAL,
         );
         let mount: Arc<dyn ArchiveMount> = Arc::new(Source);
         assert!(worker.snapshot(&mount, PaneId::Left, None, NavigationId(1), &lane.stop));

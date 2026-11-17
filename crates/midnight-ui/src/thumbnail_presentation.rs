@@ -336,7 +336,7 @@ fn thumbnail_content(
 ) -> Option<ThumbnailContent> {
     if let Some(location) = pane.thumbnail_archive_location() {
         let mount = location.mount.as_ref()?;
-        let node = entry.virtual_node.as_ref()?;
+        let node = entry.virtual_node.as_deref()?;
         if !node.readable
             || node.kind != EntryKind::File
             || node.size.is_none()

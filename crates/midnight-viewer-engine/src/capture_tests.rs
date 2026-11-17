@@ -183,7 +183,7 @@ fn a_virtual_entry_cannot_enter_the_native_capture_route() {
     let root = tempfile::tempdir().unwrap();
     let mut launch = launch(root.path());
     let mut entries = launch.entries.to_vec();
-    entries[0].virtual_node = Some(midnight_core::ArchiveNode {
+    entries[0].virtual_node = Some(Box::new(midnight_core::ArchiveNode {
         modified: None,
         id: midnight_core::VirtualEntryId { mount: 1, entry: 2 },
         parent: 1,
@@ -192,7 +192,7 @@ fn a_virtual_entry_cannot_enter_the_native_capture_route() {
         kind: EntryKind::File,
         size: Some(8),
         readable: true,
-    });
+    }));
     launch.entries = entries.into();
     let source: NativeCapture = Arc::new(|_, _| panic!("native capture must not run"));
     assert!(

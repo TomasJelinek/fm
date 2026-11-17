@@ -1,4 +1,5 @@
-//! Native keys are prepared on workers; comparators do no OS work or allocation.
+//! Native keys are prepared on workers. Sorting derives each row's facts once;
+//! comparisons do no OS work, allocation, path parsing or size lookups.
 use crate::{Cancellation, Entry, EntryKind, FsError, LocaleService, SortColumn, SortSpec};
 use std::{
     cmp::Ordering,
@@ -127,21 +128,6 @@ pub fn compare_collated_text(
     }
 }
 
-fn name_order(left: &Entry, right: &Entry, descending: bool) -> Ordering {
-    compare_collated_text(
-        left.collation
-            .as_ref()
-            .and_then(|keys| keys.name.as_deref()),
-        &left.name,
-        right
-            .collation
-            .as_ref()
-            .and_then(|keys| keys.name.as_deref()),
-        &right.name,
-        descending,
-    )
-}
-
 fn optional<T: Ord>(left: Option<T>, right: Option<T>, descending: bool) -> Ordering {
     match (left, right) {
         (Some(left), Some(right)) => direction(left.cmp(&right), descending),
@@ -158,47 +144,158 @@ pub fn sort_entries(entries: &mut [Entry], sort: SortSpec) {
 }
 
 /// Use immutable calculated sizes without replacing provider metadata. The lookup
-/// must be stable for this call and do no I/O; all other ordering rules are shared.
+/// is called once per entry, must be stable for this call and do no I/O; all other
+/// ordering rules are shared.
 pub fn sort_entries_with_sizes(
     entries: &mut [Entry],
     sort: SortSpec,
     size: impl Fn(&Entry) -> Option<u64>,
 ) {
-    entries.sort_unstable_by(|left, right| {
-        let is_folder = |kind| matches!(kind, EntryKind::Directory | EntryKind::DirectoryLink);
-        let directories = is_folder(right.kind).cmp(&is_folder(left.kind));
-        if directories != Ordering::Equal {
-            return directories;
-        }
-        let primary = match sort.column {
-            SortColumn::Name => name_order(left, right, sort.descending),
-            SortColumn::Size => optional(size(left), size(right), sort.descending),
-            SortColumn::Modified => optional(
-                left.metadata.modified,
-                right.metadata.modified,
-                sort.descending,
-            ),
-            SortColumn::Type => match (left.filename_extension(), right.filename_extension()) {
-                (Some(left_ext), Some(right_ext)) => compare_collated_text(
-                    left.collation
-                        .as_ref()
-                        .and_then(|keys| keys.extension.as_deref()),
-                    left_ext,
-                    right
-                        .collation
-                        .as_ref()
-                        .and_then(|keys| keys.extension.as_deref()),
-                    right_ext,
-                    sort.descending,
-                ),
+    let descending = sort.descending;
+    let order = match sort.column {
+        SortColumn::Name => sorted_order(
+            entries,
+            |_| (),
+            |left, right| {
+                compare_collated_text(
+                    left.name_key,
+                    left.name,
+                    right.name_key,
+                    right.name,
+                    descending,
+                )
+            },
+        ),
+        SortColumn::Size => sorted_order(entries, size, |left, right| {
+            optional(left.primary, right.primary, descending)
+        }),
+        SortColumn::Modified => sorted_order(
+            entries,
+            |entry| entry.metadata.modified,
+            |left, right| optional(left.primary, right.primary, descending),
+        ),
+        SortColumn::Type => sorted_order(
+            entries,
+            |entry| {
+                let key = entry
+                    .collation
+                    .as_ref()
+                    .and_then(|keys| keys.extension.as_deref());
+                entry.filename_extension().map(|extension| (extension, key))
+            },
+            |left, right| match (left.primary, right.primary) {
+                (Some((left_ext, left_key)), Some((right_ext, right_key))) => {
+                    compare_collated_text(left_key, left_ext, right_key, right_ext, descending)
+                }
                 (Some(_), None) => Ordering::Less,
                 (None, Some(_)) => Ordering::Greater,
                 (None, None) => Ordering::Equal,
             },
-        };
-        primary
-            .then_with(|| name_order(left, right, false))
-            .then_with(|| left.name.cmp(&right.name))
-            .then_with(|| left.id.0.cmp(&right.id.0))
+        ),
+    };
+    apply_order(entries, order);
+}
+
+/// Facts derived once per row, so comparisons never re-parse names or paths and
+/// never call the size lookup, and the sort moves these small rows, not entries.
+struct SortRow<'a, P> {
+    primary: P,
+    name_key: Option<&'a [u8]>,
+    name: &'a OsStr,
+    id: u64,
+    position: usize,
+    folder: bool,
+}
+
+/// Return `order` where `order[target]` is the current position of the entry that
+/// belongs at `target`. Folders lead; `compare` orders the column; ties fall back to
+/// ascending names and then stable IDs.
+fn sorted_order<'a, P>(
+    entries: &'a [Entry],
+    primary: impl Fn(&'a Entry) -> P,
+    compare: impl Fn(&SortRow<'a, P>, &SortRow<'a, P>) -> Ordering,
+) -> Vec<usize> {
+    let mut rows: Vec<_> = entries
+        .iter()
+        .enumerate()
+        .map(|(position, entry)| SortRow {
+            primary: primary(entry),
+            name_key: entry
+                .collation
+                .as_ref()
+                .and_then(|keys| keys.name.as_deref()),
+            name: &entry.name,
+            id: entry.id.0,
+            position,
+            folder: matches!(entry.kind, EntryKind::Directory | EntryKind::DirectoryLink),
+        })
+        .collect();
+    rows.sort_unstable_by(|left, right| {
+        right
+            .folder
+            .cmp(&left.folder)
+            .then_with(|| compare(left, right))
+            .then_with(|| {
+                compare_collated_text(left.name_key, left.name, right.name_key, right.name, false)
+            })
+            .then_with(|| left.name.cmp(right.name))
+            .then_with(|| left.id.cmp(&right.id))
     });
+    rows.into_iter().map(|row| row.position).collect()
+}
+
+/// Rearrange `entries` so that position `target` receives the entry at `order[target]`,
+/// following each permutation cycle once: at most one swap per entry.
+fn apply_order(entries: &mut [Entry], mut order: Vec<usize>) {
+    for start in 0..order.len() {
+        let mut current = start;
+        loop {
+            let source = order[current];
+            order[current] = current;
+            if source == start {
+                break;
+            }
+            entries.swap(current, source);
+            current = source;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::EntryId;
+    use std::{cell::Cell, path::PathBuf};
+
+    #[test]
+    fn size_lookup_runs_once_per_entry_and_long_cycles_reach_their_ranks() {
+        // 7919 is coprime to 1000, so the sizes permute 0..1000 into long cycles.
+        let mut entries: Vec<_> = (0..1000_u64)
+            .map(|id| {
+                let mut entry = Entry::new(
+                    EntryId(id),
+                    PathBuf::from(format!("{id:04}.txt")),
+                    EntryKind::File,
+                );
+                entry.metadata.size = Some(id * 7919 % 1000);
+                entry
+            })
+            .collect();
+        let calls = Cell::new(0);
+        let sort = SortSpec {
+            column: SortColumn::Size,
+            descending: false,
+        };
+        sort_entries_with_sizes(&mut entries, sort, |entry| {
+            calls.set(calls.get() + 1);
+            entry.metadata.size
+        });
+        assert_eq!(calls.get(), 1000);
+        assert!(
+            entries
+                .iter()
+                .enumerate()
+                .all(|(rank, entry)| entry.metadata.size == Some(rank as u64))
+        );
+    }
 }

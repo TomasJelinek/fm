@@ -78,7 +78,9 @@ the captured device/share; Up and Back retain the discovery context after a nati
 share opens. A failed native handoff keeps the Network view and error, without
 recovering to an unrelated native directory. Known absolute native share paths
 remain usable even when the discovery plugin is missing. Device captions receive
-locale sort keys on the backend before partial/final publication.
+locale sort keys on the backend before partial/final publication. Quick search and
+persistent panel filters match captions and identify Network rows by entry ID,
+because these rows have no native path.
 
 Accepted Network navigation immediately displays the requested location in the
 path, breadcrumbs and active tab. Until the first provider publication, rows from

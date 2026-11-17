@@ -8,14 +8,31 @@ use std::{
     time::Duration,
 };
 
+/// Like the filesystem host, a listing cancelled while its page is held is
+/// discarded (Interrupted) and the shared mount stays usable.
 #[derive(Debug, Default)]
 struct Mount {
     rows: HashMap<u64, Vec<ArchiveNode>>,
     lists: AtomicUsize,
     reads: AtomicUsize,
     changed: AtomicBool,
-    blocked: AtomicBool,
-    entered: AtomicBool,
+    blocked: Mutex<bool>,
+    unblocked: Condvar,
+    entered: tokio::sync::Notify,
+}
+impl Mount {
+    fn block(&self) {
+        *self.blocked.lock().unwrap() = true;
+    }
+    fn release(&self) {
+        *self.blocked.lock().unwrap() = false;
+        self.unblocked.notify_all();
+    }
+    async fn entered(&self) {
+        tokio::time::timeout(Duration::from_secs(5), self.entered.notified())
+            .await
+            .expect("archive size listing did not start");
+    }
 }
 impl ArchiveMount for Mount {
     fn id(&self) -> u64 {
@@ -23,16 +40,26 @@ impl ArchiveMount for Mount {
     }
     fn list(&self, id: u64, cancel: &Cancellation) -> Result<Vec<ArchiveNode>, FsError> {
         self.lists.fetch_add(1, Ordering::Relaxed);
-        self.entered.store(true, Ordering::Release);
-        while self.blocked.load(Ordering::Acquire) && !cancel.is_cancelled() {
-            std::thread::sleep(Duration::from_millis(1));
-        }
-        if cancel.is_cancelled() {
-            return Err(FsError::from_io(
+        let interrupted = || {
+            FsError::from_io(
                 "test",
                 Path::new(""),
                 std::io::Error::new(std::io::ErrorKind::Interrupted, "cancelled"),
-            ));
+            )
+        };
+        if cancel.is_cancelled() {
+            return Err(interrupted());
+        }
+        self.entered.notify_one();
+        // The deadline only elapses when a failing test never releases the listing.
+        let blocked = self.blocked.lock().unwrap();
+        drop(
+            self.unblocked
+                .wait_timeout_while(blocked, Duration::from_secs(10), |blocked| *blocked)
+                .unwrap(),
+        );
+        if cancel.is_cancelled() {
+            return Err(interrupted());
         }
         Ok(self.rows.get(&id).cloned().unwrap_or_default())
     }
@@ -85,7 +112,7 @@ fn fixture() -> Arc<Mount> {
 }
 fn root(
     snapshots: &Snapshots,
-    mount: Arc<Mount>,
+    mount: Arc<dyn ArchiveMount>,
     navigation: u64,
     reverse: bool,
 ) -> TreeRootSnapshot {
@@ -130,9 +157,20 @@ fn setup() -> (
     Snapshots,
     tokio::sync::mpsc::Receiver<midnight_core::Event>,
 ) {
+    setup_with_interval(worker::INTERVAL)
+}
+/// A zero progress interval publishes at every traversal step, so tests reach
+/// mid-scan publication without waiting for the production throttle.
+fn setup_with_interval(
+    interval: Duration,
+) -> (
+    Controller,
+    Snapshots,
+    tokio::sync::mpsc::Receiver<midnight_core::Event>,
+) {
     let snapshots = crate::test_snapshots(Default::default());
     let (sender, events) = tokio::sync::mpsc::channel(64);
-    let controller = Controller::new(
+    let controller = Controller::with_progress_interval(
         Retirement::testing(),
         crate::ReportArena::testing(),
         snapshots.clone(),
@@ -140,6 +178,7 @@ fn setup() -> (
             sender,
             wakeup: Arc::new(|| {}),
         },
+        interval,
     );
     (controller, snapshots, events)
 }
@@ -392,7 +431,7 @@ async fn changed_source_never_reuses_completed_cache() {
 async fn bounded_queue_rejects_overflow_and_full_scan_supersedes_pending_requests() {
     let (controller, snapshots, mut events) = setup();
     let mount = fixture();
-    mount.blocked.store(true, Ordering::Release);
+    mount.block();
     let ready = root(&snapshots, mount.clone(), 1, false);
     controller
         .submit(Command::Compute {
@@ -401,13 +440,7 @@ async fn bounded_queue_rejects_overflow_and_full_scan_supersedes_pending_request
             selection: None,
         })
         .await;
-    tokio::time::timeout(Duration::from_secs(5), async {
-        while !mount.entered.load(Ordering::Acquire) {
-            tokio::time::sleep(Duration::from_millis(1)).await;
-        }
-    })
-    .await
-    .unwrap();
+    mount.entered().await;
     for scan in 2..=9 {
         controller
             .submit(Command::Entry {
@@ -438,6 +471,7 @@ async fn bounded_queue_rejects_overflow_and_full_scan_supersedes_pending_request
             selection: Some(Arc::new(HashSet::new())),
         })
         .await;
+    mount.release();
     let outcomes = finished(&controller, &mut events, 11).await;
     for scan in 2..=9 {
         assert!(
@@ -635,9 +669,9 @@ async fn only_one_snapshot_is_in_flight_and_exact_ack_flushes_the_latest_cache()
 
 #[tokio::test]
 async fn newer_same_mount_observer_keeps_final_results_from_an_older_running_capture() {
-    let (controller, snapshots, mut events) = setup();
+    let (controller, snapshots, mut events) = setup_with_interval(Duration::ZERO);
     let mount = fixture();
-    mount.blocked.store(true, Ordering::Release);
+    mount.block();
     let ready = root(&snapshots, mount.clone(), 1, false);
     controller
         .submit(Command::Compute {
@@ -646,13 +680,7 @@ async fn newer_same_mount_observer_keeps_final_results_from_an_older_running_cap
             selection: Some(Arc::new(HashSet::from([EntryId(2)]))),
         })
         .await;
-    tokio::time::timeout(Duration::from_secs(5), async {
-        while !mount.entered.load(Ordering::Acquire) {
-            tokio::time::sleep(Duration::from_millis(1)).await;
-        }
-    })
-    .await
-    .unwrap();
+    mount.entered().await;
     let sorted = root(&snapshots, mount.clone(), 2, true);
     controller
         .submit(Command::Observe {
@@ -662,8 +690,8 @@ async fn newer_same_mount_observer_keeps_final_results_from_an_older_running_cap
             selected: Arc::new(HashSet::from([EntryId(2)])),
         })
         .await;
-    tokio::time::sleep(Duration::from_millis(260)).await;
-    mount.blocked.store(false, Ordering::Release);
+    // The next traversal step is due immediately and publishes mid-scan.
+    mount.release();
     let (mut complete, mut done) = (false, false);
     while !complete || !done {
         match next(&controller, &mut events).await {
@@ -690,7 +718,7 @@ async fn newer_same_mount_observer_keeps_final_results_from_an_older_running_cap
 async fn sorting_does_not_cancel_active_capture_but_explicit_cancel_does() {
     let (controller, snapshots, mut events) = setup();
     let mount = fixture();
-    mount.blocked.store(true, Ordering::Release);
+    mount.block();
     let ready = root(&snapshots, mount.clone(), 1, false);
     controller
         .submit(Command::Compute {
@@ -699,13 +727,7 @@ async fn sorting_does_not_cancel_active_capture_but_explicit_cancel_does() {
             selection: None,
         })
         .await;
-    tokio::time::timeout(Duration::from_secs(5), async {
-        while !mount.entered.load(Ordering::Acquire) {
-            tokio::time::sleep(Duration::from_millis(1)).await;
-        }
-    })
-    .await
-    .unwrap();
+    mount.entered().await;
     root(&snapshots, mount.clone(), 2, true);
     assert!(events.try_recv().is_err());
     controller
@@ -714,7 +736,10 @@ async fn sorting_does_not_cancel_active_capture_but_explicit_cancel_does() {
             scan: FolderSizeScanId(1),
         })
         .await;
+    // The held page is discarded and the traversal stops before another listing.
+    mount.release();
     let result = finished(&controller, &mut events, 1).await;
+    assert_eq!(mount.lists.load(Ordering::Relaxed), 1);
     assert!(result.iter().any(|e| matches!(
         e,
         Event::Finished {

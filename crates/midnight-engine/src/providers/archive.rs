@@ -53,7 +53,7 @@ pub(crate) fn captured_archive_root(
         super::registry::check_cancel(cancel)?;
         let node = entry
             .virtual_node
-            .as_ref()
+            .as_deref()
             .ok_or(ProviderError::InvalidResponse(
                 "native entry in archive root snapshot",
             ))?;
@@ -497,6 +497,8 @@ impl MountedFilesystem for CapturedArchive {
         if record.kind != EntryKind::Directory {
             return Err(ProviderError::Unsupported);
         }
+        // Probes, tree collapse and re-requests cancel routinely; the host ends a
+        // cancelled listing between pages and keeps the shared mount (archive_shared.rs).
         let rows = self.mount.list(id, cancel).map_err(map_error)?;
         check(self.mount.as_ref(), cancel)?;
         self.validate_rows(id, &rows)?;

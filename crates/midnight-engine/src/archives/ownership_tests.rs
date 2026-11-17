@@ -214,3 +214,59 @@ fn native_cleanup_keeps_retained_mount_and_cleanup_slots_through_blocked_or_pani
         drop(others);
     }
 }
+
+/// Like the filesystem host: a tainted session reports unconfirmed cleanup, keeps
+/// itself retained and fails its release, which still lets the host stop the worker.
+#[derive(Debug)]
+struct Tainted(Arc<std::sync::atomic::AtomicUsize>);
+impl ArchiveMount for Tainted {
+    fn cleanup_unconfirmed(&self) -> bool {
+        true
+    }
+    fn release_on_worker(self: Arc<Self>) -> Result<(), FsError> {
+        self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        std::mem::forget(self);
+        Err(nested::unconfirmed())
+    }
+    fn id(&self) -> u64 {
+        72
+    }
+    fn list(&self, _: u64, _: &Cancellation) -> Result<Vec<ArchiveNode>, FsError> {
+        panic!("release must not list")
+    }
+    fn read(&self, _: u64, _: u64, _: u32, _: &Cancellation) -> Result<Vec<u8>, FsError> {
+        panic!("release must not read")
+    }
+    fn validate(&self) -> Result<(), FsError> {
+        Ok(())
+    }
+}
+#[test]
+fn last_tainted_wrapper_reaches_the_host_release_while_shared_wrappers_stay_retained() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let (_domain, mounts) = fixture();
+    let shared_releases = Arc::new(AtomicUsize::new(0));
+    let first = mounts
+        .adopt(Arc::new(Tainted(shared_releases.clone())))
+        .unwrap();
+    let second = first.clone();
+    assert!(second.release_on_worker().is_err());
+    assert_eq!(
+        shared_releases.load(Ordering::SeqCst),
+        0,
+        "a shared tainted wrapper must not end the session other owners use"
+    );
+    drop(first);
+    let last_releases = Arc::new(AtomicUsize::new(0));
+    let only = mounts
+        .adopt(Arc::new(Tainted(last_releases.clone())))
+        .unwrap();
+    // Another owner released ordinarily; this is now the last wrapper reference.
+    drop(only.clone());
+    assert!(only.release_on_worker().is_err());
+    assert_eq!(
+        last_releases.load(Ordering::SeqCst),
+        1,
+        "the last tainted wrapper must hand its session to the host release"
+    );
+}

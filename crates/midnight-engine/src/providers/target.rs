@@ -195,6 +195,9 @@ impl ArchiveMount for LeasedArchive {
         self.source().id()
     }
 
+    // The source is the shared archive session. A revoked or cancelled listing ends
+    // between pages; member reads stay cooperative so that revoking this target's
+    // registrations never terminates the worker serving other owners (archive_shared.rs).
     fn list(&self, directory: u64, cancel: &Cancellation) -> Result<Vec<ArchiveNode>, FsError> {
         let request = self.context().request(cancel);
         self.check(&request)?;
@@ -210,9 +213,21 @@ impl ArchiveMount for LeasedArchive {
         length: u32,
         cancel: &Cancellation,
     ) -> Result<Vec<u8>, FsError> {
-        let request = self.context().request(cancel);
+        self.read_cooperative(entry, offset, length, &|| cancel.is_cancelled())
+    }
+
+    fn read_cooperative(
+        &self,
+        entry: u64,
+        offset: u64,
+        length: u32,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<Vec<u8>, FsError> {
+        let request = self.context().request(&Cancellation::default());
         self.check(&request)?;
-        let bytes = self.source().read(entry, offset, length, &request);
+        let bytes = self.source().read_cooperative(entry, offset, length, &|| {
+            cancelled() || request.is_cancelled()
+        });
         self.check(&request)?;
         bytes
     }

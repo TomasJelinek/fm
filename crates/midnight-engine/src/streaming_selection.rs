@@ -9,7 +9,8 @@ use std::{
 struct StreamIndex {
     navigation: NavigationId,
     location: PathBuf,
-    index: DirectoryIndex,
+    /// Shared with outstanding range snapshots; the next append copies it once.
+    index: Arc<DirectoryIndex>,
     rows: usize,
 }
 
@@ -38,29 +39,33 @@ impl StreamingSelections {
                 ..Default::default()
             };
         }
+        if entries.is_empty() {
+            return;
+        }
+        let StreamIndex { index, rows, .. } = &mut *current;
+        let index = Arc::make_mut(index);
         for entry in entries {
-            let row = current.rows;
-            current.rows += 1;
-            current.index.by_id.insert(entry.id, row);
-            current.index.by_path.insert(entry.path.clone(), entry.id);
+            let row = *rows;
+            *rows += 1;
+            index.by_id.insert(entry.id, row);
+            index.by_path.insert(entry.path.clone(), entry.id);
             if row.is_multiple_of(64) {
-                current.index.directory_bits.push(0);
+                index.directory_bits.push(0);
             }
             if matches!(entry.kind, EntryKind::Directory | EntryKind::DirectoryLink) {
-                current.index.directory_bits[row / 64] |= 1 << (row % 64);
+                index.directory_bits[row / 64] |= 1 << (row % 64);
             }
-            current
-                .index
-                .file_sizes
-                .push(if entry.kind == EntryKind::File {
-                    entry.metadata.size
-                } else {
-                    None
-                });
+            index.file_sizes.push(if entry.kind == EntryKind::File {
+                entry.metadata.size
+            } else {
+                None
+            });
         }
     }
 
-    /// Clone only on the selection blocking worker, never on the UI/runtime thread.
+    /// Share the current immutable view without copying it under the pane lock.
+    /// Repeated ranges between two batches reuse one view; the next append pays
+    /// for at most one copy on the listing worker.
     pub(crate) fn snapshot(
         &self,
         request: &SelectionRequest,
@@ -71,7 +76,7 @@ impl StreamingSelections {
         if current.navigation != request.navigation || current.location != request.location {
             return Err("The streamed range belongs to an obsolete folder listing");
         }
-        Ok(Arc::new(current.index.clone()))
+        Ok(current.index.clone())
     }
 }
 
@@ -111,6 +116,10 @@ mod tests {
             toggle_directory: false,
         };
         let index = streams.snapshot(&request).unwrap();
+        assert!(
+            Arc::ptr_eq(&index, &streams.snapshot(&request).unwrap()),
+            "ranges between two batches share one view instead of copying it"
+        );
         assert_eq!(index.by_id[&EntryId(80)], 0);
         assert_eq!(index.by_id[&EntryId(3)], 1);
         assert!(index.is_directory(EntryId(80)));
