@@ -20,6 +20,10 @@ minor are compatible. Function pointers are nullable in the representation;
 required null callbacks fail validation.
 The host must reject incompatible major/minimum-host-minor values, unsupported
 capability bits and invalid bounded ID/version metadata before creating instances.
+The public `abi::Api::validate` performs these descriptor checks. It also returns
+INCOMPATIBLE when an extension is advertised below the minor that defines it, as
+either the descriptor ABI minor or its minimum host minor: 2 for Activate, Refresh
+and ResolveText, 3 for PreparedRename.
 
 Callbacks are synchronous: create, call, release_buffer, destroy. All calls,
 encoding and resource destruction run on backend workers. The host retains the
