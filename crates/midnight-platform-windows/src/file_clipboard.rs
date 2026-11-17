@@ -12,7 +12,7 @@ use std::{
     sync::OnceLock,
 };
 use windows_sys::Win32::{
-    Foundation::{ERROR_ACCESS_DENIED, GlobalFree, HGLOBAL, HWND},
+    Foundation::{ERROR_ACCESS_DENIED, GlobalFree, HGLOBAL, HWND, LPARAM, LRESULT, WPARAM},
     System::{
         DataExchange::{
             CloseClipboard, EmptyClipboard, GetClipboardData, IsClipboardFormatAvailable,
@@ -23,8 +23,9 @@ use windows_sys::Win32::{
         Ole::{CF_HDROP, DROPEFFECT_COPY, DROPEFFECT_LINK, DROPEFFECT_MOVE},
     },
     UI::WindowsAndMessaging::{
-        CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, HWND_MESSAGE, MSG,
-        PM_REMOVE, PeekMessageW, RegisterClassW, TranslateMessage, WNDCLASSW,
+        CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GWLP_USERDATA,
+        GetWindowLongPtrW, HWND_MESSAGE, MSG, PM_REMOVE, PeekMessageW, RegisterClassW,
+        SetWindowLongPtrW, TranslateMessage, WM_DESTROYCLIPBOARD, WNDCLASSW,
     },
 };
 
@@ -245,6 +246,25 @@ fn read_format(format: u32) -> Result<Option<Vec<u8>>, FsError> {
     Ok(Some(bytes))
 }
 
+/// Window procedure of the owner window. Its user data is an integer ownership mark
+/// (nonzero while the window owns the clipboard): WM_DESTROYCLIPBOARD, sent when any
+/// window empties the clipboard this window owns, clears it. Everything else, including
+/// creation and destruction, takes the default path.
+unsafe extern "system" fn owner_procedure(
+    window: HWND,
+    message: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
+    if message == WM_DESTROYCLIPBOARD {
+        // SAFETY: Windows calls the procedure on the window's own thread with that live window.
+        unsafe { SetWindowLongPtrW(window, GWLP_USERDATA, 0) };
+        return 0;
+    }
+    // SAFETY: unhandled messages keep their original values and default processing.
+    unsafe { DefWindowProcW(window, message, wparam, lparam) }
+}
+
 pub(super) struct Files {
     window: HWND,
     effect: u32,
@@ -260,12 +280,12 @@ impl Files {
     pub(super) fn new() -> Result<Self, FsError> {
         static CLASS: OnceLock<Result<u16, String>> = OnceLock::new();
         let class = windows_sys::w!("MidnightExplorerFileClipboardOwner");
-        // SAFETY: the executable and native default window procedure stay loaded.
+        // SAFETY: the executable and its owner window procedure stay loaded.
         let instance = unsafe { GetModuleHandleW(ptr::null()) };
         CLASS
             .get_or_init(|| {
                 let value = WNDCLASSW {
-                    lpfnWndProc: Some(DefWindowProcW),
+                    lpfnWndProc: Some(owner_procedure),
                     hInstance: instance,
                     lpszClassName: class,
                     ..Default::default()
@@ -319,6 +339,9 @@ impl Files {
         if unsafe { EmptyClipboard() } == 0 {
             return Err(error(io::Error::last_os_error()));
         }
+        // EmptyClipboard made this window the owner. It first sent WM_DESTROYCLIPBOARD to the
+        // previous owner, which may have been this window, so mark ownership only now.
+        self.mark_owner();
         // Publish intent first; if publishing the list fails, no partial file list can be pasted.
         effect.publish(self.effect)?;
         data.publish(CF_HDROP as u32)
@@ -335,6 +358,24 @@ impl Files {
         };
         files.validate()?;
         Ok(files)
+    }
+
+    /// Whether this window owns the clipboard: it emptied the clipboard and has not
+    /// received WM_DESTROYCLIPBOARD since. Reading never takes ownership.
+    pub(super) fn owns_clipboard(&self) -> bool {
+        // SAFETY: reads the integer user data of this live window of the calling thread.
+        unsafe { GetWindowLongPtrW(self.window, GWLP_USERDATA) != 0 }
+    }
+
+    /// Record that a successful EmptyClipboard made this window the clipboard owner.
+    pub(super) fn mark_owner(&self) {
+        // SAFETY: stores an integer in the user data of this live window, on its thread.
+        unsafe { SetWindowLongPtrW(self.window, GWLP_USERDATA, 1) };
+    }
+
+    #[cfg(test)]
+    pub(super) fn window(&self) -> HWND {
+        self.window
     }
 
     pub(super) fn service_pending(&mut self) {
