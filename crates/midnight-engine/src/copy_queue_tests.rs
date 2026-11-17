@@ -779,7 +779,9 @@ async fn multiple_link_roots_continue_and_finish_with_the_retained_copy_permit()
     assert_eq!(fixture.control.cleanups.load(Ordering::SeqCst), 2);
     assert_eq!(fixture.control.staged_count(), 0);
     assert_eq!(h.io.available_permits(), 1);
-    assert_eq!(h.controller.capacity().available_permits(), MAX_JOBS);
+    // The admission permit also bounds terminal delivery, so on this multi-thread
+    // runtime it returns just after the terminal event reaches the outbox.
+    h.wait_capacity(MAX_JOBS).await;
     assert!(registered.upgrade().is_none());
     assert_link_resources_held_until_drop(
         &fixture,
@@ -832,7 +834,8 @@ async fn cancelling_staged_link_decisions_reuses_the_copy_permit_for_actual_clea
         assert_eq!(fixture.control.cleanups.load(Ordering::SeqCst), 1);
         assert_eq!(fixture.control.staged_count(), 0);
         assert_eq!(h.io.available_permits(), 1);
-        assert_eq!(h.controller.capacity().available_permits(), MAX_JOBS);
+        // As above: the admission permit returns just after terminal delivery.
+        h.wait_capacity(MAX_JOBS).await;
         assert!(registered.upgrade().is_none());
         assert_link_resources_held_until_drop(&fixture, &["stage", "source", "provider"]);
         h.close().await;
