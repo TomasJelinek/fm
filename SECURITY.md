@@ -599,7 +599,8 @@ names before changing them and processes children before their parent. Selection
 and traversal share a 256-target pin budget across pending metadata jobs; depth
 is limited to 64 and each name snapshot to 4 MiB. Resource exhaustion is reported
 as an error, not as a successful truncated operation. These are operation resource
-budgets, not path-length limits. Preview and result samples contain at most 32 items.
+budgets, not path-length limits. Preview samples list every captured root (at most
+256); result samples contain at most 32 items.
 
 Filename conversion uses full Unicode case mapping with the root locale while
 preserving untouched native bytes/code units. An undecodable transformed component
