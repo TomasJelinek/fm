@@ -243,48 +243,112 @@ fn cache_eviction_preserves_an_active_lease_without_accumulating_stage_ids() {
     assert_eq!(first.read(0, 4).unwrap(), b"test");
 }
 
+fn cached_ids(staging: &Staging) -> Vec<u64> {
+    staging.cache.iter().map(|cached| cached.entry).collect()
+}
+/// Stage and publish one complete member with the given content.
+fn stage_member(staging: &mut Staging, request: u64, entry: u64, content: &[u8]) -> Lease {
+    let length = content.len() as u64;
+    let op = read(request, entry);
+    let Some(Message::StageCreated { stage, .. }) = staging
+        .nested(
+            &op,
+            &Message::StageBegin {
+                request,
+                purpose: StagePurpose::Member { entry },
+                expected_length: Some(length),
+                max_length: length,
+            },
+        )
+        .unwrap()
+    else {
+        panic!("member stage was not created")
+    };
+    for message in [
+        Message::StageAppend {
+            request,
+            stage,
+            offset: 0,
+            bytes: content.to_vec(),
+        },
+        Message::StageSeal {
+            request,
+            stage,
+            length,
+        },
+    ] {
+        staging.nested(&op, &message).unwrap();
+    }
+    let reply = Message::ContentReady {
+        request,
+        entry,
+        stage,
+        offset: 0,
+        length,
+    };
+    staging.terminal(&op, &reply).unwrap().unwrap()
+}
+
 #[test]
-fn member_cache_is_bounded_by_bytes_and_always_keeps_the_newest_member() {
+fn interleaved_readers_keep_a_member_larger_than_the_budget_cached() {
+    let (_temp, mut staging) = staging();
+    staging.cache_budget = 6;
+    stage_member(&mut staging, 1, 2, b"12345678");
+    stage_member(&mut staging, 2, 3, b"abcd");
+    // A copy reading member 2 chunk by chunk alternates with a reader of member 3.
+    for _ in 0..100 {
+        assert_eq!(staging.cached(2).unwrap().read(4, 4).unwrap(), b"5678");
+        assert_eq!(staging.cached(3).unwrap().read(0, 4).unwrap(), b"abcd");
+    }
+    assert_eq!(cached_ids(&staging), [2, 3]);
+    assert_eq!(staging.cache_bytes, 12);
+}
+
+#[test]
+fn members_beyond_the_budget_leave_once_later_reads_move_on() {
     let (_temp, mut staging) = staging();
     staging.cache_budget = 8;
-    let cached_ids =
-        |staging: &Staging| -> Vec<u64> { staging.cache.iter().map(|(entry, _)| *entry).collect() };
-    let mut leases = Vec::new();
-    for entry in 2..=4 {
-        let stage = seal(&mut staging, entry, entry);
-        leases.push(
-            staging
-                .terminal(&read(entry, entry), &ready(entry, entry, stage))
-                .unwrap()
-                .unwrap(),
-        );
+    for entry in 2..=6 {
+        stage_member(&mut staging, entry, entry, b"test");
     }
-    // Three 4-byte members exceed 8 bytes: the least recently used one leaves.
-    assert_eq!(cached_ids(&staging), [3, 4]);
+    // At most four recently read members stay beyond the budget; the fifth leaves.
+    assert_eq!(cached_ids(&staging), [3, 4, 5, 6]);
+    assert_eq!(staging.cache_bytes, 16);
+    // Only member 6 is still read. Members not read within the last ACTIVE_READS
+    // member reads leave, oldest first, until the budget holds again.
+    for _ in 0..ACTIVE_READS {
+        staging.cached(6).unwrap();
+    }
+    assert_eq!(cached_ids(&staging), [5, 6]);
     assert_eq!(staging.cache_bytes, 8);
-    // Reading member 3 makes member 4 the eviction candidate.
-    assert_eq!(staging.cached(3).unwrap().read(0, 4).unwrap(), b"test");
-    let stage = seal(&mut staging, 5, 5);
-    staging
-        .terminal(&read(5, 5), &ready(5, 5, stage))
-        .unwrap()
-        .unwrap();
-    assert_eq!(cached_ids(&staging), [3, 5]);
-    // A member larger than the whole budget still stays as the only entry.
+    // Within the budget, inactive members stay for later hits.
+    for _ in 0..ACTIVE_READS {
+        staging.cached(6).unwrap();
+    }
+    assert_eq!(cached_ids(&staging), [5, 6]);
+    assert_eq!(staging.cached(5).unwrap().read(0, 4).unwrap(), b"test");
+}
+
+#[test]
+fn the_newest_member_stays_above_the_budget_and_recaching_replaces_its_accounting() {
+    let (_temp, mut staging) = staging();
     staging.cache_budget = 2;
-    let stage = seal(&mut staging, 6, 6);
-    staging
-        .terminal(&read(6, 6), &ready(6, 6, stage))
-        .unwrap()
-        .unwrap();
-    assert_eq!(cached_ids(&staging), [6]);
+    let first = stage_member(&mut staging, 1, 2, b"test");
+    assert_eq!(cached_ids(&staging), [2]);
     assert_eq!(staging.cache_bytes, 4);
     // Recaching the same member replaces its accounting instead of adding to it.
-    let lease = staging.cached(6).unwrap();
-    staging.cache_member(6, lease);
+    let lease = staging.cached(2).unwrap();
+    staging.cache_member(2, lease);
+    assert_eq!(cached_ids(&staging), [2]);
     assert_eq!(staging.cache_bytes, 4);
+    // Four newer members make member 2 inactive, so it leaves the cache.
+    for entry in 3..=7 {
+        stage_member(&mut staging, entry, entry, b"next");
+    }
+    assert_eq!(cached_ids(&staging), [4, 5, 6, 7]);
+    assert_eq!(staging.cache_bytes, 16);
     // Evicted entries never invalidate a read that still holds its lease.
-    assert_eq!(leases[0].read(0, 4).unwrap(), b"test");
+    assert_eq!(first.read(0, 4).unwrap(), b"test");
 }
 
 #[test]
