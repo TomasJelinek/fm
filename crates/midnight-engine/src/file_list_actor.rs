@@ -10,7 +10,7 @@ mod tests;
 use crate::{
     Outbox,
     file_list_output::*,
-    file_list_records::error,
+    file_list_records::{check, error},
     file_list_worker::{self, Generated, OutputReservation, Text},
     retirement::{RetirementDomain, WorkerOwned},
     task_lifetime::TaskLifetime,
@@ -18,13 +18,14 @@ use crate::{
 use midnight_core::*;
 use std::{
     collections::HashMap,
+    future::Future,
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     },
 };
 use tokio::{
-    sync::{OwnedSemaphorePermit, Semaphore},
+    sync::{AcquireError, Notify, OwnedSemaphorePermit, Semaphore},
     task::JoinSet,
 };
 
@@ -50,9 +51,19 @@ struct Job {
     request: FileListRequest,
     output: Mutex<Option<OutputReservation>>,
     cancel: Cancellation,
+    // `cancel` is a polled flag; this wakes a save queued for the gate or a worker.
+    stopped: Notify,
     active: AtomicBool,
     _scope: TaskLifetime,
     _retention: Arc<Retention>,
+}
+impl Job {
+    /// The controller cancels jobs only here: native work polls `cancel`, and an
+    /// async wait registered before its flag check is woken.
+    fn stop(&self) {
+        self.cancel.cancel();
+        self.stopped.notify_waiters();
+    }
 }
 pub(crate) struct Controller {
     jobs: HashMap<DesktopRequestId, Arc<WorkerOwned<Job>>>,
@@ -128,7 +139,7 @@ impl Controller {
         // Admission must succeed before superseding the last accepted preview.
         // Otherwise transient worker pressure cancels useful work without replacing it.
         if let Some(old) = self.jobs.get(&request.id) {
-            old.cancel.cancel();
+            old.stop();
         }
         let sizes = self
             .jobs
@@ -147,12 +158,13 @@ impl Controller {
                 retention: retention.clone(),
             })),
             cancel: Cancellation::default(),
+            stopped: Notify::new(),
             active: AtomicBool::new(true),
             _scope: self.scope.clone(),
             _retention: retention,
         }));
         self.jobs.insert(job.request.id, job.clone());
-        self.spawn(job, false, permit, tasks);
+        self.spawn(job, Some(permit), tasks);
         Ok(())
     }
     pub(crate) fn confirm(
@@ -170,11 +182,6 @@ impl Controller {
         if job.active.load(Ordering::Acquire) {
             return Err(error("File list output is already running."));
         }
-        let permit = self
-            .budget
-            .clone()
-            .try_acquire_owned()
-            .map_err(|_| error("File list workers are busy. Try again."))?;
         if job
             .pending
             .lock()
@@ -185,35 +192,29 @@ impl Controller {
         }
         // Keep the native pins in the guarded Job until a native worker actually
         // begins. Cancelling an unpolled confirmation never exposes a raw Pending.
+        // A confirmed save takes its worker only after the mutation gate.
         job.active.store(true, Ordering::Release);
-        self.spawn(job, true, permit, tasks);
+        self.spawn(job, None, tasks);
         Ok(())
     }
+    /// `generation` is the worker admitted by `start`; a confirmed save has none.
     fn spawn(
         &self,
         job: Arc<WorkerOwned<Job>>,
-        confirmed: bool,
-        permit: OwnedSemaphorePermit,
+        generation: Option<OwnedSemaphorePermit>,
         tasks: &mut JoinSet<()>,
     ) {
-        let service = self.service.clone();
-        let mutation = self.mutation.clone();
+        let output = Output {
+            service: self.service.clone(),
+            workers: self.budget.clone(),
+            mutation: self.mutation.clone(),
+            scope: self.scope.clone(),
+        };
         let outbox = self.outbox.clone();
-        let scope = self.scope.clone();
         tasks.spawn(self.scope.future(async move {
-            // Native work keeps admission after outer cancellation; delivery
-            // keeps it after native completion until its bounded send finishes.
-            let _delivery_permit = Arc::new(permit);
-            let native_permit = _delivery_permit.clone();
-            let worker = job.clone();
-            let result = tokio::task::spawn_blocking(scope.blocking(move || {
-                let _permit = native_permit;
-                let output = run(&worker, confirmed, service.as_deref(), &mutation);
-                worker.active.store(false, Ordering::Release);
-                output
-            }))
-            .await
-            .unwrap_or_else(|e| Err(error(format!("File list worker failed: {e}"))));
+            // Delivery keeps the worker of the last native step until its
+            // bounded send finishes.
+            let (result, _delivery_permit) = output.run(&job, generation).await;
             job.active.store(false, Ordering::Release);
             if !job.cancel.is_cancelled() {
                 outbox
@@ -233,12 +234,12 @@ impl Controller {
             .is_some_and(|job| job.request.generation <= generation)
             && let Some(job) = self.jobs.remove(&id)
         {
-            job.cancel.cancel();
+            job.stop();
         }
     }
     pub(crate) fn shutdown(&mut self) {
         for (_, job) in self.jobs.drain() {
-            job.cancel.cancel();
+            job.stop();
         }
     }
 }
@@ -249,62 +250,178 @@ impl Drop for Controller {
     }
 }
 
-fn run(
-    job: &Job,
-    confirmed: bool,
-    service: Option<&dyn TransferService>,
-    mutation: &Arc<Semaphore>,
-) -> Result<FileListUpdate, FsError> {
-    let pending = if confirmed {
-        Some(
-            job.pending
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .take()
-                .ok_or_else(|| error("This file list confirmation has already been used."))?,
+type Worker = Arc<OwnedSemaphorePermit>;
+
+/// What one admitted output needs: native generation and saving run on blocking
+/// workers, while the waits between them stay on the async task.
+struct Output {
+    service: Option<Arc<dyn TransferService>>,
+    workers: Arc<Semaphore>,
+    mutation: Arc<Semaphore>,
+    scope: TaskLifetime,
+}
+impl Output {
+    /// Returns the result and the worker that delivery keeps. A save waiting for
+    /// the mutation gate holds neither a worker nor a blocking thread, so Tokio
+    /// drops (never polls) it at runtime shutdown and other outputs keep both
+    /// workers; it takes a worker once the gate is granted.
+    async fn run(
+        self,
+        job: &Arc<WorkerOwned<Job>>,
+        generation: Option<OwnedSemaphorePermit>,
+    ) -> (Result<FileListUpdate, FsError>, Option<Worker>) {
+        let unavailable = || error("Native file output is unavailable.");
+        let (source, service) = match generation {
+            Some(worker) => {
+                let worker = Arc::new(worker);
+                let source = match self.native(job, worker.clone(), generate).await {
+                    Ok(Step::Save(source)) => source,
+                    Ok(Step::Done(update)) => return (Ok(update), Some(worker)),
+                    Err(error) => return (Err(error), Some(worker)),
+                };
+                let Some(service) = self.service.clone() else {
+                    return (Err(unavailable()), Some(worker));
+                };
+                (Some(source), service)
+            }
+            // The confirmed source and destination pin stay in the guarded job.
+            None => match self.service.clone() {
+                Some(service) => (None, service),
+                None => return (Err(unavailable()), None),
+            },
+        };
+        // Generation does not hold the write gate; only the save waits for it.
+        let gate = match queued(
+            job,
+            self.mutation
+                .clone()
+                .acquire_many_owned(crate::transfer_leases::NAMESPACE_WEIGHT),
         )
-    } else {
-        None
-    };
-    let (source, pin) = if let Some(pending) = pending {
-        (pending.source, Some(pending.pin))
-    } else {
-        let output = job
-            .output
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .take()
-            .ok_or_else(|| error("This file-list generation has already been used."))?;
+        .await
+        {
+            Ok(gate) => gate,
+            Err(error) => return (Err(error), None),
+        };
+        // Workers are held only by generation, delivery or this gate holder's own
+        // save; none of them waits for the gate, so this wait cannot deadlock.
+        let worker = match queued(job, self.workers.clone().acquire_owned()).await {
+            Ok(worker) => Arc::new(worker),
+            Err(error) => return (Err(error), None),
+        };
+        let saved = self
+            .native(job, worker.clone(), move |job| {
+                // The gate stays held until native publication returns, even if
+                // the outer task is aborted meanwhile.
+                let _gate = gate;
+                save(job, source, service.as_ref())
+            })
+            .await;
+        (saved, Some(worker))
+    }
+
+    /// Native work keeps its worker even if the outer task is cancelled.
+    async fn native<R: Send + 'static>(
+        &self,
+        job: &Arc<WorkerOwned<Job>>,
+        worker: Worker,
+        work: impl FnOnce(&Job) -> Result<R, FsError> + Send + 'static,
+    ) -> Result<R, FsError> {
+        let job = job.clone();
+        tokio::task::spawn_blocking(self.scope.blocking(move || {
+            let _worker = worker;
+            work(&job)
+        }))
+        .await
+        .unwrap_or_else(|e| Err(error(format!("File list worker failed: {e}"))))
+    }
+}
+
+/// Queue once (FIFO), like Delete/Rename, until granted or the job is stopped. A
+/// nonqueuing `try_acquire` succeeds only when nobody is queued (released permits
+/// go to waiters first), so polling it could wait until a refilled Copy queue
+/// drained. No timer is involved: `Job::stop` wakes the wait.
+async fn queued<T>(
+    job: &Job,
+    acquire: impl Future<Output = Result<T, AcquireError>>,
+) -> Result<T, FsError> {
+    wait_unless_stopped(&job.cancel, &job.stopped, acquire).await
+}
+
+async fn wait_unless_stopped<T>(
+    cancel: &Cancellation,
+    stopped: &Notify,
+    acquire: impl Future<Output = Result<T, AcquireError>>,
+) -> Result<T, FsError> {
+    // Created before the flag check, so a later `notify_waiters` reaches it.
+    let stopped = stopped.notified();
+    check(cancel)?;
+    tokio::select! {
+        biased;
+        // `Job::stop` cancels before it notifies, so this reports the cancellation.
+        () = stopped => check(cancel).and(Err(error("File output was stopped."))),
+        permit = acquire => permit.map_err(|_| error("File output is shutting down.")),
+    }
+}
+
+enum Step {
+    Done(FileListUpdate),
+    Save(Arc<Text>),
+}
+
+fn generate(job: &Job) -> Result<Step, FsError> {
+    let output = job
+        .output
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .take()
+        .ok_or_else(|| error("This file-list generation has already been used."))?;
+    Ok(
         match file_list_worker::generate_with_sizes(&job.request, &job.cancel, &job.sizes, output)?
         {
             Generated::Preview {
                 text,
                 items,
                 truncated,
-            } => {
-                return Ok(FileListUpdate::Preview {
-                    text,
-                    items,
-                    truncated,
-                });
+            } => Step::Done(FileListUpdate::Preview {
+                text,
+                items,
+                truncated,
+            }),
+            Generated::Content { source, .. }
+                if matches!(job.request.destination, FileListDestination::File { .. }) =>
+            {
+                Step::Save(source)
             }
-            Generated::Content { source, items } => {
-                if !matches!(job.request.destination, FileListDestination::File { .. }) {
-                    return Ok(FileListUpdate::Generated {
-                        content: source,
-                        items,
-                    });
-                }
-                (source, None)
-            }
+            Generated::Content { source, items } => Step::Done(FileListUpdate::Generated {
+                content: source,
+                items,
+            }),
+        },
+    )
+}
+
+/// Runs on a native worker while the mutation gate is held. A confirmed save
+/// (`generated` is None) takes the source and destination pin it consented to.
+fn save(
+    job: &Job,
+    generated: Option<Arc<Text>>,
+    service: &dyn TransferService,
+) -> Result<FileListUpdate, FsError> {
+    let (source, pin) = match generated {
+        Some(source) => (source, None),
+        None => {
+            let pending = job
+                .pending
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .take()
+                .ok_or_else(|| error("This file list confirmation has already been used."))?;
+            (pending.source, Some(pending.pin))
         }
     };
     let FileListDestination::File { path, append } = &job.request.destination else {
         return Err(error("No file destination was captured."));
     };
-    let service = service.ok_or_else(|| error("Native file output is unavailable."))?;
-    // Generation does not hold the write gate; only the save waits for it.
-    let _guard = acquire_output_gate(mutation, &job.cancel)?;
     match save_file_list(
         file_list_worker::transfer(source.clone()),
         path,
@@ -328,34 +445,6 @@ fn run(
             warning: receipt.warning,
         }),
     }
-}
-
-/// Queue once for the shared mutation gate, like Delete/Rename. A nonqueuing
-/// `try_acquire` succeeds only when nobody is queued (released permits go to
-/// waiters first), so polling it could wait until a refilled Copy queue drained.
-/// Cancellation is a polled flag and is checked while queued.
-fn acquire_output_gate(
-    mutation: &Arc<Semaphore>,
-    cancel: &Cancellation,
-) -> Result<OwnedSemaphorePermit, FsError> {
-    let runtime = tokio::runtime::Handle::try_current()
-        .map_err(|_| error("File output needs the engine runtime."))?;
-    // This blocking worker owns no runtime thread, so it may block on the handle.
-    runtime.block_on(async {
-        let acquire = mutation
-            .clone()
-            .acquire_many_owned(crate::transfer_leases::NAMESPACE_WEIGHT);
-        tokio::pin!(acquire);
-        loop {
-            super::file_list_records::check(cancel)?;
-            tokio::select! {
-                permit = &mut acquire => {
-                    return permit.map_err(|_| error("File output is shutting down."));
-                }
-                () = tokio::time::sleep(std::time::Duration::from_millis(25)) => {}
-            }
-        }
-    })
 }
 
 #[cfg(test)]
