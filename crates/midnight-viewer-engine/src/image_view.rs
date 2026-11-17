@@ -1,10 +1,14 @@
-use crate::{image_geometry::ImageGeometry, image_scene::Scene, image_worker::ImageWorker};
+use crate::{
+    image_geometry::ImageGeometry,
+    image_scene::Scene,
+    image_worker::{DocumentRaster, ImageWorker},
+};
 use midnight_core::{ViewerSurfaceId, ViewerTile};
 use std::sync::{Arc, atomic::AtomicU64};
 
 pub(crate) enum Paint {
     Tiles(Vec<ViewerTile>),
-    Raster(midnight_image_viewer_host::Frame),
+    Raster(DocumentRaster),
 }
 
 pub(crate) struct ImageView {
@@ -21,7 +25,7 @@ pub(crate) struct ImageView {
     published: Option<(u64, usize)>,
     failure: Option<String>,
     pub waiting_budget: bool,
-    pub document_frame: Option<(u64, midnight_image_viewer_host::Frame)>,
+    pub document_frame: Option<(u64, DocumentRaster)>,
 }
 
 impl ImageView {

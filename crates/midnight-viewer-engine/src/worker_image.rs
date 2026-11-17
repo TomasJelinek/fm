@@ -134,11 +134,11 @@ impl Worker {
                 }
                 Ok(())
             }
-            Event::DocumentFrame { revision, frame } => {
+            Event::DocumentFrame { revision, raster } => {
                 if let Some(image) = &mut self.image {
                     image.pending = None;
                     if image.revision == revision {
-                        image.document_frame = Some((revision, frame));
+                        image.document_frame = Some((revision, raster));
                     }
                     self.dirty = true;
                 }
@@ -186,8 +186,9 @@ impl Worker {
                 Arc::from([]),
                 Some(tiles.into()),
             ),
-            crate::image_view::Paint::Raster(frame) => {
-                (frame.width, frame.height, frame.rgba.into(), None)
+            // The actor already shared these pixels; the frame takes the same buffer.
+            crate::image_view::Paint::Raster(raster) => {
+                (raster.width, raster.height, raster.rgba, None)
             }
         };
         output.put(ViewerOutput::Frame(Box::new(ViewerFrame {

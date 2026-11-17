@@ -361,6 +361,53 @@ fn newly_opened_raster_image_still_restores_its_saved_zoom() {
     assert!((view.scale - 2.3456).abs() < 1e-12);
 }
 
+#[test]
+fn document_frames_reach_the_ui_in_the_buffer_the_image_actor_shared() {
+    use crate::image_worker::{DocumentRaster, Event, ImageWorker};
+    let (mut worker, output) = worker();
+    let (actor, events) = std::sync::mpsc::sync_channel(1);
+    actor
+        .send(Event::Opened {
+            pages: vec![midnight_image_viewer_host::Metadata {
+                width: 400,
+                height: 600,
+            }],
+            document: true,
+        })
+        .unwrap();
+    worker.image = Some(crate::image_view::ImageView::new(
+        ImageWorker::for_test(events, None),
+        worker.image_ids.clone(),
+    ));
+    worker.poll_image(&output);
+    let rgba: Arc<[u8]> = vec![255; 8 * 8 * 4].into();
+    actor
+        .send(Event::DocumentFrame {
+            revision: worker.image.as_ref().unwrap().revision,
+            raster: DocumentRaster {
+                width: 8,
+                height: 8,
+                rgba: rgba.clone(),
+            },
+        })
+        .unwrap();
+    worker.poll_image(&output);
+    worker.paint(&output).unwrap();
+    let frame = output
+        .take()
+        .into_iter()
+        .find_map(|event| match event {
+            ViewerOutput::Frame(frame) => Some(frame),
+            _ => None,
+        })
+        .expect("document frame");
+    assert_eq!([frame.width, frame.height], [8, 8]);
+    assert!(
+        Arc::ptr_eq(&frame.pixels, &rgba),
+        "the viewer worker does not copy document pixels"
+    );
+}
+
 fn text_page(text: String) -> Page {
     Page {
         anchors: text

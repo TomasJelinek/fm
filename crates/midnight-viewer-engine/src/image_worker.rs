@@ -43,9 +43,17 @@ pub(crate) enum Event {
     Validated(u64),
     DocumentFrame {
         revision: u64,
-        frame: midnight_image_viewer_host::Frame,
+        raster: DocumentRaster,
     },
     Failed(String),
+}
+
+/// A premultiplied document viewport. The actor moves its pixels into the shared buffer the
+/// UI frame carries, so the viewer worker publishes it without copying.
+pub(crate) struct DocumentRaster {
+    pub width: u32,
+    pub height: u32,
+    pub rgba: Arc<[u8]>,
 }
 
 enum Render {
@@ -71,17 +79,24 @@ pub(crate) struct ImageWorker {
 }
 
 impl ImageWorker {
+    /// An actor stand-in that delivers `events`. A `thread` stands for the actor's thread,
+    /// for example one still closing its session after cancellation.
     #[cfg(test)]
-    pub(crate) fn opened_for_test(pages: Vec<Metadata>, document: bool) -> Self {
+    pub(crate) fn for_test(events: Receiver<Event>, thread: Option<JoinHandle<()>>) -> Self {
         let (sender, _) = mpsc::sync_channel(1);
-        let (output, events) = mpsc::sync_channel(1);
-        output.send(Event::Opened { pages, document }).unwrap();
         Self {
             sender: Some(sender),
             events,
             cancel: Arc::new(AtomicBool::new(false)),
-            thread: None,
+            thread,
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn opened_for_test(pages: Vec<Metadata>, document: bool) -> Self {
+        let (output, events) = mpsc::sync_channel(1);
+        output.send(Event::Opened { pages, document }).unwrap();
+        Self::for_test(events, None)
     }
 
     pub fn open(
@@ -232,7 +247,14 @@ impl ImageWorker {
                                                     )
                                                     .map_err(|error| error.to_string())?;
                                                 crate::image_pixels::premultiply(&mut frame.rgba);
-                                                Event::DocumentFrame { revision, frame }
+                                                Event::DocumentFrame {
+                                                    revision,
+                                                    raster: DocumentRaster {
+                                                        width: frame.width,
+                                                        height: frame.height,
+                                                        rgba: Arc::from(frame.rgba),
+                                                    },
+                                                }
                                             }
                                         };
                                         if stopped.load(Ordering::Acquire)
@@ -450,10 +472,10 @@ mod tests {
         view.pending = None;
         view.document_frame = Some((
             revision,
-            midnight_image_viewer_host::Frame {
+            DocumentRaster {
                 width: 1000,
                 height: 700,
-                rgba: vec![255; 1000 * 700 * 4],
+                rgba: vec![255; 1000 * 700 * 4].into(),
             },
         ));
         assert!(matches!(view.request().unwrap(), Some(Paint::Raster(_))));
