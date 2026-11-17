@@ -671,8 +671,8 @@ mod tests {
         }
     }
 
-    /// Raw (non-UTF-8) paths too long for one property: each target needs an incremental
-    /// transfer.
+    /// Raw (non-UTF-8) paths whose encoded list exceeds one property chunk, so that the URI
+    /// and GNOME targets need incremental transfers.
     fn large_files(name: &str, intent: FileClipboardIntent) -> FileClipboard {
         FileClipboard {
             paths: (0..1000)
