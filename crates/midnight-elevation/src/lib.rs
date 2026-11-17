@@ -103,7 +103,7 @@ const HELPER: &str = if cfg!(windows) {
 };
 /// Where the helper must be installed, as the platform's refusal of an unprotected helper
 /// location also states. Per-user deployments do not include the helper, so a missing helper
-/// explains the same requirement.
+/// explains the same requirement. A test keeps this identical to the start of that refusal.
 const HELPER_REQUIREMENT: &str = if cfg!(windows) {
     "Authorized listing requires midnight-elevated-listing.exe to be installed by an \
      administrator in a protected folder that standard users cannot change, such as a folder \
@@ -187,6 +187,7 @@ mod tests {
         let expected_directory = directory.display().to_string();
         assert!(message.contains(HELPER), "{message}");
         assert!(message.contains(&expected_directory), "{message}");
+        assert!(message.ends_with(HELPER_REQUIREMENT), "{message}");
         // The same requirement that a refused, unprotected helper location explains.
         let (installer, location) = if cfg!(windows) {
             ("installed by an administrator", r"C:\Program Files")
@@ -195,5 +196,22 @@ mod tests {
         };
         assert!(message.contains(installer), "{message}");
         assert!(message.contains(location), "{message}");
+    }
+
+    #[test]
+    fn unprotected_helper_refusal_states_the_same_requirement() {
+        // Locations that each platform refuses without changing anything: Windows refuses a
+        // network path before opening it, and Linux refuses the root folder, which is no
+        // executable file.
+        let refused = Path::new(if cfg!(windows) {
+            r"\\server\share\midnight-elevated-listing.exe"
+        } else {
+            "/"
+        });
+        let error = native::protected_helper(refused).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied, "{error}");
+        // The missing-helper message repeats this sentence; it must not drift from it.
+        let message = error.to_string();
+        assert!(message.starts_with(HELPER_REQUIREMENT), "{message}");
     }
 }
