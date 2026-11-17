@@ -12,12 +12,28 @@
 //! `/etc/passwd` and `/etc/group` (directory services) keep the strict rule.
 //! Same-UID and root interference are outside this boundary.
 //!
-//! The application's Linux platform layer applies the same rule
+//! A Rename stage is created owner-only. Where an explicit `fchmod(0700)` cannot
+//! change the mount-provided mode of a filesystem whose permissions come from
+//! mount options, the stage is admitted only while no other user can write to it
+//! (group write only as for a protected parent), or while it has exactly the
+//! mode, owner and group of a parent that is not protected and neither carries an
+//! access ACL, so it never lets another user change more than its parent does.
+//! A Rename parent must be protected before the stage is created and again
+//! before the capture is requested, so the second case never leads to a capture
+//! here. Unlike the platform layer, this provider also reads the stage (to sync
+//! it), so a mount-provided mode without owner read is refused. Mode bits
+//! protect only where the kernel enforces them: FUSE mounts with `allow_other`
+//! but without `default_permissions`, and CIFS mounts with `noperm`, exclude
+//! other local users only as far as their server does.
+//!
+//! The application's Linux platform layer applies the same rules
 //! (`crates/midnight-platform-linux/src/ownership.rs`). The two copies cannot
 //! share code, so both carry the same rule tables; a change to one must change
 //! both.
 use crate::rename_sys as sys;
+use midnight_filesystem_plugin_api::Failure;
 use std::{
+    cell::LazyCell,
     fs::{File, Metadata},
     io::Read,
     os::unix::fs::MetadataExt,
@@ -33,13 +49,57 @@ pub(crate) fn protected_parent(directory: &File, metadata: &Metadata) -> bool {
     })
 }
 
-/// Whether only the caller can write to `directory`, whose current metadata is
-/// `metadata`: owned by the effective UID, never world-writable, and
-/// group-writable only as a protected parent may be.
-pub(crate) fn writable_only_by_caller(directory: &File, metadata: &Metadata) -> bool {
-    writable_only_mode(metadata.uid(), metadata.gid(), metadata.mode(), || {
-        sys::may_have_access_acl(directory)
-    })
+/// Whether the mount-provided mode of a new stage that `fchmod(0700)` could not
+/// change is admitted (see the module documentation). `stage` and `parent` are
+/// readable descriptors of the stage, whose current metadata is
+/// `stage_metadata`, and of its parent, so neither ACL query needs `/proc`.
+pub(crate) fn admits_stage(
+    stage: &File,
+    stage_metadata: &Metadata,
+    parent: &File,
+) -> Result<bool, Failure> {
+    let parent_metadata = parent.metadata().map_err(Failure::from_io)?;
+    Ok(mount_mode_admitted(
+        (
+            stage_metadata.uid(),
+            stage_metadata.gid(),
+            stage_metadata.mode(),
+        ),
+        || sys::may_have_access_acl(stage),
+        (
+            parent_metadata.uid(),
+            parent_metadata.gid(),
+            parent_metadata.mode(),
+        ),
+        || sys::may_have_access_acl(parent),
+    ))
+}
+
+/// `admits_stage` for the (owner, group, mode) of a stage and of its parent.
+/// Each ACL closure reports whether that directory may carry an access ACL and
+/// is asked only when its answer can decide. Admitted are a stage only the
+/// caller can write (group write only as for a protected parent), and one with
+/// exactly the mode, owner and group of a parent that is not protected, neither
+/// carrying an access ACL: it lets nobody change anything the parent does not
+/// already let them change.
+fn mount_mode_admitted(
+    stage: (u32, u32, u32),
+    stage_acl: impl FnOnce() -> bool,
+    parent: (u32, u32, u32),
+    parent_acl: impl FnOnce() -> bool,
+) -> bool {
+    let stage_acl = LazyCell::new(stage_acl);
+    let (uid, gid, mode) = stage;
+    if writable_only_mode(uid, gid, mode, || *stage_acl) {
+        return true;
+    }
+    let (parent_uid, parent_gid, parent_mode) = parent;
+    // Equal modes, owners and groups first: no ACL is read for a stage that
+    // differs from its parent or for a protected parent.
+    (mode & 0o7777, uid, gid) == (parent_mode & 0o7777, parent_uid, parent_gid)
+        && !protected_mode(parent_uid, parent_gid, parent_mode, || false)
+        && !*stage_acl
+        && !parent_acl()
 }
 
 /// `protected_parent` for a directory's owner, group and mode. `acl` reports
@@ -50,8 +110,9 @@ fn protected_mode(uid: u32, gid: u32, mode: u32, acl: impl FnOnce() -> bool) -> 
     (uid == caller || uid == 0) && (mode & 0o1000 != 0 || private_writers_only(gid, mode, acl))
 }
 
-/// `writable_only_by_caller` for a directory's owner, group and mode; `acl` as
-/// for `protected_mode`.
+/// Whether only the caller can write to a directory with this owner, group and
+/// mode: owned by the effective UID, never world-writable, and group-writable
+/// only as a protected parent may be; `acl` as for `protected_mode`.
 fn writable_only_mode(uid: u32, gid: u32, mode: u32, acl: impl FnOnce() -> bool) -> bool {
     uid == sys::effective_uid() && private_writers_only(gid, mode, acl)
 }
@@ -320,6 +381,75 @@ mod tests {
         assert!(!writable_only_mode(uid, gid, 0o40775, || true));
     }
 
+    /// The same table as the platform's test of this name
+    /// (`crates/midnight-platform-linux/src/ownership_tests.rs`).
+    #[test]
+    fn mount_provided_stage_modes_are_never_wider_than_an_unprotected_parent() {
+        const T: bool = true;
+        const F: bool = false;
+        // u, g: the effective user and group; o: another group; r: another owner;
+        // p: whether g is the caller's private group; s: whether u is root.
+        let u = sys::effective_uid();
+        let g = sys::effective_gid();
+        let o = g.wrapping_add(7919);
+        let r = u.wrapping_add(1);
+        let p = caller_private_group(g);
+        let s = u == 0;
+        // (stage, its ACL, parent, its ACL) -> (admitted, stage ACL read, parent ACL read)
+        for (stage, stage_acl, parent, parent_acl, expected) in [
+            // Only the caller can write the stage, whatever its parent.
+            ((u, g, 0o40755), F, (u, g, 0o40700), F, (T, F, F)),
+            ((u, o, 0o40750), F, (u, g, 0o40700), F, (T, F, F)),
+            // Without group write, an ACL mask lets no named user or group write.
+            ((u, g, 0o40755), T, (u, g, 0o40700), F, (T, F, F)),
+            // Private-group write, but only on a stage without an access ACL.
+            ((u, g, 0o40775), F, (u, g, 0o40700), F, (p, p, F)),
+            ((u, g, 0o40775), T, (u, g, 0o40700), F, (F, p, F)),
+            // Wider than the parent: refused without reading an ACL.
+            ((u, g, 0o40777), F, (u, g, 0o40755), F, (F, F, F)),
+            ((u, g, 0o40757), F, (u, g, 0o40755), F, (F, F, F)),
+            ((u, o, 0o40775), F, (u, g, 0o40755), F, (F, F, F)),
+            // Exactly as open as a parent other users can already change ...
+            ((u, g, 0o40777), F, (u, g, 0o40777), F, (T, T, T)),
+            ((u, o, 0o40775), F, (u, o, 0o40775), F, (T, T, T)),
+            // ... while neither carries an access ACL.
+            ((u, g, 0o40777), T, (u, g, 0o40777), F, (F, T, F)),
+            ((u, g, 0o40777), F, (u, g, 0o40777), T, (F, T, T)),
+            // Another parent owner, group or mode, or a protected (sticky) parent.
+            ((u, g, 0o40777), F, (r, g, 0o40777), F, (F, F, F)),
+            ((u, g, 0o40777), F, (0, g, 0o40777), F, (s, s, s)),
+            ((u, g, 0o40777), F, (u, o, 0o40777), F, (F, F, F)),
+            ((u, g, 0o40777), F, (u, g, 0o41777), F, (F, F, F)),
+            ((u, g, 0o41777), F, (u, g, 0o41777), F, (F, F, F)),
+            // A private group admits the stage alone; any other group leaves the
+            // parent unprotected, so the stage is then exactly as open as it.
+            ((u, g, 0o40775), F, (u, g, 0o40775), F, (T, T, !p)),
+        ] {
+            let asked = (std::cell::Cell::new(false), std::cell::Cell::new(false));
+            let verdict = mount_mode_admitted(
+                stage,
+                || {
+                    asked.0.set(true);
+                    stage_acl
+                },
+                parent,
+                || {
+                    asked.1.set(true);
+                    parent_acl
+                },
+            );
+            assert_eq!(
+                (verdict, asked.0.get(), asked.1.get()),
+                expected,
+                "stage {:?} mode {:o} acl {stage_acl}, parent {:?} mode {:o} acl {parent_acl}",
+                (stage.0, stage.1),
+                stage.2,
+                (parent.0, parent.1),
+                parent.2
+            );
+        }
+    }
+
     #[test]
     fn access_acls_are_detected_through_readable_and_path_descriptors() {
         let temp = Temp::new();
@@ -344,7 +474,10 @@ mod tests {
         let metadata = pinned.metadata().unwrap();
         assert_eq!(metadata.mode() & 0o7777, 0o775);
         assert!(!protected_parent(&pinned, &metadata));
-        assert!(!writable_only_by_caller(&readable, &metadata));
+        // As a stage below its 0755 fixture parent it is neither the caller's
+        // alone nor exactly as open as that parent.
+        let parent = File::open(&temp.path).unwrap();
+        assert!(!admits_stage(&readable, &metadata, &parent).unwrap());
         remove_access_acl(&directory);
         assert!(!sys::may_have_access_acl(&readable));
         assert!(!sys::may_have_access_acl(&pinned));

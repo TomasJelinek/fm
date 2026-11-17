@@ -133,6 +133,30 @@ fn stage_other_users_could_change_is_refused_and_removed() {
     }
 }
 
+/// A stage exactly as open as its parent is admitted only below a parent other
+/// users can already change. A Rename parent never is one, so even the mode of a
+/// protected sticky parent is refused on the stage.
+#[test]
+fn a_stage_as_open_as_a_protected_sticky_parent_is_still_refused() {
+    let _reset = hooks::reset();
+    let temp = Temp::new();
+    let parent = temp.path.join("parent");
+    fs::create_dir(&parent).unwrap();
+    let source = parent.join("source");
+    fs::write(&source, b"source bytes").unwrap();
+    let original = identity(&source);
+    chmod(&parent, 0o1777);
+    let client = Client::new();
+    let prepared = prepare(&client, &source);
+    hooks::ignore_private_mode();
+    hooks::at(Boundary::AfterStageCreate, |stage| chmod(stage, 0o1777));
+    let outcome = rename(&client, &prepared, b"target");
+    chmod(&parent, 0o755);
+    assert!(unchanged(&outcome, ErrorCode::Unsupported), "{outcome:?}");
+    assert_eq!(identity(&source), original);
+    assert_eq!(names(&parent), ["source"]);
+}
+
 #[test]
 fn restrictive_stage_mode_is_corrected_to_owner_only() {
     let _reset = hooks::reset();
