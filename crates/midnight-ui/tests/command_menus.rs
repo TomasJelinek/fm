@@ -28,14 +28,16 @@ impl Platform for TestPlatform {
     }
 }
 
+#[cfg(windows)]
+#[path = "support/windows_keys.rs"]
+mod platform_keys;
+#[cfg(not(windows))]
+#[path = "support/default_keys.rs"]
+mod platform_keys;
+
+/// Through the shared key path (on Windows, the Winit-shaped key metadata).
 fn key(window: &MainWindow, key: Key) {
-    let text: slint::SharedString = key.into();
-    window
-        .window()
-        .dispatch_event(WindowEvent::KeyPressed { text: text.clone() });
-    window
-        .window()
-        .dispatch_event(WindowEvent::KeyReleased { text });
+    platform_keys::key(window, key.into());
 }
 
 fn draw(native: &MinimalSoftwareWindow, pixels: &mut [Rgb8Pixel]) {

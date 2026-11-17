@@ -7,7 +7,7 @@ use midnight_ui::{MainWindow, Theme};
 use slint::{
     ComponentHandle, ModelRc, SharedString, VecModel,
     platform::{
-        Key, Platform, PlatformError, PointerEventButton, WindowAdapter, WindowEvent,
+        Key, Platform, PlatformError, WindowAdapter, WindowEvent,
         software_renderer::{MinimalSoftwareWindow, RepaintBufferType},
     },
 };
@@ -22,28 +22,9 @@ impl Platform for TestPlatform {
         Ok(self.0.clone())
     }
 }
-fn key(window: &MainWindow, text: impl Into<SharedString>) {
-    let text = text.into();
-    window
-        .window()
-        .dispatch_event(WindowEvent::KeyPressed { text: text.clone() });
-    window
-        .window()
-        .dispatch_event(WindowEvent::KeyReleased { text });
-}
-fn click(window: &MainWindow, x: f32, y: f32) {
-    let position = slint::LogicalPosition::new(x, y);
-    let button = PointerEventButton::Left;
-    window
-        .window()
-        .dispatch_event(WindowEvent::PointerMoved { position });
-    window
-        .window()
-        .dispatch_event(WindowEvent::PointerPressed { position, button });
-    window
-        .window()
-        .dispatch_event(WindowEvent::PointerReleased { position, button });
-}
+// The shared helpers send keys the way the platform does (on Windows, with the
+// Winit-shaped key metadata).
+use ui::{click, key};
 
 #[test]
 fn font_options_keep_family_and_density_bases_independent() {
@@ -247,9 +228,13 @@ fn font_options_keep_family_and_density_bases_independent() {
             renderer.render(&mut pixels, 1040);
         });
         assert_eq!(pixels[(height / 2 + 60) * 1040 + 230], surface);
-        // At 32px the six User menu rows exceed its height: the last row, Close,
-        // must be reachable by scrolling its list and must close the menu itself
-        // (any click outside, or on another row, would also close the popup).
+        // Known product limitation: the User menu has six rows since a728d01, but
+        // `ui/main.slint` still sizes it for five (`Theme.control-height * 5 + 90px`),
+        // so at 32px Close starts below the clip. Until the height is fixed (F8), this
+        // test only requires that Close is reachable by scrolling its list; then it
+        // should again require Close to be visible without scrolling.
+        // Close must close the menu itself: any click outside, or on another row,
+        // would also close the popup.
         let rows_run = Rc::new(Cell::new(0));
         let bump = |counter: &Rc<Cell<i32>>| {
             let counter = counter.clone();

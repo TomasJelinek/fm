@@ -25,20 +25,9 @@ impl Platform for TestPlatform {
     }
 }
 
+/// Through the shared key path (on Windows, the Winit-shaped key metadata).
 fn control(window: &MainWindow, text: impl Into<slint::SharedString>) {
-    window.window().dispatch_event(WindowEvent::KeyPressed {
-        text: Key::Control.into(),
-    });
-    let text = text.into();
-    window
-        .window()
-        .dispatch_event(WindowEvent::KeyPressed { text: text.clone() });
-    window
-        .window()
-        .dispatch_event(WindowEvent::KeyReleased { text });
-    window.window().dispatch_event(WindowEvent::KeyReleased {
-        text: Key::Control.into(),
-    });
+    ui::chord(window, &[Key::Control], text);
 }
 
 #[test]

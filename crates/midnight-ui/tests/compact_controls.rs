@@ -10,7 +10,7 @@ use i_slint_core::{
 };
 use midnight_ui::{LocationRow, MainWindow, NavigationChoiceRow};
 use slint::{
-    ComponentHandle, ModelRc, SharedString, VecModel,
+    ComponentHandle, ModelRc, VecModel,
     platform::{
         Key, Platform, PlatformError, PointerEventButton, WindowAdapter, WindowEvent,
         software_renderer::{MinimalSoftwareWindow, RepaintBufferType},
@@ -27,28 +27,9 @@ impl Platform for TestPlatform {
         self.1.get()
     }
 }
-fn key(window: &MainWindow, text: impl Into<SharedString>) {
-    let text = text.into();
-    window
-        .window()
-        .dispatch_event(WindowEvent::KeyPressed { text: text.clone() });
-    window
-        .window()
-        .dispatch_event(WindowEvent::KeyReleased { text });
-}
-fn click(window: &MainWindow, x: f32, y: f32) {
-    let position = slint::LogicalPosition::new(x, y);
-    let button = PointerEventButton::Left;
-    window
-        .window()
-        .dispatch_event(WindowEvent::PointerMoved { position });
-    window
-        .window()
-        .dispatch_event(WindowEvent::PointerPressed { position, button });
-    window
-        .window()
-        .dispatch_event(WindowEvent::PointerReleased { position, button });
-}
+// The shared helpers send keys the way the platform does (on Windows, with the
+// Winit-shaped key metadata).
+use ui::{click, key};
 
 fn popup_position(window: &MainWindow, label: &str) -> slint::LogicalPosition {
     fn find(item: ItemRc, label: &str) -> Option<ItemRc> {
