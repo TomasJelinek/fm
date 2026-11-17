@@ -7,12 +7,12 @@ pub struct HostEvent {
     pub kind: EventKind,
     /// Set on the session's fatal failure, always a `Failed` event; a session reports at
     /// most one. The host stopped the session when it recorded it: the session accepts no
-    /// further request and completes none of its outstanding ones. `request_id` names the
-    /// offending request, whether or not the consumer still tracks it, or
-    /// [`OPEN_REQUEST_ID`](crate::OPEN_REQUEST_ID) for a failure of the session itself.
-    /// `drain` returns it ahead of any older event still queued; until the dispatcher
-    /// discards those, they can follow it in the same or a later drain and belong to
-    /// requests that will never complete.
+    /// further request and completes none of the requests still outstanding then.
+    /// `request_id` names the offending request, whether or not the consumer still tracks
+    /// it, or [`OPEN_REQUEST_ID`](crate::OPEN_REQUEST_ID) for a failure of the session
+    /// itself. `drain` returns it ahead of any older event still queued. Until the
+    /// dispatcher discards that queue, older events can follow it in the same or a later
+    /// drain, including terminal events of requests that completed before the failure.
     pub fatal: bool,
 }
 

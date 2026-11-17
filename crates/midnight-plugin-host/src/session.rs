@@ -204,7 +204,10 @@ impl Session {
     }
     /// Register a bounded consumer wake. It must only enqueue work, returning
     /// whether the signal was accepted; plugin callbacks never reenter consumers.
-    /// It runs on backend threads, including the dispatcher. Ready output signals it
+    /// It can run on any thread: on backend threads, the dispatcher included, and
+    /// synchronously on the caller of this method (when a signal is already pending)
+    /// or of `drain` (when output remains). So it must never block, nor take a lock
+    /// that the consumer holds while it calls those methods. Ready output signals it
     /// at most once until the next `drain`. When the dispatcher has finished
     /// (`is_closed` is true), it is signalled once more even if earlier output was
     /// never drained, so a consumer can wait for a closing session without polling.

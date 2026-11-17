@@ -98,12 +98,17 @@ A session-fatal failure (host setup or plugin creation, malformed or mismatched
 plugin output, a failed plugin drain or read-service reply, the output budget)
 closes the session at once. `drain` returns it first, as a `Failed` event with
 `HostEvent::fatal` set (at most one per session) and the offending request's ID,
-or `OPEN_REQUEST_ID` (the Open request, 1) for the session itself. Older output
-can still follow it until the dispatcher discards the queue; those requests never
-complete. When the dispatcher finishes, it returns the session quota, sets
-`is_closed`, and then signals the `notify_on_ready` callback once more even if
-earlier output was never drained, so a consumer can wait for a closing session's
-cleanup without polling.
+or `OPEN_REQUEST_ID` (the Open request, 1) for the session itself. Requests still
+outstanding when the session failed never complete. Output queued before the
+failure, including terminal events of requests that did complete, can still follow
+it until the dispatcher discards the queue. When the dispatcher finishes, it returns
+the session quota, sets `is_closed`, and then signals the `notify_on_ready` callback
+once more even if earlier output was never drained, so a consumer can wait for a
+closing session's cleanup without polling. The callback can run on any thread: on
+backend threads, the dispatcher included, and on the thread that calls
+`notify_on_ready` (a signal is already pending) or `drain` (output remains). It
+must only enqueue work: never block, nor take a lock that the consumer holds while
+it calls those methods.
 
 ## Verification
 

@@ -225,8 +225,8 @@ fn untracked_fatal_failure_ahead_of_a_full_drain_is_reported_with_its_message() 
     worker.status = SEARCHING.into();
     // The first 32-event drain after plugin-host stopped the session on output of a
     // cancelled request (9) while more than 32 older events were queued: the fatal
-    // failure leads, older output of requests that will never complete follows, and
-    // the host still holds more of it.
+    // failure leads, and output queued before it follows, including terminal events of
+    // requests that completed before the failure. The host still holds more of it.
     let mut events = vec![
         fatal(9, INVALID, "Malformed plugin output"),
         failed(41, INVALID, "Plugin rejected request (3)"),
