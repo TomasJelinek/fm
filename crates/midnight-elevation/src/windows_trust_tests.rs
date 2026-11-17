@@ -222,9 +222,10 @@ fn pins_refuse_replacement_but_let_folders_gain_entries() {
     std::fs::write(&helper, b"fixture").unwrap();
     let outside = root.path().join("outside.txt");
     std::fs::write(&outside, b"unrelated").unwrap();
-    let folder_pin = pin_folder(&folder).unwrap();
-    let helper_pin = pin_file(&helper).unwrap();
     let refusal = |result: io::Result<()>| result.unwrap_err().raw_os_error();
+    // The folder pin alone: NTFS also refuses to rename a folder while an entry below it is
+    // open (ERROR_ACCESS_DENIED), so the helper is pinned only afterwards.
+    let folder_pin = pin_folder(&folder).unwrap();
     // Write sharing: other processes can still move entries into a pinned ancestor.
     std::fs::rename(&outside, folder.join("added.txt")).unwrap();
     // No delete sharing, and traverse access subjects the pin to share checks: the folder can
@@ -234,6 +235,7 @@ fn pins_refuse_replacement_but_let_folders_gain_entries() {
         Some(ERROR_SHARING_VIOLATION)
     );
     // Read sharing only: the helper can be neither rewritten, renamed nor deleted.
+    let helper_pin = pin_file(&helper).unwrap();
     assert_eq!(
         refusal(OpenOptions::new().write(true).open(&helper).map(drop)),
         Some(ERROR_SHARING_VIOLATION)
