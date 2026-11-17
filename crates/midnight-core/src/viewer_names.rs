@@ -10,6 +10,13 @@ pub fn viewer_plugin_name(id: &str, name: Option<&str>) -> String {
         "midnight.viewer.markdown" => Some(("Markdown viewer", "Markdown")),
         "midnight.viewer.image" => Some(("Image viewer", "Images")),
         "midnight.viewer.pdf" => Some(("PDF viewer", "PDF")),
+        // Still required. Linux HTML packages whose `web-viewer.json` was synthesized by
+        // `plugins/midnight-viewer-html/scripts/package-linux.py`, instead of copied from
+        // the project manifest as on Windows, name the viewer "Chromium HTML". Installed
+        // viewer packages are separate from the executable (the Linux README installs
+        // `viewers/` with its own copy step), so an application update can keep such a
+        // package, and its manifest name is read again at every catalog refresh. Remove
+        // this alias only once no supported installation can still hold one.
         "midnight.viewer.html" => Some(("HTML viewer", "Chromium HTML")),
         _ => None,
     };
