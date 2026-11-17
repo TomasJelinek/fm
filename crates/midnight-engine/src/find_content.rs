@@ -127,25 +127,6 @@ impl PreparedContent {
     }
 }
 
-// Standalone callers/tests; the recursive worker retains PreparedContent instead.
-#[allow(dead_code)]
-pub(super) fn matches(
-    source: &mut dyn FindSource,
-    query: &FindContentQuery,
-    limits: FindLimits,
-    progress: &mut FindProgress,
-    cancel: &Cancellation,
-) -> ContentMatch {
-    match PreparedContent::new(query) {
-        Ok(mut prepared) => prepared.matches(source, limits, progress, cancel),
-        Err(error) => ContentMatch::Failed(find_error(
-            &source.entry().path,
-            io::ErrorKind::InvalidInput,
-            error,
-        )),
-    }
-}
-
 fn encoding_error(path: &Path) -> FsError {
     find_error(
         path,

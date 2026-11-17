@@ -177,6 +177,29 @@ fn duplicate_result_and_candidate_limits_are_explicit_and_keep_whole_groups() {
 }
 
 #[test]
+fn an_omitted_oversized_group_does_not_stop_later_groups_that_fit() {
+    let fixture = fixture();
+    // The empty-file bucket is compared first and exceeds the two-result budget.
+    for name in ["empty-1", "empty-2", "empty-3"] {
+        fs::write(fixture.path().join(name), b"").unwrap();
+    }
+    for name in ["large-1", "large-2"] {
+        fs::write(fixture.path().join(name), b"identical larger content").unwrap();
+    }
+    let mut query = request(fixture.path());
+    query.duplicates = true;
+    query.limits.max_results = 2;
+    let (summary, rows) = execute_at(&query, SystemTime::now());
+    assert_eq!(summary.completion, FindCompletion::Incomplete);
+    assert!(summary.reached_budgets.contains(&FindBudget::Results));
+    assert_eq!(
+        names(&rows),
+        [PathBuf::from("large-1"), PathBuf::from("large-2")]
+    );
+    assert_eq!(summary.progress.duplicate_groups, 1);
+}
+
+#[test]
 fn large_duplicate_groups_publish_atomically_and_refused_delivery_is_cancelled() {
     let fixture = fixture();
     for index in 0..70 {

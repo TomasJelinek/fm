@@ -3,6 +3,24 @@ mod content;
 use midnight_core::*;
 use std::{io, path::PathBuf};
 
+/// One standalone content check; the recursive worker reuses `PreparedContent`.
+fn matches_once(
+    source: &mut dyn FindSource,
+    query: &FindContentQuery,
+    limits: FindLimits,
+    progress: &mut FindProgress,
+    cancel: &Cancellation,
+) -> content::ContentMatch {
+    match content::PreparedContent::new(query) {
+        Ok(mut prepared) => prepared.matches(source, limits, progress, cancel),
+        Err(error) => content::ContentMatch::Failed(find_error(
+            &source.entry().path,
+            io::ErrorKind::InvalidInput,
+            error,
+        )),
+    }
+}
+
 struct Source {
     entry: FindEntry,
     length: usize,
@@ -76,7 +94,7 @@ impl FindSource for Source {
 fn practical_default_content_scan_finds_a_late_match_above_the_old_whole_file_limit() {
     let mut source = Source::new(9 * 1024 * 1024, None, usize::MAX);
     let mut progress = FindProgress::default();
-    let result = content::matches(
+    let result = matches_once(
         &mut source,
         &FindContentQuery {
             text: "needle".into(),
@@ -98,7 +116,7 @@ fn practical_default_content_scan_finds_a_late_match_above_the_old_whole_file_li
 fn bom_scalars_and_case_folding_work_when_every_read_is_one_byte() {
     let bytes = "\u{feff}prefix Straße 文档 suffix".as_bytes().to_vec();
     let mut source = Source::new(bytes.len(), Some(bytes), 1);
-    let result = content::matches(
+    let result = matches_once(
         &mut source,
         &FindContentQuery {
             text: "STRASSE 文档".into(),
@@ -118,7 +136,7 @@ fn finding_a_match_does_not_hide_malformed_or_incomplete_utf8_later_in_the_file(
         let mut bytes = b"needle".to_vec();
         bytes.extend(suffix);
         let mut source = Source::new(bytes.len(), Some(bytes), 1);
-        let result = content::matches(
+        let result = matches_once(
             &mut source,
             &FindContentQuery {
                 text: "needle".into(),
@@ -142,7 +160,7 @@ fn streaming_content_limits_remain_explicit() {
         max_content_bytes_per_file: 3,
         ..Default::default()
     };
-    let result = content::matches(
+    let result = matches_once(
         &mut source,
         &FindContentQuery {
             text: "needle".into(),
@@ -166,7 +184,7 @@ fn scan(
     maximum_read: usize,
 ) -> content::ContentMatch {
     let mut source = Source::new(bytes.len(), Some(bytes), maximum_read);
-    content::matches(
+    matches_once(
         &mut source,
         &FindContentQuery {
             text: text.into(),
@@ -281,7 +299,7 @@ fn content_matcher_throughput_probe() {
         for _ in 0..3 {
             let mut source = Source::new(length, None, 65_536);
             assert!(matches!(
-                content::matches(
+                matches_once(
                     &mut source,
                     &query,
                     FindLimits::default(),

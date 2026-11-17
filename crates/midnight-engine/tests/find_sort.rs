@@ -62,6 +62,7 @@ fn sorted(column: FindSortColumn, descending: bool) -> FindOrder {
         7,
         Some(&ReverseLocale),
         &Cancellation::default(),
+        &mut find_sort::KeyCache::default(),
     )
     .unwrap()
 }
@@ -94,6 +95,7 @@ fn every_duplicate_sort_keeps_group_members_adjacent() {
             1,
             None,
             &Cancellation::default(),
+            &mut find_sort::KeyCache::default(),
         )
         .unwrap();
         assert_eq!(
@@ -135,6 +137,7 @@ fn missing_locale_keys_stay_last_in_both_name_and_path_directions() {
                 1,
                 Some(&MissingKey),
                 &Cancellation::default(),
+                &mut find_sort::KeyCache::default(),
             )
             .unwrap();
             assert_eq!(
@@ -177,8 +180,58 @@ fn cancelled_sort_never_publishes_an_order() {
             FindSortSpec::default(),
             1,
             Some(&ReverseLocale),
-            &cancel
+            &cancel,
+            &mut find_sort::KeyCache::default(),
         )
         .is_err()
     );
+}
+
+#[test]
+fn streaming_resorts_derive_locale_keys_only_for_new_results() {
+    struct Counting(std::sync::atomic::AtomicUsize);
+    impl LocaleService for Counting {
+        fn number_locale(&self) -> Result<NumberLocale, FsError> {
+            Ok(NumberLocale::default())
+        }
+        fn collation_key(&self, value: &OsStr) -> Result<Option<Vec<u8>>, FsError> {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            ReverseLocale.collation_key(value)
+        }
+    }
+    let locale = Counting(Default::default());
+    let calls = || locale.0.load(std::sync::atomic::Ordering::SeqCst);
+    let all = results();
+    let mut cache = find_sort::KeyCache::default();
+    let name = FindSortSpec::default();
+    let sort = |rows: &[Arc<FindResult>], spec, cache: &mut find_sort::KeyCache| {
+        find_sort::order(
+            rows,
+            spec,
+            1,
+            Some(&locale),
+            &Cancellation::default(),
+            cache,
+        )
+        .unwrap()
+    };
+    let first = sort(&all[..2], name, &mut cache);
+    assert_eq!(calls(), 2);
+    // An appended batch adds one key; the earlier two are reused.
+    let second = sort(&all, name, &mut cache);
+    assert_eq!(calls(), 3);
+    assert_eq!(
+        ids(&first),
+        ids(&sort(&all[..2], name, &mut Default::default()))
+    );
+    assert_eq!(ids(&second), ids(&sorted(name.column, name.descending)));
+    // Another column prepares its own keys.
+    let path = FindSortSpec {
+        column: FindSortColumn::Path,
+        descending: false,
+    };
+    let before = calls();
+    let by_path = sort(&all, path, &mut cache);
+    assert_eq!(calls(), before + 3);
+    assert_eq!(ids(&by_path), ids(&sorted(path.column, path.descending)));
 }

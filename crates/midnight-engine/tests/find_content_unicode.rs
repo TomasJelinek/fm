@@ -1,6 +1,7 @@
 //! Unicode whole-word correctness and an explicit repeatable throughput probe.
-#[path = "../src/find_content.rs"]
+// This copy reads only Match/Failed results; the budget fields are read elsewhere.
 #[allow(dead_code)]
+#[path = "../src/find_content.rs"]
 mod content;
 
 use midnight_core::*;

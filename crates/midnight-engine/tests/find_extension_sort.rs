@@ -85,6 +85,7 @@ fn assert_panel_parity(locale: &dyn LocaleService) {
             8,
             Some(locale),
             &Cancellation::default(),
+            &mut find_sort::KeyCache::default(),
         )
         .unwrap();
         assert_eq!(
@@ -136,6 +137,7 @@ fn extension_secondary_name_keys_share_the_aggregate_resource_bound() {
         1,
         Some(&LargeKeys),
         &Cancellation::default(),
+        &mut find_sort::KeyCache::default(),
     )
     .expect_err("both key sets must be bounded");
     assert_eq!(error.kind, std::io::ErrorKind::InvalidData);
