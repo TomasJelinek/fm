@@ -102,8 +102,9 @@ async fn acknowledged_row_navigation_survives_unacknowledged_probe_publication()
         },
     )
     .await;
-    let loading = publication(&mut events).await;
-    assert_eq!(loading.view.rows[0].disclosure, TreeDisclosure::Loading);
+    // Optional probes publish only their result, never a Loading marker.
+    let probed = publication(&mut events).await;
+    assert_eq!(probed.view.rows[0].disclosure, TreeDisclosure::Collapsed);
     // The user still sees the acknowledged view while a newer publication waits
     // in the UI event queue. Exact occurrence authority must survive that delay.
     tree(
@@ -126,9 +127,7 @@ async fn acknowledged_row_navigation_survives_unacknowledged_probe_publication()
         matches!(received, TreeEvent::Navigated { target: TreeNavigationTarget::Native(ref path), .. } if path == &target),
         "{received:?}"
     );
-    tree(&commands, TreeCommand::Commit(loading.view)).await;
-    let completed = publication(&mut events).await;
-    assert_eq!(completed.view.rows[0].disclosure, TreeDisclosure::Collapsed);
+    tree(&commands, TreeCommand::Commit(probed.view)).await;
     commands.send(Command::Shutdown).await.unwrap();
     tokio::time::timeout(Duration::from_secs(3), engine)
         .await
@@ -261,7 +260,8 @@ async fn reproject_cannot_overtake_an_unacknowledged_provider_publication() {
         },
     )
     .await;
-    let loading = publication(&mut events).await;
+    // The probe result is an unacknowledged provider publication.
+    let completed = publication(&mut events).await;
     tree(
         &commands,
         TreeCommand::Reproject(TreeReprojectRequest {
@@ -280,8 +280,6 @@ async fn reproject_cannot_overtake_an_unacknowledged_provider_publication() {
             ..
         }
     ));
-    tree(&commands, TreeCommand::Commit(loading.view)).await;
-    let completed = publication(&mut events).await;
     tree(&commands, TreeCommand::Commit(completed.view.clone())).await;
     tree(
         &commands,

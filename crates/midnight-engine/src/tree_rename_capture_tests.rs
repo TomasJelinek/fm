@@ -223,13 +223,5 @@ fn tree_rename_capture_retains_provider_and_shared_capacity_until_last_owner() {
     wait_released(&capacity);
 }
 
-fn wait_released(capacity: &Semaphore) {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-    while capacity.available_permits() == 0 && std::time::Instant::now() < deadline {
-        std::thread::yield_now();
-    }
-    assert_eq!(capacity.available_permits(), 1);
-}
-
 #[path = "tree_rename_retirement_tests.rs"]
 mod retirement;

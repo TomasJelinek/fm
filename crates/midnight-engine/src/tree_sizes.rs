@@ -12,6 +12,7 @@ use std::{
 };
 use tokio::sync::Notify;
 
+/// Minimum spacing of size snapshot publications.
 const INTERVAL: Duration = Duration::from_millis(250);
 struct Pending {
     request: TreeRequestId,
@@ -22,6 +23,23 @@ struct Pending {
 struct Progress {
     values: HashMap<TreeRowId, FolderSize>,
     done: bool,
+}
+
+/// Owns one running scan on its blocking worker. Dropping it, also while a scan
+/// unwinds, first retires the captured provider leases and then reports the scan
+/// as done, so the pane's scheduler can never stay busy for a scan that ended.
+struct ScanOwner {
+    pending: Option<Pending>,
+    progress: Arc<Mutex<Progress>>,
+    wake: Arc<Notify>,
+}
+impl Drop for ScanOwner {
+    fn drop(&mut self) {
+        // Captured provider leases retire here before completion admission.
+        drop(self.pending.take());
+        self.progress.lock().unwrap_or_else(|e| e.into_inner()).done = true;
+        self.wake.notify_one();
+    }
 }
 struct Active {
     retired: bool,
@@ -44,6 +62,7 @@ pub(crate) struct State {
     in_flight: Option<(TreeViewStamp, u64)>,
     last_map: Option<Arc<TreeSizeSnapshot>>,
     last_publish: Option<Instant>,
+    interval: Duration,
     dirty: bool,
     enabled: bool,
 }
@@ -65,9 +84,16 @@ impl State {
             in_flight: None,
             last_map: None,
             last_publish: None,
+            interval: INTERVAL,
             dirty: false,
             enabled: false,
         }
+    }
+    /// Short publication pacing for tests that do not measure the pacing itself.
+    #[cfg(test)]
+    pub fn with_interval(mut self, interval: Duration) -> Self {
+        self.interval = interval;
+        self
     }
     pub fn busy(&self) -> bool {
         self.active.is_some() || !self.pending.is_empty() || self.dirty
@@ -250,21 +276,24 @@ impl State {
             let filesystem = self.filesystem.clone();
             let reports = self.reports.clone();
             let budget = self.budget.clone();
-            let wake = self.wake.clone();
+            let owner = ScanOwner {
+                pending: Some(pending),
+                progress,
+                wake: self.wake.clone(),
+            };
             tokio::task::spawn_blocking(move || {
-                scan(
-                    filesystem.as_ref(),
-                    &budget,
-                    &pending.captured,
-                    &pending.cancel,
-                    &progress,
-                    &wake,
-                    &reports,
-                );
-                // Captured provider leases retire here before completion admission.
-                drop(pending);
-                progress.lock().unwrap_or_else(|e| e.into_inner()).done = true;
-                wake.notify_one();
+                if let Some(pending) = &owner.pending {
+                    scan(
+                        filesystem.as_ref(),
+                        &budget,
+                        &pending.captured,
+                        &pending.cancel,
+                        &owner.progress,
+                        &owner.wake,
+                        &reports,
+                    );
+                }
+                drop(owner);
             });
         }
         let Some(stamp) = stamp else {
@@ -274,7 +303,7 @@ impl State {
             && self.in_flight.is_none()
             && self
                 .last_publish
-                .is_none_or(|last| last.elapsed() >= INTERVAL)
+                .is_none_or(|last| last.elapsed() >= self.interval)
         {
             let mut running = HashSet::new();
             if let Some(active) = &self.active
@@ -326,13 +355,34 @@ fn scan(
             return;
         }
         match occurrence.captured.target.value() {
-            Ok(ProviderTarget::Native(path)) => native.push(Entry::new(
-                EntryId(occurrence.row.0),
-                path.clone(),
-                captured.view.rows[captured.view.index.row_positions[&occurrence.row]]
-                    .entry
-                    .kind,
-            )),
+            Ok(ProviderTarget::Native(path)) => {
+                let Some(row) = captured
+                    .view
+                    .index
+                    .row_positions
+                    .get(&occurrence.row)
+                    .and_then(|position| captured.view.rows.get(*position))
+                else {
+                    partial(
+                        progress,
+                        occurrence.row,
+                        wake,
+                        FolderSize::default(),
+                        format_args!(
+                            "Captured tree occurrence {:?} in {:?}",
+                            occurrence.row, captured.view.stamp
+                        ),
+                        "The captured occurrence is missing from its view.",
+                        reports,
+                    );
+                    continue;
+                };
+                native.push(Entry::new(
+                    EntryId(occurrence.row.0),
+                    path.clone(),
+                    row.entry.kind,
+                ));
+            }
             Ok(ProviderTarget::Archive(target)) => {
                 let mut latest = FolderSize::default();
                 let result = (|| {

@@ -79,7 +79,11 @@ struct Node {
     expanded: bool,
     known: Option<bool>,
     listed: bool,
+    // Every successful listing installs a new version: child metadata feeds the
+    // watch signature. The children version changes only with the ordered child
+    // occurrence sequence, so an unchanged re-listing keeps traversal cursors.
     listing_version: u64,
+    children_version: u64,
     browse_identity: Option<SizeDirectoryIdentity>,
     recursive_excluded: u64,
     error: Option<ProviderError>,
@@ -101,10 +105,45 @@ pub struct DirectoryTree {
     reports: crate::size_warnings::ReportLog,
 }
 
-/// Bounded rollback state for an atomic model/projection maintenance publication.
+/// Bounded rollback state for an atomic model/projection publication. It holds
+/// one branch subtree: listing a branch changes only that branch and its
+/// descendants, so the rest of the model is never copied.
 pub(crate) struct TreeCheckpoint {
-    nodes: HashMap<BranchId, Node>,
+    branch: BranchId,
+    nodes: Vec<(BranchId, Node)>,
     payload_bytes: usize,
+}
+
+/// Display-relevant outcome of one branch listing. A re-listing that changes none
+/// of it needs no new projection.
+pub(crate) struct ListingState {
+    failed: bool,
+    known: Option<bool>,
+    children: Vec<(BranchId, Arc<ProviderEntry>)>,
+}
+
+impl ListingState {
+    /// No error before or after, the same disclosure knowledge and the same
+    /// ordered child occurrences with equal entries.
+    pub(crate) fn unchanged(&self, after: &Self) -> bool {
+        !self.failed
+            && !after.failed
+            && self.known == after.known
+            && self.children.len() == after.children.len()
+            && self.children.iter().zip(&after.children).all(
+                |((before_id, before), (after_id, after))| {
+                    before_id == after_id && same_entry(before, after)
+                },
+            )
+    }
+}
+
+fn same_entry(left: &ProviderEntry, right: &ProviderEntry) -> bool {
+    left.token.as_bytes() == right.token.as_bytes()
+        && left.raw_name == right.raw_name
+        && left.display_name == right.display_name
+        && left.kind == right.kind
+        && left.metadata == right.metadata
 }
 
 struct Permit(Arc<AtomicUsize>, Cancellation);
@@ -206,25 +245,79 @@ impl DirectoryTree {
         node.listed
             .then_some((node.listing_version, node.children.as_slice()))
     }
-    pub(crate) fn checkpoint(&self) -> TreeCheckpoint {
-        let mut nodes = self.nodes.clone();
-        for node in nodes.values_mut() {
-            node.pending = None;
-        }
+
+    /// Ordered children of a listed branch with the version of that exact sequence.
+    /// Re-listing without inserting, removing or reordering children keeps it.
+    pub(crate) fn listed_children(&self, branch: BranchId) -> Option<(u64, &[BranchId])> {
+        let node = self.nodes.get(&branch)?;
+        node.listed
+            .then_some((node.children_version, node.children.as_slice()))
+    }
+
+    pub(crate) fn contains(&self, branch: BranchId) -> bool {
+        self.nodes.contains_key(&branch)
+    }
+
+    /// Allocation-free alternative to `state(branch).disclosure`.
+    pub(crate) fn disclosure(&self, branch: BranchId) -> Option<Disclosure> {
+        self.nodes.get(&branch).map(disclosure)
+    }
+
+    /// Allocation-free alternative to `state(branch).expanded`.
+    pub(crate) fn expanded(&self, branch: BranchId) -> bool {
+        self.nodes.get(&branch).is_some_and(|node| node.expanded)
+    }
+
+    pub(crate) fn listing_state(&self, branch: BranchId) -> Option<ListingState> {
+        let node = self.nodes.get(&branch)?;
+        Some(ListingState {
+            failed: node.error.is_some(),
+            known: node.known,
+            children: node
+                .children
+                .iter()
+                .filter_map(|id| Some((*id, self.nodes.get(id)?.entry.clone())))
+                .collect(),
+        })
+    }
+
+    /// Snapshot `branch` and its descendants. Listing results, recursive batches
+    /// and maintenance steps change only the subtree of the branch they list.
+    pub(crate) fn checkpoint(&self, branch: BranchId) -> TreeCheckpoint {
+        let nodes = self
+            .descendants(vec![branch])
+            .into_iter()
+            .filter_map(|id| {
+                let mut node = self.nodes.get(&id)?.clone();
+                node.pending = None;
+                Some((id, node))
+            })
+            .collect();
         TreeCheckpoint {
+            branch,
             nodes,
             payload_bytes: self.payload_bytes,
         }
     }
 
+    fn restore_subtree(&mut self, checkpoint: TreeCheckpoint) {
+        if !self.nodes.contains_key(&checkpoint.branch) {
+            // Its parent no longer references this subtree; restored nodes would be orphans.
+            return;
+        }
+        for id in self.descendants(vec![checkpoint.branch]) {
+            if let Some(node) = self.nodes.remove(&id) {
+                cancel_pending(&node);
+            }
+        }
+        self.nodes.extend(checkpoint.nodes);
+        self.payload_bytes = checkpoint.payload_bytes;
+    }
+
     /// Restore the published model while preserving all identity high-water marks.
     /// Cancellation never releases an outstanding worker's native I/O ownership.
     pub(crate) fn rollback_unpublished(&mut self, checkpoint: TreeCheckpoint) {
-        for node in self.nodes.values() {
-            cancel_pending(node);
-        }
-        self.nodes = checkpoint.nodes;
-        self.payload_bytes = checkpoint.payload_bytes;
+        self.restore_subtree(checkpoint);
     }
 
     pub(crate) fn restore(
@@ -233,8 +326,7 @@ impl DirectoryTree {
         branch: BranchId,
         error: ProviderError,
     ) {
-        self.nodes = checkpoint.nodes;
-        self.payload_bytes = checkpoint.payload_bytes;
+        self.restore_subtree(checkpoint);
         let available = self.limits.bytes.saturating_sub(self.payload_bytes);
         let details = self.failure_details(branch, &error);
         if let Some(node) = self.nodes.get_mut(&branch) {
@@ -522,6 +614,7 @@ impl DirectoryTree {
                     known: None,
                     listed: false,
                     listing_version: 0,
+                    children_version: 0,
                     browse_identity: None,
                     recursive_excluded: 0,
                     error: None,
@@ -778,6 +871,7 @@ impl DirectoryTree {
                         known: None,
                         listed: false,
                         listing_version: 0,
+                        children_version: 0,
                         browse_identity: None,
                         recursive_excluded: 0,
                         error: None,
@@ -797,6 +891,9 @@ impl DirectoryTree {
         parent.known = Some(!children.is_empty());
         parent.listed = true;
         parent.listing_version = listing_version;
+        if parent.children != children {
+            parent.children_version = listing_version;
+        }
         parent.children = children;
         if expand {
             parent.expanded = true;

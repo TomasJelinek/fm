@@ -44,6 +44,7 @@ mod user_command_capture;
 #[path = "tree_watch_scope.rs"]
 mod watch_scope;
 use refresh::Maintenance;
+pub(crate) use refresh::{NAMESPACE_POLL, Wait};
 #[cfg(test)]
 #[path = "tree_clipboard_capture_tests.rs"]
 mod clipboard_capture_tests;
@@ -75,15 +76,23 @@ pub(crate) struct Session {
     selection_seeded: bool,
     accepted: Option<Arc<TreeProjection>>,
     options: ProjectionOptions,
+    // Size lookup the current projection was sorted with; a size invalidation
+    // replaces `options.sizes` without rebuilding.
+    built_sizes: Arc<HashMap<TreeRowId, midnight_core::FolderSize>>,
     queue: VecDeque<PendingBranch>,
     versions: HashMap<BranchId, u64>,
     next_work: u64,
     pub(crate) last_request: TreeRequestId,
     maintenance: Option<Maintenance>,
+    // An accepted refresh waiting for the in-flight branch job to be installed.
+    refresh_pending: Option<(TreeViewStamp, TreeRequestId)>,
     prefer_maintenance: bool,
     recursive: Option<recursive::Walk>,
     recursive_batch: Option<recursive::Batch>,
     recursive_notice: Option<midnight_core::TreeEvent>,
+    // An explicit branch request that could not be admitted. It is a row
+    // diagnostic, never a session failure.
+    branch_notice: Option<midnight_core::TreeEvent>,
     recursive_publication: bool,
     watch_cache: HashMap<BranchId, (u64, Arc<crate::watch::tree::ScopeTarget>)>,
     watch_failure: Option<watch_scope::Failure>,
@@ -101,12 +110,13 @@ pub(crate) struct WorkerBudget {
 struct WorkerPermit {
     _listing: OwnedSemaphorePermit,
     _branch: OwnedSemaphorePermit,
+    // The exclusive transfer-namespace grant, held only by maintenance listings.
     _mutation: Option<OwnedSemaphorePermit>,
 }
 
 enum WorkOrigin {
     User {
-        _row: TreeRowId,
+        row: TreeRowId,
     },
     Recursive {
         walk: TreeRequestId,
@@ -270,8 +280,12 @@ impl WorkerBudget {
         self
     }
 
-    fn acquire(&self, _maintenance: bool) -> Result<Option<WorkerPermit>, ProviderError> {
-        let mutation = {
+    /// Maintenance reconciles state after transfers, so it excludes all of them
+    /// (every share of the namespace gate) through its list/apply step. Explicit,
+    /// recursive and probe listings show the live namespace and take no share:
+    /// browsing never waits for, or delays, a transfer.
+    fn acquire(&self, maintenance: bool) -> Result<Option<WorkerPermit>, ProviderError> {
+        let mutation = if maintenance {
             match self
                 .mutation
                 .clone()
@@ -281,6 +295,8 @@ impl WorkerBudget {
                 Err(TryAcquireError::NoPermits) => return Ok(None),
                 Err(TryAcquireError::Closed) => return Err(ProviderError::Unavailable),
             }
+        } else {
+            None
         };
         let branch = match self.branch.clone().try_acquire_owned() {
             Ok(permit) => permit,
@@ -365,6 +381,7 @@ impl Session {
         self.projection_state = state;
         self.projection = projection;
         self.selection = selection;
+        self.built_sizes = options.sizes.clone();
         self.options = options;
         self.last_request = request.request;
         self.selection_seeded = true;
@@ -431,16 +448,19 @@ impl Session {
             selection,
             selection_seeded: false,
             accepted: None,
+            built_sizes: options.sizes.clone(),
             options,
             queue: VecDeque::new(),
             versions: HashMap::new(),
             next_work: 1,
             last_request: TreeRequestId(0),
             maintenance: None,
+            refresh_pending: None,
             prefer_maintenance: true,
             recursive: None,
             recursive_batch: None,
             recursive_notice: None,
+            branch_notice: None,
             recursive_publication: false,
             watch_cache: HashMap::new(),
             watch_failure: None,
@@ -519,6 +539,7 @@ impl Session {
                 return Err(error);
             }
         };
+        self.built_sizes = options.sizes.clone();
         self.options = options;
         self.projection_state = state;
         self.projection = projection;
@@ -536,6 +557,13 @@ impl Session {
         }
         self.accepted = Some(projection.clone());
         true
+    }
+
+    /// The UI has acknowledged the exact current projection.
+    pub(crate) fn projection_accepted(&self) -> bool {
+        self.accepted
+            .as_ref()
+            .is_some_and(|accepted| Arc::ptr_eq(accepted, &self.projection))
     }
 
     /// The controller proves this Arc was emitted and has not yet been acknowledged.
@@ -706,7 +734,7 @@ impl Session {
         self.versions.insert(branch, version);
         self.queue.push_back(PendingBranch {
             branch,
-            origin: WorkOrigin::User { _row: row },
+            origin: WorkOrigin::User { row },
             kind,
             version,
             request,
@@ -727,11 +755,7 @@ impl Session {
             .retain(|pending| pending.kind != TreeRequest::Probe);
         for row in visible {
             let branch = self.visible_branch(*row)?;
-            if self
-                .tree
-                .state(branch)
-                .is_some_and(|state| state.disclosure == Disclosure::Unknown)
-            {
+            if self.tree.disclosure(branch) == Some(Disclosure::Unknown) {
                 self.enqueue(branch, *row, TreeRequest::Probe, TreeRequestId(0))?;
             }
         }
@@ -741,20 +765,27 @@ impl Session {
     pub(crate) fn queued(&self) -> usize {
         self.queue.len()
             + usize::from(self.recursive_ready())
+            + usize::from(self.refresh_pending.is_some())
             + self
                 .maintenance
                 .as_ref()
                 .map_or(0, |maintenance| maintenance.remaining.len())
     }
 
+    /// Call only while no branch job of this session is in flight.
     pub(crate) fn take_work(&mut self) -> Result<Option<BranchJob>, ProviderError> {
         let batching = self.recursive_batch_active();
         if !batching {
+            self.start_pending_refresh();
             self.skip_removed_refresh_branches();
-            self.queue
-                .retain(|pending| self.tree.state(pending.branch).is_some());
-            self.versions
-                .retain(|branch, _| self.tree.state(*branch).is_some());
+            // A probe is optional read-ahead for a still-unknown row. Expansion,
+            // a refresh or a recursive walk may have answered it meanwhile.
+            let tree = &self.tree;
+            self.queue.retain(|pending| match pending.kind {
+                TreeRequest::Probe => tree.disclosure(pending.branch) == Some(Disclosure::Unknown),
+                TreeRequest::Expand | TreeRequest::Refresh => tree.contains(pending.branch),
+            });
+            self.versions.retain(|branch, _| tree.contains(*branch));
         }
         if self.queued() == 0 {
             return Ok(None);
@@ -783,21 +814,24 @@ impl Session {
                 .iter()
                 .position(|pending| pending.kind != TreeRequest::Probe)
                 .unwrap_or(0);
-            let pending = self
-                .queue
-                .remove(position)
-                .ok_or(ProviderError::StaleReference)?;
+            let Some(pending) = self.queue.remove(position) else {
+                return Ok(None);
+            };
             self.prefer_maintenance = true;
             pending
         };
         let work = match self.tree.request(pending.branch, pending.kind) {
             Ok(work) => work.with_cancellation(&self.lifetime),
-            Err(error) if matches!(pending.origin, WorkOrigin::Recursive { .. }) => {
-                let cancel = self.lifetime.clone();
-                self.pause_recursive(&error, &cancel);
+            Err(error) => {
+                match pending.origin {
+                    WorkOrigin::Recursive { .. } => {
+                        self.pause_recursive(&error);
+                    }
+                    WorkOrigin::User { row } => self.reject_branch(pending, row, &error),
+                    WorkOrigin::Maintenance => return Err(error),
+                }
                 return Ok(None);
             }
-            Err(error) => return Err(error),
         };
         Ok(Some(BranchJob {
             stamp: self.projection.stamp,
@@ -806,6 +840,26 @@ impl Session {
             permit,
             registration: self.registration.clone(),
         }))
+    }
+
+    /// A user's branch request whose listing cannot start (for example a node at
+    /// the depth limit) stays local to that row. Probes are optional and silent.
+    fn reject_branch(&mut self, pending: PendingBranch, row: TreeRowId, error: &ProviderError) {
+        if self.versions.get(&pending.branch) == Some(&pending.version) {
+            self.versions.remove(&pending.branch);
+        }
+        if pending.kind != TreeRequest::Probe {
+            self.branch_notice = Some(midnight_core::TreeEvent::Rejected {
+                stamp: self.projection.stamp,
+                request: pending.request,
+                row,
+                error: crate::tree_diagnostics::diagnostic(&self.reports, error),
+            });
+        }
+    }
+
+    pub(crate) fn take_branch_notice(&mut self) -> Option<midnight_core::TreeEvent> {
+        self.branch_notice.take()
     }
 
     pub(crate) fn apply(
@@ -820,19 +874,40 @@ impl Session {
             return self.apply_recursive(completion, cancel);
         }
         let current = self.projection.stamp;
-        if completion.stamp.pane != current.pane
-            || completion.stamp.navigation != current.navigation
-            || completion.stamp.session != current.session
-            || self.versions.get(&completion.pending.branch) != Some(&completion.pending.version)
+        let BranchCompletion {
+            stamp,
+            pending,
+            result,
+            ..
+        } = completion;
+        let branch = pending.branch;
+        if stamp.pane != current.pane
+            || stamp.navigation != current.navigation
+            || stamp.session != current.session
+            || self.versions.get(&branch) != Some(&pending.version)
         {
             return Ok(false);
         }
-        self.versions.remove(&completion.pending.branch);
-        if !self.tree.apply(completion.result) {
+        self.versions.remove(&branch);
+        let checkpoint = self.tree.checkpoint(branch);
+        if !self.tree.apply(result) {
             return Ok(false);
         }
-        self.reproject(self.options.clone(), cancel)?;
-        Ok(true)
+        let Err(error) = self.reproject(self.options.clone(), cancel) else {
+            return Ok(true);
+        };
+        // The listing fits the tree budget but not the display projection (display
+        // rows also carry full paths). Keep the published rows and report the
+        // failure on the requested branch, as a refresh does; never end the session.
+        self.tree.restore(checkpoint, branch, error.clone());
+        if self.update_projection(cancel).is_ok() {
+            return Ok(true);
+        }
+        // Even the diagnostic projection failed: keep the accepted publication.
+        if let WorkOrigin::User { row } = pending.origin {
+            self.reject_branch(pending, row, &error);
+        }
+        Ok(false)
     }
 
     pub(crate) fn capture_target(
@@ -858,7 +933,7 @@ impl BranchJob {
     #[cfg(test)]
     pub(crate) fn row(&self) -> TreeRowId {
         match self.pending.origin {
-            WorkOrigin::User { _row: row } => row,
+            WorkOrigin::User { row } => row,
             WorkOrigin::Recursive { row, .. } => row,
             WorkOrigin::Maintenance => panic!("maintenance has no visible row"),
         }
@@ -868,6 +943,10 @@ impl BranchJob {
     }
     pub(crate) fn recursive(&self) -> bool {
         matches!(self.pending.origin, WorkOrigin::Recursive { .. })
+    }
+    /// Optional disclosure read-ahead, as opposed to an explicit Expand/Refresh.
+    pub(crate) fn probe(&self) -> bool {
+        self.pending.kind == TreeRequest::Probe
     }
     #[cfg(test)]
     pub(crate) fn request(&self) -> TreeRequestId {

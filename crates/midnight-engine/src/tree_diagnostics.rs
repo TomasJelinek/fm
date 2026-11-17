@@ -1,18 +1,30 @@
 //! Frozen tree failures; diagnostic text never grants provider/path authority.
-use crate::size_warnings::ReportLog;
+use crate::{providers::ProviderError, size_warnings::ReportLog};
 use midnight_core::{Cancellation, GeneratedTextSource, TreeDiagnostic};
 use std::{fmt, io, sync::Arc};
 
+#[cfg(target_os = "linux")]
+#[path = "tree_diagnostics_root/linux.rs"]
+mod root;
+#[cfg(windows)]
+#[path = "tree_diagnostics_root/windows.rs"]
+mod root;
+
+/// Each user has a separate spool root. A fixed name in a shared temporary
+/// directory would let another local account pre-create it and so disable this
+/// user's report details. `PrivateSpoolDirectory::open` creates missing
+/// components owner-only and refuses a foreign, linked or permissive root.
 pub(crate) fn log(arena: &crate::ReportArena) -> ReportLog {
     ReportLog::with_title(
         arena,
-        std::env::temp_dir().join("MidnightExplorer-size-warnings"),
+        root::root("MidnightExplorer-tree-diagnostics"),
         "Folder listing error",
     )
 }
 
-/// One log/file per tree generation. Only complete immutable record ranges are
-/// published, so later failures/retries cannot change an opened description.
+/// Record one failure in `log`; each `DirectoryTree` keeps one log for its
+/// branch failures. Only complete immutable record ranges are published, so
+/// later failures/retries cannot change an opened description.
 pub(crate) fn report(
     log: &ReportLog,
     context: impl fmt::Display,
@@ -32,13 +44,25 @@ pub(crate) fn report(
 
 /// Terminal errors have bounded admission/retention through their existing
 /// command/event owner. No live tree is required for construction failures.
-pub(crate) fn diagnostic(
-    arena: &crate::ReportArena,
-    error: &(impl fmt::Display + ?Sized),
-) -> TreeDiagnostic {
+///
+/// Only provider-supplied failure text gets a details report. Admission,
+/// staleness, capacity and cancellation outcomes have short fixed messages that
+/// the bounded diagnostic already holds completely; they are routine command
+/// races and must not create, write and later delete a spool file each.
+pub(crate) fn diagnostic(arena: &crate::ReportArena, error: &ProviderError) -> TreeDiagnostic {
     let message = error.to_string();
-    let source = report(&log(arena), "Captured tree operation", &message);
-    TreeDiagnostic::with_details(&message, source)
+    match error {
+        ProviderError::Failed(_) => {
+            let source = report(&log(arena), "Captured tree operation", &message);
+            TreeDiagnostic::with_details(&message, source)
+        }
+        ProviderError::Unavailable
+        | ProviderError::StaleReference
+        | ProviderError::Unsupported
+        | ProviderError::Cancelled
+        | ProviderError::ResourceLimited
+        | ProviderError::InvalidResponse(_) => TreeDiagnostic::new(&message),
+    }
 }
 
 /// A refresh visits at most the retained tree's bounded node set. Keep only
@@ -114,9 +138,28 @@ mod tests {
     }
 
     #[test]
+    fn routine_rejections_create_no_spool_report() {
+        for error in [
+            ProviderError::StaleReference,
+            ProviderError::ResourceLimited,
+            ProviderError::Cancelled,
+            ProviderError::Unsupported,
+            ProviderError::Unavailable,
+            ProviderError::InvalidResponse("fixture"),
+        ] {
+            let diagnostic = diagnostic(&crate::ReportArena::testing(), &error);
+            assert_eq!(diagnostic.as_str(), error.to_string());
+            assert!(diagnostic.details().is_none(), "{error:?}");
+        }
+    }
+
+    #[test]
     fn terminal_diagnostic_preserves_long_unicode_tail_and_snapshot_identity() {
         let reason = format!("{} unique terminal tail", "東京 failure ".repeat(20_000));
-        let diagnostic = diagnostic(&crate::ReportArena::testing(), &reason);
+        let diagnostic = diagnostic(
+            &crate::ReportArena::testing(),
+            &ProviderError::Failed(reason.clone()),
+        );
         assert!(diagnostic.as_str().len() <= TreeDiagnostic::MAX_BYTES);
         assert!(!diagnostic.as_str().contains("unique terminal tail"));
         let source = diagnostic.details().unwrap().clone();

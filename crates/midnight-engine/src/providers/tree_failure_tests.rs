@@ -163,7 +163,8 @@ fn payload_budget_rollback_restores_capacity_without_reusing_occurrence_ids() {
     });
     let first = row(&tree, 1).id;
     let second = row(&tree, 2).id;
-    let checkpoint = tree.checkpoint();
+    // Only the listed branch's subtree is saved; siblings are not copied.
+    let checkpoint = tree.checkpoint(first);
     graph.set(1, vec![budget_entry(4)]);
     run_checked(&mut tree, Some(first), TreeRequest::Expand);
     let unpublished = row(&tree, 4).id;
@@ -172,6 +173,7 @@ fn payload_budget_rollback_restores_capacity_without_reusing_occurrence_ids() {
     assert_payload_accounting(&tree);
     assert!(!tree.apply(pending.run()));
     assert_eq!(tree.rows().len(), 3);
+    assert!(!tree.state(first).unwrap().expanded);
     graph.set(2, vec![budget_entry(7)]);
     run_checked(&mut tree, Some(second), TreeRequest::Expand);
     assert!(row(&tree, 2).error.is_none());
@@ -194,7 +196,7 @@ fn payload_budget_restore_replaces_the_saved_error_charge() {
         .unwrap()
         .insert(1, Err(ProviderError::Failed("x".repeat(4096))));
     run_checked(&mut tree, Some(first), TreeRequest::Expand);
-    let checkpoint = tree.checkpoint();
+    let checkpoint = tree.checkpoint(tree.root());
     graph.set(1, vec![budget_entry(4)]);
     run_checked(&mut tree, Some(first), TreeRequest::Expand);
     assert!(row(&tree, 1).error.is_none());

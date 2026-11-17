@@ -184,8 +184,7 @@ impl ProjectionState {
         cancel: &Cancellation,
     ) -> Result<Arc<TreeProjection>, ProviderError> {
         check_cancel(cancel)?;
-        self.records
-            .retain(|branch, _| tree.state(*branch).is_some());
+        self.records.retain(|branch, _| tree.contains(*branch));
         self.branches
             .retain(|_, branch| self.records.contains_key(branch));
         let model_rows = tree.rows();

@@ -135,6 +135,23 @@ pub(super) struct Fixture {
     _directory: tempfile::TempDir,
 }
 
+/// Wait without spinning until backend retirement returns one capture permit.
+fn wait_released(capacity: &Semaphore) {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap();
+    let permit = runtime.block_on(async {
+        tokio::time::timeout(std::time::Duration::from_secs(2), capacity.acquire()).await
+    });
+    assert!(
+        matches!(permit, Ok(Ok(_))),
+        "capture admission returns after retirement"
+    );
+    drop(permit);
+    assert_eq!(capacity.available_permits(), 1);
+}
+
 pub(super) fn fixture() -> Fixture {
     fixture_with_extra_directories(0)
 }
@@ -428,6 +445,153 @@ fn viewport_checks_do_not_displace_explicit_work_or_expand_the_queue_limit() {
 }
 
 #[test]
+fn branch_requests_at_the_depth_limit_stay_local_to_their_row() {
+    let mut fixture = fixture();
+    // z-parent is at model depth 1; deep-362 ends the chain at depth 64.
+    let mut parent = 1;
+    for value in 300..363 {
+        fixture
+            .graph
+            .rows
+            .lock()
+            .unwrap()
+            .insert(parent, vec![directory(value, &format!("deep-{value}"))]);
+        parent = value;
+    }
+    let mut name = "z-parent".to_owned();
+    for (request, value) in (1..).zip(300..363) {
+        let view = fixture.session.projection().clone();
+        assert!(fixture.session.commit(&view));
+        let row = view
+            .rows
+            .iter()
+            .find(|row| row.entry.display_name == name)
+            .unwrap()
+            .id;
+        fixture
+            .session
+            .branch(&view, TreeRequestId(request), row, BranchAction::Expand)
+            .unwrap();
+        let job = fixture.session.take_work().unwrap().unwrap();
+        assert!(
+            fixture
+                .session
+                .apply(job.run(), &Cancellation::default())
+                .unwrap()
+        );
+        name = format!("deep-{value}");
+    }
+    let view = fixture.session.projection().clone();
+    assert!(fixture.session.commit(&view));
+    let deepest = view
+        .rows
+        .iter()
+        .find(|row| row.entry.display_name == name)
+        .unwrap();
+    assert_eq!(deepest.depth, 63);
+    let deepest = deepest.id;
+    // An optional probe of that row is dropped silently.
+    fixture.session.viewport(&view, &[deepest]).unwrap();
+    assert!(fixture.session.take_work().unwrap().is_none());
+    assert!(fixture.session.take_branch_notice().is_none());
+    // An explicit expansion is a row diagnostic, never a session failure.
+    fixture
+        .session
+        .branch(&view, TreeRequestId(100), deepest, BranchAction::Expand)
+        .unwrap();
+    assert!(fixture.session.take_work().unwrap().is_none());
+    let Some(midnight_core::TreeEvent::Rejected {
+        stamp,
+        request,
+        row,
+        error,
+    }) = fixture.session.take_branch_notice()
+    else {
+        panic!("explicit expansion must be rejected on its row");
+    };
+    assert_eq!(
+        (stamp, request, row),
+        (view.stamp, TreeRequestId(100), deepest)
+    );
+    assert!(error.as_str().contains("resource budget"), "{error:?}");
+    assert_eq!(fixture.session.queued(), 0);
+    assert!(Arc::ptr_eq(fixture.session.projection(), &view));
+}
+
+#[test]
+fn explicit_expand_beyond_the_projection_budget_fails_its_row_and_keeps_the_session() {
+    // Each path is legitimate (< 4 KiB). 2,500 children fit the tree's own budget,
+    // which does not charge display paths, but not the 16 MiB display projection.
+    let mut root = std::env::temp_dir().join("midnight-explicit-long-projection");
+    for _ in 0..185 {
+        root.push("valid-segment-1234");
+    }
+    let mut fixture = fixture_with_root_path(0, EntryKind::Directory, Some(root.clone()));
+    let mut children = Vec::new();
+    for value in 10..2510 {
+        let name = format!("child-{value}");
+        children.push(directory(value, &name));
+        fixture
+            .graph
+            .target_paths
+            .lock()
+            .unwrap()
+            .insert(value, root.join("z-parent").join(&name));
+    }
+    fixture.graph.rows.lock().unwrap().insert(1, children);
+    let view = fixture.session.projection().clone();
+    assert!(fixture.session.commit(&view));
+    let parent = view
+        .rows
+        .iter()
+        .find(|row| row.entry.display_name == "z-parent")
+        .unwrap()
+        .id;
+    fixture
+        .session
+        .branch(&view, TreeRequestId(1), parent, BranchAction::Expand)
+        .unwrap();
+    let job = fixture.session.take_work().unwrap().unwrap();
+    assert!(
+        fixture
+            .session
+            .apply(job.run(), &Cancellation::default())
+            .unwrap(),
+        "the row failure is published"
+    );
+    let failed = fixture.session.projection().clone();
+    assert_eq!(failed.stamp.session, view.stamp.session);
+    assert_eq!(failed.rows.len(), view.rows.len());
+    let row = &failed.rows[failed.index.row_positions[&parent]];
+    assert_eq!(row.disclosure, midnight_core::TreeDisclosure::Failed);
+    assert!(!row.expanded);
+    assert!(
+        row.error
+            .as_deref()
+            .is_some_and(|error| error.contains("resource budget"))
+    );
+    // The session keeps serving other branches.
+    assert!(fixture.session.commit(&failed));
+    let other = failed
+        .rows
+        .iter()
+        .find(|row| row.entry.display_name == "a-parent")
+        .unwrap()
+        .id;
+    fixture
+        .session
+        .branch(&failed, TreeRequestId(2), other, BranchAction::Expand)
+        .unwrap();
+    let job = fixture.session.take_work().unwrap().unwrap();
+    assert!(
+        fixture
+            .session
+            .apply(job.run(), &Cancellation::default())
+            .unwrap()
+    );
+}
+
+#[test]
 fn admitted_target_lease_survives_session_navigation_then_revokes_on_release() {
     let mut fixture = fixture();
     let view = fixture.session.projection().clone();
@@ -479,16 +643,15 @@ async fn cancelled_waiter_and_session_keep_worker_slots_until_the_blocked_call_f
         "cancelled call must retain the branch slot"
     );
     release.send(()).unwrap();
-    tokio::time::timeout(std::time::Duration::from_secs(5), async {
-        loop {
-            if budget.listing.available_permits() == 2 {
-                break;
-            }
-            tokio::task::yield_now().await;
-        }
-    })
+    // Both listing slots return once the blocked call has really finished.
+    let both = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        budget.listing.clone().acquire_many_owned(2),
+    )
     .await
+    .unwrap()
     .unwrap();
+    drop(both);
     assert!(budget.acquire(false).unwrap().is_some());
 }
 
