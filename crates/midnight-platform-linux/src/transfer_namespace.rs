@@ -28,7 +28,9 @@ impl<'a> Change<'a> {
             && let Some(transaction) = self.as_mut()
             && !transaction.reserve_private_child(None, cancel)?
         {
-            return Err(invalid(path, "incomplete namespace announcement refused"));
+            // A refusal before any mutation, as in `Bindings::announce`: WouldBlock keeps
+            // the change retryable (InvalidInput would end a verified publication).
+            return Err(error(path, io::ErrorKind::WouldBlock.into()));
         }
         Ok(())
     }
