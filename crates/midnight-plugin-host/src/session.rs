@@ -11,7 +11,6 @@ use std::{
         atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
         mpsc::{self, SyncSender},
     },
-    time::Duration,
 };
 
 pub(crate) const MAX_REQUESTS: usize = 32;
@@ -26,9 +25,17 @@ pub(crate) struct Command {
     pub kind: u32,
     pub payload: Vec<u8>,
 }
+/// Host view of one admitted request. Only the dispatcher submits commands and
+/// delivers native cancellation: once, and only for a request the plugin has seen.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct RequestState {
+    pub cancelled: bool,
+    pub submitted: bool,
+    pub cancel_delivered: bool,
+}
 #[derive(Default)]
 pub(crate) struct State {
-    pub requests: HashMap<u64, bool>,
+    pub requests: HashMap<u64, RequestState>,
     pub events: VecDeque<(HostEvent, usize)>,
     pub bytes: usize,
     pub fatal: Option<HostEvent>,
@@ -95,7 +102,9 @@ impl Session {
             display_name: file.display_name(),
         })
         .map_err(|_| Error("Invalid open request".into()))?;
-        lock(&shared.state).requests.insert(1, false);
+        lock(&shared.state)
+            .requests
+            .insert(1, RequestState::default());
         send.try_send(Command {
             id: 1,
             kind: abi::REQUEST_OPEN,
@@ -141,7 +150,7 @@ impl Session {
         if state.requests.len() >= MAX_REQUESTS {
             return Err(Error("Viewer request queue full".into()));
         }
-        state.requests.insert(id, false);
+        state.requests.insert(id, RequestState::default());
         if self
             .commands
             .try_send(Command { id, kind, payload })
@@ -157,8 +166,8 @@ impl Session {
     /// Cancellation has reserved capacity and is never queued behind data requests.
     pub fn cancel(&self, id: u64) {
         let mut state = lock(&self.shared.state);
-        if let Some(cancelled) = state.requests.get_mut(&id) {
-            *cancelled = true;
+        if let Some(request) = state.requests.get_mut(&id) {
+            request.cancelled = true;
         }
         let mut removed = 0;
         state.events.retain(|(event, bytes)| {
@@ -260,7 +269,10 @@ impl Shared {
     }
     pub fn cancelled(&self, id: u64) -> bool {
         self.closing.load(Ordering::Acquire)
-            || lock(&self.state).requests.get(&id).copied().unwrap_or(true)
+            || lock(&self.state)
+                .requests
+                .get(&id)
+                .is_none_or(|request| request.cancelled)
     }
     pub fn failure(&self, id: u64, message: String) {
         self.push(
@@ -321,22 +333,22 @@ pub(crate) fn worker(
     run_jobs(bridge, receive);
 }
 
+/// Block until work arrives. `Bridge::close` disconnects the queue after the
+/// dispatcher's final quiescence check; already accepted jobs still run or drop.
 pub(crate) fn run_jobs(bridge: Arc<Bridge>, receive: mpsc::Receiver<crate::callbacks::Job>) {
-    while !bridge.stop.load(Ordering::Acquire) {
-        if let Ok(job) = receive.recv_timeout(Duration::from_millis(10)) {
-            if !bridge.shared.cancelled(job.0.request_id) {
-                // SAFETY: accepted job owns its opaque context and pins the library on this worker.
-                unsafe {
-                    job.0.run.unwrap()(job.0.context);
-                }
-            }
-            // SAFETY: exactly one drop per accepted job, including cancelled jobs.
+    while let Ok(job) = receive.recv() {
+        if !bridge.shared.cancelled(job.0.request_id) {
+            // SAFETY: accepted job owns its opaque context and pins the library on this worker.
             unsafe {
-                job.0.drop.unwrap()(job.0.context);
+                job.0.run.unwrap()(job.0.context);
             }
-            bridge.jobs.fetch_sub(1, Ordering::Release);
-            bridge.shared.dispatcher.notify();
         }
+        // SAFETY: exactly one drop per accepted job, including cancelled jobs.
+        unsafe {
+            job.0.drop.unwrap()(job.0.context);
+        }
+        bridge.jobs.fetch_sub(1, Ordering::Release);
+        bridge.shared.dispatcher.notify();
     }
 }
 
@@ -382,7 +394,9 @@ pub(crate) mod tests {
     #[test]
     fn cancelling_discards_already_queued_nonterminal_output() {
         let shared = shared();
-        lock(&shared.state).requests.insert(1, false);
+        lock(&shared.state)
+            .requests
+            .insert(1, RequestState::default());
         shared.push(
             HostEvent {
                 request_id: 1,
