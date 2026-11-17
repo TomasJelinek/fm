@@ -38,7 +38,8 @@ mount_root=$(printf '%s' "$build_root" | sed 's/"/""/g')
 base_image=ubuntu:24.04
 tool_path=/opt/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 # Cache the image by setup recipe, base image tag, and pinned toolchain.
-image_key=$({ printf '%s\n' "$base_image"; cat "$build_root/scripts/docker-install-deps.sh" "$build_root/rust-toolchain.toml"; } | sha256sum)
+image_key=$({ printf '%s\n' "$base_image"; cat "$build_root/scripts/docker-install-deps.sh" \
+    "$build_root/scripts/install-rust-toolchain.sh" "$build_root/rust-toolchain.toml"; } | sha256sum)
 build_image="midnight-explorer-build:${image_key%% *}"
 build_user="$(id -u):$(id -g)"
 

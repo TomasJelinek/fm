@@ -23,7 +23,7 @@ class LinuxDockerBuildTests(unittest.TestCase):
         self.root = Path(self.owner.name) / "checkout with spaces & dollar$"
         (self.root / "scripts").mkdir(parents=True)
         for relative in ("scripts/build-docker.sh", "scripts/docker-install-deps.sh",
-                         "rust-toolchain.toml"):
+                         "scripts/install-rust-toolchain.sh", "rust-toolchain.toml"):
             shutil.copyfile(ROOT / relative, self.root / relative)
         self.bin = self.root / "bin"
         self.bin.mkdir()
@@ -182,7 +182,8 @@ sys.exit(98)
 
     def test_recipe_and_toolchain_changes_invalidate_image_cache(self):
         images = []
-        for relative in (None, "scripts/docker-install-deps.sh", "rust-toolchain.toml"):
+        for relative in (None, "scripts/docker-install-deps.sh", "scripts/install-rust-toolchain.sh",
+                         "rust-toolchain.toml"):
             if relative:
                 with (self.root / relative).open("a", encoding="utf-8") as recipe:
                     recipe.write("\n# changed cached input\n")
@@ -191,7 +192,7 @@ sys.exit(98)
             result = self.run_helper()
             self.assertEqual(result.returncode, 0, result.stderr)
             images.append(self.docker_calls()[0][2])
-        self.assertEqual(len(set(images)), 3, images)
+        self.assertEqual(len(set(images)), 4, images)
 
     def test_dry_run_plans_setup_and_full_build_without_any_actions(self):
         self.command("mkdir", 'printf "mkdir\\n" >> "$DOCKER_HELPER_LOG"\nexit 99\n')

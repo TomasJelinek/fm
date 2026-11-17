@@ -28,7 +28,7 @@ class BuildSetupTests(unittest.TestCase):
         self.repo.mkdir()
         shutil.copy2(ROOT / "build.sh", self.repo / "build.sh")
         (self.repo / "scripts").mkdir()
-        for name in ("build-docker.sh", "docker-install-deps.sh", "clean-build.sh",
+        for name in ("build-docker.sh", "docker-install-deps.sh", "install-rust-toolchain.sh", "clean-build.sh",
                      "check-clean-mounts-linux.sh", "setup-linux.sh"):
             shutil.copy2(ROOT / "scripts" / name, self.repo / "scripts" / name)
         # Package builds are separate from these host bootstrap tests.
@@ -148,13 +148,16 @@ class BuildSetupTests(unittest.TestCase):
 
     def rust_installer(self):
         (self.bin / "cargo").unlink()
+        # The pinned toolchain is read from rust-toolchain.toml with python3.
+        (self.bin / "python3").symlink_to(shutil.which("python3"))
         installer = self.root / "installer"
         installer.write_text(
-            '#!/bin/sh\nset -eu\necho "rustup $*" >> "$TEST_LOG"\n'
+            '#!/bin/sh\nset -eu\necho "rustup-init $*" >> "$TEST_LOG"\n'
             'mkdir -p "$CARGO_HOME/bin"\n'
-            'cat > "$CARGO_HOME/bin/cargo" <<\'CARGO\'\n'
-            '#!/bin/sh\necho "cargo $*" >> "$TEST_LOG"\nCARGO\n'
-            'chmod +x "$CARGO_HOME/bin/cargo"\n'
+            'for tool in cargo rustup; do\n'
+            '    printf \'#!/bin/sh\\necho "%s $*" >> "$TEST_LOG"\\n\' "$tool" > "$CARGO_HOME/bin/$tool"\n'
+            '    chmod +x "$CARGO_HOME/bin/$tool"\n'
+            'done\n'
         )
         self.env["INSTALLER"] = str(installer)
         self.command("curl", 'while [ "$#" -gt 0 ]; do\nif [ "$1" = -o ]; then cat "$INSTALLER" > "$2"; exit; fi\nshift\ndone\nexit 1\n')
@@ -163,9 +166,21 @@ class BuildSetupTests(unittest.TestCase):
         self.rust_installer()
         result = self.run_build("release")
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("rustup -y --profile minimal --default-toolchain none\n", self.output)
-        self.assertIn("cargo build -p midnight-explorer -p midnight-elevation --locked --release\n", self.output)
+        self.assertIn("rustup-init -y --profile minimal --default-toolchain none\n", self.output)
+        # Explicitly, not through proxy auto-install, which users can disable.
+        install = "rustup toolchain install 1.99.1 --profile minimal --component rustfmt --component clippy\n"
+        build = "cargo build -p midnight-explorer -p midnight-elevation --locked --release\n"
+        self.assertIn(install, self.output)
+        self.assertLess(self.output.index(install), self.output.index(build))
         self.assertEqual(list((self.repo / "_build/tmp").iterdir()), [])
+
+    def test_failed_toolchain_installation_stops_before_build(self):
+        self.rust_installer()
+        (self.repo / "rust-toolchain.toml").write_text('[toolchain]\nchannel = "--force"\n')
+        result = self.run_build()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("invalid channel", result.stderr)
+        self.assertNotIn("cargo build", self.output)
 
     def test_unconfigured_rust_bootstrap_uses_repository_tool_cache(self):
         self.rust_installer()
@@ -207,4 +222,8 @@ class BuildSetupTests(unittest.TestCase):
         result = self.run_build()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertNotIn("missing native module build prerequisites", result.stderr)
+
+
+if __name__ == "__main__":
+    unittest.main()
 

@@ -149,7 +149,7 @@ if ! command -v cargo >/dev/null 2>&1; then
     RUSTUP_HOME=${RUSTUP_HOME:-"$build_root/.tools/rustup"}
     PATH="$CARGO_HOME/bin:$PATH"
     export CARGO_HOME RUSTUP_HOME PATH
-    printf '%s\n' 'Installing Rust with rustup; Cargo will select rust-toolchain.toml.'
+    printf '%s\n' 'Installing Rust with rustup and the toolchain that rust-toolchain.toml pins.'
     rustup_installer=$(mktemp "$TMPDIR/rustup-init.XXXXXX")
     trap 'rm -f -- "$rustup_installer"' EXIT
     trap 'exit 1' HUP INT TERM
@@ -157,6 +157,9 @@ if ! command -v cargo >/dev/null 2>&1; then
     sh "$rustup_installer" -y --profile minimal --default-toolchain none
     rm -f -- "$rustup_installer"
     trap - EXIT HUP INT TERM
+    # Explicitly, so the build does not depend on proxy auto-install (which
+    # RUSTUP_AUTO_INSTALL=0 or `rustup set auto-install disable` turns off).
+    sh scripts/install-rust-toolchain.sh rust-toolchain.toml
 fi
 
 if [ "$build_profile" = release ]; then
