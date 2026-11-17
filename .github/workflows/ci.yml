@@ -1,9 +1,20 @@
 name: build-and-test
 
-on: [push, pull_request]
+# Pull requests run once (not again for their push); main and manual runs too.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
+
+# A newer push supersedes an unfinished run of the same branch or pull request;
+# every main commit keeps its own complete run.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 env:
   PYTHONUTF8: "1"
@@ -14,22 +25,25 @@ env:
 jobs:
   public-sdk:
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
     steps:
       # cargo package inspects repository ignore files through libgit2, which
       # cannot lazily fetch blobs omitted by checkout's sparse clone.
       - uses: actions/checkout@v4
+      - uses: ./.github/actions/rust-setup
       - name: Prepare SDK release workspace
         run: |
           mkdir -p "$GITHUB_WORKSPACE/_build/tmp"
           echo "TMPDIR=$GITHUB_WORKSPACE/_build/tmp" >> "$GITHUB_ENV"
           echo "CARGO_TARGET_DIR=$GITHUB_WORKSPACE/_build/sdk-target" >> "$GITHUB_ENV"
-          rustup show
       - name: Public API and SDK checks
         run: |
           cargo fetch --manifest-path api/Cargo.toml --locked
           cargo fmt --manifest-path api/Cargo.toml --all -- --check
           cargo test --manifest-path api/Cargo.toml --all-targets --locked --offline
           cargo clippy --manifest-path api/Cargo.toml --all-targets --locked --offline -- -D warnings
+      - name: C and Rust ABI layout agreement
+        run: bash api/scripts/check-abi.sh "$GITHUB_WORKSPACE/_build/api-abi/linux"
       - name: Build public SDK release bundle
         id: sdk
         run: |
@@ -58,6 +72,7 @@ jobs:
         os: [windows-latest, ubuntu-24.04]
         plugin: [basic, source, markdown]
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
     steps:
       # These builds have no application or unpublished API/SDK source available.
       - uses: actions/checkout@v4
@@ -66,10 +81,12 @@ jobs:
           sparse-checkout: |
             /plugins/midnight-viewer-${{ matrix.plugin }}/
             /rust-toolchain.toml
+            /.github/actions/
       - uses: actions/download-artifact@v4
         with:
           name: released-plugin-sdk
           path: _build/released-sdk
+      - uses: ./.github/actions/rust-setup
       - name: Prepare independent workspace
         shell: pwsh
         run: |
@@ -77,7 +94,6 @@ jobs:
           New-Item -ItemType Directory -Path $temporaryDirectory -Force | Out-Null
           @("TEMP=$temporaryDirectory", "TMP=$temporaryDirectory", "TMPDIR=$temporaryDirectory") |
             Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          rustup show
           if (Test-Path -LiteralPath 'crates') { throw 'Application source leaked into plugin job' }
           if (Test-Path -LiteralPath 'api') { throw 'Unreleased SDK source leaked into plugin job' }
       - name: Independent plugin tests and package (Windows)
@@ -114,27 +130,94 @@ jobs:
           if-no-files-found: error
           path: _build/viewer-ci/package/
 
+  viewer-conformance:
+    needs: public-sdk
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-24.04]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      # The fixture consumes only the released public SDK bundle.
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            /plugins/viewer-conformance/
+            /rust-toolchain.toml
+            /.github/actions/
+      - uses: actions/download-artifact@v4
+        with:
+          name: released-plugin-sdk
+          path: _build/released-sdk
+      - uses: ./.github/actions/rust-setup
+      - name: Released SDK ABI conformance
+        shell: pwsh
+        run: |
+          if ((Test-Path 'crates') -or (Test-Path 'api')) { throw 'Application or unpublished SDK source leaked into conformance job' }
+          $temporary = Join-Path $env:GITHUB_WORKSPACE '_build/tmp'
+          New-Item -ItemType Directory -Force $temporary | Out-Null
+          $env:TEMP=$temporary; $env:TMP=$temporary; $env:TMPDIR=$temporary
+          $sdk = (Resolve-Path '_build/released-sdk/.cargo/config.toml').Path
+          $include = (Resolve-Path '_build/released-sdk/include').Path
+          $manifest = 'plugins/viewer-conformance/Cargo.toml'
+          $env:CARGO_TARGET_DIR = Join-Path $env:GITHUB_WORKSPACE '_build/conformance-target'
+          cargo --config $sdk fetch --manifest-path $manifest --locked
+          if ($LASTEXITCODE -ne 0) { throw 'Conformance dependency fetch failed' }
+          cargo fmt --manifest-path $manifest --all -- --check
+          if ($LASTEXITCODE -ne 0) { throw 'Conformance formatting failed' }
+          cargo clippy --config $sdk --manifest-path $manifest --all-targets --locked --offline -- -D warnings
+          if ($LASTEXITCODE -ne 0) { throw 'Conformance strict Clippy failed' }
+          cargo test --config $sdk --manifest-path $manifest --locked --offline
+          if ($LASTEXITCODE -ne 0) { throw 'Conformance Rust tests failed' }
+          cargo build --config $sdk --manifest-path $manifest --release --locked --offline
+          if ($LASTEXITCODE -ne 0) { throw 'Conformance fixture build failed' }
+          $results = Join-Path $env:GITHUB_WORKSPACE '_build/conformance'
+          if ($IsWindows) {
+            # The native loader test compiles C with an x64 MSVC developer environment.
+            $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio/Installer/vswhere.exe'
+            $studio = @(& $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath)
+            if ($LASTEXITCODE -ne 0 -or $studio.Count -ne 1) { throw 'Could not find installed x64 MSVC tools' }
+            & (Join-Path $studio[0] 'Common7/Tools/Launch-VsDevShell.ps1') -Arch amd64 -HostArch amd64 -SkipAutomaticLocation | Out-Host
+            & plugins/viewer-conformance/tests/test-windows.ps1 `
+              -Library (Join-Path $env:CARGO_TARGET_DIR 'release/midnight_viewer_conformance.dll') `
+              -HeaderDirectory $include -BuildRoot (Join-Path $results 'windows')
+          } else {
+            bash plugins/viewer-conformance/tests/test-linux.sh `
+              (Join-Path $env:CARGO_TARGET_DIR 'release/libmidnight_viewer_conformance.so') `
+              $include (Join-Path $results 'linux')
+          }
+          if ($LASTEXITCODE -ne 0) { throw 'Native viewer ABI conformance failed' }
+
   public-worker-sdk:
     runs-on: ubuntu-24.04
+    timeout-minutes: 45
     steps:
       # Keep all blobs for Cargo packaging; downstream plugin jobs remain sparse
       # and receive only their own sources plus the released public SDK bundle.
       - uses: actions/checkout@v4
-      - name: Check and package public image and worker APIs
-        id: sdk
+      - uses: ./.github/actions/rust-setup
+      - name: Check public protocol workspaces
         shell: bash
         run: |
           mkdir -p _build/tmp
           export TMPDIR="$GITHUB_WORKSPACE/_build/tmp" CARGO_TARGET_DIR="$GITHUB_WORKSPACE/_build/sdk-target"
-          for api in api worker-api thumbnail-api filesystem-api image-viewer-api; do
+          for api in api worker-api thumbnail-api filesystem-api image-viewer-api web-viewer-api; do
             cargo fetch --manifest-path "$api/Cargo.toml" --locked
           done
-          cargo fmt --manifest-path image-viewer-api/Cargo.toml --all -- --check
-          cargo test --manifest-path image-viewer-api/Cargo.toml --locked --offline
-          cargo clippy --manifest-path image-viewer-api/Cargo.toml --all-targets --locked --offline -- -D warnings
-          cargo fmt --manifest-path filesystem-api/Cargo.toml --all -- --check
-          cargo test --manifest-path filesystem-api/Cargo.toml --locked --offline
-          cargo clippy --manifest-path filesystem-api/Cargo.toml --all-targets --locked --offline -- -D warnings
+          for api in worker-api thumbnail-api filesystem-api image-viewer-api web-viewer-api; do
+            cargo fmt --manifest-path "$api/Cargo.toml" --all -- --check
+            cargo test --manifest-path "$api/Cargo.toml" --workspace --all-targets --locked --offline
+            cargo clippy --manifest-path "$api/Cargo.toml" --workspace --all-targets --locked --offline -- -D warnings
+          done
+          # The HTML viewer consumes this canonical release; package it as the build does.
+          python3 -B web-viewer-api/scripts/package.py
+      - name: Package public image and worker APIs
+        id: sdk
+        shell: bash
+        run: |
+          export TMPDIR="$GITHUB_WORKSPACE/_build/tmp" CARGO_TARGET_DIR="$GITHUB_WORKSPACE/_build/sdk-target"
           output=$(cargo run --manifest-path api/Cargo.toml -p midnight-api-package --bin worker-packages --locked --offline -- "$GITHUB_WORKSPACE" "$GITHUB_WORKSPACE/_build/releases")
           bundle=$(printf '%s\n' "$output" | sed -n 's/^Public worker API\/SDK release bundle: //p' | tail -n 1)
           test -f "$bundle/.cargo/registry.toml"
@@ -154,6 +237,7 @@ jobs:
         os: [windows-latest, ubuntu-24.04]
         plugin: [image, pdf]
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
         with:
@@ -163,10 +247,12 @@ jobs:
             /plugins/image-decoder/
             /vendor/image/
             /rust-toolchain.toml
+            /.github/actions/
       - uses: actions/download-artifact@v4
         with:
           name: released-worker-sdk
           path: _build/released-sdk
+      - uses: ./.github/actions/rust-setup
       - name: Independently build and test raster viewer
         shell: pwsh
         run: |
@@ -198,6 +284,7 @@ jobs:
       matrix:
         os: [windows-latest, ubuntu-24.04]
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
         with:
@@ -205,10 +292,12 @@ jobs:
           sparse-checkout: |
             /plugins/midnight-fs-archive/
             /rust-toolchain.toml
+            /.github/actions/
       - uses: actions/download-artifact@v4
         with:
           name: released-worker-sdk
           path: _build/released-sdk
+      - uses: ./.github/actions/rust-setup
       - name: Independently check, test and package archive filesystem
         shell: pwsh
         run: |
@@ -228,11 +317,12 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Archive formatting failed' }
           cargo clippy --config $sdk --manifest-path "$plugin/Cargo.toml" --all-targets --locked --offline -- -D warnings
           if ($LASTEXITCODE -ne 0) { throw 'Archive strict Clippy failed' }
+          # Both platforms opt in to the plugin tests (normal builds skip them) and
+          # publish the optimized worker that the release smoke test installs.
           if ($IsWindows) {
-            & "$plugin/scripts/build.ps1" -SdkConfig $sdk -BuildRoot $build -OutputDirectory $package -Test -Offline
+            & "$plugin/scripts/build.ps1" -SdkConfig $sdk -BuildRoot $build -OutputDirectory $package -Profile release -Test -Offline
           } else {
-            $env:CARGO_NET_OFFLINE='true'
-            bash "$plugin/scripts/build.sh" $sdk $build $package
+            bash "$plugin/scripts/build.sh" $sdk $build $package release --test --offline
           }
           if ($LASTEXITCODE -ne 0) { throw 'Independent archive tests or packaging failed' }
       - uses: actions/upload-artifact@v4
@@ -271,6 +361,7 @@ jobs:
             library: libmidnight_filesystem_network.so
             manifest: plugin.linux.toml
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
         with:
@@ -279,6 +370,8 @@ jobs:
             /plugins/${{ matrix.plugin }}/
             /filesystem-api/
             /rust-toolchain.toml
+            /.github/actions/
+      - uses: ./.github/actions/rust-setup
       - name: Linux local-only GIO test runtime
         if: matrix.provider == 'network' && runner.os == 'Linux'
         run: |
@@ -337,6 +430,7 @@ jobs:
       matrix:
         os: [windows-latest, ubuntu-24.04]
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 180
     env:
       # The full generated UI suite otherwise fills the hosted runner disk.
       CARGO_PROFILE_DEV_DEBUG: "0"
@@ -355,109 +449,26 @@ jobs:
           pattern: filesystem-${{ runner.os }}-*
           merge-multiple: true
           path: _build/filesystem-packages
-      - name: Prepare build temporary directory and private native test installation
-        shell: pwsh
-        run: |
-          $temporaryDirectory = Join-Path $env:GITHUB_WORKSPACE '_build/tmp'
-          New-Item -ItemType Directory -Path $temporaryDirectory -Force | Out-Null
-          @("TEMP=$temporaryDirectory", "TMP=$temporaryDirectory", "TMPDIR=$temporaryDirectory") |
-            Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          if ($IsWindows) {
-            $testRoot = Join-Path $env:USERPROFILE ('MidnightViewerTests-' + [guid]::NewGuid().ToString('N'))
-            New-Item -ItemType Directory -Path $testRoot | Out-Null
-            $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
-            $acl = New-Object Security.AccessControl.DirectorySecurity
-            $acl.SetSecurityDescriptorSddlForm("D:P(A;OICI;FA;;;$sid)(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)",
-              [Security.AccessControl.AccessControlSections]::Access)
-            Set-Acl -LiteralPath $testRoot -AclObject $acl
-            $library = 'midnight_viewer_basic.dll'
-          } else {
-            $testRoot = Join-Path $env:RUNNER_TEMP ('_build/viewer-tests-' + [guid]::NewGuid().ToString('N'))
-            New-Item -ItemType Directory -Path $testRoot -Force | Out-Null
-            chmod 700 $testRoot
-            $library = 'libmidnight_viewer_basic.so'
-          }
-          "HOST_TEST_INSTALL_ROOT=$testRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          $plugin = Join-Path $env:GITHUB_WORKSPACE "_build/viewer-packages/midnight-viewer-basic/$library"
-          "HOST_TEST_PLUGIN=$plugin" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          $installedViewers = Join-Path $testRoot 'viewers'
-          Copy-Item -LiteralPath '_build/viewer-packages' -Destination $installedViewers -Recurse
-          if (-not $IsWindows) {
-            chmod 700 $installedViewers
-            Get-ChildItem -LiteralPath $installedViewers -Force -Recurse | ForEach-Object {
-              $mode = if ($_.PSIsContainer -or $_.Name -in @('midnight-viewer-image', 'midnight-viewer-pdf')) { '700' } else { '600' }
-              chmod $mode -- $_.FullName
-              if ($LASTEXITCODE -ne 0) { throw 'Private test installation permissions failed' }
-            }
-          }
-          "MIDNIGHT_VIEWER_TEST_INSTALL=$testRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          $installedFilesystems = Join-Path $testRoot 'filesystems'
-          Copy-Item -LiteralPath '_build/filesystem-packages' -Destination $installedFilesystems -Recurse
-          if (-not $IsWindows) {
-            chmod 700 -- $installedFilesystems
-            Get-ChildItem -LiteralPath $installedFilesystems -Force -Recurse | ForEach-Object {
-              $mode = if ($_.PSIsContainer -or $_.Name -eq 'midnight-fs-archive') { '700' } else { '600' }
-              chmod $mode -- $_.FullName
-              if ($LASTEXITCODE -ne 0) { throw 'Private filesystem installation permissions failed' }
-            }
-          }
-          "MIDNIGHT_NATIVE_TEST_INSTALLATION=$testRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          $testApplication = Join-Path $testRoot 'midnight-explorer.exe'
-          "MIDNIGHT_IMAGE_VIEWER_TEST_APPLICATION=$testApplication" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          "MIDNIGHT_PDF_VIEWER_TEST_APPLICATION=$testApplication" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          $archiveExecutable = if ($IsWindows) { 'midnight-fs-archive.exe' } else { 'midnight-fs-archive' }
-          $archiveWorker = Join-Path $env:GITHUB_WORKSPACE "_build/filesystem-packages/archive/$archiveExecutable"
-          if (-not $IsWindows) {
-            chmod 700 -- $archiveWorker
-            if ($LASTEXITCODE -ne 0) { throw 'Archive worker executable permissions failed' }
-          }
-          "ARCHIVE_WORKER=$archiveWorker" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          "ARCHIVE_TEST_INSTALL_ROOT=$testRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-      - name: Linux prerequisites
-        if: runner.os == 'Linux'
-        run: |
-          # Canonical DNS outages can affect all *.ubuntu.com mirrors together.
-          # Keep the job-local source file and Ubuntu signature checks; fall back
-          # to kernel.org on an independent domain, never to unsigned packages.
-          sources="$GITHUB_WORKSPACE/_build/ci-ubuntu.list"
-          apt_options=(-o "Dir::Etc::sourcelist=$sources" -o 'Dir::Etc::sourceparts=-'
-                       -o Acquire::Retries=2 -o Acquire::https::Timeout=20)
-          installed=false
-          for mirror in https://archive.ubuntu.com/ubuntu https://mirrors.edge.kernel.org/ubuntu; do
-            host=${mirror#https://}; host=${host%%/*}
-            if ! timeout 10 getent ahostsv4 "$host" > /dev/null; then
-              echo "::warning::Ubuntu mirror DNS unavailable: $host; trying next mirror"
-              continue
-            fi
-            printf '%s\n' \
-              "deb [signed-by=/usr/share/keyrings/ubuntu-archive-keyring.gpg] $mirror noble main universe" \
-              "deb [signed-by=/usr/share/keyrings/ubuntu-archive-keyring.gpg] $mirror noble-updates main universe" \
-              "deb [signed-by=/usr/share/keyrings/ubuntu-archive-keyring.gpg] $mirror noble-security main universe" > "$sources"
-            if sudo apt-get "${apt_options[@]}" update --error-on=any &&
-               sudo apt-get "${apt_options[@]}" install -y --no-install-recommends \
-                 pkg-config libfontconfig1-dev libfreetype6-dev libxkbcommon-dev \
-                 libxkbcommon-x11-0 libx11-dev libxcb1-dev libwayland-dev libudev-dev xvfb xauth; then
-              installed=true
-              break
-            fi
-            echo "::warning::Ubuntu packages unavailable from $host; trying next mirror"
-          done
-          if [[ "$installed" != true ]]; then
-            echo '::error::Unable to install authenticated Ubuntu build prerequisites'
-            exit 1
-          fi
-      - name: Build helper tests
-        if: runner.os == 'Linux'
-        run: python3 scripts/test-build.py
-      - name: Install pinned toolchain
-        run: rustup show
+      - uses: ./.github/actions/private-test-installation
+      - if: runner.os == 'Linux'
+        uses: ./.github/actions/linux-build-prerequisites
+      - uses: ./.github/actions/rust-setup
       - name: Format
         run: cargo fmt --all -- --check
-      - name: Release packaging tests
+      - name: Build script and packaging tests
         run: python -B -m unittest discover -s scripts/tests -v
-      - name: Private deployment tests (Windows)
+      - name: Deployment, registration and shortcut tests (Windows PowerShell 5.1 and 7)
         if: runner.os == 'Windows'
-        run: powershell.exe -NoProfile -File scripts/tests/test-private-deployment.ps1
+        shell: pwsh
+        run: |
+          # Production runs these helpers under PowerShell 7; they stay 5.1 compatible.
+          foreach ($test in @('test-private-deployment.ps1', 'test-runtime-registration.ps1',
+              'test-build-deployment-retirement.ps1', 'test-desktop-shortcut.ps1')) {
+            foreach ($shell in @('pwsh', 'powershell.exe')) {
+              & $shell -NoLogo -NoProfile -File "scripts/tests/$test"
+              if ($LASTEXITCODE -ne 0) { throw "$test failed under $shell" }
+            }
+          }
       - name: Source size (Windows)
         if: runner.os == 'Windows'
         run: pwsh scripts/check-source-size.ps1
@@ -468,14 +479,16 @@ jobs:
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - name: Test
         run: python -B scripts/ci-workspace-tests.py --retire-successful-test-artifacts
+      # The steps below reuse the gates' workspace feature selection through
+      # ci-workspace-tests.py; `cargo test -p` would rebuild shared dependencies.
       - name: Qualify Linux cross-filesystem Trash
         if: runner.os == 'Linux'
         shell: bash
         run: |
           set -euo pipefail
-          cargo test -p midnight-platform-linux --locked \
+          python3 -B scripts/ci-workspace-tests.py run midnight-platform-linux lib \
             mutation::tests::cross_filesystem_trash_returns_unsupported_and_keeps_source \
-            -- --exact --nocapture 2>&1 | tee _build/cross-filesystem-trash.log
+            --exact --nocapture 2>&1 | tee _build/cross-filesystem-trash.log
           grep -Fq 'QUALIFIED cross_filesystem_trash:' _build/cross-filesystem-trash.log
       - name: Native viewer ABI rejection fixture
         shell: pwsh
@@ -485,30 +498,27 @@ jobs:
           $library = if ($IsWindows) { 'midnight_host_bad_descriptor.dll' } else { 'libmidnight_host_bad_descriptor.so' }
           $path = Join-Path $env:GITHUB_WORKSPACE "_build/bad-viewer-descriptor/debug/$library"
           "HOST_BAD_PLUGIN=$path" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+      # The non-ignored tests of every target below already ran in the workspace gates.
       - name: Native viewer open, viewport, search and quiescent close
-        run: cargo test -p midnight-plugin-host --locked -- --include-ignored
+        run: python -B scripts/ci-workspace-tests.py run midnight-plugin-host lib --ignored
       - name: Native viewer engine rendering, search, copy, mode and file-cycle integration
-        run: cargo test -p midnight-viewer-engine --lib --locked -- --ignored --nocapture
+        run: python -B scripts/ci-workspace-tests.py run midnight-viewer-engine lib --ignored --nocapture
       - name: Installed native filesystem browse, read, volumes and absence checks
-        run: cargo test -p midnight-native-filesystem-host --test native --locked -- --ignored --test-threads=1
+        run: python -B scripts/ci-workspace-tests.py run midnight-native-filesystem-host test:native --ignored --test-threads=1
       - name: Installed network metadata boundary without LAN discovery
         shell: pwsh
         run: |
           $env:MIDNIGHT_NETWORK_TEST_INSTALLATION = $env:MIDNIGHT_NATIVE_TEST_INSTALLATION
-          cargo test -p midnight-native-filesystem-host --lib installed_network_metadata --locked -- --ignored --test-threads=1
+          python -B scripts/ci-workspace-tests.py run midnight-native-filesystem-host lib installed_network_metadata --ignored --test-threads=1
           if ($LASTEXITCODE -ne 0) { throw 'Installed network metadata boundary failed' }
       - name: Application viewers use native provider and refuse missing provider
         shell: pwsh
         run: |
-          $messages = cargo test -p midnight-explorer --no-run --locked --message-format=json
-          if ($LASTEXITCODE -ne 0) { throw 'Application integration test build failed' }
-          $artifact = $messages | ForEach-Object { $_ | ConvertFrom-Json } |
-            Where-Object { $_.reason -eq 'compiler-artifact' -and $_.target.name -eq 'me' -and $_.profile.test -and $_.executable } |
-            Select-Object -Last 1
-          if (-not $artifact) { throw 'Application test executable not reported' }
+          $executable = python -B scripts/ci-workspace-tests.py artifact midnight-explorer bin:me
+          if ($LASTEXITCODE -ne 0 -or -not $executable) { throw 'Application test executable not reported' }
           $name = if ($IsWindows) { 'native-app-test.exe' } else { 'native-app-test' }
           $probe = Join-Path $env:HOST_TEST_INSTALL_ROOT $name
-          Copy-Item -LiteralPath $artifact.executable -Destination $probe
+          Copy-Item -LiteralPath ($executable | Select-Object -Last 1) -Destination $probe
           if (-not $IsWindows) { chmod 700 -- $probe }
           $fixture = Join-Path $env:GITHUB_WORKSPACE '_build/native-app-fixture'
           New-Item -ItemType Directory -Force $fixture | Out-Null
@@ -518,29 +528,50 @@ jobs:
           & $probe viewers::tests::native_plugin_ --ignored --nocapture --test-threads=1
           if ($LASTEXITCODE -ne 0) { throw 'Application F3 native plugin integration failed' }
       - name: Restricted image process source validation, cancellation and retained pixels
-        run: cargo test -p midnight-image-viewer-host --test native --locked -- --ignored --test-threads=1
+        run: python -B scripts/ci-workspace-tests.py run midnight-image-viewer-host test:native --ignored --test-threads=1
       - name: Restricted PDF process pagination, source validation and cancellation
-        run: cargo test -p midnight-image-viewer-host --test pdf_native --locked -- --ignored --test-threads=1
+        run: python -B scripts/ci-workspace-tests.py run midnight-image-viewer-host test:pdf_native --ignored --test-threads=1
       - name: Restricted archive worker listing, source validation and cancellation
-        run: cargo test -p midnight-filesystem-host --test worker --locked -- --include-ignored --test-threads=1
+        run: python -B scripts/ci-workspace-tests.py run midnight-filesystem-host test:worker --ignored --test-threads=1
       - name: Native X11 drag and drop (isolated display)
         if: runner.os == 'Linux'
-        run: >-
-          xvfb-run -a -s "-screen 0 1280x1024x24 -nolisten tcp"
-          env MIDNIGHT_DND_TEST_ISOLATED=1
-          cargo test -p midnight-platform-linux --lib --locked
-          file_drag_drop:: -- --ignored --test-threads=1
+        shell: bash
+        run: |
+          set -euo pipefail
+          executable=$(python3 -B scripts/ci-workspace-tests.py artifact midnight-platform-linux lib)
+          cd crates/midnight-platform-linux
+          xvfb-run -a -s "-screen 0 1280x1024x24 -nolisten tcp" \
+            env MIDNIGHT_DND_TEST_ISOLATED=1 "$executable" file_drag_drop:: --ignored --test-threads=1
+
+  # The fat-LTO release build runs beside the test job instead of after it.
+  release:
+    needs: [viewers, image-viewer, archive-filesystem, filesystem-libraries]
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-24.04]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
+    env:
+      CARGO_INCREMENTAL: "0"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: viewer-${{ runner.os }}-*
+          merge-multiple: true
+          path: _build/viewer-packages
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: filesystem-${{ runner.os }}-*
+          merge-multiple: true
+          path: _build/filesystem-packages
+      - uses: ./.github/actions/private-test-installation
+      - if: runner.os == 'Linux'
+        uses: ./.github/actions/linux-build-prerequisites
+      - uses: ./.github/actions/rust-setup
       - name: Optimized release build
         run: cargo build -p midnight-explorer -p midnight-elevation --release --locked
-      - name: Install independently built viewer and filesystem packages beside executable
-        shell: pwsh
-        run: |
-          Copy-Item -LiteralPath '_build/viewer-packages' -Destination '_build/release/viewers' -Recurse
-          Copy-Item -LiteralPath '_build/filesystem-packages' -Destination '_build/release/filesystems' -Recurse
-          if (-not $IsWindows) {
-            chmod 700 -- '_build/release/filesystems/archive/midnight-fs-archive'
-            if ($LASTEXITCODE -ne 0) { throw 'Release archive worker executable permissions failed' }
-          }
       - name: Release filesystem smoke test
         shell: pwsh
         run: |

@@ -1,0 +1,39 @@
+name: Linux build prerequisites
+description: Install the authenticated Ubuntu packages needed to build the application.
+runs:
+  using: composite
+  steps:
+    - name: Install Ubuntu build packages
+      shell: bash
+      run: |
+        # Canonical DNS outages can affect all *.ubuntu.com mirrors together.
+        # Keep the job-local source file and Ubuntu signature checks; fall back
+        # to kernel.org on an independent domain, never to unsigned packages.
+        mkdir -p "$GITHUB_WORKSPACE/_build"
+        sources="$GITHUB_WORKSPACE/_build/ci-ubuntu.list"
+        apt_options=(-o "Dir::Etc::sourcelist=$sources" -o 'Dir::Etc::sourceparts=-'
+                     -o Acquire::Retries=2 -o Acquire::https::Timeout=20)
+        installed=false
+        for mirror in https://archive.ubuntu.com/ubuntu https://mirrors.edge.kernel.org/ubuntu; do
+          host=${mirror#https://}; host=${host%%/*}
+          if ! timeout 10 getent ahostsv4 "$host" > /dev/null; then
+            echo "::warning::Ubuntu mirror DNS unavailable: $host; trying next mirror"
+            continue
+          fi
+          printf '%s\n' \
+            "deb [signed-by=/usr/share/keyrings/ubuntu-archive-keyring.gpg] $mirror noble main universe" \
+            "deb [signed-by=/usr/share/keyrings/ubuntu-archive-keyring.gpg] $mirror noble-updates main universe" \
+            "deb [signed-by=/usr/share/keyrings/ubuntu-archive-keyring.gpg] $mirror noble-security main universe" > "$sources"
+          if sudo apt-get "${apt_options[@]}" update --error-on=any &&
+             sudo apt-get "${apt_options[@]}" install -y --no-install-recommends \
+               pkg-config libfontconfig1-dev libfreetype6-dev libxkbcommon-dev \
+               libxkbcommon-x11-0 libx11-dev libxcb1-dev libwayland-dev libudev-dev xvfb xauth; then
+            installed=true
+            break
+          fi
+          echo "::warning::Ubuntu packages unavailable from $host; trying next mirror"
+        done
+        if [[ "$installed" != true ]]; then
+          echo '::error::Unable to install authenticated Ubuntu build prerequisites'
+          exit 1
+        fi

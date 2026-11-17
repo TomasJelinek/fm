@@ -218,10 +218,7 @@ def run_command(command, root, gate):
     return code, artifacts
 
 
-def execute(root, metadata, invoke=run_command, batch_size=DEFAULT_BATCH_SIZE):
-    target_root = output_root(root, metadata)
-    serial = plan(metadata)
-    gates = batch_integrations(serial, batch_size)
+def feature_arguments(metadata):
     members = set(metadata['workspace_members'])
     names = {package['id']: package['name'] for package in metadata['packages'] if package['id'] in members}
     # Excluding a disabled unit/doctest target must not drop its member's default
@@ -229,7 +226,64 @@ def execute(root, metadata, invoke=run_command, batch_size=DEFAULT_BATCH_SIZE):
     features = sorted(f'{names[identity]}/{feature}'
                       for identity, values in metadata['ci_active_features'].items()
                       for feature in values)
-    feature_args = ['--features', ','.join(features)] if features else []
+    return ['--features', ','.join(features)] if features else []
+
+
+def artifact_selection(metadata, package_name, target):
+    """Select one test executable with exactly the workspace gates' Cargo selection.
+
+    A `-p PACKAGE` build resolves features for that package's graph only, so shared
+    dependencies get other feature sets and everything above them is rebuilt.
+    """
+    members = set(metadata['workspace_members'])
+    packages = [package for package in metadata['packages']
+                if package['id'] in members and package['name'] == package_name]
+    if len(packages) != 1:
+        raise ValueError(f'Unknown workspace package: {package_name}')
+    package = packages[0]
+    kind, _, name = target.partition(':')
+    if kind == 'lib' and not name:
+        gates = [gate for gate in plan(metadata) if gate['args'][:1] == ['--lib']]
+        if not gates or package_name in gates[0]['args'][2::2]:
+            raise ValueError(f'{package_name} has no enabled library test target')
+        return package, gates[0]['args'], lambda artifact: bool(LIB_KINDS.intersection(artifact['target']['kind']))
+    if kind in ('test', 'bin') and name:
+        if not any(kind in candidate['kind'] and candidate['name'] == name for candidate in package['targets']):
+            raise ValueError(f'{package_name} has no {kind} target {name}')
+        return (package, ['--' + kind, name],
+                lambda artifact: artifact['target']['kind'] == [kind] and artifact['target']['name'] == name)
+    raise ValueError('Expected a target of lib, test:NAME or bin:NAME')
+
+
+def build_artifact(root, metadata, package_name, target, invoke=subprocess.run):
+    """Build (normally: reuse) and return one test executable and its package directory."""
+    package, args, matches = artifact_selection(metadata, package_name, target)
+    command = (['cargo', 'test', '--workspace', '--locked'] + feature_arguments(metadata) + args
+               + ['--no-run', '--message-format=json'])
+    print('+ ' + ' '.join(command), file=sys.stderr, flush=True)
+    result = invoke(command, cwd=root, stdout=subprocess.PIPE, text=True, encoding='utf-8')
+    if result.returncode:
+        raise ValueError(f'Cargo could not build {package_name} {target} (exit {result.returncode})')
+    executables = set()
+    for line in result.stdout.splitlines():
+        try:
+            event = json.loads(line) if line.startswith('{') else None
+        except json.JSONDecodeError:
+            event = None
+        if (isinstance(event, dict) and event.get('reason') == 'compiler-artifact'
+                and event.get('package_id') == package['id'] and event.get('profile', {}).get('test')
+                and isinstance(event.get('executable'), str) and matches(event)):
+            executables.add(event['executable'])
+    if len(executables) != 1:
+        raise ValueError(f'Cargo reported {len(executables)} executables for {package_name} {target}')
+    return Path(executables.pop()), Path(package['manifest_path']).parent
+
+
+def execute(root, metadata, invoke=run_command, batch_size=DEFAULT_BATCH_SIZE):
+    target_root = output_root(root, metadata)
+    serial = plan(metadata)
+    gates = batch_integrations(serial, batch_size)
+    feature_args = feature_arguments(metadata)
     print(f'Workspace gates: {len(gates)}; '
           f'integration names: {sum(gate["cleanup"] for gate in serial)}; '
           f'integration batch bound: {batch_size}', flush=True)
@@ -326,8 +380,30 @@ def configure_output():
             stream.reconfigure(encoding='utf-8', errors='backslashreplace')
 
 
+def artifact_main(arguments, invoke=subprocess.run, metadata_loader=None):
+    """`artifact PACKAGE TARGET` prints a test executable built with the gates' selection;
+    `run PACKAGE TARGET [LIBTEST ARGS...]` runs it from its package directory, as Cargo would.
+
+    Post-gate steps use this instead of `cargo test -p PACKAGE`, which would rebuild
+    shared dependencies with that package's narrower feature set."""
+    mode, rest = arguments[0], arguments[1:]
+    if len(rest) < 2 or (mode == 'artifact' and len(rest) != 2):
+        print(f'Usage: ci-workspace-tests.py {mode} PACKAGE lib|test:NAME|bin:NAME'
+              + (' [LIBTEST ARGS...]' if mode == 'run' else ''), file=sys.stderr)
+        return 2
+    root = Path(__file__).resolve().parents[1]
+    metadata = (metadata_loader or load_metadata)(root)
+    executable, directory = build_artifact(root, metadata, rest[0], rest[1], invoke)
+    if mode == 'artifact':
+        print(executable, flush=True)
+        return 0
+    return invoke([str(executable), *rest[2:]], cwd=directory).returncode
+
+
 def main():
     configure_output()
+    if sys.argv[1:2] in (['artifact'], ['run']):
+        return artifact_main(sys.argv[1:])
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--retire-successful-test-artifacts', action='store_true')
     parser.add_argument('--integration-batch-size', type=int, choices=(1, 4, 8),

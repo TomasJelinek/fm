@@ -4,7 +4,7 @@ import shutil
 import tomllib
 import unittest
 
-from scripts.tests import test_worker_packages as worker_fixtures
+import test_worker_packages as worker_fixtures
 
 packaging = worker_fixtures.packaging
 
