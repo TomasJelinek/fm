@@ -16,8 +16,8 @@ corruption between samples. It revalidates the opened source
 before accepting replacement consent and immediately before publishing. A failed
 copy stays stopped until an explicitly supported Retry restores its checkpoint. The
 one automatic retry repeats a namespace change (stage, directory or link creation,
-publication, a Move's source or empty-directory removal) that granted peers refused
-before any mutation, once a refusing peer changes; see
+publication, a Move's source capture, source removal or empty-directory removal) that
+granted peers refused before any mutation, once a refusing peer changes; see
 [operation progress](OPERATION_PROGRESS.md#admission-policy-and-waits). Cancelled
 and recovery-terminal copies cannot publish again. A late no-replace
 collision leaves the verified stage available for a different name or explicit
@@ -135,7 +135,9 @@ Retry retains native identities and the original source/stage handles:
   It never recopies the file. Directory removal retries the exhausted frame,
   revalidating bindings without enumerating that directory again. When granted
   peers refused either removal, its retry runs automatically (the file removal
-  still with the full rehash).
+  still with the full rehash). A source capture they refused captured nothing; it
+  is repeated automatically from the capture step, and the post-capture proof
+  still rehashes both files before removal.
 
 Skip All is scoped by phase, native error kind and operation name within one job.
 Successful retries do not increment failed counts; skipped errors and cleanup or

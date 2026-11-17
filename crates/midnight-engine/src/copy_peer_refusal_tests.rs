@@ -261,19 +261,21 @@ async fn quarantined_peer_refusal_fails_with_the_restart_error() {
     h.close().await;
 }
 
-/// Wraps the cross-device fixture's Move captures: the first source removals and empty
-/// directory removals are refused as the native adapters refuse them when a granted
-/// peer's namespace refuses the change (recorded refusal, nothing mutated).
+/// Wraps the cross-device fixture's Move captures: the first source captures, source
+/// removals and empty directory removals are refused as the native adapters refuse them
+/// when a granted peer's namespace refuses the change (recorded refusal, nothing mutated).
 struct RefusingMoveService {
     inner: moves::CrossDeviceService,
+    captures: Arc<AtomicUsize>,
     removals: Arc<AtomicUsize>,
     directories: Arc<AtomicUsize>,
     finalizers: Arc<AtomicUsize>,
 }
 impl RefusingMoveService {
-    fn new(removals: usize, directories: usize) -> Self {
+    fn new(captures: usize, removals: usize, directories: usize) -> Self {
         Self {
             inner: moves::CrossDeviceService(midnight_platform::LocalFileSystem::new(None)),
+            captures: Arc::new(AtomicUsize::new(captures)),
             removals: Arc::new(AtomicUsize::new(removals)),
             directories: Arc::new(AtomicUsize::new(directories)),
             finalizers: Arc::new(AtomicUsize::new(0)),
@@ -314,6 +316,7 @@ impl TransferService for RefusingMoveService {
             source: prepared.source,
             capture: Arc::new(RefusingCapture {
                 inner: prepared.capture,
+                captures: self.captures.clone(),
                 removals: self.removals.clone(),
                 directories: self.directories.clone(),
                 finalizers: self.finalizers.clone(),
@@ -341,6 +344,7 @@ fn refusal(path: &Path) -> FsError {
 }
 struct RefusingCapture {
     inner: Arc<dyn TransferMoveCapture>,
+    captures: Arc<AtomicUsize>,
     removals: Arc<AtomicUsize>,
     directories: Arc<AtomicUsize>,
     finalizers: Arc<AtomicUsize>,
@@ -389,6 +393,9 @@ impl TransferMoveCapture for RefusingCapture {
         self.inner.remove_empty_directory(cancel)
     }
     fn capture(&self, cancel: &Cancellation) -> Result<TransferMoveCaptureOutcome, FsError> {
+        if refused(&self.captures) {
+            return Err(refusal(&self.entry().item.path));
+        }
         let outcome = self.inner.capture(cancel)?;
         if let TransferMoveCaptureOutcome::Captured { source, recovery } = &outcome {
             *self.receipt.lock().unwrap() = Some((source.clone(), recovery.clone()));
@@ -427,6 +434,54 @@ impl TransferMoveFinalizer for RefusingFinalizer {
     }
 }
 
+/// A Move's source capture refused by a granted peer captured nothing: the job repeats
+/// the capture once the peer changes, without a prompt. The Before proof is kept, the
+/// After proof still rehashes both files, and the refused attempt staged nothing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn peer_refused_move_source_capture_retries_without_a_prompt() {
+    let (_temp, parent) = moves::protected_fixture();
+    let source = parent.join("moved");
+    let destination = parent.join("destination");
+    let bytes: Vec<_> = (0..300_011).map(|index| (index % 251) as u8).collect();
+    fs::write(&source, &bytes).unwrap();
+    fs::create_dir(&destination).unwrap();
+    let service = RefusingMoveService::new(1, 0, 0);
+    let (captures, finalizers) = (service.captures.clone(), service.finalizers.clone());
+    let mut h = Harness::new(Some(Arc::new(service)));
+    h.controller
+        .enqueue_move(request(1, std::slice::from_ref(&source), &destination))
+        .await;
+    let done = terminal_without_prompt(&mut h, 1).await;
+    assert_eq!(done.state, CopyOperationState::Completed, "{done:?}");
+    assert!(done.errors.is_empty(), "{done:?}");
+    assert_eq!(
+        captures.load(Ordering::SeqCst),
+        0,
+        "the injected refusal was consumed"
+    );
+    assert_eq!(
+        finalizers.load(Ordering::SeqCst),
+        1,
+        "only the repeated capture prepared a finalizer"
+    );
+    assert_eq!(done.source_names_staged, 1, "{done:?}");
+    // Before and After proofs (source and destination); the capture retry repeats neither.
+    assert_eq!(done.validation_bytes, 4 * bytes.len() as u64, "{done:?}");
+    assert_eq!(done.source_files_removed, 1);
+    assert!(!source.exists());
+    assert_eq!(fs::read(destination.join("moved")).unwrap(), bytes);
+    let staging: Vec<_> = fs::read_dir(&parent)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .filter(|name| name.to_string_lossy().starts_with(".midnight-move-"))
+        .collect();
+    assert!(
+        staging.is_empty(),
+        "temporary Move directories remain: {staging:?}"
+    );
+    h.close().await;
+}
+
 /// A Move's verified source removal refused by a granted peer is repeated automatically
 /// (no prompt): the ordinary Retry rebuilds the finalizer and rehashes both retained
 /// objects before the source is removed.
@@ -438,7 +493,7 @@ async fn peer_refused_move_source_removal_rehashes_and_retries_without_a_prompt(
     let bytes: Vec<_> = (0..300_011).map(|index| (index % 253) as u8).collect();
     fs::write(&source, &bytes).unwrap();
     fs::create_dir(&destination).unwrap();
-    let service = RefusingMoveService::new(1, 0);
+    let service = RefusingMoveService::new(0, 1, 0);
     let (removals, finalizers) = (service.removals.clone(), service.finalizers.clone());
     let mut h = Harness::new(Some(Arc::new(service)));
     h.controller
@@ -471,7 +526,7 @@ async fn peer_refused_move_directory_removal_retries_without_a_prompt() {
     fs::create_dir(&root).unwrap();
     fs::write(root.join("child"), b"moved child").unwrap();
     fs::create_dir(&destination).unwrap();
-    let service = RefusingMoveService::new(0, 1);
+    let service = RefusingMoveService::new(0, 0, 1);
     let directories = service.directories.clone();
     let mut h = Harness::new(Some(Arc::new(service)));
     h.controller
