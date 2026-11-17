@@ -168,6 +168,132 @@ fn zip_records_merged_by_duplicate_raw_names_are_listed_but_unreadable() {
     assert_eq!(archive.read(nodes[1].id, 0, 16).unwrap().0, b"read me");
 }
 
+/// A stored ZIP whose central records may carry Info-ZIP Unicode Path fields (0x7075).
+/// Each record is (written name, raw name of the same length, data, path fields), and
+/// each path field is (the name its CRC-32 covers, path). The writer refuses duplicate
+/// names and validates 0x7075 against an empty name, so raw names are patched in and
+/// path fields are written under an unreserved tag, then retagged.
+type UnicodeRecord<'a> = (&'a str, &'a str, &'a [u8], &'a [(&'a str, &'a str)]);
+fn unicode_path_zip(records: &[UnicodeRecord<'_>]) -> Vec<u8> {
+    let find = |source: &[u8], needle: &[u8]| {
+        source
+            .windows(needle.len())
+            .position(|window| window == needle)
+    };
+    let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
+    let mut fields = Vec::new();
+    for (written, _, data, paths) in records {
+        let mut options = zip::write::FullFileOptions::default()
+            .compression_method(zip::CompressionMethod::Stored);
+        for (covers, path) in *paths {
+            let mut crc = flate2::Crc::new();
+            crc.update(covers.as_bytes());
+            let mut body = vec![1];
+            body.extend(crc.sum().to_le_bytes());
+            body.extend(path.as_bytes());
+            let mut field = 0x1234u16.to_le_bytes().to_vec();
+            field.extend((body.len() as u16).to_le_bytes());
+            field.extend(&body);
+            fields.push(field);
+            options.add_extra_data(0x1234, body, true).unwrap();
+        }
+        writer.start_file(*written, options).unwrap();
+        writer.write_all(data).unwrap();
+    }
+    let mut source = writer.finish().unwrap().into_inner();
+    for field in fields {
+        let at = find(&source, &field).unwrap();
+        source[at..at + 2].copy_from_slice(&0x7075u16.to_le_bytes());
+    }
+    for (written, raw, _, _) in records {
+        let offsets: Vec<_> = source
+            .windows(written.len())
+            .enumerate()
+            .filter_map(|(index, name)| (name == written.as_bytes()).then_some(index))
+            .collect();
+        for at in offsets {
+            source[at..at + raw.len()].copy_from_slice(raw.as_bytes());
+        }
+    }
+    source
+}
+
+#[test]
+fn zip_records_merged_through_a_unicode_path_are_listed_but_unreadable() {
+    // Different raw names, but the third record's Unicode Path (which 7-Zip and
+    // Info-ZIP also display) makes the reader index it as `setup.exe`.
+    let records: [UnicodeRecord<'_>; 3] = [
+        ("setup.exe", "setup.exe", b"benign", &[]),
+        ("readme.txt", "readme.txt", b"read me", &[]),
+        (
+            "setup.exf",
+            "setup.exf",
+            b"other!",
+            &[("setup.exf", "setup.exe")],
+        ),
+    ];
+    let source = unicode_path_zip(&records);
+    let mut archive = Archive::open(Format::Zip, source, Limits::default()).unwrap();
+    let nodes = archive.list(1, 0).unwrap();
+    let names: Vec<_> = nodes.iter().map(|node| node.name.as_slice()).collect();
+    assert_eq!(names, [b"setup.exe".as_slice(), b"readme.txt"]);
+    assert!(!nodes[0].readable, "two records merged under setup.exe");
+    assert_eq!(
+        archive.read(nodes[0].id, 0, 16).unwrap_err().code,
+        ErrorCode::Unsupported
+    );
+    assert_eq!(archive.read(nodes[1].id, 0, 16).unwrap().0, b"read me");
+}
+
+#[test]
+fn zip_duplicates_are_judged_by_the_names_the_reader_indexes() {
+    let records: [UnicodeRecord<'_>; 4] = [
+        // One raw name with two different Unicode Paths: two separate members.
+        ("a.tx1", "a.txt", b"one", &[("a.txt", "alpha.txt")]),
+        ("a.tx2", "a.txt", b"two", &[("a.txt", "beta.txt")]),
+        // Chained paths: the second covers the first one's result and merges with `beta.txt`.
+        (
+            "c.txt",
+            "c.txt",
+            b"three",
+            &[("c.txt", "gamma.txt"), ("gamma.txt", "beta.txt")],
+        ),
+        // The same raw name without a path is yet another member.
+        ("a.tx3", "a.txt", b"four", &[]),
+    ];
+    let mut archive =
+        Archive::open(Format::Zip, unicode_path_zip(&records), Limits::default()).unwrap();
+    let nodes = archive.list(1, 0).unwrap();
+    let listed: Vec<_> = nodes
+        .iter()
+        .map(|node| (node.name.as_slice(), node.readable))
+        .collect();
+    assert_eq!(
+        listed,
+        [
+            (b"alpha.txt".as_slice(), true),
+            (b"beta.txt", false),
+            (b"a.txt", true)
+        ]
+    );
+    assert_eq!(archive.read(nodes[0].id, 0, 8).unwrap().0, b"one");
+    assert_eq!(archive.read(nodes[2].id, 0, 8).unwrap().0, b"four");
+    // The record walk relies on the reader refusing a path whose CRC-32 does not
+    // cover the name it replaces; such a field never reaches the walk.
+    let mismatched: [UnicodeRecord<'_>; 1] = [("b.txt", "b.txt", b"x", &[("other", "path.txt")])];
+    assert_eq!(
+        Archive::open(
+            Format::Zip,
+            unicode_path_zip(&mismatched),
+            Limits::default()
+        )
+        .err()
+        .unwrap()
+        .code,
+        ErrorCode::Corrupt
+    );
+}
+
 fn raw_tar_entry(
     builder: &mut tar::Builder<Vec<u8>>,
     name: &[u8],
