@@ -5,6 +5,9 @@ use std::collections::HashMap;
 #[cfg(test)]
 #[path = "copy_finish_seal_tests.rs"]
 mod finish_seal_tests;
+#[cfg(test)]
+#[path = "move_preparation_tests.rs"]
+mod preparation_tests;
 #[path = "move_retry.rs"]
 mod retry;
 #[cfg(test)]
@@ -224,29 +227,7 @@ fn prepare_sources_inner(
         roots.push_back(prepared.source);
         captures.push(prepared.capture);
     }
-    // Identity-based ancestry includes aliases/case variants, not just path prefixes.
-    if roots
-        .iter()
-        .any(|source| source.entry().item.kind == EntryKind::Directory)
-    {
-        for source in &roots {
-            let parent = source.entry().item.path.parent().ok_or_else(|| {
-                unsupported(&source.entry().item.path, "Move source needs a parent.")
-            })?;
-            let directory = service.prepare_move_destination(parent, &cancel)?;
-            if directory.path() != parent {
-                return Err(unsupported(
-                    parent,
-                    "Provider returned a different Move source parent.",
-                ));
-            }
-            for other in &roots {
-                if other.entry().item.kind == EntryKind::Directory {
-                    directory.reject_source_ancestor(other.entry().identity, &cancel)?;
-                }
-            }
-        }
-    }
+    reject_nested_roots(&roots, service, &cancel)?;
     let mut job = ownership::Armed::new(Job::from_sources(destination, roots, cancel, status));
     job.progress.intent = TransferIntent::Move;
     job.move_work = Some(MoveWork {
@@ -265,6 +246,45 @@ fn prepare_sources_inner(
         refresh_parents,
     });
     Ok(job.into_inner())
+}
+
+/// Refuse a selected directory that is an ancestor of any selected root's parent.
+/// Identity-based ancestry includes aliases/case variants, not just path prefixes.
+/// Selected roots usually share one parent: open and check each parent once.
+fn reject_nested_roots(
+    roots: &VecDeque<Box<dyn TransferSource>>,
+    service: &dyn TransferService,
+    cancel: &Cancellation,
+) -> Result<(), FsError> {
+    if !roots
+        .iter()
+        .any(|source| source.entry().item.kind == EntryKind::Directory)
+    {
+        return Ok(());
+    }
+    let mut checked = HashSet::new();
+    for source in roots {
+        let parent =
+            source.entry().item.path.parent().ok_or_else(|| {
+                unsupported(&source.entry().item.path, "Move source needs a parent.")
+            })?;
+        if !checked.insert(parent) {
+            continue;
+        }
+        let directory = service.prepare_move_destination(parent, cancel)?;
+        if directory.path() != parent {
+            return Err(unsupported(
+                parent,
+                "Provider returned a different Move source parent.",
+            ));
+        }
+        for other in roots {
+            if other.entry().item.kind == EntryKind::Directory {
+                directory.reject_source_ancestor(other.entry().identity, cancel)?;
+            }
+        }
+    }
+    Ok(())
 }
 
 impl MoveWork {

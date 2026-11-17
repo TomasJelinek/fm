@@ -208,7 +208,7 @@ fn move_cancel_after_first_capture_restores_that_original_and_leaves_remaining_n
 }
 
 #[test]
-fn move_accepts_64_pinned_files_without_retaining_64_byte_buffers() {
+fn move_of_the_64_root_limit_verifies_and_removes_every_pinned_file() {
     let (_temp, parent) = protected_fixture();
     let paths: Vec<_> = (0..64)
         .map(|index| parent.join(format!("file-{index}")))

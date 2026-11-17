@@ -6,23 +6,39 @@ mod retry;
 pub(in super::super) fn tree_fixture() -> (tempfile::TempDir, PathBuf) {
     let (temp, parent) = protected_fixture();
     #[cfg(windows)]
-    {
-        // The production temporary stage's private ACE is intentionally not
-        // inheritable. Give only this owned fixture's token-user ACE inheritance
-        // so ordinary child directories also meet the native Move parent policy.
-        let script = "$ErrorActionPreference='Stop'; $p=$env:MIDNIGHT_MOVE_FIXTURE; $a=[System.IO.Directory]::GetAccessControl($p,[System.Security.AccessControl.AccessControlSections]::Access); $s=[System.Security.Principal.WindowsIdentity]::GetCurrent().User; $r=[System.Security.AccessControl.FileSystemAccessRule]::new($s,'FullControl','ContainerInherit,ObjectInherit','None','Allow'); $a.SetAccessRule($r); [System.IO.Directory]::SetAccessControl($p,$a)";
-        let output = std::process::Command::new("powershell.exe")
-            .args(["-NoProfile", "-NonInteractive", "-Command", script])
-            .env("MIDNIGHT_MOVE_FIXTURE", &parent)
+    inheritable_user_access(&parent);
+    (temp, parent)
+}
+
+/// The production temporary stage's private ACE is intentionally not inheritable.
+/// Give only this owned fixture's token-user ACE inheritance so ordinary child
+/// directories also meet the native Move parent policy. `icacls /grant:r` replaces
+/// that user's explicit grant like `SetAccessRule`, without starting PowerShell
+/// (about 40 ms instead of 0.7-1.2 s per fixture); paths stay literal arguments.
+#[cfg(windows)]
+fn inheritable_user_access(path: &Path) {
+    static USER: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    let system =
+        PathBuf::from(std::env::var_os("SystemRoot").expect("SystemRoot")).join("System32");
+    let user = USER.get_or_init(|| {
+        let output = std::process::Command::new(system.join("whoami.exe"))
+            .args(["/user", "/fo", "csv", "/nh"])
             .output()
             .unwrap();
-        assert!(
-            output.status.success(),
-            "fixture ACL: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
-    (temp, parent)
+        assert!(output.status.success(), "whoami: {output:?}");
+        // "account","S-1-..."; only the ASCII SID field is used.
+        let text = String::from_utf8_lossy(&output.stdout);
+        let sid = text.trim().rsplit(',').next().unwrap_or_default();
+        let sid = sid.trim_matches('"').to_owned();
+        assert!(sid.starts_with("S-1-"), "token user SID: {text:?}");
+        sid
+    });
+    let output = std::process::Command::new(system.join("icacls.exe"))
+        .arg(path)
+        .args(["/grant:r", &format!("*{user}:(OI)(CI)F")])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "fixture ACL: {output:?}");
 }
 
 fn prepare(paths: &[PathBuf], destination: &Path, cancel: Cancellation) -> (worker::Job, Status) {
