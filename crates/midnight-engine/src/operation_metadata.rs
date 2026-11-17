@@ -8,6 +8,7 @@ use std::{
     path::Path,
     time::{Instant, SystemTime},
 };
+use tokio::sync::{OwnedSemaphorePermit, TryAcquireError};
 
 pub(super) struct Edit {
     pub(super) preview: MetadataPreview,
@@ -341,8 +342,144 @@ struct Frame {
     depth: usize,
     issue: Option<FsError>,
     name: Option<OsString>,
-    // Target is declared first: its native handles close before this lease is returned.
-    _permit: Option<tokio::sync::OwnedSemaphorePermit>,
+    // Target is declared first: its native handles close before this pin is returned.
+    pin: Option<Pin>,
+}
+
+impl Frame {
+    fn holds_shared_pin(&self) -> bool {
+        self.pin.as_ref().is_some_and(|pin| pin.shared)
+    }
+}
+
+/// One pinned traversal target; dropping it returns the slot to its pool.
+struct Pin {
+    _permit: OwnedSemaphorePermit,
+    /// Borrowed from the shared budget rather than the executing job's reserve.
+    shared: bool,
+}
+
+/// Pins taken for one directory's children before native enumeration opens any of them.
+/// Declared before the enumerated children, so their native handles close first.
+#[derive(Default)]
+struct Lease {
+    reserve: Option<OwnedSemaphorePermit>,
+    shared: Option<OwnedSemaphorePermit>,
+}
+
+impl Lease {
+    fn count(&self) -> usize {
+        self.reserve_count() + self.shared_count()
+    }
+    fn reserve_count(&self) -> usize {
+        self.reserve
+            .as_ref()
+            .map_or(0, OwnedSemaphorePermit::num_permits)
+    }
+    fn shared_count(&self) -> usize {
+        self.shared
+            .as_ref()
+            .map_or(0, OwnedSemaphorePermit::num_permits)
+    }
+    /// Returns the pins the listed children do not need, borrowed shared ones first.
+    fn trim(&mut self, needed: usize) {
+        let mut excess = self.count().saturating_sub(needed);
+        for permits in [&mut self.shared, &mut self.reserve].into_iter().flatten() {
+            let released = excess.min(permits.num_permits());
+            drop(permits.split(released));
+            excess -= released;
+        }
+    }
+    /// One child pin, from the reserve first.
+    fn pin(&mut self) -> Option<Pin> {
+        if let Some(permit) = self.reserve.as_mut().and_then(|permits| permits.split(1)) {
+            return Some(Pin {
+                _permit: permit,
+                shared: false,
+            });
+        }
+        let permit = self.shared.as_mut()?.split(1)?;
+        Some(Pin {
+            _permit: permit,
+            shared: true,
+        })
+    }
+}
+
+/// Takes up to `at_most` currently free permits and never waits: pending metadata jobs
+/// keep their pins while they wait for the executing job, so any wait could deadlock.
+/// A failed attempt means another acquirer took permits after they were counted.
+fn take_free(pool: &Arc<Semaphore>, at_most: usize) -> Option<OwnedSemaphorePermit> {
+    loop {
+        let count = pool.available_permits().min(at_most);
+        if count == 0 {
+            return None;
+        }
+        match pool.clone().try_acquire_many_owned(count as u32) {
+            Ok(permits) => return Some(permits),
+            Err(TryAcquireError::Closed) => return None,
+            Err(TryAcquireError::NoPermits) => {}
+        }
+    }
+}
+
+/// Snapshots and pins a directory's children with at most `cap` pins. The executing
+/// job's reserve is used first. Free shared pins are borrowed only when no reserve pin
+/// is free or the adapter refused the directory as larger than the pins taken; both
+/// native adapters refuse that with `ErrorKind::Other` before opening any child.
+fn list_children(
+    target: &dyn PreparedMutation,
+    job: &worker::Job,
+    cap: usize,
+    lease: &mut Lease,
+) -> Result<Vec<Arc<dyn PreparedMutation>>, FsError> {
+    if let Some(permits) = job
+        .metadata_traversal
+        .as_ref()
+        .and_then(|reserve| take_free(reserve, cap))
+    {
+        lease.reserve = Some(permits);
+        match target.metadata_children(&job.cancel, lease.count()) {
+            Err(refusal) if refusal.kind == io::ErrorKind::Other && lease.count() < cap => {
+                lease.shared = take_free(&job.metadata_budget, cap - lease.count());
+                if lease.shared.is_none() {
+                    return Err(refusal);
+                }
+            }
+            listed => return listed,
+        }
+    } else {
+        // Still list with no pins at all, so that an empty folder succeeds.
+        lease.shared = take_free(&job.metadata_budget, cap);
+    }
+    target.metadata_children(&job.cancel, lease.count())
+}
+
+/// Names why a directory could not be pinned, instead of the adapter's size refusal.
+/// Fewer pins than the per-job cap means borrowing took every free shared target, so
+/// all shared targets then belonged to this job (`own_shared`) or to other pending jobs.
+fn pin_shortfall(path: &Path, pinned: usize, cap: usize, own_shared: usize) -> FsError {
+    let size = match pinned {
+        0 => "none of this folder's entries could be pinned".to_owned(),
+        pinned => format!("this folder has more entries than the {pinned} that could be pinned"),
+    };
+    let cause = if pinned < cap {
+        let others = MAX_METADATA_TARGETS.saturating_sub(own_shared);
+        format!(
+            "other pending metadata jobs hold {others} of the {MAX_METADATA_TARGETS} \
+             shared targets"
+        )
+    } else {
+        format!(
+            "one metadata job pins at most {MAX_METADATA_TARGETS} targets, including its \
+             selection and the folders it is still processing"
+        )
+    };
+    error(
+        path,
+        io::ErrorKind::Other,
+        &format!("{size}, because {cause}; this folder and its contents were not changed"),
+    )
 }
 
 pub(super) fn execute(mut job: worker::Job, outbox: Outbox) -> OperationProgress {
@@ -388,7 +525,7 @@ pub(super) fn execute(mut job: worker::Job, outbox: Outbox) -> OperationProgress
             depth: 0,
             issue: edit.issues[root_index].clone(),
             name: edit.names[root_index].clone(),
-            _permit: None,
+            pin: None,
         }];
         while let Some(mut frame) = stack.pop() {
             if job.cancel.is_cancelled() {
@@ -399,76 +536,83 @@ pub(super) fn execute(mut job: worker::Job, outbox: Outbox) -> OperationProgress
                 && patch.recursive
                 && frame.target.item().kind == EntryKind::Directory
             {
-                // Reserve before native enumeration opens any child handles. Other prepared
-                // jobs share the same semaphore; no batch may temporarily exceed the budget.
-                let mut permits = loop {
-                    let available = job.metadata_budget.available_permits();
-                    if let Ok(permits) = job
-                        .metadata_budget
-                        .clone()
-                        .try_acquire_many_owned(available as u32)
-                    {
-                        break permits;
-                    }
-                };
-                let children = if frame.depth >= MAX_METADATA_DEPTH {
-                    Err(error(
+                if frame.depth >= MAX_METADATA_DEPTH {
+                    // Checked first: a depth refusal never reserves or borrows pins.
+                    frame.issue = Some(error(
                         &frame.target.item().path,
                         io::ErrorKind::Other,
                         "metadata traversal exceeds its depth budget",
-                    ))
+                    ));
                 } else {
-                    frame
-                        .target
-                        .metadata_children(&job.cancel, permits.num_permits())
-                };
-                match children {
-                    Ok(children)
-                        if children.len() <= permits.num_permits()
-                            && children.len() + stack.len() + root_count
-                                <= MAX_METADATA_TARGETS =>
-                    {
-                        let child_edit = match Edit::prepare_confirmed(
-                            progress.id,
-                            edit.preview.revision,
-                            patch.clone(),
-                            &children,
-                            &job.cancel,
-                        ) {
-                            Ok(edit) => edit,
-                            Err(error) => {
-                                frame.issue = Some(error);
-                                stack.push(frame);
-                                continue;
+                    // Pins are taken before native enumeration opens any child. This job's
+                    // selection, pending frames and these children stay within the
+                    // per-job budget, and no pin is ever waited for (E6-7).
+                    let cap = MAX_METADATA_TARGETS.saturating_sub(stack.len() + root_count);
+                    let mut lease = Lease::default();
+                    match list_children(frame.target.as_ref(), &job, cap, &mut lease) {
+                        Ok(children) if children.len() <= lease.count() => {
+                            // Unused pins return before the snapshot reads below.
+                            lease.trim(children.len());
+                            let child_edit = match Edit::prepare_confirmed(
+                                progress.id,
+                                edit.preview.revision,
+                                patch.clone(),
+                                &children,
+                                &job.cancel,
+                            ) {
+                                Ok(edit) => edit,
+                                Err(error) => {
+                                    frame.issue = Some(error);
+                                    stack.push(frame);
+                                    continue;
+                                }
+                            };
+                            // Children are processed in listing order. The first ones take
+                            // the reserve pins, so the reserve refills as they finish.
+                            let pins: Vec<_> = (0..children.len())
+                                .map(|_| lease.pin().expect("one trimmed pin per child"))
+                                .collect();
+                            frame.visited = true;
+                            let depth = frame.depth + 1;
+                            stack.push(frame);
+                            for ((index, child), pin) in
+                                children.into_iter().enumerate().zip(pins).rev()
+                            {
+                                stack.push(Frame {
+                                    target: child,
+                                    visited: false,
+                                    depth,
+                                    issue: child_edit.issues[index].clone(),
+                                    name: child_edit.names[index].clone(),
+                                    pin: Some(pin),
+                                });
                             }
-                        };
-                        frame.visited = true;
-                        let depth = frame.depth + 1;
-                        stack.push(frame);
-                        for (index, child) in children.into_iter().enumerate().rev() {
-                            stack.push(Frame {
-                                target: child,
-                                visited: false,
-                                depth,
-                                issue: child_edit.issues[index].clone(),
-                                name: child_edit.names[index].clone(),
-                                _permit: Some(
-                                    permits
-                                        .split(1)
-                                        .expect("native child count fits the reserved budget"),
-                                ),
-                            });
+                            continue;
                         }
-                        continue;
+                        Ok(_) => {
+                            frame.issue = Some(error(
+                                &frame.target.item().path,
+                                io::ErrorKind::Other,
+                                "metadata traversal exceeds its pinned-target budget",
+                            ))
+                        }
+                        Err(refusal) if refusal.kind == io::ErrorKind::Other => {
+                            let own_shared = root_count
+                                + lease.shared_count()
+                                + usize::from(frame.holds_shared_pin())
+                                + stack
+                                    .iter()
+                                    .filter(|other| other.holds_shared_pin())
+                                    .count();
+                            frame.issue = Some(pin_shortfall(
+                                &frame.target.item().path,
+                                lease.count(),
+                                cap,
+                                own_shared,
+                            ));
+                        }
+                        Err(error) => frame.issue = Some(error),
                     }
-                    Ok(_) => {
-                        frame.issue = Some(error(
-                            &frame.target.item().path,
-                            io::ErrorKind::Other,
-                            "metadata traversal exceeds its pinned-target budget",
-                        ))
-                    }
-                    Err(error) => frame.issue = Some(error),
                 }
             }
             let outcome = if let Some(error) = frame.issue {

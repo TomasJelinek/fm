@@ -689,10 +689,17 @@ Attributes, timestamps and filename case changes require an explicit preview and
 confirmation of its exact revision. Preparation captures native object identities;
 each OS adapter revalidates them and applies changes through pinned handles.
 Recursive traversal does not follow links or cross mounts. It snapshots child
-names before changing them and processes children before their parent. Selection
-and traversal share a 256-target pin budget across pending metadata jobs; depth
-is limited to 64 and each name snapshot to 4 MiB. Resource exhaustion is reported
-as an error, not as a successful truncated operation. These are operation resource
+names before changing them and processes children before their parent. Selected
+targets of all pending metadata jobs share a 256-target pin budget, and one job's
+selection and traversal together never pin more than 256 targets. Recursive
+traversal by the executing job first uses a 64-target reserve of its own and may
+borrow currently free shared targets. Only one mutation job executes at a time,
+because it holds every mutation-gate share, so at most 320 metadata targets are
+pinned at once. Traversal never waits for pins: pending jobs keep theirs while
+they wait for the executing job. Depth is limited to 64 and each name snapshot to
+4 MiB. Resource exhaustion, including targets held by other pending jobs, is
+reported as an error that names its cause, not as a successful truncated
+operation. These are operation resource
 budgets, not path-length limits. Preview and result samples contain at most 32 items.
 
 Filename conversion uses full Unicode case mapping with the root locale while

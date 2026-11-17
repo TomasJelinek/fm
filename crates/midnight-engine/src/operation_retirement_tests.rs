@@ -245,7 +245,8 @@ async fn predecessor_and_mutation_gate_waits_keep_guarded_jobs_when_aborted() {
         if predecessor {
             job.predecessors = Arc::new(copies.snapshot());
         }
-        let mut waiting = Box::pin(acquire_mutation(job, gate));
+        let reserve = Arc::new(Semaphore::new(METADATA_TRAVERSAL_RESERVE));
+        let mut waiting = Box::pin(acquire_mutation(job, gate, reserve));
         assert!(matches!(
             waiting
                 .as_mut()
