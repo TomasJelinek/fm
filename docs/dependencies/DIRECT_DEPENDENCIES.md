@@ -20,7 +20,6 @@ Licenses retain upstream alternatives; see [policy](../DEPENDENCY_POLICY.md).
 | [find-msvc-tools](https://crates.io/crates/find-msvc-tools/0.1.15) | 0.1.15 | MIT OR Apache-2.0 | midnight-explorer |
 | [flate2](https://crates.io/crates/flate2/1.1.10) | 1.1.10 | MIT OR Apache-2.0 | midnight-api-package, midnight-fs-archive |
 | [fontdb](https://crates.io/crates/fontdb/0.24.0) | 0.24.0 | MIT | midnight-platform-linux |
-| [fs2](https://crates.io/crates/fs2/0.4.3) | 0.4.3 | MIT/Apache-2.0 | midnight-platform-common |
 | [futures-lite](https://crates.io/crates/futures-lite/2.6.1) | 2.6.1 | Apache-2.0 OR MIT | midnight-platform-linux |
 | [getrandom](https://crates.io/crates/getrandom/0.3.4) | 0.3.4 | MIT OR Apache-2.0 | midnight-elevation, midnight-platform-windows |
 | [hayro](https://crates.io/crates/hayro/0.9.0) | 0.9.0 | Apache-2.0 OR MIT | midnight-viewer-pdf |
@@ -43,7 +42,7 @@ Licenses retain upstream alternatives; see [policy](../DEPENDENCY_POLICY.md).
 | [pulldown-cmark](https://crates.io/crates/pulldown-cmark/0.13.6) | 0.13.6 | MIT | midnight-viewer-markdown |
 | [regex](https://crates.io/crates/regex/1.13.1) | 1.13.1 | MIT OR Apache-2.0 | midnight-platform-common, midnight-viewer-source |
 | [resvg](https://crates.io/crates/resvg/0.48.1) | 0.48.1 | Apache-2.0 OR MIT | midnight-image-decoder, midnight-platform-linux |
-| [rustix](https://crates.io/crates/rustix/1.1.6) | 1.1.6 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT | midnight-platform-linux, midnight-worker-platform |
+| [rustix](https://crates.io/crates/rustix/1.1.6) | 1.1.6 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT | midnight-platform-common, midnight-platform-linux, midnight-worker-platform |
 | [ruzstd](https://crates.io/crates/ruzstd/0.9.1) | 0.9.1 | MIT | midnight-fs-archive |
 | [serde](https://crates.io/crates/serde/1.0.229) | 1.0.229 | MIT OR Apache-2.0 | midnight-filesystem-host, midnight-image-viewer-host, midnight-native-filesystem-host, midnight-platform-common, midnight-plugin-host, midnight-thumbnail-host, midnight-web-viewer-host |
 | [serde_json](https://crates.io/crates/serde_json/1.0.154) | 1.0.154 | MIT OR Apache-2.0 | midnight-api-package, midnight-image-viewer-host, midnight-platform-common, midnight-thumbnail-host, midnight-ui, midnight-web-viewer-host |

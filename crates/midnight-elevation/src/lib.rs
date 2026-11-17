@@ -96,19 +96,39 @@ fn read(path: &Path, cancel: &Cancellation, emit: &mut dyn FnMut(Entry) -> bool)
     }
     Ok(())
 }
+const HELPER: &str = if cfg!(windows) {
+    "midnight-elevated-listing.exe"
+} else {
+    "midnight-elevated-listing"
+};
+
+/// Locate the helper beside the installed executable and accept it only from a protected
+/// location. It runs as Administrator/root, so the plugin policy (which also trusts the
+/// current user) is not sufficient: the unelevated user must not be able to replace it.
 fn trusted_helper() -> io::Result<PathBuf> {
     let executable = midnight_plugin_host::installed_executable().map_err(io::Error::other)?;
     let parent = executable
         .parent()
         .ok_or_else(|| protocol::invalid("Missing installation"))?;
-    let helper = parent.join(if cfg!(windows) {
-        "midnight-elevated-listing.exe"
-    } else {
-        "midnight-elevated-listing"
-    });
+    let helper = parent.join(HELPER);
     for component in helper.ancestors() {
-        let metadata = std::fs::symlink_metadata(component)?;
-        if metadata.file_type().is_symlink() || native::is_redirected(&metadata) {
+        let metadata = match std::fs::symlink_metadata(component) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == io::ErrorKind::NotFound && component == helper => {
+                return Err(io::Error::new(
+                    io::ErrorKind::NotFound,
+                    format!(
+                        "The authorization helper {HELPER} is not installed beside Midnight \
+                         Explorer in {}",
+                        parent.display()
+                    ),
+                ));
+            }
+            Err(error) => return Err(error),
+        };
+        // Canonicalization below must not resolve a link. Any other reparse point is judged
+        // by the platform check on pinned handles (Windows accepts only storage-only tags).
+        if metadata.file_type().is_symlink() {
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
                 "Authorization helper path contains a redirected component",
@@ -121,7 +141,7 @@ fn trusted_helper() -> io::Result<PathBuf> {
         ));
     }
     let helper = helper.canonicalize()?;
-    midnight_plugin_host::validate_plugin_path(&helper).map_err(io::Error::other)?;
+    native::protected_helper(&helper)?;
     Ok(helper)
 }
 pub(crate) fn cancelled() -> io::Error {

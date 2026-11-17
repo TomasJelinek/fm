@@ -14,8 +14,7 @@ pub mod transfer_modified_time;
 pub mod transfer_namespace;
 
 use midnight_core::{
-    Cancellation, DirectoryService, Entry, EntryId, EntryKind, EntryMetadata, FsError, SpaceInfo,
-    StorageService,
+    Cancellation, DirectoryService, Entry, EntryId, EntryKind, EntryMetadata, FsError,
 };
 use std::{
     fs, io,
@@ -134,17 +133,33 @@ fn classify(file_type: fs::FileType) -> EntryKind {
     }
 }
 
-impl StorageService for LocalServices {
-    fn space_info(&self, path: &Path) -> Result<SpaceInfo, FsError> {
-        // fs2's Windows implementation resolves a volume even for missing paths.
-        // Match the Unix behavior and report the requested path as missing first.
-        fs::symlink_metadata(path)
-            .map_err(|error| FsError::from_io("read filesystem capacity", path, error))?;
-        let stats = fs2::statvfs(path)
-            .map_err(|error| FsError::from_io("read filesystem capacity", path, error))?;
-        Ok(SpaceInfo {
-            available: stats.available_space(),
-            total: stats.total_space(),
+/// Unix capacity from `statvfs`; Windows adapters query their volumes natively.
+#[cfg(unix)]
+impl midnight_core::StorageService for LocalServices {
+    fn space_info(&self, path: &Path) -> Result<midnight_core::SpaceInfo, FsError> {
+        let stats = rustix::fs::statvfs(path).map_err(|error| {
+            FsError::from_io("read filesystem capacity", path, io::Error::from(error))
+        })?;
+        Ok(midnight_core::SpaceInfo {
+            // Space available to unprivileged users, in fragment-size units.
+            available: stats.f_bavail.saturating_mul(stats.f_frsize),
+            total: stats.f_blocks.saturating_mul(stats.f_frsize),
         })
+    }
+}
+
+#[cfg(all(test, unix))]
+mod capacity_tests {
+    use super::LocalServices;
+    use midnight_core::StorageService;
+
+    #[test]
+    fn capacity_is_reported_for_existing_paths_and_fails_for_missing_ones() {
+        let root = tempfile::tempdir().unwrap();
+        let space = LocalServices::default().space_info(root.path()).unwrap();
+        assert!(space.total > 0);
+        assert!(space.available <= space.total);
+        let missing = LocalServices::default().space_info(&root.path().join("missing"));
+        assert_eq!(missing.unwrap_err().kind, std::io::ErrorKind::NotFound);
     }
 }

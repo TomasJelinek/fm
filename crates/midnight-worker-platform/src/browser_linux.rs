@@ -39,6 +39,17 @@ impl Drop for Process {
         let _ = self.wait();
     }
 }
+/// Whether a session's recording process may still run. Only a definitely missing process
+/// counts as ended; a process owned by another user or any other failure keeps its session.
+pub(super) fn process_alive(pid: u32) -> bool {
+    let Some(pid) = i32::try_from(pid)
+        .ok()
+        .and_then(rustix::process::Pid::from_raw)
+    else {
+        return true;
+    };
+    rustix::process::test_kill_process(pid) != Err(rustix::io::Errno::SRCH)
+}
 pub(super) fn profile_parent() -> io::Result<std::path::PathBuf> {
     let base = std::env::var_os("XDG_CACHE_HOME")
         .map(std::path::PathBuf::from)

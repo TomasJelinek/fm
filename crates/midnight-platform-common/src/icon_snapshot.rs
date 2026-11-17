@@ -99,8 +99,38 @@ pub fn publish(
     directory: &Path,
     snapshot: &Snapshot,
     cancel: &Cancellation,
+    create_exclusive: impl FnMut(&Path) -> io::Result<File>,
+    open_existing: impl FnMut(&Path) -> io::Result<Option<File>>,
+) -> io::Result<PathBuf> {
+    publish_with_limit(
+        directory,
+        snapshot,
+        cancel,
+        create_exclusive,
+        open_existing,
+        MAX_SNAPSHOTS,
+    )
+}
+
+/// Managed snapshots are named by their lowercase SHA-256 and `.png`; other entries, such as
+/// a temporary file left by an interrupted publication, do not consume the snapshot budget.
+fn is_snapshot_name(name: &std::ffi::OsStr) -> bool {
+    name.to_str().is_some_and(|name| {
+        name.len() == 68
+            && name.ends_with(".png")
+            && name.as_bytes()[..64]
+                .iter()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(byte))
+    })
+}
+
+fn publish_with_limit(
+    directory: &Path,
+    snapshot: &Snapshot,
+    cancel: &Cancellation,
     mut create_exclusive: impl FnMut(&Path) -> io::Result<File>,
     mut open_existing: impl FnMut(&Path) -> io::Result<Option<File>>,
+    limit: usize,
 ) -> io::Result<PathBuf> {
     active(cancel)?;
     let destination = directory.join(&snapshot.name);
@@ -119,7 +149,13 @@ pub fn publish(
             "The command icon lock is not an empty regular file.",
         ));
     }
-    fs2::FileExt::try_lock_exclusive(&lock)?;
+    lock.try_lock().map_err(|error| match error {
+        std::fs::TryLockError::WouldBlock => io::Error::new(
+            io::ErrorKind::WouldBlock,
+            "Another command icon is being saved.",
+        ),
+        std::fs::TryLockError::Error(error) => error,
+    })?;
     active(cancel)?;
     if same_contents(open_existing(&destination)?, &snapshot.bytes)? {
         return Ok(destination);
@@ -127,11 +163,11 @@ pub fn publish(
     let mut count = 0;
     for entry in fs::read_dir(directory)? {
         active(cancel)?;
-        if entry?.file_name() == ".snapshot.lock" {
+        if !is_snapshot_name(&entry?.file_name()) {
             continue;
         }
         count += 1;
-        if count >= MAX_SNAPSHOTS {
+        if count >= limit {
             return Err(invalid("The managed command icon directory is full."));
         }
     }
@@ -236,13 +272,54 @@ mod tests {
     }
     #[test]
     fn full_managed_directory_refuses_an_additional_snapshot() {
+        const LIMIT: usize = 4;
         let root = tempfile::tempdir().unwrap();
-        for index in 0..MAX_SNAPSHOTS {
-            fs::write(root.path().join(format!("existing-{index}.png")), []).unwrap();
+        for index in 0..LIMIT {
+            fs::write(root.path().join(format!("{index:064x}.png")), []).unwrap();
         }
         let cancel = Cancellation::default();
         let snapshot = encode(&pixels(), &cancel).unwrap();
-        assert!(publish(root.path(), &snapshot, &cancel, create, open).is_err());
-        assert!(!root.path().join(snapshot.name).exists());
+        let error =
+            publish_with_limit(root.path(), &snapshot, &cancel, create, open, LIMIT).unwrap_err();
+        assert!(error.to_string().contains("is full"), "{error}");
+        assert!(!root.path().join(&snapshot.name).exists());
+        // Removing one snapshot frees its slot again.
+        fs::remove_file(root.path().join(format!("{:064x}.png", 0))).unwrap();
+        publish_with_limit(root.path(), &snapshot, &cancel, create, open, LIMIT).unwrap();
+        assert!(root.path().join(&snapshot.name).exists());
+    }
+
+    #[test]
+    fn interrupted_temporaries_and_unrelated_entries_do_not_consume_the_budget() {
+        const LIMIT: usize = 2;
+        let root = tempfile::tempdir().unwrap();
+        fs::write(root.path().join(format!("{:064x}.png", 1)), []).unwrap();
+        for stray in [
+            ".midnight-preferences-7-1.tmp",
+            ".midnight-preferences-7-2.tmp",
+            "notes.txt",
+            "ABCDEF.png",
+        ] {
+            fs::write(root.path().join(stray), []).unwrap();
+        }
+        let cancel = Cancellation::default();
+        let snapshot = encode(&pixels(), &cancel).unwrap();
+        publish_with_limit(root.path(), &snapshot, &cancel, create, open, LIMIT).unwrap();
+        assert!(is_snapshot_name(std::ffi::OsStr::new(&snapshot.name)));
+        assert!(!is_snapshot_name(std::ffi::OsStr::new(".snapshot.lock")));
+    }
+
+    #[test]
+    fn a_concurrent_snapshot_publication_is_refused_rather_than_interleaved() {
+        let root = tempfile::tempdir().unwrap();
+        let lock = create(&root.path().join(".snapshot.lock")).unwrap();
+        lock.lock().unwrap();
+        let cancel = Cancellation::default();
+        let snapshot = encode(&pixels(), &cancel).unwrap();
+        let error = publish(root.path(), &snapshot, &cancel, create, open).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::WouldBlock);
+        assert!(!root.path().join(&snapshot.name).exists());
+        drop(lock);
+        publish(root.path(), &snapshot, &cancel, create, open).unwrap();
     }
 }

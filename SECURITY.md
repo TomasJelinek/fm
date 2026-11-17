@@ -160,8 +160,9 @@ is made. Tests mutate fresh, owned fixtures only; they never empty a user's Tras
   for one read-only directory listing in a separate helper. Refresh, metadata and
   background tree probes never prompt. The helper loads no plugins, changes no
   ACLs, stores no passwords, and grants no file mutation or content-read authority
-  to the host. Native operation capture/revalidation remains unelevated.
-  See [the bounded helper contract](docs/verification/2026-11-11-directory-authorization.md).
+  to the host. Native operation capture/revalidation remains unelevated. It runs
+  only from an installation that standard users cannot change; see
+  [the directory authorization helper](#directory-authorization-helper).
   Explicit navigation into a symbolic
   link/junction follows OS directory-navigation semantics; enumeration and metadata
   inspection do not recursively follow links or open special-file contents.
@@ -324,14 +325,64 @@ is made. Tests mutate fresh, owned fixtures only; they never empty a user's Tras
 - The explicit developer `--snapshot` option is a file write, not a browsing
   operation. PNG encoding/writing runs in a backend worker and uses exclusive
   creation; an existing file or symlink is never overwritten.
-- Tests and development scripts follow the same literal-argument policy. The
-  Windows platform tests create junctions natively (`FSCTL_SET_REPARSE_POINT`, no
-  shell); other Windows junction fixtures use a fixed trusted PowerShell script via
-  `-File`. Temporary paths are parameter data, never `cmd /C` command text.
+- Tests and development scripts follow the same literal-argument policy. Windows
+  junction fixtures are created natively through the Win32 reparse-point API
+  (`FSCTL_SET_REPARSE_POINT`, no shell); the remaining ones use a fixed trusted
+  PowerShell script via `-File`. Temporary paths are parameter data, never `cmd /C`
+  command text.
 
 The directory model still uses memory proportional to the number of entries.
 Worker/front-queue bounds are not a promise that arbitrarily large directories
 fit in RAM. Precise latency and memory targets require measured workloads.
+
+## Directory authorization helper
+
+**Retry with authorization** runs `midnight-elevated-listing` as a different,
+more privileged identity: Administrator through UAC (`ShellExecuteExW` with the
+`runas` verb, on its own COM single-threaded apartment) or root through
+`/usr/bin/pkexec --disable-internal-agent` and the desktop polkit agent. The host
+therefore takes the helper only from beside its installed executable and only from
+a location that the requesting user cannot change; the plugin trust policy, which
+also trusts the current user, does not decide this.
+
+- Windows: the helper and every ancestor are ordinary objects on a local fixed drive,
+  owned by SYSTEM, Administrators or TrustedInstaller. They carry no link or other
+  reparse point, except the storage-only tags of WOF compression (CompactOS,
+  `compact /exe`) and Data Deduplication, whose content stays under the object's own
+  permissions; Cloud Files placeholders, whose content comes from a user-mode
+  provider, app execution aliases and unknown tags are refused. No other
+  identity holds delete, rename, write, attribute, permission or ownership rights on
+  them, and none may add entries to the helper's own folder, which the elevated
+  loader searches first. The checks run on handles that pin every component against
+  rename or deletion until the elevated process has started; the folder pins still let
+  other processes add entries. The Shell receives the
+  plain drive spelling of the path only when it opens the same pinned file.
+- Linux: the helper is an executable regular file; it and every ancestor are owned by
+  root, are not symbolic links and are writable by neither group nor others, and its
+  filesystem is not mounted `nosuid` (removable or user-mounted storage).
+
+Any other location, such as build output, the per-user Windows private runtime or
+`$HOME/.local/bin`, refuses authorization with an explanation of the requirement.
+
+The channel is bound by process identity. On Windows the parent checks the pipe
+client PID against the launched process; the helper checks the pipe server PID and
+the parent's creation time, and opens the pipe with identification-only quality of
+service, so no pipe server can impersonate the elevated helper. On Linux the private
+`/tmp` socket's SO_PEERCRED must be the launched pkexec PID with root UID; the helper
+verifies its original parent PID/UID, `/proc` creation time and `PKEXEC_UID`. The
+256-bit nonce in the pipe name, socket path and command line is public: matching it
+only rejects a stale or foreign helper and authenticates nothing.
+
+The helper lists one directory from enumeration metadata without opening any entry;
+Windows classifies links from their own attributes, and Linux follows a symbolic link
+only with `stat` to classify a directory link. Frames are bounded (64 MiB, 250,000
+entries, 256 KiB names, 16 KiB errors) and truncation is an error. Both ends wait on
+I/O readiness, observing cancellation and the five-minute deadline within a bounded
+slice. The helper ends its own process when the requester disconnects, sends further
+data, exits or the deadline passes, even while a directory read is blocked. At most
+two helpers can be pending or live per process. Actual UAC/polkit consent is not
+exercised by automated tests; see the
+[first qualification record](docs/verification/2026-11-11-directory-authorization.md).
 
 ## Verified clipboard copying and the copy contract
 

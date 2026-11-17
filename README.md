@@ -199,11 +199,29 @@ temporary files under `_build/tmp/`.
 
 Permission-denied native folders offer an explicit authorized listing retry using
 Windows UAC or Linux polkit (`pkexec` and a desktop authorization agent). The build
-helpers also build `midnight-elevated-listing` alongside the host; keep its `.exe`
-on Windows, or native executable on Linux, in the same protected installation.
+helpers also build `midnight-elevated-listing` alongside the host. Because the helper
+runs as Administrator or root, it is used only from beside an installed `me` that
+standard users cannot change. On Windows, that is a folder on a local fixed drive whose
+permissions only administrators can change, such as a folder below `C:\Program Files`;
+on Linux, a root-owned directory such as `/opt/midnight-explorer` (see
+[the system-wide installation](#linux-desktop-launcher)). Build output, the per-user
+Windows private runtime, anything inside a user profile and other user-writable
+locations refuse authorization with an explanation; browsing is otherwise unaffected.
+So does a folder created directly under a drive root such as `C:\`, even by an
+administrator, because it inherits Modify permission for all authenticated users from
+the root. On Windows, install a release build from a PowerShell started with
+**Run as administrator** in the checkout, then start Midnight Explorer from that folder:
+
+```powershell
+$target = Join-Path $env:ProgramFiles 'Midnight Explorer'
+New-Item -ItemType Directory -Force -Path $target | Out-Null
+Copy-Item -LiteralPath _build\release\me.exe, _build\release\midnight-elevated-listing.exe -Destination $target
+Copy-Item -Recurse -Force -LiteralPath _build\release\viewers, _build\release\filesystems, _build\release\thumbnailers -Destination $target
+```
+
 This one-shot helper lists the requested directory only, loads no plugins and
 does not elevate ordinary file operations, change ACLs or store passwords. See
-[the authorization boundary](docs/verification/2026-11-11-directory-authorization.md).
+[the authorization boundary](SECURITY.md#directory-authorization-helper).
 
 ### Windows x64
 
@@ -490,13 +508,23 @@ For a separate per-user installation of the debug build:
 
 ```sh
 install -Dm755 _build/debug/me "$HOME/.local/bin/me"
-install -Dm755 _build/debug/midnight-elevated-listing \
-    "$HOME/.local/bin/midnight-elevated-listing"
 mkdir -p "$HOME/.local/bin/viewers" "$HOME/.local/bin/filesystems" "$HOME/.local/bin/thumbnailers"
 cp -R _build/debug/viewers/. "$HOME/.local/bin/viewers/"
 cp -R _build/debug/filesystems/. "$HOME/.local/bin/filesystems/"
 cp -R _build/debug/thumbnailers/. "$HOME/.local/bin/thumbnailers/"
 python3 -B scripts/install-linux-desktop.py --executable "$HOME/.local/bin/me"
+```
+
+A per-user installation cannot offer **Retry with authorization**: the root helper
+would come from a directory its user can change. For authorized listings, install
+system-wide into a directory that only root can change (root-owned, not group- or
+world-writable, on a filesystem not mounted `nosuid`):
+
+```sh
+sudo install -d -m 755 /opt/midnight-explorer
+sudo install -m 755 _build/debug/me _build/debug/midnight-elevated-listing /opt/midnight-explorer/
+sudo cp -R _build/debug/viewers _build/debug/filesystems _build/debug/thumbnailers /opt/midnight-explorer/
+python3 -B scripts/install-linux-desktop.py --executable /opt/midnight-explorer/me
 ```
 
 Registration uses only the dedicated `io.github.TomasJelinek.MidnightExplorer`

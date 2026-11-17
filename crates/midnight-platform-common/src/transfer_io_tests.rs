@@ -196,11 +196,18 @@ fn wrong_gate_and_exclusive_witnesses_refuse_before_callback() {
     let other = Arc::new(Gate::new(1));
     let wrong = other.try_acquire(Admission::Shared).unwrap();
     assert!(with_gate(&gate, &wrong, || panic!("wrong gate callback")).is_err());
-    assert!(with_transfer_io_permit(&wrong, || panic!("public wrong gate callback")).is_err());
+    assert!(
+        with_transfer_io_permit_from(&gate, &wrong, || panic!("public wrong gate callback"))
+            .is_err()
+    );
     let exclusive = gate.try_acquire(Admission::Exclusive).unwrap();
     assert!(with_gate(&gate, &exclusive, || panic!("exclusive callback")).is_err());
-    assert!(with_transfer_io_permit(&exclusive, || panic!("public exclusive callback")).is_err());
+    assert!(
+        with_transfer_io_permit_from(&gate, &exclusive, || panic!("public exclusive callback"))
+            .is_err()
+    );
     assert!(gate.snapshot().exclusive);
+    assert!(configured_gate().is_none());
 }
 
 #[test]
@@ -253,7 +260,7 @@ fn returning_a_marker_does_not_extend_the_synchronous_borrow_context() {
 }
 
 #[test]
-fn trusted_configured_gate_composition_validates_every_nested_public_witness() {
+fn trusted_configured_gate_composition_validates_every_nested_witness() {
     let configured = Arc::new(Gate::new(1));
     let other = Arc::new(Gate::new(1));
     let owner = configured.try_acquire(Admission::Shared).unwrap();
@@ -261,7 +268,7 @@ fn trusted_configured_gate_composition_validates_every_nested_public_witness() {
     let cancel = Cancellation::default();
     let _deadline = Deadline::new(&cancel);
     with_transfer_io_permit_from(&configured, &owner, || {
-        with_transfer_io_permit(&owner, || {
+        with_transfer_io_permit_from(&configured, &owner, || {
             assert!(
                 acquire_transfer_call(&cancel, Path::new("configured"))
                     .unwrap()
@@ -271,7 +278,12 @@ fn trusted_configured_gate_composition_validates_every_nested_public_witness() {
             assert_eq!(configured.snapshot().active_shared, 1);
         })
         .unwrap();
-        assert!(with_transfer_io_permit(&foreign, || panic!("foreign nested witness")).is_err());
+        assert!(
+            with_transfer_io_permit_from(&configured, &foreign, || panic!(
+                "foreign nested witness"
+            ))
+            .is_err()
+        );
         assert!(
             acquire_transfer_call(&cancel, Path::new("outer survives"))
                 .unwrap()
@@ -280,7 +292,8 @@ fn trusted_configured_gate_composition_validates_every_nested_public_witness() {
         );
     })
     .unwrap();
-    assert!(with_transfer_io_permit(&owner, || panic!("configured gate escaped context")).is_err());
+    // The configured gate does not escape its synchronous call.
+    assert!(configured_gate().is_none());
     assert_eq!(configured.snapshot().active_shared, 1);
     drop(owner);
     assert_eq!(configured.snapshot().active_shared, 0);
@@ -292,27 +305,32 @@ fn nested_configured_gate_identity_is_restored_after_error_and_unwind() {
     let inner = Arc::new(Gate::new(1));
     let a = outer.try_acquire(Admission::Shared).unwrap();
     let b = inner.try_acquire(Admission::Shared).unwrap();
+    let is_configured = |gate: &Arc<Gate>| {
+        configured_gate().is_some_and(|configured| Arc::ptr_eq(&configured, gate))
+    };
     with_transfer_io_permit_from(&outer, &a, || {
+        assert!(is_configured(&outer));
         let result = with_transfer_io_permit_from(&inner, &b, || {
+            assert!(is_configured(&inner));
             assert!(
-                with_transfer_io_permit(&a, || panic!("outer witness accepted inside inner gate"))
-                    .is_err()
+                with_transfer_io_permit_from(&inner, &a, || panic!(
+                    "outer witness accepted inside inner gate"
+                ))
+                .is_err()
             );
-            with_transfer_io_permit(&b, || ()).unwrap();
             Err::<(), _>("ordinary result")
         })
         .unwrap();
         assert_eq!(result, Err("ordinary result"));
-        with_transfer_io_permit(&a, || ()).unwrap();
+        assert!(is_configured(&outer));
         let caught = catch_unwind(AssertUnwindSafe(|| {
             with_transfer_io_permit_from(&inner, &b, || panic!("configured unwind")).unwrap();
         }));
         assert!(caught.is_err());
-        with_transfer_io_permit(&a, || ()).unwrap();
-        assert!(with_transfer_io_permit(&b, || panic!("inner identity escaped")).is_err());
+        assert!(is_configured(&outer));
     })
     .unwrap();
-    assert!(with_transfer_io_permit(&a, || panic!("outer identity escaped")).is_err());
+    assert!(configured_gate().is_none());
     assert_eq!(outer.snapshot().active_shared, 1);
     assert_eq!(inner.snapshot().active_shared, 1);
 }

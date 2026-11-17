@@ -38,12 +38,23 @@ The directory authorization helper adds a project-owned crate and reuses the pin
 `getrandom` 0.3.4 (MIT OR Apache-2.0), `windows-sys` 0.61.2 (MIT OR Apache-2.0),
 and `libc` 0.2 (MIT OR Apache-2.0) dependencies already present in the inventory.
 Its Windows API feature selection adds no new package/version and enables only
-native filesystem, process, named-pipe, security and shell declarations. The helper
-contains no plugin discovery or loading entry point. Existing notices apply.
+native filesystem, process, named-pipe, security, COM initialization and shell
+declarations (`Win32_System_Com` is already selected by other application crates).
+The helper contains no plugin discovery or loading entry point. Existing notices apply.
 
 Make File List adds no third-party library or enabled feature. Its engine reuses
 the workspace's `midnight-worker-platform` private spool and existing transfer,
 clipboard, native picker and viewer services.
+
+`midnight-platform-common` no longer uses `fs2` 0.4.3 (unmaintained since 2018):
+command-icon snapshot locking uses the standard library's file locks, and Unix
+filesystem capacity uses the already pinned `rustix` 1.1.6 `statvfs` with its
+already selected `fs` feature (Windows adapters query capacity natively). This
+removes `fs2` and `winapi` 0.3.9, which only `fs2` used, together with the
+platform-excluded `winapi-*-pc-windows-gnu` 0.4.0 shims, from the application
+lockfile. The generated tables were refreshed by targeted row comparison
+(**644 records / 526 names / 65 direct records**; `rustix` gains this declaring
+crate), not by a full recapture or generator `--check`.
 
 The additional color themes add no Cargo library or feature. Modern palette
 references use Apache-2.0 (Tokyo Night) and MIT (One Dark, Rosé Pine and Catppuccin), with
@@ -214,7 +225,11 @@ already in the application's windows-sys 0.61.2 feature union (through
 `midnight-elevation`, `midnight-worker-platform`, mio and socket2), so no package,
 feature union or license selection changed. This is a targeted refresh, not a full
 46-pair recapture or generator `--check`; no Linux capture was taken, because the
-removed edge was `cfg(windows)` only.
+removed edge was `cfg(windows)` only. Together with the `fs2`/`winapi` removal above,
+the tables hold **643 records / 525 names / 65 direct records**: `cargo tree -i` on the
+merged lockfile reaches neither `winapi` (gone from the lockfile) nor `winapi-util`
+(still locked only as walkdir's Windows-only dependency, while walkdir itself is now
+Linux-only) for the Windows or Linux target.
 
 Windows/Linux native 0.2 source is integrated in D merge `5baee471` from C commit
 `42d45def` (25 matching paths). The plugins are not deployed and engine/UI cutover

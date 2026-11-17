@@ -1,4 +1,9 @@
 //! Capability-free AppContainer; only explicitly listed pipe handles are inherited.
+//!
+//! Every handle is created non-inheritable. A child's three standard handles become
+//! inheritable only for its `CreateProcessW` call, under the process-creation lock, and are
+//! closed before the lock is released, so launches that inherit all inheritable handles
+//! (`std::process::Command`) cannot capture them unless they overlap that single call.
 use crate::{CpuBudget, ResourcePolicy, Worker};
 use std::{
     fs::{File, OpenOptions},
@@ -9,6 +14,7 @@ use std::{
     },
     path::Path,
     ptr::{null, null_mut},
+    sync::{Mutex, MutexGuard},
 };
 use windows_sys::Win32::{
     Foundation::*,
@@ -39,22 +45,23 @@ impl Process {
         check(unsafe { TerminateJobObject(self.job.as_raw_handle(), 1) })
     }
 
+    /// Wait for the worker to exit; `Ok(false)` reports a nonzero exit status, as on Linux.
     pub fn wait(&mut self) -> io::Result<bool> {
-        let mut code = 1;
-        // SAFETY: process is an owned live process handle; output points to a valid u32.
-        unsafe {
-            if WaitForSingleObject(self.process.as_raw_handle(), INFINITE) != WAIT_OBJECT_0 {
-                return Err(io::Error::last_os_error());
-            }
-            check(GetExitCodeProcess(self.process.as_raw_handle(), &mut code))?;
-        }
-        if code != 0 {
-            return Err(io::Error::other(format!(
-                "Restricted worker exited with code {code:#x}"
-            )));
-        }
-        Ok(true)
+        wait_process(&self.process).map(|code| code == 0)
     }
+}
+
+/// Wait for a process to exit and return its exit code.
+pub(super) fn wait_process(process: &OwnedHandle) -> io::Result<u32> {
+    let mut code = 1;
+    // SAFETY: process is an owned live process handle; output points to a valid u32.
+    unsafe {
+        if WaitForSingleObject(process.as_raw_handle(), INFINITE) != WAIT_OBJECT_0 {
+            return Err(io::Error::last_os_error());
+        }
+        check(GetExitCodeProcess(process.as_raw_handle(), &mut code))?;
+    }
+    Ok(code)
 }
 
 impl Drop for Process {
@@ -73,19 +80,59 @@ pub(super) fn check(value: i32) -> io::Result<()> {
     }
 }
 
+/// Both ends start non-inheritable; see [`create_with_inherited`].
 pub(super) fn pipe() -> io::Result<(File, File)> {
     let mut read = null_mut();
     let mut write = null_mut();
     let attributes = SECURITY_ATTRIBUTES {
         nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
         lpSecurityDescriptor: null_mut(),
-        bInheritHandle: 1,
+        bInheritHandle: 0,
     };
     // SAFETY: output handles and attributes are valid; ownership is acquired only on success.
     unsafe {
         check(CreatePipe(&mut read, &mut write, &attributes, 64 * 1024))?;
         Ok((File::from_raw_handle(read), File::from_raw_handle(write)))
     }
+}
+
+static PROCESS_CREATION: Mutex<()> = Mutex::new(());
+
+/// Serializes the short intervals in which this process holds handles marked inheritable for
+/// one specific child. In-process launchers that let `CreateProcessW` inherit every inheritable
+/// handle, including `std::process::Command::spawn`, should hold this guard while spawning so
+/// that they cannot capture a worker's pipe ends.
+pub fn lock_process_creation() -> MutexGuard<'static, ()> {
+    PROCESS_CREATION
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// Run `create` (one `CreateProcessW` restricted by `PROC_THREAD_ATTRIBUTE_HANDLE_LIST`) while
+/// exactly `handles` are inheritable. The handles are closed before the creation lock is
+/// released on every exit path: success, a failed `SetHandleInformation`, a failed `create`
+/// and unwinding out of it. The child holds its own duplicates; no inheritable copy remains in
+/// this process afterwards.
+pub(super) fn create_with_inherited<H: AsRawHandle, const N: usize, R>(
+    handles: [H; N],
+    create: impl FnOnce() -> io::Result<R>,
+) -> io::Result<R> {
+    let _creation = lock_process_creation();
+    // Locals drop in reverse declaration order and before parameters, so this rebinding closes
+    // the handles while `_creation` still holds the lock, whichever way the function exits.
+    let handles = handles;
+    for handle in &handles {
+        // SAFETY: an owned live handle; only its inheritance flag changes. An early return
+        // closes every handle under the creation lock, so none stays inheritable outside it.
+        check(unsafe {
+            SetHandleInformation(
+                handle.as_raw_handle(),
+                HANDLE_FLAG_INHERIT,
+                HANDLE_FLAG_INHERIT,
+            )
+        })?;
+    }
+    create()
 }
 
 struct Sid(*mut std::ffi::c_void);
@@ -167,25 +214,8 @@ fn spawn_impl(
     }
     let (child_input, input) = pipe()?;
     let (output, child_output) = pipe()?;
+    // Non-inheritable like the pipes until the creation call itself.
     let error = OpenOptions::new().write(true).open("NUL")?;
-    // SAFETY: files own live pipe/null handles; only the intended child ends remain inheritable.
-    unsafe {
-        check(SetHandleInformation(
-            input.as_raw_handle(),
-            HANDLE_FLAG_INHERIT,
-            0,
-        ))?;
-        check(SetHandleInformation(
-            output.as_raw_handle(),
-            HANDLE_FLAG_INHERIT,
-            0,
-        ))?;
-        check(SetHandleInformation(
-            error.as_raw_handle(),
-            HANDLE_FLAG_INHERIT,
-            HANDLE_FLAG_INHERIT,
-        ))?;
-    }
     #[cfg(feature = "startup-diagnostics")]
     timing.mark("pipes");
     let name: Vec<u16> = "MidnightExplorer.RestrictedWorker.v1"
@@ -297,25 +327,27 @@ fn spawn_impl(
     environment.extend_from_slice(&[0, 0]);
     #[cfg(feature = "startup-diagnostics")]
     timing.mark("environment");
-    // SAFETY: explicit executable avoids command parsing/search; no arguments or secret environment.
-    // The attribute list assigns the resource-limited job before successful creation; suspended
-    // start also prevents worker execution until the owned process guard is installed.
-    check(unsafe {
-        CreateProcessW(
-            wide.as_ptr(),
-            null_mut(),
-            null(),
-            null(),
-            1,
-            EXTENDED_STARTUPINFO_PRESENT
-                | CREATE_UNICODE_ENVIRONMENT
-                | CREATE_SUSPENDED
-                | DETACHED_PROCESS,
-            environment.as_ptr().cast(),
-            null(),
-            &startup.StartupInfo,
-            &mut process,
-        )
+    create_with_inherited([child_input, child_output, error], || {
+        // SAFETY: explicit executable avoids command parsing/search; no arguments or secret
+        // environment. The attribute list assigns the resource-limited job before successful
+        // creation; suspended start prevents execution until the process guard is installed.
+        check(unsafe {
+            CreateProcessW(
+                wide.as_ptr(),
+                null_mut(),
+                null(),
+                null(),
+                1,
+                EXTENDED_STARTUPINFO_PRESENT
+                    | CREATE_UNICODE_ENVIRONMENT
+                    | CREATE_SUSPENDED
+                    | DETACHED_PROCESS,
+                environment.as_ptr().cast(),
+                null(),
+                &startup.StartupInfo,
+                &mut process,
+            )
+        })
     })
     .map_err(|error| {
         io::Error::new(
@@ -354,13 +386,155 @@ mod tests {
     use super::*;
     use std::{
         io::{Read, Write},
+        os::windows::io::RawHandle,
+        panic::AssertUnwindSafe,
         process::{Child, ChildStderr, Command, Stdio},
+        sync::{
+            Arc, TryLockError,
+            atomic::{AtomicBool, Ordering},
+        },
         time::{Duration, Instant},
     };
     use windows_sys::Win32::{
         Security::{GetTokenInformation, TOKEN_QUERY, TokenIsAppContainer},
         System::Pipes::PeekNamedPipe,
     };
+
+    fn inheritable(handle: HANDLE) -> bool {
+        let mut flags = 0;
+        // SAFETY: a live handle owned by the calling test; the output is a valid u32.
+        check(unsafe { GetHandleInformation(handle, &mut flags) }).unwrap();
+        flags & HANDLE_FLAG_INHERIT != 0
+    }
+
+    #[test]
+    fn pipe_ends_start_non_inheritable() {
+        // Concurrent std::process::Command launches inherit every inheritable handle.
+        let (read, write) = pipe().unwrap();
+        assert!(!inheritable(read.as_raw_handle()));
+        assert!(!inheritable(write.as_raw_handle()));
+    }
+
+    #[test]
+    fn child_handles_are_inheritable_only_inside_the_locked_creation_call() {
+        let (read, write) = pipe().unwrap();
+        let (kept, other) = pipe().unwrap();
+        let raw = [read.as_raw_handle(), write.as_raw_handle()];
+        create_with_inherited([read, write], || {
+            assert!(
+                PROCESS_CREATION.try_lock().is_err(),
+                "other launchers must wait"
+            );
+            assert!(raw.iter().all(|handle| inheritable(*handle)));
+            // Handles that are not passed in are never made inheritable.
+            assert!(!inheritable(kept.as_raw_handle()));
+            assert!(!inheritable(other.as_raw_handle()));
+            Ok(())
+        })
+        .unwrap();
+        // The creation lock is free again; the passed handles were closed while holding it.
+        drop(lock_process_creation());
+        // A failed creation also releases the lock and leaves nothing inheritable behind.
+        let (read, write) = pipe().unwrap();
+        assert!(
+            create_with_inherited([read, write], || Err::<(), _>(io::Error::other("fixture")))
+                .is_err()
+        );
+        drop(lock_process_creation());
+    }
+
+    #[test]
+    fn unrelated_spawns_hold_the_creation_lock_only_while_spawning() {
+        use std::os::windows::process::CommandExt;
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        command
+            .args(["--exact", "no-such-test"])
+            .creation_flags(CREATE_SUSPENDED)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        let mut child = crate::spawn_command(&mut command).unwrap();
+        // The suspended child keeps running, yet the lock is free again. Other tests may hold
+        // it for a moment, so retry until a deadline that elapses only on failure.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let acquired = loop {
+            match PROCESS_CREATION.try_lock() {
+                Err(TryLockError::WouldBlock) if Instant::now() < deadline => {
+                    std::thread::yield_now()
+                }
+                other => break !matches!(other, Err(TryLockError::WouldBlock)),
+            }
+        };
+        let _ = child.kill();
+        let _ = child.wait();
+        assert!(acquired, "the creation lock outlived the spawn call");
+    }
+
+    /// A child handle that records whether the creation lock was still held when it closed.
+    struct Probe {
+        file: Option<File>,
+        closed_under_lock: Arc<AtomicBool>,
+    }
+
+    impl Probe {
+        fn new(file: Option<File>) -> (Self, Arc<AtomicBool>) {
+            let closed_under_lock = Arc::new(AtomicBool::new(false));
+            let probe = Self {
+                file,
+                closed_under_lock: closed_under_lock.clone(),
+            };
+            (probe, closed_under_lock)
+        }
+    }
+
+    impl AsRawHandle for Probe {
+        fn as_raw_handle(&self) -> RawHandle {
+            // Without a file, the null handle makes SetHandleInformation fail.
+            self.file
+                .as_ref()
+                .map_or(null_mut(), AsRawHandle::as_raw_handle)
+        }
+    }
+
+    impl Drop for Probe {
+        fn drop(&mut self) {
+            // WouldBlock while any thread, including this one, holds the lock. A free (even
+            // poisoned) lock is acquired and released again at once.
+            let held = matches!(PROCESS_CREATION.try_lock(), Err(TryLockError::WouldBlock));
+            self.closed_under_lock.store(held, Ordering::SeqCst);
+            drop(self.file.take());
+        }
+    }
+
+    #[test]
+    fn child_handles_are_closed_before_the_creation_lock_on_every_exit_path() {
+        let (read, write) = pipe().unwrap();
+        // Success and a failed creation.
+        for result in [Ok(()), Err(io::Error::other("fixture"))] {
+            let (probe, closed) = Probe::new(Some(read.try_clone().unwrap()));
+            let created = create_with_inherited([probe], || result);
+            assert!(closed.load(Ordering::SeqCst));
+            drop(created);
+        }
+        // SetHandleInformation fails on the second handle after marking the first one.
+        let (marked, marked_closed) = Probe::new(Some(read.try_clone().unwrap()));
+        let (invalid, invalid_closed) = Probe::new(None);
+        let refused = create_with_inherited([marked, invalid], || -> io::Result<()> {
+            unreachable!("creation must not run after a failed inheritance change")
+        });
+        assert!(refused.is_err());
+        assert!(marked_closed.load(Ordering::SeqCst));
+        assert!(invalid_closed.load(Ordering::SeqCst));
+        // Unwinding out of the creation call.
+        let (probe, closed) = Probe::new(Some(write.try_clone().unwrap()));
+        let unwound = std::panic::catch_unwind(AssertUnwindSafe(|| {
+            create_with_inherited([probe], || -> io::Result<()> { panic!("fixture") })
+        }));
+        assert!(unwound.is_err());
+        assert!(closed.load(Ordering::SeqCst));
+        // The panic poisoned the lock; production callers recover, other tests start clean.
+        PROCESS_CREATION.clear_poison();
+        drop(lock_process_creation());
+    }
 
     const TEST_NAME: &str =
         "platform::tests::native_worker_job_is_assigned_before_resume_and_parent_exit_kills_child";

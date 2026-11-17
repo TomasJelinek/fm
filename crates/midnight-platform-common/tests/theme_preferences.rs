@@ -1,6 +1,6 @@
 use midnight_core::{UiDensity, UserPreferences};
 use midnight_platform_common::settings::{decode_preferences, encode_preferences};
-use std::{fs, io, path::Path};
+use std::io;
 
 const THEME_NAMES: [&str; 26] = [
     "blue",
@@ -106,14 +106,9 @@ fn all_previous_schema_versions_keep_the_original_theme_names() {
 }
 
 #[test]
-fn unknown_theme_names_are_rejected_without_changing_the_stored_file() {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../_build/tmp");
-    fs::create_dir_all(&root).unwrap();
-    let directory = tempfile::Builder::new()
-        .prefix("theme-preferences-")
-        .tempdir_in(root)
-        .unwrap();
-    let path = directory.path().join("preferences.json");
+fn unknown_theme_names_are_rejected_as_invalid_data() {
+    // `decode_preferences` is a pure byte decoder; the native settings services own the file
+    // and its atomic replacement, so no file is involved here.
     for name in [
         "future-theme",
         "Nord",
@@ -126,14 +121,10 @@ fn unknown_theme_names_are_rejected_without_changing_the_stored_file() {
                 .unwrap();
         input["theme"] = name.into();
         let bytes = serde_json::to_vec(&input).unwrap();
-        fs::write(&path, &bytes).unwrap();
         assert_eq!(
-            decode_preferences(&fs::read(&path).unwrap())
-                .unwrap_err()
-                .kind(),
+            decode_preferences(&bytes).unwrap_err().kind(),
             io::ErrorKind::InvalidData,
+            "{name:?}"
         );
-        assert_eq!(fs::read(&path).unwrap(), bytes);
-        assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 1);
     }
 }

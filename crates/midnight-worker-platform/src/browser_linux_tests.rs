@@ -5,6 +5,16 @@ use std::{
 };
 
 #[test]
+fn only_definitely_missing_processes_are_reported_as_ended() {
+    assert!(super::process_alive(std::process::id()));
+    // Above every possible pid_max (at most 2^22), so the kernel reports ESRCH.
+    assert!(!super::process_alive(i32::MAX.unsigned_abs()));
+    // Not a valid process ID: never mistaken for an ended session owner.
+    assert!(super::process_alive(0));
+    assert!(super::process_alive(u32::MAX));
+}
+
+#[test]
 fn browser_temporary_cleanup_never_follows_content_symlinks() {
     let outside = tempfile::tempdir().unwrap();
     let retained = outside.path().join("retained");

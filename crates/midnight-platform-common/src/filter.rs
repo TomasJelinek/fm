@@ -16,15 +16,6 @@ pub struct CompiledFilter {
 impl CompiledFilter {
     pub fn new(filter: &PanelFilter) -> Result<Self, String> {
         filter.validate_bounds().map_err(str::to_owned)?;
-        if filter.mode == FilterMode::Expression {
-            return Err("Metadata expressions require entry metadata; filename filters support Masks or Regex.".into());
-        }
-        if !filter.enabled {
-            return Ok(Self {
-                include: None,
-                exclude: None,
-            });
-        }
         let compile = |pattern: &str| {
             RegexBuilder::new(pattern)
                 .case_insensitive(!filter.case_sensitive)
@@ -36,6 +27,15 @@ impl CompiledFilter {
                 .map_err(|error| error.to_string())
         };
         match filter.mode {
+            // Rejected even when disabled: a name filter can never evaluate metadata.
+            FilterMode::Expression => Err(
+                "Metadata expressions require entry metadata; filename filters support Masks or Regex."
+                    .into(),
+            ),
+            _ if !filter.enabled => Ok(Self {
+                include: None,
+                exclude: None,
+            }),
             FilterMode::Regex => Ok(Self {
                 include: Some(compile(&filter.expression)?),
                 exclude: None,
@@ -47,7 +47,6 @@ impl CompiledFilter {
                     exclude: exclude.as_deref().map(compile).transpose()?,
                 })
             }
-            FilterMode::Expression => Err("Metadata expressions require entry metadata.".into()),
         }
     }
 

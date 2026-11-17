@@ -2,11 +2,11 @@
 use crate::protocol::{self, Reply, Request};
 use midnight_core::Cancellation;
 use std::{
-    ffi::{OsStr, OsString},
-    fs::{self, DirBuilder},
+    ffi::{CString, OsStr, OsString},
+    fs::{self, DirBuilder, DirEntry, FileType},
     io::{self, Read, Write},
     os::{
-        fd::AsRawFd,
+        fd::{AsRawFd, RawFd},
         unix::{
             ffi::{OsStrExt, OsStringExt},
             fs::{DirBuilderExt, MetadataExt},
@@ -26,6 +26,10 @@ use std::{
 
 const TIMEOUT: Duration = Duration::from_secs(300);
 const TICK: Duration = Duration::from_millis(10);
+/// Bound on how long cancellation or the deadline can stay unnoticed while waiting for I/O.
+const CANCEL_POLL: Duration = Duration::from_millis(50);
+/// Fallback re-check of the requester's identity; a closed socket wakes the monitor at once.
+const PEER_CHECK: Duration = Duration::from_millis(250);
 // A cancelled native authorization prompt retains its slot until the process really exits.
 static CHILDREN: AtomicUsize = AtomicUsize::new(0);
 
@@ -41,8 +45,59 @@ pub(crate) fn decode_path(bytes: &[u8]) -> io::Result<PathBuf> {
 pub(crate) fn metadata(value: &fs::Metadata) -> (Option<u32>, Option<u32>) {
     (None, Some(value.mode()))
 }
-pub(crate) fn is_redirected(_: &fs::Metadata) -> bool {
-    false
+/// Unix links record no target type. stat follows the link but never opens the target.
+pub(crate) fn is_directory_link(entry: &DirEntry, _: &FileType) -> bool {
+    fs::metadata(entry.path()).is_ok_and(|value| value.is_dir())
+}
+/// pkexec runs the helper as root. Only root may be able to change the helper or any ancestor,
+/// and ownership on a nosuid mount (removable or user-mounted storage) vouches for nothing.
+pub(crate) fn protected_helper(helper: &Path) -> io::Result<()> {
+    for component in helper.ancestors() {
+        let value = fs::symlink_metadata(component)?;
+        let reason = if value.file_type().is_symlink() {
+            "is a symbolic link"
+        } else if value.uid() != 0 {
+            "is not owned by root"
+        } else if value.mode() & 0o022 != 0 {
+            "is writable by its group or by other users"
+        } else {
+            continue;
+        };
+        return Err(unprotected(component, reason));
+    }
+    let value = fs::symlink_metadata(helper)?;
+    if !value.is_file() || value.mode() & 0o111 == 0 {
+        return Err(unprotected(helper, "is not an executable regular file"));
+    }
+    if mounted_nosuid(helper)? {
+        return Err(unprotected(
+            helper,
+            "is on a filesystem mounted nosuid, such as removable or user-mounted storage",
+        ));
+    }
+    Ok(())
+}
+fn unprotected(path: &Path, reason: &str) -> io::Error {
+    io::Error::new(
+        io::ErrorKind::PermissionDenied,
+        format!(
+            "Authorized listing requires midnight-elevated-listing in a root-owned installation \
+             that only root can change, such as /opt/midnight-explorer installed with sudo. {} \
+             {reason}.",
+            path.display()
+        ),
+    )
+}
+fn mounted_nosuid(path: &Path) -> io::Result<bool> {
+    let path = CString::new(path.as_os_str().as_bytes())
+        .map_err(|_| protocol::invalid("NUL in helper path"))?;
+    let mut stats = std::mem::MaybeUninit::<libc::statvfs>::uninit();
+    // SAFETY: a terminated path and writable output storage, read only after success.
+    if unsafe { libc::statvfs(path.as_ptr(), stats.as_mut_ptr()) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: statvfs succeeded and initialized the structure.
+    Ok(unsafe { stats.assume_init() }.f_flag & libc::ST_NOSUID != 0)
 }
 fn denied(message: &str) -> io::Error {
     io::Error::new(io::ErrorKind::PermissionDenied, message)
@@ -291,6 +346,31 @@ fn check(cancel: &Cancellation, deadline: Instant) -> io::Result<()> {
     }
     Ok(())
 }
+fn slice(deadline: Instant, longest: Duration) -> Duration {
+    deadline
+        .saturating_duration_since(Instant::now())
+        .min(longest)
+}
+fn poll_millis(timeout: Duration) -> libc::c_int {
+    libc::c_int::try_from(timeout.as_millis()).unwrap_or(libc::c_int::MAX)
+}
+/// Wait at most `timeout` for readiness. Readiness, hang-up, errors and signals return early;
+/// the caller retries its nonblocking operation and re-checks cancellation.
+fn wait_ready(descriptor: RawFd, events: libc::c_short, timeout: Duration) -> io::Result<()> {
+    let mut entry = libc::pollfd {
+        fd: descriptor,
+        events,
+        revents: 0,
+    };
+    // SAFETY: one initialized entry for a descriptor that stays open during the call.
+    if unsafe { libc::poll(&mut entry, 1, poll_millis(timeout)) } < 0 {
+        let error = io::Error::last_os_error();
+        if error.kind() != io::ErrorKind::Interrupted {
+            return Err(error);
+        }
+    }
+    Ok(())
+}
 struct Channel {
     socket: UnixStream,
     cancel: Cancellation,
@@ -305,13 +385,20 @@ impl Channel {
             deadline,
         })
     }
+    fn wait(&self, events: libc::c_short) -> io::Result<()> {
+        wait_ready(
+            self.socket.as_raw_fd(),
+            events,
+            slice(self.deadline, CANCEL_POLL),
+        )
+    }
 }
 impl Read for Channel {
     fn read(&mut self, data: &mut [u8]) -> io::Result<usize> {
         loop {
             check(&self.cancel, self.deadline)?;
             match self.socket.read(data) {
-                Err(e) if e.kind() == io::ErrorKind::WouldBlock => thread::sleep(TICK),
+                Err(e) if e.kind() == io::ErrorKind::WouldBlock => self.wait(libc::POLLIN)?,
                 Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
                 result => return result,
             }
@@ -323,7 +410,7 @@ impl Write for Channel {
         loop {
             check(&self.cancel, self.deadline)?;
             match self.socket.write(data) {
-                Err(e) if e.kind() == io::ErrorKind::WouldBlock => thread::sleep(TICK),
+                Err(e) if e.kind() == io::ErrorKind::WouldBlock => self.wait(libc::POLLOUT)?,
                 Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
                 result => return result,
             }
@@ -388,38 +475,25 @@ pub(crate) fn list(helper: &Path, request: &Request, cancel: &Cancellation) -> i
             }
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
                 child.check_alive()?;
-                thread::sleep(TICK);
+                wait_ready(
+                    socket.listener.as_raw_fd(),
+                    libc::POLLIN,
+                    slice(deadline, CANCEL_POLL),
+                )?;
             }
             Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
             Err(error) => return Err(error),
         }
     };
     let mut channel = Channel::new(connection, cancel.clone(), deadline)?;
+    // The nonce is visible in the socket path and command line; SO_PEERCRED, PKEXEC_UID and
+    // the /proc creation time bind the channel. Matching it rejects a stale or foreign helper.
     handshake(&mut channel, &nonce, true)?;
     protocol::write_request(&mut channel, request)?;
     // Read buffered bytes even when the helper has already exited; framing detects truncation.
     protocol::read_reply(&mut channel)
 }
 
-fn disconnected(socket: &UnixStream) -> bool {
-    let mut byte = 0u8;
-    // SAFETY: socket is live and the one-byte output remains valid through this nonblocking peek.
-    let count = unsafe {
-        libc::recv(
-            socket.as_raw_fd(),
-            (&mut byte as *mut u8).cast(),
-            1,
-            libc::MSG_PEEK | libc::MSG_DONTWAIT,
-        )
-    };
-    if count >= 0 {
-        return true;
-    } // EOF or an unauthorized second request.
-    !matches!(
-        io::Error::last_os_error().kind(),
-        io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
-    )
-}
 pub(crate) fn serve(args: &[OsString]) -> io::Result<()> {
     if args.len() != 5 || args[0] != "--linux-channel" {
         return Err(protocol::invalid("Invalid helper arguments"));
@@ -455,37 +529,101 @@ pub(crate) fn serve(args: &[OsString]) -> io::Result<()> {
     let mut channel = Channel::new(connection, cancel.clone(), deadline)?;
     handshake(&mut channel, &nonce, false)?;
     let request = protocol::read_request(&mut channel)?;
-    let monitor_socket = channel.socket.try_clone()?;
-    let monitor_cancel = cancel.clone();
-    let monitor = thread::Builder::new()
-        .name("authorized-listing-peer".into())
-        .spawn(move || monitor_peer(monitor_socket, parent, created, deadline, monitor_cancel))?;
+    let monitor = Monitor::start(&channel.socket, parent, created, deadline, cancel.clone())?;
     let reply = crate::helper::reply(request, &cancel);
-    let result = protocol::write_reply(&mut channel, &reply);
-    cancel.cancel();
-    let _ = monitor.join();
-    result
+    // Stop watching before the reply is written: afterwards the requester may close at once.
+    monitor.stop();
+    protocol::write_reply(&mut channel, &reply)
 }
 
-fn monitor_peer(
-    socket: UnixStream,
+/// Ends the dedicated helper process when its requester disconnects, sends anything after its
+/// single request, changes identity or the deadline passes, even while a native directory read
+/// is blocked. Socket readiness wakes it immediately.
+struct Monitor {
+    stop: Option<UnixStream>,
+    thread: Option<thread::JoinHandle<()>>,
+}
+impl Monitor {
+    fn start(
+        socket: &UnixStream,
+        parent: u32,
+        created: u64,
+        deadline: Instant,
+        cancel: Cancellation,
+    ) -> io::Result<Self> {
+        let socket = socket.try_clone()?;
+        let (stop, stopped) = UnixStream::pair()?;
+        let thread = thread::Builder::new()
+            .name("authorized-listing-peer".into())
+            .spawn(move || {
+                if requester_gone(&socket, &stopped, parent, created, deadline) {
+                    cancel.cancel();
+                    // This runs only inside the dedicated read-only helper process. Exiting
+                    // also ends a blocked native directory read; no application thread or
+                    // mutable transaction is terminated. The parent still waits/reaps it.
+                    std::process::exit(1);
+                }
+            })?;
+        Ok(Self {
+            stop: Some(stop),
+            thread: Some(thread),
+        })
+    }
+    fn stop(mut self) {
+        self.finish();
+    }
+    fn finish(&mut self) {
+        // Closing our end wakes the watcher's poll on the paired socket.
+        drop(self.stop.take());
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+impl Drop for Monitor {
+    fn drop(&mut self) {
+        self.finish();
+    }
+}
+
+/// Returns `false` once stopped; `true` when the requester disconnected or sent data, its
+/// process identity changed, or the deadline passed.
+fn requester_gone(
+    socket: &UnixStream,
+    stopped: &UnixStream,
     parent: u32,
     created: u64,
     deadline: Instant,
-    cancel: Cancellation,
-) {
-    while !cancel.is_cancelled() {
-        if Instant::now() >= deadline
-            || disconnected(&socket)
+) -> bool {
+    loop {
+        let mut entries = [
+            libc::pollfd {
+                fd: socket.as_raw_fd(),
+                events: libc::POLLIN | libc::POLLRDHUP,
+                revents: 0,
+            },
+            libc::pollfd {
+                fd: stopped.as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            },
+        ];
+        let timeout = poll_millis(slice(deadline, PEER_CHECK));
+        // SAFETY: two initialized entries for descriptors that stay open during the call.
+        if unsafe { libc::poll(entries.as_mut_ptr(), 2, timeout) } < 0
+            && io::Error::last_os_error().kind() != io::ErrorKind::Interrupted
+        {
+            return true;
+        }
+        if entries[1].revents != 0 {
+            return false;
+        }
+        if entries[0].revents != 0
+            || Instant::now() >= deadline
             || !stamp(parent).is_ok_and(|value| value == created)
         {
-            cancel.cancel();
-            // This runs only inside the dedicated read-only helper process. Exiting
-            // also ends a blocked native directory read; no application thread or
-            // mutable transaction is terminated. The parent still waits/reaps it.
-            std::process::exit(1);
+            return true;
         }
-        thread::sleep(TICK);
     }
 }
 
