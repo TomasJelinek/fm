@@ -7,8 +7,9 @@ The Jobs window is a session ledger; Open displays a selected operation's progre
 or retained diagnostics. It does not mix an active transfer with previous jobs.
 
 **Status:** producer/UI behavior has bounded headless-fixture qualification.
-Concurrent scheduling, native namespace/retirement cutover and fresh application
-delivery remain pending; the scheduler section below is the accepted contract.
+Concurrent scheduling and the native namespace registry described below are
+implemented in the current source; their real-storage qualification and fresh
+application delivery remain pending.
 
 ## Lifetime and controls
 
@@ -61,13 +62,42 @@ Discovering/Calculating requires actual discovery activity. Clear wait reasons o
 acquisition, cancel-request and terminal publication. Cancellation, pause and
 decision state take precedence over ordinary wait/discovery presentation.
 
-The frozen first cut retains one real configured global I/O slot, one whole-job
-namespace share and complete native scopes through actual provider destruction.
-Pause, decisions and already-pinned scope waits intentionally keep the I/O slot.
-Initial I/O/namespace acquisition is a try-pair with rollback; legacy consumers
-remain exclusive. One job performs one native call at a time; limit one serializes
-jobs. Future within-job multiple streams still require positive local SSD
-classification at both endpoints and shared budgets. See the
+Each job retains one whole-job namespace share and its complete native scopes
+through actual provider destruction, plus one retained slot identity of the
+configured global disk-I/O gate. The slot consumes capacity only while the job
+executes native steps:
+
+- Pause, user decisions and namespace-grant waits return the slot. The job readmits
+  it through the FIFO gate before its next native step (Waiting for available
+  capacity); a paused job takes neither lease.
+- At each step boundary a running job yields its slot while a call-scoped request
+  (checksum, thumbnail, viewer, folder-size or file-list I/O) is queued, so such a
+  request waits for at most one step of each transfer, never for a whole job. Jobs
+  queued for a slot do not cause yields; they wait for a running job to finish,
+  pause or wait.
+- Checked teardown reclaims a released slot without queuing, so cancellation never
+  waits for capacity (it may briefly exceed the limit). Quarantine returns the slot
+  but keeps native authority, the namespace share and the claim.
+
+Initial acquisition takes the namespace share and then the FIFO disk slot. Legacy
+namespace consumers take their complete namespace before any disk slot, and no
+slot holder waits for a namespace share, so this order cannot deadlock. One job
+performs one native call at a time; a disk-I/O limit of one runs one job's steps at
+a time. Future within-job multiple streams still require positive local SSD
+classification at both endpoints and shared budgets.
+
+Namespace admission grants a claim only when its complete footprint is disjoint
+from every granted claim and every earlier waiting claim; an opaque claim excludes
+all others. A refused grant waits for a registry change (a grant, completion or
+quarantine; any change while admission is momentarily closed) and revalidates at
+least once per second, holding no disk slot. A pin of another job that cannot be
+re-probed only defers the grant; it is never recorded against either job. All
+namespace changes (stage creation, publication, directory creation, removal) of all
+jobs are serialized by one registry turn, which spans the native call. A change of
+a running job that a granted peer refuses (opaque, latched or intersecting) is
+retried automatically after the registry changes instead of being offered as an
+error. A quarantined claim never clears: later jobs fail at once and ask for an
+application restart instead of waiting. See the
 [admission and safety contract](../superpowers/specs/2026-11-07-copy-predecessor-fence.md).
 
 ## Discovery and truthful progress
@@ -92,10 +122,12 @@ selected-root scope instead of implying that one renamed/trashed directory is on
 recursive file. Links are not followed by destructive traversal.
 
 One acknowledged 250 ms heartbeat (at most 4 Hz) coalesces ordinary discovery,
-throughput, verification-pass and wait-state updates. There is one publisher.
-A full outbox leaves the latest change unacknowledged for retry on the next tick,
-including a blocked wait clear; discovery changes do not depend on throughput.
-Initial, decision and terminal boundary delivery remain explicit.
+throughput, verification-pass and wait-state updates. A full outbox leaves the
+latest change unacknowledged for retry on the next tick, including a blocked wait
+clear; discovery changes do not depend on throughput. Initial, decision and
+terminal boundary delivery remain explicit, as do the boundary snapshots of each
+preparation attempt, the first namespace-grant wait and pause/resume
+acknowledgement.
 
 ## Verification and charts
 

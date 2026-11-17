@@ -20,13 +20,18 @@ collision leaves the verified stage available for a different name or explicit
 replacement; the consumed source stream is not replayed.
 
 All methods run on backend workers. UI receives bounded immutable progress and
-versioned conflict metadata, and sends a choice with the exact job/version. The
-queue currently runs serially on every storage class. More than one stream still
-requires positive local SSD classification at both endpoints and shared budgets.
-The [local concurrency experiment](../verification/2026-11-10-ssd-copy-probe.md)
+versioned conflict metadata, and sends a choice with the exact job/version.
+Independent Copy/Move jobs run concurrently on every storage class, up to the
+configured disk-I/O limit ([Disk operations](DISK_OPERATIONS.md); Automatic is four)
+and only while their native namespace footprints are disjoint. Each job performs one
+native call at a time and holds its disk slot only while it executes native steps;
+see [operation progress](OPERATION_PROGRESS.md#admission-policy-and-waits). More
+than one stream within a job still requires positive local SSD classification at
+both endpoints and shared budgets. The
+[local concurrency experiment](../verification/2026-11-10-ssd-copy-probe.md)
 found substantial component gains for large/mixed files, but abnormal small-file
-audit delays left its full qualification incomplete. It therefore authorizes no
-production concurrency change; there is no new parallel-copy setting or default.
+audit delays left its full qualification incomplete; it authorizes no within-job
+parallel streams.
 
 Windows stages use a twenty-character basename, `.me-` plus sixteen random hex
 characters. Exclusive creation is relative to a held directory handle, without a
@@ -92,10 +97,14 @@ Decisions use the existing `Command::DecideCopy` route. A stale version, wrong j
 or unsupported choice leaves the pending decision unchanged. Error Retry and
 Skip All never provide consent to replace or merge a conflicting destination.
 
-The async decision waiter releases blocking workers and the shared I/O permit.
-The logical mutation queue reservation remains held, preserving FIFO ordering;
-the user can still browse or enqueue more jobs. Cancel/shutdown wakes a paused
-job and performs cleanup before delivering terminal progress.
+The async decision waiter releases its blocking worker and the job's disk slot;
+the namespace share, claim, native owners and the logical queue reservation stay
+held, preserving FIFO ordering. Other disk users and jobs proceed while the user
+decides. After a non-Cancel answer the job readmits its slot through the FIFO
+gate before its next native step (Waiting for available capacity); a Cancel answer
+cancels the job at once, and checked teardown reclaims the slot without waiting.
+Cancel/shutdown wakes a paused job and performs cleanup before delivering terminal
+progress.
 
 Retry retains native identities and the original source/stage handles:
 
@@ -212,7 +221,9 @@ objects, including links or trees, without following or removing them.
 
 The recovery directory is `.midnight-recovery-<random>` beneath the destination
 folder. Windows uses a protected owner-only DACL; Linux requires owned private
-recovery and a parent protected against other-user name replacement. These are
+recovery and a parent protected against other-user name replacement (owned by the
+user or root, and sticky or writable only by the user and the user's private
+group). These are
 not isolation from root/administrators or malicious processes of the same user.
 An error after namespace mutation is a structured outcome, never a request to
 delete recovery data during cleanup:
@@ -300,16 +311,18 @@ data stream, including empty streams that were not copied and verified.
 Linux now supports live-validated removal of owned, single-link regular files on
 qualified local ext filesystems with protected source parents. Preflight retains
 a read lease before publication, refusing existing writers or writable mappings.
-One bounded dedicated thread receives blocked, thread-directed SIGIO notifications;
+A dedicated thread blocks only its own SIGIO, receives the thread-directed
+lease-break notifications and releases a breaking lease at once, so another program
+opening the source for writing is not stalled for the kernel's lease-break timeout;
 the process-wide signal disposition is unchanged. The lease remains held through
 staging, complete source/destination rehashes, identity/revision/metadata checks
 and directory-relative unlink. Any observed lease break or source change refuses
 removal and attempts no-replace restoration. Drop never removes source data.
 
-This Linux path is not atomic compare-and-unlink or an immutable snapshot. A pending
-old-name writer triggers a lease break; the kernel can forcibly remove a lease
-after its configured timeout. Checks refuse observed breaks, but arbitrary pauses
-between the final check and unlink across that timeout are outside the guarantee.
+This Linux path is not atomic compare-and-unlink or an immutable snapshot. A writer
+opening the source releases the lease immediately and is recorded; later checks
+refuse removal. A writer that opens the source between the final check and the
+unlink is not detected.
 Private staging does not isolate malicious same-UID/root namespace mutation.
 Unsupported source filesystems/kinds/rights fail before that entry's publication without a
 silent downgrade to Copy. See [native qualification and race evidence](../verification/2026-11-08-ordinary-move.md).
@@ -453,9 +466,17 @@ before native root/loaded-branch reconciliation. See the
 ## Current limits and next stage
 
 Copy preserves verified content, with explicit required modified time as above.
-Link copying and remaining times/attributes,
-permissions, ACLs, extended attributes and alternate streams need their declared
-metadata capability matrix. Existing source link/special entries are refused.
+Remaining times/attributes, permissions, ACLs, extended attributes and alternate
+streams need their declared metadata capability matrix. By default, existing source
+link/special entries are refused.
+
+The engine also implements link-preserving Copy behind
+`Command::EnqueueCopyWithOptions` with `CopyLinkPolicy::Preserve`; the UI does not
+offer it yet. It accepts native sources only, Copy (never Move) with content-only
+metadata, and recreates each symbolic/directory link from its exact representation:
+stage, sync, independent readback of the staged link, then no-replace publication.
+Special entries stay unsupported. A link cleanup failure or an uncertain link
+publication (durability unconfirmed or recovery required) stops the job.
 Recursive directory Move uses the per-file proof and postorder empty-directory
 removal contract above. It does not infer descendant verification from root
 metadata. Skips retain ancestors; failures/cancellation preserve unfinished

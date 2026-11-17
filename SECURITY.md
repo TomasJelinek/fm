@@ -514,7 +514,9 @@ from deleting a source after its preceding copy failed. Confirmation captures
 bounded completion receipts for all currently admitted copies, including native
 reservations. Only fully completed, verified predecessors permit the mutation;
 failed, cancelled or skipped work requires review and a new confirmation. No
-blocking wait runs on the UI or holds the I/O gate. Per-job cancellation,
+blocking wait runs on the UI. Transfers hold a disk-I/O slot only while executing
+native steps, never while paused or waiting for a user decision or another job,
+and yield it to queued call-scoped reads between steps. Per-job cancellation,
 phase progress and partial results must stay truthful; a completed write is not
 a completed verified copy.
 

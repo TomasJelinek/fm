@@ -17,12 +17,22 @@ filesystem syscall or process thread. Find/tree discovery and plugin-private I/O
 retain separate budgets. The setting does not size Tokio, CPU decoding/hashing
 pools, mutation/capture/cleanup admission or a new per-entry task scheduler.
 
-Admission uses semantic `Shared` or `Exclusive` requests. Only positive local-SSD
-evidence allows Shared; HDD, network and unknown storage use Exclusive. Under the
-present transfer capability contract, transfers remain Exclusive. The setting
-does not enable parallel copies or establish SSD proof at both endpoints.
-Existing stricter copy, checksum and thumbnail job limits remain. See the
-[transfer contract](TRANSFERS.md) for separate transfer requirements.
+Admission uses semantic `Shared` or `Exclusive` requests. For call-scoped reads,
+only positive local-SSD evidence allows Shared; HDD, network and unknown storage
+use Exclusive. Transfers (Copy/Move jobs) request a *retained* Shared slot whatever
+the storage class: the job keeps one slot identity for its lifetime but holds
+capacity only while it executes native steps. It releases the slot while paused,
+waiting for a user decision or for a namespace grant; at each step boundary it
+yields the slot while a call-scoped request is queued; and it readmits the slot
+through the FIFO queue before its next step. A queued exclusive request therefore
+waits for at most one step of each transfer, not for whole transfers, and later
+requests are not stuck behind it. Retained requests queued for a slot never force a
+yield. Teardown reclaims a released slot at once, so cancellation cleanup never
+queues (it may briefly exceed the limit). The limit thus bounds how many transfers
+execute native steps at once; it does not enable streams within one transfer or
+establish SSD proof at both endpoints. Existing stricter copy, checksum and
+thumbnail job limits remain. See the [transfer contract](TRANSFERS.md) and
+[operation progress](OPERATION_PROGRESS.md#admission-policy-and-waits).
 
 ## Live resizing
 
@@ -33,10 +43,14 @@ until the count fits. Growing never overlaps an exclusive holder. Existing
 holders can temporarily exceed a reduced limit while draining.
 
 Preserve FIFO, exclusive-waiter fairness and cancellation. Queued requests retain
-their Shared/Exclusive meaning across resizing. Permit Drop releases issued
-semantic ownership, not a numeric cost captured under an older capacity.
-Computing Exclusive as the current full-capacity cost still races resizing and
-does not meet this contract.
+their Shared/Exclusive meaning across resizing. Permit Drop (or an explicit
+release, which forgotten `Arc` clones observe) returns issued semantic ownership,
+not a numeric cost captured under an older capacity. Computing Exclusive as the
+current full-capacity cost still races resizing and does not meet this contract.
+Blocking waiters evaluate their cancellation probe without the gate lock and
+withdraw their queued request on every exit, including an unwinding probe. Async
+waiters (retained transfer slots) are woken when they reach the queue head; dropping
+the wait withdraws the request.
 
 ## Settings transaction
 
