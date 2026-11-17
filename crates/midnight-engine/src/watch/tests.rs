@@ -556,10 +556,17 @@ async fn events_during_a_same_path_refresh_are_checked_against_the_accepted_rows
         // A hint for the replaced navigation is ignored by the UI.
         assert_eq!(navigation, NavigationId(1));
     }
-    // The same directory keeps its native subscription across the refresh.
-    assert_eq!(native.callbacks.lock().unwrap().len(), 1);
-    stop(&controller, &mut tasks).await;
+    // The directory is subscribed again (it may have been replaced) before the
+    // previous subscription is released, and the new one reports the new
+    // navigation.
+    let callbacks = native.callbacks.lock().unwrap().clone();
+    assert_eq!(callbacks.len(), 2);
+    assert!(callbacks.iter().all(|(path, _)| path == Path::new("left")));
     assert_eq!(native.drops.load(Ordering::SeqCst), 1);
+    native.fire(1);
+    assert_eq!(changed(&mut events).await, (PaneId::Left, NavigationId(2)));
+    stop(&controller, &mut tasks).await;
+    assert_eq!(native.drops.load(Ordering::SeqCst), 2);
 }
 
 async fn assert_polling_observes_compression_only_change(

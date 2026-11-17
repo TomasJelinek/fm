@@ -63,6 +63,14 @@ struct Timing {
     poll: Duration,
 }
 
+/// Bursts settle after 150 ms of quiet, at most 500 ms after their first event;
+/// polling catches missed notifications every 15 s.
+const PRODUCTION_TIMING: Timing = Timing {
+    quiet: Duration::from_millis(150),
+    maximum: Duration::from_millis(500),
+    poll: Duration::from_secs(15),
+};
+
 struct Control {
     visible: Option<VisibleDirectory>,
     revision: u64,
@@ -114,11 +122,7 @@ impl Controller {
             native,
             outbox,
             tasks,
-            Timing {
-                quiet: Duration::from_millis(150),
-                maximum: Duration::from_millis(500),
-                poll: Duration::from_secs(15),
-            },
+            PRODUCTION_TIMING,
         )
     }
 
@@ -151,11 +155,16 @@ impl Controller {
             let filesystem = filesystem.clone();
             let native = native.clone();
             let outbox = outbox.clone();
-            actor_thread::spawn(
-                "midnight-watch",
-                tasks,
-                scope.blocking(move || run(shared, filesystem, native, outbox, timing)),
-            );
+            let native_scope = scope.clone();
+            // The worker starts when its task first runs; an unpolled task
+            // leaves the captured scope to the retained handles.
+            tasks.spawn(scope.future(async move {
+                actor_thread::run(
+                    "midnight-watch",
+                    native_scope.blocking(move || run(shared, filesystem, native, outbox, timing)),
+                )
+                .await;
+            }));
         }
         Self { panes }
     }
@@ -265,18 +274,25 @@ struct Target {
 }
 
 impl Target {
-    /// A refresh/resort of the same directory keeps the native subscription and
-    /// its event counter, so there is no registration gap. Events during the
-    /// replaced generation can postdate the new listing; their hints carried the
-    /// old navigation and were discarded by the UI, so probe once immediately
-    /// against the newly accepted rows instead of waiting for the next poll.
+    /// A refresh/resort of the same directory keeps its event counter. A new
+    /// native subscription (the directory may have been replaced) is in place
+    /// before the old one is released, so there is no registration gap. Events
+    /// during the replaced generation can postdate the new listing; their hints
+    /// carried the old navigation and were discarded by the UI, so probe once
+    /// immediately against the newly accepted rows instead of waiting for the
+    /// next poll.
     fn retarget(
         &mut self,
+        shared: &SharedOwner,
+        native: Option<&dyn WatchService>,
         visible: VisibleDirectory,
         revision: u64,
         cancel: Cancellation,
         timing: Timing,
     ) {
+        let subscription = subscribe(shared, native, &self.path, &self.dirty, &self.active);
+        // Destruction can join native watcher threads; it stays on this worker.
+        drop(std::mem::replace(&mut self._subscription, subscription));
         let version = self.dirty.load(Ordering::Relaxed);
         let activity = version != self.accepted_at
             || self
@@ -301,16 +317,14 @@ impl Drop for Target {
     }
 }
 
-fn register(
+/// A native subscription that counts notifications for one target.
+fn subscribe(
     shared: &SharedOwner,
     native: Option<&dyn WatchService>,
-    visible: VisibleDirectory,
-    revision: u64,
-    cancel: Cancellation,
-    timing: Timing,
-) -> Target {
-    let dirty = Arc::new(AtomicU64::new(0));
-    let active = Arc::new(AtomicBool::new(true));
+    path: &Path,
+    dirty: &Arc<AtomicU64>,
+    active: &Arc<AtomicBool>,
+) -> Option<Box<dyn WatchSubscription>> {
     let callback_dirty = dirty.clone();
     let callback_active = active.clone();
     let callback_shared = Arc::downgrade(shared);
@@ -322,8 +336,20 @@ fn register(
             }
         }
     });
-    let subscription =
-        native.and_then(|native| native.watch_directory(&visible.path, callback).ok());
+    native.and_then(|native| native.watch_directory(path, callback).ok())
+}
+
+fn register(
+    shared: &SharedOwner,
+    native: Option<&dyn WatchService>,
+    visible: VisibleDirectory,
+    revision: u64,
+    cancel: Cancellation,
+    timing: Timing,
+) -> Target {
+    let dirty = Arc::new(AtomicU64::new(0));
+    let active = Arc::new(AtomicBool::new(true));
+    let subscription = subscribe(shared, native, &visible.path, &dirty, &active);
     Target {
         revision,
         pane: visible.pane,
@@ -412,7 +438,14 @@ fn run(
         };
         if let Some((visible, revision, cancel)) = update {
             if let Some(current) = target.as_mut().filter(|old| old.path == visible.path) {
-                current.retarget(visible, revision, cancel, timing);
+                current.retarget(
+                    &shared,
+                    native.as_deref(),
+                    visible,
+                    revision,
+                    cancel,
+                    timing,
+                );
                 continue;
             }
             // Destruction can join native watcher threads; it always stays here.
