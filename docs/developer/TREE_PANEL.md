@@ -302,14 +302,15 @@ The latest modal-only gate does not rerun that entire scope. These
 software UI tests do not establish full native/layout qualification. A completed
 scan with warnings is not a complete count of inaccessible contents.
 
-Native size scans follow directory junction/link targets using native final-path
-resolution and stable
-directory identities. The active ancestry set stops self/ancestor cycles before
-recounting contents; separate noncyclic aliases and separately selected roots keep
-independent logical totals. Cycle/file-link omissions appear as skipped counts in
-the size tooltip, without an access-error marker. Failed target resolution keeps
-partial bytes and the existing detailed warning report. Providers without the
-identity service retain ordinary-directory sizing and report unsupported links.
+Native size scans never follow links met inside the measured folder: file
+links, directory links and junctions appear as skipped counts in the size
+tooltip, without an access-error marker, and their targets are not resolved.
+Only a selected row that is itself a directory link is measured through its
+native final-path target. Stable directory identities and the active ancestry
+set still stop non-link cycles such as bind mounts. Failed resolution of a
+selected link keeps the existing detailed warning report. Providers without
+the identity service retain ordinary-directory sizing and report an
+unsupported selected link.
 The cycle-detection state grows with active traversal depth and is released as
 each branch unwinds. It has no arbitrary directory/depth cutoff; the existing
 pending-path memory budget and bounded worker/I/O capacity remain in force.
