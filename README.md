@@ -879,12 +879,13 @@ re-lists each watched directory (in tree mode every eligible loaded branch) to
 catch missing native/network notifications. It compares the same enumeration
 metadata the listing shows and reads metadata separately only for entries whose
 enumeration lacks it; an entry whose metadata cannot be read stays unknown, as in
-the listing, instead of causing a refresh on every check. Notifications that
-arrive while an automatic refresh of the same directory is being accepted are
-checked against the new listing at once. The watcher cannot tell which of them
-the refresh listing already saw, so every refresh that follows notifications
-re-lists that directory once more right away (and reads metadata for each entry
-whose enumeration lacks it); a quiet directory is not re-listed. In tree mode, a
+the listing, instead of causing a refresh on every check. A directory stays
+watched while it is refreshed or re-sorted, and stays watched for the rows still
+shown when its refresh fails. Notifications that arrive after its new listing
+started may describe changes that listing missed, so the directory is checked
+against the new listing at once when it is shown. A refresh during which no
+notification arrives is not followed by another listing, and re-sorting rows that
+a check found current does not check them again. In tree mode, a
 changed set of watched branches registers its native watches before the old ones
 are released, so directories watched before and after stay covered; a directory
 that becomes natively watched is checked at once, and a collapse alone requests

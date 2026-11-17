@@ -1,5 +1,7 @@
 use super::*;
 
+#[path = "fence_tests.rs"]
+mod fence_tests;
 #[path = "lifetime_tests.rs"]
 mod lifetime_tests;
 #[path = "timing_tests.rs"]
@@ -89,12 +91,17 @@ struct Native {
     callbacks: Mutex<Vec<(PathBuf, ChangeCallback)>>,
     registered: Notify,
     drops: Arc<AtomicUsize>,
+    dropped: Arc<Notify>,
     drop_threads: Arc<Mutex<Vec<(ThreadId, ThreadId)>>>,
     fail: bool,
+    /// Fires the newest subscription when the next one is registered: a
+    /// notification that arrives while the worker subscribes again.
+    fire_on_watch: AtomicBool,
 }
 
 struct Guard {
     drops: Arc<AtomicUsize>,
+    dropped: Arc<Notify>,
     drop_threads: Arc<Mutex<Vec<(ThreadId, ThreadId)>>>,
     registered_on: ThreadId,
 }
@@ -106,6 +113,7 @@ impl Drop for Guard {
             .lock()
             .unwrap()
             .push((self.registered_on, std::thread::current().id()));
+        self.dropped.notify_one();
     }
 }
 impl WatchSubscription for Guard {}
@@ -116,6 +124,17 @@ impl WatchService for Native {
         path: &Path,
         changed: ChangeCallback,
     ) -> Result<Box<dyn WatchSubscription>, FsError> {
+        if self.fire_on_watch.swap(false, Ordering::SeqCst) {
+            let newest = self
+                .callbacks
+                .lock()
+                .unwrap()
+                .last()
+                .map(|(_, callback)| callback.clone());
+            if let Some(callback) = newest {
+                callback();
+            }
+        }
         self.callbacks.lock().unwrap().push((path.into(), changed));
         self.registered.notify_one();
         if self.fail {
@@ -127,6 +146,7 @@ impl WatchService for Native {
         }
         Ok(Box::new(Guard {
             drops: self.drops.clone(),
+            dropped: self.dropped.clone(),
             drop_threads: self.drop_threads.clone(),
             registered_on: std::thread::current().id(),
         }))
@@ -150,6 +170,16 @@ impl Native {
     fn fire(&self, index: usize) {
         let callback = self.callbacks.lock().unwrap()[index].1.clone();
         callback();
+    }
+
+    async fn released(&self, count: usize) {
+        tokio::time::timeout(Duration::from_secs(3), async {
+            while self.drops.load(Ordering::SeqCst) < count {
+                self.dropped.notified().await;
+            }
+        })
+        .await
+        .expect("Watch subscription must be released on its worker");
     }
 }
 
@@ -537,47 +567,6 @@ async fn complete_enumeration_metadata_is_compared_without_per_entry_stats() {
     assert_eq!(changed(&mut events).await, (PaneId::Left, NavigationId(1)));
     assert_eq!(files.metadata_reads.load(Ordering::SeqCst), 0);
     stop(&controller, &mut tasks).await;
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn events_during_a_same_path_refresh_are_checked_against_the_accepted_rows() {
-    let files = Arc::new(Files::default());
-    let native = Arc::new(Native::default());
-    files.put("left", 7);
-    // A long poll: only the immediate post-acceptance probe can report the
-    // change within the event wait.
-    let (controller, mut tasks, mut events) =
-        controller(files.clone(), Some(native.clone()), Duration::from_secs(30));
-    controller.set_visible(files.visible(PaneId::Left, 1, "left"));
-    native.registrations(1).await;
-    native.fire(0);
-    assert_eq!(changed(&mut events).await, (PaneId::Left, NavigationId(1)));
-    // The refresh lists the directory, then a final write lands and notifies
-    // before the UI accepts that already stale listing.
-    let stale = files.visible(PaneId::Left, 2, "left");
-    files.put("left", 8);
-    native.fire(0);
-    controller.set_visible(stale);
-    loop {
-        let (pane, navigation) = changed(&mut events).await;
-        assert_eq!(pane, PaneId::Left);
-        if navigation == NavigationId(2) {
-            break;
-        }
-        // A hint for the replaced navigation is ignored by the UI.
-        assert_eq!(navigation, NavigationId(1));
-    }
-    // The directory is subscribed again (it may have been replaced) before the
-    // previous subscription is released, and the new one reports the new
-    // navigation.
-    let callbacks = native.callbacks.lock().unwrap().clone();
-    assert_eq!(callbacks.len(), 2);
-    assert!(callbacks.iter().all(|(path, _)| path == Path::new("left")));
-    assert_eq!(native.drops.load(Ordering::SeqCst), 1);
-    native.fire(1);
-    assert_eq!(changed(&mut events).await, (PaneId::Left, NavigationId(2)));
-    stop(&controller, &mut tasks).await;
-    assert_eq!(native.drops.load(Ordering::SeqCst), 2);
 }
 
 async fn assert_polling_observes_compression_only_change(
