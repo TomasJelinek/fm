@@ -521,7 +521,7 @@ pub(super) fn open_enumeration(parent: &File, source: &File, name: &OsStr) -> io
     // the extra handle allows sharing DELETE because source already holds that access.
     let enumeration = open_listing(parent, name)?;
     if local_identity(source)? != local_identity(&enumeration)? {
-        return Err(io::Error::other("the directory changed before enumeration"));
+        return Err(directory_changed());
     }
     Ok(enumeration)
 }
@@ -539,9 +539,20 @@ pub(super) fn open_listing(parent: &File, name: &OsStr) -> io::Result<File> {
         FILE_DIRECTORY_FILE,
     )?;
     if Native::query(&enumeration)?.link() {
-        return Err(io::Error::other("the directory changed before enumeration"));
+        return Err(directory_changed());
     }
     Ok(enumeration)
+}
+
+/// A directory replaced (or turned into a link) between its pin and its listing open is a
+/// changed selection, reported like the adapter's other revalidation failures: `NotFound`.
+/// The engine reserves `ErrorKind::Other` from a metadata listing for its pin-budget
+/// refusal, so this must not use `Other`.
+fn directory_changed() -> io::Error {
+    io::Error::new(
+        io::ErrorKind::NotFound,
+        "the directory changed before enumeration",
+    )
 }
 
 fn child_names(directory: &File, cancel: &Cancellation) -> io::Result<Vec<OsString>> {

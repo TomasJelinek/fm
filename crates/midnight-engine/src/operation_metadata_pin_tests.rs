@@ -431,7 +431,7 @@ impl PreparedMutation for Node {
             return Err(FsError::from_io(
                 "enumerate metadata targets",
                 &self.item.path,
-                io::Error::other("the directory changed before enumeration"),
+                io::Error::other("the adapter failed for another reason"),
             ));
         }
         if self.children.len() > max_targets {
@@ -766,9 +766,10 @@ async fn shortfall_counts_only_the_shared_targets_other_jobs_hold() {
 
 #[tokio::test]
 async fn shortfall_keeps_the_adapter_text_of_a_misclassified_listing_error() {
-    // Windows reports a folder replaced between revalidation and enumeration with
-    // ErrorKind::Other too. Taken for a budget refusal, it costs one more listing with
-    // borrowed targets, and its own text stays visible after the pin diagnostic.
+    // The trait reserves ErrorKind::Other for the pin-budget refusal, but an adapter (a
+    // plugin, a future platform) may still report another failure with it. Taken for a
+    // budget refusal, it costs one more listing with borrowed targets, and its own text
+    // stays visible after the pin diagnostic.
     let probe = Probe::new(METADATA_TRAVERSAL_RESERVE);
     let parent = PathBuf::from("PARENT");
     let root = Node::new(
@@ -784,7 +785,7 @@ async fn shortfall_keeps_the_adapter_text_of_a_misclassified_listing_error() {
     assert_eq!(probe.listings_of(&parent), [(64, (0, 255)), (255, (0, 64))]);
     let message = &progress.errors[0].message;
     assert!(
-        message.ends_with("The file system reported: the directory changed before enumeration"),
+        message.ends_with("The file system reported: the adapter failed for another reason"),
         "{message}"
     );
     assert_eq!(probe.observed(), (64, MAX_METADATA_TARGETS));

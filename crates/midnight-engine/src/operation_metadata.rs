@@ -426,9 +426,9 @@ fn take_free(pool: &Arc<Semaphore>, at_most: usize) -> Option<OwnedSemaphorePerm
 /// Snapshots and pins a directory's children with at most `cap` pins. The executing
 /// job's reserve is used first. Free shared pins are borrowed only when no reserve pin
 /// is free or the adapter refused the directory as larger than the pins taken; both
-/// native adapters refuse that with `ErrorKind::Other` before opening any child. Windows
-/// also reports a directory replaced just before enumeration as `Other`, which then
-/// costs one more listing; the caller's diagnostic keeps the adapter's text for it.
+/// native adapters refuse that with `ErrorKind::Other` before opening any child, and
+/// report other failures (for example a directory replaced just before enumeration,
+/// `NotFound`) with other kinds, which are returned without borrowing.
 fn list_children(
     target: &dyn PreparedMutation,
     job: &worker::Job,
