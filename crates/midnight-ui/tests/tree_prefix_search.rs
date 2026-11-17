@@ -175,9 +175,24 @@ fn rapid_typing_escape_and_full_queue_converge_without_reopening_folders() {
         h.requests.borrow().len() <= 1,
         "only one options request is in flight"
     );
-    // A queued backend completion cannot replace the latest committed input.
-    let event = h.receive();
-    h.apply_event(event);
+    // A queued backend completion cannot replace the latest committed input: apply
+    // unrelated events until the reprojection answering the earlier query arrives.
+    assert_eq!(
+        h.requests.borrow().len(),
+        1,
+        "the earlier query's reprojection is in flight"
+    );
+    loop {
+        let event = h.receive();
+        let reprojection = matches!(&event, Event::Tree(tree) if matches!(
+            tree.as_ref(),
+            TreeEvent::Reprojected { .. } | TreeEvent::ReprojectFailed { .. }
+        ));
+        h.apply_event(event);
+        if reprojection {
+            break;
+        }
+    }
     assert_eq!(query(&h), "alp");
     ui::key(&h.ui.window, Key::Escape);
     h.until(|h| query(h).is_empty() && !pending(h));

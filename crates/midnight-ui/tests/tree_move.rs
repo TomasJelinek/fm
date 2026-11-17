@@ -188,7 +188,7 @@ fn root_transfer_updates_both_trees(intent: TransferIntent) {
                 .any(|row| row.entry.display_name == "retained")
         })
     });
-    h.until(|_| watch.observes(&fixture.root.join("destination/existing")));
+    h.until(|_| watch.live_covers(&fixture.root.join("destination/existing")));
     let destination = h.views[1].as_ref().unwrap().clone();
     let retained =
         h.ui.window
@@ -218,7 +218,7 @@ fn root_transfer_updates_both_trees(intent: TransferIntent) {
             .is_some_and(|selection| selection.len() == 1)
     });
     h.ui.window.invoke_focus_files();
-    let callbacks = watch.callbacks();
+    let mark = watch.mark();
     ui::key(
         &h.ui.window,
         if intent == TransferIntent::Move {
@@ -253,7 +253,7 @@ fn root_transfer_updates_both_trees(intent: TransferIntent) {
         let source = h.rows();
         source.iter().any(|row| row.name == "root.txt") == (intent == TransferIntent::Copy)
             && !source.iter().any(|row| row.selected)
-            && watch.callbacks() > callbacks
+            && watch.native_evidence_since(mark)
             && h.ui
                 .window
                 .get_right_rows()

@@ -196,8 +196,8 @@ fn exercise(pane: PaneId, intent: FileClipboardIntent) {
         })
     });
     h.until(|_| {
-        watch.observes(&fixture.root.join("folder"))
-            && watch.observes(&fixture.root.join("destination/existing"))
+        watch.live_covers(&fixture.root.join("folder"))
+            && watch.live_covers(&fixture.root.join("destination/existing"))
     });
     let destination_session = h.views[destination.index()].as_ref().unwrap().stamp.session;
 
@@ -338,11 +338,11 @@ fn exercise(pane: PaneId, intent: FileClipboardIntent) {
 
     // Own-write notifications may be consumed by terminal maintenance. Later
     // external writes prove both retained native tree watches still reconcile.
-    let callbacks = watch.callbacks();
+    let mark = watch.mark();
     fs::create_dir(fixture.root.join("folder/after-clipboard")).unwrap();
     fs::create_dir(fixture.root.join("destination/after-clipboard")).unwrap();
     h.until(|h| {
-        watch.callbacks() > callbacks
+        watch.native_evidence_since(mark)
             && h.rows().iter().any(|row| row.name == "after-clipboard")
             && rows(h, destination)
                 .iter()
