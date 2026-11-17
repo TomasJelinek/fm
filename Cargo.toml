@@ -82,6 +82,32 @@ opt-level = 1
 # Generated line tables are not useful when debugging handwritten presenters.
 debug = 0
 
+# Copy readback, checksums, plugin trust and the thumbnail cache hash every byte.
+# Unoptimized digest loops dominated hashing-heavy debug runs and tests.
+[profile.dev.package.sha2]
+opt-level = 3
+
+[profile.dev.package.sha1]
+opt-level = 3
+
+[profile.dev.package.md-5]
+opt-level = 3
+
+[profile.dev.package.crc32fast]
+opt-level = 3
+
+[profile.dev.package.blake3]
+opt-level = 3
+
+[profile.dev.package.digest]
+opt-level = 3
+
+[profile.dev.package.block-buffer]
+opt-level = 3
+
+[profile.dev.package.generic-array]
+opt-level = 3
+
 # Viewer iteration keeps hot pixel/layout loops useful without release LTO.
 [profile.dev.package.midnight-viewer-render]
 opt-level = 2
