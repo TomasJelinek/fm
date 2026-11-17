@@ -290,7 +290,7 @@ impl Session {
 
     pub(crate) fn abort_refresh(&mut self, error: &ProviderError) -> Option<TreeEvent> {
         let mut maintenance = self.maintenance.take()?;
-        let error = crate::tree_diagnostics::diagnostic(&self.reports, &error);
+        let error = crate::tree_diagnostics::diagnostic(&self.reports, error);
         if let Some(source) = error.details() {
             maintenance.details.push(source.clone());
         }
