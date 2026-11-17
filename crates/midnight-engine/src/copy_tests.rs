@@ -86,6 +86,9 @@ async fn native_drop_reservations_share_the_actual_copy_job_capacity() {
     while harness.tasks.join_next().await.is_some() {}
 }
 
+/// A job-level wait fails after this even while heartbeat progress keeps arriving.
+const JOB_DEADLINE: Duration = Duration::from_secs(30);
+
 /// Wait until `ready()` holds; another thread or task makes it true. Spin on `yield_now`
 /// first: the common case finishes within microseconds and the yield lets the tasks of
 /// a current-thread runtime (such as the admission consumer) run. Then back off to 1 ms
@@ -251,7 +254,13 @@ impl Harness {
         if let Some(progress) = self.terminals.remove(&OperationId(id)) {
             return progress;
         }
+        // Heartbeats keep `next` from timing out while a broken job never finishes.
+        let deadline = std::time::Instant::now() + JOB_DEADLINE;
         loop {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "job {id} did not finish"
+            );
             match self.next().await {
                 CopyEvent::Progress(progress)
                     if progress.id == OperationId(id) && progress.state.is_terminal() =>
@@ -288,7 +297,12 @@ impl Harness {
             !self.terminals.contains_key(&OperationId(id)),
             "operation already finished"
         );
+        let deadline = std::time::Instant::now() + JOB_DEADLINE;
         loop {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "job {id} raised no conflict"
+            );
             match self.next().await {
                 CopyEvent::Conflict(conflict) if conflict.id == OperationId(id) => return conflict,
                 CopyEvent::Progress(progress) if progress.id == OperationId(id) => assert!(

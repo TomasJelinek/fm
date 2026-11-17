@@ -116,7 +116,12 @@ fn no_record() {}
 /// The terminal progress of every job in `ids`, in that order; any prompt fails the test.
 async fn terminals_without_prompt(h: &mut Harness, ids: &[u64]) -> Vec<Arc<CopyProgress>> {
     let mut terminals = vec![None; ids.len()];
+    let deadline = std::time::Instant::now() + JOB_DEADLINE;
     while terminals.iter().any(Option::is_none) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "jobs {ids:?} did not finish"
+        );
         match h.next().await {
             CopyEvent::Failure(failure) => {
                 panic!("a peer refusal must not ask the user: {failure:?}")
@@ -485,14 +490,14 @@ async fn peer_refused_move_directory_removal_retries_without_a_prompt() {
 }
 
 /// Job 1 (`slow` source) blocks in its first read; job 2's destination (`counted`)
-/// counts stage creations and holds its first target probe until released.
+/// counts namespace attempts and holds its first target probe until released.
 struct PeerService {
     inner: midnight_platform::LocalFileSystem,
     slow_entered: Arc<Notify>,
     slow_released: Arc<AtomicBool>,
     probe_entered: Arc<Notify>,
     probe_released: Arc<AtomicBool>,
-    stages: Arc<AtomicUsize>,
+    attempts: Arc<AtomicUsize>,
 }
 impl midnight_core::AuditedSynchronousTransferService for PeerService {}
 impl TransferService for PeerService {
@@ -531,7 +536,7 @@ impl TransferService for PeerService {
                 inner,
                 entered: self.probe_entered.clone(),
                 released: self.probe_released.clone(),
-                stages: self.stages.clone(),
+                attempts: self.attempts.clone(),
             })
         } else {
             inner
@@ -571,12 +576,14 @@ impl TransferSource for SlowSource {
         self.inner.next_child(cancel)
     }
 }
-/// Forwards its exact native footprint; holds the first target probe and counts stages.
+/// Forwards its exact native footprint and holds the first target probe. It counts the
+/// namespace attempts of each file: stage creation (Windows names its stage) and
+/// publication (Linux names an unnamed stage only when it publishes).
 struct GatedDirectory {
     inner: Arc<dyn TransferDirectory>,
     entered: Arc<Notify>,
     released: Arc<AtomicBool>,
-    stages: Arc<AtomicUsize>,
+    attempts: Arc<AtomicUsize>,
 }
 impl TransferDirectory for GatedDirectory {
     fn native_child_namespace_scope(
@@ -632,14 +639,85 @@ impl TransferDirectory for GatedDirectory {
         self.inner.create_directory(name, cancel)
     }
     fn stage_file(&self, cancel: &Cancellation) -> Result<Box<dyn StagedTransferFile>, FsError> {
-        self.stages.fetch_add(1, Ordering::SeqCst);
-        self.inner.stage_file(cancel)
+        self.attempts.fetch_add(1, Ordering::SeqCst);
+        let inner = self.inner.stage_file(cancel)?;
+        Ok(Box::new(CountedStage {
+            inner,
+            attempts: self.attempts.clone(),
+        }))
+    }
+}
+struct CountedStage {
+    inner: Box<dyn StagedTransferFile>,
+    attempts: Arc<AtomicUsize>,
+}
+impl std::io::Read for CountedStage {
+    fn read(&mut self, data: &mut [u8]) -> io::Result<usize> {
+        self.inner.read(data)
+    }
+}
+impl std::io::Write for CountedStage {
+    fn write(&mut self, data: &[u8]) -> io::Result<usize> {
+        self.inner.write(data)
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        self.inner.flush()
+    }
+}
+impl std::io::Seek for CountedStage {
+    fn seek(&mut self, position: std::io::SeekFrom) -> io::Result<u64> {
+        self.inner.seek(position)
+    }
+}
+impl StagedTransferFile for CountedStage {
+    fn sync(&mut self, cancel: &Cancellation) -> Result<(), FsError> {
+        self.inner.sync(cancel)
+    }
+    fn len(&self) -> Result<u64, FsError> {
+        self.inner.len()
+    }
+    fn rewind_for_validation(
+        &mut self,
+        cancel: &Cancellation,
+    ) -> Result<Box<dyn TransferReadGuard>, FsError> {
+        self.inner.rewind_for_validation(cancel)
+    }
+    fn revalidate_publication(&self, cancel: &Cancellation) -> Result<TransferIdentity, FsError> {
+        self.inner.revalidate_publication(cancel)
+    }
+    fn prepare_replacement(
+        &mut self,
+        name: &std::ffi::OsStr,
+        target: Arc<dyn TransferTarget>,
+        policy: TransferReplacementPolicy,
+        cancel: &Cancellation,
+    ) -> Result<(), FsError> {
+        self.inner.prepare_replacement(name, target, policy, cancel)
+    }
+    fn publish_no_replace(
+        &mut self,
+        name: &std::ffi::OsStr,
+        cancel: &Cancellation,
+    ) -> Result<TransferPublication, FsError> {
+        self.attempts.fetch_add(1, Ordering::SeqCst);
+        self.inner.publish_no_replace(name, cancel)
+    }
+    fn publish_replace(
+        &mut self,
+        name: &std::ffi::OsStr,
+        cancel: &Cancellation,
+    ) -> Result<TransferPublication, FsError> {
+        self.inner.publish_replace(name, cancel)
+    }
+    fn cleanup(&mut self) -> Result<(), FsError> {
+        self.inner.cleanup()
     }
 }
 
-/// A job whose stage creation is refused by a persistently opaque (latched) granted peer
-/// waits for that peer's removal: it does not rerun its step every retry spacing, and
-/// it completes without a prompt once the peer is gone.
+/// A job whose namespace change (stage creation on Windows, publication on Linux) is
+/// refused by a persistently opaque (latched) granted peer waits for that peer's
+/// removal: it does not rerun the refused step every retry spacing, and it completes
+/// without a prompt, with exactly one repeated attempt, once the peer is gone.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn persistently_opaque_peer_refusal_waits_without_rerunning_the_step() {
     let temp = fixture();
@@ -657,7 +735,7 @@ async fn persistently_opaque_peer_refusal_waits_without_rerunning_the_step() {
         slow_released: Arc::new(AtomicBool::new(false)),
         probe_entered: Arc::new(Notify::new()),
         probe_released: Arc::new(AtomicBool::new(false)),
-        stages: Arc::new(AtomicUsize::new(0)),
+        attempts: Arc::new(AtomicUsize::new(0)),
     };
     let (slow_entered, slow_released) =
         (service.slow_entered.clone(), service.slow_released.clone());
@@ -665,7 +743,7 @@ async fn persistently_opaque_peer_refusal_waits_without_rerunning_the_step() {
         service.probe_entered.clone(),
         service.probe_released.clone(),
     );
-    let stages = service.stages.clone();
+    let attempts = service.attempts.clone();
     let _release_slow = ReleaseOnDrop(slow_released.clone());
     let _release_probe = ReleaseOnDrop(probe_released.clone());
     let mut h = Harness::with_slots(Some(Arc::new(service)), 2);
@@ -687,14 +765,15 @@ async fn persistently_opaque_peer_refusal_waits_without_rerunning_the_step() {
     probe_released.store(true, Ordering::Release);
     h.wait_status(2, |progress| {
         progress.wait_reason == Some(TransferWaitReason::Resources)
-            && stages.load(Ordering::SeqCst) == 1
     })
     .await;
+    let refused = attempts.load(Ordering::SeqCst);
+    assert!(refused > 0);
     // Ten retry spacings: a wait ended by the job's own refused turn would retry here.
     tokio::time::sleep(Duration::from_millis(250)).await;
     assert_eq!(
-        stages.load(Ordering::SeqCst),
-        1,
+        attempts.load(Ordering::SeqCst),
+        refused,
         "a refused job reruns its step only when a refusing peer changes"
     );
     slow_released.store(true, Ordering::Release);
@@ -711,9 +790,10 @@ async fn persistently_opaque_peer_refusal_waits_without_rerunning_the_step() {
         "{:?}",
         done[1]
     );
+    // One stage creation and one publication, plus the single repeated refused attempt.
     assert_eq!(
-        stages.load(Ordering::SeqCst),
-        2,
+        attempts.load(Ordering::SeqCst),
+        3,
         "one retry after the latched peer was removed"
     );
     assert_eq!(
