@@ -654,6 +654,16 @@ mod tests {
         started.elapsed() < FAILURE_WAIT / 2
     }
 
+    /// Assert that the test runs against a private X display, and keep that display from
+    /// resetting between tests.
+    fn isolated_display() {
+        assert_eq!(
+            std::env::var("MIDNIGHT_CLIPBOARD_TEST_ISOLATED").as_deref(),
+            Ok("1")
+        );
+        crate::clipboard::tests::keep_display_open();
+    }
+
     fn files(path: &str, intent: FileClipboardIntent) -> FileClipboard {
         FileClipboard {
             paths: vec![path.into()],
@@ -707,10 +717,7 @@ mod tests {
     #[test]
     #[ignore = "requires an isolated Xvfb DISPLAY and MIDNIGHT_CLIPBOARD_TEST_ISOLATED=1"]
     fn x11_selection_clear_ends_the_wait_and_the_ownership() {
-        assert_eq!(
-            std::env::var("MIDNIGHT_CLIPBOARD_TEST_ISOLATED").as_deref(),
-            Ok("1")
-        );
+        isolated_display();
         let mut clipboard = Clipboard::new().unwrap();
         assert!(!clipboard.owns_clipboard(), "a new window owns nothing");
         clipboard
@@ -742,10 +749,7 @@ mod tests {
     #[test]
     #[ignore = "requires an isolated Xvfb DISPLAY and MIDNIGHT_CLIPBOARD_TEST_ISOLATED=1"]
     fn x11_event_queued_by_a_round_trip_ends_the_wait_without_socket_input() {
-        assert_eq!(
-            std::env::var("MIDNIGHT_CLIPBOARD_TEST_ISOLATED").as_deref(),
-            Ok("1")
-        );
+        isolated_display();
         let mut clipboard = Clipboard::new().unwrap();
         let mut other = Clipboard::new().unwrap();
         let first = files("/tmp/first", FileClipboardIntent::Copy);
@@ -775,10 +779,7 @@ mod tests {
     #[test]
     #[ignore = "requires an isolated Xvfb DISPLAY and MIDNIGHT_CLIPBOARD_TEST_ISOLATED=1"]
     fn x11_wake_ends_a_wait_on_the_connection() {
-        assert_eq!(
-            std::env::var("MIDNIGHT_CLIPBOARD_TEST_ISOLATED").as_deref(),
-            Ok("1")
-        );
+        isolated_display();
         let mut clipboard = Clipboard::new().unwrap();
         clipboard.service_pending().unwrap();
         let wake = Wake::new().unwrap();
@@ -801,10 +802,7 @@ mod tests {
     #[test]
     #[ignore = "requires an isolated Xvfb DISPLAY and MIDNIGHT_CLIPBOARD_TEST_ISOLATED=1"]
     fn x11_delayed_selection_clear_preserves_reacquired_clipboard() {
-        assert_eq!(
-            std::env::var("MIDNIGHT_CLIPBOARD_TEST_ISOLATED").as_deref(),
-            Ok("1")
-        );
+        isolated_display();
         let mut clipboard = Clipboard::new().unwrap();
         let mut other = Clipboard::new().unwrap();
         let first = FileClipboard {
@@ -835,10 +833,7 @@ mod tests {
     #[test]
     #[ignore = "requires an isolated Xvfb DISPLAY and MIDNIGHT_CLIPBOARD_TEST_ISOLATED=1"]
     fn x11_event_flood_cannot_bypass_an_expired_clipboard_deadline() {
-        assert_eq!(
-            std::env::var("MIDNIGHT_CLIPBOARD_TEST_ISOLATED").as_deref(),
-            Ok("1")
-        );
+        isolated_display();
         let clipboard = Clipboard::new().unwrap();
         for _ in 0..128 {
             clipboard
@@ -872,10 +867,7 @@ mod tests {
     #[test]
     #[ignore = "requires an isolated Xvfb DISPLAY and MIDNIGHT_CLIPBOARD_TEST_ISOLATED=1"]
     fn x11_native_file_clipboard_transfers_raw_paths_incrementally() {
-        assert_eq!(
-            std::env::var("MIDNIGHT_CLIPBOARD_TEST_ISOLATED").as_deref(),
-            Ok("1")
-        );
+        isolated_display();
         let files = large_files("raw", FileClipboardIntent::Move);
         let (stop, owner) = serving_owner(files.clone());
         let mut reader = Clipboard::new().unwrap();
@@ -898,10 +890,7 @@ mod tests {
     #[test]
     #[ignore = "requires an isolated Xvfb DISPLAY and MIDNIGHT_CLIPBOARD_TEST_ISOLATED=1"]
     fn x11_request_naming_the_owner_window_is_ignored_and_keeps_incremental_reads() {
-        assert_eq!(
-            std::env::var("MIDNIGHT_CLIPBOARD_TEST_ISOLATED").as_deref(),
-            Ok("1")
-        );
+        isolated_display();
         let mut clipboard = Clipboard::new().unwrap();
         clipboard
             .copy(&large_files("owned", FileClipboardIntent::Copy))

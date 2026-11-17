@@ -10,7 +10,7 @@ use std::{io, path::Path, sync::Arc, time::Duration};
 
 #[cfg(test)]
 #[path = "clipboard_tests.rs"]
-mod tests;
+pub(crate) mod tests;
 
 #[derive(Default)]
 pub struct NativeClipboard;

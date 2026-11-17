@@ -3,7 +3,13 @@
 use super::*;
 use crate::file_clipboard::Files;
 use midnight_core::FileClipboardIntent;
-use std::{fs, path::PathBuf, sync::Weak, time::Instant};
+use std::{
+    fs,
+    path::PathBuf,
+    sync::{OnceLock, Weak},
+    time::Instant,
+};
+use x11rb::rust_connection::RustConnection;
 
 /// Elapses only when the event that should end a wait does not.
 const FAILURE_WAIT: Duration = Duration::from_secs(30);
@@ -188,7 +194,16 @@ fn await_clipboard_owner() {
     }
 }
 
-/// Assert that the X11 tests run against a private display.
+/// Keep one connection to the test display open for the rest of the test process. An X
+/// server resets when its last client disconnects, and it closes ("Connection reset by
+/// peer") a connection made during that reset, such as the first one of the next test.
+pub(crate) fn keep_display_open() {
+    static KEEPER: OnceLock<RustConnection> = OnceLock::new();
+    KEEPER.get_or_init(|| x11rb::connect(None).unwrap().0);
+}
+
+/// Assert that the X11 tests run against a private display, and keep that display from
+/// resetting between tests.
 fn isolated_display() {
     assert_eq!(
         std::env::var("MIDNIGHT_CLIPBOARD_TEST_ISOLATED").as_deref(),
@@ -200,6 +215,7 @@ fn isolated_display() {
         std::env::var_os("WAYLAND_DISPLAY").is_none_or(|display| display.is_empty()),
         "unset WAYLAND_DISPLAY for the isolated clipboard tests"
     );
+    keep_display_open();
 }
 
 #[test]
