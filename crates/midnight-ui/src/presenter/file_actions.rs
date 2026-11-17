@@ -1,6 +1,44 @@
 //! Native menu and clipboard intents retain their original paths and selection snapshots.
 use super::*;
 
+/// Application actions of the fallback item menu. The integer codes are the
+/// `action-codes` that `ui/file-menu.slint` reports; flat and tree menus share them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum MenuAction {
+    Open,
+    Copy,
+    Paste,
+    Rename,
+    Delete,
+    Properties,
+    Cut,
+}
+
+impl MenuAction {
+    pub(super) fn from_code(code: i32) -> Option<Self> {
+        Some(match code {
+            0 => Self::Open,
+            1 => Self::Copy,
+            2 => Self::Paste,
+            3 => Self::Rename,
+            4 => Self::Delete,
+            5 => Self::Properties,
+            6 => Self::Cut,
+            _ => return None,
+        })
+    }
+
+    pub(super) fn from_verb(verb: ShellMenuVerb) -> Self {
+        match verb {
+            ShellMenuVerb::Copy => Self::Copy,
+            ShellMenuVerb::Cut => Self::Cut,
+            ShellMenuVerb::Paste => Self::Paste,
+            ShellMenuVerb::Rename => Self::Rename,
+            ShellMenuVerb::Delete => Self::Delete,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct MenuAnchor {
     pub(crate) owner: usize,
@@ -305,26 +343,29 @@ impl Presenter {
         if self.try_tree_menu_action(token, action, send) {
             return;
         }
-        if token.is_empty() || token != self.file_menu_token() || !(0..=5).contains(&action) {
+        if token.is_empty() || token != self.file_menu_token() {
             return;
         }
-        let menu = self
-            .file_actions
-            .menu
-            .take()
-            .expect("matched fallback menu");
-        self.run_captured_menu_action(&menu, action, send);
+        // The popup closed when the item was chosen. A matching token always
+        // consumes the captured menu, so an unknown code cannot keep the menu
+        // slot occupied and block every later context menu.
+        let Some(menu) = self.file_actions.menu.take() else {
+            return;
+        };
+        if let Some(action) = MenuAction::from_code(action) {
+            self.run_captured_menu_action(&menu, action, send);
+        }
         self.retired.push(Box::new(menu));
     }
 
     fn run_captured_menu_action(
         &mut self,
         menu: &CapturedMenu,
-        action: i32,
+        action: MenuAction,
         send: &dyn Fn(Command) -> bool,
     ) {
         match action {
-            0 => match menu.context.kind {
+            MenuAction::Open => match menu.context.kind {
                 EntryKind::Directory => {
                     self.navigate(menu.context.pane, menu.context.focused.clone(), None, send);
                 }
@@ -340,20 +381,18 @@ impl Presenter {
                 }
                 EntryKind::Other => {}
             },
-            1 | 5 | 6 => {
+            MenuAction::Copy | MenuAction::Cut | MenuAction::Properties => {
                 let request = self.desktop.request();
                 let files = menu.files.clone();
-                let command = if action == 1 {
-                    Command::CopyFiles { request, files }
-                } else if action == 6 {
-                    Command::CutFiles { request, files }
-                } else {
-                    Command::ShowSelectionProperties {
+                let command = match action {
+                    MenuAction::Copy => Command::CopyFiles { request, files },
+                    MenuAction::Cut => Command::CutFiles { request, files },
+                    _ => Command::ShowSelectionProperties {
                         request,
                         selection: files.selection,
                         view: files.view,
                         fallback: files.fallback,
-                    }
+                    },
                 };
                 if send(command) {
                     self.desktop.requests.insert(request);
@@ -362,8 +401,8 @@ impl Presenter {
                         .report("Desktop queue busy", "Try the action again.".into());
                 }
             }
-            2 => self.read_file_clipboard(menu.paste_destination.clone(), send),
-            3 | 4 => {
+            MenuAction::Paste => self.read_file_clipboard(menu.paste_destination.clone(), send),
+            MenuAction::Rename | MenuAction::Delete => {
                 let p = &self.panes[menu.context.pane.index()];
                 if menu.context.target != ShellMenuTarget::Items
                     || p.loading
@@ -379,7 +418,7 @@ impl Presenter {
                 }
                 self.start_captured_operation(
                     menu.context.pane,
-                    if action == 3 {
+                    if action == MenuAction::Rename {
                         MutationKind::Rename
                     } else {
                         MutationKind::Delete(DeleteMode::Trash)
@@ -388,7 +427,6 @@ impl Presenter {
                     send,
                 );
             }
-            _ => {}
         }
     }
 
@@ -456,17 +494,9 @@ impl Presenter {
                         self.file_actions.menu = Some(menu);
                         return None;
                     }
-                    Ok(ShellMenuOutcome::Managed(verb)) => self.run_captured_menu_action(
-                        &menu,
-                        match verb {
-                            ShellMenuVerb::Copy => 1,
-                            ShellMenuVerb::Cut => 6,
-                            ShellMenuVerb::Paste => 2,
-                            ShellMenuVerb::Rename => 3,
-                            ShellMenuVerb::Delete => 4,
-                        },
-                        send,
-                    ),
+                    Ok(ShellMenuOutcome::Managed(verb)) => {
+                        self.run_captured_menu_action(&menu, MenuAction::from_verb(verb), send);
+                    }
                     Ok(ShellMenuOutcome::Dismissed | ShellMenuOutcome::Invoked) => {}
                     Err(error) => self.desktop.report(
                         "Context menu unavailable",

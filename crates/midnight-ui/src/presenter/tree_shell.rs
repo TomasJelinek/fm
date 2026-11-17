@@ -110,17 +110,18 @@ impl Presenter {
         if token.is_empty() || self.tree_menu_token().as_deref() != Some(token) {
             return false;
         }
-        if !self.owned_command_scope_available() {
-            self.desktop
-                .report("File action busy", "Try the action again.".into());
+        let action = file_actions::MenuAction::from_code(action);
+        // The popup closed when the item was chosen. Release the captured menu
+        // on every matching token so it cannot block later context menus.
+        let Some(action) = action.filter(|_| self.owned_command_scope_available()) else {
+            self.cancel_tree_clipboard(None);
+            if action.is_some() {
+                self.desktop
+                    .report("File action busy", "Open the menu again and retry.".into());
+            }
             return true;
-        }
-        if (0..=5).contains(&action) {
-            let pending = self
-                .file_actions
-                .tree_clipboard
-                .take()
-                .expect("matched fallback tree menu");
+        };
+        if let Some(pending) = self.file_actions.tree_clipboard.take() {
             self.run_tree_menu_action(pending, action, send);
         }
         true
@@ -155,14 +156,7 @@ impl Presenter {
                 return;
             }
             Ok(ShellMenuOutcome::Managed(verb)) => {
-                let action = match verb {
-                    ShellMenuVerb::Copy => 1,
-                    ShellMenuVerb::Cut => 6,
-                    ShellMenuVerb::Paste => 2,
-                    ShellMenuVerb::Rename => 3,
-                    ShellMenuVerb::Delete => 4,
-                };
-                self.run_tree_menu_action(pending, action, send);
+                self.run_tree_menu_action(pending, file_actions::MenuAction::from_verb(verb), send);
                 return;
             }
             Err(error) => self.desktop.report(
@@ -178,9 +172,10 @@ impl Presenter {
     fn run_tree_menu_action(
         &mut self,
         mut pending: Pending,
-        action: i32,
+        action: file_actions::MenuAction,
         send: &dyn Fn(Command) -> bool,
     ) {
+        use file_actions::MenuAction;
         let Purpose::Menu(menu) = &pending.purpose else {
             self.retired.push(Box::new(pending));
             return;
@@ -202,8 +197,8 @@ impl Presenter {
             return;
         }
         match action {
-            0 | 5 => {
-                pending.purpose = if action == 0 {
+            MenuAction::Open | MenuAction::Properties => {
+                pending.purpose = if action == MenuAction::Open {
                     Purpose::Open(row)
                 } else {
                     Purpose::Properties
@@ -212,7 +207,7 @@ impl Presenter {
                 self.file_actions.tree_clipboard = Some(pending);
                 self.flush_tree_clipboard(send);
             }
-            1 | 6 | 4 => {
+            MenuAction::Copy | MenuAction::Cut | MenuAction::Delete => {
                 let Some(capture) = pending.capture.fork_if_current(p) else {
                     pending.capture.cancel.cancel();
                     self.retired.push(Box::new(pending));
@@ -221,12 +216,12 @@ impl Presenter {
                 let scope = pending.scope;
                 pending.capture.cancel.cancel();
                 self.retired.push(Box::new(pending));
-                if action == 4 {
+                if action == MenuAction::Delete {
                     self.start_tree_delete_capture(DeleteMode::Trash, capture, scope, send);
                 } else {
                     self.start_tree_action(
                         capture,
-                        if action == 6 {
+                        if action == MenuAction::Cut {
                             FileClipboardIntent::Move
                         } else {
                             FileClipboardIntent::Copy
@@ -237,27 +232,25 @@ impl Presenter {
                     );
                 }
             }
-            2 if single && matches!(kind, EntryKind::Directory | EntryKind::DirectoryLink) => {
+            MenuAction::Paste
+                if single && matches!(kind, EntryKind::Directory | EntryKind::DirectoryLink) =>
+            {
                 pending.purpose = Purpose::Paste;
                 pending.desktop_request = None;
                 self.file_actions.tree_clipboard = Some(pending);
                 self.flush_tree_clipboard(send);
             }
-            2 => {
+            MenuAction::Paste => {
                 let destination = p.display_path().to_owned();
                 pending.capture.cancel.cancel();
                 self.retired.push(Box::new(pending));
                 self.read_file_clipboard(destination, send);
             }
-            3 => {
+            MenuAction::Rename => {
                 let view = pending.capture.view.clone();
                 pending.capture.cancel.cancel();
                 self.retired.push(Box::new(pending));
                 self.request_tree_rename_target(pane, view, row, send);
-            }
-            _ => {
-                pending.capture.cancel.cancel();
-                self.retired.push(Box::new(pending));
             }
         }
     }

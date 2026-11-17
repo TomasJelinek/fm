@@ -270,6 +270,78 @@ fn unavailable_native_menu_exposes_application_actions_and_old_tokens_are_reject
     assert!(p.file_menu_token().is_empty());
 }
 
+/// `ui/file-menu.slint` is the authority for the codes the fallback menu reports.
+pub(super) fn advertised_menu_codes() -> Vec<i32> {
+    include_str!("../../../ui/file-menu.slint")
+        .split_once("action-codes: [")
+        .and_then(|(_, rest)| rest.split_once(']'))
+        .expect("file-menu.slint advertises its action codes")
+        .0
+        .split(',')
+        .map(|code| code.trim().parse().expect("integer action code"))
+        .collect()
+}
+
+#[test]
+fn every_advertised_fallback_code_runs_once_and_releases_the_menu() {
+    let codes = advertised_menu_codes();
+    assert_eq!(codes.len(), 7, "one code per fallback menu item");
+    for code in codes.into_iter().chain([-1, 99]) {
+        let (mut p, base) = loaded();
+        let commands = RefCell::new(Vec::new());
+        let send = |command| {
+            commands.borrow_mut().push(command);
+            true
+        };
+        p.request_entry_menu(PaneId::Left, 1, Default::default(), &send);
+        let request = menu_request(&commands);
+        p.apply_with_sender(
+            Event::ShellMenuFinished {
+                request,
+                result: Ok(ShellMenuOutcome::Unavailable),
+            },
+            &send,
+        );
+        let token = p.file_menu_token();
+        assert!(!token.is_empty());
+        commands.borrow_mut().clear();
+        p.file_menu_action(&token, code, &send);
+        let file = base.join("a.txt");
+        let dispatched = commands.take();
+        let ran = match (code, dispatched.as_slice()) {
+            (0, [Command::OpenEntry { path, .. }]) => path == &file,
+            (1, [Command::CopyFiles { files, .. }]) | (6, [Command::CutFiles { files, .. }]) => {
+                files.fallback.as_ref() == Some(&file)
+            }
+            (2, [Command::ReadFileClipboard { destination, .. }]) => destination == &base,
+            (3 | 4, [Command::PrepareOperation(operation)]) => {
+                operation.kind
+                    == if code == 3 {
+                        MutationKind::Rename
+                    } else {
+                        MutationKind::Delete(DeleteMode::Trash)
+                    }
+            }
+            (5, [Command::ShowSelectionProperties { fallback, .. }]) => {
+                fallback.as_ref() == Some(&file)
+            }
+            (-1 | 99, []) => true,
+            _ => false,
+        };
+        assert!(ran, "code {code} dispatched {}", dispatched.len());
+        assert!(p.file_menu_token().is_empty(), "code {code} keeps the menu");
+        assert!(!p.menu_pending(), "code {code} blocks later menus");
+        p.request_entry_menu(PaneId::Left, 3, Default::default(), &send);
+        assert!(
+            matches!(
+                commands.borrow().last(),
+                Some(Command::ShowShellMenu { .. })
+            ),
+            "a later right-click after code {code} must open a menu"
+        );
+    }
+}
+
 #[test]
 fn cut_publishes_the_captured_native_selection_without_mutation() {
     let (mut p, base) = loaded();
