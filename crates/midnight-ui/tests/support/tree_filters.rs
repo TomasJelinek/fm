@@ -321,6 +321,7 @@ pub struct Harness {
     pub sizes: Option<Arc<TreeSizeSnapshot>>,
     pub size_finished: usize,
     pub copy_progress: Vec<Arc<CopyProgress>>,
+    pub clipboard_publications: usize,
     pub watch_hints: [usize; 2],
     pub send: Rc<dyn Fn(Command) -> bool>,
     pub pane: PaneId,
@@ -615,6 +616,7 @@ impl Harness {
             sizes: None,
             size_finished: 0,
             copy_progress: Vec::new(),
+            clipboard_publications: 0,
             watch_hints: [0; 2],
             send,
             pane,
@@ -853,6 +855,15 @@ impl Harness {
         presenter: &mut Presenter,
         send: &dyn Fn(Command) -> bool,
     ) {
+        if matches!(
+            &event,
+            Event::DesktopActionFinished {
+                result: Ok(DesktopActionResult::ClipboardCopied),
+                ..
+            }
+        ) {
+            self.clipboard_publications += 1;
+        }
         if let Event::Copy(CopyEvent::Progress(progress)) = &event {
             self.copy_progress.push(progress.clone());
         }
@@ -961,8 +972,10 @@ impl Harness {
             }
         }
         panic!(
-            "condition did not settle within five seconds: copy={:?}, left_error={}, right_error={}, selected={:?}, loading={:?}, folder_disclosures={:?}",
+            "condition did not settle within five seconds: copy={:?}, clipboard_publications={}, desktop_status={}, left_error={}, right_error={}, selected={:?}, loading={:?}, folder_disclosures={:?}",
             self.copy_progress.last(),
+            self.clipboard_publications,
+            self.ui.window.get_desktop_status(),
             self.ui.window.get_left_error(),
             self.ui.window.get_right_error(),
             self.selection.as_ref().map(|s| s.len()),

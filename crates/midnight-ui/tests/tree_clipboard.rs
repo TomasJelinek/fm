@@ -16,7 +16,6 @@ use std::{
     fs,
     sync::{Arc, Mutex},
     thread::{self, ThreadId},
-    time::{Duration, Instant},
 };
 
 #[derive(Default)]
@@ -121,31 +120,8 @@ fn focus(h: &support::Harness, pane: PaneId, name: &str, select: bool) {
 }
 
 fn published(h: &mut support::Harness) {
-    let deadline = Instant::now() + Duration::from_secs(5);
-    loop {
-        assert!(
-            Instant::now() < deadline,
-            "native clipboard publication must finish"
-        );
-        let event = h.receive();
-        let done = matches!(
-            &event,
-            Event::DesktopActionFinished {
-                result: Ok(DesktopActionResult::ClipboardCopied),
-                ..
-            }
-        );
-        if let Event::DesktopActionFinished {
-            result: Err(error), ..
-        } = &event
-        {
-            panic!("clipboard action failed: {error:?}");
-        }
-        h.apply_event(event);
-        if done {
-            return;
-        }
-    }
+    let expected = h.clipboard_publications + 1;
+    h.until(|h| h.clipboard_publications == expected);
 }
 
 fn exercise(pane: PaneId, intent: FileClipboardIntent) {
