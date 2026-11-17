@@ -125,20 +125,22 @@ fn manual_choice_retries_invalid_paths_and_compares_real_unicode_files_without_m
         directory.path().join("missing"),
     ] {
         let requested = [paths[0].clone(), invalid];
-        assert!(session.send(Input::Compare(requested.clone())));
+        session.send(Input::Compare(requested.clone())).unwrap();
         let rejected = choice(&session);
         assert_eq!(rejected.paths, requested);
         assert!(rejected.message.contains("File B"), "{}", rejected.message);
     }
-    assert!(session.send(Input::Resize(
-        ViewerGeometry {
-            width: 360,
-            height: 160,
-            scale: 1.0
-        },
-        42
-    )));
-    assert!(session.send(Input::Compare(paths.clone())));
+    session
+        .send(Input::Resize(
+            ViewerGeometry {
+                width: 360,
+                height: 160,
+                scale: 1.0,
+            },
+            42,
+        ))
+        .unwrap();
+    session.send(Input::Compare(paths.clone())).unwrap();
     let (frame, names) = match next_result(&session) {
         Output::Frame { frame, names } => (frame, names),
         Output::ChooseFiles(choice) => panic!("Expected text comparison: {choice:?}"),
@@ -211,11 +213,13 @@ fn browse_is_off_thread_preserves_other_side_and_cancelled_browse_keeps_fields()
             let session = open(&service, launch(Vec::new()));
             choice(&session);
             let owner = PathPickerOwner::X11(123);
-            assert!(session.send(Input::Browse {
-                side,
-                paths: paths.clone(),
-                owner
-            }));
+            session
+                .send(Input::Browse {
+                    side,
+                    paths: paths.clone(),
+                    owner,
+                })
+                .unwrap();
             let chosen = choice(&session);
             let (request, thread) = called.recv_timeout(Duration::from_secs(2)).unwrap();
             assert_ne!(thread, std::thread::current().id());
@@ -247,11 +251,13 @@ fn closing_comparator_cancels_a_running_native_picker() {
     }));
     let session = open(&service, launch(Vec::new()));
     choice(&session);
-    assert!(session.send(Input::Browse {
-        side: 0,
-        paths: Default::default(),
-        owner: PathPickerOwner::None
-    }));
+    session
+        .send(Input::Browse {
+            side: 0,
+            paths: Default::default(),
+            owner: PathPickerOwner::None,
+        })
+        .unwrap();
     called.recv_timeout(Duration::from_secs(2)).unwrap();
     session.close();
     finished.recv_timeout(Duration::from_secs(2)).unwrap();

@@ -79,6 +79,15 @@ export component ComparatorWindow inherits Window {
     in-out property <float> amount: 0.5;
     out property <length> content-width: canvas.width;
     out property <length> content-height: canvas.height;
+    // Physical pixels per logical pixel: a DPI change re-renders even at the same logical size.
+    out property <float> window-scale: 1px / 1phx;
+    // Pushes geometry to Rust when it changes; nothing samples the window periodically.
+    callback geometry-changed();
+    changed content-width => { root.geometry-changed(); }
+    changed content-height => { root.geometry-changed(); }
+    changed window-scale => { root.geometry-changed(); }
+    // Invoked from the event loop when the comparison worker has published an output.
+    callback output-ready();
     out property <bool> content-focused: !root.choosing-files && content.has-focus;
     callback input-key(KeyEvent) -> bool;
     callback scroll(float, float);

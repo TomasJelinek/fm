@@ -320,7 +320,7 @@ fn unresolved_pair_keeps_session_available_for_manual_file_selection() {
         );
         std::thread::sleep(Duration::from_millis(5));
     }
-    assert!(
+    assert_eq!(
         session.send(Input::Resize(
             ViewerGeometry {
                 width: 640,
@@ -329,6 +329,7 @@ fn unresolved_pair_keeps_session_available_for_manual_file_selection() {
             },
             1,
         )),
+        Ok(()),
         "Missing files should open the file chooser, not terminate the session"
     );
     session.close();

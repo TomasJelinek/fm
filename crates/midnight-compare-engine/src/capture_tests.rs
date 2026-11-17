@@ -1,4 +1,4 @@
-use crate::{FileChoice, Frame, Input, NativeCapture, Output, Service, Session};
+use crate::{FileChoice, Frame, Input, NativeCapture, Output, Refused, Service, Session};
 use midnight_core::{
     DirectoryIndex, Entry, EntryId, EntryKind, FileCompareLaunch, FileCompareSource,
     ViewerAppearance, ViewerGeometry,
@@ -286,11 +286,47 @@ fn explicit_compare_submission_uses_the_injected_capture_for_both_choices() {
     let service = Service::with_native_capture(runtime.handle().clone(), capture);
     let session = open(&service, unresolved()).unwrap();
     assert!(!choice(&session).is_error);
-    assert!(session.send(Input::Compare(paths)));
+    session.send(Input::Compare(paths)).unwrap();
     let frame = frame(&session);
     assert!(frame.accessible_text.contains("explicit first"));
     assert!(frame.accessible_text.contains("explicit second"));
     session.close();
+}
+
+/// A consumer retries inputs a full queue refused, but not inputs for a stopped worker.
+#[test]
+fn send_tells_a_full_queue_from_a_worker_that_stopped_after_an_internal_error() {
+    let root = fixture();
+    let paths = paths(root.path());
+    let (entered, entry) = mpsc::sync_channel(1);
+    let (release, held) = mpsc::sync_channel::<()>(1);
+    let held = Mutex::new(held);
+    let capture: NativeCapture = Arc::new(move |_, _| {
+        entered.send(()).unwrap();
+        // The worker takes no input while it is held here.
+        let _ = held.lock().unwrap().recv_timeout(Duration::from_secs(15));
+        panic!("deliberate capture fault: the comparison worker stops");
+    });
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let service = Service::with_native_capture(runtime.handle().clone(), capture);
+    let session = open(&service, launch(&paths)).unwrap();
+    entry.recv_timeout(Duration::from_secs(15)).unwrap();
+    for _ in 0..crate::INPUT_QUEUE {
+        session.send(Input::Fit).unwrap();
+    }
+    assert_eq!(session.send(Input::Fit), Err(Refused::Full));
+    release.send(()).unwrap();
+    // The worker has dropped its queue by the time it reports the stop.
+    wait_for(|last_status| {
+        let status = match session.mailbox.take() {
+            Some(Output::Status(status)) => status,
+            _ => return None,
+        };
+        let stopped = status.contains("internal error");
+        *last_status = Some(status);
+        stopped.then_some(())
+    });
+    assert_eq!(session.send(Input::Fit), Err(Refused::Stopped));
 }
 
 #[test]
