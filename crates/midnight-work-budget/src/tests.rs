@@ -10,6 +10,7 @@ use std::{
 };
 
 struct Waiting {
+    gate: Arc<Gate>,
     cancel: Arc<AtomicBool>,
     release: Option<mpsc::Sender<()>>,
     entered: mpsc::Receiver<()>,
@@ -21,8 +22,10 @@ impl Waiting {
         let worker_cancel = cancel.clone();
         let (release, released) = mpsc::channel();
         let (send, entered) = mpsc::channel();
+        let worker_gate = gate.clone();
         let worker = thread::spawn(move || {
-            if let Some(_permit) = gate.acquire(admission, || worker_cancel.load(Ordering::Acquire))
+            if let Some(_permit) =
+                worker_gate.acquire(admission, || worker_cancel.load(Ordering::Acquire))
             {
                 send.send(()).unwrap();
                 // Test cleanup closes this channel even when an assertion unwinds.
@@ -30,6 +33,7 @@ impl Waiting {
             }
         });
         Self {
+            gate,
             cancel,
             release: Some(release),
             entered,
@@ -39,11 +43,20 @@ impl Waiting {
     fn assert_entered(&self) {
         self.entered.recv_timeout(Duration::from_secs(3)).unwrap();
     }
+    /// Gate state, not timing: the queue head cannot be admitted in the current state, so
+    /// no queued request can enter until the test changes the gate. Call it after
+    /// `assert_counters`, whose queued count proves that this request is still queued.
     fn assert_waiting(&self) {
         assert!(matches!(
             self.entered.try_recv(),
             Err(mpsc::TryRecvError::Empty)
         ));
+        let state = self.gate.lock();
+        let head = state.queue.front().expect("the request is still queued");
+        assert!(
+            !state.eligible(head.admission),
+            "the queue head is admissible"
+        );
     }
 }
 impl Drop for Waiting {
@@ -65,8 +78,8 @@ fn queued(gate: &Gate, count: usize) {
         thread::yield_now();
     }
 }
-/// The gate lock makes this synchronous: a wrongly admitted waiter is visible at once,
-/// even before its thread is scheduled to report entry.
+/// Read under the gate lock: an admission that already happened is visible even before
+/// the admitted thread reports entry.
 fn assert_counters(gate: &Gate, queued: usize, active_shared: u8, exclusive: bool) {
     let snapshot = gate.snapshot();
     assert_eq!(
@@ -391,6 +404,7 @@ fn retained_owner_yields_only_to_queued_call_scoped_requests() {
     let Poll::Ready(next) = poll(&mut next_transfer, &wakes) else {
         panic!("the earlier queued transfer is admitted first");
     };
+    assert_counters(&gate, 2, 1, false);
     checksum.assert_waiting();
     assert!(next.is_contended(), "the checksum is still queued");
     assert!(next.release());
