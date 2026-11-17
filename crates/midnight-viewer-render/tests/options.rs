@@ -1,4 +1,4 @@
-use midnight_viewer_render::{TextOptions, TextRenderer, Viewport};
+use midnight_viewer_render::{LayoutError, TextOptions, TextRenderer, Viewport};
 
 #[test]
 fn tabs_align_unicode_columns_without_changing_copied_text_or_hit_offsets() {
@@ -83,11 +83,24 @@ fn font_family_color_and_dpi_are_host_configuration() {
 #[test]
 fn expansion_and_physical_font_size_are_bounded_before_layout() {
     let mut renderer = TextRenderer::default();
-    assert!(
+    let mut tabs = |count: usize, tab_width: u8| {
         renderer
-            .layout_with_options(&"\t".repeat(256 * 1024), &TextOptions::default(), &[])
-            .is_err()
-    );
+            .layout_with_options(
+                &"\t".repeat(count),
+                &TextOptions {
+                    tab_width,
+                    ..TextOptions::default()
+                },
+                &[],
+            )
+            .err()
+    };
+    // Expansion budget alone: 4,097 tabs of 64 columns exceed 256 KiB of shaped
+    // text, far below the 16,384-replacement cap.
+    assert_eq!(tabs(4097, 64), Some(LayoutError::LimitExceeded));
+    // Replacement cap alone: one-column tabs expand to only 16 KiB.
+    assert_eq!(tabs(16_384, 1), None);
+    assert_eq!(tabs(16_385, 1), Some(LayoutError::LimitExceeded));
     for options in [
         TextOptions {
             size: 512.0,

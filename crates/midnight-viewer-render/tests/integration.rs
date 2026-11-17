@@ -18,6 +18,7 @@ mod layout;
 mod monospace;
 mod options;
 mod raster;
+mod raster_timing;
 mod scroll_anchors;
 mod selection;
 mod source_continuity;

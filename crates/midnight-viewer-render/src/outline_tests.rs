@@ -1,4 +1,102 @@
-use crate::{TextOptions, TextRenderer, Viewport};
+use crate::{ColorSpan, TextOptions, TextRenderer, Viewport};
+
+#[test]
+fn culling_far_lines_and_glyphs_never_changes_raster_pixels() {
+    // Stacked marks reach far above their line box, the long line and wide
+    // ligature far beside their origins. Culling must still keep all their ink.
+    let text = format!(
+        "top line\n{}\nfiller\na{} base\nfiller\n{} \u{fdfd} wide 👩\u{200d}💻\n{}",
+        "abcdefgh ".repeat(300),
+        "\u{301}".repeat(24),
+        "e\u{302}\u{303}".repeat(8),
+        "tail line\n".repeat(8)
+    );
+    let mut culled = TextRenderer::default();
+    let mut reference = TextRenderer::default();
+    reference.glyphs.unculled = true;
+    for size in [12.0, 31.5] {
+        let options = TextOptions {
+            family: "sans-serif",
+            size,
+            ..TextOptions::default()
+        };
+        let a = culled.layout_with_options(&text, &options, &[]).unwrap();
+        let b = reference.layout_with_options(&text, &options, &[]).unwrap();
+        let mut origins = vec![(-200.0, 20.0), (1500.25, 10.75), (4000.5, size * 1.3)];
+        let mut y = -160.0;
+        while y < a.height() + 40.0 {
+            origins.push((0.0, y));
+            y += 19.25;
+        }
+        for (x, y) in origins {
+            assert_eq!(
+                culled.rasterize(&a, view(x, y), None).unwrap().rgba,
+                reference.rasterize(&b, view(x, y), None).unwrap().rgba,
+                "size={size} origin={x},{y}"
+            );
+        }
+    }
+}
+
+#[test]
+fn repainting_a_large_proportional_raster_reuses_every_cached_glyph_image() {
+    // Fractional advances give every glyph instance its own phase. Syntax colors
+    // must not multiply coverage masks, and the working set must fit the cache.
+    // Indent each line differently so that lines do not repeat glyph phases.
+    let text: String = (0..100)
+        .map(|line| {
+            format!(
+                "{}Proportional prose keeps fractional advances, so each glyph has its phase.\n",
+                "i".repeat(line % 17)
+            )
+        })
+        .collect();
+    let palette = [
+        [86, 156, 214, 255],
+        [206, 145, 120, 255],
+        [181, 206, 168, 255],
+    ];
+    let mut spans = Vec::new();
+    let mut start = 0;
+    for (index, word) in text.split_inclusive(' ').enumerate() {
+        spans.push(ColorSpan {
+            range: start..start + word.len(),
+            color: palette[index % palette.len()],
+        });
+        start += word.len();
+    }
+    let mut renderer = TextRenderer::default();
+    let page = renderer
+        .layout_with_options(
+            &text,
+            &TextOptions {
+                family: "sans-serif",
+                size: 15.0,
+                ..TextOptions::default()
+            },
+            &spans,
+        )
+        .unwrap();
+    let view = Viewport {
+        width: 1000,
+        height: 2400,
+        origin: [0.0, 0.25],
+        background: [23, 27, 31, 255],
+        selection_color: [41, 72, 98, 255],
+    };
+    let first = renderer.rasterize(&page, view, None).unwrap();
+    let misses = renderer.glyphs.misses;
+    assert!(
+        misses > 4096,
+        "the fixture exceeds the former 4096-entry bound"
+    );
+    let repaint = renderer.rasterize(&page, view, None).unwrap();
+    assert_eq!(first.rgba, repaint.rgba);
+    assert_eq!(
+        renderer.glyphs.misses, misses,
+        "an unchanged repaint must reuse every cached glyph image"
+    );
+}
 
 fn view(x: f32, y: f32) -> Viewport {
     Viewport {
@@ -99,7 +197,9 @@ fn synthesized_bold_and_skew_match_swash_mask_data_and_placement() {
                 let key = GlyphKey {
                     font: (data.data.id(), data.index),
                     size: size.to_bits(),
-                    coordinates: run.normalized_coords().to_vec(),
+                    // Variation coordinates reach the scaler directly; the key
+                    // only needs a stable interned id for them.
+                    coordinates: 1,
                     glyph: glyph.id as u16,
                     fraction: fraction.map(f32::to_bits),
                     color: [133, 177, 209, 255],
@@ -136,14 +236,16 @@ fn synthesized_bold_and_skew_match_swash_mask_data_and_placement() {
                     .hint(true)
                     .normalized_coords(run.normalized_coords())
                     .build();
-                let actual = outlines
+                let rendered = outlines
                     .get(&key, [50.0, 80.0], [200, 200])
                     .unwrap_or_else(|| {
                         outlines
                             .build(&key, &mut cached_scaler, [50.0, 80.0], [200, 200])
                             .unwrap()
-                    })
-                    .unwrap();
+                    });
+                let super::outlines::Outline::Ink(actual) = rendered else {
+                    panic!("visible glyph without ink");
+                };
                 assert_eq!(
                     (
                         actual.placement.left,

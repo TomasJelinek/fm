@@ -77,6 +77,9 @@ pub struct TextRenderer {
 pub struct TextPage {
     text: String,
     layout: Layout<[u8; 4]>,
+    /// Per-line vertical paint reach (see `glyphs::line_bounds`). Alignment may
+    /// move lines horizontally afterwards; line breaking must not run again.
+    line_bounds: Vec<[f32; 2]>,
     source_map: SourceMap,
     composite: Option<tables::Composite>,
 }
@@ -191,6 +194,7 @@ impl TextRenderer {
         layout.break_all_lines(options.wrap_width);
         Ok(TextPage {
             text: text.into(),
+            line_bounds: glyphs::line_bounds(&layout),
             layout,
             source_map,
             composite: None,

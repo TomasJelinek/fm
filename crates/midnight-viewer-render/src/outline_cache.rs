@@ -19,6 +19,17 @@ struct Path {
     bounds: Bounds,
 }
 
+/// A cached outline rendered at one raster phase.
+pub(super) enum Outline {
+    /// Coverage that intersects the raster.
+    Ink(Image),
+    /// No ink at any phase (for example a space). Cacheable like an empty image.
+    Empty,
+    /// Ink outside this raster. The same phase can become visible after
+    /// scrolling, so this result must not be cached as a phase image.
+    Offscreen,
+}
+
 impl Path {
     fn render(
         &self,
@@ -26,7 +37,10 @@ impl Path {
         origin: [f64; 2],
         size: [u32; 2],
         scratch: &mut Scratch,
-    ) -> Option<Image> {
+    ) -> Outline {
+        if self.points.is_empty() {
+            return Outline::Empty;
+        }
         let fraction = key.fraction.map(f32::from_bits);
         // These are the actual hinted/synthesized control-point bounds, including
         // accents and negative bearings. Two pixels cover phase and mask edges.
@@ -34,13 +48,12 @@ impl Path {
         let top = origin[1] - f64::from(self.bounds.max.y - fraction[1]);
         let right = origin[0] + f64::from(self.bounds.max.x + fraction[0]);
         let bottom = origin[1] - f64::from(self.bounds.min.y - fraction[1]);
-        if self.points.is_empty()
-            || left >= f64::from(size[0]) + 2.0
+        if left >= f64::from(size[0]) + 2.0
             || top >= f64::from(size[1]) + 2.0
             || right <= -2.0
             || bottom <= -2.0
         {
-            return None;
+            return Outline::Offscreen;
         }
         let offset = Vector::new(fraction[0], -fraction[1]);
         let mut image = Image::new();
@@ -54,7 +67,7 @@ impl Path {
             .render_into(&mut image.data, None);
         image.content = Content::Mask;
         image.source = Source::Outline;
-        Some(image)
+        Outline::Ink(image)
     }
 }
 
@@ -67,29 +80,29 @@ pub(super) struct OutlineCache {
 }
 
 fn path_key(key: &GlyphKey) -> GlyphKey {
-    let mut key = key.clone();
-    key.fraction = [0; 2];
-    key.color = [0; 4];
-    key
+    GlyphKey {
+        fraction: [0; 2],
+        color: [0; 4],
+        ..*key
+    }
 }
 
-fn entry_bytes(key: &GlyphKey, path: &Path) -> usize {
-    // Boxed paths have no unused vector capacity. Both stored keys own coords.
+fn entry_bytes(path: &Path) -> usize {
+    // Boxed paths have no unused vector capacity. Keys are fixed-size copies.
     std::mem::size_of::<Path>()
         + 2 * std::mem::size_of::<GlyphKey>()
         + std::mem::size_of_val(path.points.as_ref())
         + std::mem::size_of_val(path.verbs.as_ref())
-        + 2 * key.coordinates.capacity() * std::mem::size_of::<i16>()
 }
 
 impl OutlineCache {
-    /// Some(None) is a cached path with no visible ink, never a missing glyph.
+    /// None is a path that is not cached, never a glyph without ink.
     pub(super) fn get(
         &mut self,
         key: &GlyphKey,
         origin: [f64; 2],
         size: [u32; 2],
-    ) -> Option<Option<Image>> {
+    ) -> Option<Outline> {
         let path = self.paths.get(&path_key(key))?;
         Some(path.render(key, origin, size, &mut self.scratch))
     }
@@ -100,7 +113,7 @@ impl OutlineCache {
         scaler: &mut Scaler<'_>,
         origin: [f64; 2],
         size: [u32; 2],
-    ) -> Option<Option<Image>> {
+    ) -> Option<Outline> {
         // Keep the established source preference/fallback for mixed and bitmap
         // fonts completely unchanged. Do not cache unsupported/negative entries.
         if scaler.has_color_outlines() || scaler.has_color_bitmaps() || scaler.has_bitmaps() {
@@ -140,7 +153,7 @@ impl OutlineCache {
     }
 
     fn insert(&mut self, key: GlyphKey, path: Path) {
-        let bytes = entry_bytes(&key, &path);
+        let bytes = entry_bytes(&path);
         if bytes > MAX_BYTES || self.paths.contains_key(&key) {
             return;
         }
@@ -149,12 +162,18 @@ impl OutlineCache {
                 break;
             };
             if let Some(path) = self.paths.remove(&old) {
-                self.bytes -= entry_bytes(&old, &path);
+                self.bytes -= entry_bytes(&path);
             }
         }
         self.bytes += bytes;
-        self.order.push_back(key.clone());
+        self.order.push_back(key);
         self.paths.insert(key, path);
+    }
+
+    pub(super) fn clear(&mut self) {
+        self.paths.clear();
+        self.order.clear();
+        self.bytes = 0;
     }
 }
 
@@ -165,7 +184,7 @@ mod tests {
         GlyphKey {
             font: (1, 0),
             size: 19.0f32.to_bits(),
-            coordinates: vec![1, 2],
+            coordinates: 3,
             glyph,
             fraction: [0; 2],
             color: [255; 4],
@@ -202,15 +221,15 @@ mod tests {
         let mut cache = OutlineCache::default();
         let original = key(1);
         cache.insert(path_key(&original), path(1));
-        let mut phase = original.clone();
+        let mut phase = original;
         phase.fraction = [0.25f32.to_bits(), 0.75f32.to_bits()];
         phase.color = [13; 4];
         assert!(cache.paths.contains_key(&path_key(&phase)));
         for variant in 0..5 {
-            let mut key = original.clone();
+            let mut key = original;
             match variant {
                 0 => key.font.1 += 1,
-                1 => key.coordinates[0] += 1,
+                1 => key.coordinates += 1,
                 2 => key.size = 21.0f32.to_bits(),
                 3 => key.embolden = true,
                 _ => key.skew = 12.0f32.to_bits(),

@@ -21,7 +21,6 @@ fn source_glyph_pixels_survive_rebasing_through_a_fractional_line_prefix() {
         let suffix = renderer.layout_with_options(&body, &options, &[]).unwrap();
         let prefix_top = complete.caret_geometry(prefix.len()).unwrap().y0 as f32;
         let suffix_top = suffix.caret_geometry(0).unwrap().y0 as f32;
-        eprintln!("scale {scale}, prefix caret {prefix_top}, suffix caret {suffix_top}");
         for offset in [7.0, 32.25] {
             let origin = prefix_top.ceil() + offset;
             let paint = |renderer: &mut TextRenderer, page, y| {
