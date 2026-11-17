@@ -78,22 +78,26 @@ fn preferred_drop_effect_distinguishes_move_and_rejects_unknown_or_ambiguous_eff
             "{bytes:?}"
         );
     }
-    // Any set MOVE bit selects Move, as in the Shell's paste target: 2 = Cut,
-    // 3 = COPY | MOVE, 6 = MOVE | LINK and 7 = all three.
-    for value in [2u8, 3, 6, 7] {
+    // 2 = MOVE (Cut) and 6 = MOVE | LINK select Move.
+    for value in [2u8, 6] {
         assert_eq!(
             decode_drop_effect(Some(&[value, 0, 0, 0])).unwrap(),
             FileClipboardIntent::Move,
             "{value}"
         );
     }
-    // Truncated, empty and link-only effects are rejected; links are never created.
+    // Truncated, empty and link-only effects are rejected (links are never created),
+    // and so are the ambiguous COPY | MOVE (3) and COPY | MOVE | LINK (7): a destructive
+    // Move is never guessed. Unknown high bits are rejected too.
     for bytes in [
         &[][..],
         &[1, 0, 0],
         &[0, 0, 0, 0],
+        &[3, 0, 0, 0],
         &[4, 0, 0, 0],
+        &[7, 0, 0, 0],
         &[0, 0, 0, 0x80],
+        &[1, 0, 0, 0x80],
     ] {
         assert!(decode_drop_effect(Some(bytes)).is_err(), "{bytes:?}");
     }

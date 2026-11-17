@@ -20,7 +20,7 @@ use windows_sys::Win32::{
         },
         LibraryLoader::GetModuleHandleW,
         Memory::{GMEM_MOVEABLE, GMEM_ZEROINIT, GlobalAlloc, GlobalLock, GlobalSize, GlobalUnlock},
-        Ole::{CF_HDROP, DROPEFFECT_COPY, DROPEFFECT_MOVE},
+        Ole::{CF_HDROP, DROPEFFECT_COPY, DROPEFFECT_LINK, DROPEFFECT_MOVE},
     },
     UI::WindowsAndMessaging::{
         CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, HWND_MESSAGE, MSG,
@@ -119,18 +119,15 @@ fn decode_drop_effect(bytes: Option<&[u8]>) -> Result<FileClipboardIntent, FsErr
         return Err(error("The preferred drop effect is truncated."));
     };
     // Explorer's Copy publishes DROPEFFECT_COPY | DROPEFFECT_LINK (5) and Cut publishes
-    // DROPEFFECT_MOVE (2). As in the Shell's own paste target, a set MOVE bit selects
-    // Move, otherwise a set COPY bit selects Copy. Link-only or empty effects are
-    // rejected because the file manager never creates links from the clipboard.
-    let effect = u32::from_le_bytes([a, b, c, d]);
-    if effect & DROPEFFECT_MOVE != 0 {
-        Ok(FileClipboardIntent::Move)
-    } else if effect & DROPEFFECT_COPY != 0 {
-        Ok(FileClipboardIntent::Copy)
-    } else {
-        Err(error(
-            "The clipboard has an unsupported preferred drop effect.",
-        ))
+    // DROPEFFECT_MOVE (2). The file manager never creates links from the clipboard, so
+    // the LINK bit is ignored. COPY | MOVE (3, 7) leaves the operation ambiguous and a
+    // destructive Move is never guessed; link-only and empty effects name no operation.
+    match u32::from_le_bytes([a, b, c, d]) & !DROPEFFECT_LINK {
+        DROPEFFECT_COPY => Ok(FileClipboardIntent::Copy),
+        DROPEFFECT_MOVE => Ok(FileClipboardIntent::Move),
+        _ => Err(error(
+            "The clipboard has an unsupported or ambiguous preferred drop effect.",
+        )),
     }
 }
 
