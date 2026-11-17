@@ -28,7 +28,10 @@ are excluded. Contiguous large rectangles compact; too many separated spans repo
 the explicit range budget without partially committing a rectangle.
 
 Native requests share the exact immutable `DirectoryIndex` and carry navigation,
-selection context and monotonic selection revision. Workers resolve bits and totals;
+selection context and monotonic selection revision. `SelectionSnapshot::from_bits`
+accepts only indexes whose every row has a unique native path, so native
+selections never cover archive or Network Neighborhood rows; archives use the
+ID-based path below. Workers resolve bits and totals;
 the UI neither walks the complete listing nor builds selected native paths.
 Archives preserve opaque provider entry IDs even when display names collide or raw
 member names are not UTF-8. Their selection responses return the captured immutable
