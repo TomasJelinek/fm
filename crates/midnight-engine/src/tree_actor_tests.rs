@@ -697,7 +697,9 @@ async fn cancelled_waiter_and_session_keep_worker_slots_until_the_blocked_call_f
         "cancelled call must retain the branch slot"
     );
     release.send(()).unwrap();
-    // Both listing slots return once the blocked call has really finished.
+    // Both listing slots and the branch slot return once the blocked call has really
+    // finished. The worker's permit releases its listing grant before its branch grant,
+    // so wait for both instead of racing the branch release on the blocking thread.
     let both = tokio::time::timeout(
         std::time::Duration::from_secs(5),
         budget.listing.clone().acquire_many_owned(2),
@@ -705,7 +707,14 @@ async fn cancelled_waiter_and_session_keep_worker_slots_until_the_blocked_call_f
     .await
     .unwrap()
     .unwrap();
-    drop(both);
+    let branch = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        budget.branch.clone().acquire_owned(),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    drop((both, branch));
     assert!(budget.acquire(false).unwrap().is_some());
 }
 
