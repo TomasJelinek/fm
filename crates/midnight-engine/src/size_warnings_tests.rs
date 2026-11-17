@@ -354,3 +354,53 @@ fn a_failed_report_does_not_poison_another_file_in_the_same_arena() {
     assert!(good_text.contains("Stored details: 2"));
     assert!(!good_text.contains("Report storage failed"));
 }
+
+#[test]
+fn spool_roots_prefer_the_runtime_directory_then_per_user_then_per_process_names() {
+    let temporary = std::env::temp_dir();
+    let runtime = temporary.join("runtime");
+    let roots = spool_roots(
+        Some(runtime.clone().into()),
+        Some("alice/../x".into()),
+        temporary.clone(),
+        42,
+        "size-warnings",
+    );
+    assert_eq!(
+        roots,
+        [
+            runtime.join("MidnightExplorer").join("size-warnings"),
+            temporary.join("MidnightExplorer-alice..x-size-warnings"),
+            temporary.join("MidnightExplorer-size-warnings-42"),
+        ]
+    );
+    // A relative runtime directory and an unusable account label are ignored.
+    let roots = spool_roots(
+        Some("relative".into()),
+        Some("..".into()),
+        temporary.clone(),
+        7,
+        "size-warnings",
+    );
+    assert_eq!(roots, [temporary.join("MidnightExplorer-size-warnings-7")]);
+}
+
+#[test]
+fn an_unusable_shared_root_falls_back_to_the_next_private_candidate() {
+    let temporary = tempfile::tempdir().unwrap();
+    // Stands in for a shared root that another account created first.
+    let occupied = temporary.path().join("occupied");
+    std::fs::write(&occupied, b"not a private directory").unwrap();
+    let log = ReportLog::with_candidates(
+        &ReportArena::testing(),
+        vec![occupied, temporary.path().join("private")],
+        DEFAULT_TITLE,
+    );
+    let range = log.mark().report();
+    record(&log, "kept 資料 record");
+    range.finish(false);
+    let report = text(range.snapshot(&Cancellation::default()).unwrap().as_ref());
+    assert!(report.contains("kept 資料 record"));
+    assert!(report.contains("Stored details: 1"));
+    assert!(!report.contains("Report storage failed"));
+}

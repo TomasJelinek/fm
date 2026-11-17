@@ -308,6 +308,40 @@ async fn a_failed_save_is_reported_and_a_newer_revision_can_still_persist() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_identical_retry_of_a_failed_revision_is_written_again() {
+    let service = Arc::new(Settings {
+        fail_save: AtomicBool::new(true),
+        ..Settings::default()
+    });
+    let (controller, mut tasks, mut events) = controller(service.clone());
+    let values = preferences(PreferenceTheme::Light);
+    assert!(controller.save(PreferencesRevision(1), values.clone()));
+    assert!(matches!(
+        next(&mut events).await,
+        Event::PreferencesSaved {
+            revision: PreferencesRevision(1),
+            result: Err(_)
+        }
+    ));
+    // The UI keeps the same unsaved revision; its retry or shutdown flush
+    // resends it unchanged and must reach the native settings service.
+    assert!(controller.save(PreferencesRevision(1), values.clone()));
+    assert!(matches!(
+        next(&mut events).await,
+        Event::PreferencesSaved {
+            revision: PreferencesRevision(1),
+            result: Ok(())
+        }
+    ));
+    assert_eq!(*service.persisted.lock().unwrap(), values);
+    assert_eq!(service.writes.lock().unwrap().len(), 2);
+    // After success the same revision is again an idempotent duplicate.
+    assert!(controller.save(PreferencesRevision(1), values));
+    stop(&controller, &mut tasks).await;
+    assert_eq!(service.writes.lock().unwrap().len(), 2);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn native_panics_become_error_events_and_do_not_kill_the_settings_worker() {
     let service = Arc::new(Settings {
         panic_load: AtomicBool::new(true),

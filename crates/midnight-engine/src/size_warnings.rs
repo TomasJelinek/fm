@@ -8,6 +8,7 @@ use midnight_core::{
 };
 use midnight_worker_platform::spool::{AppendSpool, MAX_IO, PrivateSpoolDirectory, SpoolPrefix};
 use std::{
+    ffi::OsString,
     fmt,
     io::{self, Write},
     path::{Path, PathBuf},
@@ -43,7 +44,8 @@ struct Boundary {
 }
 
 struct State {
-    directory: PathBuf,
+    /// Candidate private roots, tried in order until one opens and stores.
+    directories: Vec<PathBuf>,
     title: &'static str,
     storage: Option<Retained<Mutex<Box<dyn Storage>>>>,
     arena: ReportArena,
@@ -80,19 +82,76 @@ impl fmt::Debug for ReportRange {
     }
 }
 
+/// Per-user private spool roots for `name`, in preference order. Linux desktops
+/// provide `$XDG_RUNTIME_DIR`, the user's own 0700 runtime directory. Otherwise
+/// the temporary directory (per user on Windows, usually the shared `/tmp` on
+/// Linux) gets a per-user name, then a per-process one. The spool accepts only
+/// an owner-only directory of the current user, so a root that another account
+/// created (by accident or to deny storage) is skipped rather than used.
+pub(crate) fn private_spool_roots(name: &str) -> Vec<PathBuf> {
+    let user = ["USER", "USERNAME", "LOGNAME"]
+        .into_iter()
+        .find_map(std::env::var_os);
+    spool_roots(
+        std::env::var_os("XDG_RUNTIME_DIR"),
+        user,
+        std::env::temp_dir(),
+        std::process::id(),
+        name,
+    )
+}
+
+fn spool_roots(
+    runtime: Option<OsString>,
+    user: Option<OsString>,
+    temporary: PathBuf,
+    process: u32,
+    name: &str,
+) -> Vec<PathBuf> {
+    let mut roots = Vec::with_capacity(3);
+    if let Some(runtime) = runtime.map(PathBuf::from).filter(|path| path.is_absolute()) {
+        roots.push(runtime.join("MidnightExplorer").join(name));
+    }
+    // A file-name-safe account label only spreads accounts apart; ownership is
+    // still verified when the root is opened.
+    let user = user
+        .map(|user| {
+            user.to_string_lossy()
+                .chars()
+                .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+                .take(64)
+                .collect::<String>()
+        })
+        .filter(|user| user.chars().any(|c| c != '.'));
+    if let Some(user) = user {
+        roots.push(temporary.join(format!("MidnightExplorer-{user}-{name}")));
+    }
+    roots.push(temporary.join(format!("MidnightExplorer-{name}-{process}")));
+    roots
+}
+
 impl ReportLog {
     pub(crate) fn for_scan(arena: &ReportArena) -> Self {
-        Self::new(
-            arena,
-            std::env::temp_dir().join("MidnightExplorer-size-warnings"),
-        )
+        Self::private(arena, DEFAULT_TITLE)
     }
+    /// A log in this user's private spool root (see `private_spool_roots`).
+    pub(crate) fn private(arena: &ReportArena, title: &'static str) -> Self {
+        Self::with_candidates(arena, private_spool_roots("size-warnings"), title)
+    }
+    #[cfg(test)]
     pub(crate) fn new(arena: &ReportArena, directory: PathBuf) -> Self {
         Self::with_title(arena, directory, DEFAULT_TITLE)
     }
     pub(crate) fn with_title(arena: &ReportArena, directory: PathBuf, title: &'static str) -> Self {
+        Self::with_candidates(arena, vec![directory], title)
+    }
+    fn with_candidates(
+        arena: &ReportArena,
+        directories: Vec<PathBuf>,
+        title: &'static str,
+    ) -> Self {
         Self(Arc::new(Mutex::new(State {
-            directory,
+            directories,
             title,
             storage: None,
             arena: arena.clone(),
@@ -147,8 +206,15 @@ impl ReportLog {
         let result = (|| {
             if state.storage.is_none() {
                 let reservation = state.arena.reserve()?;
-                let directory = PrivateSpoolDirectory::open(&state.directory)?;
-                let storage: Box<dyn Storage> = Box::new(directory.create_append_only()?);
+                let mut opened = Err(io::Error::from(io::ErrorKind::NotFound));
+                for directory in &state.directories {
+                    opened = PrivateSpoolDirectory::open(directory)
+                        .and_then(|directory| directory.create_append_only());
+                    if opened.is_ok() {
+                        break;
+                    }
+                }
+                let storage: Box<dyn Storage> = Box::new(opened?);
                 state.storage = Some(reservation.retain(Mutex::new(storage)));
             }
             let storage = state.storage.as_ref().expect("created private report");
