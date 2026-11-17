@@ -1566,7 +1566,7 @@ fn refused_incomplete_announcement_is_a_retryable_would_block_like_a_refused_pin
         };
         let result = change.incomplete(path, &cancel);
         assert!(!change.complete);
-        drop(change);
+        // `change` is no longer used, so its borrow of `turn` has ended.
         assert_eq!(
             turn.opaque, 1,
             "an opted-in turn reserves the unknown scope"
@@ -1594,6 +1594,5 @@ fn refused_incomplete_announcement_is_a_retryable_would_block_like_a_refused_pin
     };
     assert!(change.incomplete(path, &cancel).is_ok());
     assert!(!change.complete);
-    drop(change);
     assert_eq!(turn.opaque, 0);
 }
