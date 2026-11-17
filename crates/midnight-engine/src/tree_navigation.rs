@@ -134,7 +134,8 @@ impl ArchiveMount for NavigationArchive {
         self.source().read(entry, offset, length, cancel)
     }
     // A transparent wrapper: the trait defaults would drain a read the source can
-    // cancel cooperatively, and would hide its storage and cache identities.
+    // cancel cooperatively, and would hide its storage and cache identities. The
+    // source is the provider's leased target, which must forward them as well.
     fn read_cooperative(
         &self,
         entry: u64,

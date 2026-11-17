@@ -532,6 +532,165 @@ async fn actual_archive_completion_seeds_tree_and_navigation_retains_registratio
     assert!(target.mount.as_ref().unwrap().validate().is_ok());
 }
 
+/// An archive source with storage and cache identities that records how its
+/// members are read.
+#[derive(Debug)]
+struct IdentifiedArchive {
+    container: std::path::PathBuf,
+    reads: std::sync::Mutex<Vec<&'static str>>,
+}
+impl IdentifiedArchive {
+    fn new() -> Self {
+        Self {
+            container: Path::new(env!("CARGO_MANIFEST_DIR")).join("../../_build/identified.zip"),
+            reads: std::sync::Mutex::default(),
+        }
+    }
+}
+impl ArchiveMount for IdentifiedArchive {
+    fn id(&self) -> u64 {
+        Archive.id()
+    }
+    fn list(&self, directory: u64, cancel: &Cancellation) -> Result<Vec<ArchiveNode>, FsError> {
+        Archive.list(directory, cancel)
+    }
+    fn read(&self, _: u64, _: u64, _: u32, _: &Cancellation) -> Result<Vec<u8>, FsError> {
+        self.reads.lock().unwrap().push("read");
+        Ok(vec![1])
+    }
+    fn read_cooperative(
+        &self,
+        _: u64,
+        _: u64,
+        _: u32,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<Vec<u8>, FsError> {
+        self.reads.lock().unwrap().push("read_cooperative");
+        if cancelled() {
+            return Err(FsError::from_io(
+                "test read",
+                Path::new(""),
+                std::io::ErrorKind::Interrupted.into(),
+            ));
+        }
+        Ok(vec![2])
+    }
+    fn validate(&self) -> Result<(), FsError> {
+        Ok(())
+    }
+    fn native_container_locator(&self) -> Option<&Path> {
+        Some(&self.container)
+    }
+    fn persistent_member_identity(
+        &self,
+        entry: u64,
+        expected_source_version: &[u8],
+    ) -> Result<Option<Vec<u8>>, FsError> {
+        Ok(Some(
+            [&entry.to_le_bytes()[..], expected_source_version].concat(),
+        ))
+    }
+}
+
+/// Opens `source` in the left pane, navigates its tree into the first archive
+/// folder and lets the pane enter that target, as the presenter does. The
+/// entered mount wraps the tree's navigation archive, which wraps the provider's
+/// leased target over the pane's first mount of `source`. Drop the returned
+/// listing before shutdown.
+async fn enter_archive_from_tree(
+    source: Arc<IdentifiedArchive>,
+) -> (
+    midnight_engine::CommandSender,
+    mpsc::Receiver<Event>,
+    tokio::task::JoinHandle<()>,
+    ArchiveListing,
+) {
+    let (send, mut events) = mpsc::channel(32);
+    let mut engine = Engine::new(
+        Engine::lifetime().expect("engine cleanup worker"),
+        Arc::new(Files),
+        send,
+    );
+    let (commands, receive) = engine.command_channel(16).unwrap();
+    let engine = tokio::spawn(engine.run(receive));
+    let root = archive_root(&commands, &mut events, source).await;
+    let publication = enable(&commands, &mut events, root).await;
+    tree(&commands, TreeCommand::Commit(publication.view.clone())).await;
+    tree(
+        &commands,
+        TreeCommand::Navigate {
+            view: publication.view.clone(),
+            request: TreeRequestId(1),
+            row: publication.view.rows[0].id,
+            navigation: NavigationId(2),
+        },
+    )
+    .await;
+    let TreeEvent::Navigated {
+        target: TreeNavigationTarget::Archive(target),
+        ..
+    } = next_tree(&mut events).await
+    else {
+        panic!("typed archive navigation expected")
+    };
+    commands
+        .send(Command::ArchiveNavigate {
+            pane: PaneId::Left,
+            navigation: NavigationId(2),
+            action: ArchiveAction::List(target),
+            sort: SortSpec::default(),
+        })
+        .await
+        .unwrap();
+    let listing = loop {
+        if let Event::ArchiveListed { result, .. } = next(&mut events).await {
+            break result.expect("the pane enters the tree's archive target");
+        }
+    };
+    (commands, events, engine, listing)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_archive_entered_from_the_tree_reads_members_cooperatively_from_its_source() {
+    let source = Arc::new(IdentifiedArchive::new());
+    let (commands, _events, engine, listing) = enter_archive_from_tree(source.clone()).await;
+    let mount = listing.location.mount.clone().unwrap();
+    drop(listing);
+    assert_eq!(mount.read_cooperative(3, 0, 1, &|| false).unwrap(), [2]);
+    // The source observes a cancelled preview read instead of draining a plain read.
+    assert!(mount.read_cooperative(3, 0, 1, &|| true).is_err());
+    assert_eq!(
+        *source.reads.lock().unwrap(),
+        ["read_cooperative", "read_cooperative"]
+    );
+    drop(mount);
+    commands.send(Command::Shutdown).await.unwrap();
+    engine.await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "fails until LeasedArchive in providers/target.rs forwards native_container_locator \
+            and persistent_member_identity (deferred to the providers owner)"]
+async fn an_archive_entered_from_the_tree_keeps_its_storage_and_member_identities() {
+    let source = Arc::new(IdentifiedArchive::new());
+    let (commands, _events, engine, listing) = enter_archive_from_tree(source.clone()).await;
+    let mount = listing.location.mount.clone().unwrap();
+    drop(listing);
+    // Archive previews classify the container's storage by its locator and key
+    // their persistent caches by the member identity.
+    assert_eq!(
+        mount.native_container_locator(),
+        Some(source.container.as_path())
+    );
+    assert_eq!(
+        mount.persistent_member_identity(3, &[1]).unwrap(),
+        Some([&3u64.to_le_bytes()[..], &[1u8]].concat())
+    );
+    drop(mount);
+    commands.send(Command::Shutdown).await.unwrap();
+    engine.await.unwrap();
+}
+
 #[derive(Default)]
 struct Gate {
     released: std::sync::Mutex<bool>,
