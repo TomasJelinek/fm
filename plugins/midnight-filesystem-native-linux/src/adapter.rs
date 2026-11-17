@@ -132,28 +132,38 @@ impl NativeAdapter for Linux {
     }
 }
 pub fn info(metadata: &fs::Metadata) -> NativeInfo {
-    let kind = metadata.file_type();
-    let kind = if kind.is_symlink() {
-        Kind::Symlink
-    } else if kind.is_dir() {
-        Kind::Directory
-    } else if kind.is_file() {
-        Kind::File
-    } else {
-        Kind::Other
+    native_info(
+        metadata.mode(),
+        Some(metadata.len()),
+        metadata.mtime(),
+        metadata.mtime_nsec(),
+    )
+}
+/// The same no-follow metadata as `info`, from a directory-relative `fstatat`.
+pub fn stat_info(value: &libc::stat) -> NativeInfo {
+    native_info(
+        value.st_mode,
+        u64::try_from(value.st_size).ok(),
+        value.st_mtime,
+        value.st_mtime_nsec,
+    )
+}
+fn native_info(mode: u32, length: Option<u64>, seconds: i64, nanos: i64) -> NativeInfo {
+    let kind = match mode & libc::S_IFMT {
+        libc::S_IFLNK => Kind::Symlink,
+        libc::S_IFDIR => Kind::Directory,
+        libc::S_IFREG => Kind::File,
+        _ => Kind::Other,
     };
-    let nanos = u32::try_from(metadata.mtime_nsec())
+    let nanos = u32::try_from(nanos)
         .ok()
         .filter(|nanos| *nanos < 1_000_000_000);
     NativeInfo {
         kind,
         metadata: Metadata {
-            size: (kind == Kind::File).then_some(metadata.len()),
-            modified: nanos.map(|nanos| Timestamp {
-                seconds: metadata.mtime(),
-                nanos,
-            }),
-            unix_mode: Some(metadata.mode()),
+            size: length.filter(|_| kind == Kind::File),
+            modified: nanos.map(|nanos| Timestamp { seconds, nanos }),
+            unix_mode: Some(mode),
             native_attributes: None,
             compression: Compression::Unknown,
         },

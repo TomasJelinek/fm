@@ -328,3 +328,78 @@ fn old_directory_token_rejects_a_new_symlink_but_explicit_link_navigation_works(
     assert_eq!(client.call(Request::CloseList { cursor }), Response::Unit);
     assert_eq!(client.call(Request::CloseMount { mount }), Response::Unit);
 }
+
+/// Before/after measurements of per-row listing metadata and read validation:
+/// `cargo test --release --test native -- --ignored --nocapture listing_and_validation_timing`.
+#[test]
+#[ignore = "timing harness; run explicitly in release mode with --nocapture"]
+fn listing_and_validation_timing() {
+    use std::time::{Duration, Instant};
+    let temp = Temp::new();
+    let directory = temp.path.join("many");
+    fs::create_dir(&directory).unwrap();
+    for number in 0..20_000 {
+        File::create(directory.join(format!("file-{number:05}"))).unwrap();
+    }
+    for number in 0..2_000 {
+        symlink(".", directory.join(format!("link-{number:04}"))).unwrap();
+    }
+    let content = temp.path.join("content");
+    fs::write(&content, vec![0u8; 1 << 20]).unwrap();
+    let client = Client::new();
+    let (mount, root) = client.resolve(&directory);
+    let mut listing = Duration::MAX;
+    for _ in 0..5 {
+        let started = Instant::now();
+        let mut rows = 0;
+        let mut expected_page = 0;
+        let mut response = client.call(Request::ListBegin {
+            mount,
+            directory: root.id,
+            max_entries: 128,
+        });
+        let cursor = loop {
+            let Response::Page {
+                cursor,
+                done,
+                entries,
+                ..
+            } = response
+            else {
+                panic!("listing failed: {response:?}")
+            };
+            rows += entries.len();
+            if done {
+                break cursor;
+            }
+            expected_page += 1;
+            response = client.call(Request::ListNext {
+                cursor,
+                expected_page,
+                max_entries: 128,
+            });
+        };
+        listing = listing.min(started.elapsed());
+        assert_eq!(rows, 22_000);
+        assert_eq!(client.call(Request::CloseList { cursor }), Response::Unit);
+    }
+    let (content_mount, node) = client.resolve(&content);
+    let Response::Opened { reader, .. } = client.call(Request::OpenRead {
+        mount: content_mount,
+        node: node.id,
+    }) else {
+        panic!("content open failed")
+    };
+    let started = Instant::now();
+    for _ in 0..20_000 {
+        assert_eq!(
+            client.call(Request::ValidateRead { reader }),
+            Response::Unit
+        );
+    }
+    let validation = started.elapsed();
+    println!(
+        "listing 22000 rows (20000 files, 2000 directory links), best of 5: {listing:?}; \
+         20000 ValidateRead calls: {validation:?}"
+    );
+}
