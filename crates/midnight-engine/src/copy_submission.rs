@@ -8,7 +8,8 @@ pub(super) struct Submission {
 
 impl Submission {
     pub(super) fn new(command: Command) -> Self {
-        let id = command_id(&command);
+        let id = super::input::copy_command_id(&command)
+            .expect("only Copy-family commands enter guarded admission");
         Self {
             command: Some(command),
             id,
@@ -41,29 +42,6 @@ impl Drop for Submission {
                 }
             }
         }
-    }
-}
-
-fn command_id(command: &Command) -> OperationId {
-    fn metadata_id(request: &MetadataTransferRequest) -> OperationId {
-        match &request.input {
-            MetadataTransferInput::Paths(request) => request.id,
-            MetadataTransferInput::Selected(request) => request.id,
-            MetadataTransferInput::Clipboard(request) => request.id,
-        }
-    }
-    match command {
-        Command::EnqueueCopy(request) | Command::EnqueueMove(request) => request.id,
-        Command::EnqueueSelectedCopy(request) | Command::EnqueueSelectedMove(request) => request.id,
-        Command::EnqueueClipboardMove(request) => request.id,
-        Command::EnqueueTransferWithMetadata(request) => metadata_id(request),
-        Command::EnqueueCopyWithOptions(request) => match &request.input {
-            CopyOptionsInput::Native(request) => metadata_id(request),
-            CopyOptionsInput::Captured(request) => request.id,
-        },
-        Command::EnqueueArchiveCopy(request) => request.id,
-        Command::EnqueueCapturedTransfer(request) => request.id,
-        _ => unreachable!("only Copy-family commands enter guarded admission"),
     }
 }
 

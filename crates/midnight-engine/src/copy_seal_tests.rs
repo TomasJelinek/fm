@@ -22,25 +22,44 @@ pub(crate) fn child_case(qualified: &str) -> bool {
         std::process::Command::new(std::env::current_exe().unwrap())
             .args(["--exact", name, "--nocapture"])
             .env(CHILD, name)
+            // Deliberate panics must not flood the pipes with backtraces.
+            .env("RUST_BACKTRACE", "0")
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .spawn()
             .unwrap(),
     ));
+    // Drain both pipes while waiting: a child blocked on a full pipe never exits.
+    let drain = |pipe: Option<Box<dyn std::io::Read + Send>>| {
+        std::thread::spawn(move || {
+            let mut text = String::new();
+            if let Some(mut pipe) = pipe {
+                let mut bytes = Vec::new();
+                let _ = std::io::Read::read_to_end(&mut pipe, &mut bytes);
+                text = String::from_utf8_lossy(&bytes).into_owned();
+            }
+            text
+        })
+    };
+    let process = child.0.as_mut().unwrap();
+    let stdout = drain(process.stdout.take().map(|pipe| Box::new(pipe) as _));
+    let stderr = drain(process.stderr.take().map(|pipe| Box::new(pipe) as _));
     let deadline = std::time::Instant::now() + Duration::from_secs(30);
-    while child.0.as_mut().unwrap().try_wait().unwrap().is_none() {
+    let status = loop {
+        if let Some(status) = child.0.as_mut().unwrap().try_wait().unwrap() {
+            break status;
+        }
         assert!(
             std::time::Instant::now() < deadline,
             "Copy seal child did not finish: {name}"
         );
         std::thread::sleep(Duration::from_millis(5));
-    }
-    let output = child.0.take().unwrap().wait_with_output().unwrap();
-    let stdout = String::from_utf8_lossy(&output.stdout);
+    };
+    child.0.take();
+    let (stdout, stderr) = (stdout.join().unwrap(), stderr.join().unwrap());
     assert!(
-        output.status.success() && stdout.contains("1 passed;"),
-        "Copy seal child failed or matched no test: {name}\n{stdout}\n{}",
-        String::from_utf8_lossy(&output.stderr)
+        status.success() && stdout.contains("1 passed;"),
+        "Copy seal child failed or matched no test: {name}\n{stdout}\n{stderr}"
     );
     true
 }
@@ -129,8 +148,11 @@ impl Fixture {
             Scope::with_cleanup(payload, resources, Payload::cleanup),
         )
     }
+    /// Quarantine retains native authority, the namespace share and admission capacity,
+    /// but returns the disk slot: it is an admission counter, and a leaked slot would
+    /// block every later exclusive I/O request in the process.
     fn held(&self) {
-        assert_eq!(self.io.snapshot().active_shared, 1);
+        assert_eq!(self.io.snapshot().active_shared, 0);
         assert_eq!(self.namespace.available_permits(), 0);
         assert_eq!(self.capacity.available_permits(), 0);
         assert!(!self.earlier.is_finished());
@@ -344,7 +366,13 @@ fn armed_subvalue_survives_a_borrowed_operation_unwind_without_destructor() {
     });
     assert_eq!(result, Err(Quarantined));
     drop(value);
-    fixture.held();
+    // A forgotten armed value runs no code at all, not even quarantine: every guard,
+    // including the disk slot, stays with it. Production arms payloads, never a seal.
+    assert_eq!(fixture.io.snapshot().active_shared, 1);
+    assert_eq!(fixture.namespace.available_permits(), 0);
+    assert_eq!(fixture.capacity.available_permits(), 0);
+    assert!(!fixture.earlier.is_finished());
+    assert_eq!(fixture.bombs.load(Ordering::SeqCst), 0);
     assert_eq!(fixture.drops.load(Ordering::SeqCst), 0);
 }
 

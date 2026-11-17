@@ -78,9 +78,19 @@ enum Phase {
 
 #[derive(Default)]
 struct RetirementIo {
+    /// Direct Job fixtures, which have no admission envelope, lend a plain permit.
+    #[cfg(test)]
     permit: Option<OwnedSemaphorePermit>,
     admitted: Option<Arc<midnight_work_budget::Permit>>,
-    cleanup_owned: bool,
+}
+impl RetirementIo {
+    fn held(&self) -> bool {
+        #[cfg(test)]
+        if self.permit.is_some() {
+            return true;
+        }
+        self.admitted.is_some()
+    }
 }
 
 pub(super) struct LinkRetirement {
@@ -127,7 +137,7 @@ impl Diagnostics {
 }
 
 impl LinkRetirement {
-    pub(super) fn new(_status: Status, _cancel: Cancellation) -> Self {
+    pub(super) fn new() -> Self {
         Self {
             diagnostics: Arc::default(),
             io: Mutex::default(),
@@ -145,31 +155,25 @@ impl LinkRetirement {
             debug_assert!(io.permit.is_none(), "a retained permit is reused");
             io.permit = Some(permit);
         }
-        debug_assert!(!io.cleanup_owned || io.permit.is_some() || io.admitted.is_some());
     }
 
     fn attach(&self, permit: Arc<midnight_work_budget::Permit>) {
         let mut io = self.io.lock().unwrap_or_else(|error| error.into_inner());
-        assert!(
-            io.admitted.is_none() && io.permit.is_none(),
-            "Copy I/O is attached once"
-        );
+        assert!(!io.held(), "Copy I/O is attached once");
         io.admitted = Some(permit);
     }
 
     fn holds_io(&self) -> bool {
-        let io = self.io.lock().unwrap_or_else(|error| error.into_inner());
-        io.permit.is_some() || io.admitted.is_some()
+        self.io
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .held()
     }
 
+    /// The job's actual admitted slot survives stage/source/provider Drop; checked
+    /// teardown reclaims it before any cleanup runs.
     fn retain_cleanup_io(&self) {
-        let mut io = self.io.lock().unwrap_or_else(|error| error.into_inner());
-        debug_assert!(
-            io.permit.is_some() || io.admitted.is_some(),
-            "link staging runs with Copy I/O ownership"
-        );
-        // The job's actual admitted permit survives stage/source/provider Drop.
-        io.cleanup_owned = true;
+        debug_assert!(self.holds_io(), "link staging runs with Copy I/O ownership");
     }
 
     fn report(&self, failure: TransferLinkCleanupError) {
@@ -211,6 +215,11 @@ impl LinkCopy {
 
     fn needs_stage(&self) -> bool {
         matches!(self.phase, Phase::Staging)
+    }
+
+    /// The next step publishes the verified stage at the final name.
+    fn publishes_next(&self) -> bool {
+        matches!(self.phase, Phase::ReadyToPublish)
     }
 
     pub(super) fn can_retry(&self) -> bool {
@@ -486,7 +495,14 @@ impl Job {
             return Ok(Action::Conflict(target));
         }
         let copy = work.link.as_mut().expect("started link copy");
-        let publication = copy.step(work.destination.as_ref(), &work.name, &self.cancel)?;
+        let publishes = copy.publishes_next();
+        let publication = copy.step(work.destination.as_ref(), &work.name, &self.cancel);
+        // Only publication uses the final name; a staging AlreadyExists is no collision.
+        let publication = if publishes {
+            self.at_final_name(publication)?
+        } else {
+            publication?
+        };
         self.progress.phase = copy.progress_phase();
         let Some(publication) = publication else {
             return Ok(Action::Keep);

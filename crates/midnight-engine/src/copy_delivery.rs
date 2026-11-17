@@ -61,13 +61,19 @@ pub(super) struct CopyOutbox {
     notices: mpsc::Sender<Event>,
     receiver: Arc<Mutex<Option<mpsc::Receiver<Event>>>>,
     shutdown: Cancellation,
+    /// Announces job controls and shutdown to every wait of this job.
+    pub controls: Controls,
 }
 impl CopyOutbox {
     #[cfg(test)]
     pub(super) fn pending(outbox: Outbox) -> Self {
-        Self::pending_with_shutdown(outbox, Cancellation::default())
+        Self::pending_with_shutdown(outbox, Cancellation::default(), Controls::default())
     }
-    pub(super) fn pending_with_shutdown(outbox: Outbox, shutdown: Cancellation) -> Self {
+    pub(super) fn pending_with_shutdown(
+        outbox: Outbox,
+        shutdown: Cancellation,
+        controls: Controls,
+    ) -> Self {
         // Public admission accepts at most 4096 roots. Root-completion notices
         // are provider-free; one decision notice plus one spare fits after all
         // roots even while initial UI delivery is blocked. Progress coalesces.
@@ -84,6 +90,7 @@ impl CopyOutbox {
             notices,
             receiver: Arc::new(Mutex::new(Some(receiver))),
             shutdown,
+            controls,
         }
     }
     #[cfg(test)]
@@ -183,10 +190,9 @@ impl CopyOutbox {
             _ = self.wait_shutdown() => false,
         }
     }
+    /// Shutdown is announced through `controls`; delivery never polls for it.
     async fn wait_shutdown(&self) {
-        while !self.shutdown.is_cancelled() {
-            tokio::time::sleep(Duration::from_millis(25)).await;
-        }
+        self.controls.until(|| self.shutdown.is_cancelled()).await;
     }
 }
 

@@ -3,6 +3,7 @@ use crate::transfer_leases::NAMESPACE_WEIGHT;
 use std::{
     ffi::OsStr,
     io::{Read, Seek, SeekFrom, Write},
+    sync::atomic::AtomicU64,
 };
 
 async fn failure(h: &mut Harness, id: u64) -> Arc<CopyFailure> {
@@ -69,7 +70,8 @@ async fn destination_retry_repeats_failure_then_works_without_stale_consent() {
     let first = failure(&mut h, 1).await;
     assert!(first.can_retry);
     assert!(!first.can_skip);
-    assert_eq!(h.io.available_permits(), 0);
+    // A pending failure decision keeps the namespace share but returns the disk slot.
+    assert_eq!(h.io.available_permits(), 1);
     assert_eq!(
         h.mutation.available_permits(),
         NAMESPACE_WEIGHT as usize - 1
@@ -118,11 +120,9 @@ async fn partial_disk_full_write_pauses_and_retries_without_corrupting_or_recopy
     fs::create_dir(&destination).unwrap();
     let bytes: Vec<_> = (0..700_123).map(|i| (i % 251) as u8).collect();
     fs::write(&source, &bytes).unwrap();
-    let mut h = Harness::new(Some(Arc::new(DiskFullService {
-        inner: midnight_platform::LocalFileSystem::new(None),
-        fail: Arc::new(AtomicBool::new(true)),
-        repeat: false,
-    })));
+    let service = Arc::new(DiskFullService::new(false, 256 * 1024));
+    let written = service.written.clone();
+    let mut h = Harness::new(Some(service));
     h.controller
         .enqueue(request(1, std::slice::from_ref(&source), &destination))
         .await;
@@ -132,7 +132,7 @@ async fn partial_disk_full_write_pauses_and_retries_without_corrupting_or_recopy
     assert!(error.can_retry && error.can_skip);
     assert!(!destination.join("source.bin").exists());
     assert_eq!(fs::read(&source).unwrap(), bytes);
-    assert_eq!(h.io.available_permits(), 0);
+    assert_eq!(h.io.available_permits(), 1);
     assert_eq!(
         h.mutation.available_permits(),
         NAMESPACE_WEIGHT as usize - 1
@@ -147,12 +147,21 @@ async fn partial_disk_full_write_pauses_and_retries_without_corrupting_or_recopy
     assert_eq!(done.failed, 0);
     assert_eq!(fs::read(destination.join("source.bin")).unwrap(), bytes);
     assert_eq!(fs::read_dir(destination).unwrap().count(), 1);
+    // The committed first block is never rewritten: only the 17-byte partial write
+    // of the second block is replayed on top of one complete copy.
+    assert_eq!(
+        written.load(Ordering::Acquire),
+        bytes.len() as u64 + 17,
+        "Retry must resume at the committed offset, not recopy"
+    );
     h.wait_capacity(NAMESPACE_WEIGHT as usize).await;
     assert_eq!(h.io.available_permits(), 1);
     assert_eq!(h.mutation.available_permits(), NAMESPACE_WEIGHT as usize);
     h.close().await;
 }
 
+/// This fixture forwards no namespace geometry, so both jobs take the opaque exclusive
+/// lane: the second waits for the first job's namespace (not its released disk slot).
 #[tokio::test]
 async fn cancel_partial_write_cleans_stage_and_releases_the_next_queued_job() {
     let temp = fixture();
@@ -162,11 +171,7 @@ async fn cancel_partial_write_cleans_stage_and_releases_the_next_queued_job() {
     let next = temp.path().join("next.bin");
     fs::write(&first, b"never publish this partially written file").unwrap();
     fs::write(&next, b"next queued transfer").unwrap();
-    let mut h = Harness::new(Some(Arc::new(DiskFullService {
-        inner: midnight_platform::LocalFileSystem::new(None),
-        fail: Arc::new(AtomicBool::new(true)),
-        repeat: false,
-    })));
+    let mut h = Harness::new(Some(Arc::new(DiskFullService::new(false, 0))));
     h.controller
         .enqueue(request(1, std::slice::from_ref(&first), &destination))
         .await;
@@ -174,11 +179,25 @@ async fn cancel_partial_write_cleans_stage_and_releases_the_next_queued_job() {
     h.controller
         .enqueue(request(2, std::slice::from_ref(&next), &destination))
         .await;
-    assert_eq!(h.io.available_permits(), 0);
+    // Job 2 waits for job 1 before Cancel: refused its namespace grant, it holds its own
+    // share (two are held) but neither job holds the only disk slot.
+    let waiting = h
+        .wait_status(2, |progress| {
+            progress.state == CopyOperationState::Preparing
+                && progress.wait_reason == Some(TransferWaitReason::Resources)
+        })
+        .await;
+    assert_eq!(waiting.files_completed, 0);
+    eventually(
+        || h.io.available_permits() == 1,
+        "neither the decision wait nor the grant wait holds the disk slot",
+    )
+    .await;
     assert_eq!(
         h.mutation.available_permits(),
-        NAMESPACE_WEIGHT as usize - 1
+        NAMESPACE_WEIGHT as usize - 2
     );
+    assert!(!destination.join("next.bin").exists());
     decide(&h, &error, CopyChoice::Cancel).await;
     let cancelled = h.terminal(1).await;
     assert_eq!(cancelled.state, CopyOperationState::Cancelled);
@@ -215,11 +234,7 @@ async fn skip_all_errors_is_job_scoped_and_never_grants_overwrite_consent() {
         })
         .collect();
     fs::write(destination.join("existing.bin"), b"retain destination").unwrap();
-    let mut h = Harness::new(Some(Arc::new(DiskFullService {
-        inner: midnight_platform::LocalFileSystem::new(None),
-        fail: Arc::new(AtomicBool::new(true)),
-        repeat: true,
-    })));
+    let mut h = Harness::new(Some(Arc::new(DiskFullService::new(true, 0))));
     h.controller
         .enqueue(request(1, &sources, &destination))
         .await;
@@ -271,6 +286,22 @@ struct DiskFullService {
     inner: midnight_platform::LocalFileSystem,
     fail: Arc<AtomicBool>,
     repeat: bool,
+    /// Bytes written successfully before the injection, so retry can be checked to
+    /// replay only the pending block after a committed prefix.
+    after: u64,
+    /// Every byte handed to the stage, including the partial write and its replay.
+    written: Arc<AtomicU64>,
+}
+impl DiskFullService {
+    fn new(repeat: bool, after: u64) -> Self {
+        Self {
+            inner: midnight_platform::LocalFileSystem::new(None),
+            fail: Arc::new(AtomicBool::new(true)),
+            repeat,
+            after,
+            written: Arc::default(),
+        }
+    }
 }
 // Native delegates and fixture state are destroyed synchronously; no retirement queues are hidden.
 impl midnight_core::AuditedSynchronousTransferService for DiskFullService {}
@@ -291,6 +322,8 @@ impl TransferService for DiskFullService {
             inner: self.inner.prepare_transfer_destination(path, cancel)?,
             fail: self.fail.clone(),
             repeat: self.repeat,
+            after: self.after,
+            written: self.written.clone(),
         }))
     }
 }
@@ -298,6 +331,8 @@ struct DiskFullDirectory {
     inner: Arc<dyn TransferDirectory>,
     fail: Arc<AtomicBool>,
     repeat: bool,
+    after: u64,
+    written: Arc<AtomicU64>,
 }
 impl TransferDirectory for DiskFullDirectory {
     fn path(&self) -> &Path {
@@ -336,6 +371,8 @@ impl TransferDirectory for DiskFullDirectory {
             fail: self.fail.clone(),
             partial: false,
             repeat: self.repeat,
+            after: self.after,
+            written: self.written.clone(),
         }))
     }
 }
@@ -344,6 +381,8 @@ struct DiskFullStage {
     fail: Arc<AtomicBool>,
     partial: bool,
     repeat: bool,
+    after: u64,
+    written: Arc<AtomicU64>,
 }
 impl Read for DiskFullStage {
     fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
@@ -362,11 +401,17 @@ impl Write for DiskFullStage {
             self.fail.store(self.repeat, Ordering::Release);
             return Err(io::ErrorKind::StorageFull.into());
         }
-        if self.fail.load(Ordering::Acquire) && !bytes.is_empty() {
+        let count = if self.fail.load(Ordering::Acquire)
+            && !bytes.is_empty()
+            && self.written.load(Ordering::Acquire) >= self.after
+        {
             self.partial = true;
-            return self.inner.write(&bytes[..bytes.len().min(17)]);
-        }
-        self.inner.write(bytes)
+            self.inner.write(&bytes[..bytes.len().min(17)])?
+        } else {
+            self.inner.write(bytes)?
+        };
+        self.written.fetch_add(count as u64, Ordering::AcqRel);
+        Ok(count)
     }
     fn flush(&mut self) -> io::Result<()> {
         self.inner.flush()

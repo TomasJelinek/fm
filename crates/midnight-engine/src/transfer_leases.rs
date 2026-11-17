@@ -1,8 +1,9 @@
-//! Transfers retain one actual disk slot and one namespace share through retirement.
-use midnight_core::FsError;
-use midnight_work_budget::{Admission, Gate, Permit};
-use std::{io, path::Path, sync::Arc};
-use tokio::sync::{OwnedSemaphorePermit, Semaphore, TryAcquireError};
+//! Transfers retain one namespace share through retirement and one retained disk-slot
+//! identity. The slot consumes capacity only while the job executes native steps
+//! (see `copy_operations::ready_for_io`).
+use midnight_work_budget::{Gate, Permit};
+use std::sync::Arc;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 pub(crate) const NAMESPACE_WEIGHT: u32 = crate::copy_operations::MAX_JOBS as u32;
 
@@ -13,35 +14,6 @@ pub(crate) fn namespace_gate() -> Arc<Semaphore> {
 pub(super) struct Leases {
     pub io: Arc<Permit>,
     pub namespace: OwnedSemaphorePermit,
-}
-
-/// No permit is retained on a failed pair attempt. A legacy namespace owner may
-/// need disk capacity itself, so awaiting namespace while holding I/O can deadlock.
-pub(super) fn try_pair(
-    disk: &Arc<Gate>,
-    namespace: &Arc<Semaphore>,
-) -> Result<Option<Leases>, FsError> {
-    let Some(io) = disk.try_acquire(Admission::Shared) else {
-        return Ok(None);
-    };
-    match namespace.clone().try_acquire_owned() {
-        Ok(namespace) => Ok(Some(Leases {
-            io: Arc::new(io),
-            namespace,
-        })),
-        Err(TryAcquireError::NoPermits) => {
-            drop(io);
-            Ok(None)
-        }
-        Err(TryAcquireError::Closed) => {
-            drop(io);
-            Err(FsError::from_io(
-                "acquire transfer namespace",
-                Path::new(""),
-                io::Error::new(io::ErrorKind::BrokenPipe, "Transfer namespace is closing."),
-            ))
-        }
-    }
 }
 
 /// The configured process-wide gate in production; isolated fixtures supply the
@@ -61,21 +33,30 @@ impl IoBudget {
     pub(crate) fn available_permits(&self) -> usize {
         usize::from(self.gate.snapshot().available)
     }
+    /// A call-scoped consumer of the same gate (for example a checksum read).
     #[cfg(test)]
-    pub(crate) fn try_acquire_owned(self: Arc<Self>) -> Result<Arc<Permit>, TryAcquireError> {
+    pub(crate) fn try_acquire_owned(
+        self: Arc<Self>,
+    ) -> Result<Arc<Permit>, tokio::sync::TryAcquireError> {
         self.gate
-            .try_acquire(Admission::Shared)
+            .try_acquire(midnight_work_budget::Admission::Shared)
             .map(Arc::new)
-            .ok_or(TryAcquireError::NoPermits)
+            .ok_or(tokio::sync::TryAcquireError::NoPermits)
     }
+    /// FIFO call-scoped admission, queued like any other consumer of the gate.
     #[cfg(test)]
-    pub(crate) async fn acquire_owned(self: Arc<Self>) -> Result<Arc<Permit>, TryAcquireError> {
-        loop {
-            if let Some(permit) = self.gate.try_acquire(Admission::Shared) {
-                return Ok(Arc::new(permit));
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
+    pub(crate) async fn acquire_owned(
+        self: Arc<Self>,
+    ) -> Result<Arc<Permit>, tokio::sync::TryAcquireError> {
+        tokio::task::spawn_blocking(move || {
+            self.gate
+                .acquire(midnight_work_budget::Admission::Shared, || false)
+        })
+        .await
+        .ok()
+        .flatten()
+        .map(Arc::new)
+        .ok_or(tokio::sync::TryAcquireError::Closed)
     }
 }
 

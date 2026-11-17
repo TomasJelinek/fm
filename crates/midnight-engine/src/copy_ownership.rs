@@ -31,6 +31,8 @@ pub(super) struct Resources {
     capacity: Arc<AdmissionTail>,
     native: VecDeque<Box<dyn CheckedRetirement>>,
     providers: VecDeque<Box<dyn CheckedRetirement>>,
+    /// Fixture-only owners without a checked retirement: holding one quarantines.
+    #[cfg(test)]
     unknown: VecDeque<Box<dyn Send>>,
     retirement: RetirementContext,
 }
@@ -58,6 +60,7 @@ impl Resources {
             }),
             native: VecDeque::new(),
             providers: VecDeque::new(),
+            #[cfg(test)]
             unknown: VecDeque::new(),
             retirement: RetirementContext::default(),
         }
@@ -251,7 +254,9 @@ impl AuthoritySeal {
             return Ok(None);
         };
         let permit = resources.real_io.as_ref().ok_or(Quarantined)?;
-        if !permit.belongs_to(&gate) || !permit.is_shared() {
+        // A released slot never admits a native call: the async owner readmits it before
+        // every step, and checked teardown reclaims it first (`drain`).
+        if !permit.belongs_to(&gate) || !permit.is_shared() || !permit.is_held() {
             return Err(Quarantined);
         }
         Ok(Some(CallContext {
@@ -304,8 +309,27 @@ impl AuthoritySeal {
                 .and_then(|resources| resources.namespace.as_ref())
                 .is_some_and(crate::copy_namespace::Claim::is_quarantined)
     }
+    /// Teardown never waits for disk capacity: a slot released for a pause, decision or
+    /// namespace wait is charged again at once, so cancellation cannot queue behind other
+    /// jobs. This may briefly exceed the configured limit (see `Permit::reclaim`).
+    fn reclaim_io(&self) {
+        if let Some(permit) = self
+            .resources
+            .as_ref()
+            .and_then(|resources| resources.real_io.as_ref())
+        {
+            permit.reclaim();
+        }
+    }
     fn quarantine(&self) {
         if let Some(resources) = &self.resources {
+            // The disk slot is an admission counter, not native authority, and the call
+            // that used it has returned or unwound. Return it before any owner is
+            // retained or forgotten, so a quarantined job cannot block every later
+            // exclusive I/O request (forgotten clones observe the release).
+            if let Some(permit) = &resources.real_io {
+                permit.release();
+            }
             // SUCCESS and FINISHED have distinct meanings. An uncertain native
             // outcome can never satisfy SUCCESS, while FINISHED remains pending
             // until actual teardown is confirmed and its authority can release.
@@ -338,6 +362,18 @@ impl AuthoritySeal {
             claim.begin_closing().map_err(|_| Quarantined)?;
         }
         Ok(())
+    }
+    /// After the job's last native work and before its pins close: report an external
+    /// change to any pinned binding as a job diagnostic (`Claim::revalidate_before_close`).
+    fn revalidate_namespace(&self) -> Result<(), Quarantined> {
+        let Some(claim) = self
+            .resources
+            .as_ref()
+            .and_then(|resources| resources.namespace.as_ref())
+        else {
+            return Ok(());
+        };
+        self.native_call(|| claim.revalidate_before_close())
     }
     fn drop_retentions(&mut self) -> Result<(), Quarantined> {
         while let Some(native) = self.resources_mut().native.pop_front() {
@@ -403,7 +439,11 @@ impl AuthoritySeal {
             .take()
             .expect("Copy authority remains sealed");
         drop(resources.mutation.take());
-        drop(resources.real_io.take());
+        // The async owner and link cleanup may still hold clones of this Arc; the
+        // explicit release returns the slot now regardless.
+        if let Some(permit) = resources.real_io.take() {
+            permit.release();
+        }
         let progress = completion.map(worker::Completion::finish);
         if let Some(progress) = &progress {
             resources
@@ -481,11 +521,10 @@ pub(super) fn rollback_empty_reservation(value: Owned<()>) {
         .resources
         .take()
         .expect("unpublished reservation owns resources");
+    #[cfg(test)]
+    assert!(resources.unknown.is_empty());
     assert!(
-        !resources.published
-            && resources.native.is_empty()
-            && resources.providers.is_empty()
-            && resources.unknown.is_empty(),
+        !resources.published && resources.native.is_empty() && resources.providers.is_empty(),
         "only empty unpublished reservations support metadata rollback"
     );
     let _ = scope.payload.take();
@@ -597,6 +636,7 @@ impl<T: CheckedRetirement> Scope<T> {
         };
         let mut payload = Armed::new(payload);
         let mut seal = self.seal.take().expect("Copy payload owns its authority");
+        seal.reclaim_io();
         if seal.begin_closing().is_err() {
             seal.quarantine();
             self.quarantined = true;
@@ -618,6 +658,10 @@ impl<T: CheckedRetirement> Scope<T> {
                 ));
             }
             if seal.native_call(|| drop(payload.into_inner())).is_err() || seal.is_quarantined() {
+                seal.quarantine();
+                return Err(Quarantined);
+            }
+            if seal.revalidate_namespace().is_err() || seal.is_quarantined() {
                 seal.quarantine();
                 return Err(Quarantined);
             }
@@ -1095,9 +1139,37 @@ mod namespace_integration {
         );
         processed(owned);
         assert_eq!(fixture.drops.load(Ordering::SeqCst), 0);
-        assert_eq!(fixture.gate.snapshot().active_shared, 1);
+        // Native authority and the namespace share stay quarantined, but the disk slot
+        // returns: a later exclusive request is admitted at once.
+        assert_eq!(fixture.gate.snapshot().active_shared, 0);
+        assert!(
+            fixture
+                .gate
+                .try_acquire(midnight_work_budget::Admission::Exclusive)
+                .is_some()
+        );
         assert_eq!(fixture.mutation.available_permits(), 0);
         assert_eq!(fixture.capacity.available_permits(), 0);
+        assert!(!fixture.pending.is_finished());
+    }
+    /// The quarantined payload still owns a clone of the slot (link cleanup shares it), and
+    /// quarantine forgets that payload: the explicit release must still return capacity.
+    #[test]
+    fn quarantine_returns_the_disk_slot_even_when_a_forgotten_clone_survives() {
+        let (fixture, mut owned) = fixture();
+        let clone = owned
+            .resources_mut()
+            .real_io
+            .clone()
+            .expect("admitted slot");
+        let result: Result<(), _> = run(&mut owned, |_| {
+            std::panic::panic_any("native step unwound");
+        });
+        assert_eq!(result, Err(Quarantined));
+        processed(owned);
+        std::mem::forget(clone);
+        assert_eq!(fixture.gate.snapshot().active_shared, 0);
+        assert_eq!(fixture.mutation.available_permits(), 0);
         assert!(!fixture.pending.is_finished());
     }
 }

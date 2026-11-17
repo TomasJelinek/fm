@@ -53,10 +53,17 @@ impl ClaimOwner {
 }
 impl Drop for ClaimOwner {
     fn drop(&mut self) {
+        // Runs while an assertion unwinds, too: a second panic would abort the binary.
         if let Some(claim) = self.claim.take() {
-            claim.begin_closing().unwrap();
+            if claim.begin_closing().is_err() {
+                std::mem::forget(self.native.take());
+                std::mem::forget(claim);
+                return;
+            }
             drop(self.native.take());
-            claim.complete_after_drop().unwrap();
+            if claim.complete_after_drop().is_err() {
+                std::mem::forget(claim);
+            }
         }
     }
 }

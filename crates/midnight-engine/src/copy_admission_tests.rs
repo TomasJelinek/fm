@@ -150,9 +150,12 @@ async fn abandoned_native_reservation_finishes_only_after_retained_provider_dest
     released.unwrap();
     let cancel = Cancellation::default();
     assert!(
-        tokio::time::timeout(Duration::from_secs(2), predecessors.wait(&cancel))
-            .await
-            .unwrap()
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            predecessors.wait(&cancel, &Default::default())
+        )
+        .await
+        .unwrap()
     );
     assert!(pending_while_drop_held);
     assert_eq!(capacity_while_drop_held, MAX_JOBS - 2);

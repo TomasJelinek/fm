@@ -143,6 +143,14 @@ impl Fixture {
         assert_eq!(self.capacity.available_permits(), 0);
         assert!(!self.pending.is_finished());
     }
+    /// Quarantine retains native authority, the namespace share and admission capacity,
+    /// but returns the disk slot (an admission counter, not native authority).
+    fn quarantined(&self) {
+        assert_eq!(self.io.snapshot().active_shared, 0);
+        assert_eq!(self.namespace.available_permits(), 0);
+        assert_eq!(self.capacity.available_permits(), 0);
+        assert!(!self.pending.is_finished());
+    }
     fn released(&self) {
         assert_eq!(self.io.snapshot().active_shared, 0);
         assert_eq!(self.namespace.available_permits(), 1);
@@ -244,7 +252,7 @@ fn archive_last_reference(panic: bool) {
     assert_eq!(mount.bombs.load(Ordering::SeqCst), 0);
     if panic {
         assert_eq!(result, Err(Quarantined));
-        fixture.held();
+        fixture.quarantined();
         assert_eq!(
             mount.archive_capacity.available_permits(),
             mount.archive_closed_capacity - 1
@@ -300,7 +308,7 @@ fn unknown_other_domain_owner_is_retained_without_false_finished_acknowledgement
         .join()
         .unwrap();
     assert_eq!(result, Err(Quarantined));
-    fixture.held();
+    fixture.quarantined();
     assert_eq!(drops.load(Ordering::SeqCst), 0);
     assert!(foreign.try_reserve().is_err());
 }
@@ -490,7 +498,7 @@ fn archive_release_refusal_is_visible_and_never_publishes_finished() {
             .iter()
             .any(|error| error.path == Path::new("retained-session"))
     );
-    fixture.held();
+    fixture.quarantined();
 }
 
 #[test]
@@ -526,6 +534,6 @@ fn namespace_geometry_pin_does_not_implicitly_certify_native_retirement() {
     let drops = Arc::new(AtomicUsize::new(0));
     let (fixture, resources) = Fixture::with_pin(Some(Arc::new(Pin(drops.clone()))));
     assert_eq!(Scope::new((), resources).drain(), Err(Quarantined));
-    fixture.held();
+    fixture.quarantined();
     assert_eq!(drops.load(Ordering::SeqCst), 0);
 }

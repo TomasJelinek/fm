@@ -3,6 +3,14 @@ use super::*;
 use midnight_core::{DiscoveryScope, DiscoveryState, OperationDiscovery};
 use std::time::{Duration, Instant};
 
+/// Discovery callbacks coalesce status updates; tests observe every callback instead
+/// of sleeping across the interval.
+const DISCOVERY_PUBLISH_INTERVAL: Duration = if cfg!(test) {
+    Duration::ZERO
+} else {
+    Duration::from_millis(50)
+};
+
 impl Job {
     pub(in crate::copy_operations) fn prepare_discovery(&mut self) {
         // Native rename must stay constant-time. Mixed batches use selected roots too
@@ -42,7 +50,7 @@ impl Job {
             let mut visit = |item: &MutationItem| {
                 discovery.observe(item);
                 budget.observe(item, self.verification);
-                if published.elapsed() >= Duration::from_millis(50) {
+                if published.elapsed() >= DISCOVERY_PUBLISH_INTERVAL {
                     let mut status = self
                         .status
                         .lock()

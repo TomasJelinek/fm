@@ -181,7 +181,9 @@ impl Drop for Job {
     }
 }
 fn registry() -> Registry {
-    Registry::new_with_io(Arc::new(midnight_work_budget::Gate::new(32)))
+    Registry::new_with_io(Arc::new(midnight_work_budget::Gate::new(
+        midnight_work_budget::MAX_IO_LIMIT,
+    )))
 }
 fn one(
     registry: &Registry,
@@ -193,6 +195,18 @@ fn one(
     Job::new(registry, sequence, vec![(access, Some(pin))])
 }
 use TransferNamespaceAccess::{Read, Write};
+/// A granted, disjoint peer. Other claims' committed facts are then observable, so each
+/// of their finishes re-validates every pin; without one, only announced pins refresh.
+fn observer(registry: &Registry) -> Job {
+    let observer = one(
+        registry,
+        1_000,
+        Read,
+        entry(parent(900, &[900, 0]), b"observer", None, false),
+    );
+    assert!(observer.grant());
+    observer
+}
 
 #[test]
 fn subtree_child_object_announcement_blocks_external_hardlink_until_owner_close() {
@@ -484,6 +498,7 @@ fn assert_corrupt_alias_reservation_is_quarantined(corruption: AliasCorruption) 
 #[test]
 fn repeated_exact_private_arc_reuses_live_alias_and_cleanup_removes_identity_index() {
     let registry = registry();
+    let _observer = observer(&registry);
     let shared = parent(1, &[1, 0]);
     let mut owner = one(
         &registry,
@@ -810,7 +825,9 @@ fn subtree_ancestry_conflicts_in_both_directions_and_reciprocal_union_is_atomic(
     assert!(first.grant());
     assert!(!reciprocal.grant());
     assert!(!child.grant());
-    let nested_registry = Registry::new_with_io(Arc::new(midnight_work_budget::Gate::new(32)));
+    let nested_registry = Registry::new_with_io(Arc::new(midnight_work_budget::Gate::new(
+        midnight_work_budget::MAX_IO_LIMIT,
+    )));
     let nested = one(
         &nested_registry,
         1,
@@ -1066,6 +1083,7 @@ fn private_alias_collision_returns_false_before_create_and_materialization_stays
 #[test]
 fn certified_empty_private_alias_drops_pin_and_removes_random_name_history() {
     let registry = registry();
+    let _observer = observer(&registry);
     let shared = parent(1, &[1, 0]);
     let first = one(
         &registry,
@@ -1104,6 +1122,7 @@ fn certified_empty_private_alias_drops_pin_and_removes_random_name_history() {
 #[test]
 fn ordinary_finish_error_latches_opaque_diagnostic_without_erasing_native_success() {
     let registry = registry();
+    let _observer = observer(&registry);
     let (control, native) = pin(vec![entry(parent(1, &[1, 0]), b"output", None, false)]);
     let first = Job::new(&registry, 1, vec![(Write, Some(native))]);
     assert!(first.grant());
@@ -1147,13 +1166,271 @@ fn uncommitted_transaction_quarantines_and_closing_cannot_clear_it() {
     assert!(first.claim().is_quarantined());
     assert_eq!(registry.state(1), FactsState::Quarantined);
     assert!(first.claim().begin_closing().is_err());
+    // The quarantined record is never removed: a later claim fails at once with an
+    // actionable error instead of waiting forever for a grant.
     let second = one(
         &registry,
         2,
         Write,
-        entry(parent(1, &[1, 0]), b"two", None, false),
+        entry(parent(9, &[9, 0]), b"unrelated", None, false),
+    );
+    let refused = second
+        .claim()
+        .try_grant(&Cancellation::default())
+        .unwrap_err();
+    assert!(is_blocked_by_quarantine(&refused), "{refused}");
+    assert!(refused.message.contains("Restart"));
+    assert_eq!(registry.state(2), FactsState::Stable);
+}
+
+fn poll_once<F: std::future::Future>(future: std::pin::Pin<&mut F>) -> bool {
+    let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+    future.poll(&mut context).is_ready()
+}
+
+/// Run one empty turn of `job`, as a native step that announces nothing would.
+fn empty_turn(job: &Job) {
+    job.claim()
+        .changes()
+        .begin(&Cancellation::default())
+        .unwrap()
+        .finish()
+        .unwrap();
+}
+/// Reserve a fresh private child named `key` in `parent` for `job` and finish the turn.
+fn reserve_once(job: &Job, parent: &Arc<TransferNamespaceParent>, key: &[u8]) -> bool {
+    let mut change = job
+        .claim()
+        .changes()
+        .begin(&Cancellation::default())
+        .unwrap();
+    let (_, fresh) = pin(vec![entry(parent.clone(), key, None, false)]);
+    let reserved = change
+        .reserve_private_child(Some(fresh), &Cancellation::default())
+        .unwrap();
+    change.finish().unwrap();
+    reserved
+}
+
+/// The production wait for a refused change (`blockers_changed`) is not ended by the
+/// refused transaction's own finish or by any later turn of the refused job: only the
+/// refusing peer can clear it. A peer latched opaque clears only by its removal.
+#[test]
+fn refused_job_own_turns_never_end_its_wait_for_the_refusing_peer() {
+    let registry = registry();
+    let shared = parent(1, &[1, 0]);
+    let mut first = one(
+        &registry,
+        1,
+        Write,
+        entry(shared.clone(), b"one", None, false),
+    );
+    let second = one(
+        &registry,
+        2,
+        Write,
+        entry(shared.clone(), b"two", None, false),
+    );
+    assert!(first.grant() && second.grant());
+    registry.inner.opaque(
+        1,
+        failure(io::ErrorKind::Other, "source handles still open"),
+    );
+    clear_peer_refusal();
+    assert!(!reserve_once(&second, &shared, b".me-0001"));
+    let Some(Refusal::Peer(blockers)) = take_peer_refusal() else {
+        panic!("the peer refusal must be recorded");
+    };
+    assert_eq!(take_peer_refusal(), None, "a refusal is taken once");
+    assert!(
+        !blockers.can_clear_in_place(),
+        "a latched peer clears only by its removal"
+    );
+    let watch = second.claim().watch();
+    let cleared = watch.blockers_changed(&blockers);
+    tokio::pin!(cleared);
+    assert!(
+        !poll_once(cleared.as_mut()),
+        "the refused job's own transaction finish ended its wait for the opaque peer"
+    );
+    empty_turn(&second);
+    assert!(
+        !poll_once(cleared.as_mut()),
+        "a later own turn ended the wait"
+    );
+    empty_turn(&first);
+    assert!(
+        !poll_once(cleared.as_mut()),
+        "a latched peer's turn cannot clear its refusal"
+    );
+    first.close();
+    assert!(poll_once(cleared.as_mut()));
+}
+
+/// An intersecting (not latched) peer can clear its refusal by any change of its own
+/// record, such as its next turn; the refused job's turns still never end the wait.
+#[test]
+fn intersecting_peer_refusal_waits_for_that_peers_next_change() {
+    let registry = registry();
+    let shared = parent(1, &[1, 0]);
+    let first = one(
+        &registry,
+        1,
+        Write,
+        entry(shared.clone(), b"one", None, false),
+    );
+    let second = one(
+        &registry,
+        2,
+        Write,
+        entry(shared.clone(), b"two", None, false),
+    );
+    assert!(first.grant() && second.grant());
+    clear_peer_refusal();
+    // The second job announces the first job's own slot.
+    assert!(!reserve_once(&second, &shared, b"one"));
+    let Some(Refusal::Peer(blockers)) = take_peer_refusal() else {
+        panic!("the intersecting peer's refusal must be recorded");
+    };
+    assert!(blockers.can_clear_in_place());
+    let watch = second.claim().watch();
+    let cleared = watch.blockers_changed(&blockers);
+    tokio::pin!(cleared);
+    empty_turn(&second);
+    assert!(!poll_once(cleared.as_mut()));
+    empty_turn(&first);
+    assert!(poll_once(cleared.as_mut()));
+}
+
+/// A refused grant (`Grant::Conflict`) waits only for a grant, removal or quarantine:
+/// ordinary turns of the conflicting peer do not end it.
+#[test]
+fn refused_grant_waits_only_for_a_structural_change() {
+    let registry = registry();
+    let shared = parent(1, &[1, 0]);
+    let mut first = one(
+        &registry,
+        1,
+        Write,
+        entry(shared.clone(), b"one", None, false),
+    );
+    assert!(first.grant());
+    let second = one(&registry, 2, Write, entry(shared, b"one", None, false));
+    let Grant::Conflict(seen) = second.claim().admit(&Cancellation::default()).unwrap() else {
+        panic!("an intersecting candidate must be refused");
+    };
+    let watch = second.claim().watch();
+    let structural = watch.changed(seen, true);
+    tokio::pin!(structural);
+    assert!(!poll_once(structural.as_mut()));
+    empty_turn(&first);
+    assert!(!poll_once(structural.as_mut()));
+    first.close();
+    assert!(poll_once(structural.as_mut()));
+}
+
+/// The record describes the last reservation only: a refused fresh name replaced by an
+/// accepted one in the same step is not reported as a refusal.
+#[test]
+fn accepted_reservation_replaces_an_earlier_refusal_of_the_same_step() {
+    let registry = registry();
+    let shared = parent(1, &[1, 0]);
+    let first = one(
+        &registry,
+        1,
+        Write,
+        entry(shared.clone(), b"one", None, false),
+    );
+    let second = one(
+        &registry,
+        2,
+        Write,
+        entry(shared.clone(), b"two", None, false),
+    );
+    assert!(first.grant() && second.grant());
+    let mut change = second
+        .claim()
+        .changes()
+        .begin(&Cancellation::default())
+        .unwrap();
+    let (_, taken) = pin(vec![entry(shared.clone(), b"one", None, false)]);
+    let (_, free) = pin(vec![entry(shared.clone(), b".me-0004", None, false)]);
+    assert!(
+        !change
+            .reserve_private_child(Some(taken), &Cancellation::default())
+            .unwrap()
+    );
+    assert!(
+        change
+            .reserve_private_child(Some(free), &Cancellation::default())
+            .unwrap()
+    );
+    change.finish().unwrap();
+    assert_eq!(take_peer_refusal(), None);
+}
+
+#[test]
+fn refusal_by_a_quarantined_peer_is_reported_as_endless() {
+    let registry = registry();
+    let shared = parent(1, &[1, 0]);
+    let first = one(
+        &registry,
+        1,
+        Write,
+        entry(shared.clone(), b"one", None, false),
+    );
+    let second = one(
+        &registry,
+        2,
+        Write,
+        entry(shared.clone(), b"two", None, false),
+    );
+    assert!(first.grant() && second.grant());
+    first.claim().quarantine();
+    clear_peer_refusal();
+    let mut change = second
+        .claim()
+        .changes()
+        .begin(&Cancellation::default())
+        .unwrap();
+    let (_, fresh) = pin(vec![entry(shared, b".me-0002", None, false)]);
+    assert!(
+        !change
+            .reserve_private_child(Some(fresh), &Cancellation::default())
+            .unwrap()
+    );
+    change.finish().unwrap();
+    assert_eq!(take_peer_refusal(), Some(Refusal::Quarantined));
+}
+
+/// A waiting candidate re-probes its granted peers. A peer pin that cannot be refreshed
+/// right now is not the candidate's failure: the candidate stays ungranted, and the peer
+/// is neither latched opaque nor charged a diagnostic by another job's admission.
+#[test]
+fn peer_probe_failure_keeps_the_candidate_waiting_without_latching_the_peer() {
+    let registry = registry();
+    let (control, native) = pin(vec![entry(parent(1, &[1, 0]), b"one", None, false)]);
+    let first = Job::new(&registry, 1, vec![(Write, Some(native))]);
+    assert!(first.grant());
+    *control.probe.lock().unwrap() = Err(failure(
+        io::ErrorKind::InvalidInput,
+        "original namespace leaf binding changed",
+    ));
+    let second = one(
+        &registry,
+        2,
+        Write,
+        entry(parent(9, &[9, 0]), b"unrelated", None, false),
     );
     assert!(!second.grant());
+    assert!(!second.grant());
+    assert_eq!(registry.state(1), FactsState::Stable);
+    assert!(first.claim().take_diagnostics().is_empty());
+    assert_eq!(registry.state(2), FactsState::Stable);
+    *control.probe.lock().unwrap() = Ok(TransferNamespaceProbe::Known(
+        vec![entry(parent(1, &[1, 0]), b"one", None, false)].into(),
+    ));
+    assert!(second.grant());
 }
 
 #[test]
@@ -1974,6 +2251,7 @@ fn touched_existing_empty_alias_is_removed_and_its_slot_can_be_reused() {
 #[test]
 fn fresh_empty_private_and_original_announcements_remain_invalid() {
     let registry = registry();
+    let _observer = observer(&registry);
     let (control, root) = pin(vec![entry(parent(1, &[1, 0]), b"output", None, false)]);
     let owner = Job::new(&registry, 1, vec![(Write, Some(root.clone()))]);
     assert!(owner.grant());
@@ -2003,6 +2281,7 @@ fn fresh_empty_private_and_original_announcements_remain_invalid() {
 #[test]
 fn fresh_private_pin_does_not_opt_unmodified_helpers_into_partial_refresh() {
     let registry = registry();
+    let _observer = observer(&registry);
     let shared = parent(1, &[1, 0]);
     let (control, native) = pin(vec![entry(shared.clone(), b"selected", None, true)]);
     let job = Job::new(&registry, 1, vec![(Write, Some(native))]);
@@ -2038,6 +2317,102 @@ fn fresh_private_pin_does_not_opt_unmodified_helpers_into_partial_refresh() {
             .facts
             .conflicts(&descendant)
     );
+}
+
+/// Without a granted peer nobody compares this job's committed facts, so a finish probes
+/// only what the turn announced (not every accumulated pin). Any later grant first
+/// re-probes every planned pin, so an object materialized meanwhile still excludes a
+/// conflicting candidate.
+#[test]
+fn unobserved_finish_probes_only_announced_pins_and_the_next_grant_revalidates_all() {
+    let registry = registry();
+    let shared = parent(1, &[1, 0]);
+    let (control, native) = pin(vec![entry(shared.clone(), b"selected", None, true)]);
+    let job = Job::new(&registry, 1, vec![(Write, Some(native))]);
+    assert!(job.grant());
+    let before = control.calls.load(Ordering::SeqCst);
+    let mut transaction = job
+        .claim()
+        .changes()
+        .begin(&Cancellation::default())
+        .unwrap();
+    let (alias_control, alias) = pin(vec![entry(shared.clone(), b"temp", None, true)]);
+    assert!(
+        transaction
+            .reserve_private_child(Some(alias), &Cancellation::default())
+            .unwrap()
+    );
+    *control.probe.lock().unwrap() = Ok(TransferNamespaceProbe::Known(
+        vec![entry(shared, b"selected", Some(50), true)].into(),
+    ));
+    let alias_before = alias_control.calls.load(Ordering::SeqCst);
+    transaction.finish().unwrap();
+    assert_eq!(control.calls.load(Ordering::SeqCst), before);
+    assert!(alias_control.calls.load(Ordering::SeqCst) > alias_before);
+    let descendant = one(
+        &registry,
+        2,
+        Write,
+        entry(parent(50, &[50, 1, 0]), b"child", None, false),
+    );
+    assert!(!descendant.grant());
+    assert!(control.calls.load(Ordering::SeqCst) > before);
+}
+
+/// A job without a granted peer refreshes only announced pins per turn. Its final
+/// revalidation before closing still latches an external change to an untouched pinned
+/// binding and records it as the job's diagnostic, as a full turn refresh would have.
+/// A claim that was never granted touched nothing and is not revalidated.
+#[test]
+fn final_revalidation_reports_an_untouched_pin_change_of_a_lone_job() {
+    let registry = registry();
+    let shared = parent(1, &[1, 0]);
+    let (_, touched) = pin(vec![entry(shared.clone(), b"touched", None, false)]);
+    let (untouched_control, untouched) =
+        pin(vec![entry(shared.clone(), b"untouched", None, false)]);
+    let mut job = Job::new(
+        &registry,
+        1,
+        vec![(Write, Some(touched.clone())), (Read, Some(untouched))],
+    );
+    assert!(job.grant());
+    let before = untouched_control.calls.load(Ordering::SeqCst);
+    let mut transaction = job
+        .claim()
+        .changes()
+        .begin(&Cancellation::default())
+        .unwrap();
+    assert!(
+        transaction
+            .reserve_private_child(Some(touched), &Cancellation::default())
+            .unwrap()
+    );
+    transaction.finish().unwrap();
+    assert_eq!(
+        untouched_control.calls.load(Ordering::SeqCst),
+        before,
+        "a lone job's turn refreshes only what it announced"
+    );
+    *untouched_control.probe.lock().unwrap() = Err(failure(
+        io::ErrorKind::InvalidInput,
+        "original namespace parent or ancestry changed",
+    ));
+    job.claim().revalidate_before_close();
+    assert!(untouched_control.calls.load(Ordering::SeqCst) > before);
+    // The same persistent failure seen again is reported once.
+    job.claim().revalidate_before_close();
+    let diagnostics = job.claim().take_diagnostics();
+    assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
+    assert!(diagnostics[0].message.contains("ancestry changed"));
+    assert_eq!(registry.state(1), FactsState::Opaque);
+
+    let (waiting_control, waiting) = pin(vec![entry(shared, b"touched", None, false)]);
+    let ungranted = Job::new(&registry, 2, vec![(Write, Some(waiting))]);
+    let planned = waiting_control.calls.load(Ordering::SeqCst);
+    ungranted.claim().revalidate_before_close();
+    assert_eq!(waiting_control.calls.load(Ordering::SeqCst), planned);
+    assert!(ungranted.claim().take_diagnostics().is_empty());
+    job.close();
 }
 
 #[test]
@@ -2083,6 +2458,7 @@ fn intersecting_announcement_is_not_coverage_of_a_larger_alias() {
 #[test]
 fn equal_geometry_fresh_pin_does_not_enable_incremental_finish() {
     let registry = registry();
+    let _observer = observer(&registry);
     let shared = parent(1, &[1, 0]);
     let first_scope = entry(shared.clone(), b"first", None, false);
     let (_, first) = pin(vec![first_scope.clone()]);

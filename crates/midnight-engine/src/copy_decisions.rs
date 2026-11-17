@@ -1,4 +1,5 @@
-//! Async decisions keep lifetime authority without occupying a blocking worker.
+//! Async decisions keep native authority and the namespace share without occupying a
+//! blocking worker or the disk slot.
 use super::*;
 
 pub(super) struct DecisionWaiter<'a> {
@@ -8,6 +9,9 @@ pub(super) struct DecisionWaiter<'a> {
     pub decisions: &'a mut mpsc::Receiver<CopyDecision>,
     pub outbox: &'a CopyOutbox,
     pub throughput: &'a Arc<Mutex<Tracker>>,
+    /// The job's disk slot: released for the user's decision and readmitted through the
+    /// FIFO gate before the next native step (`ready_for_io`).
+    pub io: &'a midnight_work_budget::Permit,
 }
 
 impl DecisionWaiter<'_> {
@@ -20,29 +24,42 @@ impl DecisionWaiter<'_> {
         if self.cancel.is_cancelled() {
             return;
         }
+        // No native call is outstanding here; queued disk users must not wait for a user.
+        self.io.release();
         set_state(self.status, CopyOperationState::WaitingForDecision);
         sample_throughput(self.status, self.throughput);
         self.waiting.store(version, Ordering::Release);
         publish(self.outbox, snapshot(self.status)).await;
         self.outbox.send(Event::Copy(event)).await;
-        let mut timer = tokio::time::interval(Duration::from_millis(25));
+        let cancel = self.cancel;
         loop {
-            if self.cancel.is_cancelled() {
+            if cancel.is_cancelled() {
                 break;
             }
+            // A decision or an announced cancellation wakes this wait; nothing polls.
             tokio::select! {
                 decision = self.decisions.recv() => match decision {
                     Some(decision) => {
-                        if !self.cancel.is_cancelled() && decision.id == id
-                            && decision.version == version && accept(decision) { break; }
+                        let cancelling = matches!(decision.choice, CopyChoice::Cancel);
+                        if !cancel.is_cancelled() && decision.id == id
+                            && decision.version == version && accept(decision) {
+                            // An accepted Cancel needs no further step, so teardown never
+                            // waits for a disk slot to process it.
+                            if cancelling {
+                                cancel.cancel();
+                            }
+                            break;
+                        }
                     }
-                    None => { self.cancel.cancel(); break; }
+                    None => { cancel.cancel(); break; }
                 },
-                _ = timer.tick() => {},
+                () = self.outbox.controls.until(|| cancel.is_cancelled()) => {},
             }
         }
         self.waiting.store(0, Ordering::Release);
-        if !self.cancel.is_cancelled() {
+        if self.cancel.is_cancelled() {
+            set_state(self.status, CopyOperationState::CancelRequested);
+        } else {
             set_state(self.status, CopyOperationState::Running);
             sample_throughput(self.status, self.throughput);
         }
@@ -50,30 +67,43 @@ impl DecisionWaiter<'_> {
 }
 
 pub(super) fn retryable_error(error: &FsError) -> bool {
+    // A quarantined claim never clears, so Retry could only repeat the refusal.
     !matches!(
         error.kind,
         io::ErrorKind::InvalidInput
             | io::ErrorKind::InvalidData
             | io::ErrorKind::Unsupported
             | io::ErrorKind::AlreadyExists
-    )
+    ) && !crate::copy_namespace::is_blocked_by_quarantine(error)
 }
 
 #[derive(Default)]
 struct NamespacePlan {
     installed: bool,
 }
+type Endpoints = Vec<(
+    TransferNamespaceAccess,
+    Option<Arc<dyn TransferNamespacePin>>,
+)>;
 impl NamespacePlan {
+    #[cfg(test)]
     fn poll(
         &mut self,
         claim: &crate::copy_namespace::Claim,
-        endpoints: Vec<(
-            TransferNamespaceAccess,
-            Option<Arc<dyn TransferNamespacePin>>,
-        )>,
+        endpoints: Endpoints,
         io: Arc<midnight_work_budget::Permit>,
         cancel: &Cancellation,
     ) -> Result<bool, FsError> {
+        self.poll_grant(claim, endpoints, io, cancel)
+            .map(|grant| grant == Grant::Granted)
+    }
+    fn poll_grant(
+        &mut self,
+        claim: &crate::copy_namespace::Claim,
+        endpoints: Endpoints,
+        io: Arc<midnight_work_budget::Permit>,
+        cancel: &Cancellation,
+    ) -> Result<Grant, FsError> {
         if !self.installed {
             // plan_union takes the immutable pins before refresh can fail.
             // Retry revalidates those same owners; it must not install again.
@@ -84,12 +114,13 @@ impl NamespacePlan {
             drop(endpoints);
             drop(io);
         }
-        claim.try_grant(cancel)
+        claim.admit(cancel)
     }
 }
+use crate::copy_namespace::Grant;
 
 enum PreparationStep {
-    Waiting(Owned<preparation::Preparation>, NamespacePlan),
+    Waiting(Owned<preparation::Preparation>, NamespacePlan, Grant),
     Failed(Owned<preparation::Preparation>, NamespacePlan, FsError),
     Ready(Owned<worker::Job>),
     Unconfirmed,
@@ -126,7 +157,8 @@ pub(super) async fn prepare_job(
         // blocked grant subsequently refreshes through its retained registry.
         let mut revalidate = true;
         let error = loop {
-            if !wait_for_pause(
+            if !ready_for_io(
+                waiter.io,
                 waiter.cancel,
                 waiter.status,
                 waiter.outbox,
@@ -164,22 +196,23 @@ pub(super) async fn prepare_job(
                             "Preparation has no namespace claim.",
                         )
                     })?;
-                    if !plan.poll(claim, endpoints, io, &cancel)? {
-                        return Ok(None);
+                    let grant = plan.poll_grant(claim, endpoints, io, &cancel)?;
+                    if grant != Grant::Granted {
+                        return Ok(Err(grant));
                     }
                     set_resource_wait(&status, Some(&tracker), None);
                     let mut job = ownership::Armed::new(scope.attempt(cancel, status)?);
                     job.set_decision_version(version);
-                    Ok(Some(job))
+                    Ok(Ok(job))
                 });
                 match result {
-                    Ok(Ok(Some(job))) => {
+                    Ok(Ok(Ok(job))) => {
                         match ownership::handoff_job(preparation, job.into_inner()) {
                             Ok(job) => PreparationStep::Ready(job),
                             Err(_) => PreparationStep::Unconfirmed,
                         }
                     }
-                    Ok(Ok(None)) => PreparationStep::Waiting(preparation, plan),
+                    Ok(Ok(Err(refused))) => PreparationStep::Waiting(preparation, plan, refused),
                     Ok(Err(error)) => PreparationStep::Failed(preparation, plan, error),
                     Err(_) => {
                         // run has already armed/quarantined every native owner.
@@ -191,7 +224,7 @@ pub(super) async fn prepare_job(
             .await;
             match attempt {
                 Ok(PreparationStep::Ready(job)) => return Ok(job),
-                Ok(PreparationStep::Waiting(returned, retained_plan)) => {
+                Ok(PreparationStep::Waiting(returned, retained_plan, refused)) => {
                     preparation = returned;
                     plan = retained_plan;
                     revalidate = false;
@@ -205,7 +238,31 @@ pub(super) async fn prepare_job(
                         );
                         publish(waiter.outbox, snapshot(waiter.status)).await;
                     }
-                    tokio::time::sleep(Duration::from_millis(25)).await;
+                    // The grant wait keeps the namespace share and planned record, never
+                    // the disk slot: granted peers and other disk users must progress.
+                    waiter.io.release();
+                    let watch = preparation
+                        .resources_mut()
+                        .namespace()
+                        .map(crate::copy_namespace::Claim::watch);
+                    let (since, structural) = match refused {
+                        Grant::Busy(seen) => (Some(seen), false),
+                        Grant::Conflict(seen) => (Some(seen), true),
+                        Grant::Granted => (None, false),
+                    };
+                    match (watch, since) {
+                        (Some(watch), Some(since)) => {
+                            wait_for_namespace(
+                                &watch,
+                                since,
+                                structural,
+                                waiter.cancel,
+                                waiter.outbox,
+                            )
+                            .await;
+                        }
+                        _ => tokio::time::sleep(NAMESPACE_RETRY_SPACING).await,
+                    }
                 }
                 Ok(PreparationStep::Failed(returned, retained_plan, error)) => {
                     preparation = returned;

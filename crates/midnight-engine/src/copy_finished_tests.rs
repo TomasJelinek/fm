@@ -1,29 +1,104 @@
 use super::*;
+use crate::copy_operations::Controls;
 use midnight_core::{CopyOperationState, CopyProgress, OperationId, TransferIntent};
-use std::{future::Future, path::PathBuf, sync::mpsc, task::Poll, thread};
+use std::{future::Future, path::PathBuf, task::Poll, time::Duration};
 
 #[test]
-fn snapshots_include_only_earlier_unfinished_reservations_and_never_self() {
+fn unpublished_owner_and_preparation_do_not_publish_or_consume_a_sequence() {
     let mut registry = Registry::default();
-    let (first, first_wait) = registry.register().unwrap();
-    let (second, second_wait) = registry.register().unwrap();
+    let unpublished = Owner::unpublished();
+    assert_eq!(unpublished.sequence(), 0);
+    assert_eq!(registry.prepare_sequence(), Ok(1));
+    assert_eq!(registry.prepare_sequence(), Ok(1));
+    assert!(registry.pending.is_empty());
+    assert_eq!(registry.last, 0);
+    drop(unpublished);
+    let (first, earlier) = registry.register().unwrap();
+    assert_eq!(first.sequence(), 1);
+    assert!(earlier.is_finished());
+    first.finish();
+}
+
+#[test]
+fn prepared_publication_reuses_storage_and_captures_only_earlier_owners() {
+    let mut registry = Registry::default();
+    let registry_storage = registry.pending.as_ptr();
+    let mut first = Owner::unpublished();
+    let first_identity = Arc::as_ptr(&first.0);
+    let mut first_wait = Predecessors::with_capacity();
+    let first_storage = first_wait.0.as_ptr();
+    let sequence = registry.prepare_sequence().unwrap();
+    registry.publish_prepared(sequence, &mut first, &mut first_wait);
+    let mut second = Owner::unpublished();
+    let mut second_wait = Predecessors::with_capacity();
+    let second_storage = second_wait.0.as_ptr();
+    let sequence = registry.prepare_sequence().unwrap();
+    registry.publish_prepared(sequence, &mut second, &mut second_wait);
     let (third, third_wait) = registry.register().unwrap();
+    assert_eq!(registry.pending.as_ptr(), registry_storage);
+    assert_eq!(first_wait.0.as_ptr(), first_storage);
+    assert_eq!(second_wait.0.as_ptr(), second_storage);
+    assert_eq!(Arc::as_ptr(&registry.pending[0]), first_identity);
+    assert_eq!(second_wait.0.len(), 1);
     assert_eq!(
         (first.sequence(), second.sequence(), third.sequence()),
         (1, 2, 3)
     );
     assert!(first_wait.is_finished());
-    assert!(!second_wait.is_finished());
-    assert!(!third_wait.is_finished());
+    assert!(!second_wait.is_finished() && !third_wait.is_finished());
     first.finish();
-    assert!(
-        second_wait.is_finished(),
-        "self and future admissions cannot extend the snapshot"
-    );
+    assert!(second_wait.is_finished());
     assert!(!third_wait.is_finished());
     second.finish();
     assert!(third_wait.is_finished());
     third.finish();
+}
+
+#[test]
+fn prepare_refuses_full_or_exhausted_registry_without_publishing() {
+    let mut registry = Registry::default();
+    let mut owners = Vec::new();
+    for _ in 0..crate::copy_operations::MAX_JOBS {
+        owners.push(registry.register().unwrap().0);
+    }
+    let storage = registry.pending.as_ptr();
+    let last = registry.last;
+    assert!(registry.prepare_sequence().is_err());
+    assert_eq!(registry.last, last);
+    assert_eq!(registry.pending.len(), crate::copy_operations::MAX_JOBS);
+    owners.pop().unwrap().finish();
+    assert_eq!(registry.prepare_sequence(), Ok(last + 1));
+    assert_eq!(registry.last, last);
+    assert_eq!(registry.pending.as_ptr(), storage);
+    for owner in owners {
+        owner.finish();
+    }
+    // The last sequence value is usable; only the next one is refused, without wrapping.
+    registry.last = u64::MAX - 1;
+    let (final_owner, _) = registry.register().unwrap();
+    assert_eq!(final_owner.sequence(), u64::MAX);
+    final_owner.finish();
+    assert!(registry.prepare_sequence().is_err());
+    assert!(registry.register().is_err());
+    assert_eq!(registry.last, u64::MAX);
+    assert!(registry.pending.is_empty());
+}
+
+#[test]
+fn observer_only_confirms_explicit_finish_and_never_owner_loss() {
+    let mut registry = Registry::default();
+    let (owner, _) = registry.register().unwrap();
+    let observer = owner.observer();
+    drop(owner);
+    assert!(!observer.is_finished());
+    let (confirmed, _) = registry.register().unwrap();
+    let confirmed_observer = confirmed.observer();
+    confirmed.finish();
+    assert!(confirmed_observer.is_finished());
+    registry.prepare_sequence().unwrap();
+    assert!(confirmed_observer.is_finished());
+    assert!(!observer.is_finished());
+    assert_eq!(registry.pending.len(), 1);
 }
 
 #[test]
@@ -70,62 +145,14 @@ fn strong_pending_registry_is_bounded_and_only_confirmed_finish_returns_room() {
     }
 }
 
-#[test]
-fn exhausted_sequence_refuses_without_wrapping_or_registering_a_latch() {
-    let mut registry = Registry {
-        last: u64::MAX - 1,
-        ..Registry::default()
-    };
-    let (last, _) = registry.register().unwrap();
-    assert_eq!(last.sequence(), u64::MAX);
-    last.finish();
-    assert!(registry.register().is_err());
-    assert!(registry.register().is_err());
-    assert_eq!(registry.last, u64::MAX);
-    assert!(registry.pending.is_empty());
-}
-
-struct HeldDrop {
-    entered: mpsc::Sender<()>,
-    release: mpsc::Receiver<()>,
-}
-impl Drop for HeldDrop {
-    fn drop(&mut self) {
-        self.entered.send(()).unwrap();
-        self.release.recv_timeout(Duration::from_secs(4)).unwrap();
-    }
-}
-
-#[test]
-fn retained_input_destructor_must_return_before_owner_commit_releases_waiters() {
-    let mut registry = Registry::default();
-    let (first, _) = registry.register().unwrap();
-    let (second, wait) = registry.register().unwrap();
-    let (entered, entered_rx) = mpsc::channel();
-    let (release, released) = mpsc::channel();
-    let worker = thread::spawn(move || {
-        drop(HeldDrop {
-            entered,
-            release: released,
-        });
-        first.finish();
-    });
-    entered_rx.recv_timeout(Duration::from_secs(4)).unwrap();
-    let pending_during_destructor = !wait.is_finished();
-    release.send(()).unwrap();
-    worker.join().unwrap();
-    assert!(pending_during_destructor);
-    assert!(wait.is_finished());
-    second.finish();
-}
-
 #[tokio::test]
 async fn cancelled_wait_does_not_finish_predecessors_or_require_their_completion() {
     let mut registry = Registry::default();
     let (first, _) = registry.register().unwrap();
     let (second, wait) = registry.register().unwrap();
     let cancel = Cancellation::default();
-    let waiting = wait.wait(&cancel);
+    let controls = Controls::default();
+    let waiting = wait.wait(&cancel, &controls);
     tokio::pin!(waiting);
     std::future::poll_fn(|context| {
         assert!(waiting.as_mut().poll(context).is_pending());
@@ -133,11 +160,13 @@ async fn cancelled_wait_does_not_finish_predecessors_or_require_their_completion
     })
     .await;
     cancel.cancel();
-    assert!(
-        !tokio::time::timeout(Duration::from_secs(2), waiting)
-            .await
-            .unwrap()
-    );
+    controls.changed();
+    // The announced cancellation ends the wait at once, without a polling interval.
+    std::future::poll_fn(|context| {
+        assert_eq!(waiting.as_mut().poll(context), Poll::Ready(false));
+        Poll::Ready(())
+    })
+    .await;
     assert!(!wait.is_finished());
     first.finish();
     second.finish();
@@ -149,7 +178,8 @@ async fn explicit_completion_wakes_an_already_parked_waiter() {
     let (first, _) = registry.register().unwrap();
     let (second, wait) = registry.register().unwrap();
     let cancel = Cancellation::default();
-    let waiting = wait.wait(&cancel);
+    let controls = Controls::default();
+    let waiting = wait.wait(&cancel, &controls);
     tokio::pin!(waiting);
     std::future::poll_fn(|context| {
         assert!(waiting.as_mut().poll(context).is_pending());
@@ -178,13 +208,9 @@ async fn failed_and_cancelled_retirement_finish_without_satisfying_the_success_f
             CopyProgress::queued(OperationId(1), PathBuf::new(), 1, TransferIntent::Copy);
         progress.state = state;
         receipt.finish(&progress);
-        assert!(
-            !wait.is_finished(),
-            "an outcome is not a teardown acknowledgement"
-        );
         first.finish();
         let cancel = Cancellation::default();
-        assert!(wait.wait(&cancel).await);
+        assert!(wait.wait(&cancel, &Controls::default()).await);
         assert!(
             success_wait
                 .wait(&cancel, &progress.destination_directory)

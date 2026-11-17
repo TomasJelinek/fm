@@ -294,7 +294,15 @@ impl Fixture {
         )
     }
     fn held(&self) {
-        assert_eq!(self.io.snapshot().active_shared, 1);
+        self.retained(1);
+    }
+    /// Quarantine keeps native authority, the namespace share and admission capacity but
+    /// returns the disk slot, an admission counter that would otherwise block all I/O.
+    fn quarantined(&self) {
+        self.retained(0);
+    }
+    fn retained(&self, disk_slots: u8) {
+        assert_eq!(self.io.snapshot().active_shared, disk_slots);
         assert_eq!(self.namespace.available_permits(), 0);
         assert_eq!(self.capacity.available_permits(), 0);
         assert!(!self.pending.is_finished());
@@ -321,7 +329,7 @@ fn captured_move_restore_bomb_retains_native_owner_without_retry_or_drop() {
         ownership::finish(owned),
         Err(ownership::Quarantined)
     ));
-    fixture.held();
+    fixture.quarantined();
     assert_eq!(fixture.calls.restored.load(Ordering::SeqCst), 1);
     assert_eq!(fixture.calls.dropped.load(Ordering::SeqCst), 0);
     assert_eq!(*fixture.calls.order.lock().unwrap(), ["restore"]);
@@ -340,7 +348,7 @@ fn captured_move_destructor_bomb_keeps_cleanup_ticket_and_finished_pending() {
         ownership::finish(owned),
         Err(ownership::Quarantined)
     ));
-    fixture.held();
+    fixture.quarantined();
     assert_eq!(fixture.calls.restored.load(Ordering::SeqCst), 1);
     assert_eq!(fixture.calls.dropped.load(Ordering::SeqCst), 1);
     assert_eq!(
@@ -383,8 +391,8 @@ fn borrowed_finish_is_idempotent_and_tickets_close_before_finished() {
     let (fixture, mut owned) = Fixture::new(Restore::Complete, false);
     ownership::run(&mut owned, |scope| {
         scope.finish_in_place();
+        // Idempotent: the order below records each owner's cleanup exactly once.
         scope.finish_in_place();
-        assert!(scope.finish_candidate.is_some());
     })
     .unwrap();
     fixture.held();

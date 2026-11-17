@@ -20,9 +20,9 @@ fn staged_native_capacity_is_real_but_not_visible_to_finished_snapshots() {
     assert_eq!(admission.capacity().available_permits(), MAX_JOBS);
     unpublished(&admission);
     let returned: Vec<_> = (0..MAX_JOBS)
-        .map(|_| admission.0.retirement.try_reserve_nowait().unwrap())
+        .map(|_| admission.0.retirement.try_reserve().unwrap())
         .collect();
-    assert!(admission.0.retirement.try_reserve_nowait().is_err());
+    assert!(admission.0.retirement.try_reserve().is_err());
     drop(returned);
 }
 
@@ -138,7 +138,7 @@ fn empty_stage_rollback_does_not_queue_behind_held_native_destruction() {
     });
     let refused = received.recv_timeout(Duration::from_secs(2));
     let returned = admission.capacity().available_permits();
-    let slot_returned = domain.try_reserve_nowait();
+    let slot_returned = domain.try_reserve();
     drop(state);
     let _ = release.send(());
     worker.join().unwrap();

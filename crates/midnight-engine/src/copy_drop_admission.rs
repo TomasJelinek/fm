@@ -18,7 +18,7 @@ impl Admission {
         if self.0.capacity.is_closed() || self.0.cancel.is_cancelled() {
             return Err(closed());
         }
-        let lease = self.0.retirement.try_reserve_nowait().map_err(|_| busy())?;
+        let lease = self.0.retirement.try_reserve().map_err(|_| busy())?;
         let capacity = self.0.capacity.clone().try_acquire_owned().map_err(|_| {
             if self.0.capacity.is_closed() {
                 closed()
@@ -117,7 +117,7 @@ impl StagedDrop {
             .expect("published drop keeps its original sealed owner");
         let reservation = Reservation {
             owned,
-            payload,
+            payload: Payload::new(payload, &admission),
             completions,
         };
         drop(fence);

@@ -152,24 +152,24 @@ async fn native_reservation_keeps_fifo_before_its_ui_payload_arrives() {
     assert!(
         matches!(h.next().await, CopyEvent::Progress(p) if p.state == CopyOperationState::Queued)
     );
-    let overtook = tokio::time::timeout(Duration::from_millis(200), async {
+    // The job reports the explicit dependency only once it is parked on the earlier
+    // native reservation; a job that overtook it would never set this wait reason.
+    let parked = tokio::time::timeout(Duration::from_secs(4), async {
         loop {
-            if let CopyEvent::Progress(progress) = h.next().await
-                && progress.state != CopyOperationState::Queued
-            {
-                break;
+            let status = snapshot(&h.controller.registry.lock().unwrap()[&OperationId(1)].status);
+            if status.wait_reason == Some(TransferWaitReason::EarlierTransfers) {
+                break status;
             }
+            tokio::time::sleep(Duration::from_millis(1)).await;
         }
     })
     .await
-    .is_ok();
+    .expect("later copy must wait for earlier native reservation");
+    assert_eq!(parked.state, CopyOperationState::Queued);
+    assert_eq!(fs::read_dir(&target).unwrap().count(), 0);
     drop(reservation);
     assert_eq!(h.terminal(1).await.state, CopyOperationState::Completed);
     h.close().await;
-    assert!(
-        !overtook,
-        "later copy must wait for earlier native reservation"
-    );
 }
 
 #[tokio::test]
@@ -287,7 +287,7 @@ async fn cancelling_or_shutting_down_a_predecessor_wait_never_holds_execution_ca
         let reservation = h.controller.reserve().unwrap();
         let mut mutations = Mutations::new(&mut h, &source);
         mutations.confirm().await;
-        assert_eq!(h.mutation.available_permits(), 32);
+        assert_eq!(h.mutation.available_permits(), NAMESPACE_WEIGHT as usize);
         assert_eq!(h.io.available_permits(), 1);
         if shutdown {
             mutations.controller.shutdown();
@@ -451,7 +451,14 @@ async fn abandoning_many_native_slots_preserves_the_bounded_capacity_and_next_co
     let first = h.controller.reserve().unwrap();
     for _ in 0..MAX_JOBS * 8 {
         drop(h.controller.reserve().unwrap());
+        // Retirement returns the admission permit, and the abandoned slot wakes the
+        // consumer, which prunes it: only the unfilled `first` remains queued.
         h.wait_capacity(MAX_JOBS - 1).await;
+        eventually(
+            || h.controller.pending_slots() == 1,
+            "an abandoned reservation must leave the bounded slot queue",
+        )
+        .await;
     }
     assert_eq!(h.controller.capacity().available_permits(), MAX_JOBS - 1);
     h.controller
@@ -462,6 +469,29 @@ async fn abandoning_many_native_slots_preserves_the_bounded_capacity_and_next_co
     assert_eq!(h.controller.capacity().available_permits(), MAX_JOBS);
     h.close().await;
     assert_eq!(fs::read(target.join("source")).unwrap(), b"copied");
+}
+
+/// Abandoning an unfilled reservation wakes the admission consumer, which prunes the
+/// closed slot at once even though it already scanned that slot while it was unfilled;
+/// it does not wait for its one-second fallback.
+#[tokio::test]
+async fn abandoned_reservation_is_pruned_at_once_after_the_consumer_scanned_it() {
+    let h = Harness::native();
+    let reservation = h.controller.reserve().unwrap();
+    // The consumer scans the unfilled slot, keeps it and parks again.
+    for _ in 0..16 {
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(h.controller.pending_slots(), 1);
+    drop(reservation);
+    tokio::time::timeout(Duration::from_millis(500), async {
+        while h.controller.pending_slots() != 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("the abandoned slot must be pruned without waiting for the slow fallback");
+    h.close().await;
 }
 
 #[test]
@@ -559,7 +589,7 @@ fn assert_link_resources_held_until_drop(
     assert_eq!(owners, expected_owners);
     assert!(
         snapshots.iter().all(|(_, io, mutation, capacity)| {
-            *io == 0 && *mutation == 31 && *capacity == MAX_JOBS - 1
+            *io == 0 && *mutation == NAMESPACE_WEIGHT as usize - 1 && *capacity == MAX_JOBS - 1
         }),
         "cleanup and every native/provider destructor retain all leases: {snapshots:?}"
     );
@@ -568,15 +598,8 @@ fn assert_link_resources_held_until_drop(
 async fn wait_for_retired_copy_capacity(h: &Harness) {
     let capacity = h.controller.capacity();
     assert!(capacity.is_closed(), "shutdown keeps Copy admission closed");
-    tokio::time::timeout(Duration::from_secs(4), async {
-        while capacity.available_permits() != MAX_JOBS {
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .expect("actual cleanup and retained-owner destruction must return every Copy permit");
+    h.wait_capacity(MAX_JOBS).await;
     assert!(capacity.is_closed());
-    assert_eq!(capacity.available_permits(), MAX_JOBS);
 }
 
 async fn staged_link_decision(h: &mut Harness, partial: bool) {
@@ -629,7 +652,10 @@ async fn shutdown_during_blocked_link_sync_keeps_actual_return_ownership_and_wor
     h.tasks.abort_all();
     while h.tasks.join_next().await.is_some() {}
     assert_eq!(h.io.available_permits(), 0);
-    assert_eq!(h.mutation.available_permits(), 31);
+    assert_eq!(
+        h.mutation.available_permits(),
+        NAMESPACE_WEIGHT as usize - 1
+    );
     assert_eq!(h.controller.capacity().available_permits(), MAX_JOBS - 1);
     assert!(fixture.control.drop_threads().is_empty());
     assert_eq!(fixture.control.cleanups.load(Ordering::SeqCst), 0);
@@ -640,7 +666,10 @@ async fn shutdown_during_blocked_link_sync_keeps_actual_return_ownership_and_wor
         .await
         .unwrap();
     assert_eq!(h.io.available_permits(), 0);
-    assert_eq!(h.mutation.available_permits(), 31);
+    assert_eq!(
+        h.mutation.available_permits(),
+        NAMESPACE_WEIGHT as usize - 1
+    );
     assert_eq!(h.controller.capacity().available_permits(), MAX_JOBS - 1);
     assert!(fixture.control.owner_drops().is_empty());
     assert_eq!(fixture.control.staged_count(), 1);
@@ -703,8 +732,8 @@ async fn decision_abort_keeps_full_and_partial_link_stages_under_the_dedicated_i
         h.controller.enqueue_options(fixture.options(1)).await;
         staged_link_decision(&mut h, partial).await;
         assert!(
-            h.io.clone().try_acquire_owned().is_err(),
-            "a staged decision retains its actual Copy permit"
+            h.io.clone().try_acquire_owned().is_ok(),
+            "a staged decision returns its disk slot; forced teardown reclaims it"
         );
         assert_eq!(fixture.control.staged_count(), 1);
         drop(registration);
@@ -714,7 +743,10 @@ async fn decision_abort_keeps_full_and_partial_link_stages_under_the_dedicated_i
             .await
             .unwrap();
         assert_eq!(h.io.available_permits(), 0);
-        assert_eq!(h.mutation.available_permits(), 31);
+        assert_eq!(
+            h.mutation.available_permits(),
+            NAMESPACE_WEIGHT as usize - 1
+        );
         assert_eq!(h.controller.capacity().available_permits(), MAX_JOBS - 1);
         assert!(fixture.control.owner_drops().is_empty());
         assert!(registered.upgrade().is_some());
@@ -722,7 +754,7 @@ async fn decision_abort_keeps_full_and_partial_link_stages_under_the_dedicated_i
         release.0.take().unwrap().send(()).unwrap();
         wait_for_retired_copy_capacity(&h).await;
         assert_eq!(h.io.available_permits(), 1);
-        assert_eq!(h.mutation.available_permits(), 32);
+        assert_eq!(h.mutation.available_permits(), NAMESPACE_WEIGHT as usize);
         assert_eq!(fixture.control.cleanups.load(Ordering::SeqCst), 1);
         assert_eq!(fixture.control.staged_count(), 0);
         assert_eq!(
@@ -777,7 +809,9 @@ async fn multiple_link_roots_continue_and_finish_with_the_retained_copy_permit()
     assert_eq!(fixture.control.cleanups.load(Ordering::SeqCst), 2);
     assert_eq!(fixture.control.staged_count(), 0);
     assert_eq!(h.io.available_permits(), 1);
-    assert_eq!(h.controller.capacity().available_permits(), MAX_JOBS);
+    // The admission permit also bounds terminal delivery, so on this multi-thread
+    // runtime it returns just after the terminal event reaches the outbox.
+    h.wait_capacity(MAX_JOBS).await;
     assert!(registered.upgrade().is_none());
     assert_link_resources_held_until_drop(
         &fixture,
@@ -813,7 +847,8 @@ async fn cancelling_staged_link_decisions_reuses_the_copy_permit_for_actual_clea
         h.controller.enqueue_options(fixture.options(1)).await;
         staged_link_decision(&mut h, partial).await;
         drop(registration);
-        assert!(h.io.clone().try_acquire_owned().is_err());
+        // The pending decision returned the slot; cancellation cleanup reclaims it below.
+        assert!(h.io.clone().try_acquire_owned().is_ok());
         h.controller.cancel(OperationId(1));
         tokio::time::timeout(Duration::from_secs(4), cleanup_entered.notified())
             .await
@@ -829,7 +864,8 @@ async fn cancelling_staged_link_decisions_reuses_the_copy_permit_for_actual_clea
         assert_eq!(fixture.control.cleanups.load(Ordering::SeqCst), 1);
         assert_eq!(fixture.control.staged_count(), 0);
         assert_eq!(h.io.available_permits(), 1);
-        assert_eq!(h.controller.capacity().available_permits(), MAX_JOBS);
+        // As above: the admission permit returns just after terminal delivery.
+        h.wait_capacity(MAX_JOBS).await;
         assert!(registered.upgrade().is_none());
         assert_link_resources_held_until_drop(&fixture, &["stage", "source", "provider"]);
         h.close().await;

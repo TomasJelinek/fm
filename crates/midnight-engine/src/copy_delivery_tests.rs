@@ -45,6 +45,11 @@ async fn a_blocked_initial_delivery_does_not_require_work_to_wait_or_overtake_it
     terminal
         .send(progress(CopyOperationState::Completed))
         .unwrap();
+    // Let the delivery task run (current-thread runtime): it must park on the full
+    // outbox, neither finishing nor dropping the initial event.
+    for _ in 0..8 {
+        tokio::task::yield_now().await;
+    }
     assert!(!delivery.is_finished());
     assert_eq!(
         event_state(receiver.recv().await.unwrap()),
@@ -185,7 +190,7 @@ async fn stale_progress_is_refused_while_terminal_delivery_is_blocked() {
         .unwrap();
     tokio::time::timeout(Duration::from_secs(1), async {
         while !outbox.sender.intermediates_closed() {
-            tokio::task::yield_now().await;
+            tokio::time::sleep(Duration::from_millis(1)).await;
         }
     })
     .await
