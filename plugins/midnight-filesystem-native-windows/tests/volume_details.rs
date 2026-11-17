@@ -26,13 +26,15 @@ fn native_volume_details_preserve_capacity_label_and_failures() {
         .map(|unit| u16::from_le_bytes(*unit))
         .collect();
     let root = String::from_utf16(&units).unwrap().to_lowercase();
-    let fixture_path = std::fs::canonicalize(&fixture.path)
-        .unwrap()
-        .to_string_lossy()
-        .to_lowercase();
+    let fixture_path = win32_form(
+        &std::fs::canonicalize(&fixture.path)
+            .unwrap()
+            .to_string_lossy()
+            .to_lowercase(),
+    );
     assert!(!root.starts_with(r"\\?\"), "{root}");
     assert!(
-        fixture_path.trim_start_matches(r"\\?\").starts_with(&root),
+        fixture_path.starts_with(&root),
         "{root} must contain {fixture_path}"
     );
     assert!(
@@ -86,6 +88,21 @@ fn native_volume_details_accept_raw_and_long_directory_identities() {
             Response::VolumeInformation(_)
         ));
     }
+}
+/// The Win32 form the plugin publishes for a lowercased verbatim path:
+/// `\\?\unc\server\share\...` becomes `\\server\share\...` (a checkout on a
+/// share or mapped drive) and `\\?\c:\...` becomes `c:\...`.
+fn win32_form(verbatim: &str) -> String {
+    match verbatim.strip_prefix(r"\\?\unc\") {
+        Some(share) => format!(r"\\{share}"),
+        None => verbatim.trim_start_matches(r"\\?\").to_owned(),
+    }
+}
+#[test]
+fn verbatim_fixture_paths_compare_in_their_win32_form() {
+    assert_eq!(win32_form(r"\\?\c:\work\x"), r"c:\work\x");
+    assert_eq!(win32_form(r"\\?\unc\server\share\x"), r"\\server\share\x");
+    assert_eq!(win32_form(r"c:\work\x"), r"c:\work\x");
 }
 fn raw_name() -> std::ffi::OsString {
     use std::os::windows::ffi::OsStringExt;
