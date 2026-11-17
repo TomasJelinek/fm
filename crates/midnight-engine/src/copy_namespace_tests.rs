@@ -1,9 +1,23 @@
 //! Namespace grants use complete native metadata and confirmed ownership boundaries.
 use super::*;
 use std::{
+    cell::RefCell,
     sync::atomic::{AtomicUsize, Ordering},
     thread,
 };
+
+thread_local! {
+    static AFTER_RESERVATION_SNAPSHOT: RefCell<Option<Box<dyn FnOnce()>>> = const {
+        RefCell::new(None)
+    };
+}
+
+pub(super) fn after_reservation_snapshot() {
+    let hook = AFTER_RESERVATION_SNAPSHOT.with(|slot| slot.borrow_mut().take());
+    if let Some(hook) = hook {
+        hook();
+    }
+}
 
 fn id(value: u64) -> TransferIdentity {
     TransferIdentity {
@@ -1184,6 +1198,273 @@ fn closing_waits_for_actual_probe_release_and_cleanup_turn_preserves_closing() {
         .finish()
         .unwrap();
     assert_eq!(registry.state(1), FactsState::Closing);
+}
+
+#[test]
+fn known_disjoint_closing_peer_does_not_refuse_private_reservation() {
+    let registry = registry();
+    let shared = parent(1, &[1, 0]);
+    let (peer_control, peer_pin) = pin(vec![entry(shared.clone(), b"first.bin", Some(10), false)]);
+    let mut peer = Job::new(&registry, 1, vec![(Write, Some(peer_pin))]);
+    let mut owner = one(
+        &registry,
+        2,
+        Write,
+        entry(shared.clone(), b"second.bin", None, false),
+    );
+    assert!(peer.grant());
+    assert!(owner.grant());
+    peer.claim().begin_closing().unwrap();
+    assert_eq!(registry.state(1), FactsState::Closing);
+    assert_eq!(peer_control.dropped.load(Ordering::SeqCst), 0);
+    assert_eq!(registry.inner.io.snapshot().active_shared, 2);
+
+    let (candidate_control, candidate) = pin(vec![entry(shared, b"second.bin", None, false)]);
+    *candidate_control.drop_registry.lock().unwrap() = Some(Arc::downgrade(&registry.inner));
+    let mut transaction = owner
+        .claim()
+        .changes()
+        .begin(&Cancellation::default())
+        .unwrap();
+    let reserved = transaction
+        .reserve_private_child(Some(candidate), &Cancellation::default())
+        .unwrap();
+    transaction.finish().unwrap();
+    assert!(
+        reserved,
+        "known disjoint peer retirement must not refuse the owned publication name"
+    );
+    assert_eq!(candidate_control.dropped.load(Ordering::SeqCst), 0);
+    assert_eq!(peer_control.dropped.load(Ordering::SeqCst), 0);
+    assert_eq!(registry.inner.io.snapshot().active_shared, 2);
+
+    // Closing must keep its cleanup turn and its actual owners until confirmed retirement.
+    peer.claim()
+        .changes()
+        .begin(&Cancellation::default())
+        .unwrap()
+        .finish()
+        .unwrap();
+    assert_eq!(registry.state(1), FactsState::Closing);
+    peer.close();
+    assert_eq!(peer_control.dropped.load(Ordering::SeqCst), 1);
+    assert_eq!(registry.inner.io.snapshot().active_shared, 1);
+    owner.close();
+    assert_eq!(candidate_control.dropped.load(Ordering::SeqCst), 1);
+    assert_eq!(registry.inner.io.snapshot().active_shared, 0);
+}
+
+#[test]
+fn peer_completion_after_private_reservation_snapshot_does_not_refuse_disjoint_name() {
+    let registry = registry();
+    let shared = parent(1, &[1, 0]);
+    let (peer_control, peer_pin) = pin(vec![entry(shared.clone(), b"first.bin", Some(10), false)]);
+    let mut peer = Job::new(&registry, 1, vec![(Write, Some(peer_pin))]);
+    let mut owner = one(
+        &registry,
+        2,
+        Write,
+        entry(shared.clone(), b"second.bin", None, false),
+    );
+    assert!(peer.grant());
+    assert!(owner.grant());
+    let (candidate_control, candidate) = pin(vec![entry(shared, b"second.bin", None, false)]);
+    *candidate_control.drop_registry.lock().unwrap() = Some(Arc::downgrade(&registry.inner));
+    let changes = owner.claim().changes();
+
+    let reserved = thread::scope(|threads| {
+        let (entered, observed) = std::sync::mpsc::channel();
+        let (continue_send, continue_receive) = std::sync::mpsc::channel();
+        // Release the worker before scoped joining even if a main-thread assertion unwinds.
+        let release = Release(Some(continue_send));
+        let worker = threads.spawn(move || {
+            AFTER_RESERVATION_SNAPSHOT.with(|slot| {
+                let mut slot = slot.borrow_mut();
+                assert!(slot.is_none());
+                *slot = Some(Box::new(move || {
+                    entered.send(()).unwrap();
+                    continue_receive.recv().unwrap();
+                }));
+            });
+            let mut transaction = changes.begin(&Cancellation::default()).unwrap();
+            let reserved = transaction
+                .reserve_private_child(Some(candidate), &Cancellation::default())
+                .unwrap();
+            transaction.finish().unwrap();
+            reserved
+        });
+        observed.recv_timeout(Duration::from_secs(5)).unwrap();
+        let epoch = {
+            let state = registry.inner.state.lock().unwrap();
+            assert_eq!(state.turn, Some(2));
+            state.revision
+        };
+        assert_eq!(registry.inner.io.snapshot().active_shared, 2);
+        peer.close();
+        assert_eq!(peer_control.dropped.load(Ordering::SeqCst), 1);
+        assert_eq!(registry.inner.io.snapshot().active_shared, 1);
+        {
+            let state = registry.inner.state.lock().unwrap();
+            assert_eq!(state.turn, Some(2));
+            assert!(!state.records.contains_key(&1));
+            assert!(state.revision > epoch);
+        }
+        drop(release);
+        worker.join().unwrap()
+    });
+    assert!(
+        reserved,
+        "completion of a disjoint peer after the snapshot must not refuse publication"
+    );
+    assert_eq!(candidate_control.dropped.load(Ordering::SeqCst), 0);
+    assert_eq!(registry.inner.io.snapshot().active_shared, 1);
+    owner.close();
+    assert_eq!(candidate_control.dropped.load(Ordering::SeqCst), 1);
+    assert_eq!(registry.inner.io.snapshot().active_shared, 0);
+}
+
+#[test]
+fn private_reservation_rechecks_new_peer_obstructions_after_snapshot() {
+    #[derive(Clone, Copy, Debug)]
+    enum Obstruction {
+        OpaqueFacts,
+        LatchedOpaque,
+        Quarantined,
+        Conflicting,
+    }
+
+    for obstruction in [
+        Obstruction::OpaqueFacts,
+        Obstruction::LatchedOpaque,
+        Obstruction::Quarantined,
+        Obstruction::Conflicting,
+    ] {
+        let registry = registry();
+        let shared = parent(1, &[1, 0]);
+        let (peer_control, peer_pin) =
+            pin(vec![entry(shared.clone(), b"first.bin", Some(10), false)]);
+        let mut peer = Job::new(&registry, 1, vec![(Write, Some(peer_pin))]);
+        let mut owner = one(
+            &registry,
+            2,
+            Write,
+            entry(shared.clone(), b"second.bin", None, false),
+        );
+        assert!(peer.grant());
+        assert!(owner.grant());
+        let replacement = match obstruction {
+            Obstruction::OpaqueFacts | Obstruction::Conflicting => {
+                let probe = if matches!(obstruction, Obstruction::OpaqueFacts) {
+                    TransferNamespaceProbe::Unknown
+                } else {
+                    TransferNamespaceProbe::Known(
+                        vec![entry(shared.clone(), b"second.bin", None, false)].into(),
+                    )
+                };
+                Some(Arc::new(
+                    Facts::build(vec![PinFact {
+                        root: Some(0),
+                        alias: None,
+                        access: Write,
+                        probe,
+                    }])
+                    .unwrap(),
+                ))
+            }
+            Obstruction::LatchedOpaque | Obstruction::Quarantined => None,
+        };
+        let (candidate_control, candidate) = pin(vec![entry(shared, b"second.bin", None, false)]);
+        *candidate_control.drop_registry.lock().unwrap() = Some(Arc::downgrade(&registry.inner));
+        let changes = owner.claim().changes();
+
+        let outcome = thread::scope(|threads| {
+            let (entered, observed) = std::sync::mpsc::channel();
+            let (continue_send, continue_receive) = std::sync::mpsc::channel();
+            let release = Release(Some(continue_send));
+            let worker = threads.spawn(move || {
+                AFTER_RESERVATION_SNAPSHOT.with(|slot| {
+                    let mut slot = slot.borrow_mut();
+                    assert!(slot.is_none());
+                    *slot = Some(Box::new(move || {
+                        entered.send(()).unwrap();
+                        continue_receive.recv().unwrap();
+                    }));
+                });
+                let mut transaction = changes.begin(&Cancellation::default()).unwrap();
+                let result =
+                    transaction.reserve_private_child(Some(candidate), &Cancellation::default());
+                let finished = transaction.finish();
+                (result, finished)
+            });
+            observed.recv_timeout(Duration::from_secs(5)).unwrap();
+            let original = {
+                let mut state = registry.inner.state.lock().unwrap();
+                assert_eq!(state.turn, Some(2));
+                let record = state.records.get_mut(&1).unwrap();
+                assert!(record.granted);
+                // Change only cached host metadata at the validation boundary;
+                // the admitted claim, native pins and actual I/O owners remain intact.
+                let original = (
+                    record.state,
+                    record.opaque_latched,
+                    record.facts.clone(),
+                    record.quarantined.load(Ordering::Acquire),
+                );
+                match obstruction {
+                    Obstruction::OpaqueFacts => {
+                        record.state = FactsState::Opaque;
+                    }
+                    Obstruction::LatchedOpaque => {
+                        record.state = FactsState::Opaque;
+                        record.opaque_latched = true;
+                    }
+                    Obstruction::Quarantined => {
+                        record.state = FactsState::Quarantined;
+                        record.quarantined.store(true, Ordering::Release);
+                    }
+                    Obstruction::Conflicting => {}
+                }
+                if let Some(replacement) = replacement {
+                    record.facts = replacement;
+                }
+                Inner::bump(&mut state, 1).unwrap();
+                original
+            };
+            drop(release);
+            let outcome = worker.join();
+            // Restore synthetic metadata before interpreting any worker assertion
+            // or error, so fixture teardown never clears a genuine native failure.
+            {
+                let mut state = registry
+                    .inner
+                    .state
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner());
+                let record = state.records.get_mut(&1).unwrap();
+                record.state = original.0;
+                record.opaque_latched = original.1;
+                record.facts = original.2;
+                record.quarantined.store(original.3, Ordering::Release);
+                Inner::bump(&mut state, 1).unwrap();
+            }
+            outcome
+        });
+        let (reserved, finished) = outcome.unwrap();
+        finished.unwrap();
+        assert!(
+            !matches!(reserved, Ok(true)),
+            "{obstruction:?} introduced after the snapshot was ignored: {reserved:?}"
+        );
+        assert_eq!(owner.claim().alias_count(), 0);
+        assert_eq!(candidate_control.dropped.load(Ordering::SeqCst), 1);
+        assert_eq!(peer_control.dropped.load(Ordering::SeqCst), 0);
+        assert_eq!(registry.inner.io.snapshot().active_shared, 2);
+        peer.close();
+        assert_eq!(peer_control.dropped.load(Ordering::SeqCst), 1);
+        assert_eq!(registry.inner.io.snapshot().active_shared, 1);
+        owner.close();
+        assert_eq!(registry.inner.io.snapshot().active_shared, 0);
+    }
 }
 
 #[test]

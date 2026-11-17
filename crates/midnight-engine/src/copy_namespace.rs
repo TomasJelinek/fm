@@ -1570,67 +1570,86 @@ impl TransferNamespaceChange for Transaction {
                 probe,
             };
             let candidate = Facts::build(vec![fact.clone()])?;
-            let (epoch, prior, own_opaque, peers) = {
+            let (prior, mapping, mut state) = loop {
+                cancelled(cancel)?;
+                let (epoch, prior, own_opaque, peers) = {
+                    let state = self
+                        .context
+                        .registry
+                        .state
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner());
+                    let record = state
+                        .records
+                        .get(&self.context.sequence)
+                        .ok_or_else(unconfirmed)?;
+                    if state.turn != Some(self.context.sequence)
+                        || record.state == FactsState::Quarantined
+                    {
+                        return Err(unconfirmed());
+                    }
+                    let peers: Vec<_> = state
+                        .records
+                        .iter()
+                        .filter(|(sequence, record)| {
+                            **sequence != self.context.sequence && record.granted
+                        })
+                        .map(|(_, record)| {
+                            (record.facts.clone(), record.opaque_latched, record.state)
+                        })
+                        .collect();
+                    (
+                        state.revision,
+                        record.facts.clone(),
+                        record.facts.is_opaque() || record.opaque_latched,
+                        peers,
+                    )
+                };
+                #[cfg(test)]
+                tests::after_reservation_snapshot();
+                let unsupported = candidate.is_opaque() && (!peers.is_empty() || !own_opaque);
+                // Closing retains its facts and owners. Its cleanup cannot change
+                // names while this transaction holds the mutation turn.
+                let conflicts = peers.iter().any(|(facts, opaque, state)| {
+                    *opaque
+                        || matches!(state, FactsState::Quarantined)
+                        || candidate.conflicts(facts)
+                });
+                let mapping = if unsupported || conflicts {
+                    None
+                } else {
+                    prior.announcement(&fact)
+                };
                 let state = self
                     .context
                     .registry
                     .state
                     .lock()
                     .unwrap_or_else(|error| error.into_inner());
-                let record = state
-                    .records
-                    .get(&self.context.sequence)
-                    .ok_or_else(unconfirmed)?;
                 if state.turn != Some(self.context.sequence)
-                    || record.state == FactsState::Quarantined
+                    || state
+                        .records
+                        .get(&self.context.sequence)
+                        .is_none_or(|record| record.state == FactsState::Quarantined)
                 {
                     return Err(unconfirmed());
                 }
-                let peers: Vec<_> = state
-                    .records
-                    .iter()
-                    .filter(|(sequence, record)| {
-                        **sequence != self.context.sequence && record.granted
-                    })
-                    .map(|(_, record)| (record.facts.clone(), record.opaque_latched, record.state))
-                    .collect();
-                (
-                    state.revision,
-                    record.facts.clone(),
-                    record.facts.is_opaque() || record.opaque_latched,
-                    peers,
-                )
+                if state.revision != epoch {
+                    // Only host metadata is re-read; retain the same candidate
+                    // pin and I/O witness without waiting or replaying publication.
+                    continue;
+                }
+                if unsupported {
+                    return Err(failure(
+                        io::ErrorKind::Unsupported,
+                        "An unknown announcement requires the already exclusive opaque lane.",
+                    ));
+                }
+                if conflicts {
+                    return Ok(false);
+                }
+                break (prior, mapping, state);
             };
-            if candidate.is_opaque() && (!peers.is_empty() || !own_opaque) {
-                return Err(failure(
-                    io::ErrorKind::Unsupported,
-                    "An unknown announcement requires the already exclusive opaque lane.",
-                ));
-            }
-            if peers.iter().any(|(facts, opaque, state)| {
-                *opaque
-                    || matches!(state, FactsState::Closing | FactsState::Quarantined)
-                    || candidate.conflicts(facts)
-            }) {
-                return Ok(false);
-            }
-            let mapping = prior.announcement(&fact);
-            let mut state = self
-                .context
-                .registry
-                .state
-                .lock()
-                .unwrap_or_else(|error| error.into_inner());
-            if state.revision != epoch || state.turn != Some(self.context.sequence) {
-                return Ok(false);
-            }
-            if state
-                .records
-                .get(&self.context.sequence)
-                .is_none_or(|record| record.state == FactsState::Quarantined)
-            {
-                return Err(unconfirmed());
-            }
             // Only the exact original registered capability opts in. Existing
             // helpers which announce fresh temporary children remain full-refresh.
             // An opted-in helper must announce EVERY affected original/private
