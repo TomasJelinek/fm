@@ -262,7 +262,11 @@ impl NativeProvider {
             check_cancel(cancelled)?;
             for node in entries {
                 check_cancel(cancelled)?;
-                validate_node(&node)?;
+                // `services::entry` decodes and validates the address, name and timestamp
+                // once; only the identity check of `validate_node` is not repeated there.
+                if node.id == 0 {
+                    return Err(invalid("Invalid filesystem node ID"));
+                }
                 if seen.len() >= 1_000_000 || !seen.insert(node.id) {
                     return Err(invalid("Directory node limit or repeated identity"));
                 }

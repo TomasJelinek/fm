@@ -13,6 +13,35 @@ struct Active {
     ordinary: usize,
     rename_reserved: bool,
     control: bool,
+    #[cfg(test)]
+    probe: probe::Probe,
+}
+
+/// Test-only observation that a caller is blocked on the latest admission state.
+/// Only releases can admit a parked caller, and each release advances the epoch, so
+/// a caller parked at the current epoch provably stays blocked until the next release.
+#[cfg(test)]
+mod probe {
+    use std::{collections::HashMap, thread::ThreadId};
+    #[derive(Debug, Default)]
+    pub(super) struct Probe {
+        epoch: u64,
+        parked: HashMap<ThreadId, u64>,
+    }
+    impl Probe {
+        pub(super) fn park(&mut self) {
+            self.parked.insert(std::thread::current().id(), self.epoch);
+        }
+        pub(super) fn wake(&mut self) {
+            self.parked.remove(&std::thread::current().id());
+        }
+        pub(super) fn released(&mut self) {
+            self.epoch += 1;
+        }
+        pub(super) fn parked_on_current_state(&self, thread: ThreadId) -> bool {
+            self.parked.get(&thread) == Some(&self.epoch)
+        }
+    }
 }
 
 #[derive(Debug, Default)]
@@ -41,6 +70,8 @@ impl Admission {
             active.rename_reserved = true;
         }
         loop {
+            #[cfg(test)]
+            active.probe.wake();
             check_cancel(cancelled)?;
             let limit = if active.rename_reserved {
                 RENAME_ORDINARY_CALLS
@@ -51,6 +82,9 @@ impl Admission {
                 active.ordinary += 1;
                 return Ok(Ordinary(self));
             }
+            #[cfg(test)]
+            active.probe.park();
+            // Cancellation has no wake signal; the timeout only rechecks it.
             active = self
                 .available
                 .wait_timeout(active, std::time::Duration::from_millis(10))
@@ -62,12 +96,16 @@ impl Admission {
         let mut active = lock(&self.active);
         active.rename_reserved = true;
         while active.ordinary > RENAME_ORDINARY_CALLS || active.control {
+            #[cfg(test)]
+            active.probe.park();
             // This is independent of user cancellation. Seven existing ordinary
             // owners must actually release one before control plus cleanup can fit.
             active = self
                 .available
                 .wait(active)
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
+            #[cfg(test)]
+            active.probe.wake();
         }
         active.control = true;
         Control(self)
@@ -75,11 +113,19 @@ impl Admission {
     pub(crate) fn cleanup(&self) -> MutexGuard<'_, ()> {
         lock(&self.cleanup)
     }
+    #[cfg(test)]
+    pub(crate) fn parked_on_current_state(&self, thread: std::thread::ThreadId) -> bool {
+        lock(&self.active).probe.parked_on_current_state(thread)
+    }
 }
 pub(crate) struct Ordinary<'a>(&'a Admission);
 impl Drop for Ordinary<'_> {
     fn drop(&mut self) {
-        lock(&self.0.active).ordinary -= 1;
+        let mut active = lock(&self.0.active);
+        active.ordinary -= 1;
+        #[cfg(test)]
+        active.probe.released();
+        drop(active);
         // Control and general waiters have different predicates on the same state.
         self.0.available.notify_all();
     }
@@ -87,7 +133,11 @@ impl Drop for Ordinary<'_> {
 pub(crate) struct Control<'a>(&'a Admission);
 impl Drop for Control<'_> {
     fn drop(&mut self) {
-        lock(&self.0.active).control = false;
+        let mut active = lock(&self.0.active);
+        active.control = false;
+        #[cfg(test)]
+        active.probe.released();
+        drop(active);
         self.0.available.notify_all();
     }
 }
@@ -123,8 +173,18 @@ mod tests {
             let result = worker_admission.enter(&|| worker_cancel.load(Ordering::Acquire));
             send.send(result.is_ok()).unwrap();
         });
-        // An eighth normal read may not consume the destructor's reserved slot.
-        assert!(received.recv_timeout(Duration::from_millis(80)).is_err());
+        // An eighth normal read may not consume the destructor's reserved slot: it
+        // parks on the current state, which only a release (none happens) can change.
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while !admission.parked_on_current_state(worker.thread().id()) {
+            assert!(received.try_recv().is_err(), "an eighth read was admitted");
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the read never waited"
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert!(received.try_recv().is_err());
         {
             let _cleanup = admission.cleanup();
             assert_eq!(lock(&admission.active).ordinary, 7);
