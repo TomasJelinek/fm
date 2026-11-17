@@ -130,9 +130,11 @@ contexts. Cloning an archive location or mount retains the same leases: list,
 read and validate reject revocation before and after provider calls. Resources
 are destroyed before their registrations. Cancellation and revocation propagate into
 running listings, which the archive host ends between pages without stopping the
-shared worker. Member reads of a shared archive mount go through `read_cooperative`,
-because cancelling a plain protocol-1/2 read terminates the worker that other tabs,
-viewers and jobs use. A late successful reply cannot publish after cancellation.
+shared worker. Member reads of a shared archive mount go through `read_cooperative`.
+Cancelling a listing or member read never ends the worker that other tabs, viewers
+and jobs use: protocol 3 cancels cooperatively, and protocol-1/2 reads finish their
+exchange while the host discards the result. A late successful reply cannot publish
+after cancellation.
 These are routing/lifetime checks, not immutable file identity, authorization
 to mutate, or proof that a row is still selected in the current panel snapshot.
 

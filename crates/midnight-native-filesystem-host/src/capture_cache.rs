@@ -1,5 +1,6 @@
-//! Many captured identities share a small backend reader cache instead of pinning
-//! one native reader/mount for every file in the viewer's captured panel order.
+//! Many captured identities (viewer, comparison, thumbnail, command-artwork and
+//! archive captures) share a small backend reader cache instead of pinning one
+//! native reader/mount for every captured file.
 use crate::{Cancel, NativeProvider, client::PendingRelease, discovery::invalid};
 use midnight_filesystem_plugin_api::Failure;
 use midnight_plugin_host::{CapturedFile, ContentSource, Error};

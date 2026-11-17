@@ -1,13 +1,14 @@
 //! Request-scoped calls on archive mounts shared by panes, trees, viewers and jobs.
 //!
 //! The filesystem host ends a cancelled listing between its bounded page exchanges
-//! and keeps the worker. A member read is different: protocol-1/2 workers cannot
-//! interrupt a staged read, so cancelling the token of a plain `ArchiveMount::read`
-//! while it is outstanding terminates the worker and invalidates the mount for every
-//! other owner. Routine request cancellation (a cancelled copy, a revoked tree
-//! target) therefore reaches member reads only through `read_cooperative`, which
-//! protocol 3 cancels at safe checkpoints and older protocols drain and discard.
-//! Hard tokens remain for mount-owned lifetimes such as a session's own open.
+//! and keeps the worker, and it never ends a shared worker for a cancelled member
+//! read either: protocol 3 cancels a read at safe checkpoints, while protocol-1/2
+//! workers cannot interrupt a staged read, so the host finishes that exchange and
+//! discards the result. Routine request cancellation (a cancelled copy, a revoked tree
+//! target) still reaches member reads only through `read_cooperative`, so that the
+//! engine never depends on a host's choice for a plain `ArchiveMount::read` whose
+//! token is cancelled. Hard tokens remain for mount-owned lifetimes such as a
+//! session's own open.
 use midnight_core::{ArchiveMount, Cancellation, FsError};
 
 /// Read one bounded member range of a possibly shared mount. A late successful
@@ -38,10 +39,12 @@ pub(crate) mod testing {
         time::Duration,
     };
 
-    /// Like the filesystem host with a protocol-1/2 worker: a cancelled listing is
-    /// discarded and the mount stays usable, but a plain read whose token is cancelled
-    /// while the exchange is held terminates the worker, after which every list/read
-    /// fails. `read_cooperative` keeps the trait's drain-and-discard default.
+    /// A deliberately stricter host than the current filesystem host: a cancelled
+    /// listing is discarded and the mount stays usable, but a plain read whose token is
+    /// cancelled while the exchange is held terminates the worker, after which every
+    /// list/read fails (as earlier hosts did). Engine code must stay correct even
+    /// then, so its member reads go through `read_cooperative`, which keeps the
+    /// trait's drain-and-discard default here.
     #[derive(Debug, Default)]
     pub(crate) struct SharedMount {
         id: u64,

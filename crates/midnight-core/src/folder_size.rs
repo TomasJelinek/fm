@@ -4,7 +4,9 @@
 pub struct FolderSizeScanId(pub u64);
 
 /// Logical file lengths, not allocated disk usage or a filesystem snapshot.
-/// Native directory links are followed; file links and ancestry cycles are skipped.
+/// A scanned root that is itself a native directory link is measured through its
+/// target; directory and file links met inside the measured tree, and ancestry
+/// cycles, are never followed and are counted in `skipped_links`.
 /// Special files are excluded; errors make a result explicitly partial.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct FolderSize {
