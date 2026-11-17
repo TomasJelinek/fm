@@ -2,6 +2,7 @@
 use crate::{
     MainWindow, PanelFilterPresentation, Presenter,
     dialog_focus::{FocusReturn, restore_after_popup},
+    presentation_eq::same_image,
 };
 use midnight_core::{Command, FilterMode, PanelFilter};
 use slint::{ComponentHandle, SharedString};
@@ -111,7 +112,12 @@ fn synchronize(ctx: &Rc<Context>, main: &MainWindow, p: &Presenter) {
     let generation = p.filter_dialog.generation;
     let presentation = main.global::<PanelFilterPresentation>();
     presentation.set_model(main.get_panel_filter_view());
-    presentation.set_close_icon(main.get_action_icons().close);
+    // Runs on every refresh while the filter is open; an absent icon never
+    // equals itself, so an unconditional set repaints the form each time.
+    let close = main.get_action_icons().close;
+    if !same_image(&presentation.get_close_icon(), &close) {
+        presentation.set_close_icon(close);
+    }
     if ctx.generation.get() == Some(generation) {
         // The existing controls own edits; status/theme changes never call begin.
         return;

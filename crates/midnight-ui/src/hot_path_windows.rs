@@ -2,6 +2,7 @@
 use crate::{
     HotPathsPresentation, MainWindow, Presenter,
     dialog_focus::{FocusReturn, restore_after_popup},
+    presentation_eq::SamePresentation,
 };
 use midnight_core::{Bookmark, BookmarkId, Command, PaneId};
 use slint::{ComponentHandle, SharedString};
@@ -142,7 +143,12 @@ pub(crate) fn install(
 fn update(main: &MainWindow) {
     let presentation = main.global::<HotPathsPresentation>();
     presentation.set_model(main.get_bookmarks());
-    presentation.set_action_icons(main.get_action_icons());
+    // Runs on every refresh while the manager is open. An absent icon never
+    // equals itself, so an unconditional set repaints the manager each time.
+    let icons = main.get_action_icons();
+    if !presentation.get_action_icons().same_presentation(&icons) {
+        presentation.set_action_icons(icons);
+    }
 }
 
 fn current(ctx: &Context, token: &str) -> Option<Record> {
