@@ -146,11 +146,9 @@ export component MainWindow inherits Window {
     in property <int> drag-hover-pane: -1;
     in property <int> drag-hover-row: -1;
     in property <string> drag-label;
-    in property <[string]> keyboard-actions;
-    in property <int> keyboard-selected;
-    in property <string> keyboard-action-id;
+    // Legacy test surface for the selected shortcut (Options uses
+    // KeyboardEditorView); remove once no test reads or invokes it.
     in property <string> keyboard-bindings;
-    in property <string> keyboard-revision;
     in property <string> keyboard-scope;
     in property <string> keyboard-error;
     callback keyboard-apply(string, string);

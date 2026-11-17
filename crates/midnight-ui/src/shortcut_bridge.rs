@@ -5,7 +5,7 @@ use crate::{
     refresh, shortcut_input,
 };
 use midnight_core::{Command, ShortcutChord, ShortcutContext};
-use slint::{ComponentHandle, Model, VecModel};
+use slint::{ComponentHandle, Model};
 use std::{cell::RefCell, rc::Rc, sync::Arc};
 
 type Bindings = Rc<RefCell<Arc<KeyboardBindings>>>;
@@ -115,20 +115,6 @@ fn install_routing(window: &MainWindow, bindings: Bindings) {
         state.borrow().function_slot(index, modifiers, searching)
     });
     hints.set_revision(bindings.borrow().revision_text.clone());
-    if window.get_keyboard_actions().row_count() == 0 {
-        window.set_keyboard_actions(
-            Rc::new(VecModel::from(
-                bindings
-                    .borrow()
-                    .map
-                    .definitions()
-                    .iter()
-                    .map(|action| action.label.as_str().into())
-                    .collect::<Vec<_>>(),
-            ))
-            .into(),
-        );
-    }
     let weak = window.as_weak();
     let state = bindings.clone();
     window.on_files_key(move |pane, event, active, composing| {
@@ -385,36 +371,23 @@ pub(crate) fn install(
 pub(crate) fn refresh_bindings(window: &MainWindow, presenter: &Presenter) {
     crate::shortcut_editor::refresh(window, presenter);
     let state = &presenter.keyboard;
-    let action = &state.snapshot.map.definitions()[state.selected];
-    if window.get_keyboard_revision() == state.editor_revision_text
-        && window.get_keyboard_action_id() == action.id
-        && window.get_keyboard_error() == state.error
-    {
-        return;
-    }
-    window.set_keyboard_bindings(state.snapshot.editor_text(&action.id).into());
-    window.set_keyboard_scope(state.snapshot.scope(&action.id).into());
-    window.set_keyboard_error(state.error.as_str().into());
-    window.set_keyboard_selected(state.selected as i32);
-    window.set_keyboard_action_id(action.id.as_str().into());
     let hints = window.global::<ShortcutHints>();
     if hints.get_revision() != state.snapshot.revision_text {
-        window.set_keyboard_actions(
-            Rc::new(VecModel::from(
-                state
-                    .snapshot
-                    .map
-                    .definitions()
-                    .iter()
-                    .map(|definition| definition.label.as_str().into())
-                    .collect::<Vec<_>>(),
-            ))
-            .into(),
-        );
         hints.set_revision(state.snapshot.revision_text.clone());
     }
-    if window.get_keyboard_revision() != state.editor_revision_text {
-        window.set_keyboard_revision(state.editor_revision_text.clone());
+    // Legacy test surface (main.slint `keyboard-*`): the selected shortcut's
+    // keys and scope and the last edit error. Compare first; they rarely change.
+    let action = &state.snapshot.map.definitions()[state.selected];
+    let bindings = state.snapshot.editor_text(&action.id);
+    if window.get_keyboard_bindings().as_str() != bindings {
+        window.set_keyboard_bindings(bindings.into());
+    }
+    let scope = state.snapshot.scope(&action.id);
+    if window.get_keyboard_scope().as_str() != scope {
+        window.set_keyboard_scope(scope.into());
+    }
+    if window.get_keyboard_error() != state.error {
+        window.set_keyboard_error(state.error.as_str().into());
     }
 }
 
