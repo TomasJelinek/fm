@@ -1,4 +1,4 @@
-# Thumbnail executable API 0.1.0
+# Thumbnail executable API 0.1.0 and SDK 0.2.1
 
 This workspace is separate from the already published viewer API/SDK 0.1.0.
 It neither changes those packages nor extends their binary viewer ABI.
@@ -18,7 +18,11 @@ The worker host first sends `MWS1` limits. Before reading any media request the 
 verifies Windows AppContainer/job restrictions or installs Linux seccomp/rlimits,
 then replies `MWR1`. `MTH1` length-prefixed messages follow. Requests specify a
 source length, maximum dimensions, request identity and frame index 0–5. Helpers
-read/seek through bounded read-only broker messages. Responses contain exact-size
+read/seek through bounded read-only broker messages. Each read asks for at most
+256 KiB within the captured length, and the SDK fails it unless the reply has
+exactly that length, as the image-viewer SDK does; a short reply means the source
+changed. SDK 0.2.1 adds this check (0.2.0 accepted a shorter nonempty reply);
+the released 0.2.0 package is not replaced. Responses contain exact-size
 straight-alpha RGBA8 sRGB pixels or a failure; no paths, URLs, HTML or executable
 content are accepted as results. The parent validates identity, size, source
 revision, cancellation and deadlines before accepting a frame.

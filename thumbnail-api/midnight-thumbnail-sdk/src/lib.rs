@@ -6,6 +6,9 @@ use std::io::{self, Read, Seek, SeekFrom, Write};
 pub trait ReadSeek: Read + Seek {}
 impl<T: Read + Seek> ReadSeek for T {}
 
+/// Seekable view of the captured source. Each read asks the host for exactly the
+/// bytes it can return and fails unless the reply has that exact length; a short
+/// reply means the source changed and is never treated as a partial read or EOF.
 pub struct Broker<'a, R, W> {
     input: &'a mut R,
     output: &'a mut W,
@@ -42,18 +45,18 @@ impl<R: Read, W: Write> Read for Broker<'_, R, W> {
         let api::Message::Data(data) = api::read_message(self.input)? else {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                "Invalid broker read reply",
+                "Invalid source-read reply",
             ));
         };
-        if data.is_empty() || data.len() > length {
+        if data.len() != length {
             return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "Invalid broker read length",
+                io::ErrorKind::UnexpectedEof,
+                "Captured source read changed length",
             ));
         }
-        bytes[..data.len()].copy_from_slice(&data);
-        self.position += data.len() as u64;
-        Ok(data.len())
+        bytes[..length].copy_from_slice(&data);
+        self.position += length as u64;
+        Ok(length)
     }
 }
 impl<R: Read, W: Write> Seek for Broker<'_, R, W> {
