@@ -102,15 +102,22 @@ resource bound; no path is truncated or used as an operation target. Status
 samples skip a full output queue, and generation/cancellation guards prevent old
 searches from reviving after Stop, completion, restart or Close.
 
+Result modification times use the native date and time format of panel
+listings. The search worker fills a missing localized time through the engine
+locale once when it retains an ordinary result or collects a duplicate
+candidate, so a candidate that joins no group is formatted too; Go to file
+formats the validated entry it reports the same way. A time the provider
+already formatted is kept: the Windows provider formats no time, so examined
+nodes that never match cost no locale call, while the Linux provider currently
+formats every node it opens. Without an engine locale, an unformatted time
+shows the labelled UTC fallback.
+
 Name, Extension, Path, Size and Modified headers toggle ascending/descending
 sorting. Text keys use the same captured engine locale as panels; numeric sizes
 and native timestamps are compared directly, with unknown values last in both
-directions. Result modification times use that engine locale too: each result is
-formatted once when published, and the Windows provider no longer formats every
-examined node (the Linux provider still does). Extension uses the panel Type
-semantics: directories first, missing extensions last in either direction,
-native locale keys with raw fallback, then ascending locale filename and raw
-filename ties. Missing locale keys stay after
+directions. Extension uses the panel Type semantics: directories first, missing
+extensions last in either direction, native locale keys with raw fallback, then
+ascending locale filename and raw filename ties. Missing locale keys stay after
 keyed text in either direction. Dotfiles without an extension and explicit empty
 extensions retain the same distinction as panel entries. Native raw paths/IDs
 finish deterministic ties; unrepresentable names stay raw.

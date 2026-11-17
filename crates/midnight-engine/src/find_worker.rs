@@ -276,7 +276,8 @@ pub(crate) fn search_with_progress_interval(
                 match source.revalidate(cancel) {
                     Ok(()) => {
                         if request.duplicates {
-                            // Duplicate groups publish copies of their candidates.
+                            // Duplicate groups publish copies of their candidates, so every
+                            // candidate is formatted, including one that joins no group.
                             let entry = work.localized(source.entry());
                             if !candidates.collect(&entry, &mut work) {
                                 break 'roots;

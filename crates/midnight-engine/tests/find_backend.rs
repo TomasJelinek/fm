@@ -514,8 +514,9 @@ fn partial_batches_follow_the_progress_cadence_while_traversal_continues() {
 }
 
 /// A synthetic native tree: `folders` folders of `files` empty files, every node with its
-/// own identity and modification time. Files reopen by path for duplicate checks. A
-/// `provider_locale` formats every node the provider opens (the former Windows provider).
+/// own identity and modification time; the `one_byte` file holds one byte instead. Files
+/// reopen by path for duplicate checks. A `provider_locale` formats every node the
+/// provider opens (the former Windows provider).
 mod synthetic {
     use midnight_core::*;
     use std::{
@@ -528,6 +529,7 @@ mod synthetic {
     pub struct Tree {
         pub folders: usize,
         pub files: usize,
+        pub one_byte: Option<PathBuf>,
         pub provider_locale: Option<Arc<dyn LocaleService>>,
     }
     #[derive(Clone, Copy)]
@@ -553,13 +555,15 @@ mod synthetic {
             let mut object = [0; 16];
             object[..8].copy_from_slice(&index.to_le_bytes());
             let modified = SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000 + index * 61);
+            let size = (kind == EntryKind::File)
+                .then(|| u64::from(self.one_byte.as_ref().is_some_and(|file| *file == path)));
             Node {
                 tree: self.clone(),
                 entry: FindEntry {
                     path,
                     kind,
                     metadata: EntryMetadata {
-                        size: (kind == EntryKind::File).then_some(0),
+                        size,
                         modified: Some(modified),
                         localized_modified: self
                             .provider_locale
@@ -632,7 +636,7 @@ mod synthetic {
             Ok(Some(FindChild::Entry(Box::new(child))))
         }
         fn read_chunk(&mut self, _: &mut [u8], _: &Cancellation) -> Result<usize, FsError> {
-            panic!("synthetic files are empty")
+            panic!("synthetic file contents are never read")
         }
     }
 }
@@ -694,33 +698,52 @@ fn sorted_times<'a>(times: impl IntoIterator<Item = &'a SystemTime>) -> Vec<Syst
 }
 
 #[test]
-fn the_engine_locale_formats_each_published_result_once_and_no_other_node() {
+fn the_engine_locale_formats_each_result_and_duplicate_candidate_once_and_no_other_node() {
+    let root = std::env::current_dir().unwrap();
+    // The three matches are folder-N/file-7.txt; the first one holds one byte.
+    let one_byte = root.join("folder-0").join("file-7.txt");
     let tree = synthetic::Tree {
         folders: 3,
         files: 10,
+        one_byte: Some(one_byte.clone()),
         provider_locale: None,
     };
-    let mut query = request(vec![std::env::current_dir().unwrap()]);
+    let mut query = request(vec![root]);
     query.masks = "file-7.txt".into();
-    for duplicates in [false, true] {
-        query.duplicates = duplicates;
+    let search = |query: &FindRequest| {
         let locale = RecordingLocale::default();
-        let (summary, results) = synthetic_search(&tree, Some(&locale), &query);
+        let (summary, results) = synthetic_search(&tree, Some(&locale), query);
         assert_eq!(summary.progress.examined, 33);
-        assert_eq!(results.len(), 3);
-        assert_eq!(summary.progress.duplicate_groups, u64::from(duplicates));
-        let published = results.iter().map(|result| {
+        for result in &results {
             let metadata = &result.entry.metadata;
-            let modified = metadata.modified.as_ref().unwrap();
-            assert_eq!(metadata.localized_modified, Some(seconds(*modified)));
-            modified
-        });
-        // Three folders and 27 nonmatching files were examined but never formatted.
-        assert_eq!(
-            sorted_times(locale.formatted.lock().unwrap().iter()),
-            sorted_times(published)
-        );
-    }
+            assert_eq!(metadata.localized_modified, metadata.modified.map(seconds));
+        }
+        let formatted = sorted_times(locale.formatted.lock().unwrap().iter());
+        (summary, results, formatted)
+    };
+    let modified_times = |results: &[Arc<FindResult>]| {
+        sorted_times(
+            results
+                .iter()
+                .map(|result| result.entry.metadata.modified.as_ref().unwrap()),
+        )
+    };
+    // An ordinary search formats each of its three results once. The three folders and
+    // 27 nonmatching files are examined but never formatted.
+    let (_, results, formatted) = search(&query);
+    assert_eq!(results.len(), 3);
+    let matches = modified_times(&results);
+    assert_eq!(formatted, matches);
+    // A duplicate search formats each candidate once when it collects it, because a
+    // group publishes copies of its candidates. The one-byte candidate is alone in its
+    // size bucket: it is never read and joins no group, yet it was formatted too.
+    query.duplicates = true;
+    let (summary, results, formatted) = search(&query);
+    assert_eq!(summary.progress.duplicate_candidates, 3);
+    assert_eq!(summary.progress.duplicate_groups, 1);
+    assert_eq!(results.len(), 2);
+    assert!(results.iter().all(|result| result.entry.path != one_byte));
+    assert_eq!(formatted, matches);
     // A time the provider formatted is kept, and without a locale results keep the
     // provider's absent value (the UI shows its labelled UTC fallback).
     query.duplicates = false;
@@ -769,6 +792,7 @@ fn synthetic_name_search_localization_measurement() {
             let tree = synthetic::Tree {
                 folders: 400,
                 files: 625,
+                one_byte: None,
                 provider_locale: provider_formats
                     .then(|| provider.clone() as Arc<dyn LocaleService>),
             };

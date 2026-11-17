@@ -252,7 +252,7 @@ fn ordinary(entry: &FindEntry) -> Result<(), FsError> {
     }
 }
 /// Captures a node's facts. Its localized modification time is left to the engine, which
-/// formats only results: most examined nodes never become one.
+/// formats only the matches it keeps: most examined nodes never match.
 fn snapshot(file: &File, path: &Path) -> Result<(FindEntry, Native), FsError> {
     // SAFETY: the owned live handle is only queried for its native type.
     if unsafe { GetFileType(file.as_raw_handle()) } != FILE_TYPE_DISK {
