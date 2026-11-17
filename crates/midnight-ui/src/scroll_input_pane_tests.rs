@@ -54,6 +54,32 @@ impl Harness {
         }
     }
 
+    /// Advance frames until wheel motion and idle snapping have finished: no
+    /// wheel timer, no interaction, and both offsets unchanged for longer than
+    /// PanelList's 80 ms idle delay (seven 16 ms frames), so a pending snap
+    /// would have moved them. `max` bounds only a failure; a fixed settle
+    /// length wastes frames, each refreshing two 1,000-row panes.
+    fn settle(&self, max: usize) {
+        const STABLE_FRAMES: usize = 7;
+        let mut previous = (self.offset(0), self.offset(1));
+        let mut stable = 0;
+        for _ in 0..max {
+            self.advance(1);
+            let current = (self.offset(0), self.offset(1));
+            let idle = !self.timer.running() && !self.window.get_scroll_interaction_active();
+            stable = if idle && current == previous {
+                stable + 1
+            } else {
+                0
+            };
+            if stable == STABLE_FRAMES {
+                return;
+            }
+            previous = current;
+        }
+        panic!("panel scrolling did not settle within {max} frames");
+    }
+
     fn input(&self, event: WindowEvent) -> bool {
         observe(&self.window, &self.state, &self.timer, &event)
     }
@@ -217,17 +243,12 @@ fn real_file_panes_interpolate_wheel_during_model_refresh_then_snap_after_idle()
         "all wheel pixels delivered once"
     );
     assert!(!h.window.get_scroll_interaction_active());
-    let settling: Vec<_> = (0..24)
-        .map(|_| {
-            h.advance(1);
-            h.offset(0)
-        })
-        .collect();
+    h.settle(40);
     let row = h.window.global::<Theme>().get_row_height();
     let snapped = (-60.0 / row).round() * row;
     assert!(
         (h.offset(0) - snapped).abs() < 0.01,
-        "resting position aligns to a row: expected {snapped}, actual {}, row {row}, frames {settling:?}",
+        "resting position aligns to a row: expected {snapped}, actual {}, row {row}",
         h.offset(0)
     );
     assert!(!h.timer.running(), "no perpetual animation timer");
@@ -259,7 +280,7 @@ fn real_file_panes_interpolate_wheel_during_model_refresh_then_snap_after_idle()
     assert!(!h.timer.running());
     h.window.set_left_cursor(0);
     h.window.invoke_reveal_left();
-    h.advance(30);
+    h.settle(30);
     assert_eq!(
         h.offset(0),
         0.0,
@@ -270,14 +291,14 @@ fn real_file_panes_interpolate_wheel_during_model_refresh_then_snap_after_idle()
     h.advance(1);
     h.point(left_x, h.window.get_left_list_top() + 100.0);
     assert!(h.wheel(-1.0));
-    h.advance(40);
+    h.settle(60);
     assert!(
         h.offset(0) < -60.0,
         "a discrete thumbnail notch must reach another band instead of snapping back"
     );
     h.window.invoke_view_mode(0, 0);
     h.window.invoke_reveal_left();
-    h.advance(30);
+    h.settle(30);
 
     // Other scrollable controls keep native behavior. A popup covering the
     // list must never have its input transformed into delayed panel frames.
@@ -364,7 +385,7 @@ fn file_panel_scrollbar_wheel_releases_explicit_cursor_reveal_and_keeps_panel_po
             selected, last as i32,
             "wheel does not move the selected file"
         );
-        h.advance(24);
+        h.settle(40);
         let row = h.window.global::<Theme>().get_row_height();
         let snapped = ((initial + 60.0) / row).round() * row;
         assert!(
