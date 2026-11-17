@@ -7,6 +7,12 @@ viewers. Start with [the public protocol](../../filesystem-api/NATIVE_PLUGIN_PRO
 The [Windows](../../plugins/midnight-filesystem-native-windows/README.md) and
 [Linux](../../plugins/midnight-filesystem-native-linux/README.md) packages are
 independent Cargo workspaces using only the public API/SDK and OS bindings.
+The independent [macOS](../../plugins/midnight-filesystem-native-macos/README.md)
+package declares Browse, Read, Stat, Volumes, Storage, native addresses and
+VolumeDetails (`minimum_host_minor = 1`), without prepared Rename, using the same
+API/SDK and pinned libc. It is source only: type-checked and linted for both Darwin
+targets, but not run on macOS, packaged, built by the root helpers or CI, or loaded
+by the application host, whose native path codec covers only Windows and Linux.
 
 The host calls `midnight_filesystem_entry_v1`, verifies descriptor and manifest
 identity/version/capabilities, then creates bounded instances on backend workers.
@@ -48,12 +54,16 @@ name encoding. Timestamp display localization belongs to the host's backend
 locale service; plugin timestamps do not require another native stat just to
 format the date and time.
 
-Use `CaptureCache` when preparing many file identities, such as the viewer's panel
-order: capturing a revision must not pin a reader for every sibling. The cache holds
-16 active readers, validates revisions on reopen and releases entries when their
-captured source is dropped. `InstalledProvider::shared(home)` is a lazy backend-only
-installation binding pinned until application exit. It has no builtin fallback.
-Do not call these APIs or drop their resource owners on the UI thread.
+Use `CaptureCache` when many captured file identities can be alive at once:
+capturing a revision must not pin a reader for every captured file.
+`InstalledProvider::capture` and `capture_matching` share one cache, so viewer,
+comparison, thumbnail, command-icon artwork and archive-container captures together
+keep at most 16 resident readers. An evicted reader reopens only while the file
+keeps its captured length and revision, and a capture's readers are released when
+that captured source is released or dropped. `InstalledProvider::shared(home)` is a
+lazy backend-only installation binding pinned until application exit. It has no
+builtin fallback. Do not call these APIs or drop their resource owners on the UI
+thread.
 
 Nonempty native reads use the host's [checked-read contract](CONTENT_READS.md).
 The native SDK validates the pinned handle and pathname before and after ReadAt,
@@ -74,9 +84,9 @@ and stores the current validated token. See [archive capture qualification](../v
 actual DLL/SO loading, missing/duplicate/incompatible packages, removed-library
 refusal, cancellation cleanup and the reader-budget regression. The application
 composition now uses this installed service for browsing, storage queries, native
-F3, comparison/thumbnail capture and native archive-container capture. Root build
-helpers install the matching native package under
-`filesystems/native.<platform>/`; direct Cargo builds need the
+F3, comparison/thumbnail capture, command-icon artwork capture and native
+archive-container capture. Root build helpers install the matching native package
+under `filesystems/native.<platform>/`; direct Cargo builds need the
 `scripts/build-native-filesystem.ps1` or `.sh` helper before launching.
 Missing/incompatible packages have no static browsing or viewer-read fallback.
 Composition qualification is tracked in the

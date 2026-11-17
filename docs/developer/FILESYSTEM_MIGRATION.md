@@ -35,8 +35,10 @@ stores the current token; changed, malformed, foreign or unknown tokens fail clo
 Windows and Linux implementations remain separate. Mount/read/source budgets are
 unchanged. See [implementation and qualification plan](../superpowers/plans/2026-11-09-archive-native-capture.md).
 This implements native archive-container capture, not nested-archive or generic
-remote mount capability. Deployment awaits qualification of the capture-cache
-overhead found by the production-route performance probe.
+remote mount capability. The production-route performance probe found capture-cache
+overhead; the [checked-read follow-up](../verification/2026-11-09-archive-native-capture.md#checked-read-follow-up)
+reduced it and records the Windows deployment and Linux qualification. Its
+Open/List times still exceed the earlier direct-capture probe.
 
 The migration sequence is in
 [`_build/goal/vfs/integration-plan.md`](../../_build/goal/vfs/integration-plan.md).
@@ -70,7 +72,7 @@ production consumers, rather than every test fixture that calls `std::fs`.
 | F3 archive content | `viewer-engine/capture_archive.rs` wraps `ArchiveMount` in `ContentSource`, then `CapturedFile::from_source` | Preserve this working lease route; generalize ownership/version validation rather than reconstructing a member path |
 | File comparison | app `comparator.rs`; `compare-engine/worker.rs` directly captures both native paths; text/image workers use those captures | Provider-scoped independent content leases. This differs from the engine's two-pane metadata/selection comparison |
 | Thumbnails and command icons | app `thumbnails.rs` supplies `thumbnail-host::service::native_capture`; host service supports a capture closure, but current panel target construction requires native capability | Route selected provider sources and versioned cache keys through the existing bounded capture seam; keep explicit configured native icon paths distinct from panel-node authority |
-| Archive mount and listing | `engine/archives.rs` discovers installed packages; `filesystem-host/session.rs::Mount::open_captured` validates a provider capture and supervises a restricted worker | Preserve archive worker protocol 1. Generic/nested mount sources need parent content leases and aggregate nesting/decompression budgets |
+| Archive mount and listing | `engine/archives.rs` discovers installed packages; `filesystem-host/session.rs::Mount::open_captured` validates a provider capture and supervises a restricted worker | Preserve archive worker protocols 1, 2 and 3. Generic/nested mount sources need parent content leases and aggregate nesting/decompression budgets |
 | Archive copy-out | `engine/archive_transfer.rs` re-lists captured IDs and checks mount, parent, raw name, kind, length and readability; adapts members to `TransferSource` | Preserve this completed verified-copy source route and native destination guarantees; no arbitrary display-to-path conversion |
 | Copy, Move, recovery | separately injected `TransferService`; `engine/copy_*`, `move_*`; `core/transfer*.rs`; OS `transfer*` retain native handles/proofs/stages | Provider-scoped prepared source/destination capabilities with equivalent revalidation, readback, publication and recovery; Read alone grants no source removal |
 | Rename, create, Trash, permanent delete and metadata editing | separately injected `MutationService`; `engine/operations.rs`, `operation_worker.rs`, `operation_metadata.rs`; OS mutation modules | Preserve preparation before confirmation, pinned target/parent identity, no-replace and distinct Trash/permanent semantics; do not reuse read-only size traversal for mutation |
@@ -91,21 +93,31 @@ or plugin discovery when the native filesystem package is missing.
 
 The public [`filesystem-api/PROTOCOL.md`](../../filesystem-api/PROTOCOL.md) defines
 the working read-only archive worker protocol: Open with an advertised format and
-captured length, List, Read, brokered SourceRead and Close. Names are raw byte
-blobs, IDs belong to the mount, pagination preserves duplicate/case-distinct names,
-and the worker receives no native path. Current host limits include two active
-mounts and a 20-second idle-progress deadline; protocol-1 workers also keep a 64 MiB
-container limit (see [filesystem API](FILESYSTEM_API.md)). Deadline expiry,
-protocol violations, mount teardown and cancelling a protocol-1/2 read terminate the
-worker; cancelling a listing or a protocol-3 read leaves the shared mount usable. The
-engine therefore issues request-cancellable member reads of shared mounts only through
-`read_cooperative`, which older protocols drain and discard.
+captured length, List, Read, brokered SourceRead and Close. Protocols 2 and 3 add
+host-owned staging, and protocol 3 adds cooperative member-read cancellation.
+Names are raw byte blobs, IDs belong to the mount, pagination preserves
+duplicate/case-distinct names, and the worker receives no native path: the host
+starts each mount with `Mount::open_captured` from a provider capture. Current host
+limits include two active mounts and a 20-second idle-progress deadline; protocol-1
+workers also keep a 64 MiB container limit (see [filesystem API](FILESYSTEM_API.md)).
+Deadline expiry, a cancelled startup, mount teardown and any failed exchange
+terminate the worker. An exchange fails on a worker-reported failure, a protocol
+violation, a pipe, source or staging I/O failure, or a detected source change.
+Checks the host applies after an exchange completes (listing-page ID order, parent
+and size limits, and protocol-1 content length) fail only that request.
+Cancelling a listing or member read never ends the shared worker: a listing
+stops between pages and discards an in-flight page, protocol-3 member reads cancel
+cooperatively, and protocol-1/2 reads finish their exchange while the host discards
+the result. The wire reference is frozen in the released 0.4.0 package, so its
+statement that cancellation terminates the worker predates this host. The engine
+issues request-cancellable member reads of shared mounts through `read_cooperative`.
 
-Archive navigation, saved/unavailable archive tabs, selection, F3 member content and
-verified copy-out exist. Nested archives, archive writes, panel provider thumbnails
-and general remote content are separate gaps; these do not erase the delivered
-archive functionality. The existing `ArchiveAddress` remains native-container
-backed, so it is not yet a universal stored location.
+Archive navigation, saved/unavailable archive tabs, selection, F3 member content,
+panel thumbnails of archive members (for providers with stable member IDs) and
+verified copy-out exist. Nested archives, archive writes and general remote content
+are separate gaps; these do not erase the delivered archive functionality. The
+existing `ArchiveAddress` remains native-container backed, so it is not yet a
+universal stored location.
 
 The viewer C ABI reserves `KIND_FILESYSTEM`, but its messages/SDK currently expose
 the viewer request family and `export_viewer!`. That constant is not an independent
@@ -127,14 +139,15 @@ identity migration remain outstanding.
    mount and generation. A provider package ID survives restart; a runtime handle
    does not. A node ID is neither a transfer object identity nor consent to mutate.
    Include an identity domain before comparing hardlinks, ancestors or cycle keys.
-2. **Never infer native authority from absence of archive state.** Today
-   `Pane::native_capabilities()` means `archive.is_none() && !archive_request`.
-   `Entry::native_path()` returns a path only when neither `virtual_node` nor
-   `network_node` is set: Network Neighborhood is already a third provider, so
-   identity and duplicate checks must call `native_path()` rather than test for an
-   archive node (engine quick search once did not). Further providers need the same
-   review. Empty `PathBuf`, labels and URI-looking strings
-   cannot be compatibility keys or native targets.
+2. **Never infer native authority from absence of archive state.** Network
+   Neighborhood is already a third provider. Today the UI's
+   `Pane::native_capabilities()` requires `archive.is_none() && !archive_request &&
+   network.is_none() && !network_request`, and `Entry::native_path()` returns a path
+   only when neither `virtual_node` nor `network_node` is set. Identity and
+   duplicate checks must call `native_path()` rather than test for an archive node
+   (engine quick search once did not). Further providers need the same review.
+   Empty `PathBuf`, labels and URI-looking strings cannot be compatibility keys or
+   native targets.
 3. **Selection survives projection without retargeting.** Capture provider location,
    navigation/view and independent selection revisions. Reused row numbers,
    filtering, refresh, sorting and later tree occurrences cannot substitute targets.
