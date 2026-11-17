@@ -151,6 +151,25 @@ fn colour_picker_controls_follow_the_colour_after_native_input() {
 }
 
 #[test]
+fn an_over_long_color_expression_is_not_applied() {
+    let mut h = Harness::options(color_rules(), 8);
+    h.type_text("Color rule expression", &"*".repeat(4097));
+    let window = h.window.clone_strong();
+    let view = window.global::<ColorOptionsView>();
+    assert!(
+        view.get_error().starts_with("Edit not applied"),
+        "{}",
+        view.get_error()
+    );
+    assert_eq!(view.get_draft().expression, "*.rs");
+    assert_eq!(
+        h.text("Color rule expression"),
+        "*.rs",
+        "the editor shows the rule's accepted expression again"
+    );
+}
+
+#[test]
 fn return_that_opens_a_combo_box_popup_does_not_press_ok() {
     let mut h = Harness::options(color_rules(), 8);
     let accepted = Rc::new(Cell::new(0));
@@ -245,8 +264,8 @@ fn viewer_catalog() -> Vec<ViewerPluginInfo> {
     .collect()
 }
 
-#[test]
-fn viewer_extensions_follow_the_selected_viewer_after_typing() {
+/// Options open on Plugins with a loaded viewer catalog; Source viewer selected.
+fn viewer_options() -> Harness {
     let mut h = Harness::new(UserPreferences::default());
     for event in [
         Event::ViewerPluginsListed(Ok(viewer_catalog())),
@@ -263,6 +282,53 @@ fn viewer_extensions_follow_the_selected_viewer_after_typing() {
         .borrow_mut()
         .apply(Event::ViewerPluginsListed(Ok(viewer_catalog())));
     h.refresh();
+    h
+}
+
+#[test]
+fn a_refused_viewer_extension_list_stays_visible_with_its_error() {
+    let mut h = viewer_options();
+    assert_eq!(h.text("Viewer extensions"), "rs; py");
+    // The box binds two-way: a refresh must not swap the refused text for the
+    // last accepted list while the error still describes the refused one.
+    let refused = "x; ".repeat(11_000);
+    assert!(refused.len() > 32 * 1024);
+    h.type_text("Viewer extensions", &refused);
+    let window = h.window.clone_strong();
+    let view = window.global::<ViewerPluginsView>();
+    assert!(view.get_error().contains("32 KiB"), "{}", view.get_error());
+    assert!(
+        h.text("Viewer extensions") == refused,
+        "the refused list stays visible for shortening"
+    );
+    h.activate("OK", AccessibleRole::Button);
+    assert!(h.window.get_options_open(), "OK refuses the over-long list");
+    assert_eq!(h.window.get_options_topic_index(), 5);
+    assert!(h.text("Viewer extensions") == refused);
+
+    h.type_text("Viewer extensions", "rs; py; txt");
+    assert_eq!(view.get_error(), "");
+    assert_eq!(h.text("Viewer extensions"), "rs; py; txt");
+    h.type_text("Viewer extensions", &refused);
+    h.activate("Reset viewer extensions", AccessibleRole::Button);
+    assert_eq!(view.get_error(), "");
+    assert_eq!(
+        h.text("Viewer extensions"),
+        "rs; py",
+        "Reset shows the defaults"
+    );
+    assert!(
+        !h.sent
+            .borrow()
+            .iter()
+            .any(|command| matches!(command, Command::SavePreferences { .. })),
+        "nothing was saved"
+    );
+}
+
+#[test]
+fn viewer_extensions_follow_the_selected_viewer_after_typing() {
+    let mut h = viewer_options();
     assert_eq!(h.text("Viewer extensions"), "rs; py");
     h.type_text("Viewer extensions", ".RS; *.rs; rust");
     h.activate("Image viewer · 1", AccessibleRole::ListItem);

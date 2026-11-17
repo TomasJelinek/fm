@@ -212,8 +212,9 @@ pub(crate) fn install(
             || draft.foreground.len() > 64
             || draft.background.len() > 64
         {
-            presenter.colors.error =
-                "Expression limit: 4096 bytes. Colors use #RRGGBB or an empty value.".into();
+            // The refresh below re-displays the last accepted draft through the
+            // two-way bound controls, so say that the edit was dropped.
+            presenter.colors.error = "Edit not applied: expressions are limited to 4096 bytes; colors use #RRGGBB or an empty value.".into();
         } else {
             let editor = &mut presenter.colors.editor;
             if let Some(previous) = editor.drafts.get_mut(editor.selected) {

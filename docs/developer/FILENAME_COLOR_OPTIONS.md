@@ -6,6 +6,12 @@ matches. Disabled rules keep their position and display `[off]`. Rule expression
 retain their complete text and Unicode; the list elides only when its actual
 width requires it. The selected editor preserves the complete expression.
 
+The editor controls bind two-way to the selected rule's draft: selecting, adding
+or removing a rule shows that rule, and the next edit changes only it. An edit
+whose expression exceeds 4096 bytes (or whose color text exceeds 64 bytes) is not
+applied: the editor shows the rule's last accepted values again and the page
+reports "Edit not applied".
+
 The list supports mouse and accessibility selection, Up/Down and Home/End. Keyboard
 selection reveals the selected row in the bounded list viewport. Add, Remove and
 Move up/down retain the existing bounded draft editor and its 32-rule limit. The
