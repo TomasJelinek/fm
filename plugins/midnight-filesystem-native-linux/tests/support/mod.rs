@@ -131,3 +131,61 @@ impl Drop for Temp {
         std::fs::remove_dir_all(&self.path).unwrap();
     }
 }
+
+const ACCESS_ACL: &std::ffi::CStr = c"system.posix_acl_access";
+
+fn terminated(path: &Path) -> std::ffi::CString {
+    std::ffi::CString::new(path.as_os_str().as_bytes()).unwrap()
+}
+
+/// Lets another user (nobody) write to `path` through a POSIX access ACL:
+/// `user::rwx user:<other>:rwx group::r-x mask::rwx other::r-x`, so the mode reads
+/// 0775 like an ordinary private-group folder. Prints SKIP and returns false where
+/// the filesystem has no POSIX ACLs.
+pub fn share_through_access_acl(path: &Path, test: &str) -> bool {
+    // SAFETY: geteuid has no arguments or ownership requirements.
+    let caller = unsafe { libc::geteuid() };
+    let other = if caller == 65534 { 65533 } else { 65534u32 };
+    // The kernel's posix_acl_xattr format: version 2, then (tag, permissions, id)
+    // entries in tag order; ids of the unnamed entries are undefined (u32::MAX).
+    let mut acl = 2u32.to_le_bytes().to_vec();
+    for (tag, permissions, id) in [
+        (0x01u16, 7u16, u32::MAX),
+        (0x02, 7, other),
+        (0x04, 5, u32::MAX),
+        (0x10, 7, u32::MAX),
+        (0x20, 5, u32::MAX),
+    ] {
+        acl.extend_from_slice(&tag.to_le_bytes());
+        acl.extend_from_slice(&permissions.to_le_bytes());
+        acl.extend_from_slice(&id.to_le_bytes());
+    }
+    let path = terminated(path);
+    // SAFETY: terminated path and attribute name; the value outlives the call.
+    let set = unsafe {
+        libc::setxattr(
+            path.as_ptr(),
+            ACCESS_ACL.as_ptr(),
+            acl.as_ptr().cast(),
+            acl.len(),
+            0,
+        )
+    };
+    if set == 0 {
+        return true;
+    }
+    let error = std::io::Error::last_os_error();
+    if error.raw_os_error() == Some(libc::EOPNOTSUPP) {
+        eprintln!("SKIP {test}: the fixture filesystem has no POSIX ACLs");
+        return false;
+    }
+    panic!("setting a POSIX access ACL failed: {error}");
+}
+
+/// Removes the access ACL; the mode keeps the former mask as its group bits.
+pub fn remove_access_acl(path: &Path) {
+    let path = terminated(path);
+    // SAFETY: terminated path and attribute name.
+    let removed = unsafe { libc::removexattr(path.as_ptr(), ACCESS_ACL.as_ptr()) };
+    assert_eq!(removed, 0, "{}", std::io::Error::last_os_error());
+}

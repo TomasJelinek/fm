@@ -4,8 +4,11 @@
 //! name, without replacement, into a newly created owner-only directory and
 //! verify its identity there. Filesystems that cannot store POSIX modes (vfat,
 //! exfat, NTFS, CIFS without Unix extensions, FUSE) keep their mount-provided
-//! permissions on that owned directory, so other users are excluded only as far
-//! as the mount excludes them. A raced replacement is restored without overwrite;
+//! permissions on that owned directory, accepted only while no other user can
+//! write to it or while it is exactly as open as its unprotected parent (see
+//! `crate::ownership`), so staging never lets other users change more than the
+//! parent does. A raced replacement, like the item a failed capture request still
+//! moved (a lost reply on network or FUSE storage), is restored without overwrite;
 //! if restoration collides it remains in staging and the error gives its path.
 //! This prevents deleting a replacement raced into the original parent. It is
 //! not an isolation boundary against root or another process of the same uid,
@@ -406,6 +409,20 @@ impl PreparedMutation for Prepared {
     }
 }
 
+/// Rename, permanent Delete and Trash move the item through a private staging
+/// directory beside it. The error for a staging directory that `problem`
+/// prevents names the item, not the hidden staging directory.
+fn staging_unavailable(prepared: &Prepared, problem: &str, cause: io::Error) -> FsError {
+    FsError {
+        operation: OPERATION,
+        path: prepared.item.path.clone(),
+        message: format!(
+            "a private staging folder is needed beside the item, but it {problem}: {cause}"
+        ),
+        kind: cause.kind(),
+    }
+}
+
 /// The mutation itself completed; only removing its empty private staging
 /// directory failed. The error states both facts and the residual path.
 fn completed_with_residue(completed: &str, mut cleanup: FsError) -> FsError {
@@ -429,35 +446,39 @@ impl Staged {
     fn create(prepared: &Prepared) -> Result<Self, FsError> {
         loop {
             let name = OsString::from(unique_name(".midnight-mutation"));
-            let path = prepared.parent_path.join(&name);
             match mkdirat(&*prepared.parent, &name, Mode::RWXU) {
                 Ok(()) => {}
                 Err(rustix::io::Errno::EXIST) => continue,
-                Err(e) => return Err(native_error(&path, e)),
+                Err(e) => {
+                    return Err(staging_unavailable(
+                        prepared,
+                        "could not be created",
+                        e.into(),
+                    ));
+                }
             }
+            let path = prepared.parent_path.join(&name);
             return Self::adopt(prepared, name, path);
         }
     }
 
-    /// Pins the staging directory just created. Mount-provided permissions are
-    /// accepted where the filesystem cannot store 0700 (see `crate::ownership`);
-    /// a directory refused after creation is removed rather than left behind.
+    /// Pins the staging directory just created. Where the filesystem cannot store
+    /// 0700, mount-provided permissions are accepted only as
+    /// `crate::ownership::check_created_directory` allows (never wider than the
+    /// parent). A refusal names the item; the directory is removed rather than
+    /// left behind, or reported with its path.
     fn adopt(prepared: &Prepared, name: OsString, path: PathBuf) -> Result<Self, FsError> {
         let mut pinned = None;
-        let adopted = (|| -> Result<(File, Identity), FsError> {
-            let directory = File::from(
-                openat(
-                    &*prepared.parent,
-                    &name,
-                    DIRECTORY_FLAGS | OFlags::NOFOLLOW,
-                    Mode::empty(),
-                )
-                .map_err(|e| native_error(&path, e))?,
-            );
-            let identity = Identity::of(&directory, &path)?;
+        let adopted = (|| -> io::Result<(File, Identity)> {
+            let directory = File::from(openat(
+                &*prepared.parent,
+                &name,
+                DIRECTORY_FLAGS | OFlags::NOFOLLOW,
+                Mode::empty(),
+            )?);
+            let identity = Identity::from_stat(&fstat(&directory)?);
             pinned = Some((identity.device, identity.inode));
-            crate::ownership::check_created_directory(&directory)
-                .map_err(|e| FsError::from_io(OPERATION, &path, e))?;
+            crate::ownership::check_created_directory(&*prepared.parent, &directory)?;
             Ok((directory, identity))
         })();
         match adopted {
@@ -468,7 +489,8 @@ impl Staged {
                 path,
                 identity,
             }),
-            Err(mut failure) => {
+            Err(refusal) => {
+                let mut failure = staging_unavailable(prepared, "cannot be used", refusal);
                 if let Err(cleanup) =
                     crate::ownership::remove_refused_directory(&*prepared.parent, &name, pinned)
                 {
@@ -484,8 +506,7 @@ impl Staged {
 
     fn capture(&self, prepared: &Prepared, cancel: &Cancellation) -> Result<(), FsError> {
         if let Err(failure) = prepared.revalidate(cancel) {
-            let _ = self.cleanup();
-            return Err(failure);
+            return Err(self.abandon(prepared, failure));
         }
         if let Err(e) = renameat_with(
             &*prepared.parent,
@@ -494,8 +515,7 @@ impl Staged {
             STAGED_NAME,
             RenameFlags::NOREPLACE,
         ) {
-            let _ = self.cleanup();
-            return Err(native_error(&prepared.item.path, e));
+            return Err(self.abandon(prepared, native_error(&prepared.item.path, e)));
         }
         if let Err(failure) = prepared.identity.verify(
             &self.directory,
@@ -505,6 +525,41 @@ impl Staged {
             return Err(self.restore(prepared, failure));
         }
         Ok(())
+    }
+
+    /// Removes the stage after a capture failed and returns `failure`. A capture
+    /// request that returned an error may still have moved the item there (a lost
+    /// reply on a network or FUSE filesystem): the selected item found at the
+    /// staged name is restored to its name, as after any later failure. A stage
+    /// that cannot be removed is named in `failure`, including whether another
+    /// object holds the staged name.
+    fn abandon(&self, prepared: &Prepared, mut failure: FsError) -> FsError {
+        if prepared
+            .identity
+            .verify(
+                &self.directory,
+                OsStr::new(STAGED_NAME),
+                &prepared.item.path,
+            )
+            .is_ok()
+        {
+            return self.restore(prepared, failure);
+        }
+        if let Err(cleanup) = self.cleanup() {
+            let held = statat(&*self.directory, STAGED_NAME, AtFlags::SYMLINK_NOFOLLOW).is_ok();
+            failure.message.push_str(&if held {
+                format!(
+                    "; the staging directory remains at {} and holds an entry that is not the selected item: {cleanup}",
+                    self.path.display()
+                )
+            } else {
+                format!(
+                    "; the unused staging directory remains at {}: {cleanup}",
+                    self.path.display()
+                )
+            });
+        }
+        failure
     }
 
     fn restore(&self, prepared: &Prepared, mut failure: FsError) -> FsError {

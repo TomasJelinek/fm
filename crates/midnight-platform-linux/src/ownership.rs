@@ -1,12 +1,21 @@
 //! Shared ownership rules for private staging directories and protected parents.
 //!
-//! Private staging creates a directory with mode 0700 and pins it without following
-//! links. Filesystems whose permissions come from mount options (vfat, exfat, ntfs3
-//! or ntfs-3g/fuseblk, CIFS without Unix extensions, GVfs and other FUSE mounts)
-//! cannot store that mode: an explicit `fchmod(0700)` of our own new directory keeps
-//! the mount-provided mode. Such a directory is accepted with that mode, so its
-//! protection against other users is exactly the mount's. Ownership by the effective
-//! UID is always required, and a creator removes a directory it then refuses.
+//! Private staging creates a directory with mode 0700 in a pinned parent and pins
+//! it without following links; it must be a directory owned by the effective UID
+//! on the parent's filesystem. Filesystems whose permissions come from mount
+//! options (vfat, exfat, ntfs-3g/fuseblk, CIFS without Unix extensions, GVfs and
+//! other FUSE mounts) cannot store that mode: an explicit `fchmod(0700)` of our own
+//! new directory keeps the mount-provided mode. Such a mode is accepted only while
+//! no other user can write to the directory (group write only as for a protected
+//! parent: the private group, without an access ACL), or while it has exactly the
+//! mode, owner and group of a parent that is not protected and neither carries an
+//! access ACL. The directory therefore never lets another user change more than
+//! its parent does. Mode bits protect only where the kernel enforces them: FUSE
+//! mounts with `allow_other` but without `default_permissions`, and CIFS mounts
+//! with `noperm`, exclude other local users only as far as their server does. A
+//! creator removes a directory it refuses. The Linux Rename plugin applies the
+//! same rule (`plugins/midnight-filesystem-native-linux/src/ownership.rs`); both
+//! carry the same rule tables.
 //!
 //! A protected parent prevents other users from replacing or removing our names:
 //! it is owned by the effective UID or root and is either sticky or not writable by
@@ -20,10 +29,11 @@
 //! keep the strict rule. Same-UID and root interference remain outside this boundary.
 
 use rustix::fs::{
-    AtFlags, FileType, Mode, OFlags, fchmod, fgetxattr_query, fstat, getxattr_query, openat,
+    AtFlags, FileType, Mode, OFlags, Stat, fchmod, fgetxattr_query, fstat, getxattr_query, openat,
     statat, unlinkat,
 };
 use std::{
+    cell::LazyCell,
     ffi::OsStr,
     fs::File,
     io::{self, Read},
@@ -41,72 +51,124 @@ pub(crate) enum CreatedDirectory {
     /// Owned by the effective UID with exactly mode 0700.
     Private,
     /// Owned by the effective UID on a filesystem that cannot store the requested
-    /// mode; the value is the mount-provided permission bits.
+    /// mode; the value is the mount-provided permission bits, which the module's
+    /// rule admitted.
     MountProvided(u32),
 }
 
-/// Classifies a directory this process just created with `mkdirat(..., 0o700)`
-/// and opened without following links. Refuses a non-directory or foreign owner.
-pub(crate) fn check_created_directory(directory: &File) -> io::Result<CreatedDirectory> {
-    let mode = owned_directory_mode(directory)?;
-    if mode == 0o700 {
+/// Classifies a directory this process just created in `parent` with
+/// `mkdirat(..., 0o700)` and opened without following links (see the module
+/// documentation). Refuses a non-directory, a foreign owner, another filesystem
+/// than the parent's and a mount-provided mode that would let other users change
+/// the directory more than `parent` allows; the caller removes a directory it
+/// refuses.
+pub(crate) fn check_created_directory(
+    parent: impl AsFd,
+    directory: &File,
+) -> io::Result<CreatedDirectory> {
+    let parent_stat = fstat(&parent)?;
+    let stat = owned_directory(directory, parent_stat.st_dev)?;
+    if stat.st_mode & 0o777 == 0o700 {
         return Ok(CreatedDirectory::Private);
-    }
-    #[cfg(test)]
-    if let Some(simulated) = simulation::mount_mode() {
-        return Ok(CreatedDirectory::MountProvided(simulated));
     }
     // A restrictive umask or default ACL is corrected on our own new directory.
     // Mount-option permissions keep their mode (vfat/exfat silently, others with
-    // an error), which identifies a filesystem that cannot represent it.
-    let _ = set_private_mode(directory);
-    let mode = owned_directory_mode(directory)?;
-    Ok(if mode == 0o700 {
-        CreatedDirectory::Private
-    } else {
-        CreatedDirectory::MountProvided(mode)
-    })
+    // an error), which identifies a filesystem that cannot represent it. The
+    // pinned handle may be O_PATH: this readable reopen of exactly that directory
+    // serves fchmod and the ACL query, which then needs no /proc fallback.
+    let readable = reopen_readable(directory);
+    if let Ok(readable) = &readable {
+        let _ = fchmod(readable, Mode::RWXU);
+    }
+    let stat = owned_directory(directory, parent_stat.st_dev)?;
+    if stat.st_mode & 0o777 == 0o700 {
+        return Ok(CreatedDirectory::Private);
+    }
+    let admitted = mount_mode_admitted(
+        (stat.st_uid, stat.st_gid, stat.st_mode),
+        || match &readable {
+            Ok(readable) => may_have_access_acl(readable),
+            Err(_) => may_have_access_acl(directory),
+        },
+        (parent_stat.st_uid, parent_stat.st_gid, parent_stat.st_mode),
+        // The parent may be an O_PATH pin too.
+        || match reopen_readable(&parent) {
+            Ok(readable) => may_have_access_acl(&readable),
+            Err(_) => may_have_access_acl(&parent),
+        },
+    );
+    if !admitted {
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "its mount-provided permissions would let other users change it more than its parent folder allows",
+        ));
+    }
+    Ok(CreatedDirectory::MountProvided(stat.st_mode & 0o777))
 }
 
-fn owned_directory_mode(directory: &File) -> io::Result<u32> {
+/// The status of a new private directory, which must be a directory owned by
+/// the effective UID on the filesystem `device` of its parent.
+fn owned_directory(directory: &File, device: u64) -> io::Result<Stat> {
     let stat = fstat(directory)?;
+    #[cfg(test)]
+    let stat = simulation::reported(stat);
     if FileType::from_raw_mode(stat.st_mode) != FileType::Directory {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "the new private directory is not a directory",
         ));
     }
-    #[cfg(test)]
-    if simulation::foreign_owner() {
-        return Err(foreign_owner());
-    }
     if stat.st_uid != rustix::process::geteuid().as_raw() {
-        return Err(foreign_owner());
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "the new private directory is not owned by this user",
+        ));
     }
-    #[cfg(test)]
-    if let Some(simulated) = simulation::mount_mode() {
-        return Ok(simulated);
+    if stat.st_dev != device {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "the new private directory is on another filesystem",
+        ));
     }
-    Ok(stat.st_mode & 0o777)
+    Ok(stat)
 }
 
-fn foreign_owner() -> io::Error {
-    io::Error::new(
-        io::ErrorKind::PermissionDenied,
-        "the new private directory is not owned by this user",
+/// A readable descriptor of exactly the directory `directory` refers to.
+fn reopen_readable(directory: impl AsFd) -> rustix::io::Result<std::os::fd::OwnedFd> {
+    openat(
+        directory,
+        ".",
+        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::empty(),
     )
 }
 
-fn set_private_mode(directory: &File) -> io::Result<()> {
-    // The pinned handle may be O_PATH; reopen exactly that directory for fchmod.
-    let readable = openat(
-        directory,
-        ".",
-        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC,
-        Mode::empty(),
-    )?;
-    fchmod(&readable, Mode::RWXU)?;
-    Ok(())
+/// Whether a mount-provided mode that `fchmod(0700)` could not change is
+/// admitted. `stage` and `parent` are the (owner, group, mode) of the new
+/// directory and of its parent; each ACL closure reports whether that directory
+/// may carry an access ACL and is asked only when its answer can decide.
+/// Admitted are a directory only the caller can write (group write only as for a
+/// protected parent), and one with exactly the mode, owner and group of a parent
+/// that is not protected, neither carrying an access ACL: it lets nobody change
+/// anything the parent does not already let them change.
+fn mount_mode_admitted(
+    stage: (u32, u32, u32),
+    stage_acl: impl FnOnce() -> bool,
+    parent: (u32, u32, u32),
+    parent_acl: impl FnOnce() -> bool,
+) -> bool {
+    let stage_acl = LazyCell::new(stage_acl);
+    let (uid, gid, mode) = stage;
+    if writable_only_mode(uid, gid, mode, || *stage_acl) {
+        return true;
+    }
+    let (parent_uid, parent_gid, parent_mode) = parent;
+    // Equal modes, owners and groups first: no ACL is read for a stage that
+    // differs from its parent or for a protected parent.
+    (mode & 0o7777, uid, gid) == (parent_mode & 0o7777, parent_uid, parent_gid)
+        && !protected_mode(parent_uid, parent_gid, parent_mode, || false)
+        && !*stage_acl
+        && !parent_acl()
 }
 
 /// Removes the empty directory this process created as `parent/name` and then
@@ -327,26 +389,38 @@ fn number(field: &[u8]) -> Option<u32> {
     std::str::from_utf8(field).ok()?.parse().ok()
 }
 
-/// Test-only simulation of filesystems that cannot represent POSIX modes or
-/// that report a foreign owner, on the calling thread only.
+/// Test-only simulation of filesystems that cannot represent POSIX modes, that
+/// report a foreign owner or that place a new directory on another filesystem,
+/// on the calling thread only. Each alters the status reported for a new private
+/// directory, so the real checks decide.
 #[cfg(test)]
 pub(crate) mod simulation {
-    use std::cell::Cell;
+    use rustix::fs::Stat;
+    use std::{cell::Cell, thread::LocalKey};
 
     thread_local! {
         static MOUNT_MODE: Cell<Option<u32>> = const { Cell::new(None) };
         static FOREIGN_OWNER: Cell<bool> = const { Cell::new(false) };
+        static FOREIGN_DEVICE: Cell<bool> = const { Cell::new(false) };
     }
 
-    pub(crate) fn mount_mode() -> Option<u32> {
-        MOUNT_MODE.with(Cell::get)
+    /// The status of a new private directory as the simulated filesystem reports it.
+    pub(crate) fn reported(mut stat: Stat) -> Stat {
+        if let Some(mode) = MOUNT_MODE.with(Cell::get) {
+            stat.st_mode = (stat.st_mode & !0o7777) | mode;
+        }
+        if FOREIGN_OWNER.with(Cell::get) {
+            stat.st_uid = stat.st_uid.wrapping_add(1);
+        }
+        if FOREIGN_DEVICE.with(Cell::get) {
+            stat.st_dev = stat.st_dev.wrapping_add(1);
+        }
+        stat
     }
 
-    pub(crate) fn foreign_owner() -> bool {
-        FOREIGN_OWNER.with(Cell::get)
-    }
-
-    /// Newly created private directories report `mode`, which cannot be changed.
+    /// Newly created private directories report the permission bits `mode`
+    /// (with set-ID and sticky bits), which `fchmod` cannot change; the rule then
+    /// admits or refuses that mode like a real mount-provided one.
     pub(crate) fn with_mount_mode<T>(mode: u32, run: impl FnOnce() -> T) -> T {
         MOUNT_MODE.with(|cell| cell.set(Some(mode)));
         let result = run();
@@ -356,9 +430,19 @@ pub(crate) mod simulation {
 
     /// Newly created private directories report another owner.
     pub(crate) fn with_foreign_owner<T>(run: impl FnOnce() -> T) -> T {
-        FOREIGN_OWNER.with(|cell| cell.set(true));
+        with(&FOREIGN_OWNER, run)
+    }
+
+    /// Newly created private directories report another filesystem than their
+    /// parent's.
+    pub(crate) fn with_foreign_device<T>(run: impl FnOnce() -> T) -> T {
+        with(&FOREIGN_DEVICE, run)
+    }
+
+    fn with<T>(flag: &'static LocalKey<Cell<bool>>, run: impl FnOnce() -> T) -> T {
+        flag.with(|cell| cell.set(true));
         let result = run();
-        FOREIGN_OWNER.with(|cell| cell.set(false));
+        flag.with(|cell| cell.set(false));
         result
     }
 }

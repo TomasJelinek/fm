@@ -113,12 +113,12 @@ pub(crate) fn limit() -> Failure {
     )
 }
 /// The staged protocol needs a parent in which other users can neither replace
-/// nor remove names (see `ownership`).
+/// nor remove names: owned by the user or root, and sticky or writable only by
+/// the user and the user's private group without a POSIX access ACL (see
+/// `ownership`).
 pub(crate) fn trusted_parent(parent: &File) -> Result<(), Failure> {
     let metadata = parent.metadata().map_err(Failure::from_io)?;
-    if !metadata.is_dir()
-        || !ownership::protected_parent(metadata.uid(), metadata.gid(), metadata.mode())
-    {
+    if !metadata.is_dir() || !ownership::protected_parent(parent, &metadata) {
         return Err(Failure::new(
             ErrorCode::Unsupported,
             "Rename requires a parent folder owned by you or root that other users cannot change.",

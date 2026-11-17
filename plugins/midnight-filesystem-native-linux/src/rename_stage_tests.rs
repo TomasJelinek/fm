@@ -2,8 +2,9 @@
 //! through the exported C ABI. Mode, ownership and lookup behavior of other
 //! filesystems is simulated only where an owned local fixture cannot show it.
 use crate::{
+    rename_sys as sys,
     rename_test_hooks::{self as hooks, Boundary},
-    rename_test_support::{Client, Temp},
+    rename_test_support::{Client, Temp, remove_access_acl, share_through_access_acl},
 };
 use midnight_filesystem_plugin_api::*;
 use std::{
@@ -68,6 +69,32 @@ fn renamed(outcome: &RenameOutcome) -> bool {
 fn unchanged(outcome: &RenameOutcome, code: ErrorCode) -> bool {
     matches!(outcome, RenameOutcome::Unchanged(failure) if failure.code == code)
 }
+fn mode(path: &Path) -> u32 {
+    fs::metadata(path).unwrap().mode() & 0o7777
+}
+/// Group write can admit only a directory of the effective group without an
+/// access ACL. A set-group-ID or default-ACL fixture root gives new fixtures
+/// another group or an inherited ACL; prints SKIP then.
+fn group_write_can_admit(directory: &Path, test: &str) -> bool {
+    let group = fs::metadata(directory).unwrap().gid();
+    if group != sys::effective_gid() {
+        eprintln!("SKIP {test}: the fixture group {group} is not the effective group");
+        return false;
+    }
+    if sys::may_have_access_acl(&fs::File::open(directory).unwrap()) {
+        eprintln!("SKIP {test}: the fixture carries an inherited access ACL");
+        return false;
+    }
+    true
+}
+/// Whether the fixture filesystem stores POSIX access ACLs; prints SKIP otherwise.
+fn access_acls_supported(directory: &Path, test: &str) -> bool {
+    let probe = directory.join("acl-probe");
+    fs::create_dir(&probe).unwrap();
+    let supported = share_through_access_acl(&probe, test);
+    fs::remove_dir(&probe).unwrap();
+    supported
+}
 
 #[test]
 fn private_mount_provided_stage_mode_is_accepted_and_the_stage_removed() {
@@ -104,6 +131,30 @@ fn stage_other_users_could_change_is_refused_and_removed() {
         assert_eq!(identity(&source), original);
         assert_eq!(names(&temp.path), ["source"], "mode {mode:o}");
     }
+}
+
+/// A stage exactly as open as its parent is admitted only below a parent other
+/// users can already change. A Rename parent never is one, so even the mode of a
+/// protected sticky parent is refused on the stage.
+#[test]
+fn a_stage_as_open_as_a_protected_sticky_parent_is_still_refused() {
+    let _reset = hooks::reset();
+    let temp = Temp::new();
+    let parent = temp.path.join("parent");
+    fs::create_dir(&parent).unwrap();
+    let source = parent.join("source");
+    fs::write(&source, b"source bytes").unwrap();
+    let original = identity(&source);
+    chmod(&parent, 0o1777);
+    let client = Client::new();
+    let prepared = prepare(&client, &source);
+    hooks::ignore_private_mode();
+    hooks::at(Boundary::AfterStageCreate, |stage| chmod(stage, 0o1777));
+    let outcome = rename(&client, &prepared, b"target");
+    chmod(&parent, 0o755);
+    assert!(unchanged(&outcome, ErrorCode::Unsupported), "{outcome:?}");
+    assert_eq!(identity(&source), original);
+    assert_eq!(names(&parent), ["source"]);
 }
 
 #[test]
@@ -317,6 +368,10 @@ fn shared_writable_parents_are_refused_before_a_name_is_requested() {
         fs::create_dir(&parent).unwrap();
         let source = parent.join("source");
         fs::write(&source, b"source bytes").unwrap();
+        if accepted && mode & 0o020 != 0 && !group_write_can_admit(&parent, "private-group parents")
+        {
+            continue;
+        }
         chmod(&parent, mode);
         hooks::assume_private_group(private_group);
         let client = Client::new();
@@ -342,5 +397,120 @@ fn shared_writable_parents_are_refused_before_a_name_is_requested() {
             assert_eq!(names(&parent), ["source"]);
         }
         chmod(&parent, 0o755);
+    }
+}
+
+/// With a POSIX access ACL the group bits are its mask, so a 0775 parent of the
+/// user's private group can still let named users replace or remove names.
+#[test]
+fn acl_shared_private_group_parents_are_refused_before_a_name_is_requested() {
+    const TEST: &str = "ACL-shared private-group parents";
+    let _reset = hooks::reset();
+    let temp = Temp::new();
+    let parent = temp.path.join("parent");
+    fs::create_dir(&parent).unwrap();
+    let source = parent.join("source");
+    fs::write(&source, b"source bytes").unwrap();
+    chmod(&parent, 0o755);
+    if !group_write_can_admit(&parent, TEST) {
+        return;
+    }
+    hooks::assume_private_group(true);
+    if !share_through_access_acl(&parent, TEST) {
+        return;
+    }
+    assert_eq!(mode(&parent), 0o775);
+    let client = Client::new();
+    let response = prepare_response(&client, &source);
+    assert!(
+        matches!(&response, Response::Failed(failure) if failure.code == ErrorCode::Unsupported),
+        "{response:?}"
+    );
+    assert_eq!(names(&parent), ["source"]);
+    // The ACL alone made the difference: the same 0775 parent without it is protected.
+    remove_access_acl(&parent);
+    assert_eq!(mode(&parent), 0o775);
+    let prepared = prepare(&client, &source);
+    let outcome = rename(&client, &prepared, b"target");
+    assert!(renamed(&outcome), "{outcome:?}");
+    assert_eq!(names(&parent), ["target"]);
+}
+
+#[test]
+fn a_parent_shared_through_an_access_acl_after_prepare_refuses_rename_and_leaves_nothing() {
+    const TEST: &str = "parents shared after Prepare";
+    for at_stage_creation in [false, true] {
+        let _reset = hooks::reset();
+        let temp = Temp::new();
+        let parent = temp.path.join("parent");
+        fs::create_dir(&parent).unwrap();
+        let source = parent.join("source");
+        fs::write(&source, b"source bytes").unwrap();
+        chmod(&parent, 0o755);
+        let original = identity(&source);
+        if !group_write_can_admit(&parent, TEST) || !access_acls_supported(&temp.path, TEST) {
+            return;
+        }
+        hooks::assume_private_group(true);
+        let client = Client::new();
+        let prepared = prepare(&client, &source);
+        let shared = parent.clone();
+        let share = move || assert!(share_through_access_acl(&shared, TEST));
+        if at_stage_creation {
+            // Execution rechecks the parent before the capture is requested, so
+            // the unused stage is removed again.
+            hooks::at(Boundary::AfterStageCreate, move |_| share());
+        } else {
+            // Execution checks the parent before it creates a stage.
+            share();
+        }
+        let outcome = rename(&client, &prepared, b"target");
+        assert!(
+            unchanged(&outcome, ErrorCode::Unsupported),
+            "at stage creation {at_stage_creation}: {outcome:?}"
+        );
+        assert_eq!(identity(&source), original);
+        assert_eq!(
+            names(&parent),
+            ["source"],
+            "at stage creation {at_stage_creation}"
+        );
+    }
+}
+
+#[test]
+fn a_mount_provided_stage_shared_through_an_access_acl_is_refused_and_removed() {
+    const TEST: &str = "ACL-shared mount-provided stages";
+    for shared in [true, false] {
+        let _reset = hooks::reset();
+        let temp = Temp::new();
+        let source = temp.path.join("source");
+        fs::write(&source, b"source bytes").unwrap();
+        let original = identity(&source);
+        if !group_write_can_admit(&temp.path, TEST) || !access_acls_supported(&temp.path, TEST) {
+            return;
+        }
+        let client = Client::new();
+        let prepared = prepare(&client, &source);
+        // A mount-provided 0775 mode of the user's private group; with an ACL its
+        // group bits are the mask that also lets named users write.
+        hooks::assume_private_group(true);
+        hooks::ignore_private_mode();
+        hooks::at(Boundary::AfterStageCreate, move |stage| {
+            chmod(stage, 0o775);
+            if shared {
+                assert!(share_through_access_acl(stage, TEST));
+            }
+        });
+        let outcome = rename(&client, &prepared, b"target");
+        if shared {
+            assert!(unchanged(&outcome, ErrorCode::Unsupported), "{outcome:?}");
+            assert_eq!(identity(&source), original);
+            assert_eq!(names(&temp.path), ["source"]);
+        } else {
+            assert!(renamed(&outcome), "{outcome:?}");
+            assert_eq!(identity(&temp.path.join("target")), original);
+            assert_eq!(names(&temp.path), ["target"]);
+        }
     }
 }

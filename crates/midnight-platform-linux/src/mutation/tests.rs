@@ -730,8 +730,226 @@ fn rename_and_permanent_delete_accept_mount_provided_staging_permissions() {
     crate::ownership::simulation::with_mount_mode(0o755, || rename_and_delete_in(fixture.path()));
 }
 
+/// The equally-open-parent case compares the staging folder's group with its
+/// parent's and requires neither to carry an access ACL; prints SKIP when the
+/// fixture is of another group (a set-group-ID ancestor) or carries an access
+/// ACL (a default ACL above it).
+fn equally_open_parent_supported(directory: &Path, test: &str) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    let group = fs::metadata(directory).unwrap().gid();
+    if group != rustix::process::getegid().as_raw() {
+        eprintln!("SKIP {test}: the fixture group {group} is not the effective group");
+        return false;
+    }
+    if rustix::fs::getxattr_query(directory, "system.posix_acl_access").is_ok() {
+        eprintln!("SKIP {test}: the fixture carries an access ACL");
+        return false;
+    }
+    true
+}
+
+#[test]
+fn rename_and_permanent_delete_accept_a_stage_as_open_as_its_unprotected_parent() {
+    use std::os::unix::fs::PermissionsExt;
+    // A share mounted with dir_mode=0777, or vfat/exfat with umask=000: every
+    // folder, the staging folder included, is equally open to all users.
+    let fixture = tempfile::tempdir().unwrap();
+    if !equally_open_parent_supported(fixture.path(), "stages as open as their parent") {
+        return;
+    }
+    fs::set_permissions(fixture.path(), fs::Permissions::from_mode(0o777)).unwrap();
+    crate::ownership::simulation::with_mount_mode(0o777, || rename_and_delete_in(fixture.path()));
+}
+
+/// A refused staging directory is reported for the selected item, never for the
+/// hidden staging directory, which is gone.
+fn assert_refused_for(item: &Path, refused: midnight_core::FsError, kind: ErrorKind) {
+    assert_eq!(refused.kind, kind, "{refused}");
+    assert_eq!(refused.path, item, "{refused}");
+    assert!(
+        refused.message.starts_with(
+            "a private staging folder is needed beside the item, but it cannot be used: "
+        ),
+        "{refused}"
+    );
+    assert!(!refused.message.contains(".midnight-mutation"), "{refused}");
+}
+
+#[test]
+fn a_stage_wider_than_its_parent_is_refused_and_removed() {
+    use std::os::unix::fs::PermissionsExt;
+    let fixture = tempfile::tempdir().unwrap();
+    fs::set_permissions(fixture.path(), fs::Permissions::from_mode(0o755)).unwrap();
+    let original = fixture.path().join("photo.jpg");
+    fs::write(&original, b"pixels").unwrap();
+    let cancel = Cancellation::default();
+    let prepared = LinuxFileSystem::new(None)
+        .prepare(&original, &cancel)
+        .unwrap();
+    // New folders of this mount would let every user change what the parent
+    // protects.
+    crate::ownership::simulation::with_mount_mode(0o777, || {
+        for _ in 0..3 {
+            let refused = prepared.rename(OsStr::new("renamed.jpg"), &cancel);
+            assert_refused_for(&original, refused.unwrap_err(), ErrorKind::Unsupported);
+            let refused = prepared.delete(DeleteMode::Permanent, &cancel, &mut |_| {});
+            assert_refused_for(&original, refused.unwrap_err(), ErrorKind::Unsupported);
+        }
+    });
+    assert_eq!(fs::read(&original).unwrap(), b"pixels");
+    assert!(staging_residue(fixture.path()).is_empty());
+    assert_eq!(fs::read_dir(fixture.path()).unwrap().count(), 1);
+}
+
+/// With a POSIX access ACL the parent's group bits are only the ACL mask, so a
+/// stage of the same mode without an ACL would grant the owning group those bits
+/// in full. The parent's ACL is read through the O_PATH parent pin of Rename and
+/// Delete.
+#[test]
+fn a_stage_as_open_as_a_parent_shared_through_an_access_acl_is_refused() {
+    use std::os::unix::fs::PermissionsExt;
+    let fixture = tempfile::tempdir().unwrap();
+    let test = "stages as open as an ACL-shared parent";
+    if !equally_open_parent_supported(fixture.path(), test)
+        || !crate::test_support::share_through_access_acl(fixture.path(), test)
+    {
+        return;
+    }
+    // chmod keeps the ACL; the mode now reads like that of a dir_mode=0777 share.
+    fs::set_permissions(fixture.path(), fs::Permissions::from_mode(0o777)).unwrap();
+    let original = fixture.path().join("photo.jpg");
+    fs::write(&original, b"pixels").unwrap();
+    let cancel = Cancellation::default();
+    let prepared = LinuxFileSystem::new(None)
+        .prepare(&original, &cancel)
+        .unwrap();
+    crate::ownership::simulation::with_mount_mode(0o777, || {
+        let refused = prepared.rename(OsStr::new("renamed.jpg"), &cancel);
+        assert_refused_for(&original, refused.unwrap_err(), ErrorKind::Unsupported);
+        let refused = prepared.delete(DeleteMode::Permanent, &cancel, &mut |_| {});
+        assert_refused_for(&original, refused.unwrap_err(), ErrorKind::Unsupported);
+    });
+    assert_eq!(fs::read(&original).unwrap(), b"pixels");
+    assert!(staging_residue(fixture.path()).is_empty());
+    // The ACL alone made the difference.
+    crate::test_support::remove_access_acl(fixture.path());
+    let renamed = crate::ownership::simulation::with_mount_mode(0o777, || {
+        prepared.rename(OsStr::new("renamed.jpg"), &cancel)
+    })
+    .unwrap();
+    assert_eq!(fs::read(renamed).unwrap(), b"pixels");
+    assert!(staging_residue(fixture.path()).is_empty());
+}
+
+#[test]
+fn a_staging_folder_that_cannot_be_created_is_reported_for_the_item() {
+    use std::os::unix::fs::PermissionsExt;
+    let fixture = tempfile::tempdir().unwrap();
+    let original = fixture.path().join("photo.jpg");
+    fs::write(&original, b"pixels").unwrap();
+    let cancel = Cancellation::default();
+    let prepared = LinuxFileSystem::new(None)
+        .prepare(&original, &cancel)
+        .unwrap();
+    fs::set_permissions(fixture.path(), fs::Permissions::from_mode(0o500)).unwrap();
+    // Root and CAP_DAC_OVERRIDE write to read-only folders anyway.
+    if fs::create_dir(fixture.path().join("probe")).is_ok() {
+        fs::remove_dir(fixture.path().join("probe")).unwrap();
+        fs::set_permissions(fixture.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        eprintln!("SKIP staging creation failures: this process writes to read-only folders");
+        return;
+    }
+    let refused = prepared.rename(OsStr::new("renamed.jpg"), &cancel);
+    fs::set_permissions(fixture.path(), fs::Permissions::from_mode(0o700)).unwrap();
+    let refused = refused.unwrap_err();
+    assert_eq!(refused.kind, ErrorKind::PermissionDenied, "{refused}");
+    assert_eq!(refused.path, original, "{refused}");
+    assert!(
+        refused.message.starts_with(
+            "a private staging folder is needed beside the item, but it could not be created: "
+        ),
+        "{refused}"
+    );
+    assert_eq!(fs::read(&original).unwrap(), b"pixels");
+}
+
+#[test]
+fn a_failed_capture_names_a_stage_it_cannot_remove_by_what_the_stage_holds() {
+    let fixture = tempfile::tempdir().unwrap();
+    let source = fixture.path().join("source");
+    fs::write(&source, b"selected").unwrap();
+    let cancel = Cancellation::default();
+    let prepared = super::Prepared::new(&source, None, &cancel).unwrap();
+    // Another object at the staged name (in a stage as open as its parent, one
+    // another user may have planted) refuses the capture and keeps the stage.
+    let staged = super::Staged::create(&prepared).unwrap();
+    let occupant = staged.path.join(super::STAGED_NAME);
+    fs::write(&occupant, b"occupant").unwrap();
+    let failure = staged.capture(&prepared, &cancel).unwrap_err();
+    assert_eq!(failure.kind, ErrorKind::AlreadyExists);
+    assert!(
+        failure.message.contains(&format!(
+            "the staging directory remains at {} and holds an entry that is not the selected item",
+            staged.path.display()
+        )),
+        "{}",
+        failure.message
+    );
+    assert_eq!(fs::read(&source).unwrap(), b"selected");
+    assert_eq!(fs::read(&occupant).unwrap(), b"occupant");
+    // Without a capture request the stage cannot hold the item.
+    let staged = super::Staged::create(&prepared).unwrap();
+    fs::write(staged.path.join("other"), b"other").unwrap();
+    fs::rename(&source, fixture.path().join("moved")).unwrap();
+    let failure = staged.capture(&prepared, &cancel).unwrap_err();
+    assert!(
+        failure.message.contains(&format!(
+            "the unused staging directory remains at {}",
+            staged.path.display()
+        )),
+        "{}",
+        failure.message
+    );
+}
+
+#[test]
+fn an_item_moved_by_a_capture_that_reported_failure_is_restored() {
+    let fixture = tempfile::tempdir().unwrap();
+    let source = fixture.path().join("source");
+    fs::write(&source, b"selected").unwrap();
+    let cancel = Cancellation::default();
+    let prepared = super::Prepared::new(&source, None, &cancel).unwrap();
+    let no_reply = || super::error(&source, ErrorKind::TimedOut, "no reply");
+    // The capture request moved the item, but its reply was lost (a network or
+    // FUSE filesystem): the item goes back to its name and the stage is removed.
+    let staged = super::Staged::create(&prepared).unwrap();
+    fs::rename(&source, staged.path.join(super::STAGED_NAME)).unwrap();
+    let failure = staged.abandon(&prepared, no_reply());
+    assert_eq!(failure.message, "no reply");
+    assert_eq!(fs::read(&source).unwrap(), b"selected");
+    assert!(staging_residue(fixture.path()).is_empty());
+    // If another entry took the name meanwhile, the item stays in the stage,
+    // which the error names.
+    let staged = super::Staged::create(&prepared).unwrap();
+    let recovery = staged.path.join(super::STAGED_NAME);
+    fs::rename(&source, &recovery).unwrap();
+    fs::write(&source, b"replacement").unwrap();
+    let failure = staged.abandon(&prepared, no_reply());
+    assert!(
+        failure.message.contains(&format!(
+            "remaining entry preserved at {}",
+            recovery.display()
+        )),
+        "{}",
+        failure.message
+    );
+    assert_eq!(fs::read(&recovery).unwrap(), b"selected");
+    assert_eq!(fs::read(&source).unwrap(), b"replacement");
+}
+
 #[test]
 fn refused_staging_directories_are_removed_and_the_source_is_untouched() {
+    use crate::ownership::simulation::{with_foreign_device, with_foreign_owner};
     let fixture = tempfile::tempdir().unwrap();
     let original = fixture.path().join("photo.jpg");
     fs::write(&original, b"pixels").unwrap();
@@ -740,14 +958,17 @@ fn refused_staging_directories_are_removed_and_the_source_is_untouched() {
         .prepare(&original, &cancel)
         .unwrap();
     for _ in 0..3 {
-        let refused = crate::ownership::simulation::with_foreign_owner(|| {
-            prepared.rename(OsStr::new("renamed.jpg"), &cancel)
-        });
-        assert_eq!(refused.unwrap_err().kind, ErrorKind::PermissionDenied);
-        let refused = crate::ownership::simulation::with_foreign_owner(|| {
-            prepared.delete(DeleteMode::Permanent, &cancel, &mut |_| {})
-        });
-        assert_eq!(refused.unwrap_err().kind, ErrorKind::PermissionDenied);
+        // Another owner, or another filesystem than the parent's.
+        let refused = with_foreign_owner(|| prepared.rename(OsStr::new("renamed.jpg"), &cancel));
+        assert_refused_for(&original, refused.unwrap_err(), ErrorKind::PermissionDenied);
+        let refused =
+            with_foreign_owner(|| prepared.delete(DeleteMode::Permanent, &cancel, &mut |_| {}));
+        assert_refused_for(&original, refused.unwrap_err(), ErrorKind::PermissionDenied);
+        let refused = with_foreign_device(|| prepared.rename(OsStr::new("renamed.jpg"), &cancel));
+        assert_refused_for(&original, refused.unwrap_err(), ErrorKind::InvalidData);
+        let refused =
+            with_foreign_device(|| prepared.delete(DeleteMode::Permanent, &cancel, &mut |_| {}));
+        assert_refused_for(&original, refused.unwrap_err(), ErrorKind::InvalidData);
     }
     assert_eq!(fs::read(&original).unwrap(), b"pixels");
     assert!(staging_residue(fixture.path()).is_empty());

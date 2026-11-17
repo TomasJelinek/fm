@@ -182,12 +182,13 @@ fn a_verdict_being_computed_never_blocks_cached_checks() {
     assert!(cache.get((2, 2), validity, || false));
 }
 
-fn created(parent: &Path, name: &str) -> File {
-    rustix::fs::mkdir(parent.join(name), Mode::RWXU).unwrap();
+/// An O_PATH pin of the directory `path`, as Rename and Delete pin their parent
+/// and their new staging directory.
+fn pinned(path: &Path) -> File {
     File::from(
         openat(
             rustix::fs::CWD,
-            parent.join(name),
+            path,
             OFlags::PATH | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
             Mode::empty(),
         )
@@ -195,12 +196,18 @@ fn created(parent: &Path, name: &str) -> File {
     )
 }
 
+fn created(parent: &Path, name: &str) -> File {
+    rustix::fs::mkdir(parent.join(name), Mode::RWXU).unwrap();
+    pinned(&parent.join(name))
+}
+
 #[test]
 fn created_directories_are_private_and_restrictive_modes_are_corrected() {
     let temp = tempfile::tempdir().unwrap();
+    let parent = File::open(temp.path()).unwrap();
     let private = created(temp.path(), "private");
     assert_eq!(
-        check_created_directory(&private).unwrap(),
+        check_created_directory(&parent, &private).unwrap(),
         CreatedDirectory::Private
     );
     // A restrictive umask or default ACL can create less than 0700.
@@ -211,7 +218,7 @@ fn created_directories_are_private_and_restrictive_modes_are_corrected() {
     )
     .unwrap();
     assert_eq!(
-        check_created_directory(&restricted).unwrap(),
+        check_created_directory(&parent, &restricted).unwrap(),
         CreatedDirectory::Private
     );
     assert_eq!(
@@ -220,22 +227,189 @@ fn created_directories_are_private_and_restrictive_modes_are_corrected() {
     );
 }
 
+/// The Linux Rename plugin carries the same table
+/// (`plugins/midnight-filesystem-native-linux/src/ownership.rs`): both code bases
+/// must admit the same mount-provided stage modes and read the same ACLs.
 #[test]
-fn mount_provided_modes_are_accepted_but_foreign_owners_are_refused() {
+fn mount_provided_stage_modes_are_never_wider_than_an_unprotected_parent() {
+    const T: bool = true;
+    const F: bool = false;
+    // u, g: the effective user and group; o: another group; r: another owner;
+    // p: whether g is the caller's private group; s: whether u is root.
+    let u = rustix::process::geteuid().as_raw();
+    let g = rustix::process::getegid().as_raw();
+    let o = g.wrapping_add(7919);
+    let r = u.wrapping_add(1);
+    let p = caller_private_group(g);
+    let s = u == 0;
+    // (stage, its ACL, parent, its ACL) -> (admitted, stage ACL read, parent ACL read)
+    for (stage, stage_acl, parent, parent_acl, expected) in [
+        // Only the caller can write the stage, whatever its parent.
+        ((u, g, 0o40755), F, (u, g, 0o40700), F, (T, F, F)),
+        ((u, o, 0o40750), F, (u, g, 0o40700), F, (T, F, F)),
+        // Without group write, an ACL mask lets no named user or group write.
+        ((u, g, 0o40755), T, (u, g, 0o40700), F, (T, F, F)),
+        // Private-group write, but only on a stage without an access ACL.
+        ((u, g, 0o40775), F, (u, g, 0o40700), F, (p, p, F)),
+        ((u, g, 0o40775), T, (u, g, 0o40700), F, (F, p, F)),
+        // Wider than the parent: refused without reading an ACL.
+        ((u, g, 0o40777), F, (u, g, 0o40755), F, (F, F, F)),
+        ((u, g, 0o40757), F, (u, g, 0o40755), F, (F, F, F)),
+        ((u, o, 0o40775), F, (u, g, 0o40755), F, (F, F, F)),
+        // Exactly as open as a parent other users can already change ...
+        ((u, g, 0o40777), F, (u, g, 0o40777), F, (T, T, T)),
+        ((u, o, 0o40775), F, (u, o, 0o40775), F, (T, T, T)),
+        // ... while neither carries an access ACL.
+        ((u, g, 0o40777), T, (u, g, 0o40777), F, (F, T, F)),
+        ((u, g, 0o40777), F, (u, g, 0o40777), T, (F, T, T)),
+        // Another parent owner, group or mode, or a protected (sticky) parent.
+        ((u, g, 0o40777), F, (r, g, 0o40777), F, (F, F, F)),
+        ((u, g, 0o40777), F, (0, g, 0o40777), F, (s, s, s)),
+        ((u, g, 0o40777), F, (u, o, 0o40777), F, (F, F, F)),
+        ((u, g, 0o40777), F, (u, g, 0o41777), F, (F, F, F)),
+        ((u, g, 0o41777), F, (u, g, 0o41777), F, (F, F, F)),
+        // A private group admits the stage alone; any other group leaves the
+        // parent unprotected, so the stage is then exactly as open as it.
+        ((u, g, 0o40775), F, (u, g, 0o40775), F, (T, T, !p)),
+    ] {
+        let asked = (std::cell::Cell::new(false), std::cell::Cell::new(false));
+        let verdict = mount_mode_admitted(
+            stage,
+            || {
+                asked.0.set(true);
+                stage_acl
+            },
+            parent,
+            || {
+                asked.1.set(true);
+                parent_acl
+            },
+        );
+        assert_eq!(
+            (verdict, asked.0.get(), asked.1.get()),
+            expected,
+            "stage {:?} mode {:o} acl {stage_acl}, parent {:?} mode {:o} acl {parent_acl}",
+            (stage.0, stage.1),
+            stage.2,
+            (parent.0, parent.1),
+            parent.2
+        );
+    }
+}
+
+/// The parent's group and access ACL take part in the equally-open-parent
+/// case; prints SKIP when the temporary directory is of another group (a
+/// set-group-ID ancestor) or carries an access ACL (a default ACL above it).
+fn equally_open_parent_supported(parent: &File, test: &str) -> bool {
+    let group = parent.metadata().unwrap().gid();
+    if group != rustix::process::getegid().as_raw() {
+        eprintln!(
+            "SKIP {test}: the temporary directory's group {group} is not the effective group"
+        );
+        return false;
+    }
+    if may_have_access_acl(parent) {
+        eprintln!("SKIP {test}: the temporary directory carries an access ACL");
+        return false;
+    }
+    true
+}
+
+#[test]
+fn mount_provided_modes_are_admitted_only_as_far_as_the_parent_allows() {
     let temp = tempfile::tempdir().unwrap();
+    // Pinned with O_PATH like the mutation parent: its ACL is read through a
+    // readable reopen.
+    let parent = pinned(temp.path());
     let directory = created(temp.path(), "fat");
+    let check =
+        |mode| simulation::with_mount_mode(mode, || check_created_directory(&parent, &directory));
+    // A parent other users cannot change: vfat/exfat with a 022 mask is admitted,
+    // a stage other users could change is not.
     assert_eq!(
-        simulation::with_mount_mode(0o755, || check_created_directory(&directory).unwrap()),
+        check(0o755).unwrap(),
         CreatedDirectory::MountProvided(0o755)
     );
-    let error = simulation::with_foreign_owner(|| check_created_directory(&directory).unwrap_err());
+    for mode in [0o777, 0o757] {
+        assert_eq!(
+            check(mode).unwrap_err().kind(),
+            io::ErrorKind::Unsupported,
+            "mode {mode:o}"
+        );
+    }
+    if equally_open_parent_supported(&parent, "mount-provided modes as open as their parent") {
+        // A share mounted with dir_mode=0777: every folder is equally open.
+        fs::set_permissions(temp.path(), fs::Permissions::from_mode(0o777)).unwrap();
+        assert_eq!(
+            check(0o777).unwrap(),
+            CreatedDirectory::MountProvided(0o777)
+        );
+        // With an access ACL the parent's group bits are only the ACL mask: a stage
+        // of the same mode without an ACL would grant the owning group those bits
+        // in full, and named entries may restrict users the stage would not.
+        let test = "mount-provided modes as open as an ACL-shared parent";
+        if crate::test_support::share_through_access_acl(temp.path(), test) {
+            fs::set_permissions(temp.path(), fs::Permissions::from_mode(0o777)).unwrap();
+            assert_eq!(check(0o777).unwrap_err().kind(), io::ErrorKind::Unsupported);
+            crate::test_support::remove_access_acl(temp.path());
+            assert_eq!(
+                check(0o777).unwrap(),
+                CreatedDirectory::MountProvided(0o777)
+            );
+        }
+        // A sticky parent is protected, so nothing wider than the caller's is admitted.
+        fs::set_permissions(temp.path(), fs::Permissions::from_mode(0o1777)).unwrap();
+        for mode in [0o777, 0o1777] {
+            assert_eq!(
+                check(mode).unwrap_err().kind(),
+                io::ErrorKind::Unsupported,
+                "mode {mode:o}"
+            );
+        }
+        fs::set_permissions(temp.path(), fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    let error = simulation::with_foreign_owner(|| {
+        check_created_directory(&parent, &directory).unwrap_err()
+    });
     assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+    let error = simulation::with_foreign_device(|| {
+        check_created_directory(&parent, &directory).unwrap_err()
+    });
+    assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    assert!(error.to_string().contains("another filesystem"), "{error}");
     fs::write(temp.path().join("file"), b"not a directory").unwrap();
     let file = File::open(temp.path().join("file")).unwrap();
     assert_eq!(
-        check_created_directory(&file).unwrap_err().kind(),
+        check_created_directory(&parent, &file).unwrap_err().kind(),
         io::ErrorKind::InvalidData
     );
+}
+
+/// With a POSIX access ACL the group bits of a mount-provided 0775 mode are the
+/// mask of named writers, so the directory is not the caller's alone.
+#[test]
+fn a_mount_provided_stage_shared_through_an_access_acl_is_refused() {
+    let temp = tempfile::tempdir().unwrap();
+    let parent = File::open(temp.path()).unwrap();
+    let path = temp.path().join("shared");
+    let directory = created(temp.path(), "shared");
+    // Any other group refuses a group-writable stage whether or not it has an ACL.
+    let group = fs::metadata(&path).unwrap().gid();
+    if !caller_private_group(group) {
+        eprintln!(
+            "SKIP ACL-shared mount-provided modes: group {group} is not this user's private group"
+        );
+        return;
+    }
+    if !crate::test_support::share_through_access_acl(&path, "ACL-shared mount-provided modes") {
+        return;
+    }
+    let check =
+        || simulation::with_mount_mode(0o775, || check_created_directory(&parent, &directory));
+    assert_eq!(check().unwrap_err().kind(), io::ErrorKind::Unsupported);
+    // The ACL alone made the difference: without it the private group may write.
+    crate::test_support::remove_access_acl(&path);
+    assert_eq!(check().unwrap(), CreatedDirectory::MountProvided(0o775));
 }
 
 #[test]

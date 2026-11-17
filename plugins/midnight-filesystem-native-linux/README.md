@@ -40,17 +40,24 @@ opened once, and each validation checks the current name through a metadata-only
 
 Prepared Rename pins the selected entry and its parent before a name is chosen.
 The parent must be owned by the user or root and either sticky or writable only
-by the user (group write is accepted only for the user's private group, as on
-Ubuntu or Fedora with umask 002); otherwise preparation is refused before a name
-is requested. Every Rename, including no-replace, moves the entry through a
-hidden `.midnight-rename-*` stage beside it and publishes it with
+by the user: group write is accepted only for the user's private group (as on
+Ubuntu or Fedora with umask 002) and only while the folder has no POSIX access
+ACL, because with one the group bits are the ACL mask, which can let named users
+or groups write. Otherwise preparation is refused before a name is requested,
+and execution checks again. Every Rename, including no-replace, moves the entry
+through a hidden `.midnight-rename-*` stage beside it and publishes it with
 `RENAME_NOREPLACE`, so the result is the exact pinned inode; watchers briefly
 see the stage. The stage is created owner-only; filesystems whose permissions
 come from mount options (vfat, exfat, NTFS, CIFS without POSIX extensions, many
 FUSE mounts) keep their mount-provided mode, which is accepted only while no
-other user can write to the stage. A stage this provider refuses is removed
-again. The stage and parent directories are synced (up to three directory syncs
-per Rename) and results report `durability_confirmed: true`. On case-insensitive
+other user can write to the stage (the same private-group and ACL conditions
+apply), so the stage never lets other users change more than the protected
+parent does. Permission bits protect only where the kernel enforces them: FUSE
+mounts with `allow_other` but without `default_permissions` and CIFS mounts
+with `noperm` exclude other local users only as far as their server does. A
+stage this provider refuses is removed again. The stage and parent directories
+are synced (up to three directory syncs per Rename) and results report
+`durability_confirmed: true`. On case-insensitive
 mounts a case-only change of a single-link entry or a directory is published
 like any other name; another hard link of the source remains a conflict.
 Recoverable replacement of a regular file (`RENAME_EXCHANGE`, displaced target

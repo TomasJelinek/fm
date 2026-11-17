@@ -169,7 +169,9 @@ impl Plan {
         }
     }
     /// This call created the stage and then refused it. Remove it while its name
-    /// still binds the directory we created; rmdir never removes contents.
+    /// still binds the directory we pinned (when it could not be pinned, the name
+    /// is removed only if it is an empty directory); rmdir never removes contents,
+    /// and the parent need not be protected.
     fn refused(
         self,
         prepared: &Prepared,
@@ -262,8 +264,9 @@ pub(crate) struct Stage {
     plan: Plan,
     file: File,
     identity: Identity,
-    /// Permission bits accepted at creation: 0700, or the mount-provided mode of
-    /// a filesystem that cannot store POSIX modes. Any later change is refused.
+    /// Permission bits accepted at creation: 0700, or a mount-provided mode that
+    /// `ownership::admits_stage` accepted on a filesystem that cannot store POSIX
+    /// modes. Any later change is refused.
     mode: u32,
     parent_sync: File,
     stage_sync: File,
@@ -320,7 +323,7 @@ impl Stage {
                 Ok(file) => file,
                 Err(failure) => return Err(plan.refused(prepared, &parent_sync, failure, None)),
             };
-            let (identity, mode, stage_sync) = match Self::admit(prepared, &file) {
+            let (identity, mode, stage_sync) = match Self::admit(prepared, &file, &parent_sync) {
                 Ok(admitted) => admitted,
                 Err(failure) => {
                     return Err(plan.refused(prepared, &parent_sync, failure, Some(&file)));
@@ -346,18 +349,29 @@ impl Stage {
             "Rename stage collision limit reached.",
         )))
     }
-    /// Admit a stage this call just created: an owned same-device directory that
-    /// only the caller can change. A restrictive umask or default ACL is corrected
-    /// to 0700. Filesystems whose permissions come from mount options (vfat, exfat,
-    /// NTFS, CIFS without POSIX extensions, many FUSE mounts) keep their mode,
-    /// which is accepted only while no other user may write to the stage.
-    fn admit(prepared: &Prepared, file: &File) -> Result<(Identity, u32, File), Failure> {
+    /// Admit a stage this call just created: an owned directory on the parent's
+    /// device. A restrictive umask or default ACL is corrected to 0700.
+    /// Filesystems whose permissions come from mount options (vfat, exfat, NTFS,
+    /// CIFS without POSIX extensions, many FUSE mounts) keep their mode, which
+    /// `ownership::admits_stage` accepts only while no other user can write to the
+    /// stage (group write only for the private group, without an access ACL). Its
+    /// other case, a stage exactly as open as an unprotected parent, never leads
+    /// to a capture here: the parent is protected when the stage is created and
+    /// is checked again before the capture is requested. `parent_sync` is the
+    /// parent's readable descriptor, whose identity the caller confirmed.
+    fn admit(
+        prepared: &Prepared,
+        file: &File,
+        parent_sync: &File,
+    ) -> Result<(Identity, u32, File), Failure> {
         let identity = Identity::of(file)?;
+        let owned_here = |metadata: &std::fs::Metadata| {
+            metadata.is_dir()
+                && metadata.uid() == sys::effective_uid()
+                && metadata.dev() == prepared.parent_identity.device
+        };
         let metadata = file.metadata().map_err(Failure::from_io)?;
-        if !metadata.is_dir()
-            || metadata.uid() != sys::effective_uid()
-            || identity.device != prepared.parent_identity.device
-        {
+        if !owned_here(&metadata) {
             return Err(changed(
                 "New Rename stage is not an owned same-device directory.",
             ));
@@ -371,10 +385,13 @@ impl Stage {
             // The result is observed below; a refusal leaves the mount-provided mode.
             let _ = sys::make_private(&stage_sync);
             let current = stage_sync.metadata().map_err(Failure::from_io)?;
+            if !owned_here(&current) {
+                return Err(changed(
+                    "New Rename stage is not an owned same-device directory.",
+                ));
+            }
             mode = current.mode() & 0o777;
-            if mode != 0o700
-                && !ownership::writable_only_by_caller(current.uid(), current.gid(), mode)
-            {
+            if mode != 0o700 && !ownership::admits_stage(&stage_sync, &current, parent_sync)? {
                 return Err(Failure::new(
                     ErrorCode::Unsupported,
                     "This filesystem would let other users change the Rename stage.",
@@ -606,7 +623,11 @@ impl Stage {
             ),
         }
     }
-    /// The capture request was issued and returned an error.
+    /// The capture request was issued and returned an error. Unlike a stage
+    /// refused at creation (`Plan::refused`) or abandoned before the request
+    /// (`abandon`), this stage is removed only through `cleanup`: after both
+    /// directories are synced and while the parent is still protected
+    /// (`container_current`). Otherwise it is reported as a recovery receipt.
     pub(crate) fn without_capture(mut self, prepared: &Prepared, error: Failure) -> RenameOutcome {
         // A failed namespace syscall can be ambiguous on remote storage. Observe
         // the retained stage before claiming that capture did not happen.
