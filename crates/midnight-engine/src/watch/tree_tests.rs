@@ -718,10 +718,15 @@ struct LinkWatchRuntime {
     native: Arc<Batches>,
     outbox: Outbox,
     events: mpsc::Receiver<Event>,
+    timing: Timing,
 }
 
 impl LinkWatchRuntime {
     fn new(scope: &tree::TreeScope) -> Self {
+        Self::with_timing(scope, link_watch_timing())
+    }
+
+    fn with_timing(scope: &tree::TreeScope, timing: Timing) -> Self {
         let handle = Handle {
             panes: Retirement::testing().panes.map(|lease| {
                 Arc::new(lease.own(Shared {
@@ -735,7 +740,7 @@ impl LinkWatchRuntime {
                         tree: None,
                     }),
                     worker: std::sync::OnceLock::new(),
-                    timing: link_watch_timing(),
+                    timing,
                 }))
             }),
         };
@@ -755,6 +760,7 @@ impl LinkWatchRuntime {
                 wakeup: Arc::new(|| {}),
             },
             events,
+            timing,
         }
     }
 
@@ -764,7 +770,7 @@ impl LinkWatchRuntime {
                 &self.handle.panes[PaneId::Left.index()],
                 files,
                 &self.outbox,
-                link_watch_timing(),
+                self.timing,
             );
         }
     }
@@ -813,6 +819,62 @@ impl LinkWatchRuntime {
             "accepted stable scope must become quiet"
         );
     }
+}
+
+#[test]
+fn callback_before_refresh_admission_is_covered_without_a_fresh_hint() {
+    let files = Arc::new(Files::default());
+    let path = std::env::current_dir()
+        .unwrap()
+        .join("_build/watch-tree-pre-admission")
+        .to_str()
+        .unwrap()
+        .to_owned();
+    files.put(&path, 7);
+    let (_session, scope) = scope(&files, &path);
+    // Settle the initial observation, then keep polling outside this synchronous
+    // window so only explicit callbacks can add dirty epochs.
+    let mut runtime = LinkWatchRuntime::with_timing(
+        &scope,
+        Timing {
+            quiet: Duration::ZERO,
+            maximum: Duration::ZERO,
+            poll: Duration::from_secs(3600),
+        },
+    );
+    runtime.settle(files.as_ref(), &scope, 100);
+    let probes = files.probes.load(Ordering::SeqCst);
+
+    runtime.native.fire();
+    runtime.tick(files.as_ref(), 1);
+    let hint_a = runtime
+        .changed()
+        .expect("callback A emits the consumed hint");
+    assert_eq!(hint_a, scope.stamp);
+
+    // Callback B precedes admission of the sweep requested by hint A. Do not
+    // tick the runtime between B and admission: B has emitted no separate hint.
+    runtime.native.fire();
+    assert!(runtime.changed().is_none());
+    let ticket = runtime
+        .handle
+        .begin_refresh(hint_a, TreeRequestId(101))
+        .unwrap();
+    runtime
+        .handle
+        .finish_refresh(ticket, true, scope.stamp.revision);
+    runtime.handle.set_tree_scope(scope.clone());
+    runtime.tick(files.as_ref(), 1);
+
+    assert!(
+        runtime.changed().is_none(),
+        "the successful admitted sweep and exact Commit cover A and B without a fresh hint"
+    );
+    assert_eq!(
+        files.probes.load(Ordering::SeqCst),
+        probes,
+        "polling cannot introduce or consume another observation in this window"
+    );
 }
 
 #[test]

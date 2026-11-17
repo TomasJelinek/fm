@@ -43,11 +43,7 @@ fn exercise_external_changes(pane: PaneId) {
         let directory = parent.join(name);
         fs::create_dir(&directory).unwrap();
         if let Err(panic) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            h.until(|h| {
-                watch.callbacks() > before
-                    && h.watch_hints[pane.index()] > hints
-                    && h.rows().iter().any(|row| row.name == name)
-            });
+            h.until(|h| watch.callbacks() > before && h.rows().iter().any(|row| row.name == name));
         })) {
             let callbacks = watch.callbacks();
             let current_hints = h.watch_hints[pane.index()];
@@ -56,7 +52,7 @@ fn exercise_external_changes(pane: PaneId) {
                 .as_ref()
                 .is_some_and(|view| view.rows.iter().any(|row| row.entry.display_name == name));
             eprintln!(
-                "tree watch creation predicates: pane={pane:?}, target={name:?}, callbacks={callbacks}>{before} ({}), hints={current_hints}>{hints} ({}), ui_row={ui_row}, observed_projection_row={projection_row}, historical_subscriptions(root,branch)={:?}",
+                "tree watch creation predicates: pane={pane:?}, target={name:?}, callbacks={callbacks}>{before} (fresh_callback_required={}), hints={current_hints}>{hints} (fresh_hint_informational={}, coalescing_allowed), ui_row_required={ui_row}, observed_projection_row={projection_row}, historical_subscriptions(root,branch)={:?}",
                 callbacks > before,
                 current_hints > hints,
                 (watch.observes(&fixture.root), watch.observes(&branch)),
@@ -78,6 +74,10 @@ fn exercise_external_changes(pane: PaneId) {
                 .any(|row| row.name == "small" && row.selected)
         );
     }
+    assert!(
+        h.watch_hints[pane.index()] > 0,
+        "the native tree watch session must receive a routing hint"
+    );
     assert!(h.ui.window.get_left_error().is_empty());
     assert!(h.ui.window.get_right_error().is_empty());
 }

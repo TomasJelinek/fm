@@ -18,6 +18,16 @@ with the receipt, state any differences and limit qualification to that scope.
 Independent plugins still use their own workspace and normal configuration;
 this does not require blanket workspace builds for independent plugin checks.
 
+Fixture readiness is not a maintenance-quiescence fence. Exact pre-ACK capture
+fixtures must account for independent startup maintenance without weakening
+production projection/occurrence guards. If an opt-in fixture defers hints, hold
+only pure scalar `Changed` / `DirectoryChanged` through transfer terminal, then
+replay the originals before reconciliation/external-write assertions; retain
+native watchers and pre-ACK coverage. Watch checks still require a real callback
+plus the UI row, but a refresh admitted after a callback can coalesce its hint.
+Test before-admission coalescing separately from post-admission dirty-state
+survival, retaining existing post-admission and default-timing coverage.
+
 To run two independent headless targets concurrently, select both in the build
 and in the runner (no second Cargo process is needed):
 

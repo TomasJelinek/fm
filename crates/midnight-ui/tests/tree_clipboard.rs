@@ -175,7 +175,9 @@ fn exercise(pane: PaneId, intent: FileClipboardIntent) {
         service,
         watch.clone(),
         clipboard.clone(),
+        true,
     );
+    assert!(h.maintenance_hints_held());
     let source_session = h.view.as_ref().unwrap().stamp.session;
     let destination = pane.other();
     let existing = rows(&h, destination)
@@ -254,6 +256,8 @@ fn exercise(pane: PaneId, intent: FileClipboardIntent) {
             .last()
             .is_some_and(|progress| progress.state.is_terminal())
     });
+    h.release_maintenance_hints();
+    assert!(!h.maintenance_hints_held());
     let progress = h.copy_progress.last().unwrap();
     assert_eq!(
         progress.state,
@@ -392,6 +396,7 @@ fn unselected_parent_is_excluded_and_focused_nested_folder_is_the_fallback() {
         service.clone(),
         service,
         clipboard.clone(),
+        false,
     );
     focus(&h, PaneId::Left, "..", false);
     assert!(h.selection.as_ref().unwrap().is_empty());

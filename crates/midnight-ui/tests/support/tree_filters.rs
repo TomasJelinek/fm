@@ -385,6 +385,9 @@ struct ClipboardTrace {
     replies: [usize; 3],
     scope_claims: usize,
     scope_denials: usize,
+    // Preserve the first chord evidence even when later stages fill the ring.
+    before_chord: Option<(u128, ClipboardStep)>,
+    after_chord: Option<(u128, ClipboardStep)>,
     steps: VecDeque<(u128, ClipboardStep)>,
 }
 
@@ -400,6 +403,8 @@ impl ClipboardTrace {
             replies: [0; 3],
             scope_claims: 0,
             scope_denials: 0,
+            before_chord: None,
+            after_chord: None,
             steps: VecDeque::with_capacity(16),
         }
     }
@@ -427,8 +432,13 @@ impl ClipboardTrace {
         if self.steps.len() == 16 {
             self.steps.pop_front();
         }
-        self.steps
-            .push_back((self.started.elapsed().as_millis(), step));
+        let record = (self.started.elapsed().as_millis(), step);
+        match step.stage {
+            "before_copy_chord" if self.before_chord.is_none() => self.before_chord = Some(record),
+            "after_copy_chord" if self.after_chord.is_none() => self.after_chord = Some(record),
+            _ => {}
+        }
+        self.steps.push_back(record);
     }
 }
 
@@ -515,6 +525,9 @@ pub struct Harness {
     pub clipboard_publications: usize,
     clipboard_trace: Rc<RefCell<ClipboardTrace>>,
     pub watch_hints: [usize; 2],
+    hold_maintenance_hints: bool,
+    held_tree_hints: [Option<TreeViewStamp>; 2],
+    held_directory_hints: [Option<NavigationId>; 2],
     pub send: Rc<dyn Fn(Command) -> bool>,
     pub pane: PaneId,
     runtime: Runtime,
@@ -534,6 +547,7 @@ struct NativeServices {
     watch: Option<Arc<dyn WatchService>>,
     clipboard: Option<Arc<dyn ClipboardService>>,
     commands: Option<(Arc<dyn UserCommandService>, Vec<UserCommand>)>,
+    hold_maintenance_hints: bool,
 }
 
 type InstallTransfer = Box<dyn FnOnce(&mut Engine)>;
@@ -607,6 +621,7 @@ impl Harness {
                 watch: None,
                 clipboard: None,
                 commands: None,
+                hold_maintenance_hints: false,
             }),
         )
     }
@@ -630,6 +645,7 @@ impl Harness {
                 watch: Some(watch),
                 clipboard: None,
                 commands: None,
+                hold_maintenance_hints: false,
             }),
         )
     }
@@ -641,6 +657,7 @@ impl Harness {
         transfer: Arc<T>,
         watch: Arc<dyn WatchService>,
         clipboard: Arc<dyn ClipboardService>,
+        hold_maintenance_hints: bool,
     ) -> Self {
         Self::with_fixture(
             pane,
@@ -654,6 +671,7 @@ impl Harness {
                 watch: Some(watch),
                 clipboard: Some(clipboard),
                 commands: None,
+                hold_maintenance_hints,
             }),
         )
     }
@@ -677,6 +695,7 @@ impl Harness {
                 watch: None,
                 clipboard: None,
                 commands: Some((commands, configuration)),
+                hold_maintenance_hints: false,
             }),
         )
     }
@@ -719,12 +738,14 @@ impl Harness {
             watch,
             clipboard,
             commands: user_commands,
+            hold_maintenance_hints,
         } = native.unwrap_or_else(|| NativeServices {
             path: Path::new(env!("CARGO_MANIFEST_DIR")).join("../../_build/tree-filter-bridge"),
             directory: Arc::new(Files(calls.clone())),
             watch: None,
             clipboard: None,
             commands: None,
+            hold_maintenance_hints: false,
         });
         let watching = watch.is_some();
         let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -826,6 +847,9 @@ impl Harness {
             clipboard_publications: 0,
             clipboard_trace,
             watch_hints: [0; 2],
+            hold_maintenance_hints,
+            held_tree_hints: [None; 2],
+            held_directory_hints: [None; 2],
             send,
             pane,
             runtime,
@@ -1063,6 +1087,21 @@ impl Harness {
         presenter: &mut Presenter,
         send: &dyn Fn(Command) -> bool,
     ) {
+        if self.hold_maintenance_hints {
+            match &event {
+                Event::Tree(tree) => {
+                    if let TreeEvent::Changed { stamp } = tree.as_ref() {
+                        self.held_tree_hints[stamp.pane.index()] = Some(*stamp);
+                        return;
+                    }
+                }
+                Event::DirectoryChanged { pane, navigation } => {
+                    self.held_directory_hints[pane.index()] = Some(*navigation);
+                    return;
+                }
+                _ => {}
+            }
+        }
         if let Some(metadata) = ClipboardStep::event(&event) {
             self.clipboard_trace.borrow_mut().record(metadata);
         }
@@ -1154,6 +1193,25 @@ impl Harness {
         self.runtime.block_on(async {
             tokio::time::sleep(Duration::from_millis(1)).await;
         });
+    }
+
+    pub fn maintenance_hints_held(&self) -> bool {
+        self.hold_maintenance_hints
+    }
+
+    pub fn release_maintenance_hints(&mut self) {
+        // Disable first: replay and all later native hints take the ordinary path.
+        self.hold_maintenance_hints = false;
+        let tree = std::mem::take(&mut self.held_tree_hints);
+        let directories = std::mem::take(&mut self.held_directory_hints);
+        for pane in [PaneId::Left, PaneId::Right] {
+            if let Some(stamp) = tree[pane.index()] {
+                self.apply_event(Event::Tree(Box::new(TreeEvent::Changed { stamp })));
+            }
+            if let Some(navigation) = directories[pane.index()] {
+                self.apply_event(Event::DirectoryChanged { pane, navigation });
+            }
+        }
     }
 
     pub fn clipboard_checkpoint(&self, stage: &'static str) {

@@ -18,6 +18,47 @@ code or a green subset into complete qualification.
 designed app features, test each deeply and polish all UI. Copy/Move convergence
 comes first; role work still requires scoped acceptance and exclusive ownership.
 
+### Clipboard and tree fixture ordering — 17 November 2026
+
+CI [44029256172](https://github.com/TomasJelinek/fm/actions/runs/44029256172)
+failed Gate40 clipboard on both platforms: Linux **8 passed / 4 failed**,
+Windows **11 passed / 1 failed**. Clipboard actor counts were **0** and trace
+attempts `[6,0,0]`: the exact pre-ACK capture was canceled by independently
+arriving startup-maintenance view churn before the capture command. No native
+clipboard invocation or refusal occurred. Native subscription startup and initial
+observation mark dirty; fixture readiness was not a maintenance-quiescence fence.
+Production exact-projection/occurrence guards must remain strict.
+
+Four **TEST-ONLY** diffs on `codex/ci-tree-fixture-ordering-20261117` have
+local runtime qualification. An opt-in fixture holds only pure scalar `Changed` /
+`DirectoryChanged` hints through native clipboard-transfer terminal, then releases
+and replays the original hints before the original reconciliation/external-write
+assertions. Native watchers and pre-ACK coverage remain enabled. Watch assertions
+still require a real callback plus the UI row; a refresh admitted after a callback
+may coalesce its hint, so a fresh per-mutation hint is not the contract. A new
+deterministic Engine unit covers before-admission coalescing; existing
+post-admission survival and default-timing tests are unchanged.
+
+Root verified **Windows 37 passed / 0 failed / 0 ignored** and **Linux 37/0/0**:
+Engine watch **16** (new before-admission coalescing plus retained post-admission
+coverage), clipboard **12**, tree-watch **9**. UI compilation used workspace
+feature context; default capture ran at four CPUs/four threads on both systems.
+Engine used four Windows threads and two Linux threads. Source postimages were
+unchanged; normal UID/SID runs exited all owned children. Both formatting checks
+passed. Linux strict Engine `--lib --tests` Clippy exited **0 / 41.16 s** and
+scoped workspace UI Clippy **0 / 32.47 s**. Windows strict Engine `--lib` and
+scoped workspace UI Clippy exited **0**. The Windows Engine `--lib --tests`
+lint supplement also exited **0 / 17.13 s**, covering the new test configuration.
+Both platform build leases are released; no runtime checks were repeated for
+the supplemental lint coverage.
+
+Fresh full integrated CI remains **PENDING**, not GREEN; run `44029256172`
+remains RED history. The original c97 Gate43 failing predicate remains
+**UNATTRIBUTED**: local fixture results do not prove its cause or a watcher behavior
+fix. Architect/Perf final source reviews accepted the test-only changes. Windows
+production remains unchanged from the qualified c97 EXE; no app rebuild/deployment
+is needed. Earlier checkpoint results keep their own dates, inputs and scopes.
+
 ### Tree-watch CI follow-up — 17 November 2026
 
 Root verified CI `44018173075` completed **19/20 successful jobs**, including
