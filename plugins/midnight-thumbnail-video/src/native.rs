@@ -216,9 +216,11 @@ pub(super) fn rotation(stream: &ffmpeg::Stream<'_>) -> io::Result<i32> {
 /// AVColorPrimaries/AVColorTransferCharacteristic values shown without gamut or tone
 /// mapping: BT.709 (1), unspecified (2) and the SD gamuts BT.470BG (5) and SMPTE 170M
 /// (6), which differ only slightly from BT.709; BT.709/unspecified/BT.601 and sRGB
-/// transfers. Wide-gamut and HDR input waits for a reviewed tone mapper.
+/// transfers, plus the BT.470M/BG tags (4, 5) that PAL and NTSC-M SD streams carry for
+/// the same BT.601 camera curve and that are decoded like it. Wide-gamut and HDR input
+/// waits for a reviewed tone mapper.
 fn displayable(primaries: i32, transfer: i32) -> bool {
-    matches!(primaries, 1 | 2 | 5 | 6) && matches!(transfer, 1 | 2 | 6 | 13)
+    matches!(primaries, 1 | 2 | 5 | 6) && matches!(transfer, 1 | 2 | 4 | 5 | 6 | 13)
 }
 pub(super) fn color_conversion(
     frame: &ffmpeg::frame::Video,
@@ -284,8 +286,11 @@ mod tests {
         assert!(super::displayable(6, 6));
         assert!(super::displayable(5, 6));
         assert!(super::displayable(1, 1) && super::displayable(2, 13));
-        // BT.2020 gamut, PQ and HLG transfers.
+        // DVD-PAL and NTSC-M transcodes that keep their BT.470BG/M transfer tags.
+        assert!(super::displayable(5, 5) && super::displayable(6, 4));
+        // BT.2020 gamut, linear light, PQ and HLG transfers.
         assert!(!super::displayable(9, 1));
+        assert!(!super::displayable(1, 8));
         assert!(!super::displayable(1, 16));
         assert!(!super::displayable(9, 18));
     }

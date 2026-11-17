@@ -116,6 +116,11 @@ fn transposes(orientation: Orientation) -> bool {
 /// channels independently, which darkens or tints edges next to transparent
 /// pixels; colors are therefore averaged with alpha weights.
 fn reduce(image: DynamicImage, width: u32, height: u32) -> DynamicImage {
+    if width >= image.width() && height >= image.height() {
+        // Nothing to reduce: keep the decoded samples exactly (an icon smaller than
+        // its cell must not pass through 8-bit premultiplication).
+        return image;
+    }
     let (width, height) = (width.min(image.width()), height.min(image.height()));
     if !image.color().has_alpha() {
         return image.thumbnail(width, height);
@@ -256,5 +261,26 @@ mod tests {
         assert_eq!(reduced.get_pixel(0, 0).0, [255, 0, 0, 128]);
         assert!(transposes(Orientation::Rotate90));
         assert!(!transposes(Orientation::FlipVertical));
+    }
+
+    #[test]
+    fn images_within_the_bound_keep_their_exact_samples() {
+        // A faint pixel loses most of its color precision through 8-bit
+        // premultiplication; an icon smaller than its cell must not be touched.
+        let icon =
+            DynamicImage::ImageRgba8(RgbaImage::from_pixel(16, 16, image::Rgba([201, 37, 99, 4])));
+        assert_eq!(reduce(icon.clone(), 96, 96), icon);
+        assert_eq!(reduce(icon.clone(), 16, 16), icon);
+        let mut wide = RgbaImage::from_pixel(32, 16, image::Rgba([201, 37, 99, 4]));
+        wide.put_pixel(0, 0, image::Rgba([0, 0, 0, 255]));
+        let wide = DynamicImage::ImageRgba8(wide);
+        // One bound below the image still reduces it.
+        assert_eq!(reduce(wide.clone(), 16, 96).width(), 16);
+        let gray = DynamicImage::ImageLumaA16(image::ImageBuffer::from_pixel(
+            8,
+            8,
+            image::LumaA([40_000u16, 300]),
+        ));
+        assert_eq!(reduce(gray.clone(), 8, 8), gray);
     }
 }
