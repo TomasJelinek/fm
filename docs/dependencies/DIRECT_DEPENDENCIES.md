@@ -36,7 +36,7 @@ Licenses retain upstream alternatives; see [policy](../DEPENDENCY_POLICY.md).
 | [md-5](https://crates.io/crates/md-5/0.10.6) | 0.10.6 | MIT OR Apache-2.0 | midnight-engine |
 | [minicbor](https://crates.io/crates/minicbor/2.3.0) | 2.3.0 | BlueOak-1.0.0 | midnight-plugin-api |
 | [moxcms](https://crates.io/crates/moxcms/0.8.1) | 0.8.1 | BSD-3-Clause OR Apache-2.0 | midnight-image-decoder, midnight-viewer-image |
-| [notify](https://crates.io/crates/notify/8.2.1) | 8.2.1 | CC0-1.0 | midnight-platform-linux, midnight-platform-windows |
+| [notify](https://crates.io/crates/notify/8.2.1) | 8.2.1 | CC0-1.0 | midnight-platform-linux |
 | [parley](https://crates.io/crates/parley/0.11.1) | 0.11.1 | Apache-2.0 OR MIT | midnight-viewer-render |
 | [png](https://crates.io/crates/png/0.18.1) | 0.18.1 | MIT OR Apache-2.0 | midnight-viewer-ui |
 | [prettyplease](https://crates.io/crates/prettyplease/0.2.37) | 0.2.37 | MIT OR Apache-2.0 | midnight-ui-bindings |

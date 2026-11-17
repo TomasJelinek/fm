@@ -12,7 +12,7 @@ use std::{
     sync::OnceLock,
 };
 use windows_sys::Win32::{
-    Foundation::{GlobalFree, HGLOBAL, HWND},
+    Foundation::{ERROR_ACCESS_DENIED, GlobalFree, HGLOBAL, HWND},
     System::{
         DataExchange::{
             CloseClipboard, EmptyClipboard, GetClipboardData, IsClipboardFormatAvailable,
@@ -20,7 +20,7 @@ use windows_sys::Win32::{
         },
         LibraryLoader::GetModuleHandleW,
         Memory::{GMEM_MOVEABLE, GMEM_ZEROINIT, GlobalAlloc, GlobalLock, GlobalSize, GlobalUnlock},
-        Ole::CF_HDROP,
+        Ole::{CF_HDROP, DROPEFFECT_COPY, DROPEFFECT_LINK, DROPEFFECT_MOVE},
     },
     UI::WindowsAndMessaging::{
         CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, HWND_MESSAGE, MSG,
@@ -115,26 +115,64 @@ fn decode_drop_effect(bytes: Option<&[u8]>) -> Result<FileClipboardIntent, FsErr
     let Some(bytes) = bytes else {
         return Ok(FileClipboardIntent::Copy);
     };
-    let Some(value) = bytes.get(..4) else {
+    let Some(&[a, b, c, d]) = bytes.get(..4) else {
         return Err(error("The preferred drop effect is truncated."));
     };
-    match u32::from_le_bytes(value.try_into().unwrap()) {
-        1 => Ok(FileClipboardIntent::Copy),
-        2 => Ok(FileClipboardIntent::Move),
+    // Explorer's Copy publishes DROPEFFECT_COPY | DROPEFFECT_LINK (5) and Cut publishes
+    // DROPEFFECT_MOVE (2). The file manager never creates links from the clipboard, so
+    // the LINK bit is ignored. COPY | MOVE (3, 7) leaves the operation ambiguous and a
+    // destructive Move is never guessed; link-only and empty effects name no operation.
+    match u32::from_le_bytes([a, b, c, d]) & !DROPEFFECT_LINK {
+        DROPEFFECT_COPY => Ok(FileClipboardIntent::Copy),
+        DROPEFFECT_MOVE => Ok(FileClipboardIntent::Move),
         _ => Err(error(
             "The clipboard has an unsupported or ambiguous preferred drop effect.",
         )),
     }
 }
 
+/// Attempts made while another process holds the clipboard, matching arboard's text path.
+const OPEN_ATTEMPTS: u32 = 5;
+const OPEN_RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(5);
+
 struct ClipboardLock;
 impl ClipboardLock {
     fn open(owner: HWND) -> Result<Self, FsError> {
-        // SAFETY: the session created this non-null window on the calling worker thread.
-        if unsafe { OpenClipboard(owner) } == 0 {
-            return Err(error(io::Error::last_os_error()));
+        retry_open(
+            || {
+                // SAFETY: the session created this non-null window on the calling worker thread.
+                if unsafe { OpenClipboard(owner) } == 0 {
+                    Err(io::Error::last_os_error())
+                } else {
+                    Ok(())
+                }
+            },
+            || std::thread::sleep(OPEN_RETRY_DELAY),
+        )
+        .map(|()| Self)
+        .map_err(error)
+    }
+}
+
+/// Clipboard History, rdpclip, clipboard managers or a reader of data this session just
+/// published can hold the clipboard briefly, which fails OpenClipboard with
+/// ERROR_ACCESS_DENIED. Retry only that error, a bounded number of times, on the backend
+/// session thread; other errors are returned immediately.
+fn retry_open(
+    mut attempt: impl FnMut() -> io::Result<()>,
+    mut pause: impl FnMut(),
+) -> io::Result<()> {
+    let mut made = 0;
+    loop {
+        let failure = match attempt() {
+            Ok(()) => return Ok(()),
+            Err(failure) => failure,
+        };
+        made += 1;
+        if made >= OPEN_ATTEMPTS || failure.raw_os_error() != Some(ERROR_ACCESS_DENIED as i32) {
+            return Err(failure);
         }
-        Ok(Self)
+        pause();
     }
 }
 impl Drop for ClipboardLock {

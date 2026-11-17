@@ -111,7 +111,7 @@ fn append_onedrive_account(
     // junction spelling. Compare directory identities without rewriting paths.
     let identity = |path: &std::path::Path| {
         crate::mutation::native::open_parent(path)
-            .and_then(|file| crate::mutation::native::identity(&file))
+            .and_then(|file| crate::mutation::native::local_identity(&file))
             .ok()
     };
     let target = identity(&path);
@@ -155,7 +155,7 @@ mod tests {
 
     #[test]
     fn cloud_registrations_merge_same_directory_but_keep_distinct_accounts() {
-        let temporary = tempfile::tempdir().unwrap();
+        let temporary = crate::test_fixtures::build_temp("fixture-");
         let personal = temporary.path().join("Cloud 文档");
         let business = temporary.path().join("Business");
         std::fs::create_dir(&personal).unwrap();

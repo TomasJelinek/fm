@@ -251,40 +251,13 @@ fn recursive_delete_removes_a_junction_without_touching_its_target() {
     assert_eq!(fs::read(target.join("sentinel")).unwrap(), b"keep me");
 }
 
+#[path = "../src/test_fixtures.rs"]
+mod test_fixtures;
+
+/// A native junction (FSCTL_SET_REPARSE_POINT) instead of a PowerShell cold start.
 fn create_junction(junction: &Path, target: &Path) {
-    use std::{
-        ffi::OsString,
-        os::windows::{
-            ffi::{OsStrExt, OsStringExt},
-            process::CommandExt,
-        },
-        process::Command,
-    };
-    // PowerShell's junction creator does not normalize an extended target prefix.
-    let units: Vec<u16> = target.as_os_str().encode_wide().collect();
-    let prefix: Vec<u16> = "\\\\?\\".encode_utf16().collect();
-    let target = if units.starts_with(&prefix) {
-        OsString::from_wide(&units[4..])
-    } else {
-        target.as_os_str().to_owned()
-    };
-    let script = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../midnight-platform/tests/create-junction.ps1");
-    let output = Command::new("powershell.exe")
-        .args(["-NoLogo", "-NoProfile", "-NonInteractive", "-File"])
-        .arg(script)
-        .arg("-JunctionPath")
-        .arg(junction)
-        .arg("-TargetPath")
-        .arg(target)
-        .creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW)
-        .output()
-        .unwrap();
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
+    fs::create_dir(junction).unwrap();
+    test_fixtures::create_junction(junction, target).unwrap();
 }
 
 #[test]
@@ -329,6 +302,123 @@ fn confirmed_permanent_delete_removes_read_only_files_without_changing_other_lin
         fs::read(retained).unwrap(),
         b"retained through another name"
     );
+}
+
+/// The filesystem name of the volume holding `path` ("NTFS", "FAT32", "exFAT", ...).
+fn filesystem_name(path: &Path) -> String {
+    use std::os::windows::{fs::OpenOptionsExt, io::AsRawHandle};
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_FLAG_BACKUP_SEMANTICS, FILE_READ_ATTRIBUTES, GetVolumeInformationByHandleW,
+    };
+    let directory = fs::OpenOptions::new()
+        .access_mode(FILE_READ_ATTRIBUTES)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+        .open(path)
+        .unwrap();
+    let mut name = [0u16; 64];
+    // SAFETY: a live directory handle and a writable bounded name buffer; the other
+    // optional outputs are null.
+    let succeeded = unsafe {
+        GetVolumeInformationByHandleW(
+            directory.as_raw_handle(),
+            std::ptr::null_mut(),
+            0,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            name.as_mut_ptr(),
+            name.len() as u32,
+        )
+    };
+    assert_ne!(succeeded, 0, "{}", io::Error::last_os_error());
+    let end = name
+        .iter()
+        .position(|unit| *unit == 0)
+        .unwrap_or(name.len());
+    String::from_utf16_lossy(&name[..end])
+}
+
+/// Removable-media qualification. This suite cannot create a FAT volume without
+/// administrator rights, so point `MIDNIGHT_TEST_FAT_DIRECTORY` at a writable directory
+/// on FAT32/exFAT media and run `cargo test -p midnight-platform-windows --test
+/// mutations removable_media -- --ignored --nocapture`. The test works in a fresh
+/// subdirectory it removes again. FAT has no reparse-tag, file-ID or POSIX disposition
+/// classes: classification falls back to basic attributes, deletion to the classic
+/// disposition (refusing Read-only entries) and Copy/Move refuse the volume. On any
+/// other filesystem the test checks the ordinary behaviour instead, so a dry run on NTFS
+/// exercises the same steps.
+#[test]
+#[ignore = "opt-in: needs MIDNIGHT_TEST_FAT_DIRECTORY on FAT32/exFAT media"]
+fn removable_media_creation_discovery_and_permanent_deletion() {
+    use midnight_core::TransferService;
+    let base = std::env::var_os("MIDNIGHT_TEST_FAT_DIRECTORY")
+        .expect("set MIDNIGHT_TEST_FAT_DIRECTORY to a writable directory on FAT32/exFAT media");
+    let filesystem = filesystem_name(Path::new(&base));
+    let fat = ["FAT", "FAT32", "exFAT"].contains(&filesystem.as_str());
+    eprintln!("qualifying {filesystem} (FAT expectations: {fat})");
+    let temp = tempfile::Builder::new()
+        .prefix("midnight-media-")
+        .tempdir_in(&base)
+        .unwrap();
+    let cancel = Cancellation::default();
+    let filesystem_service = WindowsFileSystem::new(None);
+    // F7 and empty-file creation classify every entered directory.
+    let base_directory = filesystem_service
+        .prepare_create(temp.path(), &cancel)
+        .unwrap();
+    let nested = base_directory
+        .create(Path::new("tree\\nested"), &cancel)
+        .unwrap();
+    assert!(nested.is_dir());
+    let tree = temp.path().join("tree");
+    filesystem_service
+        .prepare_create(&tree, &cancel)
+        .unwrap()
+        .create_file(OsStr::new("empty.txt"), &cancel)
+        .unwrap();
+    fs::write(nested.join("data.bin"), vec![7u8; 70_000]).unwrap();
+    let read_only = tree.join("read-only.txt");
+    fs::write(&read_only, b"read-only").unwrap();
+    let writable = fs::metadata(&read_only).unwrap().permissions();
+    let mut permissions = writable.clone();
+    permissions.set_readonly(true);
+    fs::set_permissions(&read_only, permissions).unwrap();
+    // Discovery lists the whole tree from enumeration records.
+    let mut discovered = Vec::new();
+    prepare(&tree)
+        .discover(&cancel, &mut |item| discovered.push(item.path.clone()))
+        .unwrap();
+    assert_eq!(discovered.len(), 5, "{discovered:?}");
+    // A rename and a leaf deletion.
+    let renamed = prepare(&tree.join("empty.txt"))
+        .rename(OsStr::new("renamed to a longer name.txt"), &cancel)
+        .unwrap();
+    prepare(&renamed)
+        .delete(DeleteMode::Permanent, &cancel, &mut |_| {})
+        .unwrap();
+    assert!(!renamed.exists());
+    // Copy and Move need stable identities.
+    let transfer = filesystem_service.prepare_transfer_destination(temp.path(), &cancel);
+    if fat {
+        let error = transfer.err().expect("FAT has no stable file identities");
+        assert_eq!(error.kind, io::ErrorKind::Unsupported, "{error:?}");
+    } else {
+        transfer.unwrap();
+    }
+    // Recursive permanent deletion: FAT refuses the Read-only entry and keeps it.
+    let deleted = prepare(&tree).delete(DeleteMode::Permanent, &cancel, &mut |_| {});
+    if fat {
+        let error = deleted.expect_err("the classic disposition cannot ignore Read-only");
+        assert_eq!(error.kind, io::ErrorKind::PermissionDenied, "{error:?}");
+        assert!(read_only.exists());
+        fs::set_permissions(&read_only, writable).unwrap();
+        prepare(&tree)
+            .delete(DeleteMode::Permanent, &cancel, &mut |_| {})
+            .unwrap();
+    } else {
+        deleted.unwrap();
+    }
+    assert!(!tree.exists());
 }
 
 #[test]

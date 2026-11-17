@@ -24,7 +24,7 @@ pub(crate) fn query(path: &Path, cancel: &Cancellation) -> Result<VolumeInformat
         ..Default::default()
     };
     let (mut serial, mut flags) = (0, 0);
-    match volume_details::wide_buffer(|output| {
+    match volume_details::wide_buffer(volume_details::NAME_UNITS, |output| {
         let length = u32::try_from(output.len())
             .map_err(|_| io::Error::other("Volume label buffer overflow"))?;
         // SAFETY: root is terminated; output and scalar pointers are valid for this call.
@@ -57,7 +57,7 @@ pub(crate) fn query(path: &Path, cancel: &Cancellation) -> Result<VolumeInformat
             .push(format!("Volume label and properties: {error}")),
     }
     cancelled(cancel).map_err(fail)?;
-    match volume_details::wide_buffer(|output| {
+    match volume_details::wide_buffer(volume_details::NAME_UNITS, |output| {
         let length = u32::try_from(output.len())
             .map_err(|_| io::Error::other("Filesystem name buffer overflow"))?;
         // SAFETY: root and output have valid lengths; all unused pointers are null.
@@ -167,7 +167,7 @@ mod tests {
 
     #[test]
     fn native_volume_details_report_actual_filesystem_and_capacity() {
-        let fixture = tempfile::tempdir().unwrap();
+        let fixture = crate::test_fixtures::build_temp("fixture-");
         let directory = fixture.path().join("Žluťoučký_磁碟_🦀");
         std::fs::create_dir(&directory).unwrap();
         let details = query(&directory, &Cancellation::default()).unwrap();
@@ -192,7 +192,7 @@ mod tests {
 
     #[test]
     fn missing_or_cancelled_native_query_does_not_substitute_a_parent_volume() {
-        let fixture = tempfile::tempdir().unwrap();
+        let fixture = crate::test_fixtures::build_temp("fixture-");
         assert!(query(&fixture.path().join("missing"), &Cancellation::default()).is_err());
         let cancelled = Cancellation::default();
         cancelled.cancel();

@@ -325,8 +325,9 @@ is made. Tests mutate fresh, owned fixtures only; they never empty a user's Tras
   operation. PNG encoding/writing runs in a backend worker and uses exclusive
   creation; an existing file or symlink is never overwritten.
 - Tests and development scripts follow the same literal-argument policy. The
-  Windows junction fixture uses a fixed trusted PowerShell script via `-File`;
-  temporary paths are parameter data, never `cmd /C` command text.
+  Windows platform tests create junctions natively (`FSCTL_SET_REPARSE_POINT`, no
+  shell); other Windows junction fixtures use a fixed trusted PowerShell script via
+  `-File`. Temporary paths are parameter data, never `cmd /C` command text.
 
 The directory model still uses memory proportional to the number of entries.
 Worker/front-queue bounds are not a promise that arbitrarily large directories
@@ -586,7 +587,19 @@ requires the compression support mask and avoids final-link/automount traversal.
 Unknown support does not mean uncompressed. Sparse allocation, archive suffixes
 and apparent compression ratios are not evidence; reported sizes remain logical.
 
-Directory links and junctions retain a separate entry kind. Native Windows link
+Directory links and junctions retain a separate entry kind. On Windows only
+name-surrogate reparse points (symbolic links, junctions, mount points) are links;
+Cloud Files/OneDrive placeholders, deduplicated, WOF-compressed and other
+filter-backed entries are ordinary files/directories in listing, Find, Copy/Move,
+deletion, creation and metadata editing. Their content is read only through a
+filter-mediated reopen of the identity-pinned object (it may hydrate), never from
+the raw reparse stub. That reopen evaluates the reparse point the object carries at
+that moment: should another process with write access replace a filtered file's
+reparse point with a symbolic link after classification, the open follows that link
+before the identity check rejects the result. It therefore requests
+identification-level impersonation only, so a named pipe reached that way cannot
+impersonate the application. A reparse point whose tag cannot be read is treated as a
+link. Native Windows link
 icons use system overlays on cached generic types, without sending untrusted
 link paths to the Shell or opening targets. Linux icons reuse the listing's
 directory-link label (above) and open no target. Recursive sizing

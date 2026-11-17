@@ -88,6 +88,8 @@ struct OwnerRecord {
 struct OwnerState {
     objects: Arc<[TransferIdentity]>,
     remaining: AtomicUsize,
+    /// Observed only by tests; production decisions use `Job::owners_closed`.
+    #[cfg(test)]
     closed: AtomicBool,
     unconfirmed: AtomicBool,
 }
@@ -118,6 +120,7 @@ impl Drop for NativeOwner {
             if state.remaining.fetch_sub(1, Ordering::AcqRel) == 1
                 && !state.unconfirmed.load(Ordering::Acquire)
             {
+                #[cfg(test)]
                 state.closed.store(true, Ordering::Release);
                 if let Some(job) = &self._job {
                     for object in state.objects.iter() {
@@ -138,6 +141,7 @@ pub(super) fn owner(objects: &[TransferIdentity]) -> NativeOwner {
     let state = Arc::new(OwnerState {
         objects: objects.into(),
         remaining: AtomicUsize::new(1),
+        #[cfg(test)]
         closed: AtomicBool::new(false),
         unconfirmed: AtomicBool::new(false),
     });
@@ -882,6 +886,24 @@ impl TransferNamespacePin for Pin {
         let mut scopes = Vec::with_capacity(bindings.len());
         let mut unknown = false;
         for mut binding in bindings {
+            // A private pin witnesses an object this job created (a stage, then its
+            // published output). Once every native owner of that object has closed, the
+            // job never touches it again: retire the binding instead of re-proving it on
+            // every later refresh. Otherwise published outputs accumulate one alias each,
+            // a full refresh costs O(published files) (quadratic over a job), and an
+            // external change to a finished output later fails the job's refresh.
+            // Namespace claims on those outputs remain with the original pins covering
+            // them (destination entry or subtree roots).
+            if let Some(job) = &self.job
+                && !self.original
+                && !binding.delete_pending
+                && binding
+                    .object
+                    .is_some_and(|object| job.owners_closed(object))
+            {
+                self.prune(|old| old.slot != binding.slot || old.object != binding.object);
+                continue;
+            }
             if let Some(job) = &self.job
                 && !binding.original
                 && job.removed_parent(binding.slot.parent)

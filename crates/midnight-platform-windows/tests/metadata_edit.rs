@@ -1,4 +1,6 @@
 #![cfg(windows)]
+#[path = "../src/test_fixtures.rs"]
+mod test_fixtures;
 use midnight_core::*;
 use midnight_platform_windows::WindowsFileSystem;
 use std::{
@@ -19,7 +21,7 @@ fn clear_fixture_readonly(path: &std::path::Path) {
 
 #[test]
 fn combined_case_only_rename_and_time_keep_other_fields() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = test_fixtures::build_temp("fixture-");
     let path = dir.path().join("CASE.txt");
     fs::write(&path, b"unchanged contents").unwrap();
     let cancel = Cancellation::default();
@@ -57,7 +59,7 @@ fn combined_case_only_rename_and_time_keep_other_fields() {
 
 #[test]
 fn collision_or_cancel_cannot_apply_later_metadata() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = test_fixtures::build_temp("fixture-");
     let source = dir.path().join("SOURCE");
     let target = dir.path().join("target");
     fs::write(&source, b"source").unwrap();
@@ -91,7 +93,7 @@ fn collision_or_cancel_cannot_apply_later_metadata() {
 
 #[test]
 fn another_hardlink_name_is_a_preview_collision() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = test_fixtures::build_temp("fixture-");
     let path = dir.path().join("FIRST");
     let other = dir.path().join("other");
     fs::write(&path, b"shared contents").unwrap();
@@ -121,7 +123,7 @@ fn another_hardlink_name_is_a_preview_collision() {
 #[test]
 fn metadata_only_preserves_raw_utf16_and_long_native_paths() {
     use std::os::windows::ffi::OsStringExt;
-    let dir = tempfile::tempdir().unwrap();
+    let dir = test_fixtures::build_temp("fixture-");
     let mut parent = dir.path().to_owned();
     for index in 0..5 {
         parent.push(format!("{index}-{}", "x".repeat(60)));
@@ -160,7 +162,7 @@ fn metadata_only_preserves_raw_utf16_and_long_native_paths() {
 #[test]
 fn compression_round_trip_uses_native_capability_and_preserves_contents() {
     use std::os::windows::fs::MetadataExt;
-    let dir = tempfile::tempdir().unwrap();
+    let dir = test_fixtures::build_temp("fixture-");
     let path = dir.path().join("compressible.txt");
     let contents = vec![42u8; 131_072];
     fs::write(&path, &contents).unwrap();
@@ -196,7 +198,7 @@ fn compression_round_trip_uses_native_capability_and_preserves_contents() {
 
 fn clear_readonly_with_compression(compressed: bool, name: Option<&OsStr>) {
     use std::os::windows::fs::MetadataExt;
-    let dir = tempfile::tempdir().unwrap();
+    let dir = test_fixtures::build_temp("fixture-");
     let path = dir.path().join("readonly.txt");
     let contents = vec![43u8; 131_072];
     fs::write(&path, &contents).unwrap();
@@ -266,7 +268,7 @@ fn clear_readonly_and_compress_after_rename() {
 
 #[test]
 fn compression_keep_readonly_does_not_change_attributes() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = test_fixtures::build_temp("fixture-");
     let path = dir.path().join("readonly.txt");
     fs::write(&path, b"source").unwrap();
     let cancel = Cancellation::default();
@@ -309,7 +311,7 @@ fn compression_failure_reports_applied_readonly_and_hidden_changes() {
     use windows_sys::Win32::Storage::FileSystem::{
         FILE_READ_ATTRIBUTES, FILE_READ_DATA, FILE_SHARE_DELETE, FILE_SHARE_READ,
     };
-    let dir = tempfile::tempdir().unwrap();
+    let dir = test_fixtures::build_temp("fixture-");
     let path = dir.path().join("readonly.txt");
     fs::write(&path, b"source").unwrap();
     let cancel = Cancellation::default();
@@ -363,7 +365,7 @@ fn compression_failure_reports_applied_readonly_and_hidden_changes() {
 
 #[test]
 fn compression_collision_keeps_requested_readonly_clear_unapplied() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = test_fixtures::build_temp("fixture-");
     let path = dir.path().join("readonly.txt");
     let target = dir.path().join("target.txt");
     fs::write(&path, b"source").unwrap();

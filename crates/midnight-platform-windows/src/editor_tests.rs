@@ -16,7 +16,7 @@ fn default_is_notepad_in_os_system_directory() {
 
 #[test]
 fn preview_preserves_unicode_spaces_and_metacharacters_without_a_shell() {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = crate::test_fixtures::build_temp("fixture-");
     let file = directory.path().join("文档 e\u{301} & $HOME; ' test.txt");
     fs::write(&file, b"text").unwrap();
     let executable = std::env::current_exe().unwrap();
@@ -43,7 +43,7 @@ fn preview_preserves_unicode_spaces_and_metacharacters_without_a_shell() {
 
 #[test]
 fn missing_program_and_batch_files_fail_without_default_fallback() {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = crate::test_fixtures::build_temp("fixture-");
     let file = directory.path().join("file.txt");
     fs::write(&file, b"text").unwrap();
     for name in ["missing.exe", "script.cmd", "script.bat"] {
@@ -65,7 +65,7 @@ fn missing_program_and_batch_files_fail_without_default_fallback() {
 
 #[test]
 fn directories_missing_files_and_nonlocal_paths_are_rejected_before_launch() {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = crate::test_fixtures::build_temp("fixture-");
     let preferences = EditorPreferences {
         rules: Vec::new(),
         executable: Some(std::env::current_exe().unwrap()),
@@ -85,7 +85,7 @@ fn directories_missing_files_and_nonlocal_paths_are_rejected_before_launch() {
 
 #[test]
 fn safe_harness_child_is_started_without_opening_a_desktop_editor() {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = crate::test_fixtures::build_temp("fixture-");
     let file = directory.path().join("文档 & $HOME .txt");
     fs::write(&file, b"test").unwrap();
     let preferences = EditorPreferences {
@@ -112,7 +112,7 @@ fn safe_harness_child_is_started_without_opening_a_desktop_editor() {
 
 #[test]
 fn selected_editor_rule_controls_program_argv_and_working_directory() {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = crate::test_fixtures::build_temp("fixture-");
     let file = directory.path().join("文档 & $HOME.txt");
     fs::write(&file, b"text").unwrap();
     let executable = std::env::current_exe().unwrap();

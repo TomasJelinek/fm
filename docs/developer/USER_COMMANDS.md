@@ -71,7 +71,11 @@ Terminal data is exported only through declared fixed keys: `ME_ACTIVE_PATH`,
 `ME_FILE_EXTENSION`. Undeclared inherited values of these keys are removed.
 Missing declared values fail before any spawn. Script source stays literal;
 environment values cannot become recursively expanded template source. Windows
-uses an owned, sorted Unicode child environment, including per-drive cwd records;
+uses an owned, sorted Unicode child environment, including per-drive cwd records
+(one `=X:` record for every drive letter that resolves; a drive without a recorded
+cwd yields its root). Hidden process-private records inherited from a launching
+Command Prompt or the Shell, such as `=ExitCode`, `=ExitCodeAscii` and `=::`, are
+dropped; caller-supplied records are never exempt from validation.
 Linux uses native environment values on the existing terminal builder. Parent
 environment and process cwd are never changed. Script text is not automatically
 added to command history or logs; process debug output redacts source/argv/env.

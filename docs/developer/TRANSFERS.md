@@ -206,7 +206,13 @@ Windows captures the exact guarded old file into a private same-volume directory
 then publishes the verified stage without replacement. This has an explicit
 namespace gap. A concurrent new destination wins; both the old file and the
 verified stage are retained instead of deleting that winner or rolling back over
-it. Linux links its verified anonymous inode into a private directory and uses
+it. Once the old file is captured, a later cancellation no longer interrupts the
+publication, which completes as `Replaced`. Should the publication itself fail after
+the capture (for example because the destination path was rebound), the captured old
+file is renamed back into its still-absent name through the pinned destination
+directory, without replacement, and only the verified stage remains recovery data; if
+a new entry took that name, both objects stay in recovery. Native Move restores a
+staged source the same way. Linux links its verified anonymous inode into a private directory and uses
 an exchange; it checks the displaced identity/revision and retains unexpected
 objects, including links or trees, without following or removing them.
 
@@ -227,7 +233,8 @@ delete recovery data during cleanup:
 
 Before mutation, an ordinary error leaves the existing target untouched. After
 recovery ownership transfers, Drop closes handles but never removes retained
-objects. No implicit rollback or recovery garbage collection is performed.
+objects. Apart from that no-replace restore of a captured old file, no implicit
+rollback or recovery garbage collection is performed.
 
 Jobs shows the exact recovery count and the first 16 paths. Transfer and deletion
 receipts remain throughout the session until explicitly cleared; history is not
@@ -449,6 +456,39 @@ upgrades Copy authority into Move. Successful-root Remove acknowledgements settl
 before native root/loaded-branch reconciliation. See the
 [tree transfer contract](TREE_PANEL.md#move-and-transfer-reconciliation) and
 [integration evidence](../verification/2026-11-10-tree-move.md).
+
+## Windows namespace pins
+
+The Windows adapter reports exact lookup keys only on NTFS volumes whose
+persistent 8.3-name creation is disabled, for ASCII names in case-insensitive
+directories and any names in case-sensitive directories. Every other binding is
+`Unknown`, which sends that turn to the host's opaque lane and its full refresh of
+the job's pins. Original pins (selected sources and destination entries or
+subtrees) and their directory anchor handles are retained for the job's lifetime;
+an external change to one of their bindings is a job namespace error. Private pins
+witness the stages a job creates and then their published outputs; once every native
+owner of such an object has closed, the next refresh retires that alias, so published
+outputs neither accumulate claims nor turn later external changes into job errors.
+Their names stay covered by the original destination pins. A retired output's object
+identity no longer takes part in peer admission: another job that reaches the same
+object through a different hard-link name is not excluded by it (this job never
+touches that object again). This retirement ruling awaits Architect/F1 confirmation.
+
+Windows Copy and Move require 128-bit `FileIdInfo` identities, because they compare
+identities across their own stage publications, Move captures and namespace pins.
+Volumes without them (FAT32, exFAT, some redirectors), whose 64-bit file indices
+change when an entry is renamed, are refused as sources and destinations with an
+explicit `Unsupported` error.
+
+The namespace unit tests take their qualified (incremental) branches on a volume
+whose persistent 8.3-name creation is disabled and their unqualified (full-refresh)
+branches elsewhere. In test builds `MIDNIGHT_TEST_NAMESPACE_LOOKUP` forces one mode
+process-wide (`short-names-disabled`, valid on any NTFS volume because the fixtures
+never use short names, or `unqualified`); pooled parent bindings are shared by
+concurrently running tests, so the mode cannot be per test. Every default `--lib` run
+also reruns `transfer::namespace::tests::` in a child process forced into the mode the
+build volume does not provide
+(`parent::tests::namespace_tests_pass_in_the_other_lookup_mode_too`).
 
 ## Current limits and next stage
 

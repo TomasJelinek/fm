@@ -224,14 +224,22 @@ fn basic(file: &File, path: &Path) -> Result<FILE_BASIC_INFO, FsError> {
 fn security(file: &File, path: &Path) -> Result<Vec<u64>, FsError> {
     let mut needed = 0;
     // SAFETY: live READ_CONTROL handle; zero-length query writes only needed.
-    unsafe {
+    let probed = unsafe {
         GetKernelObjectSecurity(
             file.as_raw_handle(),
             SECURITY,
             ptr::null_mut(),
             0,
             &mut needed,
-        );
+        )
+    };
+    if probed == 0 {
+        // The size probe is expected to fail with ERROR_INSUFFICIENT_BUFFER; any other
+        // failure (access denied, an unsupported filesystem) is the real cause.
+        let failure = io::Error::last_os_error();
+        if failure.raw_os_error() != Some(122) {
+            return Err(error(path, failure));
+        }
     }
     if needed == 0 || needed > 1024 * 1024 {
         return Err(unsupported(

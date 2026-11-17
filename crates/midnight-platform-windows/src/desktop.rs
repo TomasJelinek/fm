@@ -59,6 +59,10 @@ impl TerminalService for WindowsFileSystem {
         validate_terminal_request(request).map_err(|error| {
             FsError::from_io("launch terminal", &request.working_directory, error)
         })?;
+        let prepared = cmd_working_directory(request).map_err(|error| {
+            FsError::from_io("launch terminal", &request.working_directory, error)
+        })?;
+        let request = prepared.as_ref().unwrap_or(request);
         let executable = match request.shell {
             ShellFlavor::PowerShell => powershell_path(),
             ShellFlavor::Cmd => command_prompt_path(),
@@ -240,6 +244,19 @@ fn terminal_command_profile(
     })
 }
 
+/// Cmd discards a verbatim (`\\?\`) or device working directory after `CreateProcess`
+/// succeeds and silently runs in another directory. Like Custom Commands, use the
+/// identity-checked DOS spelling of the same directory, or refuse the launch.
+fn cmd_working_directory(request: &TerminalRequest) -> io::Result<Option<TerminalRequest>> {
+    if request.shell != ShellFlavor::Cmd {
+        return Ok(None);
+    }
+    Ok(Some(TerminalRequest {
+        working_directory: user_command_cwd::for_cmd(&request.working_directory)?,
+        ..request.clone()
+    }))
+}
+
 fn validate_terminal_request(request: &TerminalRequest) -> io::Result<()> {
     if request.mode != TerminalMode::Standard {
         return Err(io::Error::new(
@@ -380,6 +397,33 @@ pub(crate) fn known_folder(id: &GUID) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn command_prompt_terminal_never_receives_a_verbatim_or_device_cwd() {
+        let fixture = crate::test_fixtures::build_temp("terminal-cwd-");
+        let request = |shell, working_directory: PathBuf| TerminalRequest {
+            command: "cd".into(),
+            working_directory,
+            shell,
+            mode: TerminalMode::Standard,
+        };
+        let mut verbatim = std::ffi::OsString::from(r"\\?\");
+        verbatim.push(fixture.path().as_os_str());
+        let prepared = cmd_working_directory(&request(ShellFlavor::Cmd, verbatim.clone().into()))
+            .unwrap()
+            .expect("Cmd gets a converted request");
+        assert_eq!(prepared.working_directory, fixture.path());
+        assert_eq!(prepared.command, "cd");
+        let mut device = std::ffi::OsString::from(r"\\.\");
+        device.push(fixture.path().as_os_str());
+        assert!(cmd_working_directory(&request(ShellFlavor::Cmd, device.into())).is_err());
+        // PowerShell keeps the verbatim spelling it handles natively.
+        assert!(
+            cmd_working_directory(&request(ShellFlavor::PowerShell, verbatim.into()))
+                .unwrap()
+                .is_none()
+        );
+    }
 
     #[test]
     fn failed_com_initialization_preserves_the_callers_existing_apartment() {

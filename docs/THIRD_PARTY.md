@@ -56,8 +56,8 @@ captures for the independent native macOS filesystem package only:
 
 - [Direct dependencies](dependencies/DIRECT_DEPENDENCIES.md): **66**
   package/version records declared by project crates, including build/test tools.
-- [Complete Cargo inventory](dependencies/CARGO_LIBRARIES.md): **646**
-  package/version/source records, **528** distinct crate names, including transitives.
+- [Complete Cargo inventory](dependencies/CARGO_LIBRARIES.md): **645**
+  package/version/source records, **527** distinct crate names, including transitives.
 - [Machine-readable CSV](dependencies/cargo-licenses.csv): the same complete list,
   with licenses, source, workspace, target and direct dependants.
 
@@ -198,6 +198,24 @@ comparison preserves the generated package/license tables and their recorded
 provenance: **646 records / 528 names / 66 direct records**. This is a feature
 refresh, not a full 46-pair recapture or generator `--check`.
 
+On 17 November 2026 `midnight-platform-windows` replaced `notify` with its own
+`ReadDirectoryChangesW` service. notify was a `cfg(windows)` dependency of that crate,
+so only the Windows application graph changes. A targeted Windows-host
+`app`/`x86_64-pc-windows-msvc` metadata/tree capture (`--locked --offline`, edges
+`normal,build,dev`), selected with the generator's own code, contains none of
+notify 8.2.1, notify-types 2.2.0, walkdir 2.5.0, same-file 1.0.6 or winapi-util
+0.1.11. The first four remain Linux application dependencies through
+`midnight-platform-linux`; winapi-util leaves the inventory. Exactly those rows
+changed (notify keeps only `midnight-platform-linux` as its declarer), giving
+**645 records / 527 names / 66 direct records**; re-rendering the edited rows with
+the generator reproduces all three tables byte for byte. The crate's two added
+windows-sys features (`Win32_Foundation`, `Win32_System_WindowsProgramming`) were
+already in the application's windows-sys 0.61.2 feature union (through
+`midnight-elevation`, `midnight-worker-platform`, mio and socket2), so no package,
+feature union or license selection changed. This is a targeted refresh, not a full
+46-pair recapture or generator `--check`; no Linux capture was taken, because the
+removed edge was `cfg(windows)` only.
+
 Windows/Linux native 0.2 source is integrated in D merge `5baee471` from C commit
 `42d45def` (25 matching paths). The plugins are not deployed and engine/UI cutover
 remains unimplemented; installed-provider/native-runtime qualification is separate. See
@@ -221,7 +239,7 @@ This table is a guide; the linked inventories above contain every selected crate
 | sha2 0.10.9 | SHA-256 copy/readback verification, protected Windows plugin runtimes and standalone SHA-256/SHA-512 checksum backend | MIT OR Apache-2.0 |
 | md-5 0.10.6 / sha1 0.10.6 | MD5/SHA-1 compatibility calculations in the standalone checksum backend; not authentication or copy verification | MIT OR Apache-2.0; MIT branch selected |
 | crc32fast 1.5.4 | SFV/CRC32 compatibility calculations; also an existing PNG/compression dependency | MIT OR Apache-2.0; MIT branch selected |
-| notify 8.2.1 | Filesystem event watching | CC0-1.0 |
+| notify 8.2.1 | Linux filesystem event watching (Windows uses its own `ReadDirectoryChangesW` service) | CC0-1.0 |
 | image 0.25.10 / png 0.18.1 | Icons, isolated image thumbnails and the independent image viewer | MIT OR Apache-2.0 |
 | zip 8.6.0 | Read-only ZIP archive provider | MIT |
 | hayro 0.9.0 and its parser/interpreter crates | Isolated PDF rendering | Apache-2.0 OR MIT; pinned notices and embedded font/CMap licenses accompany the PDF plugin |

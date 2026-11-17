@@ -20,6 +20,7 @@ mod user_command_environment;
 mod user_command_terminal_tests;
 mod user_commands;
 pub use clipboard::NativeClipboard;
+mod directory_records;
 #[cfg(test)]
 mod discovery_tests;
 mod find;
@@ -37,16 +38,22 @@ mod network;
 mod onedrive_locations;
 mod open;
 mod path_picker;
+mod reparse;
+#[cfg(test)]
+mod reparse_service_tests;
 mod settings;
 mod shell_menu;
 mod size_directory;
 mod sort_keys;
 mod storage_kind;
 mod terminal_process;
+#[cfg(test)]
+mod test_fixtures;
 mod transfer;
 mod volume_details;
 mod volume_information;
 mod watch;
+mod watch_service;
 mod window_geometry;
 mod windows_argv;
 pub use window_geometry::monitor_work_area;

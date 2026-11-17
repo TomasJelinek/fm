@@ -94,7 +94,7 @@ mod tests {
     use super::*;
     #[test]
     fn managed_snapshot_is_native_unicode_and_cannot_replace_a_directory() {
-        let root = tempfile::tempdir().unwrap();
+        let root = crate::test_fixtures::build_temp("fixture-");
         let application = root.path().join("配置 文档");
         let pixels = SnapshotPixels::new(1, 1, vec![20, 40, 60, 255]).unwrap();
         let path = save_at(&application, &pixels, &Cancellation::default()).unwrap();

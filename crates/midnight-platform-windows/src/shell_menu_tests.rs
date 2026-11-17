@@ -57,7 +57,7 @@ fn shell_menu_invalid_request_never_initializes_a_native_menu() {
 
 #[test]
 fn shell_menu_real_shell_resolves_unicode_multiselection_without_invoking() {
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::test_fixtures::build_temp("fixture-");
     let paths = vec![
         root.path().join("文档 & one.txt"),
         root.path().join("two.txt"),
@@ -100,7 +100,7 @@ fn shell_menu_interactive_native_popup_can_be_dismissed() {
         FindWindowW, GUI_INMENUMODE, GUITHREADINFO, GetGUIThreadInfo, GetWindowThreadProcessId,
         PostMessageW, WM_CANCELMODE,
     };
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::test_fixtures::build_temp("fixture-");
     let path = root.path().join("Native menu smoke 文档.txt");
     std::fs::write(&path, b"untouched").unwrap();
     let menu_request = request(vec![path.clone()]);

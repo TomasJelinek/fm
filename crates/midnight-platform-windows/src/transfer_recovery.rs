@@ -76,15 +76,16 @@ impl Directory {
             ));
         }
         // Native rename needs no DACL-query rights. Acquire them only for the
-        // cross-volume recovery path. ReOpenFile cannot reopen directories;
-        // compare the new handle to the retained identity before trusting its DACL.
-        use std::os::windows::fs::OpenOptionsExt;
-        let held = std::fs::OpenOptions::new()
-            .access_mode(READ_CONTROL | FILE_READ_ATTRIBUTES)
-            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
-            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
-            .open(&self.path)
-            .map_err(|e| error(&self.path, e))?;
+        // cross-volume recovery path. ReOpenFile cannot reopen directories, so reopen
+        // the retained object through an empty handle-relative name: never the display
+        // path, which may end in a junction or symbolic link to this directory. Compare
+        // the new handle to the retained identity before trusting its DACL.
+        let held = native::reopen(
+            &self.file,
+            READ_CONTROL | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        )
+        .map_err(|e| error(&self.path, e))?;
         if identity(&held, &self.path)? != self.identity {
             return Err(invalid(
                 &self.path,
@@ -249,7 +250,12 @@ pub(super) fn open_merge(
 }
 
 pub(in crate::transfer) fn supported(directory: &Directory) -> bool {
-    let Ok(path) = final_path(&directory.file) else {
+    // The volume GUID root names the volume that holds the directory even when it is
+    // mounted in a folder of another drive (a DOS path's drive letter would not).
+    // Shares have no volume GUID; their DOS root reports a remote drive.
+    let Ok(path) = final_path(&directory.file, VOLUME_NAME_GUID)
+        .or_else(|_| final_path(&directory.file, VOLUME_NAME_DOS))
+    else {
         return false;
     };
     let Some(root) = path
@@ -382,18 +388,43 @@ impl Stage {
         }
         replacement.expected.revalidate(cancel)?;
         mutation.prepare_rename(&self.file, &self.directory.file, name, cancel)?;
-        let recovery =
-            create_named_directory_in(&self.directory, cancel, ".midnight-recovery-", 0, mutation)?;
+        // DELETE lets a failed capture remove the still-empty private directory again.
+        let recovery = create_named_directory_in(
+            &self.directory,
+            cancel,
+            ".midnight-recovery-",
+            DELETE,
+            mutation,
+        )?;
         let staged_path = recovery.path.join("replacement");
         let staged_identity = identity(&self.file, &self.path)?;
-        mutation
-            .rename(
-                &self.file,
-                &recovery.file,
-                OsStr::new("replacement"),
-                cancel,
-            )
-            .map_err(|e| error(&self.path, e))?;
+        if let Err(failure) = mutation.rename(
+            &self.file,
+            &recovery.file,
+            OsStr::new("replacement"),
+            cancel,
+        ) {
+            // Nothing entered the recovery directory: remove it, or report it as
+            // recovery data instead of leaving an unreported hidden directory.
+            let mut failure = error(&self.path, failure);
+            let receipt = TransferRecovery {
+                path: recovery.path.clone(),
+                identity: Some(recovery.identity),
+            };
+            return match recovery.remove_empty_stage_in(mutation) {
+                Ok(()) => Err(failure),
+                Err(cleanup) => {
+                    failure.message.push_str(&format!(
+                        "; empty recovery directory cleanup failed: {cleanup}"
+                    ));
+                    Ok(TransferPublication::RecoveryRequired {
+                        published: None,
+                        recovery: vec![receipt],
+                        error: failure,
+                    })
+                }
+            };
+        }
         // From this point, even the verified replacement is persistent recovery data.
         // Drop must close its handle without deleting it if any later step fails.
         self.published = true;
@@ -417,17 +448,33 @@ impl Stage {
             identity: Some(original_identity),
         };
         after_capture();
-        // A new final entry created during the explicit gap wins; never remove it.
-        let commit = self.directory.revalidate(cancel).and_then(|()| {
+        // The original is captured: a later cancellation no longer interrupts the
+        // commit, which would leave the final name empty. A new final entry created
+        // during the explicit gap wins; never remove it.
+        let settled = Cancellation::default();
+        let commit = self.directory.revalidate(&settled).and_then(|()| {
             mutation
-                .rename(&self.file, &self.directory.file, name, cancel)
+                .rename(&self.file, &self.directory.file, name, &settled)
                 .map_err(|e| error(&path, e))
         });
-        if let Err(error) = commit {
+        if let Err(mut failure) = commit {
+            // As native Move does: restore the original only into an absent final name.
+            // Then only the verified stage remains recovery data; a gap winner keeps
+            // both prior objects in recovery.
+            let restore = mutation.rename(&original, &self.directory.file, name, &settled);
+            let recovery = match restore {
+                Ok(()) => vec![staged_receipt],
+                Err(restore) => {
+                    failure
+                        .message
+                        .push_str(&format!("; original retained for recovery: {restore}"));
+                    vec![original_receipt, staged_receipt]
+                }
+            };
             return Ok(TransferPublication::RecoveryRequired {
                 published: None,
-                recovery: vec![original_receipt, staged_receipt],
-                error,
+                recovery,
+                error: failure,
             });
         }
         self.path = path.clone();
@@ -449,14 +496,15 @@ pub(in crate::transfer) fn rename_into_untracked(
     let mut buffer = vec![0u64; length.div_ceil(size_of::<u64>())];
     let information = buffer.as_mut_ptr().cast::<FILE_RENAME_INFORMATION>();
     let mut status = IO_STATUS_BLOCK::default();
-    // SAFETY: aligned counted-name buffer and live source/parent handles. ReplaceIfExists
+    // SAFETY: aligned counted-name buffer and live source/parent handles. The name pointer
+    // derives from the allocation, not from the one-element FileName field. ReplaceIfExists
     // stays false; RootDirectory anchors both capture and publication without path traversal.
     let code = unsafe {
         (*information).RootDirectory = parent.as_raw_handle();
         (*information).FileNameLength = (wide.len() * 2) as u32;
         ptr::copy_nonoverlapping(
             wide.as_ptr(),
-            (*information).FileName.as_mut_ptr(),
+            ptr::addr_of_mut!((*information).FileName).cast::<u16>(),
             wide.len(),
         );
         NtSetInformationFile(
@@ -663,7 +711,14 @@ fn trusted_recovery_parent(file: &File) -> io::Result<()> {
                 }
                 // SAFETY: the checked native access-allowed ACE contains its mask and SID.
                 let ace = unsafe { &*raw.cast::<ACCESS_ALLOWED_ACE>() };
-                let sid = ptr::addr_of!(ace.SidStart).cast_mut().cast();
+                // The variable-length SID extends past the struct's SidStart field: derive
+                // its pointer from the GetAce allocation pointer, not from the reference.
+                // SAFETY: the offset lies inside the ACE whose size was checked above.
+                let sid = unsafe {
+                    raw.cast::<u8>()
+                        .add(std::mem::offset_of!(ACCESS_ALLOWED_ACE, SidStart))
+                        .cast()
+                };
                 if ace.Mask & mutable != 0 && !trusted(sid) {
                     return Err(io::Error::other(
                         "another identity can replace recovery entries or their parent",

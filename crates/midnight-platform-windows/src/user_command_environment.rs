@@ -34,11 +34,14 @@ fn snapshot_inner(
     overrides: &[(String, OsString)],
     cmd_arguments: bool,
 ) -> io::Result<Vec<u16>> {
-    // Native Shell menu initialization can introduce this non-drive private key.
-    // Do not serialize it as a custom child variable. Keep malformed values so the
-    // strict block encoder still rejects NUL; fixed caller overrides are checked later.
+    // Hidden `=`-prefixed names other than per-drive cwd records are private to the
+    // process that created them: cmd.exe keeps `=ExitCode`/`=ExitCodeAscii`, and native
+    // Shell menu initialization can add `=::`. They are inherited by children but are not
+    // custom variables, so capture drops them. Keep malformed values so the strict block
+    // encoder still rejects NUL; fixed caller overrides are checked later.
     inherited.retain(|(key, value)| {
-        key.as_os_str() != std::ffi::OsStr::new("=::") || value.encode_wide().any(|unit| unit == 0)
+        !private_record(&key.encode_wide().collect::<Vec<_>>())
+            || value.encode_wide().any(|unit| unit == 0)
     });
     // CreateProcess does not propagate per-drive cwd records with a custom block.
     // GetFullPathNameW("X:") is the documented non-mutating way to retrieve them.
@@ -135,15 +138,10 @@ fn build_inner(
     for (key, value) in inherited {
         let key = key.encode_wide().collect::<Vec<_>>();
         let value = value.encode_wide().collect::<Vec<_>>();
-        let drive = key.len() == 3
-            && key[0] == b'=' as u16
-            && key[1] <= 127
-            && (key[1] as u8).is_ascii_alphabetic()
-            && key[2] == b':' as u16;
         if key.is_empty()
             || key.contains(&0)
             || value.contains(&0)
-            || (!drive && key.contains(&(b'=' as u16)))
+            || (!drive_record(&key) && key.contains(&(b'=' as u16)))
         {
             return Err(invalid("Invalid inherited native environment record."));
         }
@@ -199,6 +197,18 @@ fn build_inner(
     }
     block.push(0);
     Ok(block)
+}
+/// `=X:` per-drive current-directory record for an ASCII drive letter.
+fn drive_record(key: &[u16]) -> bool {
+    key.len() == 3
+        && key[0] == b'=' as u16
+        && key[1] <= 127
+        && (key[1] as u8).is_ascii_alphabetic()
+        && key[2] == b':' as u16
+}
+/// Hidden process-private record such as cmd.exe's `=ExitCode` or the Shell's `=::`.
+fn private_record(key: &[u16]) -> bool {
+    key.first() == Some(&(b'=' as u16)) && !drive_record(key)
 }
 fn diagnostic_name(name: &[u16]) -> String {
     // Error text shows only escaped names, never inherited values. Bound hostile

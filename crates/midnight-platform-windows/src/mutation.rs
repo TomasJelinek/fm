@@ -13,7 +13,7 @@ use std::{
     sync::Arc,
 };
 use windows_sys::Win32::Storage::FileSystem::{
-    FILE_ATTRIBUTE_COMPRESSED, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT,
+    FILE_ATTRIBUTE_COMPRESSED, FILE_ATTRIBUTE_REPARSE_POINT,
 };
 
 #[path = "mutation_discovery.rs"]
@@ -62,19 +62,19 @@ impl MutationService for WindowsFileSystem {
             native::open_parent(parent_path).map_err(|e| failure("open parent", path, e))?;
         let source = native::open_child(&parent, &name, false)
             .map_err(|e| failure("prepare mutation", path, e))?;
-        let identity = native::identity(&source).map_err(|e| failure("read identity", path, e))?;
+        let identity =
+            native::local_identity(&source).map_err(|e| failure("read identity", path, e))?;
         let metadata = source
             .metadata()
             .map_err(|e| failure("read metadata", path, e))?;
-        let attributes = metadata.file_attributes();
-        let directory = attributes & FILE_ATTRIBUTE_DIRECTORY != 0;
+        // Only name-surrogate reparse points are links; cloud placeholders and other
+        // filter-backed entries are ordinary files and directories.
+        let native = crate::reparse::Native::of(&source, metadata.file_attributes())
+            .map_err(|e| failure("read reparse tag", path, e))?;
+        let attributes = native.attributes;
+        let directory = native.directory();
         let reparse = attributes & FILE_ATTRIBUTE_REPARSE_POINT != 0;
-        let kind = match (directory, reparse) {
-            (true, true) => EntryKind::DirectoryLink,
-            (false, true) => EntryKind::Symlink,
-            (true, false) => EntryKind::Directory,
-            (false, false) => EntryKind::File,
-        };
+        let kind = native.kind();
         checked(cancel, path)?;
         Ok(Arc::new(WindowsMutation {
             item: MutationItem {
@@ -113,16 +113,16 @@ impl WindowsMutation {
             .ok_or_else(|| invalid(path, "missing parent"))?;
         let visible_parent =
             native::open_parent(parent_path).map_err(|e| failure("revalidate parent", path, e))?;
-        if native::identity(&visible_parent)
+        if native::local_identity(&visible_parent)
             .map_err(|e| failure("read parent identity", path, e))?
-            != native::identity(&self.parent)
+            != native::local_identity(&self.parent)
                 .map_err(|e| failure("read parent identity", path, e))?
         {
             return Err(changed(path));
         }
         let source = native::open_child(&self.parent, &self.name, exclusive)
             .map_err(|e| failure("revalidate source", path, e))?;
-        if native::identity(&source).map_err(|e| failure("read identity", path, e))?
+        if native::local_identity(&source).map_err(|e| failure("read identity", path, e))?
             != self.identity
         {
             return Err(changed(path));

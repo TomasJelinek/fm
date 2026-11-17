@@ -3,11 +3,7 @@ use super::*;
 use std::{
     fs::OpenOptions,
     mem::size_of,
-    os::windows::{
-        ffi::{OsStrExt, OsStringExt},
-        fs::OpenOptionsExt,
-        io::AsRawHandle,
-    },
+    os::windows::{ffi::OsStrExt, fs::OpenOptionsExt, io::AsRawHandle},
 };
 use windows_sys::Win32::System::{
     IO::DeviceIoControl,
@@ -17,34 +13,6 @@ use windows_sys::Win32::System::{
     },
 };
 
-#[cfg(debug_assertions)]
-static LOOKUP_TRACE_ENABLED: OnceLock<bool> = OnceLock::new();
-
-#[cfg(debug_assertions)]
-fn lookup_trace_enabled() -> bool {
-    *LOOKUP_TRACE_ENABLED.get_or_init(|| {
-        std::env::var_os("MIDNIGHT_TEST_TRACE_NATIVE_LOOKUP").as_deref() == Some(OsStr::new("1"))
-    })
-}
-
-#[cfg(debug_assertions)]
-fn lookup_trace_first(stage: u32) -> bool {
-    use std::sync::atomic::{AtomicU32, Ordering};
-    static SEEN: AtomicU32 = AtomicU32::new(0);
-    let bit = 1_u32 << stage;
-    LOOKUP_TRACE_ENABLED.get().copied().unwrap_or(false)
-        && SEEN.fetch_or(bit, Ordering::Relaxed) & bit == 0
-}
-
-#[cfg(debug_assertions)]
-macro_rules! trace_lookup {
-    ($stage:expr, $($args:tt)*) => {
-        if lookup_trace_first($stage) {
-            eprintln!("[midnight-native-lookup] {}", format_args!($($args)*));
-        }
-    };
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum LookupMode {
     ShortNamesDisabled { case_sensitive: bool },
@@ -53,8 +21,6 @@ pub(super) enum LookupMode {
 impl LookupMode {
     pub(super) fn key(self, name: &OsStr) -> Option<Arc<[u8]>> {
         let Self::ShortNamesDisabled { case_sensitive } = self else {
-            #[cfg(debug_assertions)]
-            trace_lookup!(8, "key refused mode={self:?} name={name:?}");
             return None;
         };
         let mut result = Vec::new();
@@ -63,8 +29,6 @@ impl LookupMode {
             // qualified here; Unicode lowercasing is not evidence of native equivalence.
             if !case_sensitive {
                 if unit > 0x7f {
-                    #[cfg(debug_assertions)]
-                    trace_lookup!(9, "key refused non_ascii unit={unit:#06x} name={name:?}");
                     return None;
                 }
                 if (b'a' as u16..=b'z' as u16).contains(&unit) {
@@ -117,7 +81,11 @@ fn metadata_directory(path: &Path) -> Result<File, FsError> {
         .open(path)
         .map_err(|e| error(path, e))?;
     let metadata = file.metadata().map_err(|e| error(path, e))?;
-    if !metadata.is_dir() || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+    // Cloud Files placeholders (a OneDrive root and every folder below it) carry a
+    // non-surrogate reparse tag and are ordinary directories; only links are refused.
+    let native = crate::reparse::Native::of(&file, metadata.file_attributes())
+        .map_err(|e| error(path, e))?;
+    if !native.directory() || native.link() {
         return Err(invalid(
             path,
             "native namespace ancestor is not an ordinary directory",
@@ -126,16 +94,29 @@ fn metadata_directory(path: &Path) -> Result<File, FsError> {
     Ok(file)
 }
 
+/// Pools are keyed by identity, but an identity alone does not prove the binding: a
+/// directory renamed after it was pooled, or a cloned/snapshot volume with the same
+/// serial number and file IDs, would hand out a stale or foreign path. A pooled entry
+/// is reused only while its GUID physical path also matches; otherwise a fresh entry
+/// replaces the slot and existing holders keep (and revalidate) their own.
+fn pooled<T>(
+    pool: &Pool<T>,
+    identity: TransferIdentity,
+    current: impl Fn(&T) -> bool,
+) -> Option<Arc<T>> {
+    pool.lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(&identity)
+        .and_then(Weak::upgrade)
+        .filter(|found| current(found))
+}
+
 fn anchor(path: &Path) -> Result<Arc<Anchor>, FsError> {
     let file = metadata_directory(path)?;
     let identity = identity(&file, path)?;
     let pool = ANCHORS.get_or_init(Default::default);
-    if let Some(found) = pool
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .get(&identity)
-        .and_then(Weak::upgrade)
-    {
+    let current = |found: &Anchor| found.physical == path;
+    if let Some(found) = pooled(pool, identity, current) {
         return Ok(found);
     }
     let candidate = Arc::new(Anchor {
@@ -144,7 +125,11 @@ fn anchor(path: &Path) -> Result<Arc<Anchor>, FsError> {
         physical: path.to_owned(),
     });
     let mut pool = pool.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(found) = pool.get(&identity).and_then(Weak::upgrade) {
+    if let Some(found) = pool
+        .get(&identity)
+        .and_then(Weak::upgrade)
+        .filter(|found| current(found))
+    {
         return Ok(found);
     }
     pool.insert(identity, Arc::downgrade(&candidate));
@@ -159,15 +144,12 @@ pub(super) fn capture(
     checked(cancel, path)?;
     let expected = identity(file, path)?;
     let pool = PARENTS.get_or_init(Default::default);
-    if let Some(found) = pool
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .get(&expected)
-        .and_then(Weak::upgrade)
-    {
+    let physical = physical_path(file).map_err(|e| error(path, e))?;
+    if let Some(found) = pooled(pool, expected, |found: &Parent| {
+        found.physical() == physical
+    }) {
         return Ok(found);
     }
-    let physical = physical_path(file).map_err(|e| error(path, e))?;
     let mut chain = Vec::new();
     for component in physical.ancestors().filter(|path| path.has_root()) {
         checked(cancel, path)?;
@@ -185,29 +167,8 @@ pub(super) fn capture(
     let root = chain
         .last()
         .ok_or_else(|| invalid(path, "native parent has no root"))?;
-    let volume = match open_volume(root) {
-        Ok(volume) => Some(volume),
-        Err(_failure) => {
-            #[cfg(debug_assertions)]
-            trace_lookup!(
-                2,
-                "volume refused root={:?} identity={:?} kind={:?} message={:?}",
-                root.physical,
-                root.identity,
-                _failure.kind,
-                _failure.message
-            );
-            None
-        }
-    };
+    let volume = open_volume(root).ok();
     let mode = lookup_mode(&first.file, volume.as_deref());
-    #[cfg(debug_assertions)]
-    trace_lookup!(
-        0,
-        "capture parent={physical:?} identity={expected:?} root={:?} root_identity={:?} mode={mode:?}",
-        root.physical,
-        root.identity
-    );
     let snapshot = Arc::new(TransferNamespaceParent {
         identity: expected,
         lookup_domain: mode.domain(),
@@ -226,7 +187,11 @@ pub(super) fn capture(
     });
     candidate.validate(cancel)?;
     let mut pool = pool.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(found) = pool.get(&expected).and_then(Weak::upgrade) {
+    if let Some(found) = pool
+        .get(&expected)
+        .and_then(Weak::upgrade)
+        .filter(|found| found.physical() == physical)
+    {
         return Ok(found);
     }
     pool.insert(expected, Arc::downgrade(&candidate));
@@ -295,15 +260,10 @@ impl Parent {
 }
 
 fn open_volume(root: &Arc<Anchor>) -> Result<Arc<Volume>, FsError> {
-    #[cfg(debug_assertions)]
-    lookup_trace_enabled();
     let pool = VOLUMES.get_or_init(Default::default);
-    if let Some(found) = pool
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .get(&root.identity)
-        .and_then(Weak::upgrade)
-    {
+    // NTFS roots share file ID 5; the GUID root path distinguishes cloned volumes.
+    let current = |found: &Volume| found.root.physical == root.physical;
+    if let Some(found) = pooled(pool, root.identity, current) {
         return Ok(found);
     }
     let path: Vec<_> = root.physical.as_os_str().encode_wide().collect();
@@ -311,13 +271,6 @@ fn open_volume(root: &Arc<Anchor>) -> Result<Arc<Volume>, FsError> {
     // already pinned root directory. A DASD volume-device handle does not serve
     // this FSCTL on the qualified native path.
     if !path.starts_with(&r"\\?\Volume{".encode_utf16().collect::<Vec<_>>()) {
-        #[cfg(debug_assertions)]
-        trace_lookup!(
-            1,
-            "volume path refused root={:?} identity={:?}",
-            root.physical,
-            root.identity
-        );
         return Err(unsupported(
             &root.physical,
             "native volume rule query unavailable",
@@ -325,31 +278,20 @@ fn open_volume(root: &Arc<Anchor>) -> Result<Arc<Volume>, FsError> {
     }
     // Duplicate the existing authority rather than reopening its display path or
     // broadening access. The duplicate retains the same directory object/rights.
-    let file = root.file.try_clone().map_err(|e| {
-        #[cfg(debug_assertions)]
-        trace_lookup!(
-            3,
-            "root directory duplicate failed root={:?} identity={:?} raw_os_error={:?} kind={:?}",
-            root.physical,
-            root.identity,
-            e.raw_os_error(),
-            e.kind()
-        );
-        error(&root.physical, e)
-    })?;
-    #[cfg(debug_assertions)]
-    trace_lookup!(
-        3,
-        "pinned root directory duplicated root={:?} identity={:?}",
-        root.physical,
-        root.identity
-    );
+    let file = root
+        .file
+        .try_clone()
+        .map_err(|e| error(&root.physical, e))?;
     let volume = Arc::new(Volume {
         file,
         root: root.clone(),
     });
     let mut pool = pool.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(found) = pool.get(&root.identity).and_then(Weak::upgrade) {
+    if let Some(found) = pool
+        .get(&root.identity)
+        .and_then(Weak::upgrade)
+        .filter(|found| current(found))
+    {
         return Ok(found);
     }
     pool.insert(root.identity, Arc::downgrade(&volume));
@@ -411,17 +353,37 @@ fn persistent_short_names_disabled(
         && response.VolumeFlags & PERSISTENT_VOLUME_STATE_SHORT_NAME_CREATION_DISABLED != 0
 }
 
+/// Test seam for the namespace tests (see `docs/developer/TRANSFERS.md`): with
+/// `short-names-disabled` they run their qualified (incremental) branches on an NTFS
+/// volume that still creates 8.3 names (their fixtures never use short names); with
+/// `unqualified` they run the full-refresh branches on any volume. The forced mode is
+/// process-wide because pooled parent bindings and their mode are shared by
+/// concurrently running tests.
+#[cfg(test)]
+pub(super) const TEST_LOOKUP_ENV: &str = "MIDNIGHT_TEST_NAMESPACE_LOOKUP";
+
+/// `Some(true)`: assume 8.3-name creation is disabled; `Some(false)`: unqualified.
+fn forced_lookup() -> Option<bool> {
+    #[cfg(test)]
+    {
+        match std::env::var(TEST_LOOKUP_ENV).as_deref() {
+            Ok("short-names-disabled") => Some(true),
+            Ok("unqualified") => Some(false),
+            _ => None,
+        }
+    }
+    #[cfg(not(test))]
+    {
+        None
+    }
+}
+
 fn lookup_mode(directory: &File, volume: Option<&Volume>) -> LookupMode {
-    #[cfg(debug_assertions)]
-    lookup_trace_enabled();
-    let Some(volume) = volume else {
-        #[cfg(debug_assertions)]
-        trace_lookup!(4, "lookup refused missing_volume");
+    let forced = forced_lookup();
+    let Some(volume) = volume.filter(|_| forced != Some(false)) else {
         return LookupMode::Unqualified;
     };
     let mut fs_name = [0u16; 32];
-    #[cfg(debug_assertions)]
-    let trace_volume = lookup_trace_first(5);
     // SAFETY: live native directory, writable bounded filesystem-name buffer; other
     // optional outputs are null. Failure means unqualified lookup, never inferred NTFS.
     let volume_result = unsafe {
@@ -436,28 +398,11 @@ fn lookup_mode(directory: &File, volume: Option<&Volume>) -> LookupMode {
             fs_name.len() as u32,
         )
     };
-    #[cfg(debug_assertions)]
-    let volume_error = if trace_volume && volume_result == 0 {
-        io::Error::last_os_error().raw_os_error()
-    } else {
-        None
-    };
     let filesystem = fs_name.split(|u| *u == 0).next().unwrap_or_default();
-    #[cfg(debug_assertions)]
-    if trace_volume {
-        eprintln!(
-            "[midnight-native-lookup] volume_info result={volume_result} last_error={volume_error:?} filesystem={:?} root={:?} root_identity={:?}",
-            String::from_utf16_lossy(filesystem),
-            volume.root.physical,
-            volume.root.identity
-        );
-    }
     if volume_result == 0 || !filesystem.iter().copied().eq("NTFS".encode_utf16()) {
         return LookupMode::Unqualified;
     }
     let mut case = FILE_CASE_SENSITIVE_INFO::default();
-    #[cfg(debug_assertions)]
-    let trace_case = lookup_trace_first(6);
     // SAFETY: live native directory and correctly sized writable metadata structure.
     let case_result = unsafe {
         GetFileInformationByHandleEx(
@@ -467,19 +412,6 @@ fn lookup_mode(directory: &File, volume: Option<&Volume>) -> LookupMode {
             size_of::<FILE_CASE_SENSITIVE_INFO>() as u32,
         )
     };
-    #[cfg(debug_assertions)]
-    let case_error = if trace_case && case_result == 0 {
-        io::Error::last_os_error().raw_os_error()
-    } else {
-        None
-    };
-    #[cfg(debug_assertions)]
-    if trace_case {
-        eprintln!(
-            "[midnight-native-lookup] case_info result={case_result} last_error={case_error:?} flags={:#010x} root={:?}",
-            case.Flags, volume.root.physical
-        );
-    }
     if case_result == 0 || case.Flags & !1 != 0 {
         return LookupMode::Unqualified;
     }
@@ -490,8 +422,6 @@ fn lookup_mode(directory: &File, volume: Option<&Volume>) -> LookupMode {
     };
     let mut response = FILE_FS_PERSISTENT_VOLUME_INFORMATION::default();
     let mut returned = 0;
-    #[cfg(debug_assertions)]
-    let trace_query = lookup_trace_first(7);
     // SAFETY: live duplicate of the pinned filesystem-root directory. Fixed-size
     // input/output buffers remain valid for synchronous DeviceIoControl; no overlapped I/O.
     let query_result = unsafe {
@@ -506,39 +436,13 @@ fn lookup_mode(directory: &File, volume: Option<&Volume>) -> LookupMode {
             std::ptr::null_mut(),
         )
     };
-    #[cfg(debug_assertions)]
-    let query_error = if trace_query && query_result == 0 {
-        io::Error::last_os_error().raw_os_error()
-    } else {
-        None
-    };
-    #[cfg(debug_assertions)]
-    if trace_query {
-        eprintln!(
-            "[midnight-native-lookup] persistent_volume result={query_result} last_error={query_error:?} returned={returned} expected_bytes={} request_version={} request_mask={:#010x} response_version={} response_mask={:#010x} volume_flags={:#010x} root={:?}",
-            size_of::<FILE_FS_PERSISTENT_VOLUME_INFORMATION>(),
-            request.Version,
-            request.FlagMask,
-            response.Version,
-            response.FlagMask,
-            response.VolumeFlags,
-            volume.root.physical
-        );
-    }
-    if !persistent_short_names_disabled(query_result, returned, &response) {
+    if forced != Some(true) && !persistent_short_names_disabled(query_result, returned, &response) {
         return LookupMode::Unqualified;
     }
     // The root still belongs to the originally pinned volume after the query. A path
     // rebound cannot silently supply a different volume's alias policy.
     let root_identity = metadata_directory(&volume.root.physical)
         .and_then(|file| identity(&file, &volume.root.physical));
-    #[cfg(debug_assertions)]
-    trace_lookup!(
-        10,
-        "root_revalidation path={:?} expected={:?} observed={root_identity:?}",
-        volume.root.physical,
-        volume.root.identity
-    );
     if root_identity.ok() != Some(volume.root.identity) {
         return LookupMode::Unqualified;
     }
@@ -548,28 +452,8 @@ fn lookup_mode(directory: &File, volume: Option<&Volume>) -> LookupMode {
 }
 
 pub(super) fn physical_path(file: &File) -> io::Result<PathBuf> {
+    use super::super::destination::final_path;
     final_path(file, VOLUME_NAME_GUID).or_else(|_| final_path(file, VOLUME_NAME_DOS))
-}
-fn final_path(file: &File, flags: u32) -> io::Result<PathBuf> {
-    let mut buffer = vec![0u16; 256];
-    loop {
-        let capacity = u32::try_from(buffer.len())
-            .map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?;
-        // SAFETY: live native handle and writable UTF-16 buffer; returned length is
-        // checked before reading initialized units. No fixed path-length limit.
-        let count = unsafe {
-            GetFinalPathNameByHandleW(file.as_raw_handle(), buffer.as_mut_ptr(), capacity, flags)
-        };
-        if count == 0 {
-            return Err(io::Error::last_os_error());
-        }
-        if count >= capacity {
-            buffer.resize(count as usize + 1, 0);
-            continue;
-        }
-        buffer.truncate(count as usize);
-        return Ok(PathBuf::from(OsString::from_wide(&buffer)));
-    }
 }
 
 #[cfg(test)]

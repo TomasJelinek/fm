@@ -392,8 +392,10 @@ fn a_new_entry_in_the_capture_gap_wins_and_both_prior_objects_are_retained() {
     assert_eq!(fs::read(&recovery[1].path).unwrap(), b"verified bytes");
 }
 
+/// Before: a cancellation landing after the original was captured aborted the commit
+/// and left the destination name empty, with both files in hidden recovery.
 #[test]
-fn cancellation_after_capture_retains_original_and_verified_replacement() {
+fn cancellation_after_capture_completes_the_replacement_and_retains_the_original() {
     let temp = fixture();
     let target = temp.path().join("target");
     fs::write(&target, b"original").unwrap();
@@ -403,17 +405,59 @@ fn cancellation_after_capture_retains_original_and_verified_replacement() {
         .replace(OsStr::new("target"), &cancel, || cancel.cancel())
         .unwrap();
     let recovery = match outcome {
+        TransferPublication::Replaced { path, recovery } => {
+            assert_eq!(path, target);
+            recovery
+        }
+        other => panic!("unexpected replacement outcome: {other:?}"),
+    };
+    drop(stage);
+    assert_eq!(fs::read(&target).unwrap(), b"verified bytes");
+    assert_eq!(fs::read(&recovery.path).unwrap(), b"original");
+}
+
+/// A commit failure without a gap winner (here the destination path was rebound to
+/// another directory) restores the captured original under its absent name through
+/// the pinned directory; only the verified stage remains recovery data.
+#[test]
+fn a_failed_commit_after_capture_restores_the_original_into_its_absent_name() {
+    let temp = fixture();
+    let destination = temp.path().join("destination");
+    let elsewhere = temp.path().join("elsewhere");
+    let alias = temp.path().join("alias");
+    fs::create_dir(&destination).unwrap();
+    fs::create_dir(&elsewhere).unwrap();
+    fs::create_dir(&alias).unwrap();
+    crate::test_fixtures::create_junction(&alias, &destination).unwrap();
+    fs::write(destination.join("target"), b"original").unwrap();
+    let mut stage = stage(&alias);
+    let outcome = stage
+        .replace(OsStr::new("target"), &Cancellation::default(), || {
+            fs::remove_dir(&alias).unwrap();
+            fs::create_dir(&alias).unwrap();
+            crate::test_fixtures::create_junction(&alias, &elsewhere).unwrap();
+        })
+        .unwrap();
+    let (recovery, error) = match outcome {
         TransferPublication::RecoveryRequired {
             published: None,
             recovery,
-            ..
-        } => recovery,
+            error,
+        } => (recovery, error),
         other => panic!("unexpected recovery outcome: {other:?}"),
     };
     drop(stage);
-    assert!(!target.exists());
-    assert_eq!(fs::read(&recovery[0].path).unwrap(), b"original");
-    assert_eq!(fs::read(&recovery[1].path).unwrap(), b"verified bytes");
+    assert!(
+        error.message.contains("destination directory changed"),
+        "{error:?}"
+    );
+    assert_eq!(fs::read(destination.join("target")).unwrap(), b"original");
+    assert!(!elsewhere.join("target").exists());
+    assert_eq!(recovery.len(), 1);
+    // The receipt names the stage through the (since rebound) alias path.
+    let staged = destination.join(recovery[0].path.strip_prefix(&alias).unwrap());
+    assert_eq!(fs::read(staged).unwrap(), b"verified bytes");
+    fs::remove_dir(&alias).unwrap();
 }
 
 #[test]

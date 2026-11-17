@@ -35,7 +35,11 @@ fn prepare_native(
     let name = path
         .file_name()
         .ok_or_else(|| invalid(path, "source needs a basename"))?;
-    // Denied delete sharing pins this namespace. Recovery-only rights and DACL
+    // This attribute-only handle pins the parent's identity (its file ID cannot be
+    // reused while open), not its name: such opens do not take part in share-access
+    // checks, so another process can still rename the parent. Every mutation therefore
+    // works handle-relatively and revalidates the path binding first; a reported path
+    // can name the location from that last revalidation. Recovery-only rights and DACL
     // checks are deferred until a cross-volume proof path actually needs staging.
     let parent_file = Arc::new(
         OpenOptions::new()
@@ -89,6 +93,40 @@ fn prepare_native_child(
         _namespace_owner: super::namespace::owner(&[source.entry().identity]),
     });
     Ok((source, capture))
+}
+
+impl Capture {
+    /// The Move source's own binding check. A file keeps its full content revision. A
+    /// directory compares identity only: NTFS updates its write/change times whenever a
+    /// child changes, and a native rename moves whatever it contains (descendants are
+    /// deliberately not enumerated), so such changes must not fail the Move.
+    fn revalidate_source(&self, cancel: &Cancellation) -> Result<(), FsError> {
+        let path = &self.entry.item.path;
+        if self.entry.item.kind != EntryKind::Directory {
+            return self.expected.revalidate(cancel).map_err(|mut failure| {
+                // The shared conflict pin speaks of a destination; this is the source.
+                if failure.message == "consented destination changed" {
+                    failure.message = "Move source changed".into();
+                }
+                failure
+            });
+        }
+        checked(cancel, path)?;
+        self.parent.revalidate(cancel)?;
+        let visible = native::open_relative(
+            self.parent.native_file(),
+            &self.name,
+            FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            windows_sys::Wdk::Storage::FileSystem::FILE_OPEN,
+            0,
+        )
+        .map_err(|e| error(path, e))?;
+        if identity(&visible, path)? != self.entry.identity {
+            return Err(invalid(path, "Move source changed"));
+        }
+        Ok(())
+    }
 }
 
 #[derive(Default)]
@@ -175,7 +213,7 @@ impl TransferMoveCapture for Capture {
         &self.entry
     }
     fn revalidate(&self, cancel: &Cancellation) -> Result<(), FsError> {
-        self.expected.revalidate(cancel)
+        self.revalidate_source(cancel)
     }
     fn capture(&self, cancel: &Cancellation) -> Result<TransferMoveCaptureOutcome, FsError> {
         self.capture_with(cancel, || {}, || {})
@@ -191,7 +229,11 @@ impl TransferMoveCapture for Capture {
             return Ok(());
         }
         let cleanup = Cancellation::default();
-        self.parent.check_recovery_parent(&cleanup)?;
+        // Putting the user's object back into the directory it came from needs only the
+        // parent's identity binding; the DACL trust policy guards staging, and a parent
+        // permission change during the operation must not strand the original in the
+        // owner-only stage.
+        self.parent.revalidate(&cleanup)?;
         // Rename exactly our selected held object. A new original-name winner is
         // never replaced, even if the winner was created after cancellation.
         self.parent

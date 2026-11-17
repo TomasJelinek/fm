@@ -5,18 +5,14 @@ use std::{
     ffi::{OsStr, OsString},
     fs::File,
     io,
-    os::windows::{
-        ffi::{OsStrExt, OsStringExt},
-        fs::MetadataExt,
-    },
+    os::windows::ffi::{OsStrExt, OsStringExt},
     path::{Component, Path, PathBuf, Prefix},
     sync::Arc,
 };
 use windows_sys::{
     Wdk::Storage::FileSystem::{FILE_DIRECTORY_FILE, FILE_OPEN},
     Win32::Storage::FileSystem::{
-        FILE_ATTRIBUTE_REPARSE_POINT, FILE_READ_ATTRIBUTES, FILE_SHARE_READ, FILE_SHARE_WRITE,
-        FILE_TRAVERSE, SYNCHRONIZE,
+        FILE_READ_ATTRIBUTES, FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_TRAVERSE, SYNCHRONIZE,
     },
 };
 
@@ -46,7 +42,7 @@ pub(super) fn prepare(
         ));
     }
     let identity =
-        native::identity(&directory).map_err(|e| failure("read base identity", path, e))?;
+        native::local_identity(&directory).map_err(|e| failure("read base identity", path, e))?;
     checked(cancel, path)?;
     Ok(Arc::new(WindowsDirectory {
         path: path.to_owned(),
@@ -59,7 +55,8 @@ impl WindowsDirectory {
     fn revalidate(&self) -> Result<(), FsError> {
         let visible = native::open_parent(&self.path)
             .map_err(|e| failure("revalidate base directory", &self.path, e))?;
-        if native::identity(&visible).map_err(|e| failure("read base identity", &self.path, e))?
+        if native::local_identity(&visible)
+            .map_err(|e| failure("read base identity", &self.path, e))?
             != self.identity
         {
             return Err(changed(&self.path));
@@ -137,7 +134,7 @@ impl WindowsDirectory {
                     cursor.directories.push(child);
                 }
             }
-            if native::identity(cursor.current())
+            if native::local_identity(cursor.current())
                 .map_err(|e| failure("read base identity", &self.path, e))?
                 != self.identity
             {
@@ -195,7 +192,9 @@ fn open_directory(parent: &File, name: &OsStr) -> io::Result<File> {
         FILE_OPEN,
         FILE_DIRECTORY_FILE,
     )?;
-    if directory.metadata()?.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+    // Cloud placeholder and other non-surrogate reparse directories are ordinary
+    // directories; only namespace-redirecting links are refused.
+    if crate::reparse::Native::query(&directory)?.link() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "creating through a junction or symbolic link is not allowed",

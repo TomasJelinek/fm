@@ -10,7 +10,7 @@ fn native_drop_device_observes_actual_volume_without_capturing_a_source() {
     use windows_sys::Win32::Storage::FileSystem::{
         FILE_READ_ATTRIBUTES, FILE_READ_DATA, FILE_SHARE_READ, FILE_SHARE_WRITE,
     };
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::test_fixtures::build_temp("fixture-");
     let path = temp.path().join("ordinary file");
     fs::write(&path, b"content must remain unchanged").unwrap();
     let filesystem = crate::WindowsFileSystem::new(None);
@@ -502,6 +502,96 @@ fn retained_validation_survives_source_capture_and_proves_published_binding() {
     stage.read_to_end(&mut bytes).unwrap();
     assert_eq!(bytes, b"verified bytes");
     guard.revalidate(&cancel).unwrap();
+}
+
+#[test]
+fn native_directory_move_tolerates_child_changes_after_preparation() {
+    use midnight_core::{TransferNativeMoveOutcome, TransferSource};
+    let (_temp, parent) = fixture();
+    let source_path = parent.join("logs 文档");
+    fs::create_dir(&source_path).unwrap();
+    fs::write(source_path.join("first.log"), b"first").unwrap();
+    let destination_path = parent.join("archive");
+    fs::create_dir(&destination_path).unwrap();
+    let cancel = Cancellation::default();
+    let (source, capture) = prepare_native(&source_path, &cancel).unwrap();
+    let expected = source.entry().identity;
+    // An application keeps writing inside the directory being moved; NTFS updates the
+    // directory's write and change times, which must not read as a changed source.
+    fs::write(source_path.join("rotated.log"), b"rotated").unwrap();
+    capture.revalidate(&cancel).unwrap();
+    let destination = crate::WindowsFileSystem::new(None)
+        .prepare_transfer_destination(&destination_path, &cancel)
+        .unwrap();
+    let outcome = capture
+        .try_native_move(
+            destination.as_ref(),
+            std::ffi::OsStr::new("logs"),
+            None,
+            &cancel,
+        )
+        .unwrap();
+    assert!(matches!(outcome, TransferNativeMoveOutcome::Moved { .. }));
+    drop(source);
+    drop(capture);
+    let moved = destination_path.join("logs");
+    assert_eq!(fs::read(moved.join("rotated.log")).unwrap(), b"rotated");
+    let service = crate::WindowsFileSystem::new(None);
+    let moved_entry = service
+        .prepare_transfer_source(&moved, &cancel)
+        .unwrap()
+        .entry()
+        .identity;
+    assert_eq!(moved_entry, expected);
+}
+
+#[test]
+fn native_move_and_recovery_checks_accept_directories_reached_through_a_junction() {
+    use midnight_core::{TransferNativeMoveOutcome, TransferSource};
+    let (_temp, parent) = fixture();
+    let real = parent.join("real target 文档");
+    fs::create_dir(&real).unwrap();
+    let junction = parent.join("junction to target");
+    fs::create_dir(&junction).unwrap();
+    crate::test_fixtures::create_junction(&junction, &real).unwrap();
+    let source_path = parent.join("source");
+    fs::write(&source_path, b"moved through a junction").unwrap();
+    let cancel = Cancellation::default();
+    let filesystem = crate::WindowsFileSystem::new(None);
+    // The panel sits inside the junction: the destination resolves to its target.
+    let destination = filesystem
+        .prepare_transfer_destination(&junction, &cancel)
+        .unwrap();
+    let (source, capture) = prepare_native(&source_path, &cancel).unwrap();
+    let expected = source.entry().identity;
+    let outcome = capture
+        .try_native_move(
+            destination.as_ref(),
+            std::ffi::OsStr::new("moved"),
+            None,
+            &cancel,
+        )
+        .unwrap();
+    assert!(matches!(outcome, TransferNativeMoveOutcome::Moved { .. }));
+    drop(source);
+    drop(capture);
+    assert_eq!(
+        fs::read(real.join("moved")).unwrap(),
+        b"moved through a junction"
+    );
+    // A source whose displayed parent is the junction keeps its recovery checks: the
+    // parent DACL is read from the retained target object, not the junction itself.
+    let (source, capture) = prepare_native(&junction.join("moved"), &cancel).unwrap();
+    assert_eq!(source.entry().identity, expected);
+    capture.preflight_finalization(&cancel).unwrap();
+    drop(source);
+    drop(capture);
+    assert_eq!(fs::read_dir(&real).unwrap().count(), 1);
+    fs::remove_dir(&junction).unwrap();
+    assert!(
+        real.join("moved").exists(),
+        "removing the link keeps its target"
+    );
 }
 
 fn fixture() -> (tempfile::TempDir, PathBuf) {

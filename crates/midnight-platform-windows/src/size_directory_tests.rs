@@ -11,7 +11,7 @@ fn open(path: &Path) -> fs::File {
 
 #[test]
 fn legacy_directory_identity_is_stable_and_distinguishes_directories() {
-    let owned = tempfile::tempdir().unwrap();
+    let owned = crate::test_fixtures::build_temp("fixture-");
     let child = owned.path().join("child");
     fs::create_dir(&child).unwrap();
     let first = legacy_identity(&open(owned.path())).unwrap();

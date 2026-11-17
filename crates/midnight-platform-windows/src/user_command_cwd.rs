@@ -21,8 +21,8 @@ pub(super) fn for_cmd(path: &Path) -> io::Result<PathBuf> {
             // names differently. Compare two live native owners before accepting.
             let original = native::open_parent(path).map_err(|_| unsupported())?;
             let converted = native::open_parent(&candidate).map_err(|_| unsupported())?;
-            let original_id = native::identity(&original).map_err(|_| unsupported())?;
-            let converted_id = native::identity(&converted).map_err(|_| unsupported())?;
+            let original_id = native::local_identity(&original).map_err(|_| unsupported())?;
+            let converted_id = native::local_identity(&converted).map_err(|_| unsupported())?;
             if original_id != converted_id {
                 return Err(unsupported());
             }

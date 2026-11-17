@@ -1,5 +1,42 @@
 use super::*;
 
+/// Every default run covers both branches of the namespace tests: in-process in the
+/// build volume's native lookup mode, and in a child process forced into the other
+/// mode. The forced mode is process-wide because concurrently running tests share
+/// pooled parent bindings, whose lookup mode is part of their validation; a per-thread
+/// seam would make those tests disagree about one binding.
+#[test]
+fn namespace_tests_pass_in_the_other_lookup_mode_too() {
+    if std::env::var_os(TEST_LOOKUP_ENV).is_some() {
+        // Already a forced run: an explicit second pass or the child below.
+        return;
+    }
+    let base = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../_build/tmp");
+    std::fs::create_dir_all(&base).unwrap();
+    let temp = tempfile::tempdir_in(base).unwrap();
+    let directory = metadata_directory(temp.path()).unwrap();
+    let native = capture(&directory, temp.path(), &Cancellation::default())
+        .unwrap()
+        .mode;
+    let other = match native {
+        LookupMode::ShortNamesDisabled { .. } => "unqualified",
+        LookupMode::Unqualified => "short-names-disabled",
+    };
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["transfer::namespace::tests::", "--test-threads", "4"])
+        .env(TEST_LOOKUP_ENV, other)
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success()
+            && stdout.contains("test result: ok")
+            && !stdout.contains("ok. 0 passed"),
+        "namespace tests failed in the {other} lookup mode:\n{stdout}\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
 #[test]
 fn volume_query_handle_retains_pinned_root_directory_identity() {
     let base = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../_build/tmp");
@@ -13,7 +50,12 @@ fn volume_query_handle_retains_pinned_root_directory_identity() {
         .last()
         .unwrap();
     let root = anchor(root_path).unwrap();
-    let query = open_volume(&root).unwrap();
+    let query = match open_volume(&root) {
+        Ok(query) => query,
+        // A share or other volume without a GUID path has no volume rule query.
+        Err(error) if error.kind == io::ErrorKind::Unsupported => return,
+        Err(error) => panic!("{error:?}"),
+    };
     assert!(Arc::ptr_eq(&query.root, &root));
     assert_eq!(
         identity(&query.file, &root.physical).unwrap(),
@@ -24,6 +66,32 @@ fn volume_query_handle_retains_pinned_root_directory_identity() {
         identity(&query.file, &query.root.physical).unwrap(),
         query.root.identity
     );
+}
+
+#[test]
+fn a_renamed_directory_is_never_bound_to_its_pooled_old_path() {
+    let temp = crate::test_fixtures::build_temp("namespace-pool-");
+    let cancel = Cancellation::default();
+    let old = temp.path().join("old 文档");
+    let new = temp.path().join("new 文档");
+    std::fs::create_dir(&old).unwrap();
+    // Another job (or a paused one awaiting a decision) still holds the pooled Parent.
+    let held = capture(&native::open_parent(&old).unwrap(), &old, &cancel).unwrap();
+    std::fs::rename(&old, &new).unwrap();
+    let fresh = capture(&native::open_parent(&new).unwrap(), &new, &cancel).unwrap();
+    assert!(
+        !Arc::ptr_eq(&held, &fresh),
+        "a stale pooled path is not reused"
+    );
+    assert_eq!(fresh.physical().file_name(), new.file_name());
+    fresh.validate(&cancel).unwrap();
+    assert!(
+        held.validate(&cancel).is_err(),
+        "the old holder sees its own change"
+    );
+    // The fresh entry now owns the pool slot.
+    let again = capture(&native::open_parent(&new).unwrap(), &new, &cancel).unwrap();
+    assert!(Arc::ptr_eq(&fresh, &again));
 }
 
 #[test]

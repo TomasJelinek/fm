@@ -1,14 +1,15 @@
 //! Handle-relative native access keeps recursion independent of mutable path traversal.
 use super::{checked, failure};
+use crate::{directory_records::Cursor, reparse::Native};
 use midnight_core::{Cancellation, FsError};
 use std::{
     ffi::{OsStr, OsString},
     fs::{File, OpenOptions},
     io,
-    mem::{offset_of, size_of},
+    mem::size_of,
     os::windows::{
         ffi::{OsStrExt, OsStringExt},
-        fs::{MetadataExt, OpenOptionsExt},
+        fs::OpenOptionsExt,
         io::{AsRawHandle, FromRawHandle},
     },
     path::{Path, PathBuf},
@@ -24,7 +25,8 @@ use windows_sys::{
         },
     },
     Win32::{
-        Foundation::{ERROR_NO_MORE_FILES, RtlNtStatusToDosError, UNICODE_STRING},
+        Foundation::{RtlNtStatusToDosError, UNICODE_STRING},
+        Security::{SECURITY_QUALITY_OF_SERVICE, SecurityIdentification},
         Storage::FileSystem::*,
         System::IO::IO_STATUS_BLOCK,
     },
@@ -36,7 +38,44 @@ pub(crate) struct Identity {
     pub(crate) id: [u8; 16],
 }
 
+/// The volume serial number and 128-bit `FileIdInfo` identifier. It survives renames
+/// and moves within its volume (NTFS, ReFS). Copy and Move compare identities across
+/// their own renames (stage publication, Move capture, namespace pins), so they use only
+/// this form and refuse a filesystem without it.
 pub(crate) fn identity(file: &File) -> io::Result<Identity> {
+    file_id(file).map_err(without_stable_identity)
+}
+
+fn without_stable_identity(error: io::Error) -> io::Error {
+    if !unsupported(&error) {
+        return error;
+    }
+    io::Error::new(
+        io::ErrorKind::Unsupported,
+        format!(
+            "Copy and Move are not supported on this filesystem: it has no stable file \
+             identities (FAT32 and exFAT media do not). Use an NTFS or ReFS volume, or \
+             transfer these files with another tool. ({error})"
+        ),
+    )
+}
+
+/// Identity for operations that never compare an identity across their own rename:
+/// permanent deletion, deletion discovery, Rename/F7/metadata preparation, Find and
+/// advisory queries. Filesystems without `FileIdInfo` (FAT32, exFAT, some redirectors)
+/// use the 32-bit volume serial number and the 64-bit file index instead. FAT derives
+/// that index from the position of the entry's directory record: it is unique among the
+/// existing entries, but renaming the entry to a longer name, moving it to another
+/// directory or third-party defragmentation changes it, and a new entry can then take
+/// over the old value. A volume consistently uses one of the two forms.
+pub(crate) fn local_identity(file: &File) -> io::Result<Identity> {
+    match file_id(file) {
+        Err(error) if unsupported(&error) => legacy_identity(file),
+        result => result,
+    }
+}
+
+fn file_id(file: &File) -> io::Result<Identity> {
     let mut information = FILE_ID_INFO::default();
     // SAFETY: file owns a live handle; information is writable for the duration of the call.
     if unsafe {
@@ -53,6 +92,34 @@ pub(crate) fn identity(file: &File) -> io::Result<Identity> {
     Ok(Identity {
         volume: information.VolumeSerialNumber,
         id: information.FileId.Identifier,
+    })
+}
+
+/// ERROR_INVALID_FUNCTION, ERROR_NOT_SUPPORTED and ERROR_INVALID_PARAMETER are returned
+/// by filesystems (FAT32, exFAT, some redirectors) without an extended information class.
+pub(crate) fn unsupported(error: &io::Error) -> bool {
+    matches!(error.raw_os_error(), Some(1 | 50 | 87)) || error.kind() == io::ErrorKind::Unsupported
+}
+
+/// The 64-bit file index and 32-bit volume serial number, for filesystems without
+/// `FileIdInfo` (see [`local_identity`]).
+fn legacy_identity(file: &File) -> io::Result<Identity> {
+    let mut information = BY_HANDLE_FILE_INFORMATION::default();
+    // SAFETY: file retains the live handle and information is an exact writable native
+    // structure for this synchronous metadata-only query.
+    if unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut information) } == 0 {
+        let error = io::Error::last_os_error();
+        return Err(if unsupported(&error) {
+            io::ErrorKind::Unsupported.into()
+        } else {
+            error
+        });
+    }
+    let index =
+        (u64::from(information.nFileIndexHigh) << 32) | u64::from(information.nFileIndexLow);
+    Ok(Identity {
+        volume: u64::from(information.dwVolumeSerialNumber),
+        id: u128::from(index).to_le_bytes(),
     })
 }
 
@@ -87,7 +154,9 @@ pub(super) fn create_directory(
         },
         FILE_DIRECTORY_FILE,
     )?;
-    if directory.metadata()?.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+    // Cloud placeholder and other non-surrogate reparse directories are ordinary
+    // directories; only namespace-redirecting links are refused.
+    if Native::query(&directory)?.link() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "creating through a junction or symbolic link is not allowed",
@@ -109,6 +178,44 @@ pub(super) fn create_empty_file(parent: &File, name: &OsStr) -> io::Result<File>
     )
 }
 
+/// Reopens exactly the object `file` refers to with new access, through an empty
+/// handle-relative name instead of a pathname. Unlike `ReOpenFile`, this also works for
+/// directories, including one reached through a junction or mount point.
+pub(crate) fn reopen(file: &File, access: u32, share: u32) -> io::Result<File> {
+    open_relative(file, OsStr::new(""), access, share, FILE_OPEN, 0)
+}
+
+/// Reopens a filter-backed file's content (see `reparse::reopen_content`): like
+/// `ReOpenFile`, the empty name relative to `pinned` reopens the same object, here
+/// without `FILE_OPEN_REPARSE_POINT` so the owning filter supplies the data. Unlike
+/// `ReOpenFile`, which rejects the `SECURITY_IDENTIFICATION` flag value, the open
+/// carries an identification-level quality of service (see [`open_identifying`]).
+pub(crate) fn reopen_mediated(pinned: &File, access: u32, share: u32) -> io::Result<File> {
+    open_identifying(pinned, OsStr::new(""), access, share)
+}
+
+/// Opens a non-directory relative to `parent` and follows its reparse points, with an
+/// identification-level security quality of service: should the open reach a named pipe
+/// (a reparse point replaced by a symbolic link to one), its server can identify this
+/// process but never impersonate it.
+fn open_identifying(parent: &File, name: &OsStr, access: u32, share: u32) -> io::Result<File> {
+    let quality = SECURITY_QUALITY_OF_SERVICE {
+        Length: size_of::<SECURITY_QUALITY_OF_SERVICE>() as u32,
+        ImpersonationLevel: SecurityIdentification,
+        ContextTrackingMode: 0, // SECURITY_STATIC_TRACKING
+        EffectiveOnly: false,
+    };
+    create_relative(
+        parent,
+        name,
+        access,
+        share,
+        FILE_OPEN,
+        FILE_NON_DIRECTORY_FILE,
+        Some(&quality),
+    )
+}
+
 pub(crate) fn open_relative(
     parent: &File,
     name: &OsStr,
@@ -116,6 +223,26 @@ pub(crate) fn open_relative(
     share: u32,
     disposition: u32,
     options: u32,
+) -> io::Result<File> {
+    create_relative(
+        parent,
+        name,
+        access,
+        share,
+        disposition,
+        options | FILE_OPEN_REPARSE_POINT,
+        None,
+    )
+}
+
+fn create_relative(
+    parent: &File,
+    name: &OsStr,
+    access: u32,
+    share: u32,
+    disposition: u32,
+    options: u32,
+    quality: Option<&SECURITY_QUALITY_OF_SERVICE>,
 ) -> io::Result<File> {
     let mut wide: Vec<_> = name.encode_wide().collect();
     let bytes = u16::try_from(
@@ -138,24 +265,29 @@ pub(crate) fn open_relative(
         Length: size_of::<OBJECT_ATTRIBUTES>() as u32,
         RootDirectory: parent.as_raw_handle(),
         ObjectName: &mut unicode,
+        SecurityQualityOfService: quality.map_or(ptr::null(), ptr::from_ref),
         ..Default::default()
     };
     let mut result = ptr::null_mut();
     let mut status = IO_STATUS_BLOCK::default();
-    // SAFETY: parent is live; counted UTF-16 name, attributes, result and status outlive the
-    // synchronous NtCreateFile call. No caller uses a replace/truncate disposition; the final
-    // reparse point is opened directly. Only one validated basename is accepted by callers.
+    // SAFETY: parent is live; counted UTF-16 name, attributes (and the optional quality of
+    // service they point to), result and status outlive the synchronous NtCreateFile call.
+    // No caller uses a replace/truncate disposition. Every caller but `open_identifying`
+    // (the filter-mediated reopen of the empty name) opens the final reparse point
+    // directly; callers accept only one validated basename or the empty name of the parent
+    // object itself. Synchronous I/O requires SYNCHRONIZE, which CreateFileW and
+    // ReOpenFile add implicitly.
     let code = unsafe {
         NtCreateFile(
             &mut result,
-            access,
+            access | SYNCHRONIZE,
             &attributes,
             &mut status,
             ptr::null(),
             0,
             share,
             disposition,
-            options | FILE_OPEN_REPARSE_POINT | FILE_SYNCHRONOUS_IO_NONALERT,
+            options | FILE_SYNCHRONOUS_IO_NONALERT,
             ptr::null(),
             0,
         )
@@ -176,15 +308,17 @@ pub(crate) fn rename(source: &File, name: &OsStr) -> io::Result<()> {
     let mut buffer = vec![0u64; length.div_ceil(size_of::<u64>())];
     let information = buffer.as_mut_ptr().cast::<FILE_RENAME_INFORMATION>();
     let mut status = IO_STATUS_BLOCK::default();
-    // SAFETY: aligned allocation covers the header and counted UTF-16 basename. Native
-    // FileRenameInformation with null RootDirectory and a simple name renames within the
-    // source handle's own parent; it never resolves through the process working directory.
-    // ReplaceIfExists stays false. The source handle denies concurrent delete/rename access.
+    // SAFETY: aligned allocation covers the header and counted UTF-16 basename. The name
+    // pointer derives from the whole allocation, not from the one-element FileName field.
+    // Native FileRenameInformation with null RootDirectory and a simple name renames within
+    // the source handle's own parent; it never resolves through the process working
+    // directory. ReplaceIfExists stays false. The source handle denies concurrent
+    // delete/rename access.
     unsafe {
         (*information).FileNameLength = ((name.len() - 1) * 2) as u32;
         ptr::copy_nonoverlapping(
             name.as_ptr(),
-            (*information).FileName.as_mut_ptr(),
+            ptr::addr_of_mut!((*information).FileName).cast::<u16>(),
             name.len(),
         );
         let code = NtSetInformationFile(
@@ -203,35 +337,91 @@ pub(crate) fn rename(source: &File, name: &OsStr) -> io::Result<()> {
     Ok(())
 }
 
+/// Copy/Move cleanup keeps POSIX disposition only and its stricter attribute policy.
+/// Their pinned anchors and pooled directory handles would leave a classic (delete-on-
+/// close) disposition pending, and Copy/Move already refuse the filesystems without
+/// stable identities, which are also those without POSIX disposition.
 pub(crate) fn remove(source: &File) -> io::Result<()> {
-    remove_with_flags(source, 0)
+    posix_dispose(source, 0)
 }
 
 fn remove_confirmed(source: &File) -> io::Result<()> {
     // The user explicitly confirmed permanent deletion. Ignore only the DOS
     // read-only attribute, without changing it on surviving hard links. DELETE
-    // access, identity pins and no-follow traversal are still required. Copy/
-    // move cleanup uses remove() and retains its stricter attribute policy.
-    remove_with_flags(source, FILE_DISPOSITION_FLAG_IGNORE_READONLY_ATTRIBUTE)
+    // access, identity pins and no-follow traversal are still required.
+    dispose(
+        || posix_dispose(source, FILE_DISPOSITION_FLAG_IGNORE_READONLY_ATTRIBUTE),
+        || {
+            let information = FILE_DISPOSITION_INFO { DeleteFile: true };
+            // SAFETY: source has DELETE access; the fixed-size structure is valid during
+            // this call.
+            native_result(unsafe {
+                SetFileInformationByHandle(
+                    source.as_raw_handle(),
+                    FileDispositionInfo,
+                    (&information as *const FILE_DISPOSITION_INFO).cast(),
+                    size_of::<FILE_DISPOSITION_INFO>() as u32,
+                )
+            })
+        },
+        // The basic class exists on every filesystem, unlike the reparse-tag class.
+        || {
+            crate::reparse::attributes(source)
+                .map(|attributes| attributes & FILE_ATTRIBUTE_READONLY != 0)
+        },
+    )
 }
 
-fn remove_with_flags(source: &File, flags: FILE_DISPOSITION_INFO_EX_FLAGS) -> io::Result<()> {
+fn posix_dispose(source: &File, flags: FILE_DISPOSITION_INFO_EX_FLAGS) -> io::Result<()> {
     let information = FILE_DISPOSITION_INFO_EX {
         Flags: FILE_DISPOSITION_FLAG_DELETE | FILE_DISPOSITION_FLAG_POSIX_SEMANTICS | flags,
     };
     // SAFETY: source has DELETE access; the fixed-size structure is valid during this call.
-    if unsafe {
+    native_result(unsafe {
         SetFileInformationByHandle(
             source.as_raw_handle(),
             FileDispositionInfoEx,
             (&information as *const FILE_DISPOSITION_INFO_EX).cast(),
             size_of::<FILE_DISPOSITION_INFO_EX>() as u32,
         )
-    } == 0
-    {
-        return Err(io::Error::last_os_error());
+    })
+}
+
+fn native_result(succeeded: i32) -> io::Result<()> {
+    if succeeded == 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(())
     }
-    Ok(())
+}
+
+/// Confirmed permanent deletion. POSIX disposition removes the name immediately while
+/// identity handles stay open. Filesystems without it (FAT32, exFAT, some redirectors)
+/// reject the extended class; they fall back to the classic handle-bound disposition on
+/// the same pinned handle, which removes the name once every handle to the entry is
+/// closed (the caller closes its own right afterwards). The classic class cannot ignore
+/// the DOS read-only attribute, so a read-only entry there is reported instead of
+/// changing its attributes.
+fn dispose(
+    extended: impl FnOnce() -> io::Result<()>,
+    classic: impl FnOnce() -> io::Result<()>,
+    read_only: impl FnOnce() -> io::Result<bool>,
+) -> io::Result<()> {
+    let error = match extended() {
+        Ok(()) => return Ok(()),
+        Err(error) if unsupported(&error) => error,
+        Err(error) => return Err(error),
+    };
+    if read_only()? {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!(
+                "this filesystem cannot delete a read-only entry without changing its \
+                 attributes; clear Read-only first ({error})"
+            ),
+        ));
+    }
+    classic()
 }
 
 struct Frame {
@@ -259,8 +449,13 @@ pub(super) fn delete_tree(
         checked(cancel, &frame.path)?;
         if let Some(name) = frame.names.pop() {
             let child_path = frame.path.join(&name);
-            let child = open_child(&frame.enumeration, &name, true)
-                .map_err(|e| failure("open delete child", &child_path, e))?;
+            let child = match open_child(&frame.enumeration, &name, true) {
+                Ok(child) => child,
+                // Another process (a compiler, antivirus, a sync client) removed this
+                // snapshotted child first; the requested end state is already reached.
+                Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+                Err(error) => return Err(failure("open delete child", &child_path, error)),
+            };
             if let Some(next) =
                 visit_delete_entry(child, &frame.enumeration, child_path, cancel, progress)?
             {
@@ -290,11 +485,10 @@ fn visit_delete_entry(
     progress: &mut dyn FnMut(&Path),
 ) -> Result<Option<Frame>, FsError> {
     checked(cancel, &path)?;
-    let attrs = file
-        .metadata()
-        .map_err(|e| failure("read delete attributes", &path, e))?
-        .file_attributes();
-    if attrs & FILE_ATTRIBUTE_DIRECTORY == 0 || attrs & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+    let native = Native::query(&file).map_err(|e| failure("read delete attributes", &path, e))?;
+    // Links are leaves: the no-follow handle removes the link itself, never its target.
+    // Cloud placeholder and other non-surrogate reparse directories are recursed.
+    if !native.directory() || native.link() {
         remove_confirmed(&file).map_err(|e| failure("delete", &path, e))?;
         drop(file);
         progress(&path);
@@ -325,6 +519,17 @@ pub(super) fn open_enumeration(parent: &File, source: &File, name: &OsStr) -> io
     // Listing access shares its bit with file-content read. Only ordinary directories reach
     // here. Keep source's no-delete-sharing guard while opening relative to its pinned parent;
     // the extra handle allows sharing DELETE because source already holds that access.
+    let enumeration = open_listing(parent, name)?;
+    if local_identity(source)? != local_identity(&enumeration)? {
+        return Err(io::Error::other("the directory changed before enumeration"));
+    }
+    Ok(enumeration)
+}
+
+/// Opens a child directory for listing without following its final reparse point and
+/// refuses a namespace-redirecting link. Non-surrogate reparse directories (cloud
+/// placeholders, ...) are ordinary directories.
+pub(super) fn open_listing(parent: &File, name: &OsStr) -> io::Result<File> {
     let enumeration = open_relative(
         parent,
         name,
@@ -333,10 +538,7 @@ pub(super) fn open_enumeration(parent: &File, source: &File, name: &OsStr) -> io
         FILE_OPEN,
         FILE_DIRECTORY_FILE,
     )?;
-    let attributes = enumeration.metadata()?.file_attributes();
-    if attributes & FILE_ATTRIBUTE_REPARSE_POINT != 0
-        || identity(source)? != identity(&enumeration)?
-    {
+    if Native::query(&enumeration)?.link() {
         return Err(io::Error::other("the directory changed before enumeration"));
     }
     Ok(enumeration)
@@ -376,77 +578,41 @@ fn collect_child_names(
     let mut names = Vec::new();
     let mut name_bytes = 0usize;
     let mut name_count = 0usize;
-    let mut buffer = vec![0u64; 8192];
-    loop {
-        // SAFETY: aligned 64 KiB buffer is writable; directory owns a synchronous directory
-        // handle. The returned offsets and UTF-16 lengths are checked before dereferencing.
-        if unsafe {
-            GetFileInformationByHandleEx(
-                directory.as_raw_handle(),
-                FileIdBothDirectoryInfo,
-                buffer.as_mut_ptr().cast(),
-                (buffer.len() * 8) as u32,
-            )
-        } == 0
-        {
-            let error = io::Error::last_os_error();
-            if error.raw_os_error() == Some(ERROR_NO_MORE_FILES as i32) {
-                return Ok(names);
+    let mut found = false;
+    let mut cursor = Cursor::default();
+    while !cursor.ended() && !found {
+        cursor.next_batch(directory, &mut |record| {
+            if found {
+                return Ok(());
             }
-            return Err(error);
-        }
-        let mut offset = 0usize;
-        loop {
             if !cancel.wait_if_paused() {
                 return Err(io::Error::new(
                     io::ErrorKind::Interrupted,
                     "deletion cancelled",
                 ));
             }
-            let header = offset_of!(FILE_ID_BOTH_DIR_INFO, FileName);
-            if offset + size_of::<FILE_ID_BOTH_DIR_INFO>() > buffer.len() * 8 {
-                return Err(io::Error::other("invalid directory record"));
+            name_bytes = name_bytes.saturating_add(record.name.len() * 2);
+            if name_count >= max_names || name_bytes > max_bytes {
+                return Err(io::Error::other(
+                    "metadata directory snapshot exceeds its resource budget",
+                ));
             }
-            // SAFETY: checked record lies inside aligned buffer; Windows offsets are 8-byte aligned.
-            let record = unsafe {
-                &*buffer
-                    .as_ptr()
-                    .cast::<u8>()
-                    .add(offset)
-                    .cast::<FILE_ID_BOTH_DIR_INFO>()
-            };
-            let bytes = record.FileNameLength as usize;
-            if !bytes.is_multiple_of(2) || offset + header + bytes > buffer.len() * 8 {
-                return Err(io::Error::other("invalid directory filename"));
-            }
-            // SAFETY: the preceding byte bounds and even length cover the entire UTF-16 slice.
-            let units = unsafe { std::slice::from_raw_parts(record.FileName.as_ptr(), bytes / 2) };
-            let name = OsString::from_wide(units);
-            if name != "." && name != ".." {
-                name_bytes = name_bytes.saturating_add(bytes);
-                if name_count >= max_names || name_bytes > max_bytes {
-                    return Err(io::Error::other(
-                        "metadata directory snapshot exceeds its resource budget",
-                    ));
+            name_count += 1;
+            let name = OsString::from_wide(record.name);
+            match find {
+                Some(find) if name == find => {
+                    found = true;
+                    names = vec![name];
                 }
-                name_count += 1;
-                if let Some(find) = find {
-                    if name == find {
-                        return Ok(vec![name]);
-                    }
-                } else {
-                    names.push(name);
-                }
+                Some(_) => {}
+                None => names.push(name),
             }
-            if record.NextEntryOffset == 0 {
-                break;
-            }
-            if !(record.NextEntryOffset as usize).is_multiple_of(8)
-                || (record.NextEntryOffset as usize) < header + bytes
-            {
-                return Err(io::Error::other("invalid next directory record"));
-            }
-            offset += record.NextEntryOffset as usize;
-        }
+            Ok(())
+        })?;
     }
+    Ok(names)
 }
+
+#[cfg(test)]
+#[path = "mutation_native_tests.rs"]
+mod tests;

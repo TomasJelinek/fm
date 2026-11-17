@@ -8,7 +8,7 @@ fn directory(path: &Path) -> Directory {
 
 #[test]
 fn colliding_compact_names_retry_exclusively_and_preserve_the_existing_winner() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::test_fixtures::build_temp("fixture-");
     let directory = directory(temp.path());
     let occupied = OsString::from(".me-0000000000000000");
     let fresh = OsString::from(".me-0000000000000001");
@@ -78,7 +78,7 @@ fn attributes(stage: &Stage, attributes: u32) {
 
 #[test]
 fn cleanup_refusal_is_reported_and_retry_removes_only_the_owned_stage() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::test_fixtures::build_temp("fixture-");
     let directory = directory(temp.path());
     let mut stage = directory
         .create_stage(true, None, &Cancellation::default())
@@ -102,7 +102,7 @@ fn cleanup_refusal_is_reported_and_retry_removes_only_the_owned_stage() {
 #[test]
 fn cleanup_unlinks_stage_while_a_delete_sharing_reader_retains_its_bytes() {
     use std::os::windows::fs::OpenOptionsExt;
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::test_fixtures::build_temp("fixture-");
     let directory = directory(temp.path());
     let mut stage = directory
         .create_stage(false, None, &Cancellation::default())
@@ -171,7 +171,7 @@ fn stage_factory_cancel_does_not_hide_native_cleanup_refusal_as_interrupted() {
 
 fn factory_failure(failure_kind: io::ErrorKind) {
     for preserving in [false, true] {
-        let temp = tempfile::tempdir().unwrap();
+        let temp = crate::test_fixtures::build_temp("fixture-");
         let target_path = temp.path().join("target");
         fs::write(&target_path, b"original target").unwrap();
         let directory = directory(temp.path());

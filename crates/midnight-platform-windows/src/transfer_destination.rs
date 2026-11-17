@@ -164,7 +164,7 @@ impl TransferDirectory for Directory {
         self.revalidate(cancel)?;
         // Resolve the retained handle, then inspect native identities of its actual ancestors.
         // There is no lexical case folding or assumption that drive letters are identities.
-        let actual = final_path(&self.file).map_err(|e| error(&self.path, e))?;
+        let actual = final_path(&self.file, VOLUME_NAME_DOS).map_err(|e| error(&self.path, e))?;
         for ancestor in actual.ancestors().filter(|p| p.has_root()) {
             checked(cancel, &self.path)?;
             let file = native::open_parent(ancestor).map_err(|e| error(&self.path, e))?;
@@ -501,7 +501,8 @@ impl Drop for Stage {
     }
 }
 
-fn final_path(file: &File) -> io::Result<PathBuf> {
+/// `GetFinalPathNameByHandleW` with the given volume-name form, without a length cap.
+pub(super) fn final_path(file: &File, flags: u32) -> io::Result<PathBuf> {
     let mut buffer = vec![0u16; 256];
     loop {
         let capacity = u32::try_from(buffer.len()).map_err(|_| {
@@ -512,12 +513,7 @@ fn final_path(file: &File) -> io::Result<PathBuf> {
         })?;
         // SAFETY: writable UTF-16 buffer and live handle; length result checked before use.
         let count = unsafe {
-            GetFinalPathNameByHandleW(
-                file.as_raw_handle(),
-                buffer.as_mut_ptr(),
-                capacity,
-                VOLUME_NAME_DOS,
-            )
+            GetFinalPathNameByHandleW(file.as_raw_handle(), buffer.as_mut_ptr(), capacity, flags)
         };
         if count == 0 {
             return Err(io::Error::last_os_error());

@@ -183,7 +183,7 @@ mod tests {
 
     #[test]
     fn renamed_application_reads_legacy_only_until_current_preferences_exist() {
-        let temporary = tempfile::tempdir().unwrap();
+        let temporary = crate::test_fixtures::build_temp("fixture-");
         let current = temporary.path().join("Midnight Explorer/preferences.json");
         let legacy = temporary
             .path()
@@ -225,7 +225,7 @@ mod tests {
 
     #[test]
     fn renamed_application_rejects_current_or_legacy_directory_without_fallback() {
-        let temporary = tempfile::tempdir().unwrap();
+        let temporary = crate::test_fixtures::build_temp("fixture-");
         let current = temporary.path().join("Midnight Explorer/preferences.json");
         let legacy = temporary
             .path()
@@ -250,7 +250,7 @@ mod tests {
 
     #[test]
     fn unicode_settings_beyond_max_path_roundtrip_and_replace_atomically() {
-        let temporary = tempfile::tempdir().unwrap();
+        let temporary = crate::test_fixtures::build_temp("fixture-");
         let component = "dlouhá_中文_🧪_".repeat(5);
         let path = temporary
             .path()
@@ -287,7 +287,7 @@ mod tests {
 
     #[test]
     fn directory_destination_is_rejected_and_its_contents_preserved() {
-        let temporary = tempfile::tempdir().unwrap();
+        let temporary = crate::test_fixtures::build_temp("fixture-");
         let path = temporary.path().join("preferences.json");
         fs::create_dir(&path).unwrap();
         fs::write(path.join("keep"), b"preserved").unwrap();
@@ -298,7 +298,7 @@ mod tests {
 
     #[test]
     fn invalid_font_preferences_preserve_the_existing_file_without_temporary_files() {
-        let temporary = tempfile::tempdir().unwrap();
+        let temporary = crate::test_fixtures::build_temp("fixture-");
         let path = temporary.path().join("preferences.json");
         save_to(&path, UserPreferences::default()).unwrap();
         let original = fs::read(&path).unwrap();
@@ -313,38 +313,13 @@ mod tests {
 
     #[test]
     fn rejects_actual_junction_reparse_point_without_touching_outside_target() {
-        use std::{os::windows::process::CommandExt, process::Command};
-        let temporary = tempfile::tempdir().unwrap();
+        let temporary = crate::test_fixtures::build_temp("settings-junction-");
         let target = temporary.path().join("outside_文档");
         fs::create_dir(&target).unwrap();
         fs::write(target.join("keep"), b"preserved outside").unwrap();
         let path = temporary.path().join("preferences.json");
-        let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .unwrap()
-            .join("midnight-platform/tests/create-junction.ps1");
-        let output = Command::new(crate::desktop::powershell_path().unwrap())
-            .args([
-                "-NoLogo",
-                "-NoProfile",
-                "-NonInteractive",
-                "-WindowStyle",
-                "Hidden",
-                "-File",
-            ])
-            .arg(fixture)
-            .arg("-JunctionPath")
-            .arg(&path)
-            .arg("-TargetPath")
-            .arg(&target)
-            .creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW)
-            .output()
-            .unwrap();
-        assert!(
-            output.status.success(),
-            "junction fixture failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
+        fs::create_dir(&path).unwrap();
+        crate::test_fixtures::create_junction(&path, &target).unwrap();
         assert_eq!(
             load_from(&path).unwrap_err().kind(),
             io::ErrorKind::InvalidInput
@@ -361,7 +336,7 @@ mod tests {
 
     #[test]
     fn failed_replace_preserves_locked_preferences_and_cleans_own_temp() {
-        let temporary = tempfile::tempdir().unwrap();
+        let temporary = crate::test_fixtures::build_temp("fixture-");
         let path = temporary.path().join("preferences.json");
         let old =
             midnight_platform_common::settings::encode_preferences(UserPreferences::default())
@@ -390,7 +365,7 @@ mod tests {
     fn valid_preferences_at_byte_limit_load_and_one_byte_over_is_rejected() {
         use midnight_platform_common::settings::MAX_PREFERENCES_BYTES;
 
-        let temporary = tempfile::tempdir().unwrap();
+        let temporary = crate::test_fixtures::build_temp("fixture-");
         let path = temporary.path().join("preferences.json");
         let expected = UserPreferences::default();
         let mut bytes = encode_preferences(expected.clone()).unwrap();

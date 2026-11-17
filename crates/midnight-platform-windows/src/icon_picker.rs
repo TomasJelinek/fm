@@ -191,12 +191,49 @@ fn select(
         .position(|unit| *unit == 0)
         .filter(|length| *length > 0 && *length + 1 < buffer.len())
         .ok_or_else(|| invalid("The selected icon resource path is incomplete or too large."))?;
-    let path = PathBuf::from(OsString::from_wide(&buffer[..length]));
+    let path = picked_path(&buffer[..length]);
     midnight_core::validate_picked_path(&path).map_err(io::Error::other)?;
     if index < 0 {
         return Err(invalid("The selected resource index is invalid."));
     }
     Ok(Some((path, index)))
+}
+
+/// `PickIconDlg` returns the text of its path field, not a resolved path: the Shell
+/// shows it unexpanded (`%SystemRoot%\System32\imageres.dll`) and older shells quote a
+/// browsed path containing spaces. Strip one pair of surrounding quotes (Windows names
+/// cannot contain `"`) and expand `%NAME%` references from this process's environment,
+/// as `ExpandEnvironmentStringsW` does: an undefined reference stays literal. Unpaired
+/// UTF-16 is preserved; the result is still validated and revalidated by handle.
+fn picked_path(units: &[u16]) -> PathBuf {
+    const QUOTE: u16 = b'"' as u16;
+    const PERCENT: u16 = b'%' as u16;
+    let units = match units {
+        [QUOTE, inner @ .., QUOTE] => inner,
+        _ => units,
+    };
+    let mut expanded = Vec::with_capacity(units.len());
+    let mut rest = units;
+    while let Some(start) = rest.iter().position(|unit| *unit == PERCENT) {
+        expanded.extend_from_slice(&rest[..start]);
+        let after = &rest[start + 1..];
+        let Some(end) = after.iter().position(|unit| *unit == PERCENT) else {
+            expanded.extend_from_slice(&rest[start..]);
+            rest = &[];
+            break;
+        };
+        let name = &after[..end];
+        match (!name.is_empty())
+            .then(|| std::env::var_os(OsString::from_wide(name)))
+            .flatten()
+        {
+            Some(value) => expanded.extend(value.encode_wide()),
+            None => expanded.extend_from_slice(&rest[start..start + end + 2]),
+        }
+        rest = &after[end + 1..];
+    }
+    expanded.extend_from_slice(rest);
+    PathBuf::from(OsString::from_wide(&expanded))
 }
 
 pub(crate) fn choose(
@@ -277,7 +314,7 @@ mod tests {
     use super::*;
     #[test]
     fn selected_resource_index_is_rasterized_at128_and_snapshot_survives_source_removal() {
-        let temporary = tempfile::tempdir().unwrap();
+        let temporary = crate::test_fixtures::build_temp("fixture-");
         let source = temporary.path().join("resource 文档.dll");
         let system = crate::desktop::system_directory().unwrap();
         // Modern Windows keeps shell32 artwork in its resource-only MUN sidecar.
@@ -316,6 +353,31 @@ mod tests {
         cancel.cancel();
         assert!(
             matches!(capture_pixels(&source, 0, &cancel), Err(error) if error.kind() == io::ErrorKind::Interrupted)
+        );
+    }
+
+    #[test]
+    fn picked_shell_text_is_unquoted_and_environment_expanded_losslessly() {
+        let units = |text: &str| text.encode_utf16().collect::<Vec<_>>();
+        let system = PathBuf::from(std::env::var_os("SystemRoot").unwrap());
+        // The Shell's unexpanded default selection.
+        let picked = super::picked_path(&units(r"%SystemRoot%\System32\imageres.dll"));
+        assert_eq!(picked, system.join(r"System32\imageres.dll"));
+        midnight_core::validate_picked_path(&picked).unwrap();
+        // Older shells quote a browsed path that contains spaces.
+        assert_eq!(
+            super::picked_path(&units(r#""C:\Program Files\Icons\a b.ico""#)),
+            PathBuf::from(r"C:\Program Files\Icons\a b.ico")
+        );
+        // Undefined references, a lone percent sign and unpaired UTF-16 stay literal.
+        let mut raw = units(r"C:\%MIDNIGHT_UNDEFINED_ICON_VARIABLE%\100%\");
+        raw.push(0xd800);
+        let expected = OsString::from_wide(&raw);
+        assert_eq!(super::picked_path(&raw), PathBuf::from(expected));
+        // An already absolute selection is unchanged.
+        assert_eq!(
+            super::picked_path(&units(r"D:\icons\x.dll")),
+            PathBuf::from(r"D:\icons\x.dll")
         );
     }
 }

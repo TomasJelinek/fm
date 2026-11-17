@@ -1,0 +1,263 @@
+use super::*;
+use crate::{WindowsFileSystem, test_fixtures::build_temp};
+use midnight_core::{DeleteMode, MutationService};
+use std::{
+    cell::Cell,
+    ffi::c_void,
+    fs,
+    io::{Read, Write},
+    os::windows::io::OwnedHandle,
+    sync::atomic::{AtomicUsize, Ordering},
+};
+use windows_sys::Win32::{
+    Foundation::{HANDLE, INVALID_HANDLE_VALUE},
+    Security::{
+        GetTokenInformation, RevertToSelf, SECURITY_IMPERSONATION_LEVEL, SecurityImpersonation,
+        TOKEN_QUERY, TokenImpersonationLevel,
+    },
+    System::Threading::{GetCurrentThread, OpenThreadToken},
+};
+
+// The pipe-server half of the SQOS test only; the crate does not enable windows-sys
+// `Win32_System_Pipes` for these two test calls.
+#[link(name = "kernel32", kind = "raw-dylib")]
+unsafe extern "system" {
+    fn CreateNamedPipeW(
+        name: *const u16,
+        open_mode: u32,
+        pipe_mode: u32,
+        max_instances: u32,
+        out_buffer_size: u32,
+        in_buffer_size: u32,
+        default_timeout: u32,
+        security_attributes: *const c_void,
+    ) -> HANDLE;
+}
+#[link(name = "advapi32", kind = "raw-dylib")]
+unsafe extern "system" {
+    fn ImpersonateNamedPipeClient(pipe: HANDLE) -> i32;
+}
+
+fn os(code: i32) -> io::Error {
+    io::Error::from_raw_os_error(code)
+}
+
+/// Ends the test thread's impersonation, also when an assertion unwinds.
+struct Reverted;
+impl Drop for Reverted {
+    fn drop(&mut self) {
+        // SAFETY: ends this thread's impersonation; harmless when none is active.
+        unsafe { RevertToSelf() };
+    }
+}
+
+/// Creates a fresh named pipe of this test, lets `open` connect to it relative to the
+/// named-pipe root directory, and returns the impersonation level the pipe server
+/// obtains from that client.
+fn level_seen_by_pipe_server(
+    open: impl FnOnce(&File, &OsStr) -> io::Result<File>,
+) -> SECURITY_IMPERSONATION_LEVEL {
+    const PIPE_ACCESS_DUPLEX: u32 = 0x3;
+    const FILE_FLAG_FIRST_PIPE_INSTANCE: u32 = 0x0008_0000;
+    const PIPE_REJECT_REMOTE_CLIENTS: u32 = 0x8;
+    static NEXT: AtomicUsize = AtomicUsize::new(0);
+    let name = format!(
+        "midnight-sqos-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    );
+    let wide: Vec<u16> = format!(r"\\.\pipe\{name}")
+        .encode_utf16()
+        .chain(Some(0))
+        .collect();
+    // SAFETY: a NUL-terminated pipe name and default security; the result is checked.
+    let server = unsafe {
+        CreateNamedPipeW(
+            wide.as_ptr(),
+            PIPE_ACCESS_DUPLEX | FILE_FLAG_FIRST_PIPE_INSTANCE,
+            PIPE_REJECT_REMOTE_CLIENTS,
+            1,
+            64,
+            64,
+            0,
+            ptr::null(),
+        )
+    };
+    assert_ne!(
+        server,
+        INVALID_HANDLE_VALUE,
+        "{}",
+        io::Error::last_os_error()
+    );
+    // SAFETY: a successful CreateNamedPipeW returned one owned server handle.
+    let mut server = unsafe { File::from_raw_handle(server) };
+    let pipes = OpenOptions::new()
+        .access_mode(FILE_READ_ATTRIBUTES)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+        .open(r"\\.\pipe\")
+        .unwrap();
+    let mut client = open(&pipes, OsStr::new(&name)).expect("the client reaches the pipe");
+    // A pipe server can impersonate only after it read the client's data.
+    client.write_all(b"x").unwrap();
+    let mut byte = [0u8];
+    server.read_exact(&mut byte).unwrap();
+    // SAFETY: the connected server handle owned above.
+    let impersonated = unsafe { ImpersonateNamedPipeClient(server.as_raw_handle()) };
+    assert_ne!(impersonated, 0, "{}", io::Error::last_os_error());
+    let _reverted = Reverted;
+    let mut token = ptr::null_mut();
+    // SAFETY: the current-thread pseudo handle and a writable handle output. The access
+    // check uses the process context (OpenAsSelf): an identification-level token cannot
+    // open itself.
+    let opened = unsafe { OpenThreadToken(GetCurrentThread(), TOKEN_QUERY, 1, &mut token) };
+    assert_ne!(opened, 0, "{}", io::Error::last_os_error());
+    // SAFETY: a successful OpenThreadToken returned one owned token handle.
+    let token = unsafe { OwnedHandle::from_raw_handle(token) };
+    let mut level: SECURITY_IMPERSONATION_LEVEL = 0;
+    let mut returned = 0u32;
+    // SAFETY: a live token with TOKEN_QUERY and an exactly sized writable output.
+    let queried = unsafe {
+        GetTokenInformation(
+            token.as_raw_handle(),
+            TokenImpersonationLevel,
+            (&mut level as *mut SECURITY_IMPERSONATION_LEVEL).cast(),
+            size_of::<SECURITY_IMPERSONATION_LEVEL>() as u32,
+            &mut returned,
+        )
+    };
+    assert_ne!(queried, 0, "{}", io::Error::last_os_error());
+    level
+}
+
+/// The filter-mediated reopen re-evaluates whatever reparse point the pinned object
+/// carries now. Should a symbolic link to a named pipe replace a filtered file's reparse
+/// point after classification, the open reaches that pipe before the caller's identity
+/// check rejects it; its server may identify this process but never impersonate it.
+/// Planting such a symbolic link needs a privilege the test cannot assume, and Windows
+/// refuses to follow a junction into the named-pipe device, so the test connects the
+/// open that `reopen_mediated` performs (`open_identifying`) to the pipe by name.
+#[test]
+fn a_mediated_reopen_reaching_a_named_pipe_never_lends_impersonation() {
+    let access = FILE_READ_DATA | FILE_WRITE_DATA;
+    let share = FILE_SHARE_READ | FILE_SHARE_WRITE;
+    // Control: the same open without a quality of service lends full impersonation.
+    let plain = |parent: &File, name: &OsStr| {
+        create_relative(
+            parent,
+            name,
+            access,
+            share,
+            FILE_OPEN,
+            FILE_NON_DIRECTORY_FILE,
+            None,
+        )
+    };
+    assert_eq!(level_seen_by_pipe_server(plain), SecurityImpersonation);
+    let mediated = |parent: &File, name: &OsStr| open_identifying(parent, name, access, share);
+    assert_eq!(level_seen_by_pipe_server(mediated), SecurityIdentification);
+}
+
+#[test]
+fn confirmed_deletion_falls_back_only_where_the_filesystem_lacks_posix_disposition() {
+    let classic = Cell::new(0);
+    let probed = Cell::new(0);
+    let run = |extended: io::Result<()>, read_only: bool| {
+        dispose(
+            || extended,
+            || {
+                classic.set(classic.get() + 1);
+                Ok(())
+            },
+            || {
+                probed.set(probed.get() + 1);
+                Ok(read_only)
+            },
+        )
+    };
+    // Supported: neither the classic class nor the attribute probe is used.
+    assert!(run(Ok(()), false).is_ok());
+    assert_eq!((classic.get(), probed.get()), (0, 0));
+    // FAT32/exFAT report the extended class as unsupported in one of three ways.
+    for code in [1, 50, 87] {
+        assert!(run(Err(os(code)), false).is_ok(), "{code}");
+    }
+    assert_eq!((classic.get(), probed.get()), (3, 3));
+    // Other failures, such as a denied deletion, are never retried another way.
+    let error = run(Err(os(5)), false).unwrap_err();
+    assert_eq!(error.raw_os_error(), Some(5));
+    // The classic class cannot ignore Read-only: confirmed deletion reports it.
+    let error = run(Err(os(87)), true).unwrap_err();
+    assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+    assert!(error.to_string().contains("Read-only"), "{error}");
+    assert_eq!(classic.get(), 3);
+}
+
+#[test]
+fn copy_and_move_refuse_filesystems_without_stable_identities_with_an_actionable_error() {
+    // FAT file indices follow directory-record positions and change when a transfer
+    // renames its own stages, so Copy/Move never fall back to them.
+    for code in [1, 50, 87] {
+        let error = without_stable_identity(os(code));
+        assert_eq!(error.kind(), io::ErrorKind::Unsupported, "{code}");
+        let message = error.to_string();
+        assert!(
+            message.contains("Copy and Move are not supported") && message.contains("FAT32"),
+            "{message}"
+        );
+    }
+    let denied = without_stable_identity(os(5));
+    assert_eq!(denied.raw_os_error(), Some(5), "other errors are unchanged");
+}
+
+#[test]
+fn permanent_deletion_skips_children_another_process_removed_first() {
+    let temp = build_temp("delete-race-");
+    let root = temp.path().join("tree");
+    fs::create_dir(&root).unwrap();
+    let names: Vec<_> = (0..6).map(|index| format!("child-{index}.txt")).collect();
+    for name in &names {
+        fs::write(root.join(name), b"x").unwrap();
+    }
+    let cancel = Cancellation::default();
+    let prepared = WindowsFileSystem::new(None)
+        .prepare(&root, &cancel)
+        .unwrap();
+    // After the first removal, another process deletes the remaining snapshotted
+    // children: the deletion still reaches its requested end state.
+    let mut reported = Vec::new();
+    prepared
+        .delete(DeleteMode::Permanent, &cancel, &mut |path| {
+            if reported.is_empty() {
+                for name in &names {
+                    let _ = fs::remove_file(root.join(name));
+                }
+            }
+            reported.push(path.to_owned());
+        })
+        .unwrap();
+    assert!(!root.exists());
+    assert_eq!(
+        reported.len(),
+        2,
+        "one child and the directory: {reported:?}"
+    );
+    assert_eq!(reported.last(), Some(&root));
+}
+
+#[test]
+fn file_identity_combines_volume_and_file_id() {
+    let temp = build_temp("identity-");
+    let path = temp.path().join("file");
+    fs::write(&path, b"x").unwrap();
+    let first = identity(&File::open(&path).unwrap()).unwrap();
+    let second = identity(&File::open(&path).unwrap()).unwrap();
+    assert!(first == second);
+    // Where FileIdInfo exists, mutation and transfer identities have the same form, so
+    // a Rename replacement can compare its prepared identity with transfer captures.
+    assert!(local_identity(&File::open(&path).unwrap()).unwrap() == first);
+    let legacy = legacy_identity(&File::open(&path).unwrap()).unwrap();
+    // On NTFS the 64-bit index is the low half of the 128-bit identifier.
+    assert_eq!(legacy.id[..8], first.id[..8]);
+    assert_eq!(legacy.volume as u32, first.volume as u32);
+}

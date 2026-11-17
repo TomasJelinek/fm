@@ -1,9 +1,11 @@
 #![cfg(windows)]
+#[path = "../src/test_fixtures.rs"]
+mod test_fixtures;
 use midnight_core::*;
 use midnight_platform_windows::WindowsFileSystem;
 use std::{
     ffi::{OsStr, OsString},
-    fs,
+    fs, io,
     os::windows::ffi::OsStrExt,
     path::Path,
 };
@@ -17,7 +19,7 @@ fn bytes(value: &OsStr) -> Vec<u8> {
 fn actual_program_receives_native_argv_and_cwd_without_shell_execution_or_truncation() {
     let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let executable = probe::helper(&workspace, "program-probe.exe");
-    let temp = tempfile::tempdir().unwrap();
+    let temp = test_fixtures::build_temp("fixture-");
     let directory = temp.path().join("cwd 文档 & $x; '");
     fs::create_dir(&directory).unwrap();
     let output = temp.path().join("argv.bin");
@@ -56,8 +58,15 @@ fn actual_program_receives_native_argv_and_cwd_without_shell_execution_or_trunca
 
 #[test]
 fn cancelled_missing_and_batch_programs_never_launch_a_fallback() {
-    let temp = tempfile::tempdir().unwrap();
-    for name in ["missing.exe", "script.cmd", "script.bat"] {
+    let temp = test_fixtures::build_temp("fixture-");
+    // Each refusal has its own cause: a missing program is NotFound, a batch file is
+    // refused as input before any spawn (no cmd.exe fallback), and a cancelled
+    // request is Interrupted. An unrelated failure no longer satisfies the test.
+    for (name, kind) in [
+        ("missing.exe", io::ErrorKind::NotFound),
+        ("script.cmd", io::ErrorKind::InvalidInput),
+        ("script.bat", io::ErrorKind::InvalidInput),
+    ] {
         let executable = temp.path().join(name);
         if name != "missing.exe" {
             fs::write(&executable, b"echo unwanted").unwrap();
@@ -69,11 +78,11 @@ fn cancelled_missing_and_batch_programs_never_launch_a_fallback() {
                 arguments: vec![],
             },
         };
-        assert!(
-            WindowsFileSystem::new(None)
-                .launch_user_command(&process, &Cancellation::default())
-                .is_err()
-        );
+        let error = WindowsFileSystem::new(None)
+            .launch_user_command(&process, &Cancellation::default())
+            .err()
+            .expect("the program must not launch");
+        assert_eq!(error.kind, kind, "{name}: {error:?}");
     }
     let cancel = Cancellation::default();
     cancel.cancel();
@@ -84,11 +93,11 @@ fn cancelled_missing_and_batch_programs_never_launch_a_fallback() {
             arguments: vec!["--list".into()],
         },
     };
-    assert!(
-        WindowsFileSystem::new(None)
-            .launch_user_command(&process, &cancel)
-            .is_err()
-    );
+    let error = WindowsFileSystem::new(None)
+        .launch_user_command(&process, &cancel)
+        .err()
+        .expect("a cancelled request must not launch");
+    assert_eq!(error.kind, io::ErrorKind::Interrupted, "{error:?}");
 }
 
 #[test]
@@ -97,7 +106,7 @@ fn malformed_executable_returns_a_native_error_and_restores_thread_error_mode() 
         process::{Command, Stdio},
         time::{Duration, Instant},
     };
-    let temp = tempfile::tempdir().unwrap();
+    let temp = test_fixtures::build_temp("fixture-");
     let report = temp.path().join("bad-image-result");
     let mut child = Command::new(std::env::current_exe().unwrap())
         .args([

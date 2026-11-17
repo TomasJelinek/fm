@@ -72,7 +72,7 @@ mod tests {
     }
     #[test]
     fn executable_icon_extracts_real_unicode_path_resources_without_launching() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = crate::test_fixtures::build_temp("fixture-");
         let source = Path::new(&std::env::var_os("SystemRoot").unwrap()).join("System32/cmd.exe");
         let target = directory.path().join("executable 文档.exe");
         std::fs::copy(source, &target).unwrap();

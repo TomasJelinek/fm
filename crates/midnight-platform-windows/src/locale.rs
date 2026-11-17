@@ -253,6 +253,19 @@ fn locale_value(field: u32) -> io::Result<Vec<u16>> {
 }
 
 fn wide_output(mut call: impl FnMut(*mut u16, i32) -> i32) -> io::Result<Vec<u16>> {
+    // Dates, times and locale fields normally fit a small buffer: format once on the
+    // stack (one NLS call per value on the listing hot path) and size-probe only when
+    // the native call reports an insufficient buffer.
+    let mut stack = [0u16; 128];
+    let written = call(stack.as_mut_ptr(), stack.len() as i32);
+    if written > 0 {
+        return Ok(stack[..written as usize].to_vec());
+    }
+    let error = io::Error::last_os_error();
+    if error.raw_os_error() != Some(122) {
+        // Anything but ERROR_INSUFFICIENT_BUFFER is a real failure.
+        return Err(error);
+    }
     let required = call(ptr::null_mut(), 0);
     if required <= 0 {
         return Err(io::Error::last_os_error());

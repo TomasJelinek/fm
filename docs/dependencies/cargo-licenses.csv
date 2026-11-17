@@ -313,8 +313,8 @@ naga-types,30.0.1,MIT OR Apache-2.0,registry+https://github.com/rust-lang/crates
 natord,1.0.9,MIT,registry+https://github.com/rust-lang/crates.io-index,app,Linux; Windows,
 nom,7.1.3,MIT,registry+https://github.com/rust-lang/crates.io-index,thumbnail-video,Linux; Windows,
 nom,8.0.0,MIT,registry+https://github.com/rust-lang/crates.io-index,app,Linux,
-notify,8.2.1,CC0-1.0,registry+https://github.com/rust-lang/crates.io-index,app,Linux; Windows,midnight-platform-linux; midnight-platform-windows
-notify-types,2.2.0,MIT OR Apache-2.0,registry+https://github.com/rust-lang/crates.io-index,app,Linux; Windows,
+notify,8.2.1,CC0-1.0,registry+https://github.com/rust-lang/crates.io-index,app,Linux,midnight-platform-linux
+notify-types,2.2.0,MIT OR Apache-2.0,registry+https://github.com/rust-lang/crates.io-index,app,Linux,
 nu-ansi-term,0.50.3,MIT,registry+https://github.com/rust-lang/crates.io-index,app,Linux; Windows,
 num-bigint,0.4.8,MIT OR Apache-2.0,registry+https://github.com/rust-lang/crates.io-index,image-decoder; image-viewer; thumbnail-image,Linux; Windows,
 num-derive,0.4.2,MIT OR Apache-2.0,registry+https://github.com/rust-lang/crates.io-index,image-decoder; image-viewer; thumbnail-image,Linux; Windows,
@@ -410,7 +410,7 @@ rustls-pki-types,1.15.1,MIT OR Apache-2.0,registry+https://github.com/rust-lang/
 rustls-webpki,0.103.16,ISC,registry+https://github.com/rust-lang/crates.io-index,html-viewer,Linux; Windows,
 rustversion,1.0.23,MIT OR Apache-2.0,registry+https://github.com/rust-lang/crates.io-index,app,Linux; Windows,
 ruzstd,0.9.1,MIT,registry+https://github.com/rust-lang/crates.io-index,archive,Linux; Windows,midnight-fs-archive
-same-file,1.0.6,Unlicense/MIT,registry+https://github.com/rust-lang/crates.io-index,app,Linux; Windows,
+same-file,1.0.6,Unlicense/MIT,registry+https://github.com/rust-lang/crates.io-index,app,Linux,
 scoped-tls,1.0.1,MIT/Apache-2.0,registry+https://github.com/rust-lang/crates.io-index,app; renderer-tests,Linux,
 scoped-tls-hkt,0.1.5,MIT/Apache-2.0,registry+https://github.com/rust-lang/crates.io-index,app,Linux; Windows,
 scopeguard,1.2.0,MIT OR Apache-2.0,registry+https://github.com/rust-lang/crates.io-index,app; renderer-tests,Linux; Windows,
@@ -555,7 +555,7 @@ version-compare,0.2.1,MIT,registry+https://github.com/rust-lang/crates.io-index,
 version_check,0.9.5,MIT/Apache-2.0,registry+https://github.com/rust-lang/crates.io-index,api; app; image-decoder; image-viewer; renderer-tests; thumbnail-image,Linux; Windows,
 vtable,0.5.0,MIT OR Apache-2.0,registry+https://github.com/rust-lang/crates.io-index,app,Linux; Windows,
 vtable-macro,0.5.0,MIT OR Apache-2.0,registry+https://github.com/rust-lang/crates.io-index,app,Linux; Windows,
-walkdir,2.5.0,Unlicense/MIT,registry+https://github.com/rust-lang/crates.io-index,app,Linux; Windows,
+walkdir,2.5.0,Unlicense/MIT,registry+https://github.com/rust-lang/crates.io-index,app,Linux,
 wayland-backend,0.3.15,MIT,registry+https://github.com/rust-lang/crates.io-index,renderer-tests,Linux,
 wayland-backend,0.3.17,MIT,registry+https://github.com/rust-lang/crates.io-index,app,Linux,
 wayland-client,0.31.14,MIT,registry+https://github.com/rust-lang/crates.io-index,renderer-tests,Linux,
@@ -578,7 +578,6 @@ wgpu-hal,30.0.1,MIT OR Apache-2.0,registry+https://github.com/rust-lang/crates.i
 wgpu-naga-bridge,30.0.1,MIT OR Apache-2.0,registry+https://github.com/rust-lang/crates.io-index,app; renderer-tests,Linux; Windows,
 wgpu-types,30.0.1,MIT OR Apache-2.0,registry+https://github.com/rust-lang/crates.io-index,app; renderer-tests,Linux; Windows,
 winapi,0.3.9,MIT/Apache-2.0,registry+https://github.com/rust-lang/crates.io-index,app,Windows,
-winapi-util,0.1.11,Unlicense OR MIT,registry+https://github.com/rust-lang/crates.io-index,app,Windows,
 windows,0.62.2,MIT OR Apache-2.0,registry+https://github.com/rust-lang/crates.io-index,app; renderer-tests,Windows,midnight-platform-windows
 windows-collections,0.3.2,MIT OR Apache-2.0,registry+https://github.com/rust-lang/crates.io-index,app; renderer-tests,Windows,
 windows-core,0.62.2,MIT OR Apache-2.0,registry+https://github.com/rust-lang/crates.io-index,app; renderer-tests,Windows,midnight-platform-windows

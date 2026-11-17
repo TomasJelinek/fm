@@ -69,23 +69,78 @@ fn hdrop_rejects_missing_terminators_offsets_ansi_and_relative_paths() {
 #[test]
 fn preferred_drop_effect_distinguishes_move_and_rejects_unknown_or_ambiguous_effects() {
     assert_eq!(decode_drop_effect(None).unwrap(), FileClipboardIntent::Copy);
-    assert_eq!(
-        decode_drop_effect(Some(&[1, 0, 0, 0])).unwrap(),
-        FileClipboardIntent::Copy
-    );
-    assert_eq!(
-        decode_drop_effect(Some(&[2, 0, 0, 0])).unwrap(),
-        FileClipboardIntent::Move
-    );
+    // 1 = COPY (Midnight's own Copy), 5 = COPY | LINK (Explorer's Copy) and a
+    // trailing byte beyond the DWORD do not change the decoded intent.
+    for bytes in [&[1, 0, 0, 0][..], &[5, 0, 0, 0], &[5, 0, 0, 0, 9]] {
+        assert_eq!(
+            decode_drop_effect(Some(bytes)).unwrap(),
+            FileClipboardIntent::Copy,
+            "{bytes:?}"
+        );
+    }
+    // 2 = MOVE (Cut) and 6 = MOVE | LINK select Move.
+    for value in [2u8, 6] {
+        assert_eq!(
+            decode_drop_effect(Some(&[value, 0, 0, 0])).unwrap(),
+            FileClipboardIntent::Move,
+            "{value}"
+        );
+    }
+    // Truncated, empty and link-only effects are rejected (links are never created),
+    // and so are the ambiguous COPY | MOVE (3) and COPY | MOVE | LINK (7): a destructive
+    // Move is never guessed. Unknown high bits are rejected too.
     for bytes in [
         &[][..],
         &[1, 0, 0],
         &[0, 0, 0, 0],
         &[3, 0, 0, 0],
         &[4, 0, 0, 0],
+        &[7, 0, 0, 0],
+        &[0, 0, 0, 0x80],
+        &[1, 0, 0, 0x80],
     ] {
-        assert!(decode_drop_effect(Some(bytes)).is_err());
+        assert!(decode_drop_effect(Some(bytes)).is_err(), "{bytes:?}");
     }
+}
+
+#[test]
+fn clipboard_open_retries_only_a_briefly_held_clipboard_within_its_bound() {
+    let denied = || io::Error::from_raw_os_error(ERROR_ACCESS_DENIED as i32);
+    // Held twice by another process, then released: the third attempt succeeds.
+    let (mut attempts, mut pauses) = (0, 0);
+    let opened = retry_open(
+        || {
+            attempts += 1;
+            if attempts <= 2 { Err(denied()) } else { Ok(()) }
+        },
+        || pauses += 1,
+    );
+    assert!(opened.is_ok());
+    assert_eq!((attempts, pauses), (3, 2));
+    // Held for the whole bound: the last native error is reported, without a final pause.
+    let (mut attempts, mut pauses) = (0, 0);
+    let error = retry_open(
+        || {
+            attempts += 1;
+            Err(denied())
+        },
+        || pauses += 1,
+    )
+    .unwrap_err();
+    assert_eq!(error.raw_os_error(), Some(ERROR_ACCESS_DENIED as i32));
+    assert_eq!((attempts, pauses), (OPEN_ATTEMPTS, OPEN_ATTEMPTS - 1));
+    // Other failures are not contention and are returned immediately.
+    let (mut attempts, mut pauses) = (0, 0);
+    let error = retry_open(
+        || {
+            attempts += 1;
+            Err(io::Error::from_raw_os_error(1400))
+        },
+        || pauses += 1,
+    )
+    .unwrap_err();
+    assert_eq!(error.raw_os_error(), Some(1400));
+    assert_eq!((attempts, pauses), (1, 0));
 }
 
 #[test]

@@ -5,11 +5,13 @@ use midnight_platform_windows::WindowsFileSystem;
 use std::{
     ffi::OsStr,
     fs, io,
-    os::windows::{ffi::OsStrExt, process::CommandExt},
+    os::windows::ffi::OsStrExt,
     path::Path,
-    process::Command,
     sync::{Arc, Barrier},
 };
+
+#[path = "../src/test_fixtures.rs"]
+mod test_fixtures;
 
 fn fixture() -> tempfile::TempDir {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -242,24 +244,9 @@ fn existing_junction_is_not_followed_or_replaced() {
     fs::create_dir(&target).unwrap();
     fs::write(target.join("sentinel"), b"keep target intact").unwrap();
     let link = temp.path().join("junction");
-    let output = Command::new("powershell.exe")
-        .args(["-NoLogo", "-NoProfile", "-NonInteractive", "-File"])
-        .arg(
-            Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("../midnight-platform/tests/create-junction.ps1"),
-        )
-        .arg("-JunctionPath")
-        .arg(&link)
-        .arg("-TargetPath")
-        .arg(&target)
-        .creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW)
-        .output()
-        .unwrap();
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
+    // A native junction (FSCTL_SET_REPARSE_POINT) instead of a PowerShell cold start.
+    fs::create_dir(&link).unwrap();
+    test_fixtures::create_junction(&link, &target).unwrap();
     let base = WindowsFileSystem::new(None)
         .prepare_create(temp.path(), &Cancellation::default())
         .unwrap();
