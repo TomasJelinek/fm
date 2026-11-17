@@ -169,7 +169,9 @@ impl Plan {
         }
     }
     /// This call created the stage and then refused it. Remove it while its name
-    /// still binds the directory we created; rmdir never removes contents.
+    /// still binds the directory we pinned (when it could not be pinned, the name
+    /// is removed only if it is an empty directory); rmdir never removes contents,
+    /// and the parent need not be protected.
     fn refused(
         self,
         prepared: &Prepared,
