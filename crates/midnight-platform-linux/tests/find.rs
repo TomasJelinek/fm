@@ -61,6 +61,13 @@ fn native_find_preserves_raw_names_skips_links_and_revalidates_identity() {
     );
 }
 
+/// Directory times come from the kernel's coarse clock, so a change within the same
+/// tick can keep them. A fixed past time makes every later change observable.
+fn backdate(path: &std::path::Path) {
+    let past = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000_000);
+    fs::File::open(path).unwrap().set_modified(past).unwrap();
+}
+
 #[test]
 fn changes_inside_a_directory_never_abort_its_remaining_enumeration() {
     let temporary = tempfile::tempdir().unwrap();
@@ -69,6 +76,8 @@ fn changes_inside_a_directory_never_abort_its_remaining_enumeration() {
         fs::write(root.join(name), name).unwrap();
     }
     fs::create_dir(root.join("sub")).unwrap();
+    backdate(root);
+    backdate(&root.join("sub"));
     let service = LinuxFileSystem::new(None);
     let cancel = Cancellation::default();
     let mut directory = service.open_find_source(root, &cancel).unwrap();
@@ -100,6 +109,11 @@ fn changes_inside_a_directory_never_abort_its_remaining_enumeration() {
         .clone();
     let file = service.open_find_source(&root.join("a"), &cancel).unwrap();
     fs::write(root.join("sub/added"), b"added").unwrap();
+    assert_ne!(
+        fs::metadata(root.join("sub")).unwrap().modified().unwrap(),
+        std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000_000),
+        "the directory change must be observable in its times"
+    );
     fs::write(root.join("a"), b"rewritten contents").unwrap();
     let reopened = service
         .open_find_source(&root.join("sub"), &cancel)
