@@ -100,9 +100,40 @@ pub(crate) fn restore_after_popup(
     });
 }
 
+/// Let a dialog-wide key handler detect that the focused control already acted
+/// on the same key by moving focus. Slint delivers a key to the focused item
+/// and then to its ancestors; a Fluent ComboBox opens its popup on Return (which
+/// takes focus) and still rejects the key, so the dialog's default action would
+/// otherwise run as well.
+pub(crate) fn install_key_focus(main: &crate::MainWindow) {
+    use slint::ComponentHandle;
+    use std::{cell::RefCell, rc::Rc};
+    let marked = Rc::new(RefCell::new(ItemWeak::default()));
+    let weak = main.as_weak();
+    let mark = marked.clone();
+    main.global::<crate::PopupFocus>()
+        .on_mark_key_focus(move || {
+            if let Some(main) = weak.upgrade() {
+                let focus = WindowInner::from_pub(main.window())
+                    .focus_item
+                    .borrow()
+                    .clone();
+                *mark.borrow_mut() = focus;
+            }
+        });
+    let weak = main.as_weak();
+    main.global::<crate::PopupFocus>()
+        .on_key_moved_focus(move || {
+            weak.upgrade().is_some_and(|main| {
+                *WindowInner::from_pub(main.window()).focus_item.borrow() != *marked.borrow()
+            })
+        });
+}
+
 /// Slint restores a popup's old parent focus even when a newer popup remains
 /// above it. Preserve the newer dialog's invoking control across that update.
 pub(crate) fn install(main: &crate::MainWindow) {
+    install_key_focus(main);
     use slint::ComponentHandle;
     use std::{
         cell::{Cell, RefCell},

@@ -303,21 +303,23 @@ fn refresh(
                     )
                 }),
         );
-        w.set_progress(progress(s).into());
+        w.set_progress(progress(s, &p.number_locale).into());
         w.set_current_directory(s.current_directory.as_ref().map_or_else(
             SharedString::default,
             |path| {
-                let phase = match s.progress.phase {
-                    FindPhase::Scanning => "Scanning",
-                    FindPhase::HashingDuplicates => "Hashing",
-                    FindPhase::ComparingDuplicates => "Comparing",
-                };
-                format!("{phase}: {}", path.display()).into()
+                let mut text = match s.progress.phase {
+                    FindPhase::Scanning => "Scanning: ",
+                    FindPhase::HashingDuplicates => "Hashing: ",
+                    FindPhase::ComparingDuplicates => "Comparing: ",
+                }
+                .to_owned();
+                crate::error_presentation::append_path(&mut text, path);
+                text.into()
             },
         ));
         w.set_sort_column(sort_index(s.sort.column));
         w.set_sort_descending(s.sort.descending);
-        w.set_details(details(s).into());
+        w.set_details(details(s, &p.number_locale).into());
         if record.roots != s.roots {
             record.roots = s.roots.clone();
             w.set_roots(
@@ -474,7 +476,13 @@ fn create(
     }
     callback!(on_copy_details, |p, send| {
         if let Some(s) = p.finds.sessions.get(&id) {
-            let text = format!("{}\n\n{}\n{}", progress(s), s.error, details(s));
+            let locale = &p.number_locale;
+            let text = format!(
+                "{}\n\n{}\n{}",
+                progress(s, locale),
+                s.error,
+                details(s, locale)
+            );
             p.copy_viewer_text(text, send);
         }
     });
@@ -537,7 +545,7 @@ fn sort_index(column: FindSortColumn) -> i32 {
     }
 }
 
-fn progress(s: &crate::presenter::find::FindSession) -> String {
+fn progress(s: &crate::presenter::find::FindSession, locale: &NumberLocale) -> String {
     let status = if !s.error.is_empty() {
         "Error · see Details"
     } else if s.stopping {
@@ -559,40 +567,50 @@ fn progress(s: &crate::presenter::find::FindSession) -> String {
     };
     let mut text = format!(
         "{status} · {} found · {} examined",
-        s.results.len(),
-        s.progress.examined
+        locale.format_u64(s.results.len() as u64),
+        locale.format_u64(s.progress.examined)
     );
     if s.duplicates {
         text.push_str(&format!(
             " · {} groups · {} candidates",
-            s.progress.duplicate_groups, s.progress.duplicate_candidates
+            locale.format_u64(s.progress.duplicate_groups),
+            locale.format_u64(s.progress.duplicate_candidates)
         ));
     }
     text
 }
 
-fn details(s: &crate::presenter::find::FindSession) -> String {
+fn details(s: &crate::presenter::find::FindSession, locale: &NumberLocale) -> String {
     let p = &s.progress;
+    let count = |value: u64| locale.format_u64(value);
     let mut text = format!(
         "{} files · {} folders · {} content bytes\nSkipped: {} links, {} special entries, {} mount boundaries\n{} errors · {} size-limited files",
-        p.files,
-        p.directories,
-        p.content_bytes,
-        p.skipped_links,
-        p.skipped_special,
-        p.skipped_mounts,
-        p.errors,
-        p.limited_files
+        count(p.files),
+        count(p.directories),
+        count(p.content_bytes),
+        count(p.skipped_links),
+        count(p.skipped_special),
+        count(p.skipped_mounts),
+        count(p.errors),
+        count(p.limited_files)
     );
     if s.duplicates {
         text.push_str(&format!(
             "\nIdentical files: {} verified groups · {} candidates · {} bytes read to check duplicates",
-            p.duplicate_groups, p.duplicate_candidates, p.duplicate_bytes
+            count(p.duplicate_groups),
+            count(p.duplicate_candidates),
+            count(p.duplicate_bytes)
         ));
     }
     if let Some(summary) = &s.summary {
         if !summary.reached_budgets.is_empty() {
-            text.push_str(&format!("\nReached limits: {:?}", summary.reached_budgets));
+            let limits: Vec<_> = summary
+                .reached_budgets
+                .iter()
+                .copied()
+                .map(budget)
+                .collect();
+            text.push_str(&format!("\nReached limits: {}", limits.join(", ")));
         }
         for error in &summary.diagnostics {
             text.push_str(&format!(
@@ -602,6 +620,19 @@ fn details(s: &crate::presenter::find::FindSession) -> String {
         }
     }
     text
+}
+
+/// User wording for a backend resource budget, never a Rust identifier.
+fn budget(budget: FindBudget) -> &'static str {
+    match budget {
+        FindBudget::Results => "result count",
+        FindBudget::Nodes => "visited entries",
+        FindBudget::Depth => "folder depth",
+        FindBudget::RetainedBytes => "retained memory",
+        FindBudget::FileContent => "content read per file",
+        FindBudget::TotalContent => "total content read",
+        FindBudget::DuplicateCandidates => "duplicate candidates",
+    }
 }
 
 fn file_action(action: i32) -> Option<crate::presenter::find::FileAction> {

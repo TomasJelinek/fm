@@ -98,6 +98,24 @@ fn embedded_notice_rejects_stale_copy_authorize_and_close_without_creating_anoth
 }
 
 #[test]
+fn help_creation_failure_becomes_a_notice_that_survives_refreshes() {
+    let mut h = crate::test_harness::Harness::new(midnight_core::UserPreferences::default());
+    // Without a visible owner the native host cannot be created.
+    h.window.hide().unwrap();
+    h.window.invoke_open_help_window();
+    h.settle();
+    h.refresh();
+    let notice = h.presenter.borrow().desktop.notice.clone();
+    let (title, body) = notice.expect("a retained failure notice");
+    assert_eq!(title, "Help and About");
+    assert!(body.starts_with("Unable to open the window: "), "{body}");
+    assert!(
+        !h.window.get_desktop_status().contains("Unable to open"),
+        "the failure is not a transient status line"
+    );
+}
+
+#[test]
 fn startup_notice_presents_only_the_latest_generation_and_shutdown_retires_it() {
     std::thread::spawn(|| {
         let adapters = Rc::new(Cell::new(0));

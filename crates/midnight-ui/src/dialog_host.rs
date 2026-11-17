@@ -27,9 +27,17 @@ impl DialogSessions {
     }
 }
 
+/// Every shipped native tool window is `Modeless`; modal flows are embedded
+/// popups in the main window (docs/developer/DIALOG_ERGONOMICS.md).
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub(crate) enum DialogModality {
     Modeless,
+    /// Test-only today, retained deliberately: the tested path for a future
+    /// native owner-modal window. While shown it holds a lease that disables
+    /// the owner natively and through its Slint input gate. Production never
+    /// takes a lease, so `dialog_input_blocked` stays false there. Removing
+    /// this also removes MainWindow `dialog-input-blocked`, which input
+    /// bridges and integration tests still read.
     OwnerModal,
 }
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -85,6 +93,8 @@ impl DialogOwner {
     }
 
     /// The callback must capture its component weakly. It gates Slint pointer and keyboard input.
+    /// Only `DialogModality::OwnerModal` leases (exercised by tests, never by a
+    /// shipped dialog) ever invoke it with `true`.
     pub(crate) fn set_input_gate(&self, gate: impl Fn(bool) + 'static) {
         let gate: Rc<dyn Fn(bool)> = Rc::new(gate);
         *self.0.input_gate.borrow_mut() = Some(gate.clone());
@@ -133,20 +143,23 @@ impl DialogOwner {
     }
 }
 
+/// Runs for every input event (`dialog_input_blocked`); avoid allocating. The
+/// access closures only upgrade a component handle and never touch `OWNERS`.
 fn find_owner(window: &slint::Window) -> Option<Rc<OwnerState>> {
-    let candidates = OWNERS.with(|owners| {
+    OWNERS.with(|owners| {
         let mut owners = owners.borrow_mut();
         owners.retain(|owner| owner.strong_count() > 0);
-        owners.iter().filter_map(Weak::upgrade).collect::<Vec<_>>()
-    });
-    candidates.into_iter().find(|owner| {
-        let mut matched = false;
-        (owner.access)(&mut |candidate| matched = std::ptr::eq(window, candidate));
-        matched
+        owners.iter().filter_map(Weak::upgrade).find(|owner| {
+            let mut matched = false;
+            (owner.access)(&mut |candidate| matched = std::ptr::eq(window, candidate));
+            matched
+        })
     })
 }
 
 /// Consult before native shortcut handling; Slint controls also use the owner's input gate.
+/// Without an `OwnerModal` lease (all shipped dialogs) this is a short,
+/// allocation-free scan of the live owners that returns false.
 pub(crate) fn dialog_input_blocked(window: &slint::Window) -> bool {
     find_owner(window).is_some_and(|owner| owner.leases.get() > 0)
 }

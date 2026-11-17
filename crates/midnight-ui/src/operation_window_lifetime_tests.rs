@@ -136,12 +136,28 @@ fn embedded_copy_busy_factory_preserves_draft_and_dismisses_in_place() {
         };
         crate::refresh(&h.main, &h.state.borrow());
         let record = h.ctx.windows.borrow().record.as_ref().unwrap().clone();
-        for _ in 0..64 {
+        let confirm_once = || {
             confirm(
                 &h.ctx,
                 record.session,
                 path.to_string_lossy().as_ref().into(),
-            );
+            )
+        };
+        confirm_once();
+        let first = {
+            let p = h.state.borrow();
+            let error = p.copies.draft.as_ref().unwrap().error.clone();
+            (error, p.desktop.notice_generation)
+        };
+        // Repeated refusals while reclamation stays busy must not accumulate
+        // notices or replace the draft's single explanation.
+        for _ in 1..64 {
+            confirm_once();
+        }
+        {
+            let p = h.state.borrow();
+            let error = p.copies.draft.as_ref().unwrap().error.clone();
+            assert_eq!((error, p.desktop.notice_generation), first);
         }
         {
             let p = h.state.borrow();

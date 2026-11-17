@@ -39,7 +39,9 @@ export global ViewerPluginsView {
     in property <bool> restart-needed;
     in property <string> error;
     in property <int> selected: -1;
-    in property <string> extensions;
+    // The selected viewer's draft or saved list. The editor binds two-way: native
+    // input detaches a one-way binding, and the editor outlives selection changes.
+    in-out property <string> extensions;
     in property <bool> extension-override;
     in property <bool> can-move-up;
     in property <bool> can-move-down;
@@ -199,8 +201,7 @@ export component PluginOptions inherits Rectangle {
     if !root.compact-tabs : DialogTabs { labels: ["Viewers", "Filesystems", "Archives", "Thumbnailers"]; current-index <=> root.section; }
     if root.compact-tabs : HintedComboBox {
         accessible-label: "Plugin type"; model: ["Viewers", "Filesystems", "Archives", "Thumbnailers"];
-        current-index: root.section; hint: "Choose the installed plugin category.";
-        selected(value) => { root.section = self.current-index; }
+        current-index <=> root.section; hint: "Choose the installed plugin category.";
     }
     if root.section == 0 : VerticalLayout {
         spacing: 8px; alignment: start;
@@ -234,7 +235,7 @@ export component PluginOptions inherits Rectangle {
                 }
             }
             LineEdit {
-                text: ViewerPluginsView.extensions; min-width: 0px;
+                text <=> ViewerPluginsView.extensions; min-width: 0px;
                 accessible-label: "Viewer extensions";
                 enabled: root.selected.configurable && ViewerPluginsView.settings-ready;
                 edited => { ViewerPluginsView.edit-extensions(self.text); }

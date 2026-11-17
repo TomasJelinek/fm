@@ -214,7 +214,9 @@ fn meter(
     } else if let Some((done, total)) = work.filter(|(done, total)| *total > 0 && done <= total) {
         output.determinate = true;
         output.fraction = ((done as f64 / total as f64).min(0.99)) as f32;
-        output.label = format!("{}% complete", (output.fraction * 100.0).floor() as u32).into();
+        // Integer percentage: the f32 bar fraction rounds 53/100 to 52.99…%.
+        let percent = (u128::from(done) * 100 / u128::from(total)).min(99);
+        output.label = format!("{percent}% complete").into();
     } else {
         output.label = format!(
             "{} items completed",
@@ -287,6 +289,31 @@ mod tests {
         assert!(!value.determinate && value.discovering);
         assert!(value.label.contains("3 items"));
         assert!(value.eta.is_empty() && value.remaining.is_empty());
+    }
+    #[test]
+    fn percentage_label_uses_exact_integer_division() {
+        let discovery = OperationDiscovery {
+            state: DiscoveryState::Complete,
+            ..Default::default()
+        };
+        let label = |done, total| {
+            meter(
+                &discovery,
+                None,
+                Some((done, total)),
+                false,
+                false,
+                &NumberLocale::default(),
+            )
+            .label
+        };
+        // f32 fractions put these just below the whole percentage.
+        for (done, total, percent) in [(53, 100, 53), (59, 100, 59), (530, 1000, 53)] {
+            assert_eq!(label(done, total), format!("{percent}% complete"));
+        }
+        assert_eq!(label(177, 300), "59% complete");
+        assert_eq!(label(u64::MAX - 1, u64::MAX), "99% complete");
+        assert_eq!(label(100, 100), "99% complete", "100% requires success");
     }
     #[test]
     fn retry_io_cannot_inflate_progress_and_100_requires_success() {

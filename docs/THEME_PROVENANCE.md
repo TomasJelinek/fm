@@ -65,9 +65,11 @@ Paper Contrast, Sandstone Contrast, Deep Ocean and Graphite Contrast target at
 least 7:1 for semantic row and control text. Both High Contrast palettes target
 at least 12:1, including helper text, while their primary black/white text reaches
 21:1. Selection and focus edges retain at least 3:1 against adjacent row fills.
-The selected row has a side stripe and stronger text weight; a selected cursor
-also has a top line. Those shapes preserve the distinction without requiring
-recognition of cyan/yellow or another color pair.
+The selected row has a wider side stripe and stronger text weight, also while a
+filename search highlights its matching prefix; the cursor on a selected row adds
+a one-pixel outline. The Colors page preview draws the same marks. Those shapes
+preserve the distinction without requiring recognition of cyan/yellow or another
+color pair.
 
 The targets follow the W3C explanations of
 [enhanced text contrast](https://www.w3.org/WAI/WCAG22/Understanding/contrast-enhanced.html),

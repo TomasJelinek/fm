@@ -102,14 +102,19 @@ fn sync_editor(presenter: &mut Presenter) {
 
 pub(crate) fn refresh(window: &MainWindow, presenter: &Presenter) {
     let editor = &presenter.colors.editor;
-    let saved: Vec<_> = presenter
-        .preferences
-        .values
-        .filename_colors
-        .iter()
-        .map(from_rule)
-        .collect();
-    let drafts = if editor.dirty { &editor.drafts } else { &saved };
+    let saved: Vec<_>;
+    let drafts = if editor.dirty {
+        &editor.drafts
+    } else {
+        saved = presenter
+            .preferences
+            .values
+            .filename_colors
+            .iter()
+            .map(from_rule)
+            .collect();
+        &saved
+    };
     let view = window.global::<ColorOptionsView>();
     let labels: Vec<slint::SharedString> = drafts
         .iter()
@@ -207,8 +212,9 @@ pub(crate) fn install(
             || draft.foreground.len() > 64
             || draft.background.len() > 64
         {
-            presenter.colors.error =
-                "Expression limit: 4096 bytes. Colors use #RRGGBB or an empty value.".into();
+            // The refresh below re-displays the last accepted draft through the
+            // two-way bound controls, so say that the edit was dropped.
+            presenter.colors.error = "Edit not applied: expressions are limited to 4096 bytes; colors use #RRGGBB or an empty value.".into();
         } else {
             let editor = &mut presenter.colors.editor;
             if let Some(previous) = editor.drafts.get_mut(editor.selected) {

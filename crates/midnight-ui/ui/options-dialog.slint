@@ -11,7 +11,7 @@ import { ThumbnailOptions } from "thumbnail-options.slint";
 import { ArchiveOptions } from "archive-options.slint";
 import { ColorOptions, ColorOptionsView } from "color-options.slint";
 import { UserCommandOptions, UserCommandSettingsView } from "user-command-options.slint";
-import { DialogHeader } from "dialog-frame.slint";
+import { DialogHeader, PopupFocus } from "dialog-frame.slint";
 import { DialogFooter } from "dialog-footer.slint";
 import { FluentScrollMetrics } from "fluent-scroll-metrics.slint";
 import { WrappingCheckBox } from "wrapping-check-box.slint";
@@ -23,6 +23,10 @@ component OptionPicker inherits Rectangle {
     in property <int> current-index;
     in property <bool> narrow;
     callback selected(int);
+    // A ComboBox assigns its own current-index on selection, which detaches a
+    // one-way binding. Follow the host's staged value explicitly (Reset to
+    // defaults, a refused choice) instead of showing the last user choice.
+    changed current-index => { picker.current-index = root.current-index; }
     height: root.narrow ? caption.preferred-height + 6px + Theme.control-height : Theme.control-height + 6px;
     min-width: 0px;
     GridLayout {
@@ -39,19 +43,12 @@ component OptionPicker inherits Rectangle {
             accessible-label: root.label; hint: root.hint;
             model: root.model; current-index: root.current-index;
             min-width: 0px; horizontal-stretch: 1; height: Theme.control-height;
-            selected(value) => { root.selected(self.current-index); }
+            selected(value) => { root.selected(self.current-index); self.current-index = root.current-index; }
         }
     }
 }
 
 export component OptionsBody inherits Rectangle {
-    in property <string> editor-default-label;
-    in property <string> editor-executable;
-    in property <string> editor-arguments;
-    in property <string> editor-revision;
-    in property <string> editor-error;
-    callback editor-apply(string, string);
-    callback editor-restore();
     in property <ActionIcons> action-icons;
     in-out property <int> topic-index;
     in property <int> theme-index;
@@ -68,14 +65,16 @@ export component OptionsBody inherits Rectangle {
     in property <bool> options-saving;
     in property <bool> preferences-save-failed;
     in property <string> preferences-save-status;
-    in property <bool> quick-search-filter;
-    in property <bool> sizes-in-bytes;
-    in property <bool> remember-command-history;
-    in property <bool> copy-checksum-verification: true;
+    // Check boxes bind two-way to these staged values: a native toggle detaches a
+    // one-way binding, and Reset to defaults changes them while Options stays open.
+    in-out property <bool> quick-search-filter;
+    in-out property <bool> sizes-in-bytes;
+    in-out property <bool> remember-command-history;
+    in-out property <bool> copy-checksum-verification: true;
     in property <int> disk-io-concurrency-index;
     in property <bool> command-history-empty;
-    in property <bool> thumbnails-enabled;
-    in property <bool> thumbnails-network;
+    in-out property <bool> thumbnails-enabled;
+    in-out property <bool> thumbnails-network;
     in-out property <bool> thumbnails-archives: true;
     in property <int> thumbnail-size: 96;
     in property <string> thumbnail-cache-location;
@@ -145,6 +144,10 @@ export component OptionsBody inherits Rectangle {
     option-focus := FocusScope {
     forward-focus: save-button;
     capture-key-pressed(event) => {
+        // A focused ComboBox opens its popup on Return (moving focus into it) and
+        // then rejects the key, which bubbles here. Remember where Return started
+        // so that opening a popup never also validates, saves and closes Options.
+        if event.text == Key.Return { PopupFocus.mark-key-focus(); }
         if event.text == Key.Escape && !KeyboardEditorView.capturing {
             if ColorOptionsView.picker-field >= 0 { ColorOptionsView.picker-field = -1; return accept; }
             if UserCommandSettingsView.drag-active { UserCommandSettingsView.drag-cancel(); return accept; }
@@ -155,7 +158,8 @@ export component OptionsBody inherits Rectangle {
     }
     key-pressed(event) => {
         if event.text == Key.Return && root.preferences-ready && !root.options-busy
-            && !root.page-busy && ColorOptionsView.picker-field < 0 && !KeyboardEditorView.capturing {
+            && !root.page-busy && ColorOptionsView.picker-field < 0 && !KeyboardEditorView.capturing
+            && !PopupFocus.key-moved-focus() {
             root.confirm(); return accept;
         }
         reject
@@ -189,7 +193,11 @@ export component OptionsBody inherits Rectangle {
         if root.narrow && !root.header-topic : HintedComboBox {
             accessible-label: "Options topic";
             model: OptionsTopics.titles;
-            current-index: OptionsTopics.index(root.topic-index);
+            // Pages also change from links and validation errors; native selection
+            // detaches a one-way binding, so follow the page explicitly.
+            private property <int> topic-position: OptionsTopics.index(root.topic-index);
+            changed topic-position => { self.current-index = self.topic-position; }
+            current-index: self.topic-position;
             hint: "Choose the Options page.";
             selected(value) => { root.topic-index = OptionsTopics.topic(self.current-index); }
         }
@@ -232,14 +240,10 @@ export component OptionsBody inherits Rectangle {
               }
               if root.topic-index == 4 : EditorOptions {
                 narrow: root.narrow;
-                default-label: root.editor-default-label; executable: root.editor-executable;
-                arguments: root.editor-arguments; revision: root.editor-revision; error: root.editor-error;
-                apply(executable, arguments) => { root.editor-apply(executable, arguments); }
-                restore => { root.editor-restore(); }
               }
             if root.topic-index == 6 : ThumbnailOptions {
-                thumbnails-enabled: root.thumbnails-enabled;
-                thumbnails-network: root.thumbnails-network;
+                thumbnails-enabled <=> root.thumbnails-enabled;
+                thumbnails-network <=> root.thumbnails-network;
                 thumbnails-archives <=> root.thumbnails-archives;
                 thumbnail-size: root.thumbnail-size;
                 thumbnail-cache-location: root.thumbnail-cache-location;
@@ -253,13 +257,13 @@ export component OptionsBody inherits Rectangle {
                 Text { text: "Panels"; color: Theme.strong-text; font-size: Theme.font-size; font-weight: 600; }
                 WrappingCheckBox {
                     text: "Show only filename search matches";
-                    checked: root.quick-search-filter; min-height: Theme.control-height;
+                    checked <=> root.quick-search-filter; min-height: Theme.control-height;
                     toggled => { root.search-filter-changed(self.checked); }
                     hint: "Typing in a panel searches filename prefixes. Enable this to hide nonmatching files instead of moving among matches.";
                 }
                 WrappingCheckBox {
                     text: "Always show file sizes in bytes";
-                    checked: root.sizes-in-bytes; min-height: Theme.control-height;
+                    checked <=> root.sizes-in-bytes; min-height: Theme.control-height;
                     toggled => { root.sizes-format-changed(self.checked); }
                     hint: "Use exact byte counts in the file list. When disabled, large sizes use readable units. The panel detail line always shows bytes.";
                 }
@@ -267,7 +271,7 @@ export component OptionsBody inherits Rectangle {
                 Text { text: "File operations"; color: Theme.strong-text; font-size: Theme.font-size; font-weight: 600; }
                 WrappingCheckBox {
                     text: "Verify entire copied file with SHA-256 (recommended)";
-                    checked: root.copy-checksum-verification; min-height: Theme.control-height;
+                    checked <=> root.copy-checksum-verification; min-height: Theme.control-height;
                     toggled => { root.copy-verification-changed(self.checked); }
                     hint: "When disabled, check exact length and the first, middle and last 64 KiB; files up to 192 KiB are compared entirely. Corruption between samples can go undetected. Applies to new Copy and cross-volume Move jobs. Same-volume rename reads no contents.";
                 }
@@ -295,7 +299,7 @@ export component OptionsBody inherits Rectangle {
                 Text { text: "Command line"; color: Theme.strong-text; font-size: Theme.font-size; font-weight: 600; }
                 WrappingCheckBox {
                     text: "Remember command history after restart";
-                    checked: root.remember-command-history; min-height: Theme.control-height;
+                    checked <=> root.remember-command-history; min-height: Theme.control-height;
                     toggled => { root.remember-command-history-changed(self.checked); }
                     hint: "Keep the last 100 distinct executed commands. Commands may contain sensitive text. Disabling this removes persisted history; session history remains available.";
                 }

@@ -111,9 +111,13 @@ export component UserCommandForm inherits VerticalLayout {
             for label[index] in ["Active folder", "Other folder", "File path", "File name", "Name without extension", "Extension"] : WrappingCheckBox {
             row: root.narrow ? index : floor(index / 2); col: root.narrow ? 0 : mod(index, 2);
             text: label + (index < UserCommandSettingsView.variable-references.length ? " · " + UserCommandSettingsView.variable-references[index] : "");
-            checked: index == 0 ? UserCommandSettingsView.draft.active-path : index == 1 ? UserCommandSettingsView.draft.other-path
+            // A toggle detaches a one-way binding; Discard and Insert value change
+            // the draft while this list stays open, so follow it explicitly.
+            private property <bool> required: index == 0 ? UserCommandSettingsView.draft.active-path : index == 1 ? UserCommandSettingsView.draft.other-path
                 : index == 2 ? UserCommandSettingsView.draft.file-path : index == 3 ? UserCommandSettingsView.draft.file-name
                 : index == 4 ? UserCommandSettingsView.draft.file-stem : UserCommandSettingsView.draft.file-extension;
+            changed required => { self.checked = self.required; }
+            checked: self.required;
             hint: UserCommandSettingsView.draft.shell == 2
                 ? "Require this captured value. The shown _ARG reference is a complete external-program argument; raw ME_* values need the builtin's own syntax."
                 : "Require this captured value before the script can run. Use the shown quoted reference in the script.";
@@ -125,6 +129,7 @@ export component UserCommandForm inherits VerticalLayout {
                 else if index == 4 { UserCommandSettingsView.draft.file-stem = self.checked; }
                 else { UserCommandSettingsView.draft.file-extension = self.checked; }
                 root.edited();
+                self.checked = self.required;
             }
         }
         }

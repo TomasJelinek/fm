@@ -113,7 +113,8 @@ fn nested_modal_lease_restores_only_after_last_child() {
 }
 
 #[test]
-fn show_failure_releases_modal_owner() {
+// The native show fails before any modal lease is taken; nothing may block the owner.
+fn failed_show_leaves_the_owner_unblocked_and_the_child_hidden() {
     ui(|display| {
         let main = crate::MainWindow::new().unwrap();
         main.show().unwrap();

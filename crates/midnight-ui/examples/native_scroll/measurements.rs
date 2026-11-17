@@ -173,6 +173,44 @@ pub(super) struct PixelProof {
     pixels: Vec<slint::Rgba8Pixel>,
 }
 
+impl PixelProof {
+    /// The whole window. Readback must run on the UI thread; take it only
+    /// after measurement, and encode/write it later with `write_pixel_proof`.
+    pub(super) fn window(name: &'static str, window: &MainWindow) -> Self {
+        let snapshot = window.window().take_snapshot().unwrap();
+        Self {
+            name,
+            width: snapshot.width(),
+            height: snapshot.height(),
+            pixels: snapshot.as_slice().to_vec(),
+        }
+    }
+
+    /// Uncompressed 24-bit top-down BMP; rows padded to four bytes.
+    fn bmp(&self) -> Vec<u8> {
+        let stride = (self.width * 3 + 3) & !3;
+        let length = 54 + stride * self.height;
+        let mut bytes = Vec::with_capacity(length as usize);
+        bytes.extend_from_slice(b"BM");
+        bytes.extend_from_slice(&length.to_le_bytes());
+        bytes.extend_from_slice(&[0; 4]);
+        bytes.extend_from_slice(&54u32.to_le_bytes());
+        bytes.extend_from_slice(&40u32.to_le_bytes());
+        bytes.extend_from_slice(&self.width.to_le_bytes());
+        bytes.extend_from_slice(&(-(self.height as i32)).to_le_bytes());
+        bytes.extend_from_slice(&1u16.to_le_bytes());
+        bytes.extend_from_slice(&24u16.to_le_bytes());
+        bytes.extend_from_slice(&[0; 24]);
+        for row in self.pixels.chunks(self.width as usize) {
+            for pixel in row {
+                bytes.extend_from_slice(&[pixel.b, pixel.g, pixel.r]);
+            }
+            bytes.resize(bytes.len() + (stride - self.width * 3) as usize, 0);
+        }
+        bytes
+    }
+}
+
 pub(super) fn capture_pixel_proof(window: &MainWindow) -> Vec<PixelProof> {
     let mut captures = Vec::new();
     // GPU readback changes timing: these snapshots run only after measurement.
@@ -227,29 +265,11 @@ pub(super) fn capture_pixel_proof(window: &MainWindow) -> Vec<PixelProof> {
     captures
 }
 
+/// Encode and write captures as `<name>.bmp`; call from a worker thread.
 pub(super) fn write_pixel_proof(directory: &Path, captures: Vec<PixelProof>) -> io::Result<()> {
     std::fs::create_dir_all(directory)?;
     for proof in captures {
-        let stride = (proof.width * 3 + 3) & !3;
-        let length = 54 + stride * proof.height;
-        let mut bytes = Vec::with_capacity(length as usize);
-        bytes.extend_from_slice(b"BM");
-        bytes.extend_from_slice(&length.to_le_bytes());
-        bytes.extend_from_slice(&[0; 4]);
-        bytes.extend_from_slice(&54u32.to_le_bytes());
-        bytes.extend_from_slice(&40u32.to_le_bytes());
-        bytes.extend_from_slice(&proof.width.to_le_bytes());
-        bytes.extend_from_slice(&(-(proof.height as i32)).to_le_bytes());
-        bytes.extend_from_slice(&1u16.to_le_bytes());
-        bytes.extend_from_slice(&24u16.to_le_bytes());
-        bytes.extend_from_slice(&[0; 24]);
-        for row in proof.pixels.chunks(proof.width as usize) {
-            for pixel in row {
-                bytes.extend_from_slice(&[pixel.b, pixel.g, pixel.r]);
-            }
-            bytes.resize(bytes.len() + (stride - proof.width * 3) as usize, 0);
-        }
-        std::fs::write(directory.join(format!("{}.bmp", proof.name)), bytes)?;
+        std::fs::write(directory.join(format!("{}.bmp", proof.name)), proof.bmp())?;
     }
     Ok(())
 }

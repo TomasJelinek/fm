@@ -84,7 +84,12 @@ export component FileEntry inherits Rectangle {
         private property <bool> activation-pending;
         private property <bool> drag-attempted;
         pointer-event(event) => {
-            root.drag-modifiers(event.modifiers.control, event.modifiers.shift, event.modifiers.alt || event.modifiers.meta);
+            // Modifiers matter to an active drag only. Hover moves would otherwise
+            // call into Rust (borrowing the presenter) for every pointer event;
+            // the press records them and keyboard changes are forwarded separately.
+            if event.kind != PointerEventKind.move || self.drag-attempted {
+                root.drag-modifiers(event.modifiers.control, event.modifiers.shift, event.modifiers.alt || event.modifiers.meta);
+            }
             if event.kind == PointerEventKind.down {
                 self.right-pressed = event.button == PointerEventButton.right;
                 self.left-pressed = event.button == PointerEventButton.left;
@@ -211,6 +216,7 @@ export component FileEntry inherits Rectangle {
                         x: 0px; y: 0px; width: parent.width; height: parent.height;
                         text: item.name; prefix-end: item.prefix-end;
                         text-color: root.text-color; row-background: root.name-background;
+                        font-weight: item.selected ? 600 : 400;
                     }
                     if item.prefix-end <= 0 : Text {
                         x: 0px; y: 0px; width: parent.width; height: parent.height;
@@ -285,6 +291,7 @@ export component FileEntry inherits Rectangle {
                 x: 0px; y: 0px; width: parent.width; height: parent.height;
                 text: item.name; prefix-end: item.prefix-end; wrapped: true;
                 text-color: root.text-color; row-background: root.name-background;
+                font-weight: item.selected ? 600 : 400;
             }
             if item.prefix-end <= 0 : Text {
                 x: 0px; y: 0px; width: parent.width; height: parent.height;

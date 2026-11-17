@@ -34,20 +34,27 @@ separately; this document is not a claim that every item is already released.
   Under the [11 November policy](../superpowers/plans/2026-11-11-dialog-polish-followup.md),
   only modeless working windows require free movement outside the main window.
   Attributes / Times / Case remains embedded. Do not migrate other embedded modal
-  forms to satisfy the superseded all-native-window requirement; existing native
-  modal hosts still need a policy review.
-- Ordinary confirmations and settings are modal and do not add separate Windows
-  taskbar buttons. Existing native ordinary hosts set ownership before first show
-  and retain normal title bars and resizing. Independent working windows (Find,
-  Checksums, viewers and comparators) keep taskbar and Alt+Tab access, with the same
-  application identity for system grouping. Help/About remain ordinary dialogs
-  even when modeless. Make File List uses an owner-modal native host with no
-  separate taskbar item.
+  forms to satisfy the superseded all-native-window requirement.
+- Ordinary confirmations and settings are modal popups embedded in the main
+  window: Options, Rename/Create/Delete, Copy/Move drafts, notices, Make File
+  List, Panel Filter, Hot Paths and Attributes / Times / Case. They add no
+  taskbar buttons. No native host is owner-modal. Native modeless hosts (Help,
+  About, Jobs, job progress and operation decisions) set ownership before first
+  show and retain normal title bars and resizing. Independent working windows
+  (Find, Checksums, viewers and comparators) keep taskbar and Alt+Tab access, with
+  the same application identity for system grouping. Help/About remain ordinary
+  dialogs even when modeless.
 - Options follows OK/Cancel: OK validates and saves the complete current form,
   then closes only after successful persistence. Cancel discards the draft and
   restores live previews, including the theme. Validation remains cancellable;
   dismissal is disabled during an admitted save. Failed saves retain the draft
-  and explain the failure.
+  and explain the failure. Enter presses OK unless the focused control used it:
+  Enter on a combo box only opens its list.
+- Controls always show the staged value. An editor that stays open while its
+  subject changes (the selected color rule, viewer, Hot Path, archive format, or
+  values replaced by Reset to defaults) binds two-way to that value or follows
+  it explicitly: native input otherwise detaches a one-way Slint binding, so the
+  control would keep the previous value and write it into the next item.
 - General (formerly Panel) contains Panels and Command line sections, including
   remembering and clearing command history; there is no separate Command page.
   These controls participate in the same OK/Cancel transaction, including
@@ -59,6 +66,9 @@ separately; this document is not a claim that every item is already released.
   Escape also cancels. An empty named destination remains invalid; opening or
   focusing a dialog never submits it.
 - Dialog dismissal stays reachable at 320 by 200, including large touch fonts.
+  Compact forms (Compare folders, Hot Paths, Panel Filter, Attributes) move focus
+  to dismissal once when they enter their compact layout, which can clip the
+  focused field; resizing within that layout keeps the field being edited.
   Options reuses the shared anchored footer: Reset and OK occupy a scrollable
   action region, while Cancel stays fixed. The shared dismiss-enabled property
   preserves the Options save lock without changing other dialogs' default.
@@ -192,7 +202,7 @@ line. Previews shows the cache location resolved by the backend, above Clear cac
 new settings use 96 logical pixels for the thumbnail's longest side.
 
 All confirmation/form bodies retain a themed icon, title and divider, including
-native modal hosts. Rename derives initial height after applying its final text
+native hosts. Rename derives initial height after applying its final text
 and font at the intended width. Cancelled operations retain existing lifetime and
 job admission rules. Header close, Escape and Cancel use the same form dismissal.
 Active Copy/Move/Delete progress instead asks for cancellation confirmation;

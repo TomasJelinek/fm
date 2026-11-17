@@ -35,7 +35,6 @@ export component OperationWindow inherits DialogWindow {
     callback request-dismiss();
     request-close => { root.request-dismiss(); }
     public function begin() { form.begin(); }
-    public function focus-input() { form.focus-input(); }
     public function apply-preferences(scheme: int, density: int, family: string, desktop: int, touch: int) {
         root.apply-tool-theme(scheme, density, family, desktop, touch);
     }

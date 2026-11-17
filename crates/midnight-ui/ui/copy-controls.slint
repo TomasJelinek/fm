@@ -34,7 +34,7 @@ export component CopyConflictDialog inherits Rectangle {
     in property <string> target-details;
     callback decide(int, string);
     callback later();
-    callback move-dialog(length, length);
+    // Hosted only by the native DecisionWindow: the system title bar moves it.
     private property <bool> compact: root.height < 280px;
     background: Theme.surface; border-color: Theme.active-frame; border-width: 1px; border-radius: 6px;
     forward-focus: scope;
@@ -53,7 +53,6 @@ export component CopyConflictDialog inherits Rectangle {
                 error: root.failure-mode; native-icon: root.native-icon; fallback-icon: FallbackIcons.copy;
                 compact: root.compact; text-size: Theme.font-size * 1.2;
                 close-label: "Cancel job"; close => { root.decide(3, ""); }
-                dragged(dx, dy) => { root.move-dialog(dx, dy); }
             }
             content := ScrollView {
                 min-height: 0px; min-width: 0px; vertical-stretch: 1;

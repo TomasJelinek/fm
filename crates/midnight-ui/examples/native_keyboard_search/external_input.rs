@@ -2,7 +2,12 @@
 use super::{AccessibleRole, ComponentHandle, Duration, KeyboardEditorView, MainWindow, ui};
 use midnight_ui::Presenter;
 use slint::Model;
-use std::{cell::RefCell, rc::Rc};
+use std::{cell::RefCell, rc::Rc, time::Instant};
+
+/// The driver script bounds each step (at most 20 s for startup, 3 s per
+/// query) and its total length grows with `-Rounds`. This backstop only ends a
+/// probe whose driver stopped: no observed state change for this long.
+const STALLED_DRIVER: Duration = Duration::from_secs(60);
 
 pub(super) fn run(
     window: MainWindow,
@@ -11,8 +16,9 @@ pub(super) fn run(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let weak = window.as_weak();
     let timer = slint::Timer::default();
-    let mut step = 0;
+    let mut step = 0u32;
     let mut previous = None;
+    let mut progressed = Instant::now();
     timer.start(
         slint::TimerMode::Repeated,
         Duration::from_millis(20),
@@ -82,6 +88,7 @@ pub(super) fn run(
             if previous.as_ref() != Some(&state) {
                 eprintln!("external-state={state}");
                 previous = Some(state);
+                progressed = Instant::now();
             }
             if query == "keyboard-native-complete" {
                 assert_eq!(view.get_commands().row_count(), 0);
@@ -89,10 +96,11 @@ pub(super) fn run(
                 slint::quit_event_loop().unwrap();
             }
             assert!(
-                step < 3000,
-                "native input driver did not complete within 60 seconds"
+                progressed.elapsed() < STALLED_DRIVER,
+                "native input driver made no progress for {} seconds",
+                STALLED_DRIVER.as_secs()
             );
-            step += 1;
+            step = step.saturating_add(1);
         },
     );
     window.run()?;

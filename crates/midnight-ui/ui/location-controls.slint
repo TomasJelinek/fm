@@ -109,5 +109,5 @@ export component CompactLocationButton inherits Rectangle {
         }
     }
     // Tooltip observers must precede accepting input in hit-test order.
-    Tooltip { TipBody { text: root.hint; } }
+    if root.hint != "": Tooltip { TipBody { text: root.hint; } }
 }

@@ -1,17 +1,25 @@
 //! Bounded operation text; failure samples are independent of successful outcome samples.
-use midnight_core::OperationProgress;
+use crate::error_presentation::append_path;
+use midnight_core::{NumberLocale, OperationProgress};
 
-pub(super) fn detail(progress: &OperationProgress, metadata_summary: &str) -> String {
+pub(super) fn detail(
+    progress: &OperationProgress,
+    metadata_summary: &str,
+    locale: &NumberLocale,
+) -> String {
+    // Counts follow regional grouping, as in the job's summary line; paths keep
+    // their identity and cannot inject extra lines (see `append_path`).
     let mut text = format!(
-        "{} / {} targets · {} errors · {} entries processed\n\nSource folder\n{}",
-        progress.completed,
-        progress.total,
-        progress.failed,
-        progress.processed_entries,
-        progress.source_directory.display()
+        "{} / {} targets · {} errors · {} entries processed\n\nSource folder\n",
+        locale.format_u64(progress.completed),
+        locale.format_u64(progress.total),
+        locale.format_u64(progress.failed),
+        locale.format_u64(progress.processed_entries),
     );
+    append_path(&mut text, &progress.source_directory);
     if let Some(path) = &progress.current_path {
-        text.push_str(&format!("\n\nCurrent item\n{}", path.display()));
+        text.push_str("\n\nCurrent item\n");
+        append_path(&mut text, path);
     }
     if !metadata_summary.is_empty() {
         text.push_str("\n\n");
@@ -28,10 +36,8 @@ mod tests {
     use midnight_core::{FsError, MutationKind, OperationId, OperationState};
     use std::{io, path::PathBuf};
 
-    #[test]
-    fn late_failure_stays_visible_when_current_path_and_outcome_sample_have_moved_on() {
-        let failed_path = PathBuf::from("parent/子目录/too-many-children");
-        let progress = OperationProgress {
+    fn progress() -> OperationProgress {
+        OperationProgress {
             pause_requested: false,
             paused: false,
             discovery: Default::default(),
@@ -45,17 +51,27 @@ mod tests {
             processed_entries: 70,
             current_path: Some(PathBuf::from("parent/last-successful-item")),
             message: String::new(),
+            errors: Vec::new(),
+            source_directory: PathBuf::from("parent"),
+            renamed_to: None,
+        }
+    }
+
+    #[test]
+    fn late_failure_stays_visible_when_current_path_and_outcome_sample_have_moved_on() {
+        let failed_path = PathBuf::from("parent/子目录/too-many-children");
+        let progress = OperationProgress {
             errors: vec![FsError::from_io(
                 "snapshot metadata targets",
                 &failed_path,
                 io::Error::other("metadata directory snapshot exceeds its resource budget"),
             )],
-            source_directory: PathBuf::from("parent"),
-            renamed_to: None,
+            ..progress()
         };
         let text = detail(
             &progress,
             "\nAdditional outcomes are included in the totals.",
+            &NumberLocale::default(),
         );
         assert!(text.contains("last-successful-item"));
         assert!(text.contains("Additional outcomes"));
@@ -64,5 +80,36 @@ mod tests {
             text.contains("snapshot exceeds its resource budget"),
             "{text}"
         );
+    }
+
+    #[test]
+    fn counts_follow_regional_grouping_and_paths_cannot_add_lines() {
+        let locale = NumberLocale {
+            decimal_separator: ",".into(),
+            group_separator: ".".into(),
+            grouping: vec![3],
+            repeat_last_group: true,
+        };
+        let progress = OperationProgress {
+            total: 20_000,
+            completed: 12_345,
+            failed: 1_000,
+            processed_entries: 1_234_567,
+            current_path: Some(PathBuf::from("parent/a\n\nCurrent item\nforged")),
+            ..progress()
+        };
+        let text = detail(&progress, "", &locale);
+        assert!(
+            text.starts_with(
+                "12.345 / 20.000 targets · 1.000 errors · 1.234.567 entries processed"
+            ),
+            "{text}"
+        );
+        assert_eq!(
+            text.lines().filter(|line| *line == "Current item").count(),
+            1,
+            "{text}"
+        );
+        assert!(!text.contains("\nforged"), "{text}");
     }
 }

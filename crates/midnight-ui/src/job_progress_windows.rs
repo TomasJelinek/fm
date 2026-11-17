@@ -4,6 +4,7 @@ use crate::{
     JobProgressWindow, MainWindow, OperationRow, Presenter,
     dialog_host::{DialogHost, DialogModality, DialogOwner, DialogSession, DialogSessions},
     dialog_presentation::{self, DialogThemeTarget},
+    presentation_eq::SamePresentation,
     tool_window_failure::Failures,
 };
 use midnight_core::Command;
@@ -122,7 +123,11 @@ impl Windows {
                     {
                         record.window.set_close_error(SharedString::default());
                     }
-                    record.window.set_job(row.clone());
+                    // Plain equality reports a change for every row without a
+                    // native icon, re-laying out and repainting the window.
+                    if !previous.same_presentation(&row) {
+                        record.window.set_job(row.clone());
+                    }
                     if !row.active || !row.cancellable {
                         record.window.set_cancel_confirmation(false);
                     }

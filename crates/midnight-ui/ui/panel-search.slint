@@ -15,6 +15,8 @@ export component PrefixName inherits Rectangle {
     in property <color> text-color;
     in property <color> row-background;
     in property <bool> wrapped;
+    // Selected rows keep their stronger weight while a filename search highlights them.
+    in property <int> font-weight: 400;
     clip: true;
     horizontal-stretch: 1;
     min-width: 0px;
@@ -39,8 +41,10 @@ export component PrefixName inherits Rectangle {
         text: root.text;
         font-family: Theme.font-family;
         font-size: Theme.font-size;
+        font-weight: root.font-weight;
         changed font-family => { root.update-highlight(); }
         changed font-size => { root.update-highlight(); }
+        changed font-weight => { root.update-highlight(); }
         changed width => { root.update-highlight(); }
         color: root.text-color;
         selection-foreground-color: FilenameColorPresentation.readable(Theme.search-match, root.row-background);
@@ -67,7 +71,7 @@ export component PrefixName inherits Rectangle {
         height: parent.height;
         background: root.row-background;
         ellipsis := Text {
-            text: "…"; color: root.text-color; font-size: Theme.font-size;
+            text: "…"; color: root.text-color; font-size: Theme.font-size; font-weight: root.font-weight;
             vertical-alignment: center;
             accessible-role: none;
         }

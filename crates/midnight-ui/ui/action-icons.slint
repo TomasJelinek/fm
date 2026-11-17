@@ -124,8 +124,6 @@ export component ActionButton inherits Rectangle {
     in property <bool> removal-icon;
     in property <bool> destructive;
     in property <bool> enabled: true;
-    in property <bool> checkable;
-    in-out property <bool> checked;
     out property <bool> has-focus: input.has-focus;
     out property <bool> pressed: root.enabled && pointer.pressed;
     callback clicked();
@@ -141,26 +139,23 @@ export component ActionButton inherits Rectangle {
     accessible-role: button;
     accessible-label: root.text;
     accessible-enabled: root.enabled;
-    accessible-checkable: root.checkable;
-    accessible-checked: root.checked;
     accessible-action-default => { if root.enabled { root.activate(); } }
     function activate() {
         // A focused native Button can still deliver Enter after it becomes disabled.
         if !root.enabled { return; }
-        if root.checkable { root.checked = !root.checked; }
         input.focus();
         root.clicked();
     }
     background: !root.enabled ? Theme.secondary-surface
         : root.destructive ? Theme.error-background
         : root.pressed ? Theme.cursor-background
-        : root.primary || root.checked ? Theme.active-header
+        : root.primary ? Theme.active-header
         : pointer.has-hover ? Theme.hover : Theme.secondary-surface;
     border-radius: 4px;
     border-width: root.has-focus && root.enabled ? 2px : 1px;
     border-color: !root.enabled ? Theme.frame
         : root.destructive ? Theme.error-text
-        : root.has-focus || root.primary || root.checked ? Theme.active-frame : Theme.frame;
+        : root.has-focus || root.primary ? Theme.active-frame : Theme.frame;
     content := HorizontalLayout {
         padding-left: root.compact ? 4px : 12px;
         padding-right: root.compact ? 4px : 12px;

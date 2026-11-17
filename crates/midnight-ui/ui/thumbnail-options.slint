@@ -3,9 +3,11 @@ import { FallbackIcons } from "action-icons.slint";
 import { Theme } from "theme.slint";
 import { WrappingCheckBox } from "wrapping-check-box.slint";
 
+// Controls bind two-way or re-sync explicitly: native input detaches one-way
+// bindings, and Options Reset changes these values while the page stays open.
 export component ThumbnailOptions inherits VerticalLayout {
-    in property <bool> thumbnails-enabled;
-    in property <bool> thumbnails-network;
+    in-out property <bool> thumbnails-enabled;
+    in-out property <bool> thumbnails-network;
     in-out property <bool> thumbnails-archives: true;
     in property <int> thumbnail-size: 96;
     in property <string> thumbnail-cache-location;
@@ -15,13 +17,13 @@ export component ThumbnailOptions inherits VerticalLayout {
     spacing: 16px; alignment: start;
     WrappingCheckBox {
         text: "Show image and video previews";
-        checked: root.thumbnails-enabled; min-height: Theme.control-height;
+        checked <=> root.thumbnails-enabled; min-height: Theme.control-height;
         hint: "Use installed thumbnail plugins in Thumbnails view. Decoding runs in background workers and results are cached.";
         toggled => { root.changed(self.checked, root.thumbnails-network, root.thumbnails-archives, 0); }
     }
     WrappingCheckBox {
         text: "Allow previews on network locations";
-        checked: root.thumbnails-network; enabled: root.thumbnails-enabled;
+        checked <=> root.thumbnails-network; enabled: root.thumbnails-enabled;
         min-height: Theme.control-height;
         hint: "Allow background reads on network or unclassified storage. These reads remain serial.";
         toggled => { root.changed(root.thumbnails-enabled, self.checked, root.thumbnails-archives, 1); }
@@ -38,14 +40,16 @@ export component ThumbnailOptions inherits VerticalLayout {
         Text { text: "Thumbnail size (longest side)"; color: Theme.text; font-size: Theme.font-size; }
         HintedComboBox {
             private property <[int]> sizes: [48, 64, 72, 96, 128, 192, 256];
-            accessible-label: "Thumbnail size";
-            model: ["48 px", "64 px", "72 px", "96 px (default)", "128 px", "192 px", "256 px"];
-            current-index: root.thumbnail-size == 48 ? 0 : root.thumbnail-size == 64 ? 1
+            private property <int> size-index: root.thumbnail-size == 48 ? 0 : root.thumbnail-size == 64 ? 1
                 : root.thumbnail-size == 72 ? 2 : root.thumbnail-size == 96 ? 3
                 : root.thumbnail-size == 128 ? 4 : root.thumbnail-size == 192 ? 5 : 6;
+            changed size-index => { self.current-index = self.size-index; }
+            accessible-label: "Thumbnail size";
+            model: ["48 px", "64 px", "72 px", "96 px (default)", "128 px", "192 px", "256 px"];
+            current-index: self.size-index;
             min-height: Theme.control-height;
             hint: "Longest side in logical pixels. Images keep their aspect ratio without cropping. Smaller sizes reuse cached images; larger sizes keep the current preview visible while a sharper image is prepared.";
-            selected(value) => { root.size-changed(self.sizes[self.current-index]); }
+            selected(value) => { root.size-changed(self.sizes[self.current-index]); self.current-index = self.size-index; }
         }
     }
     Text { text: "Thumbnail cache"; color: Theme.text; font-size: Theme.font-size; }

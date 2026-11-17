@@ -114,14 +114,12 @@ component MetadataTime inherits GridLayout {
 
 export component MetadataDialog inherits Rectangle {
     accessible-role: groupbox; accessible-label: "Attributes, times and case";
-    in property <image> native-icon;
     callback move-dialog(length, length);
     in property <string> token;
     in property <string> revision;
     in property <string> summary;
     in property <string> preview-text;
     in property <string> timestamp-example: "2026-11-06T12:30:00+01:00";
-    in property <[MetadataFileRow]> rows;
     in property <string> list-status;
     in property <bool> preview-current;
     in property <string> error;
@@ -152,11 +150,11 @@ export component MetadataDialog inherits Rectangle {
     private property <bool> reviewing;
     private property <string> reviewed-revision;
     private property <bool> narrow-fields: root.width < max(500px, Theme.font-size * 24);
-    changed height => {
-        // A compact viewport can fully clip the focused page field. Keep Escape
-        // reachable; Slint drops keyboard events aimed at an invisible item.
-        if root.height < 350px { footer.focus-dismiss(); }
-    }
+    // A compact viewport can fully clip the focused page field. Keep Escape
+    // reachable; Slint drops keyboard events aimed at an invisible item. Act
+    // once on entering the compact height, not on every resize step inside it.
+    private property <bool> compact-height: root.height < 350px;
+    changed compact-height => { if root.compact-height { footer.focus-dismiss(); } }
     changed ready => { if root.ready { root.draft-edited = false; } }
     changed preview-current => {
         if root.preview-current {
@@ -203,7 +201,7 @@ export component MetadataDialog inherits Rectangle {
         VerticalLayout {
             padding: root.height < 350px ? 6px : 16px; spacing: root.height < 350px ? 4px : 10px;
             DialogHeader { title: root.reviewing ? "Review changes" : "Attributes, times and case"; text-size: Theme.font-size * 1.2;
-                native-icon: root.native-icon; fallback-icon: FallbackIcons.attributes; compact: root.height < 350px;
+                fallback-icon: FallbackIcons.attributes; compact: root.height < 350px;
                 close => { root.cancel(); }
                 dragged(dx, dy) => { root.move-dialog(dx, dy); } }
             if root.reviewing : DialogText {

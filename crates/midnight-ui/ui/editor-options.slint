@@ -109,14 +109,6 @@ component EditorPriorityList inherits Rectangle {
 
 export component EditorOptions inherits VerticalLayout {
     in property <bool> narrow;
-    // Kept as a compatibility surface for the containing Options component.
-    in property <string> default-label;
-    in property <string> executable;
-    in property <string> arguments;
-    in property <string> revision;
-    in property <string> error;
-    callback apply(string, string);
-    callback restore();
     private property <bool> rule-selected: EditorOptionsView.selected >= 0
         && EditorOptionsView.selected < EditorOptionsView.rule-count;
     spacing: 8px; alignment: start;

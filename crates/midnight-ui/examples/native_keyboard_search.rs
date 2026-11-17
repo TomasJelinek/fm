@@ -64,7 +64,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 18 => ui::key(&window, "e"),
                 19 => {
                     assert_eq!(window.global::<KeyboardEditorView>().get_filter(), "vie");
-                    ui::click_popup(&window, "Done", AccessibleRole::Button);
+                    ui::click_popup(&window, "OK", AccessibleRole::Button);
                 }
                 20 => window
                     .window()

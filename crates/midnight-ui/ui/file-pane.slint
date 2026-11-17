@@ -752,7 +752,7 @@ export component FilePane inherits Rectangle {
             }
             if root.rows.length == 0 && !root.loading : Text {
                 text: root.search-query != "" ? (root.search-pending ? "Searching…" : "No matching names") : "This folder is empty";
-                color: Theme.muted-text; font-size: 13px; horizontal-alignment: center; vertical-alignment: center;
+                color: Theme.muted-text; font-size: Theme.font-size + 1px; horizontal-alignment: center; vertical-alignment: center;
             }
             // Overlay the pending notice: refresh must not move rows or reset scrolling.
             if root.loading && root.loading-feedback : Rectangle {

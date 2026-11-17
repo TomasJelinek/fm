@@ -115,10 +115,14 @@ component ColorPriorityList inherits Rectangle {
     }
 }
 
+// Every editor input binds two-way to the selected rule's draft. Native input
+// assigns its own property, which would permanently detach a one-way binding:
+// the rule editor stays instantiated while the selection moves, so a detached
+// control would keep showing (and then write back) the previous rule's value.
 component ColorField inherits VerticalLayout {
     in property <bool> narrow;
     in property <string> label;
-    in property <string> value;
+    in-out property <string> value;
     in property <color> resolved;
     in property <int> field;
     callback edited(string);
@@ -150,7 +154,7 @@ component ColorField inherits VerticalLayout {
         }
         HintedLineEdit {
             row: 0; col: 1;
-            text: root.value; placeholder-text: "Theme default"; horizontal-stretch: 1; min-width: 0px;
+            text <=> root.value; placeholder-text: "Theme default"; horizontal-stretch: 1; min-width: 0px;
             enabled: !ColorOptionsView.busy;
             accessible-label: root.label + " hex color";
             hint: "Choose a color with the swatch, or enter #RRGGBB. Leave empty for the theme color.";
@@ -177,8 +181,11 @@ component ColorPreview inherits Rectangle {
         x: 0px; y: 0px; width: root.selected ? 4px : 3px; height: parent.height;
         background: root.selected ? Theme.selected-edge : root.cursor ? Theme.cursor-edge : transparent;
     }
+    // Same marks as an active panel row (file-entry.slint): side stripe, plus
+    // an outline when the cursor is on a selected row.
     if root.selected && root.cursor : Rectangle {
-        x: 4px; y: 0px; height: 1px; width: parent.width - 4px; background: Theme.selected-edge;
+        x: 4px; y: 0px; width: parent.width - 4px; height: parent.height;
+        background: transparent; border-width: 1px; border-color: Theme.cursor-edge;
     }
     preview-text := Text {
         x: 8px; width: parent.width - 16px; vertical-alignment: center; horizontal-alignment: center;
@@ -215,48 +222,48 @@ export component ColorOptions inherits VerticalLayout {
             spacing: 10px;
             WrappingCheckBox {
                 row: 0; col: 0;
-                text: "Enable rule"; checked: ColorOptionsView.draft.enabled; enabled: !ColorOptionsView.busy;
+                text: "Enable rule"; checked <=> ColorOptionsView.draft.enabled; enabled: !ColorOptionsView.busy;
                 hint: "Disabled rules stay in the list but do not color filenames.";
-                toggled => { ColorOptionsView.draft.enabled = self.checked; ColorOptionsView.edit(ColorOptionsView.draft); }
+                toggled => { ColorOptionsView.edit(ColorOptionsView.draft); }
             }
             WrappingCheckBox {
                 row: root.narrow ? 1 : 0; col: root.narrow ? 0 : 1;
-                text: "Case sensitive"; checked: ColorOptionsView.draft.case-sensitive; enabled: !ColorOptionsView.busy;
+                text: "Case sensitive"; checked <=> ColorOptionsView.draft.case-sensitive; enabled: !ColorOptionsView.busy;
                 hint: "Use the same case option as the panel filename filter.";
-                toggled => { ColorOptionsView.draft.case-sensitive = self.checked; ColorOptionsView.edit(ColorOptionsView.draft); }
+                toggled => { ColorOptionsView.edit(ColorOptionsView.draft); }
             }
         }
         GridLayout {
             spacing: 8px;
             HintedComboBox {
                 row: 0; col: 0; min-width: 0px;
-                model: ["Masks", "Regex"]; current-index: ColorOptionsView.draft.mode; enabled: !ColorOptionsView.busy;
+                model: ["Masks", "Regex"]; current-index <=> ColorOptionsView.draft.mode; enabled: !ColorOptionsView.busy;
                 accessible-label: "Color rule syntax"; hint: "Masks use * and ?, ; separates alternatives and | starts exclusions. Regex uses bounded Rust regular expressions.";
-                selected(value) => { ColorOptionsView.draft.mode = self.current-index; ColorOptionsView.edit(ColorOptionsView.draft); }
+                selected(value) => { ColorOptionsView.edit(ColorOptionsView.draft); }
             }
             HintedComboBox {
                 row: root.narrow ? 1 : 0; col: root.narrow ? 0 : 1; min-width: 0px;
-                model: ["Files", "Folders", "Files and folders"]; current-index: ColorOptionsView.draft.target; enabled: !ColorOptionsView.busy;
+                model: ["Files", "Folders", "Files and folders"]; current-index <=> ColorOptionsView.draft.target; enabled: !ColorOptionsView.busy;
                 accessible-label: "Color rule targets"; hint: "Choose which filename kinds this rule can match.";
-                selected(value) => { ColorOptionsView.draft.target = self.current-index; ColorOptionsView.edit(ColorOptionsView.draft); }
+                selected(value) => { ColorOptionsView.edit(ColorOptionsView.draft); }
             }
         }
         HintedLineEdit {
-            text: ColorOptionsView.draft.expression; enabled: !ColorOptionsView.busy;
+            text <=> ColorOptionsView.draft.expression; enabled: !ColorOptionsView.busy;
             accessible-label: "Color rule expression"; hint: "Examples: *.rs;*.toml|test* or regex \\.rs$. At most 4096 UTF-8 bytes.";
-            edited => { ColorOptionsView.draft.expression = self.text; ColorOptionsView.edit(ColorOptionsView.draft); }
+            edited => { ColorOptionsView.edit(ColorOptionsView.draft); }
         }
         GridLayout {
             spacing: 10px;
             ColorField {
                 row: 0; col: 0; narrow: root.narrow;
-                label: "Foreground"; field: 0; value: ColorOptionsView.draft.foreground;
+                label: "Foreground"; field: 0; value <=> ColorOptionsView.draft.foreground;
                 resolved: ColorOptionsView.preview-foreground-set ? ColorOptionsView.preview-foreground : Theme.text;
                 edited(value) => { ColorOptionsView.draft.foreground = value; ColorOptionsView.edit(ColorOptionsView.draft); }
             }
             ColorField {
                 row: root.narrow ? 1 : 0; col: root.narrow ? 0 : 1; narrow: root.narrow;
-                label: "Background"; field: 1; value: ColorOptionsView.draft.background;
+                label: "Background"; field: 1; value <=> ColorOptionsView.draft.background;
                 resolved: ColorOptionsView.preview-background-set ? ColorOptionsView.preview-background : Theme.pane-background;
                 edited(value) => { ColorOptionsView.draft.background = value; ColorOptionsView.edit(ColorOptionsView.draft); }
             }

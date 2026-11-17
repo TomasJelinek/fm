@@ -1,8 +1,8 @@
 //! Embedded filter presentation; Presenter retains captured navigation and validation.
 use crate::{
-    MainWindow, PanelFilterPresentation, PanelFilterWindow, Presenter,
+    MainWindow, PanelFilterPresentation, Presenter,
     dialog_focus::{FocusReturn, restore_after_popup},
-    dialog_presentation::DialogThemeTarget,
+    presentation_eq::same_image,
 };
 use midnight_core::{Command, FilterMode, PanelFilter};
 use slint::{ComponentHandle, SharedString};
@@ -23,20 +23,6 @@ struct Context {
     help: RefCell<Option<help::Record>>,
     next_help: Cell<u64>,
     closing: Cell<bool>,
-}
-
-// Standalone wrappers remain useful to exercise the form at native-window sizes.
-impl DialogThemeTarget for PanelFilterWindow {
-    fn apply_theme(
-        &self,
-        scheme: i32,
-        density: i32,
-        family: SharedString,
-        desktop: i32,
-        touch: i32,
-    ) {
-        self.invoke_apply_preferences(scheme, density, family, desktop, touch);
-    }
 }
 
 pub(crate) fn install(
@@ -108,8 +94,12 @@ pub(crate) fn install(
         if let Some(main) = context.main.upgrade() {
             retire(&context, &main);
         }
-        if let Some(state) = context.state.upgrade() {
-            state.borrow_mut().cancel_panel_filter();
+        // Exit closes every tool window, possibly while a refresh or the host's
+        // shutdown timer holds the Presenter. The draft dies with it then.
+        if let Some(state) = context.state.upgrade()
+            && let Ok(mut presenter) = state.try_borrow_mut()
+        {
+            presenter.cancel_panel_filter();
         }
     });
 }
@@ -122,7 +112,12 @@ fn synchronize(ctx: &Rc<Context>, main: &MainWindow, p: &Presenter) {
     let generation = p.filter_dialog.generation;
     let presentation = main.global::<PanelFilterPresentation>();
     presentation.set_model(main.get_panel_filter_view());
-    presentation.set_close_icon(main.get_action_icons().close);
+    // Runs on every refresh while the filter is open; an absent icon never
+    // equals itself, so an unconditional set repaints the form each time.
+    let close = main.get_action_icons().close;
+    if !same_image(&presentation.get_close_icon(), &close) {
+        presentation.set_close_icon(close);
+    }
     if ctx.generation.get() == Some(generation) {
         // The existing controls own edits; status/theme changes never call begin.
         return;

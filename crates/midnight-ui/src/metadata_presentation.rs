@@ -1,10 +1,10 @@
 //! Bounded metadata forms and conflict presentation; native work is sent to the engine.
 use super::*;
+use crate::error_presentation::path_text;
 use i_slint_core::{
     accessibility::AccessibleStringProperty, item_tree::ParentItemTraversalMode,
     items::AccessibleRole, window::WindowInner,
 };
-use std::cell::Cell;
 
 pub(super) fn install_permissions(window: &MainWindow) {
     window.global::<UnixPermissionsCodec>().on_parse(|text| {
@@ -71,11 +71,6 @@ pub(super) fn bind(
             dismiss_controls(&window);
         }
     });
-    window.set_metadata_rows(ModelRc::new(MetadataRows {
-        presenter: state.clone(),
-        revision: Cell::new(None),
-        notify: ModelNotify::default(),
-    }));
     macro_rules! callback {
         ($name:ident, |$p:ident, $s:ident $(, $arg:ident)*| $body:block) => {{
             callback!($name, true, |$p, $s $(, $arg)*| $body);
@@ -118,9 +113,6 @@ pub(super) fn bind(
     callback!(on_cancel_metadata, |p, s, token| {
         p.cancel_metadata(token.as_str(), s);
     });
-    callback!(on_decide_metadata_conflict, |p, s, token, choice| {
-        p.decide_metadata_conflict(token.as_str(), choice, s);
-    });
 }
 
 pub(super) fn refresh(window: &MainWindow, presenter: &Presenter) {
@@ -148,19 +140,6 @@ pub(super) fn refresh(window: &MainWindow, presenter: &Presenter) {
     window.set_metadata_busy(state.busy);
     window.set_metadata_ready(state.can_apply());
     window.set_metadata_preview_current(state.preview_current());
-    if let Some(rows) = window
-        .get_metadata_rows()
-        .as_any()
-        .downcast_ref::<MetadataRows>()
-    {
-        let revision = state
-            .preview
-            .as_ref()
-            .map(|preview| (preview.id, preview.revision));
-        if rows.revision.replace(revision) != revision {
-            rows.notify.reset();
-        }
-    }
     let caps = state
         .preview
         .as_ref()
@@ -246,7 +225,7 @@ pub(super) fn show_conflict(window: &MainWindow, conflict: &MetadataConflict, fo
     }
     window.set_metadata_conflict_body(format!(
         "Source: {}\nRequested name: {}\n\nThe destination already exists. No existing entry will be overwritten. Skipping leaves this item's remaining changes unapplied; completed changes elsewhere are retained.",
-        conflict.source.display(), conflict.destination.display()).into());
+        path_text(&conflict.source), path_text(&conflict.destination)).into());
     window.set_metadata_conflict_token(token.into());
     window.invoke_show_metadata_conflict();
 }
@@ -300,7 +279,11 @@ fn requested(preview: &MetadataPreview) -> String {
         }
     }
     if let Some(case) = patch.case {
-        changes.push(format!("Filename case: {:?}, {:?}", case.mode, case.scope));
+        changes.push(format!(
+            "Filename case: {}, {}",
+            case_mode_label(case.mode),
+            case_scope_label(case.scope)
+        ));
     }
     if changes.is_empty() {
         changes.push("No changes requested.".into());
@@ -309,6 +292,24 @@ fn requested(preview: &MetadataPreview) -> String {
         changes.push("Includes descendants; children are processed before their parent.".into());
     }
     changes.join("\n")
+}
+
+/// The Case page's choice labels (metadata-controls.slint); keep both equal.
+fn case_mode_label(mode: CaseMode) -> &'static str {
+    match mode {
+        CaseMode::Lower => "lowercase",
+        CaseMode::Upper => "UPPERCASE",
+        CaseMode::Mixed => "Mixed Case",
+        CaseMode::MixedNameLowerExtension => "Mixed name.lower extension",
+    }
+}
+
+fn case_scope_label(scope: CaseScope) -> &'static str {
+    match scope {
+        CaseScope::Whole => "Whole filename",
+        CaseScope::Basename => "Base name",
+        CaseScope::Extension => "Extension",
+    }
 }
 
 fn preview_text(preview: &MetadataPreview) -> String {
@@ -340,117 +341,6 @@ fn preview_status(presenter: &Presenter) -> String {
     }
 }
 
-struct MetadataRows {
-    presenter: Rc<RefCell<Presenter>>,
-    revision: Cell<Option<(OperationId, u64)>>,
-    notify: ModelNotify,
-}
-
-impl Model for MetadataRows {
-    type Data = MetadataFileRow;
-    fn row_count(&self) -> usize {
-        self.presenter
-            .borrow()
-            .metadata
-            .preview
-            .as_ref()
-            .map_or(0, |preview| preview.sample.len().min(MAX_METADATA_TARGETS))
-    }
-    fn row_data(&self, index: usize) -> Option<Self::Data> {
-        if index >= self.row_count() {
-            return None;
-        }
-        let presenter = self.presenter.borrow();
-        let preview = presenter.metadata.preview.as_ref()?;
-        preview.sample.get(index).map(|row| file_row(row, preview))
-    }
-    fn model_tracker(&self) -> &dyn ModelTracker {
-        &self.notify
-    }
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
-}
-
-fn attributes(snapshot: &MetadataSnapshot) -> String {
-    let mut text = Vec::new();
-    if let Some(value) = snapshot.windows_attributes {
-        let flags = [
-            (EDIT_READ_ONLY, "R"),
-            (EDIT_HIDDEN, "H"),
-            (EDIT_SYSTEM, "S"),
-            (EDIT_ARCHIVE, "A"),
-        ]
-        .into_iter()
-        .filter_map(|(flag, label)| (value & flag != 0).then_some(label))
-        .collect::<Vec<_>>();
-        text.push(if flags.is_empty() {
-            "None".into()
-        } else {
-            flags.join(" ")
-        });
-    }
-    if let Some(mode) = snapshot.unix_mode {
-        text.push(format!("{:04o}", mode & 0o7777));
-    }
-    for (label, value) in [
-        ("Compressed", snapshot.compressed),
-        ("Encrypted", snapshot.encrypted),
-    ] {
-        if let Some(value) = value {
-            text.push(format!("{label}: {}", if value { "yes" } else { "no" }));
-        }
-    }
-    if text.is_empty() {
-        "Unavailable".into()
-    } else {
-        text.join(" · ")
-    }
-}
-
-fn file_row(row: &MetadataPreviewRow, preview: &MetadataPreview) -> MetadataFileRow {
-    let patch = &preview.patch;
-    let name = row.path.file_name().unwrap_or_default().to_string_lossy();
-    let proposed = row
-        .proposed_name
-        .as_deref()
-        .map(|name| name.to_string_lossy())
-        .unwrap_or_else(|| name.clone());
-    let attributes = format!(
-        "Current: {}\nProposed: {}",
-        attributes(&row.current),
-        attributes(&row.proposed)
-    );
-    let times = [
-        ("Modified", row.current.modified, patch.modified),
-        ("Created", row.current.created, patch.created),
-        ("Accessed", row.current.accessed, patch.accessed),
-    ]
-    .into_iter()
-    .map(|(label, before, edit)| {
-        let before = before
-            .map(|value| time(value, preview))
-            .unwrap_or_else(|| "Unavailable".into());
-        match edit {
-            TimeEdit::Set(value) => format!("{label}: {before} → {}", time(value, preview)),
-            TimeEdit::Keep => format!("{label}: {before} (unchanged)"),
-            TimeEdit::Now => format!("{label}: {before} → Now (awaiting preview)"),
-        }
-    })
-    .collect::<Vec<_>>()
-    .join("\n");
-    let issue = row
-        .issue
-        .as_ref()
-        .map(|issue| format!("\n{}", crate::error_presentation::describe(issue)))
-        .unwrap_or_default();
-    MetadataFileRow {
-        current_name: name.as_ref().into(), proposed_name: proposed.as_ref().into(),
-        detail: format!("{}\nProposed name: {proposed}\n{attributes}\n{times}\nR = Read-only · H = Hidden · S = System · A = Archive{issue}", row.path.display()).into(),
-        attributes: attributes.into(), times: times.into(), issue: row.issue.is_some(),
-    }
-}
-
 pub(super) fn result_detail(result: &MetadataResult) -> String {
     let mut text = format!(
         "\n{} examined · {} changed · {} skipped · {} failed",
@@ -473,9 +363,10 @@ pub(super) fn result_detail(result: &MetadataResult) -> String {
         .into_iter()
         .filter_map(|(changed, field)| changed.then_some(field))
         .collect::<Vec<_>>();
+        // A name containing a line break must not forge another outcome line.
         text.push_str(&format!(
             "\n{}: {}",
-            item.current_path.display(),
+            path_text(&item.current_path),
             if fields.is_empty() {
                 "unchanged".into()
             } else {
@@ -516,6 +407,37 @@ mod tests {
     }
 
     #[test]
+    fn case_review_uses_the_choice_labels_and_outcomes_escape_line_breaks() {
+        let mut preview = empty_preview(1);
+        preview.patch.case = Some(CaseChange {
+            mode: CaseMode::MixedNameLowerExtension,
+            scope: CaseScope::Basename,
+        });
+        assert_eq!(
+            preview_text(&preview),
+            "Filename case: Mixed name.lower extension, Base name"
+        );
+        let forged = std::path::PathBuf::from("x\n/home/u/.ssh/id_rsa: permissions");
+        let text = result_detail(&MetadataResult {
+            id: OperationId(1),
+            processed: 1,
+            changed: 0,
+            skipped: 0,
+            failed: 0,
+            sample: vec![MetadataOutcome::unchanged(forged)],
+        });
+        assert_eq!(
+            text.lines().count(),
+            4,
+            "one totals line and one outcome line: {text}"
+        );
+        assert!(
+            !text.contains("\n/home/u/.ssh/id_rsa: permissions"),
+            "{text}"
+        );
+    }
+
+    #[test]
     fn initial_inspection_does_not_claim_the_live_draft_has_no_changes() {
         let preview = empty_preview(0);
         let text = preview_text(&preview);
@@ -549,64 +471,8 @@ mod tests {
             },
         );
         assert_eq!(preview_text(&preview), "Modified: 1. 1. 1970 1:00:00");
-        let row = MetadataPreviewRow {
-            path: "žluťoučký.txt".into(),
-            proposed_name: None,
-            current: MetadataSnapshot {
-                modified: Some(UNIX_EPOCH),
-                ..Default::default()
-            },
-            proposed: MetadataSnapshot::default(),
-            issue: None,
-        };
-        assert!(
-            file_row(&row, &preview)
-                .times
-                .contains("Modified: 1. 1. 1970 1:00:00 → 1. 1. 1970 1:00:00")
-        );
-    }
-
-    #[test]
-    fn virtual_rows_preserve_unicode_and_show_requested_metadata_at_the_last_root() {
-        let row = MetadataPreviewRow {
-            path: "ŽLUŤOUČKÝ.TXT".into(),
-            proposed_name: Some("žluťoučký.txt".into()),
-            current: MetadataSnapshot {
-                windows_attributes: Some(EDIT_HIDDEN),
-                modified: Some(UNIX_EPOCH),
-                ..Default::default()
-            },
-            proposed: MetadataSnapshot {
-                windows_attributes: Some(EDIT_READ_ONLY),
-                modified: Some(UNIX_EPOCH + Duration::from_secs(3600)),
-                ..Default::default()
-            },
-            issue: None,
-        };
-        let mut preview = empty_preview(1);
-        preview.patch = MetadataPatch {
-            windows_mask: EDIT_READ_ONLY | EDIT_HIDDEN,
-            windows_value: EDIT_READ_ONLY,
-            modified: TimeEdit::Set(UNIX_EPOCH + Duration::from_secs(3600)),
-            ..Default::default()
-        };
-        preview.sample = vec![row; MAX_METADATA_TARGETS];
-        let mut presenter = Presenter::new(".".into(), ".".into());
-        presenter.metadata.preview = Some(Arc::new(preview));
-        let rows = MetadataRows {
-            presenter: Rc::new(RefCell::new(presenter)),
-            revision: Cell::new(None),
-            notify: ModelNotify::default(),
-        };
-        assert_eq!(rows.row_count(), 256);
-        let last = rows.row_data(255).unwrap();
-        assert_eq!(last.current_name.as_str(), "ŽLUŤOUČKÝ.TXT");
-        assert_eq!(last.proposed_name.as_str(), "žluťoučký.txt");
-        assert_eq!(last.attributes.as_str(), "Current: H\nProposed: R");
-        assert!(
-            last.times
-                .contains("1970-01-01 00:00:00 UTC → 1970-01-01 01:00:00 UTC")
-        );
-        assert!(rows.row_data(256).is_none());
+        // Times without a worker-localized value use the UTC fallback.
+        preview.patch.modified = TimeEdit::Set(UNIX_EPOCH + Duration::from_secs(3600));
+        assert_eq!(preview_text(&preview), "Modified: 1970-01-01 01:00:00 UTC");
     }
 }

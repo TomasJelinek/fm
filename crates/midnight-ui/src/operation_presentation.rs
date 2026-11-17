@@ -16,12 +16,20 @@ pub(super) fn title(kind: MutationKind) -> &'static str {
 pub(super) fn refresh(window: &MainWindow, presenter: &Presenter) {
     let state = &presenter.operations;
     if state.closing && !presenter.has_live_operations() {
+        // Exit waited for live work, showing Jobs. Close every tool window
+        // with the main window, or a visible Jobs window keeps the app running.
+        close_tool_windows(window);
         let _ = window.hide();
     }
     let rows = job_presentation::rows(presenter);
-    update_model(window.get_operations(), rows, |model| {
-        window.set_operations(model)
-    });
+    // Copy/Move/Run often have no native icon; an absent image never equals
+    // itself, so plain equality would replace this model on every refresh.
+    update_model_by(
+        window.get_operations(),
+        rows,
+        OperationRow::same_presentation,
+        |model| window.set_operations(model),
+    );
     copy_presentation::refresh(window, presenter);
     let Some(preview) = &state.preview else {
         window.set_operation_token("".into());

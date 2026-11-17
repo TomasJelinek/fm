@@ -80,5 +80,5 @@ export component PanelWarning inherits Rectangle {
             clicked => { self.completed = self.armed; }
         }
     }
-    Tooltip { TipBody { text: root.detail; } }
+    if root.detail != "": Tooltip { TipBody { text: root.detail; } }
 }

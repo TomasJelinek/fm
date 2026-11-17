@@ -42,7 +42,8 @@ fn restored_origin_adds_user_position_and_preserves_all_other_wm_hints() {
 }
 
 #[test]
-fn repeated_position_hints_keep_physical_coordinates_without_decoration_or_scale_drift() {
+// Decoration/scale drift needs a real window: midnight-explorer window_state/linux_tests.rs.
+fn repeated_position_hints_keep_the_requested_physical_coordinates() {
     let position = slint::PhysicalPosition::new(-1825, -357);
     let expected = position_hints(existing_hints(), position);
     let mut updated = expected;

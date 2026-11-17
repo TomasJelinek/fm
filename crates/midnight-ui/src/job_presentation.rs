@@ -10,11 +10,6 @@ mod meter;
 #[path = "job_presentation_tests.rs"]
 mod tests;
 
-pub(crate) fn install(window: &MainWindow) {
-    window.global::<JobsView>().on_find(find);
-    window.global::<JobsView>().on_has_finished(has_finished);
-}
-
 pub(crate) fn has_finished(rows: ModelRc<OperationRow>, without_errors: bool) -> bool {
     rows.iter()
         .any(|row| !row.active && (!without_errors || !row.failed))
@@ -153,7 +148,7 @@ fn mutation(p: &Presenter, progress: &OperationProgress) -> OperationRow {
     let mut detail = format!(
         "{}\n{state}\n\n{}",
         operation_presentation::title(progress.kind),
-        operation_detail::detail(progress, &metadata)
+        operation_detail::detail(progress, &metadata, &p.number_locale)
     );
     append_discovery(&mut detail, &progress.discovery, &p.number_locale);
     if !progress.message.is_empty() {

@@ -25,15 +25,17 @@ export component PanelFilterDialog inherits Rectangle {
     callback clear();
     callback help();
     callback move-dialog(length, length);
-    changed width => { if root.input-enabled && root.width < 400px { footer.focus-dismiss(); } }
-    changed height => { if root.input-enabled && root.height < 280px { footer.focus-dismiss(); } }
+    // Move focus once when the compact layout begins (it can clip the focused
+    // field); resizing inside it must not take focus from the edited field.
+    private property <bool> compact: root.width < 400px || root.height < 280px;
+    changed compact => { if root.input-enabled && root.compact { footer.focus-dismiss(); } }
     public function begin() {
         mode.current-index = root.model.mode;
         expression.text = root.model.expression;
         names.checked = root.model.case-sensitive;
         history.current-index = 0;
         if !root.input-enabled { return; }
-        if root.width < 400px || root.height < 280px { footer.focus-dismiss(); }
+        if root.compact { footer.focus-dismiss(); }
         else { expression.focus(); }
     }
     background: Theme.surface; border-radius: 8px;

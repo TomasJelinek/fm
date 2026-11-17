@@ -7,15 +7,16 @@ pub(super) fn install(
     _send: Rc<dyn Fn(Command) -> bool>,
     begin_owned: crate::BeginOwned,
 ) {
+    // The shipped Copy/Move form confirms through OperationPresentation
+    // (operation_windows.rs); this MainWindow callback remains for tests only.
     let weak = window.as_weak();
-    let state = presenter.clone();
-    let begin_confirm = begin_owned.clone();
+    let state = presenter;
     window.on_confirm_copy_draft(move |token, destination| {
         let Some(window) = weak.upgrade() else {
             return;
         };
         // Claim before the Presenter action clones a captured draft or builds a request.
-        if crate::with_owned_commands(&state, &begin_confirm, |p, send| {
+        if crate::with_owned_commands(&state, &begin_owned, |p, send| {
             if window.get_copy_draft_wait() {
                 p.confirm_copy_dialog_options(
                     token.as_str(),
@@ -48,24 +49,6 @@ pub(super) fn install(
         if let Ok(p) = state.try_borrow() {
             crate::refresh(&window, &p);
         }
-    });
-    let weak = window.as_weak();
-    window.on_cancel_copy_draft(move |token| {
-        let Some(window) = weak.upgrade() else {
-            return;
-        };
-        if crate::with_owned_commands(&presenter, &begin_owned, |p, _| {
-            p.cancel_copy_dialog(token.as_str());
-        })
-        .is_none()
-            && let Ok(mut p) = presenter.try_borrow_mut()
-        {
-            p.defer_cancel_copy_dialog(token.as_str());
-        }
-        if let Ok(p) = presenter.try_borrow() {
-            crate::refresh(&window, &p);
-        }
-        window.invoke_focus_files();
     });
 }
 

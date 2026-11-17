@@ -5,7 +5,14 @@ import { DialogResizeEdge } from "dialog-resize.slint";
 import { CloseButton } from "close-button.slint";
 
 // Retain the top dialog's focus when an asynchronous update closes a lower popup.
-export global PopupFocus { callback update(); }
+// `mark-key-focus` (in a capture handler) and `key-moved-focus` (in the bubbling
+// handler of the same key) tell a dialog-wide default key whether the focused
+// control already acted on that key by moving focus, e.g. opening a popup.
+export global PopupFocus {
+    callback update();
+    callback mark-key-focus();
+    callback key-moved-focus() -> bool;
+}
 
 // Each top-level native dialog sets this in its own component context. Its OS
 // titlebar supplies native movement/resizing; all forms retain the themed header.

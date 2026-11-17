@@ -1,5 +1,5 @@
 //! Presentation of measured native fields, with exact bytes alongside readable values.
-use crate::format_size;
+use crate::{error_presentation::path_text, format_size};
 use midnight_core::{NumberLocale, StorageKind, VolumeInformation, VolumeProperty};
 use std::path::Path;
 
@@ -9,12 +9,13 @@ pub(crate) fn body(
     info: &VolumeInformation,
     locale: &NumberLocale,
 ) -> String {
-    let mut lines = vec![format!("{context}: {}", path.display())];
+    // Paths keep their identity and cannot add lines to the copied report.
+    let mut lines = vec![format!("{context}: {}", path_text(path))];
     lines.push(format!(
         "Volume / mount: {}",
         info.root
-            .as_ref()
-            .map_or_else(|| "Unavailable".into(), |root| root.display().to_string())
+            .as_deref()
+            .map_or_else(|| "Unavailable".into(), path_text)
     ));
     for (label, value) in [
         ("Volume label", &info.label),

@@ -50,22 +50,28 @@ pub(crate) fn refresh(window: &MainWindow, presenter: &Presenter) {
         .extension_draft
         .as_ref()
         .filter(|draft| current.is_some_and(|plugin| plugin.id == draft.id));
-    view.set_extensions(
-        draft
-            .map_or_else(
-                || {
-                    current.map_or_else(String::new, |plugin| {
-                        associations
-                            .overrides
-                            .get(&plugin.id)
-                            .unwrap_or(&plugin.extensions)
-                            .join("; ")
-                    })
-                },
-                |draft| draft.text.clone(),
-            )
-            .into(),
-    );
+    // The editor binds two-way to `extensions`. A refused (over-long) entry
+    // stays visible with its error so it can be shortened; the Presenter keeps
+    // the last accepted draft, and OK and viewer changes stay blocked until an
+    // accepted edit, Reset or Cancel clears the refusal.
+    if !state.extension_input_rejected {
+        view.set_extensions(
+            draft
+                .map_or_else(
+                    || {
+                        current.map_or_else(String::new, |plugin| {
+                            associations
+                                .overrides
+                                .get(&plugin.id)
+                                .unwrap_or(&plugin.extensions)
+                                .join("; ")
+                        })
+                    },
+                    |draft| draft.text.clone(),
+                )
+                .into(),
+        );
+    }
     view.set_extension_override(
         draft.is_some()
             || state.extension_input_rejected

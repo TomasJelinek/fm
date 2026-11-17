@@ -9,7 +9,7 @@ export component AboutDialog inherits Rectangle {
     in property <image> application-icon;
     in property <image> close-icon;
     callback close();
-    callback move-dialog(length, length);
+    // Hosted only by the native AboutWindow: the system title bar moves it.
     background: Theme.surface;
     init => { close-button.focus(); }
     FocusScope {
@@ -20,10 +20,9 @@ export component AboutDialog inherits Rectangle {
         VerticalLayout {
             padding: 8px; spacing: 6px;
             DialogHeader {
-                title: "Midnight Explorer"; text-size: 18px; compact: true;
+                title: "Midnight Explorer"; text-size: Theme.font-size * 1.5; compact: true;
                 native-icon: root.application-icon;
                 close-label: "Close dialog"; close => { root.close(); }
-                dragged(dx, dy) => { root.move-dialog(dx, dy); }
             }
             ScrollView {
                 min-height: 0px; vertical-stretch: 1;

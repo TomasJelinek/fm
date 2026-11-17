@@ -109,7 +109,6 @@ export component MainWindow inherits Window {
         }
     }
     callback open-help-window();
-    in-out property <int> help-topic: 0;
     callback open-about-window();
     callback open-notice-window();
     callback refresh-information-windows();
@@ -125,8 +124,8 @@ export component MainWindow inherits Window {
     callback thumbnail-clear-cache();
     callback thumbnail-options-changed(bool, bool, bool, int);
     callback thumbnail-size-changed(int);
-    in property <bool> thumbnails-enabled: true;
-    in property <bool> thumbnails-network: false;
+    in-out property <bool> thumbnails-enabled: true;
+    in-out property <bool> thumbnails-network: false;
     in-out property <bool> thumbnails-archives: true;
     in property <int> thumbnail-size: 96;
     in property <string> thumbnail-cache-location;
@@ -147,14 +146,11 @@ export component MainWindow inherits Window {
     in property <int> drag-hover-pane: -1;
     in property <int> drag-hover-row: -1;
     in property <string> drag-label;
-    in property <[string]> keyboard-actions;
-    in property <int> keyboard-selected;
-    in property <string> keyboard-action-id;
+    // Legacy test surface for the selected shortcut (Options uses
+    // KeyboardEditorView); remove once no test reads or invokes it.
     in property <string> keyboard-bindings;
-    in property <string> keyboard-revision;
     in property <string> keyboard-scope;
     in property <string> keyboard-error;
-    callback keyboard-select(int);
     callback keyboard-apply(string, string);
     callback keyboard-restore(string);
     callback keyboard-restore-all();
@@ -206,7 +202,6 @@ export component MainWindow inherits Window {
     in property <bool> network-available;
     in property <bool> network-discovery-available;
     callback mutation(int, int);
-    callback confirm-operation(string, string);
     callback cancel-operation(string);
     callback cancel-job(string);
     callback pause-job(string, bool);
@@ -215,7 +210,6 @@ export component MainWindow inherits Window {
     callback network-connections(bool);
     callback refresh-operation-windows();
     callback close-operation-windows();
-    public function begin-operation() { root.refresh-operation-windows(); }
     out property <bool> operations-visible;
     callback open-job-progress(string);
     callback refresh-jobs-window(bool);
@@ -243,7 +237,6 @@ export component MainWindow inherits Window {
     in property <string> copy-target-details;
     callback decide-copy(string, int, string);
     callback resolve-copy(string);
-    callback defer-copy(string);
     public function show-copy-conflict() { root.open-decision-window(false, false); }
     public function close-copy-conflict() { root.close-decision-window(false); }
     in property <string> copy-draft-token;
@@ -257,11 +250,8 @@ export component MainWindow inherits Window {
     in property <bool> copy-draft-metadata-enabled;
     in-out property <bool> copy-draft-preserve-time;
     callback confirm-copy-draft(string, string);
-    callback cancel-copy-draft(string);
-    public function show-copy-draft() { root.drag-invalidate-targets(); root.refresh-operation-windows(); }
     in property <string> metadata-conflict-token;
     in property <string> metadata-conflict-body;
-    callback decide-metadata-conflict(string, int);
     public function show-metadata-conflict() { root.open-decision-window(true, false); }
     public function close-metadata-conflict() { root.close-decision-window(true); }
     in property <string> metadata-token;
@@ -659,11 +649,8 @@ export component MainWindow inherits Window {
         else { ColorOptionsView.picker-field = -1; options.close(); root.focus-files(); }
         PopupFocus.update();
     }
-    in property <string> editor-default-label;
-    in property <string> editor-executable;
-    in property <string> editor-arguments;
-    in property <string> editor-revision;
-    in property <string> editor-error;
+    // Legacy single-editor callbacks: never invoked. Kept only while
+    // Presenter::change_editor/restore_editor still exist; remove together.
     callback editor-apply(string, string);
     callback editor-restore();
     callback terminal-changed(int);
@@ -716,13 +703,12 @@ export component MainWindow inherits Window {
     public function apply-file-input-action(pane: int, action: int) {
         if pane == 0 { left.apply-input-action(action); } else { right.apply-input-action(action); }
     }
-    private property <int> main-menu-generation;
     public function show-app-menu(menu: int) {
         root.drag-invalidate-targets();
-        if menu == 0 { root.help-topic = 0; root.open-help-window(); } else if menu == 1 { user-menu.show(); }
-        else { root.main-menu-generation += 1; main-menu.show(); }
+        // Each show instantiates the menu popup anew; its init resets it.
+        if menu == 0 { root.open-help-window(); } else if menu == 1 { user-menu.show(); }
+        else { main-menu.show(); }
     }
-    public function show-filter-help() { root.help-topic = 1; root.open-help-window(); }
     public function show-about() { root.drag-invalidate-targets(); root.open-about-window(); }
     public function show-bookmarks(pane: int) {
         root.open-hot-paths-window(pane);
@@ -1298,7 +1284,7 @@ export component MainWindow inherits Window {
                 token: root.metadata-token; revision: root.metadata-revision;
                 summary: root.metadata-summary; preview-text: root.metadata-preview-text;
                 timestamp-example: root.metadata-timestamp-example;
-                rows: root.metadata-rows; list-status: root.metadata-list-status;
+                list-status: root.metadata-list-status;
                 preview-current: root.metadata-preview-current;
                 error: root.metadata-error; ready: root.metadata-ready; busy: root.metadata-busy;
                 can-windows: root.metadata-can-windows; windows-mask: root.metadata-windows-mask;
@@ -1372,7 +1358,6 @@ export component MainWindow inherits Window {
             desired-width: max(480px, Theme.font-size * 22);
             desired-height: max(600px, Theme.font-size * 28);
             dismiss-on-outside: false; dim: true;
-            changed visible => { if self.visible { self.reset(); } }
             color-picker-body := ColorPickerDialog {
                 title: options-frame.picker-field == 0 ? "Foreground color" : "Background color";
                 initial: options-frame.picker-initial; generation: options-frame.picker-generation;
@@ -1431,10 +1416,6 @@ export component MainWindow inherits Window {
             dismiss => { root.cancel-options(); }
             options-body := OptionsBody {
                 move-dialog(dx, dy) => { options-frame.move-by(dx, dy); }
-                editor-default-label: root.editor-default-label; editor-executable: root.editor-executable;
-                editor-arguments: root.editor-arguments; editor-revision: root.editor-revision; editor-error: root.editor-error;
-                editor-apply(executable, arguments) => { root.editor-apply(executable, arguments); }
-                editor-restore => { root.editor-restore(); }
                 action-icons: root.action-icons;
                 topic-index <=> root.options-topic-index;
                 theme-index: root.theme-index; density-index: root.density-index;
@@ -1444,13 +1425,13 @@ export component MainWindow inherits Window {
                 options-busy: root.options-busy; options-saving: root.options-committing;
                 preferences-saving: root.preferences-saving; preferences-ready: root.preferences-ready;
                 preferences-save-status: root.preferences-save-status; preferences-save-failed: root.preferences-save-failed;
-                quick-search-filter: root.quick-search-filter; sizes-in-bytes: root.sizes-in-bytes;
-                remember-command-history: root.remember-command-history;
-                copy-checksum-verification: root.copy-checksum-verification;
+                quick-search-filter <=> root.quick-search-filter; sizes-in-bytes <=> root.sizes-in-bytes;
+                remember-command-history <=> root.remember-command-history;
+                copy-checksum-verification <=> root.copy-checksum-verification;
                 disk-io-concurrency-index: root.disk-io-concurrency-index;
                 command-history-empty: root.command-history.length == 0;
-                thumbnails-enabled: root.thumbnails-enabled;
-                thumbnails-network: root.thumbnails-network;
+                thumbnails-enabled <=> root.thumbnails-enabled;
+                thumbnails-network <=> root.thumbnails-network;
                 thumbnails-archives <=> root.thumbnails-archives;
                 thumbnail-size: root.thumbnail-size;
                 thumbnail-cache-location: root.thumbnail-cache-location;
@@ -1507,7 +1488,6 @@ export component MainWindow inherits Window {
             main-menu-body := MainMenuBody {
                 can-measure-folders: root.active-pane == 0 ? root.left-can-measure-folders : root.right-can-measure-folders;
                 icons: root.action-icons;
-                generation: root.main-menu-generation;
                 can-target-cursor: root.active-pane == 0 ? root.left-can-target-cursor : root.right-can-target-cursor;
                 can-target-selection: root.active-pane == 0 ? root.left-can-target-selection : root.right-can-target-selection;
                 native-filesystem: root.active-pane == 0 ? root.left-native-filesystem : root.right-native-filesystem;

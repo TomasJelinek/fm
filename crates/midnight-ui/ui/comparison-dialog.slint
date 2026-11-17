@@ -20,15 +20,17 @@ export component CompareDirectoriesDialog inherits Rectangle {
     callback cancel();
     callback move-dialog(length, length);
     // Shrinking can clip the focused field and clear Slint's focus entirely.
-    changed width => { if root.width < 400px { footer.focus-dismiss(); } }
-    changed height => { if root.height < 350px { footer.focus-dismiss(); } }
+    // Move focus once when the compact layout begins; resizing inside it must
+    // not take focus from the field being edited.
+    private property <bool> compact: root.width < 400px || root.height < 350px;
+    changed compact => { if root.compact { footer.focus-dismiss(); } }
     public function begin() {
         sizes.checked = root.model.by-size;
         times.checked = root.model.by-modified;
         names.checked = root.model.case-sensitive;
         tolerance.text = root.model.tolerance-seconds;
         directories.checked = root.model.unmatched-directories;
-        if root.width < 400px || root.height < 350px {
+        if root.compact {
             footer.focus-dismiss();
         } else {
             sizes.focus();

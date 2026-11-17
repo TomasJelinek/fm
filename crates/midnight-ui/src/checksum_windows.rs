@@ -106,6 +106,10 @@ struct Record {
     destination_revision: u64,
     manifest_revision: u64,
     suggested: Option<std::path::PathBuf>,
+    /// Algorithm set behind the published output models. `ModelRc` compares by
+    /// identity, so republishing equal models would reset both output choosers
+    /// and every visible result row on each checksum batch.
+    output_algorithms: Option<ChecksumAlgorithms>,
 }
 type Windows = Rc<RefCell<HashMap<ChecksumJobId, Record>>>;
 
@@ -295,34 +299,10 @@ fn refresh(
         );
         w.set_progress(progress(s, &p.number_locale).into());
         w.set_details(details(s, &p.number_locale).into());
-        w.set_output_available(
-            Rc::new(slint::VecModel::from(
-                OUTPUT_ALGORITHMS
-                    .iter()
-                    .map(|&a| s.algorithms.contains(a))
-                    .collect::<Vec<_>>(),
-            ))
-            .into(),
-        );
-        let output_indices: Vec<i32> = OUTPUT_ALGORITHMS
-            .iter()
-            .enumerate()
-            .filter_map(|(index, &algorithm)| {
-                s.algorithms.contains(algorithm).then_some(index as i32)
-            })
-            .collect();
-        let output_labels: Vec<slint::SharedString> = output_indices
-            .iter()
-            .map(|&index| OUTPUT_ALGORITHMS[index as usize].label().into())
-            .collect();
-        w.set_output_values(Rc::new(slint::VecModel::from(output_indices)).into());
-        w.set_output_labels(Rc::new(slint::VecModel::from(output_labels)).into());
-        let formats: Vec<slint::SharedString> = OUTPUT_ALGORITHMS
-            .iter()
-            .filter(|&&a| s.algorithms.contains(a))
-            .map(|a| format!("{} (*.{})", a.label(), a.extension()).into())
-            .collect();
-        w.set_format_labels(Rc::new(slint::VecModel::from(formats)).into());
+        if record.output_algorithms != Some(s.algorithms) {
+            record.output_algorithms = Some(s.algorithms);
+            publish_outputs(w, s.algorithms);
+        }
         let first = s
             .algorithms
             .iter()
@@ -571,6 +551,7 @@ fn create(
         revision: None,
         destination_revision: 0,
         manifest_revision: 0,
+        output_algorithms: None,
         suggested: state
             .borrow()
             .checksums
@@ -603,6 +584,35 @@ fn draft(s: &ChecksumSession) -> ChecksumDraft {
         crc32: s.algorithms.contains(ChecksumAlgorithm::Crc32),
         recursive: s.recursive,
     }
+}
+/// The output choosers and result columns for a captured algorithm set.
+fn publish_outputs(w: &ChecksumWindow, algorithms: ChecksumAlgorithms) {
+    w.set_output_available(
+        Rc::new(slint::VecModel::from(
+            OUTPUT_ALGORITHMS
+                .iter()
+                .map(|&a| algorithms.contains(a))
+                .collect::<Vec<_>>(),
+        ))
+        .into(),
+    );
+    let output_indices: Vec<i32> = OUTPUT_ALGORITHMS
+        .iter()
+        .enumerate()
+        .filter_map(|(index, &algorithm)| algorithms.contains(algorithm).then_some(index as i32))
+        .collect();
+    let output_labels: Vec<slint::SharedString> = output_indices
+        .iter()
+        .map(|&index| OUTPUT_ALGORITHMS[index as usize].label().into())
+        .collect();
+    w.set_output_values(Rc::new(slint::VecModel::from(output_indices)).into());
+    w.set_output_labels(Rc::new(slint::VecModel::from(output_labels)).into());
+    let formats: Vec<slint::SharedString> = OUTPUT_ALGORITHMS
+        .iter()
+        .filter(|&&a| algorithms.contains(a))
+        .map(|a| format!("{} (*.{})", a.label(), a.extension()).into())
+        .collect();
+    w.set_format_labels(Rc::new(slint::VecModel::from(formats)).into());
 }
 fn digest(row: &ChecksumRow, algorithm: ChecksumAlgorithm) -> slint::SharedString {
     row.digest(algorithm)
@@ -666,28 +676,59 @@ fn progress(s: &ChecksumSession, locale: &NumberLocale) -> String {
     )
 }
 fn details(s: &ChecksumSession, locale: &NumberLocale) -> String {
-    let mut text = format!(
-        "Captured folder\n{}\n\n{} discovered · {} skipped · {} errors\n{}",
-        s.directory.display(),
-        locale.format_u64(s.progress.discovered),
-        locale.format_u64(s.progress.skipped),
-        locale.format_u64(s.progress.errors),
-        s.save_message
-    );
-    if let Some(path) = &s.progress.current {
-        text.push_str(&format!("\n\nCurrent file\n{}", path.display()));
+    details_text(
+        &s.directory,
+        &s.progress,
+        &s.save_message,
+        s.verification.as_deref(),
+        s.run.as_ref().map(|run| &run.summary),
+        locale,
+    )
+}
+fn details_text(
+    directory: &std::path::Path,
+    progress: &ChecksumProgress,
+    save_message: &str,
+    verification: Option<&std::path::Path>,
+    summary: Option<&ChecksumSummary>,
+    locale: &NumberLocale,
+) -> String {
+    use crate::error_presentation::append_path;
+    // Paths keep their identity and cannot inject lines (see `append_path`).
+    let mut text = String::from("Captured folder\n");
+    append_path(&mut text, directory);
+    text.push_str(&format!(
+        "\n\n{} discovered · {} skipped · {} errors\n{save_message}",
+        locale.format_u64(progress.discovered),
+        locale.format_u64(progress.skipped),
+        locale.format_u64(progress.errors),
+    ));
+    if let Some(path) = &progress.current {
+        text.push_str("\n\nCurrent file\n");
+        append_path(&mut text, path);
     }
-    if let Some(path) = &s.verification {
-        text.push_str(&format!("\n\nChecksum file\n{}", path.display()));
+    if let Some(path) = verification {
+        text.push_str("\n\nChecksum file\n");
+        append_path(&mut text, path);
     }
-    if let Some(run) = &s.run {
-        if !run.summary.reached_budgets.is_empty() {
+    if let Some(summary) = summary {
+        if !summary.reached_budgets.is_empty() {
+            let limits: Vec<_> = summary
+                .reached_budgets
+                .iter()
+                .map(|budget| match budget {
+                    ChecksumBudget::Rows => "result rows",
+                    ChecksumBudget::Depth => "folder depth",
+                    ChecksumBudget::Nodes => "visited entries",
+                    ChecksumBudget::RetainedBytes => "retained memory",
+                })
+                .collect();
             text.push_str(&format!(
-                "\n\nReached resource limits: {:?}",
-                run.summary.reached_budgets
+                "\n\nReached resource limits: {}",
+                limits.join(", ")
             ));
         }
-        for error in &run.summary.diagnostics {
+        for error in &summary.diagnostics {
             text.push_str(&format!(
                 "\n\n{}",
                 crate::error_presentation::describe(error)
@@ -695,4 +736,135 @@ fn details(s: &ChecksumSession, locale: &NumberLocale) -> String {
         }
     }
     text
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn details_name_limits_in_words_and_keep_paths_on_their_own_lines() {
+        let progress = ChecksumProgress {
+            discovered: 12_345,
+            current: Some("folder/a\nCurrent file\nforged.txt".into()),
+            ..Default::default()
+        };
+        let summary = ChecksumSummary {
+            completion: ChecksumCompletion::Incomplete,
+            progress: progress.clone(),
+            reached_budgets: vec![ChecksumBudget::Rows, ChecksumBudget::RetainedBytes],
+            diagnostics: Vec::new(),
+        };
+        let locale = NumberLocale {
+            decimal_separator: ",".into(),
+            group_separator: ".".into(),
+            grouping: vec![3],
+            repeat_last_group: true,
+        };
+        let text = details_text(
+            std::path::Path::new("folder"),
+            &progress,
+            "",
+            None,
+            Some(&summary),
+            &locale,
+        );
+        assert!(text.contains("12.345 discovered"), "{text}");
+        assert!(
+            text.contains("Reached resource limits: result rows, retained memory"),
+            "{text}"
+        );
+        assert_eq!(
+            text.lines().filter(|line| *line == "Current file").count(),
+            1,
+            "{text}"
+        );
+        assert!(!text.contains("\nforged.txt"), "{text}");
+    }
+
+    #[test]
+    fn checksum_updates_keep_the_output_models_of_an_unchanged_algorithm_set() {
+        let h = crate::test_harness::Harness::with_location(
+            UserPreferences::default(),
+            std::env::temp_dir(),
+        );
+        let state = h.presenter.clone();
+        let send: Rc<dyn Fn(Command) -> bool> = Rc::new(|_| true);
+        state
+            .borrow_mut()
+            .request_checksums(PaneId::Left, send.as_ref());
+        let id = *state
+            .borrow()
+            .checksums
+            .sessions
+            .keys()
+            .next()
+            .expect("an empty panel opens a checksum session");
+        // Drive this module's refresh directly to reach the window it creates.
+        let windows: Windows = Rc::default();
+        let sessions = RefCell::new(DialogSessions::default());
+        let closing = Rc::new(Cell::new(false));
+        let failures = Failures::new(
+            &h.window,
+            &state,
+            &send,
+            &closing,
+            "Checksums",
+            Presenter::close_checksums,
+        );
+        let update = || refresh(&h.window, &windows, &sessions, &state, &send, &failures);
+        let outputs = || {
+            let records = windows.borrow();
+            let window = &records[&id].window;
+            (
+                window.get_output_labels(),
+                window.get_output_values(),
+                window.get_output_available(),
+                window.get_format_labels(),
+            )
+        };
+        update();
+        let published = outputs();
+        let algorithms = state.borrow().checksums.sessions[&id].algorithms;
+        assert!(
+            state
+                .borrow_mut()
+                .start_checksums(id, algorithms, false, send.as_ref())
+        );
+        update();
+        let generation = state.borrow().checksums.sessions[&id].generation;
+        for discovered in 1..=3 {
+            state
+                .borrow_mut()
+                .apply(Event::Checksum(Box::new(ChecksumEvent {
+                    job: id,
+                    generation,
+                    update: ChecksumUpdate::Progress(ChecksumProgress {
+                        discovered,
+                        ..Default::default()
+                    }),
+                })));
+            update();
+            // ModelRc equality is identity: a republished model resets both
+            // output choosers and every visible result row.
+            assert!(
+                outputs() == published,
+                "progress {discovered} republished the output models"
+            );
+        }
+        // Verification narrows the session to the manifest's algorithm.
+        assert!(!algorithms.contains(ChecksumAlgorithm::Md5));
+        state
+            .borrow_mut()
+            .apply(Event::Checksum(Box::new(ChecksumEvent {
+                job: id,
+                generation,
+                update: ChecksumUpdate::Verifying(ChecksumAlgorithm::Md5),
+            })));
+        update();
+        let republished = outputs();
+        assert!(republished != published, "a new algorithm set republishes");
+        assert_eq!(republished.0.row_count(), 1);
+        assert_eq!(republished.0.row_data(0).unwrap(), "MD5");
+    }
 }
