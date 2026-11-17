@@ -1,4 +1,6 @@
 //! Streaming UTF-8 generation to a private, sealed temporary file.
+#[path = "file_list_spool.rs"]
+mod spool_root;
 #[cfg(test)]
 #[path = "file_list_worker_tests.rs"]
 mod tests;
@@ -6,7 +8,7 @@ use super::file_list_actor::{Retention, sizes::Captured};
 use super::file_list_records::{captured_record, check, error, selected};
 use crate::retirement::{RetirementLease, WorkerOwned};
 use midnight_core::*;
-use midnight_worker_platform::spool::{MAX_IO, PrivateSpoolDirectory, Spool};
+use midnight_worker_platform::spool::{MAX_IO, Spool};
 use std::{collections::BTreeMap, fmt, io, sync::Arc};
 
 pub(super) struct OutputReservation {
@@ -116,12 +118,7 @@ pub(super) fn generate_with_sizes(
     let mut spool = if preview {
         None
     } else {
-        let directory = std::env::temp_dir().join("MidnightExplorer-file-list");
-        Some(
-            PrivateSpoolDirectory::open(&directory)
-                .and_then(|root| root.create())
-                .map_err(|e| error(e.to_string()))?,
-        )
+        Some(spool_root::create().map_err(|e| error(e.to_string()))?)
     };
     let mut text = String::new();
     let mut truncated = false;
