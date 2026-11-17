@@ -131,6 +131,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let weak = window.as_weak();
     let timer = slint::Timer::default();
     let mut step = 0u32;
+    // Alternate from the size actually applied. Tick parity would repeat the
+    // current size after a skipped tick, producing no resize and no sample.
+    let mut wide = true;
     timer.start(
         slint::TimerMode::Repeated,
         Duration::from_millis(100),
@@ -145,12 +148,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             // Allow glyph and pipeline caches to warm before the first resize sample.
             if step >= 8 && pending.borrow().is_none() {
                 *pending.borrow_mut() = Some(Instant::now());
+                wide = !wide;
                 window.window().set_size(slint::LogicalSize::new(
-                    if step.is_multiple_of(2) {
-                        1240.0
-                    } else {
-                        1340.0
-                    },
+                    if wide { 1340.0 } else { 1240.0 },
                     820.0,
                 ));
             }
