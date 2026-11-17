@@ -34,6 +34,10 @@ On Linux:
 bash plugins/viewer-conformance/tests/test-linux.sh _build/release/libmidnight_viewer_conformance.so BUNDLE/include _build/conformance/linux
 ```
 
+The repository CI workflow does not run these native tests yet. Run them manually
+with the commands above on both Windows and Linux whenever the public API/SDK or
+the plugin ABI changes, and record the result with the change.
+
 For an exported project, set `CARGO_TARGET_DIR` and temporary/cache directories
 below its common `_build` directory. The tests exercise the actual loaded native
 library. One scenario deliberately panics inside Rust: its panic hook prints to

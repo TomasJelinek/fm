@@ -965,7 +965,7 @@ comparison and explicit overwrite policy before publication.
 ### Internal viewers
 
 F3 opens the independent image viewer for PNG, JPEG, GIF, WebP, BMP, ICO and TIFF,
-Markdown for `.md`/`.markdown`, source highlighting for the package's
+Markdown for `.md`/`.markdown`/`.mdown`/`.mkd`, source highlighting for the package's
 [supported language catalogue](plugins/midnight-viewer-source/README.md), and the basic
 text/hex viewer for other files. Alt+F3 always requests the basic plugin's Text mode,
 including for binary input. The mode selector changes between modes supported by
