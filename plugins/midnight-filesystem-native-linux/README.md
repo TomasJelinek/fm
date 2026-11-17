@@ -55,8 +55,9 @@ apply), so the stage never lets other users change more than the protected
 parent does. Permission bits protect only where the kernel enforces them: FUSE
 mounts with `allow_other` but without `default_permissions` and CIFS mounts
 with `noperm` exclude other local users only as far as their server does. A
-stage this provider refuses is removed again. The stage and parent directories are synced (up to three directory syncs
-per Rename) and results report `durability_confirmed: true`. On case-insensitive
+stage this provider refuses is removed again. The stage and parent directories
+are synced (up to three directory syncs per Rename) and results report
+`durability_confirmed: true`. On case-insensitive
 mounts a case-only change of a single-link entry or a directory is published
 like any other name; another hard link of the source remains a conflict.
 Recoverable replacement of a regular file (`RENAME_EXCHANGE`, displaced target
