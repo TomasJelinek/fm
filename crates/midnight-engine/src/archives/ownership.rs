@@ -68,6 +68,17 @@ impl ArchiveMount for GuardedMount {
     fn release_on_worker(self: Arc<Self>) -> Result<(), FsError> {
         let mut reference = Retained::new(self);
         if reference.get().cleanup_unconfirmed() {
+            // The tainted session stays quarantined, yet only its host can end the
+            // worker and return the archive process permit. The last wrapper hands
+            // its reference over; a shared wrapper reference stays retained.
+            match Arc::try_unwrap(reference.take()) {
+                Ok(mut mount) => {
+                    if let Some(owner) = mount.0.take() {
+                        release_tainted(owner);
+                    }
+                }
+                Err(shared) => std::mem::forget(shared),
+            }
             return Err(nested::unconfirmed());
         }
         let Some(mut mount) = Arc::into_inner(reference.take()) else {
@@ -205,6 +216,31 @@ impl Retirement {
         let mounts = Mounts::new(retirement.domain.clone());
         let mount = mounts.adopt(source).unwrap();
         (mount, retirement.domain, mounts.retained.clone())
+    }
+}
+
+/// Give a tainted session's host reference its final release. The host stops the
+/// worker and returns its process permit but keeps the tainted source; this
+/// wrapper's retained-mount slot and cleanup lease stay quarantined as well.
+fn release_tainted(owner: WorkerOwned<Native>) {
+    let context = nested::current().unwrap_or_default();
+    let (native, lease) = owner.into_parts();
+    let mut native = Retained::new(native);
+    let _lease = Retained::new(lease);
+    let Some(source) = native.get_mut().source.take() else {
+        return;
+    };
+    // Deliberately not a checked step: a quarantined context must still reach the
+    // host, whose tainted release performs no source teardown.
+    let released =
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| source.release_on_worker()));
+    match released {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => context.record(error),
+        Err(payload) => {
+            std::mem::forget(payload);
+            context.record(nested::unconfirmed());
+        }
     }
 }
 
