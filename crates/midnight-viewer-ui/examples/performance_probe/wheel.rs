@@ -14,18 +14,6 @@ fn send(_: &ViewerWindow, _: i16, _: &super::timeline::Trace) -> Result<(), Stri
     Err("native wheel injection is implemented for Windows only".into())
 }
 
-#[cfg(target_os = "windows")]
-pub(super) fn real_paths() -> std::io::Result<Vec<std::path::PathBuf>> {
-    Ok(native::real_paths())
-}
-#[cfg(not(target_os = "windows"))]
-pub(super) fn real_paths() -> std::io::Result<Vec<std::path::PathBuf>> {
-    Err(std::io::Error::new(
-        std::io::ErrorKind::Unsupported,
-        "Personal real-file cases are configured only for the native Windows wheel probe",
-    ))
-}
-
 #[derive(Clone, Copy, Default)]
 pub(super) struct Options {
     pub sustained: bool,

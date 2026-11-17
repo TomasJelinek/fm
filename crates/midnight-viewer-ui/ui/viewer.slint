@@ -96,6 +96,8 @@ export component ViewerWindow inherits Window {
     out property <bool> content-focused: content-focus.has-focus;
     callback input-key(KeyEvent, bool) -> bool;
     callback scroll(float, float);
+    // Discrete, settled seeks for tests and diagnostic probes. The scrollbars
+    // use drag-seek between position-drag-began and position-drag-ended.
     callback seek(float);
     callback pan(float);
     callback position-drag-began(bool);

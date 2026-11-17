@@ -90,10 +90,10 @@ impl Stripe {
         if self.rows != next.rows || maximum * 2 >= self.rows {
             return None;
         }
-        let maximum = maximum as isize;
+        let limit = maximum as isize;
         let error = |shift: isize| -> f64 {
             let mut total = 0_u64;
-            for row in maximum..self.rows as isize - maximum {
+            for row in limit..self.rows as isize - limit {
                 let old = (row + shift) as usize * COLUMNS;
                 let new = row as usize * COLUMNS;
                 for column in 0..COLUMNS {
@@ -104,22 +104,8 @@ impl Stripe {
             }
             total as f64
         };
-        let candidates: Vec<f64> = (-maximum..=maximum).map(error).collect();
-        let (index, best) = candidates
-            .iter()
-            .enumerate()
-            .min_by(|a, b| a.1.total_cmp(b.1))?;
-        let mut pixels = index as f64 - maximum as f64;
-        if index > 0 && index + 1 < candidates.len() {
-            let left = candidates[index - 1];
-            let right = candidates[index + 1];
-            let curvature = left - 2.0 * best + right;
-            if curvature > 0.0 {
-                pixels += ((left - right) / (2.0 * curvature)).clamp(-0.5, 0.5);
-            }
-        }
-        let unmoved = candidates[maximum as usize];
-        Some((pixels, if unmoved == 0.0 { 1.0 } else { best / unmoved }))
+        let candidates: Vec<f64> = (-limit..=limit).map(error).collect();
+        super::super::shift::fit(&candidates, maximum)
     }
 }
 

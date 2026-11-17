@@ -11,15 +11,23 @@ use slint::{
     },
 };
 use std::{
-    cell::RefCell,
+    cell::{Cell, RefCell},
     rc::Rc,
-    time::{Duration, Instant},
+    time::Duration,
 };
+
+thread_local! {
+    // Widget animations run on this virtual clock; drawing advances it by frames.
+    static CLOCK: Cell<Duration> = const { Cell::new(Duration::ZERO) };
+}
 
 struct TestPlatform(Rc<MinimalSoftwareWindow>);
 impl Platform for TestPlatform {
     fn create_window_adapter(&self) -> Result<Rc<dyn WindowAdapter>, PlatformError> {
         Ok(self.0.clone())
+    }
+    fn duration_since_start(&self) -> Duration {
+        CLOCK.with(Cell::get)
     }
 }
 
@@ -52,8 +60,8 @@ fn draw(
         size: slint::LogicalSize::new(width as f32, height as f32),
     });
     let mut pixels = vec![slint::Rgb8Pixel::default(); (width * height) as usize];
-    let start = Instant::now();
-    loop {
+    // At most two virtual seconds of 16 ms frames, without real sleeping.
+    for frame in 0.. {
         slint::platform::update_timers_and_animations();
         native.draw_if_needed(|renderer| {
             renderer.render(&mut pixels, width as usize);
@@ -61,11 +69,8 @@ fn draw(
         if !window.window().has_active_animations() {
             break;
         }
-        assert!(
-            start.elapsed() < Duration::from_secs(2),
-            "Widget animations did not settle"
-        );
-        std::thread::sleep(Duration::from_millis(10));
+        assert!(frame < 125, "Widget animations did not settle");
+        CLOCK.with(|clock| clock.set(clock.get() + Duration::from_millis(16)));
     }
     if let Some(directory) = std::env::var_os("ME_VIEWER_POLISH_SCREENSHOTS") {
         let directory = std::path::PathBuf::from(directory);
