@@ -142,10 +142,8 @@ fn real_worker_uses_pathless_content_and_retains_exact_native_locator() {
     source.changed.store(true, Ordering::Release);
     assert!(mount.list(1, &cancel).is_err());
     assert!(mount.read(entries[0].id.entry, 0, 1, &cancel).is_err());
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
-    while mount.staging_present() && std::time::Instant::now() < deadline {
-        std::thread::sleep(std::time::Duration::from_millis(10));
-    }
+    // The failed exchange wakes the supervisor, which reclaims staging before its receipt.
+    assert!(mount.supervisor_closed_within(std::time::Duration::from_secs(10)));
     assert!(
         !mount.staging_present(),
         "source change must release stale private storage while mount is still retained"

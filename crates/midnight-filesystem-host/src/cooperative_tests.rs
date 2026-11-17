@@ -5,6 +5,8 @@ use std::io::{Seek, SeekFrom};
 #[derive(Debug, Default)]
 struct Source {
     cancelled: AtomicBool,
+    /// A request token cancelled at the same points as `cancelled`.
+    token: Cancellation,
     validations: AtomicUsize,
     cancel_on_validation: AtomicUsize,
     change_on_validation: AtomicUsize,
@@ -25,6 +27,7 @@ impl ContentSource for Source {
         let count = self.validations.fetch_add(1, Ordering::SeqCst) + 1;
         if count == self.cancel_on_validation.load(Ordering::SeqCst) {
             self.cancelled.store(true, Ordering::Release);
+            self.token.cancel();
         }
         if count == self.stop_on_validation.load(Ordering::SeqCst) {
             self.supervision
@@ -42,6 +45,7 @@ impl ContentSource for Source {
     }
     fn read_at(&self, _: u64, length: u32) -> Result<Vec<u8>, Error> {
         self.cancelled.store(true, Ordering::Release);
+        self.token.cancel();
         Ok(vec![7; length as usize])
     }
 }
@@ -113,10 +117,7 @@ impl Fixture {
                 output,
                 request: 0,
             }),
-            supervision: Arc::new(Supervision {
-                stop: AtomicBool::new(false),
-                deadline: Mutex::new(None),
-            }),
+            supervision: Arc::new(Supervision::new(None)),
             protocol,
             staging: Arc::new(Mutex::new(Some(
                 crate::staging::Staging::open(&temp.path().join("spool")).unwrap(),
@@ -215,6 +216,189 @@ fn cooperative_checkpoints_cancel_then_list_and_read_on_the_same_mount() {
         fixture.source.cancelled.store(false, Ordering::Release);
         fixture.mount.list(1, &Cancellation::default()).unwrap();
         assert_eq!(fixture.read().unwrap(), b"data");
+    }
+}
+
+#[test]
+fn cancelling_a_listing_discards_its_page_and_keeps_the_shared_mount() {
+    let page = |request| Message::Entries {
+        request,
+        entries: vec![],
+        more: false,
+    };
+    for protocol in [Protocol::V1, Protocol::V2, Protocol::V3] {
+        let fixture = Fixture::new(protocol, vec![page(1), page(2)]);
+        // The request token is cancelled while the page exchange is in flight.
+        fixture
+            .source
+            .cancel_on_validation
+            .store(1, Ordering::SeqCst);
+        let token = fixture.source.token.clone();
+        assert_eq!(
+            fixture.mount.list(1, &token).unwrap_err().kind,
+            io::ErrorKind::Interrupted
+        );
+        assert!(
+            !fixture.mount.supervision.stopped(),
+            "{protocol:?}: cancelled listing ended the shared worker"
+        );
+        // Cancellation before a page sends nothing; the next listing reads page two.
+        assert!(fixture.mount.list(1, &token).is_err());
+        assert!(
+            fixture
+                .mount
+                .list(1, &Cancellation::default())
+                .unwrap()
+                .is_empty()
+        );
+    }
+}
+
+#[test]
+fn protocol_three_hard_read_cancellation_is_cooperative_and_keeps_the_mount() {
+    let mut replies = vec![begin(1), source_read(), append(1, 1), cancelled(1)];
+    replies.extend(followup(2));
+    let fixture = Fixture::new(Protocol::V3, replies);
+    let token = fixture.source.token.clone();
+    assert_eq!(
+        fixture.mount.read(2, 0, 4, &token).unwrap_err().kind,
+        io::ErrorKind::Interrupted
+    );
+    assert!(
+        !fixture.mount.supervision.stopped(),
+        "cancelled read killed shared mount"
+    );
+    assert!(fixture.sent().iter().any(|message| matches!(
+        message,
+        Message::Failed {
+            request: 1,
+            code: api::ErrorCode::Cancelled,
+            ..
+        }
+    )));
+    fixture.source.cancelled.store(false, Ordering::Release);
+    fixture.mount.list(1, &Cancellation::default()).unwrap();
+    assert_eq!(fixture.read().unwrap(), b"data");
+}
+
+#[test]
+fn legacy_read_cancellation_drains_the_exchange_and_keeps_the_mount() {
+    for protocol in [Protocol::V1, Protocol::V2] {
+        let mut replies = if protocol == Protocol::V1 {
+            vec![
+                source_read(),
+                Message::Content {
+                    request: 1,
+                    eof: true,
+                    bytes: b"data".to_vec(),
+                },
+            ]
+        } else {
+            vec![
+                begin(1),
+                source_read(),
+                append(1, 1),
+                seal(1, 1),
+                ready(1, 1),
+            ]
+        };
+        replies.push(Message::Entries {
+            request: 2,
+            entries: vec![],
+            more: false,
+        });
+        let fixture = Fixture::new(protocol, replies);
+        // The brokered source read cancels the request token mid-exchange. These
+        // protocols cannot interrupt the worker, so the host finishes the exchange and
+        // discards its content instead of ending the shared worker.
+        let token = fixture.source.token.clone();
+        assert_eq!(
+            fixture.mount.read(2, 0, 4, &token).unwrap_err().kind,
+            io::ErrorKind::Interrupted
+        );
+        assert!(token.is_cancelled());
+        assert!(
+            !fixture.mount.supervision.stopped(),
+            "{protocol:?}: a cancelled read ended the shared worker"
+        );
+        assert!(
+            !fixture
+                .sent()
+                .iter()
+                .any(|message| matches!(message, Message::Failed { .. }))
+        );
+        // Like a cancelled protocol-3 read, the drained member is not cached either.
+        if let Some(staging) = fixture.mount.staging.lock().unwrap().as_mut() {
+            assert!(staging.cached(2).is_none(), "{protocol:?}");
+        }
+        fixture.mount.list(1, &Cancellation::default()).unwrap();
+    }
+}
+
+#[test]
+fn interleaved_reads_do_not_restage_a_member_larger_than_the_cache_budget() {
+    let stage = |request, entry, stage, content: &[u8]| {
+        let length = content.len() as u64;
+        vec![
+            Message::StageBegin {
+                request,
+                purpose: api::StagePurpose::Member { entry },
+                expected_length: Some(length),
+                max_length: length,
+            },
+            Message::StageAppend {
+                request,
+                stage,
+                offset: 0,
+                bytes: content.to_vec(),
+            },
+            Message::StageSeal {
+                request,
+                stage,
+                length,
+            },
+            Message::ContentReady {
+                request,
+                entry,
+                stage,
+                offset: 0,
+                length,
+            },
+        ]
+    };
+    for protocol in [Protocol::V2, Protocol::V3] {
+        let mut replies = stage(1, 2, 1, b"12345678");
+        replies.extend(stage(2, 3, 2, b"abcd"));
+        let fixture = Fixture::new(protocol, replies);
+        fixture
+            .mount
+            .staging
+            .lock()
+            .unwrap()
+            .as_mut()
+            .unwrap()
+            .set_cache_budget(6);
+        let token = Cancellation::default();
+        assert_eq!(fixture.mount.read(2, 0, 4, &token).unwrap(), b"1234");
+        assert_eq!(fixture.mount.read(3, 0, 4, &token).unwrap(), b"abcd");
+        // The worker has no further replies, so any re-stage would fail these reads.
+        for _ in 0..8 {
+            assert_eq!(fixture.mount.read(2, 4, 4, &token).unwrap(), b"5678");
+            assert_eq!(
+                fixture.mount.read_cooperative(3, 0, 4, &|| false).unwrap(),
+                b"abcd"
+            );
+        }
+        let requests = fixture
+            .sent()
+            .iter()
+            .filter(|message| matches!(message, Message::Read { .. }))
+            .count();
+        assert_eq!(
+            requests, 2,
+            "{protocol:?}: a cached member was staged again"
+        );
+        assert!(!fixture.mount.supervision.stopped());
     }
 }
 

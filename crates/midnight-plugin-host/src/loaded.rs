@@ -6,6 +6,7 @@ use std::{
     sync::{Arc, Mutex, OnceLock},
 };
 static LIBRARIES: OnceLock<Mutex<HashMap<PathBuf, Arc<Loaded>>>> = OnceLock::new();
+const MAX_LIBRARIES: usize = 256;
 pub(crate) struct Loaded {
     pub api: abi::PluginApi,
     _library: Library,
@@ -24,22 +25,40 @@ impl Loaded {
         })
     }
     pub fn acquire(info: &PluginInfo) -> Result<Arc<Self>, Error> {
-        let mut libraries =
-            crate::session::lock(LIBRARIES.get_or_init(|| Mutex::new(HashMap::new())));
-        if let Some(library) = libraries.get(&info.entry_library) {
-            if library.id != info.id || library.version != info.version {
-                return Err(Error(
-                    "Plugin metadata changed after loading; restart required".into(),
-                ));
-            }
-            return Ok(library.clone());
+        Self::acquire_within(info, MAX_LIBRARIES)
+    }
+    fn acquire_within(info: &PluginInfo, limit: usize) -> Result<Arc<Self>, Error> {
+        let libraries = LIBRARIES.get_or_init(|| Mutex::new(HashMap::new()));
+        // A full registry refuses before any validation, load or entry call runs.
+        if let Some(library) = Self::registered(&crate::session::lock(libraries), info, limit)? {
+            return Ok(library);
         }
-        if libraries.len() >= 256 {
-            return Err(Error("Loaded library limit reached".into()));
+        // Trust validation, native loading and the entry call run without the registry
+        // lock, so `is_loaded` and first loads of other plugins never wait behind them.
+        // A racing duplicate open of the same module is reference counted by the OS
+        // loader; the loser is dropped while the registered library stays pinned.
+        let opened = Arc::new(Self::open(info)?);
+        let mut registry = crate::session::lock(libraries);
+        if let Some(library) = Self::registered(&registry, info, limit)? {
+            return Ok(library);
         }
-        let library = Arc::new(Self::open(info)?);
-        libraries.insert(info.entry_library.clone(), library.clone());
-        Ok(library)
+        registry.insert(info.entry_library.clone(), opened.clone());
+        Ok(opened)
+    }
+    /// The registered library, or None when a new one may be added within `limit`.
+    fn registered(
+        registry: &HashMap<PathBuf, Arc<Loaded>>,
+        info: &PluginInfo,
+        limit: usize,
+    ) -> Result<Option<Arc<Self>>, Error> {
+        match registry.get(&info.entry_library) {
+            Some(library) if library.id != info.id || library.version != info.version => Err(
+                Error("Plugin metadata changed after loading; restart required".into()),
+            ),
+            Some(library) => Ok(Some(library.clone())),
+            None if registry.len() >= limit => Err(Error("Loaded library limit reached".into())),
+            None => Ok(None),
+        }
     }
     pub fn open(info: &PluginInfo) -> Result<Self, Error> {
         crate::trust::check(&info.entry_library)?;
@@ -102,4 +121,39 @@ pub(crate) unsafe fn bytes<'a>(value: abi::ByteSlice, max: u32) -> Result<&'a [u
     }
     // SAFETY: caller's mapping contract, bounded non-null length checked above.
     Ok(unsafe { std::slice::from_raw_parts(value.data, value.len as usize) })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_full_registry_refuses_before_validating_or_loading_the_library() {
+        let directory = tempfile::tempdir().unwrap();
+        let package = directory.path().join("package");
+        // Nothing exists here: any trust check, load or entry call would fail differently.
+        let info = PluginInfo {
+            id: "full.registry".into(),
+            name: None,
+            version: "1".into(),
+            description: String::new(),
+            models: Vec::new(),
+            modes: Vec::new(),
+            extensions: Vec::new(),
+            priority: 0,
+            entry_library: package.join("missing-plugin-library"),
+            package_dir: package,
+        };
+        let Err(full) = Loaded::acquire_within(&info, 0) else {
+            panic!("a full registry admitted a new library");
+        };
+        assert_eq!(full.0, "Loaded library limit reached");
+        let Err(admitted) = Loaded::acquire_within(&info, MAX_LIBRARIES) else {
+            panic!("a missing library loaded");
+        };
+        assert_ne!(
+            admitted.0, full.0,
+            "below the limit the request reaches validation"
+        );
+    }
 }

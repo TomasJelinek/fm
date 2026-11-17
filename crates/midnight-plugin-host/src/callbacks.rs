@@ -8,7 +8,7 @@ use std::{
     collections::HashMap,
     sync::{
         Arc, Mutex, OnceLock, Weak,
-        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
+        atomic::{AtomicU64, AtomicUsize, Ordering},
         mpsc::{self, SyncSender},
     },
 };
@@ -34,14 +34,32 @@ struct Buffers {
     bytes: usize,
 }
 
+/// Bounded admission whose consumer blocks in `recv`. Closing drops the only sender,
+/// so the consumer drains accepted work and then observes disconnection.
+struct Queue<T>(Mutex<Option<SyncSender<T>>>);
+impl<T> Queue<T> {
+    fn new(sender: SyncSender<T>) -> Self {
+        Self(Mutex::new(Some(sender)))
+    }
+    /// A rejected value is returned to the caller's ownership by being dropped here;
+    /// jobs and services carry no destructor, so the plugin keeps its ownership.
+    fn try_send(&self, value: T) -> bool {
+        lock(&self.0)
+            .as_ref()
+            .is_some_and(|sender| sender.try_send(value).is_ok())
+    }
+    fn close(&self) {
+        drop(lock(&self.0).take());
+    }
+}
+
 pub(crate) struct Bridge {
     pub shared: Arc<Shared>,
-    cpu: SyncSender<Job>,
-    io: SyncSender<Job>,
-    service: SyncSender<Service>,
+    cpu: Queue<Job>,
+    io: Queue<Job>,
+    service: Queue<Service>,
     pub jobs: AtomicUsize,
     pub services: AtomicUsize,
-    pub stop: AtomicBool,
     buffers: Mutex<Buffers>,
     ids: AtomicU64,
 }
@@ -82,12 +100,11 @@ impl Bridge {
         (
             Arc::new(Self {
                 shared,
-                cpu,
-                io,
-                service,
+                cpu: Queue::new(cpu),
+                io: Queue::new(io),
+                service: Queue::new(service),
                 jobs: AtomicUsize::new(0),
                 services: AtomicUsize::new(0),
-                stop: AtomicBool::new(false),
                 buffers: Mutex::new(Buffers::default()),
                 ids: AtomicU64::new(1),
             }),
@@ -176,6 +193,12 @@ impl Bridge {
             && self.services.load(Ordering::Acquire) == 0
             && lock(&self.buffers).values.is_empty()
     }
+    /// End worker admission. Blocked workers finish queued items and then exit.
+    pub fn close(&self) {
+        self.cpu.close();
+        self.io.close();
+        self.service.close();
+    }
 }
 
 unsafe extern "C" fn schedule(id: u64, work: *const abi::Work) -> abi::Status {
@@ -203,7 +226,7 @@ unsafe extern "C" fn schedule(id: u64, work: *const abi::Work) -> abi::Status {
             return abi::SHUTTING_DOWN;
         }
         bridge.jobs.fetch_add(1, Ordering::Acquire);
-        if sender.try_send(Job(work)).is_err() {
+        if !sender.try_send(Job(work)) {
             bridge.jobs.fetch_sub(1, Ordering::Release);
             return abi::QUEUE_FULL;
         }
@@ -249,14 +272,10 @@ unsafe extern "C" fn service(id: u64, request: *const abi::Request) -> abi::Stat
             _ => return abi::UNSUPPORTED,
         };
         bridge.services.fetch_add(1, Ordering::Acquire);
-        if bridge
-            .service
-            .try_send(Service {
-                id: request.id,
-                kind,
-            })
-            .is_err()
-        {
+        if !bridge.service.try_send(Service {
+            id: request.id,
+            kind,
+        }) {
             bridge.services.fetch_sub(1, Ordering::Release);
             return abi::QUEUE_FULL;
         }
@@ -327,7 +346,9 @@ mod tests {
                 drop: AtomicUsize::new(0),
             };
             let shared = shared();
-            lock(&shared.state).requests.insert(1, false);
+            lock(&shared.state)
+                .requests
+                .insert(1, crate::session::RequestState::default());
             let (bridge, receivers) = Bridge::new(shared.clone());
             let (_registration, api) = bridge.register().unwrap();
             let work = abi::Work {
@@ -354,15 +375,21 @@ mod tests {
                 "rejected scheduling consumed ownership"
             );
             shared.closing.store(cancel, Ordering::Release);
+            // Closing admission rejects new work but still drains every accepted job,
+            // after which the blocking worker observes disconnection and exits.
+            bridge.close();
+            assert_eq!(
+                unsafe { api.schedule_work.unwrap()(api.context, &work) },
+                if cancel {
+                    abi::SHUTTING_DOWN
+                } else {
+                    abi::QUEUE_FULL
+                }
+            );
             let worker_bridge = bridge.clone();
-            let worker =
-                std::thread::spawn(move || crate::session::run_jobs(worker_bridge, receivers.cpu));
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-            while bridge.jobs.load(Ordering::Acquire) != 0 && std::time::Instant::now() < deadline {
-                std::thread::sleep(std::time::Duration::from_millis(1));
-            }
-            bridge.stop.store(true, Ordering::Release);
-            worker.join().unwrap();
+            std::thread::spawn(move || crate::session::run_jobs(worker_bridge, receivers.cpu))
+                .join()
+                .unwrap();
             assert_eq!(
                 counts.run.load(Ordering::Acquire),
                 if cancel { 0 } else { 32 }
@@ -375,7 +402,9 @@ mod tests {
     #[test]
     fn work_queue_rejection_preserves_ownership_and_shutdown_has_reserved_capacity() {
         let shared = shared();
-        lock(&shared.state).requests.insert(1, false);
+        lock(&shared.state)
+            .requests
+            .insert(1, crate::session::RequestState::default());
         let (bridge, receivers) = Bridge::new(shared.clone());
         let (_registration, api) = bridge.register().unwrap();
         let work = abi::Work {

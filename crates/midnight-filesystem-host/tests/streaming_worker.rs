@@ -151,11 +151,11 @@ fn cancellation_during_member_extraction_returns_no_partial_content() {
     );
     assert!(mount.read(file.id.entry, 0, 1, &cancel).is_err());
     assert!(cancel.is_cancelled());
-    assert!(
-        mount
-            .read(file.id.entry, 0, 1, &Cancellation::default())
-            .is_err()
-    );
+    // Protocol 3 cancels the member cooperatively; earlier protocols cannot interrupt
+    // staging, so the host finishes that exchange and discards it. Either way the
+    // shared mount stays usable.
+    let next = mount.read(file.id.entry, 0, 1, &Cancellation::default());
+    assert_eq!(next.unwrap().len(), 1);
 }
 
 #[test]
@@ -182,19 +182,9 @@ fn all_supported_formats_use_the_same_verified_stage_protocol() {
         let path = root.join(name);
         let (package, format) = catalog.choose(&path).unwrap();
         let cancel = Cancellation::default();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
-        let mount = loop {
-            match Mount::open(package, format, &path, &cancel) {
-                Ok(mount) => break mount,
-                Err(error)
-                    if error.to_string().contains("Two archive mounts")
-                        && std::time::Instant::now() < deadline =>
-                {
-                    std::thread::sleep(std::time::Duration::from_millis(10))
-                }
-                Err(error) => panic!("{name}: {error}"),
-            }
-        };
+        let source = CapturedFile::capture(&path).unwrap();
+        let mount = Mount::open_captured(package, format, &path, source, &cancel)
+            .unwrap_or_else(|error| panic!("{name}: {error}"));
         let member = mount
             .list(1, &cancel)
             .unwrap()
@@ -212,6 +202,10 @@ fn all_supported_formats_use_the_same_verified_stage_protocol() {
                 "{name}"
             );
         }
+        // Deterministic confirmed teardown frees the mount permit for the next format.
+        mount
+            .release_on_worker()
+            .unwrap_or_else(|error| panic!("{name}: {error}"));
     }
 }
 

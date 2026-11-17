@@ -395,3 +395,86 @@ fn prepared_rename_network_kind_is_rejected_before_native_library_load() {
         "A virtual discovery provider cannot supply native file access"
     );
 }
+
+/// Serves pre-generated listing pages, so timing covers only host-side page handling.
+#[derive(Debug)]
+struct PagedListing {
+    root: Response,
+    pages: Mutex<std::collections::VecDeque<Response>>,
+}
+impl Transport for PagedListing {
+    fn call(&self, request: &Request, _: Cancel<'_>) -> Result<Response, Failure> {
+        match request {
+            Request::Resolve { .. } => Ok(self.root.clone()),
+            Request::ListBegin { .. } | Request::ListNext { .. } => self
+                .pages
+                .lock()
+                .unwrap()
+                .pop_front()
+                .ok_or_else(|| Failure::new(ErrorCode::Invalid, "No listing page")),
+            Request::CloseList { .. } | Request::CloseMount { .. } => Ok(Response::Unit),
+            _ => Err(Failure::new(ErrorCode::Invalid, "Unexpected request")),
+        }
+    }
+}
+
+#[test]
+#[ignore = "manual timing: -- --ignored --nocapture listing_cost"]
+fn listing_cost_of_one_hundred_thousand_native_entries() {
+    const ENTRIES: u64 = 100_000;
+    let batch = u64::from(midnight_filesystem_plugin_api::MAX_BATCH);
+    let mut samples = Vec::new();
+    for _ in 0..5 {
+        let mut pages = std::collections::VecDeque::new();
+        for page in 0..ENTRIES.div_ceil(batch) {
+            let start = page * batch;
+            let end = (start + batch).min(ENTRIES);
+            let entries = (start..end)
+                .map(|index| {
+                    let name = format!("entry-{index:06}.txt");
+                    Node {
+                        id: index + 2,
+                        address: test_path::address(&path().join(&name)),
+                        name_encoding: test_path::encoding(),
+                        raw_name: test_path::name(&name),
+                        display: name,
+                        kind: Kind::File,
+                        metadata: Metadata {
+                            size: Some(index),
+                            ..Metadata::default()
+                        },
+                    }
+                })
+                .collect();
+            pages.push_back(Response::Page {
+                cursor: 9,
+                page,
+                done: end == ENTRIES,
+                entries,
+            });
+        }
+        let host = NativeProvider {
+            transport: Arc::new(PagedListing {
+                root: resolve_directory(),
+                pages: Mutex::new(pages),
+            }),
+            capabilities: abi::CAP_NATIVE_ADDRESS | abi::CAP_BROWSE,
+        };
+        let mut count = 0_u64;
+        let start = std::time::Instant::now();
+        host.read_directory(&path(), &|| false, &mut |entry| {
+            count += 1;
+            std::hint::black_box(entry);
+            true
+        })
+        .unwrap();
+        samples.push(start.elapsed());
+        assert_eq!(count, ENTRIES);
+    }
+    samples.sort();
+    eprintln!(
+        "LISTING entries={ENTRIES} min_ms={:.1} median_ms={:.1}",
+        samples[0].as_secs_f64() * 1000.0,
+        samples[2].as_secs_f64() * 1000.0
+    );
+}

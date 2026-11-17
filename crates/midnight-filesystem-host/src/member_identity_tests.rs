@@ -16,10 +16,7 @@ fn mount(root: &Path) -> Mount {
             output: tempfile::tempfile().unwrap(),
             request: 0,
         }),
-        supervision: Arc::new(Supervision {
-            stop: AtomicBool::new(false),
-            deadline: Mutex::new(None),
-        }),
+        supervision: Arc::new(Supervision::new(None)),
         protocol: Protocol::V2,
         staging: Arc::new(Mutex::new(None)),
         close: Arc::new(close::CloseReceipt::new()),
