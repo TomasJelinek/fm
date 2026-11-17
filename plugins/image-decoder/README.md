@@ -6,9 +6,19 @@ enter their existing Windows AppContainer/Linux worker restrictions before
 parsing. Only opaque seek/read source bytes enter this library.
 
 PNG, JPEG, GIF, WebP, BMP, ICO and TIFF use image-rs 0.25.10 and moxcms 0.8.1.
-Orientation and embedded RGB ICC profiles are honored; output is straight-alpha
-sRGB RGBA8. The first still frame is used. Original dimensions are limited to
-32768 pixels per edge and 128 MiB of RGBA storage; profiles to 4 MiB.
+Orientation and embedded RGB and gray ICC profiles are honored; output is
+straight-alpha sRGB RGBA8. image-rs converts CMYK samples to RGB without a profile,
+so an embedded CMYK profile is not applied, exactly as for CMYK files without one.
+Profiles of other color models are rejected rather than claimed sRGB. CICP-only
+color signalling (AVIF nclx, PNG cICP) is not converted: those pixels are used as
+sRGB. The first still frame is used. Original dimensions are limited to 32768
+pixels per edge and 128 MiB of RGBA storage; profiles to 4 MiB. Thumbnails reduce
+the frame first, averaging colors with alpha weights so transparent edges keep
+their color, and orient the small result afterwards.
+
+Source reads go through a seek-preserving window of at most 256 KiB: it batches
+small codec reads into brokered reads and keeps fetched bytes across codec seeks,
+so TIFF strips and tiles are not refetched once per strip.
 
 Plain UTF-8 SVG uses resvg/usvg 0.48.1 with only `text` enabled. Shapes, paths,
 gradients, bounded local `use` references and text are supported. Thumbnails
@@ -17,7 +27,9 @@ Viewers rasterize at original dimensions and retain those pixels, so later zoom
 uses the existing image sampler rather than rerendering vector detail.
 
 SVG input is limited to 4 MiB, 32768 XML nodes, nesting depth 64 and 65536 expanded
-reference visits. DTDs, duplicate IDs, reference cycles, scripts, event handlers,
+reference visits. The expansion budget follows the same reference usvg renders: an
+unprefixed `href` before `xlink:href`, in any attribute order. DTDs, duplicate IDs,
+reference cycles, scripts, event handlers,
 foreign objects, embedded/external images and subtree effects (`filter`, `mask`,
 `clipPath`, `marker`, `pattern`) are explicitly rejected. SVGZ is not supported.
 The SVG root must use its standard namespace. Both image resolvers return no
@@ -47,7 +59,7 @@ hiding a read-limit error in a trailing box. Existing PNG/JPEG/etc source reads
 remain streamed and acquire no new encoded-source ceiling. The upstream AVIF
 container parser retains its own bounded-input copies. The first primary still
 image is used; animation, derived grids, HDR tone mapping and complete AVIF
-metadata fidelity are not claimed. RGB ICC conversion uses the common policy;
+metadata fidelity are not claimed. ICC conversion uses the common policy;
 otherwise image-rs's native color conversion supplies the pixels.
 
 See [native build instructions](native/README.md) and the recorded

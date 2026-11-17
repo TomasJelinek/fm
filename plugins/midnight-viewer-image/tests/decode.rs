@@ -134,6 +134,28 @@ fn embedded_rgb_profile_converts_to_srgb_and_preserves_alpha() {
 }
 
 #[test]
+fn embedded_gray_profile_converts_gray_samples_to_srgb_and_preserves_alpha() {
+    // A linear (gamma 1.0) gray profile: linear 50% gray is sRGB 188, not 128.
+    let profile = moxcms::ColorProfile::new_gray_with_gamma(1.0)
+        .encode()
+        .unwrap();
+    for (color, samples) in [
+        (image::ExtendedColorType::L8, vec![128]),
+        (image::ExtendedColorType::La8, vec![128, 77]),
+    ] {
+        let mut bytes = Vec::new();
+        let mut encoder = image::codecs::png::PngEncoder::new(&mut bytes);
+        encoder.set_icc_profile(profile.clone()).unwrap();
+        encoder.write_image(&samples, 1, 1, color).unwrap();
+        let image = midnight_viewer_image::decode(&mut Cursor::new(bytes)).unwrap();
+        let rgba = image.render(viewport(1, 1, 1.0, 0.0, 0.0)).unwrap().rgba;
+        assert!(rgba[0] == rgba[1] && rgba[1] == rgba[2], "{rgba:?}");
+        assert!((186..=190).contains(&rgba[0]), "{rgba:?}");
+        assert_eq!(rgba[3], samples.get(1).copied().unwrap_or(255));
+    }
+}
+
+#[test]
 fn gif_exposes_only_its_first_still_frame() {
     let mut encoded = Vec::new();
     {
