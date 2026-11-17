@@ -1,6 +1,6 @@
 //! Listing-start fences and same-directory relisting, in the backend's order:
 //! it records a dispatched listing or resort, then clears the pane's watch
-//! scope, and later accepts the new view.
+//! scope, and later accepts the new view or reports that the listing failed.
 //!
 //! Every watcher here polls only after 30 s, so each probe a test counts is an
 //! immediate check after an acceptance. Such a probe runs before the worker can
@@ -186,6 +186,113 @@ async fn a_resort_keeps_what_its_rows_include() {
     native.fire(2);
     assert_eq!(changed(&mut events).await, (PaneId::Left, NavigationId(3)));
     assert_eq!(probes(&files), 0);
+    stop(&controller, &mut tasks).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_check_that_finds_the_rows_current_spares_a_later_resort() {
+    let files = Arc::new(Files::default());
+    files.put("left", 7);
+    let (controller, mut tasks, mut events, native) = watcher(&files);
+    controller.set_visible(files.visible(PaneId::Left, 1, "left"));
+    native.registrations(1).await;
+    // The refresh lists the directory after its last write, whose notification
+    // is counted only after the listing started.
+    list(&controller, 2, "left");
+    files.put("left", 8);
+    native.fire(0);
+    // Another notification is counted while the accepted rows are subscribed
+    // again; it is hinted after the check of the accepted rows.
+    native.fire_on_watch.store(true, Ordering::SeqCst);
+    controller.set_visible(files.visible(PaneId::Left, 2, "left"));
+    hint_for(&mut events, 2).await;
+    assert_eq!(probes(&files), 1, "the accepted rows are checked once");
+    // That check found the rows current, so a resort of them is not checked.
+    resort(&controller, 3, "left");
+    controller.set_visible(files.visible(PaneId::Left, 3, "left"));
+    native.registrations(3).await;
+    native.fire(2);
+    hint_for(&mut events, 3).await;
+    assert_eq!(probes(&files), 1);
+    stop(&controller, &mut tasks).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_failed_refresh_keeps_hinting_for_the_rows_still_shown() {
+    let files = Arc::new(Files::default());
+    files.put("left", 7);
+    let (controller, mut tasks, mut events, native) = watcher(&files);
+    controller.set_visible(files.visible(PaneId::Left, 1, "left"));
+    native.registrations(1).await;
+    // The refresh fails, and the pane keeps showing navigation 1.
+    list(&controller, 2, "left");
+    controller
+        .reporter()
+        .listing_failed(PaneId::Left, NavigationId(2));
+    native.fire(0);
+    assert_eq!(changed(&mut events).await, (PaneId::Left, NavigationId(1)));
+    assert_eq!(
+        native.callbacks.lock().unwrap().len(),
+        1,
+        "the directory stays subscribed"
+    );
+    assert_eq!(
+        probes(&files),
+        0,
+        "a failed refresh is not checked at once, so it is not retried in a loop"
+    );
+    stop(&controller, &mut tasks).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_failed_refresh_keeps_checking_the_rows_still_shown() {
+    let files = Arc::new(Files::default());
+    files.put("left", 7);
+    let native = Arc::new(Native::default());
+    let (controller, mut tasks, mut events) = controller(
+        files.clone(),
+        Some(native.clone()),
+        Duration::from_millis(40),
+    );
+    controller.set_visible(files.visible(PaneId::Left, 1, "left"));
+    native.registrations(1).await;
+    list(&controller, 2, "left");
+    // A change without a notification, while that refresh fails.
+    files.put("left", 8);
+    controller
+        .reporter()
+        .listing_failed(PaneId::Left, NavigationId(2));
+    assert_eq!(changed(&mut events).await, (PaneId::Left, NavigationId(1)));
+    stop(&controller, &mut tasks).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_superseded_listing_failure_does_not_rearm_the_watch() {
+    let files = Arc::new(Files::default());
+    files.put("left", 7);
+    let (controller, mut tasks, mut events, native) = watcher(&files);
+    controller.set_visible(files.visible(PaneId::Left, 1, "left"));
+    native.registrations(1).await;
+    list(&controller, 2, "left");
+    list(&controller, 3, "left");
+    let stale = files.visible(PaneId::Left, 3, "left");
+    // The superseded listing reports after the newer dispatch; the directory
+    // stays counting for the newer listing, without hints.
+    controller
+        .reporter()
+        .listing_failed(PaneId::Left, NavigationId(2));
+    files.put("left", 8);
+    native.fire(0);
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), events.recv())
+            .await
+            .is_err(),
+        "no hint for the rows of navigation 1 while navigation 3 loads"
+    );
+    // The newer listing lacks the change and is checked once accepted.
+    controller.set_visible(stale);
+    assert_eq!(changed(&mut events).await, (PaneId::Left, NavigationId(3)));
+    assert_eq!(probes(&files), 1);
     stop(&controller, &mut tasks).await;
 }
 

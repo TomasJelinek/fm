@@ -94,6 +94,9 @@ struct Native {
     dropped: Arc<Notify>,
     drop_threads: Arc<Mutex<Vec<(ThreadId, ThreadId)>>>,
     fail: bool,
+    /// Fires the newest subscription when the next one is registered: a
+    /// notification that arrives while the worker subscribes again.
+    fire_on_watch: AtomicBool,
 }
 
 struct Guard {
@@ -121,6 +124,17 @@ impl WatchService for Native {
         path: &Path,
         changed: ChangeCallback,
     ) -> Result<Box<dyn WatchSubscription>, FsError> {
+        if self.fire_on_watch.swap(false, Ordering::SeqCst) {
+            let newest = self
+                .callbacks
+                .lock()
+                .unwrap()
+                .last()
+                .map(|(_, callback)| callback.clone());
+            if let Some(callback) = newest {
+                callback();
+            }
+        }
         self.callbacks.lock().unwrap().push((path.into(), changed));
         self.registered.notify_one();
         if self.fail {

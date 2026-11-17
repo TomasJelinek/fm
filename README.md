@@ -878,10 +878,12 @@ catch missing native/network notifications. It compares the same enumeration
 metadata the listing shows and reads metadata separately only for entries whose
 enumeration lacks it; an entry whose metadata cannot be read stays unknown, as in
 the listing, instead of causing a refresh on every check. A directory stays
-watched while it is refreshed or re-sorted. Notifications that arrive after its
-new listing started may describe changes that listing missed, so the directory
-is checked against the new listing at once when it is shown; a refresh during
-which no notification arrives is not followed by another listing. In tree mode, a
+watched while it is refreshed or re-sorted, and stays watched for the rows still
+shown when its refresh fails. Notifications that arrive after its new listing
+started may describe changes that listing missed, so the directory is checked
+against the new listing at once when it is shown. A refresh during which no
+notification arrives is not followed by another listing, and re-sorting rows that
+a check found current does not check them again. In tree mode, a
 changed set of watched branches registers its native watches before the old ones
 are released, so directories watched before and after stay covered; a directory
 that becomes natively watched is checked at once, and a collapse alone requests

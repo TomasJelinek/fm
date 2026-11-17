@@ -706,10 +706,12 @@ impl EngineServices {
                         denied_navigations.begin(pane, navigation);
                         folder_presence.cancel(pane);
                         // Before `trees.invalidate` clears the pane's watch scope and
-                        // before a listing task can read the directory.
+                        // before a listing task can read the directory. A Resort
+                        // without the UI's rows lists the directory again.
                         if let Some(watcher) = &watcher {
                             match &command {
-                                Some(Command::Navigate { path, .. } | Command::Refresh { path, .. }) => watcher.listing_started(pane, navigation, path),
+                                Some(Command::Navigate { path, .. } | Command::Refresh { path, .. }
+                                    | Command::Resort { path, source: None, .. }) => watcher.listing_started(pane, navigation, path),
                                 Some(Command::Resort { path, .. }) => watcher.resort_started(pane, navigation, path),
                                 _ => {}
                             }
@@ -1161,6 +1163,7 @@ impl EngineServices {
                             let navigation_fallback = self.navigation_fallback.clone();
                             let denied_navigations = denied_navigations.clone();
                             let worker_scope = scope.clone();
+                            let listing_watch = watcher.as_ref().map(watch::Controller::reporter);
                             let listing = tasks.spawn(scope.future(async move {
                                 if !outbox.send(Event::ListingStarted { pane, navigation, path: listing_path.clone() }).await { return; }
                                 let Ok(permit) = budget.acquire_owned().await else { return; };
@@ -1180,6 +1183,14 @@ impl EngineServices {
                                     let failure = midnight_core::FsError::from_io("listing worker", &error_path, std::io::Error::other(error.to_string()));
                                     listing_failed(&error_snapshots, pane, navigation);
                                     error_outbox.send(Event::ListingFailed { pane, navigation, error: failure }).await;
+                                }
+                                if let Some(watch) = listing_watch {
+                                    // Read before checking the cancellation: a newer navigation cancels
+                                    // this listing before another one can commit. Without a commit this
+                                    // listing failed, offered elevation or fell back; the pane keeps its rows.
+                                    let committed = error_snapshots.lock().unwrap_or_else(|e| e.into_inner())[pane.index()]
+                                        .committed.as_ref().is_some_and(|snapshot| snapshot.navigation == navigation);
+                                    if !committed && !error_cancel.is_cancelled() { watch.listing_failed(pane, navigation); }
                                 }
                             }));
                             let filesystem = self.filesystem.clone();

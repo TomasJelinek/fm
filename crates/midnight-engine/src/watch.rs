@@ -12,7 +12,7 @@ use midnight_core::{
 use std::{
     path::{Component, Path, PathBuf},
     sync::{
-        Arc, Mutex, OnceLock,
+        Arc, Mutex, OnceLock, Weak,
         atomic::{AtomicBool, AtomicU64, Ordering},
     },
     thread::{self, Thread},
@@ -57,6 +57,13 @@ pub(crate) struct Handle {
     panes: [SharedOwner; RETIREMENT_CAPACITY],
 }
 
+/// Lets a flat listing's task, which outlives its dispatch, report its outcome.
+#[derive(Clone)]
+pub(crate) struct Reporter {
+    panes: [Weak<WorkerOwned<Shared>>; RETIREMENT_CAPACITY],
+    listings: [Arc<Mutex<Listings>>; RETIREMENT_CAPACITY],
+}
+
 #[derive(Clone, Copy)]
 struct Timing {
     quiet: Duration,
@@ -86,9 +93,11 @@ struct Control {
 #[derive(Clone)]
 struct Visible {
     directory: VisibleDirectory,
-    /// `None` when that listing's start was not recorded: a resort shows rows
-    /// listed earlier, and a listing can start before a target has published
-    /// its counter.
+    /// `None` when no listing start was recorded for these rows: a resort of
+    /// the UI's rows shows rows listed earlier, and a listing can start before
+    /// a target has published its counter. A resort whose rows the backend
+    /// cannot use lists the directory again without a fence, which costs at
+    /// most one check.
     fence: Option<Fence>,
 }
 
@@ -103,9 +112,11 @@ struct Fence {
 struct Started {
     navigation: NavigationId,
     path: PathBuf,
-    /// Recorded for a Navigate/Refresh listing once a target has published its
+    /// Recorded for a listing of the directory once a target has published its
     /// counter.
     fence: Option<Fence>,
+    /// It ended without rows to accept; the pane shows its previous rows.
+    failed: bool,
 }
 
 /// Shared by the backend's command loop and one pane's flat worker.
@@ -209,19 +220,28 @@ impl Controller {
         Self { panes, listings }
     }
 
-    /// Called by the backend when it dispatches a flat Navigate/Refresh listing
-    /// of `path`, before it clears the pane's watch scope and before the listing
-    /// reads the directory. The listing includes every change the pane's flat
-    /// target has counted so far (see `Target::retarget`), and a target already
-    /// watching `path` keeps counting until the listing is accepted.
+    /// Called by the backend when it dispatches a flat listing of `path` (a
+    /// Navigate, a Refresh, or a Resort without the UI's rows), before it clears
+    /// the pane's watch scope and before the listing reads the directory. The
+    /// listing includes every change the pane's flat target has counted so far
+    /// (see `Target::retarget`). A target already watching `path` keeps
+    /// counting until the listing is accepted, and watches the rows still shown
+    /// again if the listing fails (see `Reporter::listing_failed`).
     pub(crate) fn listing_started(&self, pane: PaneId, navigation: NavigationId, path: &Path) {
         self.started(pane, navigation, path, true);
     }
 
-    /// Like `listing_started` for a flat Resort, which shows rows listed earlier
-    /// and therefore records no fence.
+    /// Like `listing_started` for a flat Resort of the UI's rows, which were
+    /// listed earlier and therefore record no fence.
     pub(crate) fn resort_started(&self, pane: PaneId, navigation: NavigationId, path: &Path) {
         self.started(pane, navigation, path, false);
+    }
+
+    pub(crate) fn reporter(&self) -> Reporter {
+        Reporter {
+            panes: self.panes.each_ref().map(Arc::downgrade),
+            listings: self.listings.clone(),
+        }
     }
 
     fn started(&self, pane: PaneId, navigation: NavigationId, path: &Path, listing: bool) {
@@ -240,6 +260,7 @@ impl Controller {
             navigation,
             path: path.to_path_buf(),
             fence,
+            failed: false,
         });
     }
 
@@ -307,6 +328,30 @@ impl Handle {
     }
 }
 
+impl Reporter {
+    /// Called by the backend when the flat listing it dispatched as
+    /// `navigation` ended without rows to accept (it failed, offered elevation
+    /// or fell back to another directory) and was not superseded. The pane
+    /// still shows the rows it accepted before, so a target kept for this
+    /// listing watches them again (see `Target::rearm`).
+    pub(crate) fn listing_failed(&self, pane: PaneId, navigation: NavigationId) {
+        let index = pane.index();
+        {
+            let mut listings = self.listings[index]
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            match listings.started.as_mut() {
+                Some(started) if started.navigation == navigation => started.failed = true,
+                // A newer dispatch decides about the target.
+                _ => return,
+            }
+        }
+        if let Some(shared) = self.panes[index].upgrade() {
+            shared.wake();
+        }
+    }
+}
+
 impl Drop for Controller {
     fn drop(&mut self) {
         self.shutdown();
@@ -355,7 +400,8 @@ struct Target {
     observed: u64,
     /// Change count up to which the accepted rows include every change: the
     /// fence of the listing they came from (0 for a new target, whose counter
-    /// starts after its listing).
+    /// starts after its listing), or the count before a probe that found them
+    /// current.
     accepted_at: u64,
     active: Arc<AtomicBool>,
     _subscription: Option<Box<dyn WatchSubscription>>,
@@ -365,10 +411,10 @@ struct Target {
 
 impl Target {
     /// A refresh/resort of the same directory keeps its change counter: the
-    /// target stays subscribed from the dispatch until this acceptance (see
-    /// `relisting`). A new native subscription (the directory may have been
-    /// replaced) is in place before the old one is released, so there is no
-    /// registration gap.
+    /// target stays subscribed from the dispatch until this acceptance, or
+    /// until that listing fails (see `relisting` and `rearm`). A new native
+    /// subscription (the directory may have been replaced) is in place before
+    /// the old one is released, so there is no registration gap.
     ///
     /// The new rows are probed at once only if a change was counted that they
     /// may lack; no hint reported it for them. A change is counted only after it
@@ -412,6 +458,33 @@ impl Target {
         let now = Instant::now();
         self.poll_at = if activity { now } else { now + timing.poll };
     }
+
+    /// Watches the accepted rows again after the listing of this directory
+    /// that made the target stale failed as `navigation`: the pane still shows
+    /// these rows and accepts their hints. Subscription, counts, debounce and
+    /// poll schedule carry on, so notifications counted meanwhile are hinted,
+    /// and a refresh that keeps failing is retried no faster than a current
+    /// target hints and checks. The failed dispatch cancelled the control's
+    /// token; probes get a new one, which the next dispatch or acceptance
+    /// cancels.
+    fn rearm(&mut self, shared: &Shared, navigation: NavigationId) {
+        let mut state = shared
+            .state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        // Otherwise the control changed since `relisting` looked at it, and the
+        // next look decides again.
+        if state.stopped
+            || state.navigation != navigation
+            || state.tree.is_some()
+            || state.tree_navigation == Some(navigation)
+        {
+            return;
+        }
+        state.cancel = Cancellation::default();
+        self.revision = state.revision;
+        self.cancel = state.cancel.clone();
+    }
 }
 
 impl Drop for Target {
@@ -433,7 +506,8 @@ fn subscribe(
     let callback_shared = Arc::downgrade(shared);
     let callback = Arc::new(move || {
         if callback_active.load(Ordering::Acquire) {
-            // Pairs with the fence's acquire load in `Controller::listing_started`.
+            // Pairs with the acquire loads of a fence (`Controller::started`)
+            // and of the count a probe can confirm (`run`).
             callback_dirty.fetch_add(1, Ordering::Release);
             if let Some(shared) = callback_shared.upgrade() {
                 shared.wake();
@@ -454,7 +528,10 @@ fn register(
 ) -> Target {
     let dirty = Arc::new(AtomicU64::new(0));
     // Published before the subscription exists, so a listing that starts from
-    // now on fences against the counter that will see its changes.
+    // now on fences against this counter. A fence covers counted changes only:
+    // a change before the subscription exists is never counted, and a listing
+    // that read the directory before then can lack it until the periodic check
+    // (as the listing this target starts from can).
     listings
         .lock()
         .unwrap_or_else(|error| error.into_inner())
@@ -478,22 +555,43 @@ fn register(
     }
 }
 
+/// What the pane's newest dispatch means for a stale target of a directory.
+enum Relisting {
+    /// Another directory, or a view without a flat listing: release the target.
+    Released,
+    /// A listing or resort of this directory that is not accepted yet.
+    Pending,
+    /// That listing, dispatched as this navigation, failed.
+    Failed(NavigationId),
+}
+
 /// Whether the pane's newest dispatch shows `path` again: a Navigate, Refresh or
 /// Resort that is not older than the navigation that made the target stale
-/// (the backend records it before it clears the pane's watch scope). Archive,
-/// network and tree views, and other directories, release the target at once.
-fn relisting(shared: &Shared, listings: &Mutex<Listings>, path: &Path) -> bool {
-    let navigation = shared
-        .state
-        .lock()
-        .unwrap_or_else(|error| error.into_inner())
-        .navigation;
-    listings
-        .lock()
-        .unwrap_or_else(|error| error.into_inner())
-        .started
-        .as_ref()
-        .is_some_and(|started| started.navigation >= navigation && started.path == path)
+/// (the backend records it before it clears the pane's watch scope), until it
+/// is accepted or reported failed. Archive, network and tree views, and other
+/// directories, release the target at once.
+fn relisting(shared: &Shared, listings: &Mutex<Listings>, path: &Path) -> Relisting {
+    let (navigation, tree_view) = {
+        let state = shared
+            .state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        (
+            state.navigation,
+            state.tree_navigation == Some(state.navigation),
+        )
+    };
+    let listings = listings.lock().unwrap_or_else(|error| error.into_inner());
+    match &listings.started {
+        Some(started) if !tree_view && started.navigation >= navigation && started.path == path => {
+            if started.failed {
+                Relisting::Failed(started.navigation)
+            } else {
+                Relisting::Pending
+            }
+        }
+        _ => Relisting::Released,
+    }
 }
 
 fn run(
@@ -595,31 +693,40 @@ fn run(
             ));
             continue;
         }
-        if let Some(stale) = target
+        let stale = target
             .as_ref()
             .filter(|target| !shared.is_current(target.revision))
-        {
-            if relisting(&shared, &listings, &stale.path) {
+            .map(|target| relisting(&shared, &listings, &target.path));
+        match stale {
+            Some(Relisting::Pending) => {
                 // Counts this directory's notifications for the fence of its
                 // next listing, without probes or hints, until it is accepted.
                 thread::park();
                 continue;
             }
-            drop(target.take());
+            Some(Relisting::Failed(navigation)) => {
+                if let Some(target) = target.as_mut() {
+                    target.rearm(&shared, navigation);
+                }
+                continue;
+            }
+            Some(Relisting::Released) => drop(target.take()),
+            None => {}
         }
         let Some(target) = target.as_mut() else {
             thread::park();
             continue;
         };
-        let version = target.dirty.load(Ordering::Relaxed);
+        // Read before the probe below reads the directory.
+        let version = target.dirty.load(Ordering::Acquire);
         if version != target.observed {
             target.observed = version;
             target.debounce.record(Instant::now());
         }
         if Instant::now() >= target.poll_at {
             // Recovery of unknown metadata is also a visible change. Baselines
-            // stay until UI acceptance, so ignored hints and failed refreshes
-            // are periodically retried.
+            // stay until UI acceptance, so later checks repeat an ignored hint,
+            // and a failed refresh once its target is re-armed (see `rearm`).
             let changed = match probe(filesystem.as_ref(), &target.path, &target.cancel) {
                 Ok(current) => target.baseline != Some(current),
                 Err(()) => true,
@@ -633,6 +740,11 @@ fn run(
                 // before this probe is checked again when it is accepted.
                 target.observed = target.dirty.fetch_add(1, Ordering::Release).wrapping_add(1);
                 target.debounce.record(Instant::now());
+            } else {
+                // Every change counted up to `version` happened before this
+                // probe read the directory, and the directory matched the
+                // accepted rows, so a later resort of them needs no probe.
+                target.accepted_at = version;
             }
         }
         let now = Instant::now();
