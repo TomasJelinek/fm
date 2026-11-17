@@ -10,12 +10,17 @@ use std::{
 const FAILURE_WAIT: Duration = Duration::from_secs(10);
 
 /// What the fake native owner observed, and what the test lets it do.
-#[derive(Default)]
+#[derive(Debug, Default)]
 struct State {
     /// The session offers a waker (as on Windows) or not (as X11 today).
     wakes: bool,
     owns: bool,
     fail_waits: bool,
+    /// Wake every newly opened session before its first wait. This forces what a submit's
+    /// wake does when it races the worker: the worker can take the request, open a session
+    /// and install its waker before the controller calls the waker, which then ends the
+    /// first idle wait of that session early. The waker contract allows such a wake.
+    wake_on_open: bool,
     /// The sticky wake: set by the waker, consumed by the next wait.
     woken: bool,
     /// Waits the test lets end as elapsed timeouts; only then does virtual time pass.
@@ -33,6 +38,38 @@ struct State {
     opened: usize,
     closed: usize,
     copied: Vec<String>,
+}
+
+/// Counters of the fake owner; tests compare them with a baseline taken while idle.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Counts {
+    waits: usize,
+    services: usize,
+    ended_by_wake: usize,
+    ended_by_expiry: usize,
+}
+impl State {
+    fn counts(&self) -> Counts {
+        Counts {
+            waits: self.timeouts.len(),
+            services: self.services,
+            ended_by_wake: self.ended_by_wake,
+            ended_by_expiry: self.ended_by_expiry,
+        }
+    }
+    /// What happened since `base`.
+    fn since(&self, base: Counts) -> Counts {
+        let now = self.counts();
+        Counts {
+            waits: now.waits - base.waits,
+            services: now.services - base.services,
+            ended_by_wake: now.ended_by_wake - base.ended_by_wake,
+            ended_by_expiry: now.ended_by_expiry - base.ended_by_expiry,
+        }
+    }
+    fn waits_only_with(&self, timeout: Duration) -> bool {
+        self.timeouts.iter().all(|waited| *waited == timeout)
+    }
 }
 
 #[derive(Default)]
@@ -78,8 +115,9 @@ impl Shared {
         while !done(&state) {
             let left = deadline.saturating_duration_since(Instant::now());
             if left.is_zero() {
+                let report = format!("timed out waiting until {what}: {state:?}");
                 drop(state);
-                panic!("timed out waiting until {what}");
+                panic!("{report}");
             }
             let (next, _) = self
                 .changed
@@ -89,12 +127,22 @@ impl Shared {
         }
         state
     }
+    /// Block until the worker idles in a wait with no wake pending; returns that state.
+    /// Call it after a submit returned: the controller called the waker before returning,
+    /// so a wake that raced the worker onto a new session has ended a wait already or is
+    /// still pending, and nothing but the test ends the wait found here.
+    fn idle(&self, what: &str) -> MutexGuard<'_, State> {
+        self.until(what, |state| state.waiting && !state.woken)
+    }
 }
 
 struct Owner(Arc<Shared>);
 impl ClipboardService for Owner {
     fn open(&self) -> Result<Box<dyn ClipboardSession>, FsError> {
-        self.0.update(|state| state.opened += 1);
+        self.0.update(|state| {
+            state.opened += 1;
+            state.woken |= state.wake_on_open;
+        });
         Ok(Box::new(Session(self.0.clone())))
     }
 }
@@ -192,6 +240,7 @@ impl Harness {
             events,
         }
     }
+    /// Submit a copy; returns after the controller queued it and called the waker.
     fn copy(&mut self, id: u64, text: &str) {
         let Self {
             runtime,
@@ -239,121 +288,166 @@ impl Harness {
     }
 }
 
+/// Each controller test runs once as usual and once with a submit wake that raced the
+/// worker onto the session it opened for that request (`State::wake_on_open`).
+const RACING_WAKE: [bool; 2] = [false, true];
+
 #[test]
 fn idle_session_with_a_waker_wakes_only_when_its_safety_timeout_expires() {
-    let shared = Shared::new(|state| {
-        state.wakes = true;
-        state.owns = true;
-    });
-    let mut harness = Harness::new(&shared);
-    harness.copy(1, "one");
-    harness.copied(1);
-    assert!(harness.wake_installed());
-    {
-        let state = shared.until("the idle worker waits", |state| state.waiting);
-        // One service pass after the request, then one wait with the long timeout.
-        assert_eq!(state.timeouts, [IDLE_WAIT]);
-        assert_eq!(state.services, 1);
-    }
-    // One virtual minute passes; each wakeup is an expired safety timeout (a 10 ms pump
-    // wakes up to 6,000 times in that minute).
-    assert!(IDLE_WAIT >= Duration::from_secs(1));
-    let expiries = (60 / IDLE_WAIT.as_secs()) as usize;
-    shared.update(|state| state.expire = expiries);
-    {
-        let state = shared.until("a virtual minute passed", |state| {
-            state.ended_by_expiry == expiries && state.waiting
+    for racing_wake in RACING_WAKE {
+        let shared = Shared::new(|state| {
+            state.wakes = true;
+            state.owns = true;
+            state.wake_on_open = racing_wake;
         });
-        assert_eq!(state.timeouts, vec![IDLE_WAIT; expiries + 1]);
-        assert_eq!(state.services, expiries + 1, "no wakeup between the waits");
-        assert_eq!(state.ended_by_wake, 0);
+        let mut harness = Harness::new(&shared);
+        harness.copy(1, "one");
+        harness.copied(1);
+        assert!(harness.wake_installed());
+        let base = {
+            let state = shared.idle("the idle worker waits");
+            // Only the submit's wake may have ended an earlier wait; no timeout expired.
+            assert!(state.waits_only_with(IDLE_WAIT), "{state:?}");
+            assert_eq!(state.ended_by_expiry, 0, "{state:?}");
+            if racing_wake {
+                assert!(
+                    state.ended_by_wake >= 1,
+                    "the racing wake was not delivered"
+                );
+            }
+            state.counts()
+        };
+        // One virtual minute passes; each wakeup is an expired safety timeout (a 10 ms pump
+        // wakes up to 6,000 times in that minute).
+        assert!(IDLE_WAIT >= Duration::from_secs(1));
+        let expiries = (60 / IDLE_WAIT.as_secs()) as usize;
+        shared.update(|state| state.expire = expiries);
+        let minute = {
+            let state = shared.until("a virtual minute passed", |state| {
+                state.ended_by_expiry == expiries && state.waiting
+            });
+            assert_eq!(
+                state.since(base),
+                Counts {
+                    waits: expiries,
+                    services: expiries,
+                    ended_by_wake: 0,
+                    ended_by_expiry: expiries,
+                },
+                "one service pass per expired wait and no wakeup between them: {state:?}"
+            );
+            assert!(state.waits_only_with(IDLE_WAIT), "{state:?}");
+            assert_eq!((state.opened, state.closed), (1, 0), "{state:?}");
+            state.counts()
+        };
+        harness.shutdown();
+        let state = shared.until("the session closed", |state| state.closed == 1);
+        assert_eq!(
+            state.since(minute).ended_by_wake,
+            1,
+            "Controller drop wakes the idle worker: {state:?}"
+        );
+        assert!(!state.stuck);
     }
-    harness.shutdown();
-    let state = shared.until("the session closed", |state| state.closed == 1);
-    assert_eq!(
-        state.ended_by_wake, 1,
-        "Controller drop wakes the idle worker"
-    );
-    assert!(!state.stuck);
 }
 
 #[test]
 fn queued_requests_end_an_idle_wait_through_the_waker() {
-    let shared = Shared::new(|state| {
-        state.wakes = true;
-        state.owns = true;
-    });
-    let mut harness = Harness::new(&shared);
-    harness.copy(1, "one");
-    harness.copied(1);
-    drop(shared.until("the idle worker waits", |state| state.waiting));
-    // Queued while the worker waits: served without its timeout expiring.
-    harness.copy(2, "two");
-    harness.copied(2);
-    {
-        let state = shared.until("the worker waits again", |state| {
-            state.waiting && state.timeouts.len() == 2
+    for racing_wake in RACING_WAKE {
+        let shared = Shared::new(|state| {
+            state.wakes = true;
+            state.owns = true;
+            state.wake_on_open = racing_wake;
         });
-        assert_eq!((state.ended_by_wake, state.ended_by_expiry), (1, 0));
+        let mut harness = Harness::new(&shared);
+        harness.copy(1, "one");
+        harness.copied(1);
+        let base = shared.idle("the idle worker waits").counts();
+        // Queued while the worker waits, which only the waker or an expiry can end; no
+        // expiry is granted.
+        harness.copy(2, "two");
+        harness.copied(2);
+        let base = {
+            let state = shared.idle("the worker waits again");
+            let since = state.since(base);
+            assert_eq!(
+                (since.waits, since.ended_by_wake, since.ended_by_expiry),
+                (1, 1, 0),
+                "the wake ended the wait, then the worker waited again: {state:?}"
+            );
+            state.counts()
+        };
+        // Queued after the worker found its inbox empty but before it waits (the
+        // lost-wakeup window): the earlier wake must end the wait that follows. The expiry
+        // ends the current wait, so that the worker reaches that window.
+        shared.update(|state| {
+            state.hold = true;
+            state.expire = 1;
+        });
+        drop(shared.until(
+            "the worker is between its inbox check and its wait",
+            |state| state.held,
+        ));
+        harness.copy(3, "three");
+        shared.update(|state| state.hold = false);
+        harness.copied(3);
+        let state = shared.idle("the worker waits again");
+        let since = state.since(base);
+        assert_eq!(
+            (since.waits, since.ended_by_wake, since.ended_by_expiry),
+            (2, 1, 1),
+            "the expiry ended one wait, the earlier wake the held one: {state:?}"
+        );
+        assert!(state.waits_only_with(IDLE_WAIT), "{state:?}");
+        assert_eq!(state.copied, ["one", "two", "three"]);
+        assert_eq!((state.opened, state.closed), (1, 0), "{state:?}");
+        assert!(!state.stuck);
+        drop(state);
+        harness.shutdown();
     }
-    // Queued after the worker found its inbox empty but before it waits (the lost-wakeup
-    // window): the earlier wake must end the wait that follows.
-    shared.update(|state| {
-        state.hold = true;
-        state.expire = 1;
-    });
-    drop(shared.until(
-        "the worker is between its inbox check and its wait",
-        |state| state.held,
-    ));
-    harness.copy(3, "three");
-    shared.update(|state| state.hold = false);
-    harness.copied(3);
-    let state = shared.until("the worker waits again", |state| {
-        state.waiting && state.timeouts.len() == 4
-    });
-    assert_eq!((state.ended_by_wake, state.ended_by_expiry), (2, 1));
-    assert_eq!(state.copied, ["one", "two", "three"]);
-    assert!(!state.stuck);
-    drop(state);
-    harness.shutdown();
 }
 
 #[test]
 fn session_that_stops_owning_is_closed_and_the_worker_waits_on_its_inbox() {
-    let shared = Shared::new(|state| {
-        state.wakes = true;
-        state.owns = true;
-    });
-    let mut harness = Harness::new(&shared);
-    harness.copy(1, "one");
-    harness.copied(1);
-    drop(shared.until("the idle worker waits", |state| state.waiting));
-    // The platform's ownership-loss event (Windows: WM_DESTROYCLIPBOARD) ends the wait.
-    shared.update(|state| {
-        state.owns = false;
-        state.woken = true;
-    });
-    {
-        let state = shared.until("the session closed", |state| state.closed == 1);
-        assert_eq!(state.timeouts.len(), 1, "a closed session is not waited on");
+    for racing_wake in RACING_WAKE {
+        let shared = Shared::new(|state| {
+            state.wakes = true;
+            state.owns = true;
+            state.wake_on_open = racing_wake;
+        });
+        let mut harness = Harness::new(&shared);
+        harness.copy(1, "one");
+        harness.copied(1);
+        let base = shared.idle("the idle worker waits").counts();
+        // The platform's ownership-loss event (Windows: WM_DESTROYCLIPBOARD) ends the wait.
+        shared.update(|state| {
+            state.owns = false;
+            state.woken = true;
+        });
+        {
+            let state = shared.until("the session closed", |state| state.closed == 1);
+            assert_eq!(
+                state.since(base).waits,
+                0,
+                "a closed session is not waited on: {state:?}"
+            );
+        }
+        assert!(
+            !harness.wake_installed(),
+            "the controller keeps no waker of a closed session"
+        );
+        // The worker blocks on its inbox; the next request opens a new session.
+        shared.update(|state| state.owns = true);
+        harness.copy(2, "two");
+        harness.copied(2);
+        let state = shared.idle("the new session waits");
+        assert_eq!((state.opened, state.closed), (2, 1), "{state:?}");
+        assert!(state.waits_only_with(IDLE_WAIT), "{state:?}");
+        assert_eq!(state.copied, ["one", "two"]);
+        assert!(!state.stuck);
+        drop(state);
+        harness.shutdown();
     }
-    assert!(
-        !harness.wake_installed(),
-        "the controller keeps no waker of a closed session"
-    );
-    // The worker blocks on its inbox; the next request opens a new session.
-    shared.update(|state| state.owns = true);
-    harness.copy(2, "two");
-    harness.copied(2);
-    let state = shared.until("the new session waits", |state| {
-        state.waiting && state.timeouts.len() == 2
-    });
-    assert_eq!((state.opened, state.closed), (2, 1));
-    assert_eq!(state.copied, ["one", "two"]);
-    assert!(!state.stuck);
-    drop(state);
-    harness.shutdown();
 }
 
 /// Cancels the worker and lets its current wait expire, also when the driver panics.
