@@ -166,3 +166,98 @@ fn recall_rejects_a_shell_from_another_platform_and_keeps_current_draft_grammar(
     assert_eq!(p.effective_shell(), Some(ShellFlavor::Posix));
     assert!(p.desktop.terminal_pending.is_none());
 }
+
+fn saved_histories(sent: &RefCell<Vec<Command>>) -> Vec<Vec<CommandHistoryEntry>> {
+    sent.borrow()
+        .iter()
+        .filter_map(|command| match command {
+            Command::SavePreferences { preferences, .. } => {
+                Some(preferences.command_history.clone())
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn commands_run_while_history_is_not_remembered_stay_session_only() {
+    let secret = "curl -H 'Authorization: Bearer 文档'";
+    let mut p = Presenter::new("left".into(), "right".into());
+    p.preferences_loaded(Ok(UserPreferences {
+        command_history: vec![entry("saved", ShellFlavor::Posix)],
+        ..Default::default()
+    }));
+    let sent = RefCell::new(Vec::new());
+    let send = |command| {
+        sent.borrow_mut().push(command);
+        true
+    };
+    p.change_remember_command_history(false, &send);
+    p.preferences_saved(p.preferences.revision, Ok(()));
+    sent.borrow_mut().clear();
+    let revision = p.preferences.revision;
+    p.record_command_history(entry(secret, ShellFlavor::Posix));
+    p.flush_loaded_preferences(&send);
+    assert!(
+        saved_histories(&sent).is_empty(),
+        "the stored history does not change while it is not remembered"
+    );
+    assert_ne!(p.preferences.revision, revision, "recall still refreshes");
+    assert_eq!(p.rotate_command_history(true, "").as_deref(), Some(secret));
+
+    p.change_remember_command_history(true, &send);
+    let saved = saved_histories(&sent);
+    assert!(!saved.is_empty());
+    assert!(
+        saved
+            .iter()
+            .all(|history| history.iter().all(|entry| entry.command != secret)),
+        "enabling the option later must not persist the earlier command"
+    );
+    sent.borrow_mut().clear();
+    // The same command and shell already head the recall list.
+    p.record_command_history(entry(secret, ShellFlavor::Posix));
+    p.flush_loaded_preferences(&send);
+    assert!(
+        saved_histories(&sent)
+            .last()
+            .is_some_and(|history| history.first() == Some(&entry(secret, ShellFlavor::Posix))),
+        "running it again while remembering authorizes persistence"
+    );
+}
+
+#[test]
+fn session_only_command_supersedes_a_save_in_flight_so_its_result_completes() {
+    let mut p = Presenter::new("left".into(), "right".into());
+    p.preferences_loaded(Ok(UserPreferences {
+        remember_command_history: false,
+        ..Default::default()
+    }));
+    let sent = RefCell::new(Vec::new());
+    let send = |command| {
+        sent.borrow_mut().push(command);
+        true
+    };
+    p.change_panel_split(0.4, &send);
+    let in_flight = p.preferences.revision;
+    p.record_command_history(entry("ls -la", ShellFlavor::Posix));
+    p.flush_loaded_preferences(&send);
+    let revisions = sent
+        .borrow()
+        .iter()
+        .filter_map(|command| match command {
+            Command::SavePreferences { revision, .. } => Some(*revision),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(revisions.len(), 2, "the new revision is saved too");
+    assert!(
+        saved_histories(&sent).iter().all(Vec::is_empty),
+        "the session-only command is not stored"
+    );
+    p.preferences_saved(in_flight, Ok(()));
+    assert!(p.preferences.unsaved, "the newer save is still running");
+    p.preferences_saved(revisions[1], Ok(()));
+    assert_eq!(p.preferences_save_status(), "Changes saved");
+    assert!(p.pending_preferences_save().is_none());
+}

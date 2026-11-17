@@ -342,3 +342,38 @@ fn jobs_preparation_errors_and_cancelled_confirmed_delete_remain_visible() {
         }
     }
 }
+
+#[test]
+fn completion_refresh_follows_a_pane_that_moved_on_while_its_old_refresh_waited() {
+    let mut p = Presenter::new("a".into(), "right".into());
+    let first = begin(&mut p, PaneId::Left, "a");
+    finish(&mut p, PaneId::Left, first, vec![]);
+    let moved = begin(&mut p, PaneId::Left, "b");
+    // A completion into A was queued while A was loading; then the pane moved on.
+    p.operations
+        .refresh
+        .push((PaneId::Left, PathBuf::from("a"), None));
+    p.queue_operation_refresh(PaneId::Left, Path::new("b"), None);
+    assert_eq!(
+        p.operations.refresh,
+        [(PaneId::Left, PathBuf::from("b"), None)],
+        "a newer completion replaces the stale target instead of being skipped"
+    );
+    let sent = RefCell::new(Vec::new());
+    let entries: Vec<Entry> = vec![];
+    p.apply_with_sender(
+        Event::ListingFinished {
+            pane: PaneId::Left,
+            navigation: moved,
+            index: Arc::new(DirectoryIndex::from_entries(&entries)),
+            entries: entries.into(),
+        },
+        &|command| {
+            sent.borrow_mut().push(command);
+            true
+        },
+    );
+    assert!(sent.borrow().iter().any(|command| matches!(command,
+        Command::Refresh { pane: PaneId::Left, path, .. } if path == Path::new("b"))));
+    assert!(p.operations.refresh.is_empty());
+}

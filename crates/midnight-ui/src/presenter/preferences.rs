@@ -38,6 +38,10 @@ pub(crate) struct PreferencesState {
     pub(super) edited: EditedFields,
     /// At most one pending change per viewer setting while the initial read runs.
     viewer_before_load: Vec<ViewerPreferenceChange>,
+    /// Exact commands recalled in this session that were run while "Remember
+    /// command history after restart" was off. Persistence was not authorized
+    /// for them, even if the option is enabled later; bounded by the history.
+    pub(super) session_commands: HashSet<String>,
 }
 
 #[derive(Default)]
@@ -226,7 +230,6 @@ impl Presenter {
             return;
         }
         self.preferences.loaded = true;
-        let previous_filter = self.preferences.values.quick_search_filter;
         match result {
             Ok(mut loaded) => {
                 for change in self.preferences.viewer_before_load.drain(..) {
@@ -416,12 +419,14 @@ impl Presenter {
                 self.desktop
                     .report("Could not load options", message.clone());
                 self.preferences.save_blocked = Some(message);
+                // The disabled-provider policy is unknown; viewers explain this
+                // instead of reporting a load that can no longer complete.
+                self.viewer_plugins.startup_read_failed = true;
             }
         }
         self.preferences.flush_after_load = self.preferences.unsaved;
         self.capture_options_baseline();
         self.sync_user_command_settings();
-        let _ = previous_filter;
         self.search_filter_changed();
     }
 
@@ -619,15 +624,41 @@ impl Presenter {
 
     /// The backend reports the exact frozen command only after a successful launch.
     pub(super) fn record_command_history(&mut self, entry: CommandHistoryEntry) {
-        if let Some(baseline) = &mut self.preferences.options.baseline {
+        let state = &mut self.preferences;
+        if let Some(baseline) = &mut state.options.baseline {
             remember_command(&mut baseline.command_history, entry.clone());
         }
-        if remember_command(&mut self.preferences.values.command_history, entry) {
-            self.preferences.edited.command_history = true;
-            self.preferences.unsaved = true;
-            self.preferences.revision.0 = self.preferences.revision.0.saturating_add(1);
-            self.preferences.flush_after_load = true;
+        let command = entry.command.clone();
+        let recalled = remember_command(&mut state.values.command_history, entry);
+        if state.values.remember_command_history {
+            // Running a command while remembering authorizes its persistence,
+            // also when its session-only run already heads the recall list.
+            let authorized = state.session_commands.remove(&command);
+            if !recalled && !authorized {
+                return;
+            }
+            state.edited.command_history = true;
+            state.unsaved = true;
+            state.flush_after_load = true;
+        } else {
+            if !recalled {
+                return;
+            }
+            // Recall only: the stored (empty) history is unchanged, so no save.
+            state.session_commands.insert(command);
+            let history = &state.values.command_history;
+            state
+                .session_commands
+                .retain(|command| history.iter().any(|entry| entry.command == *command));
+            // `revision` also identifies saves: once it moves on, the result of
+            // a save still in flight no longer completes `unsaved`. Save the
+            // same content again under the new revision to supersede it.
+            if state.pending_save_revision.is_some() {
+                state.flush_after_load = true;
+            }
         }
+        // The recall list follows the in-memory history and its revision.
+        state.revision.0 = state.revision.0.saturating_add(1);
     }
 
     pub(super) fn update_preferences(
@@ -756,13 +787,17 @@ impl Presenter {
         if let Err(error) = values.validate() {
             self.preferences.save_error = crate::error_presentation::describe(&error);
             self.desktop.status = "Options apply to this session; saving needs attention".into();
-            self.desktop.report(
-                "Cannot save options",
+            // Only the bookmark capacity has a remedy the user can apply here.
+            let remedy = if values.bookmarks.len() > MAX_BOOKMARKS {
                 format!(
-                    "{error}\nRemove bookmarks until at most 64 remain, then save again. \
-                 Existing saved bookmarks have not been replaced."
-                ),
-            );
+                    "Remove bookmarks until at most {MAX_BOOKMARKS} remain, then save again. \
+                     Existing saved bookmarks have not been replaced."
+                )
+            } else {
+                "The saved options file has not been changed.".to_owned()
+            };
+            self.desktop
+                .report("Cannot save options", format!("{error}\n{remedy}"));
             return false;
         }
         if send(Command::SavePreferences {

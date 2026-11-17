@@ -392,6 +392,278 @@ fn accepted_recursive_disclosure_of_another_row_supersedes_the_older_queued_star
 }
 
 #[test]
+fn dropped_adopted_session_leaves_tree_mode_instead_of_recommitting() {
+    for accepted in [true, false] {
+        let (mut p, root) = fixture();
+        p.apply_with_sender(
+            Event::Tree(Box::new(TreeEvent::Published(publication(
+                root.clone(),
+                1,
+                true,
+                false,
+            )))),
+            &|_| true,
+        );
+        let stamp = p.panes[0].tree_view().unwrap().stamp;
+        let sent = RefCell::new(Vec::new());
+        let send = |command| {
+            sent.borrow_mut().push(command);
+            accepted
+        };
+        p.apply_with_sender(
+            Event::Tree(Box::new(TreeEvent::Unavailable {
+                root,
+                error: TreeDiagnostic::new("Tree session failed"),
+            })),
+            &send,
+        );
+        assert!(p.desktop.notice.is_some(), "the failure is reported once");
+        // The engine answers observations of a dropped session with request 0.
+        for _ in 0..3 {
+            p.apply_with_sender(
+                Event::Tree(Box::new(TreeEvent::Rejected {
+                    stamp,
+                    request: TreeRequestId(0),
+                    row: TreeRowId(0),
+                    error: TreeDiagnostic::new("Tree session is not ready."),
+                })),
+                &send,
+            );
+        }
+        assert!(
+            !sent.borrow().iter().any(|command| matches!(command,
+                Command::Tree(tree) if matches!(tree.as_ref(), TreeCommand::Commit(_) | TreeCommand::Viewport { .. }))),
+            "observations of a dropped session must not be re-sent"
+        );
+        let left = |sent: &RefCell<Vec<Command>>| {
+            sent.borrow().iter().any(|command| {
+                matches!(
+                    command,
+                    Command::Refresh {
+                        pane: PaneId::Left,
+                        ..
+                    }
+                )
+            })
+        };
+        assert!(
+            left(&sent),
+            "a flat re-read is requested to leave tree mode"
+        );
+        if accepted {
+            assert!(p.panes[0].loading);
+        } else {
+            assert!(!p.panes[0].loading, "the refused re-read was not committed");
+            assert!(
+                p.panes[0].tree_view().is_some(),
+                "kept until the re-read is sent"
+            );
+            sent.borrow_mut().clear();
+            p.flush_selection(&|command| {
+                sent.borrow_mut().push(command);
+                true
+            });
+            assert!(left(&sent), "the retained re-read is retried");
+            assert!(p.panes[0].loading && p.panes[0].tree_view().is_none());
+        }
+        p.retire_all();
+        let retired = p.take_retired();
+        std::thread::spawn(move || drop(retired)).join().unwrap();
+    }
+}
+
+#[test]
+fn dropped_adopted_session_cancels_a_comparison_that_waits_for_it() {
+    let (mut p, root) = fixture();
+    p.apply_with_sender(
+        Event::Tree(Box::new(TreeEvent::Published(publication(
+            root.clone(),
+            1,
+            true,
+            false,
+        )))),
+        &|_| true,
+    );
+    let right = test_root().join("comparison-right");
+    let navigation = begin(&mut p, PaneId::Right, right.to_str().unwrap());
+    finish(
+        &mut p,
+        PaneId::Right,
+        navigation,
+        vec![Entry::new(EntryId(2), right.join("r.txt"), EntryKind::File)],
+    );
+    // A newer publication is adopted while the queue is full: its Commit waits,
+    // so the submitted comparison waits for this tree.
+    p.apply_with_sender(
+        Event::Tree(Box::new(TreeEvent::Published(publication(
+            root.clone(),
+            2,
+            true,
+            false,
+        )))),
+        &|_| false,
+    );
+    p.open_comparison();
+    p.submit_comparison(CompareOptions::default(), &|_| false);
+    assert!(p.comparison.busy, "the comparison waits for the tree");
+    let sent = RefCell::new(Vec::new());
+    p.apply_with_sender(
+        Event::Tree(Box::new(TreeEvent::Unavailable {
+            root,
+            error: TreeDiagnostic::new("Tree session failed"),
+        })),
+        &|command| {
+            sent.borrow_mut().push(command);
+            true
+        },
+    );
+    assert!(!p.comparison.busy, "the comparison stops waiting");
+    assert_eq!(
+        p.comparison.error,
+        "Comparison cancelled because a panel or selection changed."
+    );
+    assert!(
+        sent.borrow().iter().any(|command| matches!(
+            command,
+            Command::Refresh {
+                pane: PaneId::Left,
+                ..
+            }
+        )),
+        "the comparison does not hold back the re-read"
+    );
+    assert!(
+        !sent
+            .borrow()
+            .iter()
+            .any(|command| matches!(command, Command::CompareDirectories(_)))
+    );
+    assert!(p.panes[0].tree_view().is_none() && p.panes[0].loading);
+    p.retire_all();
+    let retired = p.take_retired();
+    std::thread::spawn(move || drop(retired)).join().unwrap();
+}
+
+/// Adopt a one-level tree over the archive fixture's rows.
+fn adopt_archive_tree(p: &mut Presenter) -> TreeRootSnapshot {
+    let entries = p.panes[0].entries.clone();
+    let identity = p.panes[0].row_identity(&entries[0]);
+    let sent = RefCell::new(Vec::new());
+    p.disclose_tree(PaneId::Left, &identity, &|command| {
+        sent.borrow_mut().push(command);
+        true
+    });
+    let Some(Command::Tree(command)) = sent.borrow_mut().pop() else {
+        panic!("tree enable");
+    };
+    let TreeCommand::Enable { root, .. } = *command else {
+        panic!("tree enable");
+    };
+    let rows = entries
+        .iter()
+        .enumerate()
+        .map(|(position, entry)| {
+            let mut display = entry.clone();
+            display.id = EntryId(100 + position as u64);
+            TreeDisplayRow {
+                id: TreeRowId(display.id.0),
+                entry: display,
+                parent: None,
+                depth: 0,
+                disclosure: TreeDisclosure::None,
+                expanded: false,
+                selectable: true,
+                navigable: false,
+                context_only: false,
+                error: None,
+                error_details: None,
+                original_root_entry: Some(entry.id),
+                prefix_end: 0,
+                search_match: false,
+            }
+        })
+        .collect();
+    let stamp = TreeViewStamp {
+        pane: PaneId::Left,
+        navigation: root.navigation,
+        session: TreeSessionId(9),
+        revision: TreeRevision(1),
+    };
+    let view =
+        Arc::new(TreeProjection::new(root.clone(), stamp, TreeLayoutRevision(1), rows).unwrap());
+    let selection = Arc::new(TreeSelectionSnapshot::from_bits(view.clone(), vec![0]).unwrap());
+    p.apply_with_sender(
+        Event::Tree(Box::new(TreeEvent::Published(
+            TreePublication::new(view, SelectionRevision(0), selection).unwrap(),
+        ))),
+        &|_| true,
+    );
+    assert!(p.panes[0].tree_view().is_some(), "archive tree adopted");
+    root
+}
+
+#[test]
+fn dropped_archive_tree_session_relists_the_archive_folder() {
+    for accepted in [true, false] {
+        let mut p = super::archives::archive_pane();
+        let root = adopt_archive_tree(&mut p);
+        let sent = RefCell::new(Vec::new());
+        let send = |command| {
+            sent.borrow_mut().push(command);
+            accepted
+        };
+        p.apply_with_sender(
+            Event::Tree(Box::new(TreeEvent::Unavailable {
+                root,
+                error: TreeDiagnostic::new("Tree session failed"),
+            })),
+            &send,
+        );
+        assert!(p.desktop.notice.is_some(), "the failure is reported");
+        let relisted = |sent: &RefCell<Vec<Command>>| {
+            sent.borrow().iter().any(|command| {
+                matches!(
+                    command,
+                    Command::ArchiveNavigate {
+                        pane: PaneId::Left,
+                        action: ArchiveAction::List(_),
+                        ..
+                    }
+                )
+            })
+        };
+        assert!(relisted(&sent), "the archive folder is listed again");
+        assert!(
+            !sent.borrow().iter().any(|command| matches!(command,
+                Command::Tree(tree) if matches!(tree.as_ref(), TreeCommand::Commit(_) | TreeCommand::Viewport { .. }))),
+            "observations of a dropped session must not be re-sent"
+        );
+        if accepted {
+            assert!(p.panes[0].loading && p.panes[0].tree_view().is_none());
+        } else {
+            assert!(
+                p.panes[0].tree_view().is_some(),
+                "kept until the re-list is sent"
+            );
+            assert!(
+                p.panes[0].error.is_empty(),
+                "a retried request does not report a busy queue"
+            );
+            sent.borrow_mut().clear();
+            p.flush_selection(&|command| {
+                sent.borrow_mut().push(command);
+                true
+            });
+            assert!(relisted(&sent), "the refused re-list is retried");
+            assert!(p.panes[0].loading && p.panes[0].tree_view().is_none());
+        }
+        p.retire_all();
+        let retired = p.take_retired();
+        std::thread::spawn(move || drop(retired)).join().unwrap();
+    }
+}
+
+#[test]
 fn tree_commit_backpressure_does_not_send_selection_before_acknowledgment() {
     let (mut p, root) = fixture();
     p.apply_with_sender(

@@ -31,11 +31,27 @@ pub(crate) struct ViewerPluginsState {
     pub(crate) pending: bool,
     pub(crate) startup_disabled: Option<Arc<[String]>>,
     pub(crate) startup_associations: Arc<ViewerAssociations>,
+    /// The initial settings read failed, so `startup_disabled` stays unknown and
+    /// viewers remain unavailable for this session instead of ignoring the
+    /// user's disabled providers.
+    pub(crate) startup_read_failed: bool,
     pub(crate) revision: u64,
     pub(crate) selected_key: String,
     pub(crate) extension_draft: Option<super::viewer_associations::ExtensionDraft>,
     pub(crate) association_error: String,
     pub(crate) extension_input_rejected: bool,
+}
+
+impl ViewerPluginsState {
+    /// Why no viewer can start while the startup provider policy is unknown.
+    pub(super) fn policy_unavailable(&self) -> &'static str {
+        if self.startup_read_failed {
+            "Viewers are unavailable because saved options could not be read. \
+             Restart after resolving the read error."
+        } else {
+            "Viewer settings are still loading. Try again."
+        }
+    }
 }
 
 impl Presenter {
@@ -285,6 +301,28 @@ mod tests {
     fn viewer_waits_for_saved_startup_plugin_choices() {
         let presenter = presenter();
         assert!(presenter.viewer_launch(PaneId::Left, false).is_none());
+    }
+
+    #[test]
+    fn failed_settings_read_explains_unavailable_viewers_instead_of_loading() {
+        let mut presenter = presenter();
+        assert_eq!(presenter.viewer_unavailable_reason(PaneId::Left), None);
+        presenter.preferences_loaded(Err(FsError::from_io(
+            "load preferences",
+            std::path::Path::new("preferences"),
+            std::io::ErrorKind::PermissionDenied.into(),
+        )));
+        assert!(presenter.viewer_launch(PaneId::Left, false).is_none());
+        let reason = presenter.viewer_unavailable_reason(PaneId::Left);
+        assert!(reason.is_some_and(|reason| reason.contains("could not be read")));
+        let compare = presenter.file_compare_launch(PaneId::Left).err();
+        assert!(compare.is_some_and(|error| error.contains("could not be read")));
+        assert!(
+            !presenter
+                .viewer_plugins
+                .policy_unavailable()
+                .contains("loading")
+        );
     }
 
     #[test]

@@ -541,8 +541,7 @@ impl Presenter {
                     let Some(disabled_plugins) = self.viewer_plugins.startup_disabled.clone()
                     else {
                         s.running = false;
-                        s.error =
-                            "Viewer settings are still loading. Try Create list again.".into();
+                        s.error = self.viewer_plugins.policy_unavailable().into();
                         self.retired.push(Box::new(content));
                         return;
                     };

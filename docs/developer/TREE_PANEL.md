@@ -369,6 +369,14 @@ captured launch. Switching the active pane cannot retarget it; source navigation
 projection replacement or application close cancels pending work. Queue pressure
 retains one pending editor intent with its original settings.
 
+Background changes do not cancel started work silently. When a newer publication
+of the same session (watch refresh, branch loading) or a selection change voids a
+pending capture for Delete, Rename, attributes, checksums, Custom Commands, F4 or
+the clipboard/menu actions, the panel reports that the tree changed and asks for
+a retry. Leaving the tree after an F4 launch or a clipboard copy was already
+handed to the desktop worker reports that it may not have completed. Navigation,
+shutdown and explicit Escape/dismissal stay silent.
+
 Resolution, native regular-file validation, spawning and final provider disposal
 run on backend workers, including shutdown before an async delivery task starts.
 Existing process/launch limits and literal executable/argv handling remain. Raw
@@ -503,8 +511,9 @@ newly owned capture data; native clipboard payload limits also apply. Rejected,
 canceled and stale captures are retired on backend workers, including queue
 refusal and pending engine-command destruction during shutdown. The presenter
 keeps one pending clipboard capture and retries outer command-channel pressure
-with the same source. Navigation cancels pending work; it does not erase an
-already published OS clipboard entry.
+with the same source. Navigation cancels pending work, and a copy that was
+already handed to the clipboard worker reports that it may not have completed; it
+does not erase an already published OS clipboard entry.
 
 Ctrl+V retains the native panel root as its destination even when a nested row
 has focus. Copy uses the ordinary verified queue; Move intent opens the existing
@@ -583,6 +592,15 @@ The earlier [verification record](../verification/2026-11-10-tree-watch.md) reta
 its dated scope; [ACTIVE_WORK](../ACTIVE_WORK.md#current-checkpoint) records current
 qualification. This does not add archive watches, generic watch providers or the
 remaining tree operation consumers.
+
+When the adopted session of the displayed root fails (`Unavailable`), the
+presenter stops sending that session's Commit, viewport, branch and size requests,
+reports the failure and leaves tree mode. A native panel reads its folder again
+flat; like other automatic re-reads, this waits while a drag from that panel is in
+progress. A directory comparison that waits for or runs against the failed tree is
+cancelled, so it cannot hold the re-read back. An archive panel lists its current
+archive folder again. Either request retires the tree and starts a fresh selection
+context; when the command queue is full, the request is kept and retried.
 
 ## Delete from expanded native panels
 

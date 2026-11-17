@@ -144,3 +144,29 @@ fn progressive_selection_uses_the_new_generation_and_survives_final_sort() {
     assert_eq!(p.panes[0].cursor, Some(EntryId(2)));
     assert_eq!(selected_ids(&p, PaneId::Left), HashSet::from([EntryId(2)]));
 }
+
+#[test]
+fn refused_internal_rebase_is_silent_and_an_accepted_send_clears_busy_notices() {
+    let mut p = Presenter::new("left".into(), "right".into());
+    let first = begin(&mut p, PaneId::Left, "left");
+    finish(&mut p, PaneId::Left, first, vec![entry(1, "left/a")]);
+    p.panes[0].selection_rebase_pending = true;
+    p.flush_selection(&|_| false);
+    assert!(p.panes[0].selection_rebase_pending, "the rebase is retried");
+    assert!(
+        p.panes[0].error.is_empty(),
+        "an automatic retry is not actionable"
+    );
+    move_cursor(&mut p, PaneId::Left, 6);
+    p.move_cursor(PaneId::Left, 9, &|_| false);
+    assert!(
+        p.panes[0].error.contains("busy"),
+        "refused user input is reported"
+    );
+    p.flush_selection(&|_| true);
+    assert!(!p.panes[0].selection_rebase_pending);
+    assert!(
+        p.panes[0].error.is_empty(),
+        "an accepted send clears the notice"
+    );
+}

@@ -30,6 +30,9 @@ pub(super) struct State {
     pub(super) anchor: Option<TreeRowId>,
     pub(super) viewport: (usize, usize),
     viewport_sent: Option<(TreeRevision, usize, usize)>,
+    /// The backend dropped this adopted session. Its view stays visible until a
+    /// same-folder re-read leaves tree mode; nothing is sent for it meanwhile.
+    pub(super) unavailable: bool,
 }
 
 impl Pane {
@@ -38,7 +41,8 @@ impl Pane {
     }
 
     pub(super) fn tree_projection_ready(&self) -> bool {
-        !self.tree.commit_pending
+        !self.tree.unavailable
+            && !self.tree.commit_pending
             && self.tree.replay.is_empty()
             && self.tree.navigation.is_none()
             && !self.tree.options.is_pending()
@@ -107,6 +111,32 @@ impl Pane {
 impl Presenter {
     /// Retire presentation before a location transition; restore only an exact root alias.
     pub(super) fn clear_tree(&mut self, pane: PaneId, navigation: Option<NavigationId>) {
+        if self.filter_dialog.open && self.filter_dialog.pane == pane {
+            self.cancel_panel_filter();
+        }
+        self.clear_tree_presentation(pane, navigation);
+    }
+
+    /// `clear_tree` without closing the Panel Filter dialog, for a re-read of the
+    /// committed folder that keeps the dialog's flat target current.
+    pub(super) fn clear_tree_presentation(
+        &mut self,
+        pane: PaneId,
+        navigation: Option<NavigationId>,
+    ) {
+        // Leaving the tree cancels launches the user already started; say so
+        // instead of discarding their receipts silently.
+        let interrupted = if self.tree_clipboard_copy_admitted(pane) {
+            Some("Copy to clipboard")
+        } else if self.tree_editor_admitted(pane) {
+            Some("Opening the editor")
+        } else {
+            None
+        };
+        if let Some(action) = interrupted {
+            self.desktop.status =
+                format!("{action} may not have completed because the folder changed.");
+        }
         self.clear_folder_presence(pane);
         self.cancel_tree_transfer(Some(pane));
         self.cancel_tree_clipboard(Some(pane));
@@ -117,9 +147,6 @@ impl Presenter {
         self.cancel_tree_rename(Some(pane));
         self.cancel_tree_delete(Some(pane));
         self.cancel_tree_drag(Some(pane));
-        if self.filter_dialog.open && self.filter_dialog.pane == pane {
-            self.cancel_panel_filter();
-        }
         let p = &mut self.panes[pane.index()];
         if let Some(view) = p.tree_view() {
             p.cursor = p
@@ -162,6 +189,29 @@ impl Presenter {
         self.retired.push(Box::new(mem::take(&mut p.tree)));
         self.retired.push(Box::new(p.error_details.take()));
         p.rectangle_preview = None;
+    }
+
+    /// Leave an adopted tree whose backend session was dropped. A native panel
+    /// re-reads its folder like other automatic re-reads; an archive panel
+    /// re-lists its archive folder. Both retire the tree and start a fresh
+    /// selection context. A refused request stays owed: the native re-read as the
+    /// pane's refresh hint, the archive re-list through `flush_background_refreshes`.
+    pub(super) fn leave_unavailable_tree(&mut self, pane: PaneId, send: &dyn Fn(Command) -> bool) {
+        let p = &self.panes[pane.index()];
+        if !p.tree.unavailable || p.loading {
+            return;
+        }
+        if let Some(archive) = &p.archive {
+            let location = archive.location.clone();
+            self.archive_navigate_impl(
+                pane,
+                ArchiveAction::List(location),
+                Reload::Background,
+                send,
+            );
+        } else if let Some(navigation) = p.successful_generation {
+            self.refresh_if_changed(pane, navigation, send);
+        }
     }
 
     /// Temporary typed-action boundary. A display index never grants native operation authority.
@@ -313,15 +363,18 @@ impl Presenter {
         let Some(request) = p.tree.request.checked_next() else {
             return false;
         };
+        // flush_trees retries a requested expansion automatically.
+        const BUSY: &str = "Branch queue is busy. Try again.";
         if !send(Command::Tree(Box::new(TreeCommand::Branch {
             view,
             request,
             row,
             action,
         }))) {
-            p.set_error("Branch queue is busy. Try again.", &mut self.retired);
+            p.report_busy(BUSY, &mut self.retired);
             return false;
         }
+        p.clear_busy(BUSY, &mut self.retired);
         p.tree.request = request;
         true
     }
@@ -330,7 +383,7 @@ impl Presenter {
         self.flush_tree_size_acks(send);
         for pane in [PaneId::Left, PaneId::Right] {
             let p = &mut self.panes[pane.index()];
-            if p.loading {
+            if p.loading || p.tree.unavailable {
                 continue;
             }
             if p.tree.publication.is_none()
@@ -767,7 +820,8 @@ impl Presenter {
                 self.retired.push(Box::new(target));
             }
             TreeEvent::Unavailable { root, error } => {
-                let p = &mut self.panes[root.pane.index()];
+                let pane = root.pane;
+                let p = &mut self.panes[pane.index()];
                 if p.tree
                     .pending
                     .as_ref()
@@ -775,6 +829,24 @@ impl Presenter {
                 {
                     self.retired.push(Box::new(p.tree.pending.take()));
                     p.set_tree_error(&error, "", &mut self.retired);
+                } else if !p.tree.unavailable
+                    && p.tree_view()
+                        .is_some_and(|view| view.root.same_snapshot(&root))
+                {
+                    // The backend dropped the adopted session. Re-sending its
+                    // Commit/Viewport observations would only be rejected again.
+                    p.tree.unavailable = true;
+                    self.desktop.report(
+                        "Tree unavailable",
+                        format!(
+                            "{}\n\nThe folder is listed again without its expanded branches.",
+                            error.as_str()
+                        ),
+                    );
+                    // A comparison waiting for or running against this tree can
+                    // never finish; cancel it first so it cannot hold the re-read.
+                    self.flush_comparison(send);
+                    self.leave_unavailable_tree(pane, send);
                 }
                 self.retired.push(Box::new(root));
             }
@@ -792,7 +864,11 @@ impl Presenter {
                         .is_some_and(|(pending_stamp, pending, _, _)| {
                             *pending_stamp == stamp && *pending == request
                         });
-                if navigation_rejected || p.tree_view().is_some_and(|view| view.stamp == stamp) {
+                // A dropped session rejects every observation; never re-arm them.
+                if !p.tree.unavailable
+                    && (navigation_rejected
+                        || p.tree_view().is_some_and(|view| view.stamp == stamp))
+                {
                     if request == TreeRequestId(0) {
                         p.tree.commit_pending = true;
                         p.tree.viewport_sent = None;

@@ -477,3 +477,50 @@ fn flat_file_drop_targets_the_root_only_with_current_native_identity() {
         );
     }
 }
+
+#[test]
+fn watch_refresh_waits_for_a_drag_from_its_pane_and_refused_navigation_keeps_it() {
+    let (mut p, _) = loaded();
+    let sent = RefCell::new(Vec::new());
+    let send = |command| {
+        sent.borrow_mut().push(command);
+        true
+    };
+    assert!(p.begin_file_drag(PaneId::Left, 1, &identity(&p, 1), &send));
+    let committed = p.panes[0].successful_generation.unwrap();
+    sent.borrow_mut().clear();
+    assert!(!p.refresh_if_changed(PaneId::Left, committed, &send));
+    p.flush_selection(&send);
+    assert!(
+        p.drag_drop.lifecycle.active().is_some(),
+        "the gesture survives"
+    );
+    assert!(
+        !sent
+            .borrow()
+            .iter()
+            .any(|command| matches!(command, Command::Refresh { .. } | Command::CancelDrag(_))),
+        "a watch hint neither re-reads the source nor cancels the drag"
+    );
+    assert!(
+        !p.navigate(PaneId::Left, test_root().join("elsewhere"), None, &|_| {
+            false
+        })
+    );
+    assert!(
+        p.drag_drop.lifecycle.active().is_some(),
+        "a refused navigation leaves the drag alive"
+    );
+    p.cancel_file_drag(&send);
+    p.flush_selection(&send);
+    assert!(
+        sent.borrow().iter().any(|command| matches!(
+            command,
+            Command::Refresh {
+                pane: PaneId::Left,
+                ..
+            }
+        )),
+        "the retained hint re-reads the folder after the gesture"
+    );
+}

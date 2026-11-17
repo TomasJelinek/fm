@@ -8,6 +8,20 @@ fn loaded() -> Presenter {
 }
 
 #[test]
+fn invalid_settings_suggest_removing_bookmarks_only_for_too_many_bookmarks() {
+    let mut presenter = loaded();
+    presenter.preferences.values.command_history = (0..=MAX_COMMAND_HISTORY)
+        .map(|index| CommandHistoryEntry {
+            command: format!("command {index}"),
+            shell: ShellFlavor::Posix,
+        })
+        .collect();
+    presenter.change_preferences(0, 0, 2, &|_| panic!("invalid settings are never sent"));
+    let (_, body) = presenter.desktop.notice.as_ref().expect("reported");
+    assert!(!body.contains("bookmark"), "{body}");
+}
+
+#[test]
 fn explicit_save_retries_a_failed_backend_write_with_a_new_revision() {
     let mut presenter = loaded();
     let sent = RefCell::new(Vec::new());

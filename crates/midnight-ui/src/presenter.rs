@@ -99,6 +99,24 @@ pub use tabs::TabSummary;
 /// Owned allocations returned to the application's background reclamation queue.
 pub type DeferredDrop = Box<dyn Send>;
 
+/// Native back/forward history keeps the same bound as archive and network history.
+const MAX_HISTORY: usize = 128;
+
+/// How an accepted directory request treats the committed location.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Reload {
+    /// A user navigation, including an explicit same-folder refresh (Ctrl+R),
+    /// which discards computed folder sizes unless a scan continues across it.
+    Navigate,
+    /// A re-sort of the committed listing. It does not re-read the folder, so a
+    /// retained watch hint survives it.
+    Resort,
+    /// An automatic re-read of the committed folder after a watch hint or a
+    /// finished operation. It keeps computed folder sizes and never reports a
+    /// busy queue; callers retain it until it can be sent.
+    Background,
+}
+
 struct Request {
     navigation: NavigationId,
     /// At most the original strict ancestors plus one OS-root attempt.
@@ -202,6 +220,8 @@ pub(crate) struct Pane {
     pub(crate) volume_paths: HashMap<PathBuf, PathBuf>,
     streaming_index: HashMap<EntryId, usize>,
     pending: Option<Request>,
+    /// A current watch hint that waits for a gesture, a comparison or queue capacity.
+    refresh_hint: bool,
     pub(crate) generation: u64,
     successful_generation: Option<NavigationId>,
     committed_sort: SortSpec,
@@ -350,27 +370,71 @@ impl Presenter {
     }
 
     /// Refresh a watch hint only while its exact committed generation is visible.
-    /// Adopted trees retain pending work if the caller's bounded sender is full.
+    /// Returns whether a re-read was sent; adopted trees retain pending work.
+    ///
+    /// The re-read keeps location-scoped state (computed folder sizes, the Panel
+    /// Filter dialog, the viewport). It waits while a drag from this pane or a
+    /// directory comparison still needs the committed rows, or while the bounded
+    /// sender is full; `flush_selection` retries the retained hint.
     pub fn refresh_if_changed(
         &mut self,
         pane: PaneId,
         navigation: NavigationId,
         send: &dyn Fn(Command) -> bool,
     ) -> bool {
-        let p = &self.panes[pane.index()];
+        let p = &mut self.panes[pane.index()];
         if p.loading || !p.native_capabilities() || p.successful_generation != Some(navigation) {
             return false;
         }
+        p.refresh_hint = false;
         if self.request_native_tree_refresh(pane, send) {
             return true;
         }
-        let p = &self.panes[pane.index()];
-        let path = p.path.clone();
-        let accepted = self.navigate(pane, path, None, send);
-        if accepted {
-            self.panes[pane.index()].preserve_viewport = true;
+        let path = self.panes[pane.index()].path.clone();
+        if self.background_refresh_blocked(pane)
+            || !self.navigate_impl(pane, path, None, Reload::Background, send)
+        {
+            self.panes[pane.index()].refresh_hint = true;
+            return false;
         }
-        accepted
+        true
+    }
+
+    /// Automatic re-reads wait while replacing the committed rows would abort a
+    /// drag gesture from the pane or a directory comparison that captured them.
+    fn background_refresh_blocked(&self, pane: PaneId) -> bool {
+        self.comparison.in_progress()
+            || self
+                .drag_drop
+                .lifecycle
+                .active()
+                .is_some_and(|gesture| gesture.source.pane == pane.index())
+    }
+
+    /// Retry retained watch hints and post-operation refreshes once unblocked.
+    fn flush_background_refreshes(&mut self, send: &dyn Fn(Command) -> bool) {
+        for pane in [PaneId::Left, PaneId::Right] {
+            // An archive panel whose tree session was dropped still owes its re-list.
+            if self.panes[pane.index()].archive.is_some() {
+                self.leave_unavailable_tree(pane, send);
+            }
+            let p = &self.panes[pane.index()];
+            // A hint survives a loading re-sort (it reuses the committed rows) and
+            // is retried once that request commits.
+            if !p.refresh_hint || p.loading || self.background_refresh_blocked(pane) {
+                continue;
+            }
+            match p.successful_generation.filter(|_| p.native_capabilities()) {
+                Some(navigation) => {
+                    self.refresh_if_changed(pane, navigation, send);
+                }
+                // A later archive or network location superseded the hint.
+                None => self.panes[pane.index()].refresh_hint = false,
+            }
+        }
+        if !self.operations.refresh.is_empty() {
+            self.refresh_operation_paths(send);
+        }
     }
 
     /// Detach live state after the window closes; reclaim `take_retired()` on a worker.
@@ -402,7 +466,17 @@ impl Presenter {
         self.retire_selection_actions();
         self.retire_file_actions();
         self.tabs.retire(&mut self.retired);
+        // These hold further references to listing Arcs and per-entry maps; the
+        // final drop must not run on the UI thread when the Presenter drops.
+        self.colors.retire_sources(&mut self.retired);
+        self.comparison.retire_captures(&mut self.retired);
+        self.retired
+            .push(Box::new(mem::take(&mut self.copies.selection)));
+        for pane in [PaneId::Left, PaneId::Right] {
+            self.clear_folder_presence(pane);
+        }
         for p in &mut self.panes {
+            self.retired.push(Box::new(p.archive.take()));
             self.retired.push(Box::new(p.error_details.take()));
             self.retired.push(Box::new(p.folder_errors.take()));
             self.retired.push(Box::new(mem::take(&mut p.tree)));
@@ -452,7 +526,7 @@ impl Presenter {
         history: Option<usize>,
         send: &dyn Fn(Command) -> bool,
     ) -> bool {
-        self.navigate_impl(pane, path, history, false, send)
+        self.navigate_impl(pane, path, history, Reload::Navigate, send)
     }
 
     pub(crate) fn can_retry_directory_elevated(&self, pane: PaneId) -> bool {
@@ -504,18 +578,9 @@ impl Presenter {
         pane: PaneId,
         path: PathBuf,
         history: Option<usize>,
-        resort: bool,
+        mode: Reload,
         send: &dyn Fn(Command) -> bool,
     ) -> bool {
-        drag_drop::invalidate(&self.drag_drop.targets);
-        if self
-            .drag_drop
-            .lifecycle
-            .active()
-            .is_some_and(|g| g.source.pane == pane.index())
-        {
-            self.cancel_file_drag(send);
-        }
         let p = &mut self.panes[pane.index()];
         let Some(navigation) = p.generation.checked_add(1).map(NavigationId) else {
             p.set_error(
@@ -524,7 +589,7 @@ impl Presenter {
             );
             return false;
         };
-        let command = if resort {
+        let command = if mode == Reload::Resort {
             let source = p
                 .successful_generation
                 .filter(|_| p.path == path)
@@ -560,13 +625,27 @@ impl Presenter {
             }
         };
         if !send(command) {
-            p.set_error("Navigation queue is busy. Try again.", &mut self.retired);
+            if mode != Reload::Background {
+                p.set_error("Navigation queue is busy. Try again.", &mut self.retired);
+            }
             return false;
         }
+        drag_drop::invalidate(&self.drag_drop.targets);
+        // Only an accepted request replaces the source rows of a drag. Background
+        // re-reads wait for the gesture instead (see `background_refresh_blocked`).
+        if self
+            .drag_drop
+            .lifecycle
+            .active()
+            .is_some_and(|g| g.source.pane == pane.index())
+        {
+            self.cancel_file_drag(send);
+        }
+        let p = &mut self.panes[pane.index()];
         p.archive_request = false;
         p.network_request = false;
         self.retired.push(Box::new(p.network_pending.take()));
-        self.navigation_accepted_impl(pane, navigation, path, history, resort, send);
+        self.navigation_accepted_impl(pane, navigation, path, history, mode, send);
         self.tab_navigation_accepted(pane, send);
         true
     }
@@ -580,7 +659,7 @@ impl Presenter {
         history: Option<usize>,
         send: &dyn Fn(Command) -> bool,
     ) {
-        self.navigation_accepted_impl(pane, navigation, path, history, false, send);
+        self.navigation_accepted_impl(pane, navigation, path, history, Reload::Navigate, send);
     }
 
     fn navigation_accepted_impl(
@@ -589,7 +668,7 @@ impl Presenter {
         navigation: NavigationId,
         path: PathBuf,
         history: Option<usize>,
-        resort: bool,
+        mode: Reload,
         send: &dyn Fn(Command) -> bool,
     ) {
         let p = &self.panes[pane.index()];
@@ -600,9 +679,19 @@ impl Presenter {
             .filter(|source| source.matches(p))
             .cloned()
             .or_else(|| folder_presence::Source::capture(p));
+        let same_location = path == p.path && p.successful_generation.is_some();
+        // Leaving an archive or network view for its native folder is a change.
+        let same_native_view = same_location && p.native_capabilities();
         self.panes[pane.index()].retain_folder_errors(&mut self.retired);
+        // A re-read of the committed folder keeps a flat Panel Filter dialog
+        // current; any other transition closes it with the tree presentation.
+        if same_native_view {
+            self.follow_panel_filter_refresh(pane, navigation);
+            self.clear_tree_presentation(pane, Some(navigation));
+        } else {
+            self.clear_tree(pane, Some(navigation));
+        }
         // Returning to an ancestor focuses the immediate child we came through.
-        self.clear_tree(pane, Some(navigation));
         // Keep the raw path, including when a second Up supersedes a loading view.
         let p = &self.panes[pane.index()];
         let return_cursor = p
@@ -615,12 +704,14 @@ impl Presenter {
                     .map(Path::to_owned)
             })
             .flatten();
-        let new_location = path != self.panes[pane.index()].path
-            || self.panes[pane.index()].successful_generation.is_none();
-        self.search_navigation_accepted(pane, new_location, send);
+        self.search_navigation_accepted(pane, !same_location, send);
         self.selection_navigation_accepted(pane, navigation, &path);
         let p = &mut self.panes[pane.index()];
-        let same_location = path == p.path && p.successful_generation.is_some();
+        // A re-sort reuses the committed snapshot; a retained hint still needs
+        // its re-read once the re-sort commits.
+        if mode != Reload::Resort {
+            p.refresh_hint = false;
+        }
         if !same_location && let Some(scan) = p.size_scan.take() {
             // Navigate is also a cancellation boundary in the backend; this explicit
             // request keeps intent visible when the navigation queue has room.
@@ -632,7 +723,12 @@ impl Presenter {
             self.retired
                 .push(Box::new(mem::take(&mut p.entry_size_scans)));
         }
-        if !same_location || (!resort && p.size_scan.is_none() && p.entry_size_scans.is_empty()) {
+        // An explicit re-read discards computed sizes unless a scan continues
+        // across it. Resorts and automatic re-reads keep them; vanished folders
+        // are pruned when the listing commits.
+        if !same_location
+            || (mode == Reload::Navigate && p.size_scan.is_none() && p.entry_size_scans.is_empty())
+        {
             p.folder_column_samples = SizeColumnSamples::default();
             self.retired.push(Box::new(mem::take(&mut p.folder_sizes)));
             p.size_scan_attempted = false;
@@ -649,7 +745,7 @@ impl Presenter {
             self.retired.push(Box::new(superseded));
         }
         p.retire_stream(&mut self.retired);
-        let keep_rows = path == p.path && p.successful_generation.is_some();
+        let keep_rows = same_location;
         let previous_cursor = if keep_rows { p.cursor } else { p.cursor.take() };
         let previous_parent_cursor = p.parent_cursor;
         p.parent_cursor =
@@ -686,7 +782,7 @@ impl Presenter {
         p.generation = navigation.0;
         p.loading = true;
         p.set_error("", &mut self.retired);
-        p.preserve_viewport = false;
+        p.preserve_viewport = mode == Reload::Background;
     }
 
     /// Apply a backend event and dispatch any validated directory-link followup.
@@ -1066,7 +1162,13 @@ impl Presenter {
             | Event::StorageKindUpdated {
                 pane, navigation, ..
             } => (*pane, *navigation),
-            _ => unreachable!(),
+            _ => {
+                // Every variant has a dispatcher above. A future unrouted variant must
+                // not unwind the UI event loop in release builds.
+                debug_assert!(false, "unrouted backend event");
+                self.retired.push(Box::new(event));
+                return;
+            }
         };
         if matches!(&event, Event::ListingFailed { .. })
             && self.panes[pane.index()].generation == navigation.0
@@ -1089,6 +1191,14 @@ impl Presenter {
         }
         match event {
             Event::ListingStarted { .. } => {}
+            // A same-folder re-read keeps the committed rows visible and commits the
+            // complete ListingFinished payload; nothing reads its stream.
+            Event::EntriesBatch { entries, .. } if p.keeps_rows() => {
+                self.retired.push(Box::new(entries));
+            }
+            Event::MetadataBatch { entries, .. } if p.keeps_rows() => {
+                self.retired.push(Box::new(entries));
+            }
             Event::EntriesBatch { entries, .. } => {
                 let request = p.pending.as_ref().expect("validated pending generation");
                 let same_location = request.path == p.path;
@@ -1143,13 +1253,25 @@ impl Presenter {
                     .flatten()
                     .and_then(|path| index.by_path.get(path))
                     .copied();
-                let cursor = wanted_cursor.or_else(|| {
-                    source_cursor
-                        .as_ref()
-                        .and_then(raw_path)
-                        .and_then(|path| index.by_path.get(path))
-                        .copied()
-                });
+                let cursor = wanted_cursor
+                    .or_else(|| {
+                        source_cursor
+                            .as_ref()
+                            .and_then(raw_path)
+                            .and_then(|path| index.by_path.get(path))
+                            .copied()
+                    })
+                    .or_else(|| {
+                        // The focused entry vanished from a same-folder re-read
+                        // (delete, move, external removal): stay near its row.
+                        let position = source_cursor.and_then(|id| source_index.get(&id))?;
+                        request
+                            .keep_rows
+                            .then(|| {
+                                surviving_neighbour(source_entries, *position, &entries, &index)
+                            })
+                            .flatten()
+                    });
                 if !request.keep_rows
                     && p.streaming.is_empty()
                     && same_location
@@ -1202,7 +1324,25 @@ impl Presenter {
                         self.retired.push(Box::new(p.history.split_off(retained)));
                     }
                     p.history.push(p.path.clone());
+                    if p.history.len() > MAX_HISTORY {
+                        self.retired.push(Box::new(p.history.remove(0)));
+                    }
                     p.history_index = Some(p.history.len() - 1);
+                }
+                if request.keep_rows {
+                    retain_listed_folder_sizes(&mut p.folder_sizes, &index, &mut self.retired);
+                    // A folder the attempted scan never covered (created after it)
+                    // is not calculated rather than unfinished.
+                    if p.size_scan_attempted
+                        && lists_unscanned_folder(
+                            &entries,
+                            &index,
+                            &p.folder_sizes,
+                            p.size_scan_scope.as_ref(),
+                        )
+                    {
+                        p.size_scan_attempted = false;
+                    }
                 }
                 self.retired
                     .push(Box::new(mem::replace(&mut p.entries, entries)));
@@ -1276,7 +1416,8 @@ impl Presenter {
                     p.storage_kind = kind;
                 }
             }
-            _ => unreachable!(),
+            // The listing variants were selected above; retire anything else.
+            event => self.retired.push(Box::new(event)),
         }
     }
 
@@ -1341,7 +1482,8 @@ impl Presenter {
         self.navigate(pane, p.history[index].clone(), Some(index), send)
     }
     /// Whether either pane has an accepted navigation that has not completed.
-    pub fn is_loading(&self) -> bool {
+    #[cfg(test)]
+    pub(crate) fn is_loading(&self) -> bool {
         self.panes.iter().any(|p| p.loading)
     }
     /// Whether volume discovery or either pane currently has a displayed error.
@@ -1620,7 +1762,7 @@ impl Presenter {
             return false;
         }
         let path = p.display_path().to_owned();
-        if self.navigate_impl(pane, path, None, true, send) {
+        if self.navigate_impl(pane, path, None, Reload::Resort, send) {
             true
         } else {
             self.panes[pane.index()].sort = old;
@@ -1700,6 +1842,7 @@ impl Pane {
             streaming: vec![],
             metadata: HashMap::new(),
             pending: None,
+            refresh_hint: false,
             generation: 0,
             successful_generation: None,
             index: Arc::new(DirectoryIndex::from_entries(&[])),
@@ -1813,6 +1956,12 @@ impl Pane {
             .as_ref()
             .is_some_and(|request| !request.keep_rows)
     }
+    /// A pending same-folder re-read stages privately behind the committed rows.
+    fn keeps_rows(&self) -> bool {
+        self.pending
+            .as_ref()
+            .is_some_and(|request| request.keep_rows)
+    }
     fn retire_stream(&mut self, retired: &mut Vec<DeferredDrop>) {
         retired.push(Box::new(mem::take(&mut self.streaming)));
         retired.push(Box::new(mem::take(&mut self.streaming_index)));
@@ -1823,6 +1972,76 @@ impl Pane {
 fn parent_path(path: &Path) -> Option<&Path> {
     path.parent()
         .filter(|parent| !parent.as_os_str().is_empty())
+}
+
+/// The caret's replacement after its entry vanished from a same-folder re-read:
+/// the nearest surviving neighbour in the old order (later rows first), within a
+/// bounded reach, else the same position in the new listing.
+fn surviving_neighbour(
+    old: &[Entry],
+    position: usize,
+    new: &[Entry],
+    index: &DirectoryIndex,
+) -> Option<EntryId> {
+    const REACH: usize = 1024;
+    let later = position.saturating_add(1)..old.len().min(position.saturating_add(REACH + 1));
+    let earlier = (position.saturating_sub(REACH)..position.min(old.len())).rev();
+    later
+        .chain(earlier)
+        .find_map(|row| {
+            old.get(row)
+                .and_then(|entry| index.by_path.get(&entry.path))
+                .copied()
+        })
+        .or_else(|| {
+            new.get(position.min(new.len().checked_sub(1)?))
+                .map(|entry| entry.id)
+        })
+}
+
+/// Computed sizes survive a same-folder re-read only for folders it still lists.
+fn retain_listed_folder_sizes(
+    sizes: &mut HashMap<PathBuf, FolderSize>,
+    index: &DirectoryIndex,
+    retired: &mut Vec<DeferredDrop>,
+) {
+    if sizes.is_empty() {
+        return;
+    }
+    let vanished: Vec<_> = sizes
+        .extract_if(|path, _| {
+            !index
+                .by_path
+                .get(path)
+                .is_some_and(|id| index.is_directory(*id))
+        })
+        .collect();
+    if !vanished.is_empty() {
+        retired.push(Box::new(vanished));
+    }
+}
+
+/// Whether the listing has a folder without a size that the last full scan did
+/// not cover. Without a retained scope the scan finished and sized every folder
+/// it listed. `sizes` holds only listed folders, so counting the directory bits
+/// avoids a per-entry pass when every folder has a size.
+fn lists_unscanned_folder(
+    entries: &[Entry],
+    index: &DirectoryIndex,
+    sizes: &HashMap<PathBuf, FolderSize>,
+    scope: Option<&SizeScanScope>,
+) -> bool {
+    let folders: usize = index
+        .directory_bits
+        .iter()
+        .map(|bits| bits.count_ones() as usize)
+        .sum();
+    sizes.len() < folders
+        && entries.iter().any(|entry| {
+            matches!(entry.kind, EntryKind::Directory | EntryKind::DirectoryLink)
+                && !sizes.contains_key(&entry.path)
+                && scope.is_none_or(|scope| !scope.contains(&entry.path))
+        })
 }
 
 /// Navigation uses logical parents: `link/..` goes to the link's lexical parent,

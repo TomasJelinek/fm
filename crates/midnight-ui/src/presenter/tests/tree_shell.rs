@@ -402,6 +402,52 @@ fn dismiss_and_navigation_discard_late_native_menu_actions() {
 }
 
 #[test]
+fn every_advertised_fallback_code_releases_the_tree_menu() {
+    let codes = super::file_actions::advertised_menu_codes();
+    for code in codes.into_iter().chain([-1, 99]) {
+        let mut presenter = loaded();
+        let (_, request) = menu(&mut presenter);
+        finish_menu(&mut presenter, request, ShellMenuOutcome::Unavailable);
+        let token = presenter.file_menu_token();
+        assert!(!token.is_empty());
+        let sent = RefCell::new(Vec::new());
+        presenter.file_menu_action(&token, code, &|command| {
+            sent.borrow_mut().push(command);
+            true
+        });
+        let sent = sent.into_inner();
+        let tree = |matches: fn(&TreeCommand) -> bool| {
+            sent.iter()
+                .any(|command| matches!(command, Command::Tree(tree) if matches(tree)))
+        };
+        let dispatched = match code {
+            0 => sent
+                .iter()
+                .any(|command| matches!(command, Command::OpenCapturedEntry { .. })),
+            1 | 6 => tree(|command| matches!(command, TreeCommand::Clipboard(_))),
+            2 => sent
+                .iter()
+                .any(|command| matches!(command, Command::ReadCapturedFileClipboard { .. })),
+            3 => tree(|command| matches!(command, TreeCommand::Rename(_))),
+            4 => tree(|command| matches!(command, TreeCommand::Delete(_))),
+            5 => sent
+                .iter()
+                .any(|command| matches!(command, Command::ShowCapturedProperties { .. })),
+            _ => sent.is_empty(),
+        };
+        assert!(dispatched, "code {code} must run its tree action once");
+        if code == 6 {
+            assert_eq!(take_capture(sent).intent, FileClipboardIntent::Move);
+        }
+        assert!(!presenter.tree_menu_pending(), "code {code} keeps the menu");
+        assert!(presenter.file_menu_token().is_empty());
+        presenter.retire_all();
+        let retired = presenter.take_retired();
+        std::thread::spawn(move || drop(retired)).join().unwrap();
+    }
+}
+
+#[test]
 fn refused_open_dispatch_retries_the_same_source_then_clears_on_file_completion() {
     let mut presenter = loaded();
     let (_, request) = menu(&mut presenter);

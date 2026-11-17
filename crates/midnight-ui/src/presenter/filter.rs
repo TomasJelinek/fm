@@ -136,6 +136,19 @@ impl Presenter {
         }
     }
 
+    /// A same-folder re-read keeps a flat dialog current for the pane's next
+    /// generation. A tree dialog closes because the re-read retires the tree.
+    pub(super) fn follow_panel_filter_refresh(&mut self, pane: PaneId, navigation: NavigationId) {
+        if !self.filter_dialog.open || self.filter_dialog.pane != pane {
+            return;
+        }
+        let generation = self.panes[pane.index()].generation;
+        match &mut self.filter_dialog.target {
+            Some(Target::Flat(target)) if *target == generation => *target = navigation.0,
+            _ => self.cancel_panel_filter(),
+        }
+    }
+
     fn panel_filter_target_current(&self) -> bool {
         let p = &self.panes[self.filter_dialog.pane.index()];
         match &self.filter_dialog.target {
@@ -149,13 +162,18 @@ impl Presenter {
         }
     }
 
+    /// Only a pending transition to another location makes the flat target stale;
+    /// a same-folder re-read keeps the committed rows and the dialog's target.
+    fn panel_filter_pane_settled(&self) -> bool {
+        let p = &self.panes[self.filter_dialog.pane.index()];
+        !p.loading || p.keeps_rows()
+    }
+
     pub(crate) fn clear_captured_panel_filter(&mut self, send: &dyn Fn(Command) -> bool) {
         if !self.filter_dialog.open {
             return;
         }
-        if !self.panel_filter_target_current()
-            || self.panes[self.filter_dialog.pane.index()].loading
-        {
+        if !self.panel_filter_target_current() || !self.panel_filter_pane_settled() {
             self.filter_dialog.error =
                 "The panel changed. Reopen the filter for the current folder.".into();
             return;
@@ -203,8 +221,8 @@ impl Presenter {
     pub fn flush_filters(&mut self, send: &dyn Fn(Command) -> bool) {
         if let Some(request) = self.filter_dialog.ready.take() {
             let p = &self.panes[request.pane.index()];
-            let current = self.panel_filter_target_current();
-            if !current || p.loading {
+            let current = self.panel_filter_target_current() && self.panel_filter_pane_settled();
+            if !current {
                 self.filter_dialog.error =
                     "The panel changed. Reopen the filter for the current folder.".into();
                 return;

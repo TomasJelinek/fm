@@ -105,10 +105,16 @@ impl Presenter {
                 .and_then(|pending| pending.previous_selection_origin.clone()),
             restore: p.selection_restore.clone(),
         };
+        // An internal rebase is retried by flush_selection; only user input
+        // reports congestion, and an accepted send clears that notice again.
+        const BUSY: &str = "Selection queue is busy. Try again.";
         if !send(Command::Selection(request)) {
-            p.set_error("Selection queue is busy. Try again.", &mut self.retired);
+            if !rebase {
+                p.report_busy(BUSY, &mut self.retired);
+            }
             return false;
         }
+        p.clear_busy(BUSY, &mut self.retired);
         p.selection_revision = revision;
         if let Some(preview) = preview {
             p.selection_preview.push(preview);
@@ -132,6 +138,7 @@ impl Presenter {
         self.flush_trees(send);
         self.flush_copy_selection(send);
         self.flush_tree_refresh(send);
+        self.flush_background_refreshes(send);
         for pane in [PaneId::Left, PaneId::Right] {
             if self.panes[pane.index()].tree_view().is_none()
                 && self.panes[pane.index()].selection_rebase_pending

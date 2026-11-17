@@ -22,6 +22,37 @@ pub(crate) struct OperationsState {
     pub(super) refresh: Vec<(PaneId, PathBuf, Option<PathBuf>)>,
 }
 
+impl OperationsState {
+    /// See `Presenter::queue_operation_refresh`; borrows only what it changes so a
+    /// caller can hold another part of the presenter.
+    pub(super) fn queue_refresh(
+        &mut self,
+        pane: PaneId,
+        shown: &Pane,
+        directory: &Path,
+        reveal: Option<PathBuf>,
+        retired: &mut Vec<DeferredDrop>,
+    ) {
+        if !shown.native_capabilities() || shown.display_path() != directory {
+            return;
+        }
+        if let Some(change) = self
+            .refresh
+            .iter_mut()
+            .find(|(target, _, _)| *target == pane)
+        {
+            if change.1 != directory {
+                change.1 = directory.to_owned();
+                retired.push(Box::new(mem::replace(&mut change.2, reveal)));
+            } else if reveal.is_some() {
+                retired.push(Box::new(mem::replace(&mut change.2, reveal)));
+            }
+        } else {
+            self.refresh.push((pane, directory.to_owned(), reveal));
+        }
+    }
+}
+
 impl Presenter {
     /// Availability is based on native entry identities, never the rendered row label.
     pub(crate) fn can_target_cursor(&self, pane: PaneId) -> bool {
@@ -387,9 +418,6 @@ impl Presenter {
                         if self.panes[pane.index()].queue_native_tree_refresh(&mut self.retired) {
                             continue;
                         }
-                        if self.panes[pane.index()].display_path() != progress.source_directory {
-                            continue;
-                        }
                         let reveal = progress
                             .renamed_to
                             .as_ref()
@@ -397,21 +425,7 @@ impl Presenter {
                                 destination.parent() == Some(progress.source_directory.as_path())
                             })
                             .cloned();
-                        if let Some(change) = self
-                            .operations
-                            .refresh
-                            .iter_mut()
-                            .find(|(target, _, _)| *target == pane)
-                        {
-                            change.1 = progress.source_directory.clone();
-                            change.2 = reveal;
-                        } else {
-                            self.operations.refresh.push((
-                                pane,
-                                progress.source_directory.clone(),
-                                reveal,
-                            ));
-                        }
+                        self.queue_operation_refresh(pane, &progress.source_directory, reveal);
                     }
                     if !progress.errors.is_empty() {
                         self.desktop.report(
@@ -450,32 +464,57 @@ impl Presenter {
         }
         None
     }
+    /// Queue one coalesced post-operation re-read of a native pane showing
+    /// `directory`. A newer completion for the pane replaces an older target, so a
+    /// pane that moved on while its previous re-read waited is still refreshed.
+    pub(super) fn queue_operation_refresh(
+        &mut self,
+        pane: PaneId,
+        directory: &Path,
+        reveal: Option<PathBuf>,
+    ) {
+        self.operations.queue_refresh(
+            pane,
+            &self.panes[pane.index()],
+            directory,
+            reveal,
+            &mut self.retired,
+        );
+    }
+
     pub(super) fn refresh_operation_paths(&mut self, send: &dyn Fn(Command) -> bool) {
         let changes = mem::take(&mut self.operations.refresh);
+        let mut revealed = Vec::new();
         for (pane, directory, destination) in changes {
             let p = &self.panes[pane.index()];
-            if p.display_path() != directory {
+            if !p.native_capabilities() || p.display_path() != directory {
                 continue;
             }
-            if p.loading || !self.navigate(pane, directory.clone(), None, send) {
+            if p.loading
+                || self.background_refresh_blocked(pane)
+                || !self.navigate_impl(pane, directory.clone(), None, Reload::Background, send)
+            {
                 self.operations.refresh.push((pane, directory, destination));
-            } else {
-                if destination.is_some() {
-                    self.change_search_query(pane, "", send);
-                }
-                let p = &mut self.panes[pane.index()];
-                p.preserve_viewport = destination.is_none();
-                if let Some(destination) = &destination {
-                    // A same-directory refresh retains old rows. Release their old
-                    // caret so wanted_cursor can reveal the created/renamed entry.
-                    // Subsequent user input still wins through cursor_touched.
-                    p.cursor = p.index.by_path.get(destination).copied();
-                    p.parent_cursor = false;
-                }
-                if let Some(request) = &mut p.pending {
-                    request.wanted_cursor = destination;
-                }
+                continue;
             }
+            let p = &mut self.panes[pane.index()];
+            p.preserve_viewport = destination.is_none();
+            if let Some(destination) = &destination {
+                // A same-directory refresh retains old rows. Release their old
+                // caret so wanted_cursor can reveal the created/renamed entry.
+                // Subsequent user input still wins through cursor_touched.
+                p.cursor = p.index.by_path.get(destination).copied();
+                p.parent_cursor = false;
+                revealed.push(pane);
+            }
+            if let Some(request) = &mut p.pending {
+                request.wanted_cursor = destination;
+            }
+        }
+        // Clearing a quick search flushes selection work, which can re-enter this
+        // queue; do it only after every queued re-read was settled above.
+        for pane in revealed {
+            self.change_search_query(pane, "", send);
         }
     }
 }

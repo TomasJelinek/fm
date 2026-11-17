@@ -93,7 +93,9 @@ file content or mutation permissions. See the
 
 A generated report title is only a display label and never authority to reopen a
 native path. Missing size-report viewer support and diagnostic read failures are
-reported explicitly.
+reported explicitly. If the initial settings read failed, the disabled-viewer
+policy is unknown and viewers stay unavailable for the session; reports, F3,
+Find, Make File List and Compare then say so instead of asking to try again.
 
 See the [implementation plan](../superpowers/plans/2026-11-10-size-warning-reports.md)
 and [tree backend evidence](../verification/2026-11-10-tree-diagnostic-details.md).

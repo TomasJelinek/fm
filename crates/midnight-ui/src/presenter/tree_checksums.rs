@@ -16,10 +16,8 @@ impl Presenter {
             return;
         }
         if self.checksums.sessions.len() >= checksums::MAX_CHECKSUM_WINDOWS {
-            self.desktop.report(
-                "Checksums",
-                "Close one of the four checksum windows first.".into(),
-            );
+            self.desktop
+                .report("Checksums", checksums::window_limit_message());
             return;
         }
         let p = &self.panes[pane.index()];
@@ -56,21 +54,22 @@ impl Presenter {
         };
         let p = &mut self.panes[pending.capture.view.stamp.pane.index()];
         // A later projection cannot approve an earlier selection, even after enqueue.
-        if !p
+        let current = p
             .tree_view()
-            .is_some_and(|view| Arc::ptr_eq(view, &pending.capture.view))
-        {
-            pending.capture.cancel.cancel();
-            self.retired.push(Box::new(pending));
-            return;
-        }
-        match pending.capture.status(p, self.operations.closing) {
-            tree_capture::Status::Gone | tree_capture::Status::SelectionChanged => {
+            .is_some_and(|view| Arc::ptr_eq(view, &pending.capture.view));
+        let status = current.then(|| pending.capture.status(p, self.operations.closing));
+        match status {
+            None | Some(tree_capture::Status::Gone | tree_capture::Status::SelectionChanged) => {
+                self.report_tree_capture_lost(
+                    &pending.capture.view,
+                    &pending.capture.cancel,
+                    "checksum calculation",
+                );
                 pending.capture.cancel.cancel();
                 self.retired.push(Box::new(pending));
                 return;
             }
-            tree_capture::Status::Ready(request, publication) => {
+            Some(tree_capture::Status::Ready(request, publication)) => {
                 if send(Command::Tree(Box::new(TreeCommand::Checksums(
                     TreeChecksumRequest {
                         view: pending.capture.view.clone(),
@@ -85,7 +84,7 @@ impl Presenter {
                     pending.capture.request = Some(request);
                 }
             }
-            tree_capture::Status::Waiting => {}
+            Some(tree_capture::Status::Waiting) => {}
         }
         self.checksums.tree = Some(pending);
     }

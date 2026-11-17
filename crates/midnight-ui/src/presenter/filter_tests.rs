@@ -209,3 +209,76 @@ fn only_successfully_applied_filters_enter_bounded_deduplicated_history() {
     );
     assert_eq!(history[0], different_case);
 }
+
+fn commit_listing(p: &mut Presenter, navigation: NavigationId) {
+    let entries = vec![Entry::new(
+        EntryId(navigation.0),
+        p.panes[0].path.join("a.txt"),
+        EntryKind::File,
+    )];
+    p.apply(Event::ListingFinished {
+        pane: PaneId::Left,
+        navigation,
+        index: Arc::new(DirectoryIndex::from_entries(&entries)),
+        entries: entries.into(),
+    });
+}
+
+fn sent_navigation(sent: &RefCell<Vec<Command>>) -> NavigationId {
+    sent.borrow()
+        .iter()
+        .rev()
+        .find_map(|command| match command {
+            Command::Navigate { navigation, .. } | Command::Refresh { navigation, .. } => {
+                Some(*navigation)
+            }
+            _ => None,
+        })
+        .expect("a directory request")
+}
+
+#[test]
+fn same_folder_refresh_keeps_the_flat_dialog_current_until_it_applies() {
+    for listing_first in [false, true] {
+        let mut p = presenter();
+        let sent = RefCell::new(Vec::new());
+        let send = |command| {
+            sent.borrow_mut().push(command);
+            true
+        };
+        let path = p.panes[0].path.clone();
+        assert!(p.navigate(PaneId::Left, path.clone(), None, &send));
+        commit_listing(&mut p, sent_navigation(&sent));
+        p.open_panel_filter(PaneId::Left);
+        let request = submit(&mut p, "kind = file");
+        let committed = p.panes[0].successful_generation.unwrap();
+        assert!(p.refresh_if_changed(PaneId::Left, committed, &send));
+        assert!(
+            p.filter_dialog.open,
+            "a watch refresh keeps the dialog open"
+        );
+        if listing_first {
+            commit_listing(&mut p, sent_navigation(&sent));
+        }
+        p.apply(Event::PanelFilterValidated {
+            request,
+            result: Ok(()),
+            diagnostic: None,
+        });
+        p.flush_filters(&send);
+        assert!(
+            p.filter_dialog.error.is_empty(),
+            "{}",
+            p.filter_dialog.error
+        );
+        assert!(!p.filter_dialog.open, "the validated filter was applied");
+        assert_eq!(
+            p.preferences.values.panel_filters[0].expression,
+            "kind = file"
+        );
+
+        p.open_panel_filter(PaneId::Left);
+        assert!(p.navigate(PaneId::Left, path.join("other"), None, &send));
+        assert!(!p.filter_dialog.open, "a location change still closes it");
+    }
+}

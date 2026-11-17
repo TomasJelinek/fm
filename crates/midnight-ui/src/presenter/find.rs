@@ -65,7 +65,20 @@ impl FindState {
     }
 
     fn session_mut(&mut self, id: &FindSessionId) -> Option<&mut FindSession> {
-        let session = self.sessions.get_mut(id)?;
+        self.session_mut_if(id, |_| true)
+    }
+
+    /// Only an accepted event marks its session changed; a stale backend tail
+    /// must not force a full Find-window refresh.
+    fn session_mut_if(
+        &mut self,
+        id: &FindSessionId,
+        accept: impl FnOnce(&FindSession) -> bool,
+    ) -> Option<&mut FindSession> {
+        let session = self
+            .sessions
+            .get_mut(id)
+            .filter(|session| accept(session))?;
         session.revision = session.revision.wrapping_add(1);
         Some(session)
     }
@@ -79,7 +92,7 @@ impl Presenter {
         if self.finds.sessions.len() >= MAX_FIND_SESSIONS {
             self.desktop.report(
                 "Find files",
-                "Close one of the four Find windows first.".into(),
+                format!("Close one of the {MAX_FIND_SESSIONS} open Find windows first."),
             );
             return None;
         }
@@ -305,17 +318,14 @@ impl Presenter {
         send: &dyn Fn(Command) -> bool,
     ) {
         let request = result.request;
-        let Some(s) = self.finds.session_mut(&request.session) else {
+        let Some(s) = self.finds.session_mut_if(&request.session, |s| {
+            s.generation == request.generation
+                && s.pending
+                    .is_some_and(|p| p.token == request.token && p.result == request.result)
+        }) else {
             self.retired.push(Box::new(result));
             return;
         };
-        if s.generation != request.generation
-            || s.pending
-                .is_none_or(|p| p.token != request.token || p.result != request.result)
-        {
-            self.retired.push(Box::new(result));
-            return;
-        }
         s.pending = None;
         let entry = match result.result {
             Ok(entry) => entry,
@@ -350,8 +360,7 @@ impl Presenter {
     pub(super) fn apply_find(&mut self, event: FindEvent) {
         let Some(s) = self
             .finds
-            .session_mut(&event.session)
-            .filter(|s| s.generation == event.generation)
+            .session_mut_if(&event.session, |s| s.generation == event.generation)
         else {
             self.retired.push(Box::new(event));
             return;
@@ -405,8 +414,7 @@ impl Presenter {
     pub(super) fn reject_find(&mut self, rejection: FindRejected) {
         if let Some(s) = self
             .finds
-            .session_mut(&rejection.session)
-            .filter(|s| s.generation == rejection.generation)
+            .session_mut_if(&rejection.session, |s| s.generation == rejection.generation)
         {
             s.running = false;
             s.stopping = false;

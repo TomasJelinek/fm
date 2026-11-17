@@ -120,6 +120,8 @@ impl Presenter {
             if cancelling {
                 self.mark_copy_cancel_requested(id);
             }
+        } else {
+            self.report_control_busy();
         }
     }
 }

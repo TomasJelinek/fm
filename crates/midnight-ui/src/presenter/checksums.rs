@@ -116,9 +116,26 @@ impl ChecksumSession {
     }
 }
 
+pub(super) fn window_limit_message() -> String {
+    format!("Close one of the {MAX_CHECKSUM_WINDOWS} open checksum windows first.")
+}
+
 impl ChecksumState {
     fn session_mut(&mut self, id: ChecksumJobId) -> Option<&mut ChecksumSession> {
-        let session = self.sessions.get_mut(&id)?;
+        self.session_mut_if(id, |_| true)
+    }
+
+    /// Only an accepted event marks its session changed; a stale backend tail
+    /// must not force a full checksum-window refresh.
+    fn session_mut_if(
+        &mut self,
+        id: ChecksumJobId,
+        accept: impl FnOnce(&ChecksumSession) -> bool,
+    ) -> Option<&mut ChecksumSession> {
+        let session = self
+            .sessions
+            .get_mut(&id)
+            .filter(|session| accept(session))?;
         session.revision = session.revision.wrapping_add(1);
         Some(session)
     }
@@ -185,10 +202,10 @@ impl Presenter {
         send: &dyn Fn(Command) -> bool,
     ) -> Option<ChecksumJobId> {
         if self.checksums.sessions.len() >= MAX_CHECKSUM_WINDOWS || self.operations.closing {
-            self.desktop.report(
-                "Checksums",
-                "Close one of the four checksum windows first.".into(),
-            );
+            // Shutdown refuses silently; there may be no window to close.
+            if !self.operations.closing {
+                self.desktop.report("Checksums", window_limit_message());
+            }
             self.retired.push(Box::new((files, tree_sources)));
             return None;
         }

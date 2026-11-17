@@ -19,7 +19,12 @@ impl Pane {
     /// Manual refresh, native hints and transfers can affect any loaded native branch.
     /// The backend refreshes retained nodes, never the UI's current selection.
     pub(super) fn queue_native_tree_refresh(&mut self, retired: &mut Vec<DeferredDrop>) -> bool {
-        if !self.native_capabilities() || self.archive.is_some() || self.tree_view().is_none() {
+        // A dropped session is left through a flat re-read, not tree maintenance.
+        if !self.native_capabilities()
+            || self.archive.is_some()
+            || self.tree_view().is_none()
+            || self.tree.unavailable
+        {
             return false;
         }
         if let Some(epoch) = self.tree.refresh.desired.checked_add(1) {
@@ -53,10 +58,12 @@ impl Presenter {
         }
         for pane in [PaneId::Left, PaneId::Right] {
             let p = &mut self.panes[pane.index()];
+            // A running comparison captured this exact projection; publish after it.
             if p.loading
                 || !p.tree_input_ready()
                 || !p.tree.preview.is_empty()
                 || self.copies.selection.pending_for(pane)
+                || self.comparison.in_progress()
                 || p.tree.refresh.sent.is_some()
                 || p.tree.refresh.desired == p.tree.refresh.completed
             {

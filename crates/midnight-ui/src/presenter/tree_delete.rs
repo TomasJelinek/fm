@@ -100,21 +100,22 @@ impl Presenter {
             return;
         };
         let p = &mut self.panes[pending.capture.view.stamp.pane.index()];
-        if !p
+        let current = p
             .tree_view()
-            .is_some_and(|view| Arc::ptr_eq(view, &pending.capture.view))
-        {
-            pending.capture.cancel.cancel();
-            self.retired.push(Box::new(pending));
-            return;
-        }
-        match pending.capture.status(p, self.operations.closing) {
-            tree_capture::Status::Gone | tree_capture::Status::SelectionChanged => {
+            .is_some_and(|view| Arc::ptr_eq(view, &pending.capture.view));
+        let status = current.then(|| pending.capture.status(p, self.operations.closing));
+        match status {
+            None | Some(tree_capture::Status::Gone | tree_capture::Status::SelectionChanged) => {
+                self.report_tree_capture_lost(
+                    &pending.capture.view,
+                    &pending.capture.cancel,
+                    "Delete",
+                );
                 pending.capture.cancel.cancel();
                 self.retired.push(Box::new(pending));
                 return;
             }
-            tree_capture::Status::Ready(request, publication) => {
+            Some(tree_capture::Status::Ready(request, publication)) => {
                 if send(Command::Tree(Box::new(TreeCommand::Delete(
                     TreeDeleteRequest {
                         mode: pending.mode,
@@ -131,7 +132,7 @@ impl Presenter {
                     pending.capture.request = Some(request);
                 }
             }
-            tree_capture::Status::Waiting => {}
+            Some(tree_capture::Status::Waiting) => {}
         }
         self.operations.tree_delete = Some(pending);
     }

@@ -13,6 +13,14 @@ pub(super) fn test_root() -> PathBuf {
 }
 
 #[test]
+fn breadcrumb_copy_refuses_a_non_utf8_component() {
+    use std::{ffi::OsString, os::unix::ffi::OsStringExt};
+    super::panel_navigation::assert_lossy_breadcrumb_is_not_copied(OsString::from_vec(
+        b"raw-\xff".to_vec(),
+    ));
+}
+
+#[test]
 fn unique_bookmarks_compare_native_bytes_without_display_loss() {
     use crate::Presenter;
     use midnight_core::{Event, PaneId};

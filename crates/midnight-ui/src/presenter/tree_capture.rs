@@ -113,3 +113,29 @@ impl Capture {
         )
     }
 }
+
+impl Presenter {
+    /// A pending tree action loses its exact capture when a newer publication of
+    /// the same session (watch refresh, branch loading) or a selection change
+    /// replaces the view. Navigation, shutdown and explicit cancellation stay
+    /// silent; this case did not come from the user, so ask for a retry.
+    pub(super) fn report_tree_capture_lost(
+        &mut self,
+        view: &TreeProjection,
+        cancel: &Cancellation,
+        action: &str,
+    ) {
+        let p = &mut self.panes[view.stamp.pane.index()];
+        let same_session = p.tree_view().is_some_and(|current| {
+            current.stamp.navigation == view.stamp.navigation
+                && current.stamp.session == view.stamp.session
+        });
+        if self.operations.closing || cancel.is_cancelled() || p.loading || !same_session {
+            return;
+        }
+        p.set_error(
+            format!("The tree or its selection changed before {action} could start. Try again."),
+            &mut self.retired,
+        );
+    }
+}

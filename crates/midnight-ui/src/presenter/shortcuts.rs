@@ -3,6 +3,10 @@ use super::*;
 
 impl Presenter {
     pub fn viewer_unavailable_reason(&self, pane: PaneId) -> Option<String> {
+        if self.viewer_plugins.startup_read_failed && self.viewer_plugins.startup_disabled.is_none()
+        {
+            return Some(self.viewer_plugins.policy_unavailable().into());
+        }
         let panel = &self.panes[pane.index()];
         if panel.tree_view().is_some() && self.viewer_launch(pane, false).is_none() {
             return Some(

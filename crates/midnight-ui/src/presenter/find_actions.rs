@@ -135,7 +135,7 @@ impl Presenter {
         match pending.action {
             FileAction::View(basic) => {
                 let Some(disabled_plugins) = self.viewer_plugins.startup_disabled.clone() else {
-                    s.error = "Viewer settings are still loading. Try again.".into();
+                    s.error = self.viewer_plugins.policy_unavailable().into();
                     self.retired.push(Box::new(source));
                     return;
                 };

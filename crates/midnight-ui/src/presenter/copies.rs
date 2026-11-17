@@ -165,7 +165,16 @@ impl Presenter {
             if cancelling {
                 self.mark_copy_cancel_requested(id);
             }
+        } else {
+            self.report_control_busy();
         }
+    }
+
+    /// A refused job control leaves the decision or job unchanged and its job
+    /// window keeps the retryable choice; say why on the status line without a
+    /// popup over the modeless job windows.
+    pub(super) fn report_control_busy(&mut self) {
+        self.desktop.status = "Job queue is busy. Try the action again.".into();
     }
 
     pub(crate) fn cancel_copy(&mut self, token: &str, send: &dyn Fn(Command) -> bool) {
@@ -179,17 +188,21 @@ impl Presenter {
         if self.cancel_pending_drop(id, send) {
             return;
         }
-        if self
+        if !self
             .copies
             .progress
             .iter()
             .any(|p| p.id == id && !p.state.is_terminal())
-            && send(Command::CancelCopy(id))
         {
+            return;
+        }
+        if send(Command::CancelCopy(id)) {
             self.mark_copy_cancel_requested(id);
             self.copies.conflicts.retain(|conflict| conflict.id != id);
             self.copies.failures.retain(|failure| failure.id != id);
             self.copies.deferred_decisions.retain(|(job, _)| *job != id);
+        } else {
+            self.report_control_busy();
         }
     }
 
@@ -256,24 +269,21 @@ impl Presenter {
                         if self.panes[pane.index()].queue_native_tree_refresh(&mut self.retired) {
                             continue;
                         }
-                        if self.panes[pane.index()].native_capabilities()
-                            && (self.panes[pane.index()].display_path()
-                                == progress.destination_directory
-                                || progress
-                                    .source_directories
-                                    .iter()
-                                    .any(|path| path == self.panes[pane.index()].display_path()))
-                            && !self
-                                .operations
-                                .refresh
+                        let shown = &self.panes[pane.index()];
+                        let directory = shown.display_path();
+                        if directory == progress.destination_directory
+                            || progress
+                                .source_directories
                                 .iter()
-                                .any(|(target, _, _)| *target == pane)
+                                .any(|path| path == directory)
                         {
-                            self.operations.refresh.push((
+                            self.operations.queue_refresh(
                                 pane,
-                                self.panes[pane.index()].display_path().to_owned(),
+                                shown,
+                                directory,
                                 None,
-                            ));
+                                &mut self.retired,
+                            );
                         }
                     }
                     if !progress.errors.is_empty() {
@@ -342,6 +352,31 @@ mod tests {
             intent: FileClipboardIntent::Copy,
         }
     }
+    #[test]
+    fn refused_cancel_and_pause_report_a_busy_queue_instead_of_doing_nothing() {
+        let mut p = Presenter::new("left".into(), "right".into());
+        p.start_copy(clipboard(), std::env::temp_dir(), &|_| true);
+        let token = format!("copy-job:{}", p.copies.progress[0].id.0);
+        p.desktop.status.clear();
+        p.cancel_copy(&token, &|_| false);
+        assert!(
+            p.desktop.status.contains("busy"),
+            "refused Cancel is reported"
+        );
+        assert!(p.desktop.notice.is_none(), "no popup over the job windows");
+        assert_ne!(
+            p.copies.progress[0].state,
+            CopyOperationState::CancelRequested
+        );
+        p.desktop.status.clear();
+        p.set_job_paused(&token, true, &|_| false);
+        assert!(
+            p.desktop.status.contains("busy"),
+            "refused Pause is reported"
+        );
+        assert!(!p.copies.progress[0].pause_requested);
+    }
+
     #[test]
     fn replacement_and_merge_choices_require_advertised_capability() {
         for (choice, can_replace, can_merge, accepted) in [

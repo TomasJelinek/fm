@@ -166,6 +166,9 @@ impl Presenter {
         let Some(publication) = &p.tree.publication else {
             return;
         };
+        // A queued request stays pending and flush_trees retries it.
+        const BUSY: &str = "Folder size queue is busy. Try again.";
+        let mut accepted = false;
         while let Some(pending) = p.tree.sizes.pending.front() {
             if pending.selection.is_some_and(|(stamp, revision)| {
                 stamp != publication.view.stamp || revision != publication.selection_revision
@@ -194,9 +197,10 @@ impl Presenter {
             if !send(Command::Tree(Box::new(TreeCommand::Sizes(
                 TreeSizeCommand::Compute(command),
             )))) {
-                p.set_error("Folder size queue is busy. Try again.", &mut self.retired);
+                p.report_busy(BUSY, &mut self.retired);
                 return;
             }
+            accepted = true;
             p.tree.request = request;
             match p
                 .tree
@@ -211,6 +215,9 @@ impl Presenter {
                 Some(TreeSizeScope::Single(row)) => p.tree.sizes.entries.push((row, request)),
                 None => {}
             }
+        }
+        if accepted {
+            p.clear_busy(BUSY, &mut self.retired);
         }
     }
 

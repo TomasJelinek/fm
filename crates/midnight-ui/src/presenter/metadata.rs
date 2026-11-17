@@ -212,10 +212,15 @@ impl Presenter {
             .iter_mut()
             .find(|old| old.id == conflict.id)
         {
-            if conflict.token > current.token {
-                *current = conflict;
-            }
-        } else if self.operations.metadata_conflicts.len() < 32 {
+            let stale = if conflict.token > current.token {
+                mem::replace(current, conflict)
+            } else {
+                conflict
+            };
+            self.retired.push(Box::new(stale));
+        } else {
+            // One current conflict per live job, as for copy and rename decisions.
+            // Dropping one would leave its job waiting without a decision window.
             self.operations.metadata_conflicts.push(conflict);
         }
     }

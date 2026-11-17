@@ -20,6 +20,20 @@ pub(crate) struct ComparisonState {
     tree_pending: [Option<(TreeViewStamp, SelectionRevision)>; 2],
 }
 
+impl ComparisonState {
+    /// A comparison waits for, or runs against, the exact displayed rows of both
+    /// panes. Automatic re-reads wait for it instead of cancelling it.
+    pub(super) fn in_progress(&self) -> bool {
+        self.waiting || self.pending.is_some()
+    }
+
+    /// Shutdown hands captured listings and selections to reclamation.
+    pub(super) fn retire_captures(&mut self, retired: &mut Vec<DeferredDrop>) {
+        retired.push(Box::new(self.pending.take()));
+        retired.push(Box::new(mem::take(&mut self.seeds)));
+    }
+}
+
 impl Presenter {
     pub(crate) fn open_comparison(&mut self) {
         if self.panes.iter().any(|p| !p.native_capabilities()) {
@@ -127,6 +141,15 @@ impl Presenter {
                 return;
             };
             let p = &self.panes[pane.index()];
+            if p.tree.unavailable {
+                // A dropped tree session never becomes ready; the panel is listed
+                // again instead, and that re-read must not wait for this request.
+                self.comparison.waiting = false;
+                self.comparison.busy = false;
+                self.comparison.error =
+                    "Comparison cancelled because a panel or selection changed.".into();
+                return;
+            }
             if p.search.pending || p.search_view_waiting() || !tree::selection_ready(p) {
                 return;
             }
