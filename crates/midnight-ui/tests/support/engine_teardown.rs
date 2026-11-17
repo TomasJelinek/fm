@@ -4,7 +4,9 @@
 //!
 //! Teardown never panics: harnesses usually drop while a failed assertion unwinds,
 //! and a second panic in `Drop` would abort the whole test binary. Errors are
-//! returned and asserted by the caller only when the thread is not panicking.
+//! returned, and the caller asserts them only after `Runtime::shutdown_timeout`
+//! (dropping a runtime while panicking waits for its blocking pool without limit)
+//! and only when the thread is not already panicking.
 #![allow(dead_code)] // Each harness uses its own subset.
 use midnight_core::{Command, Event};
 use midnight_engine::{CommandSender, reclaim};
@@ -65,22 +67,37 @@ pub async fn shutdown(
 }
 
 /// Hand values to the reclamation worker; if it is gone, drop them on a blocking
-/// thread instead of the UI thread.
+/// thread instead of the UI thread. Each wait is bounded by [`ENGINE_SHUTDOWN`]: a
+/// stuck worker or drop is reported, and the caller's `Runtime::shutdown_timeout`
+/// bounds the blocking drop it leaves behind.
 pub async fn retire_final(
     queue: &mpsc::Sender<reclaim::Retired>,
     retired: reclaim::Retired,
 ) -> Result<(), String> {
-    if let Err(error) = queue.send(retired).await {
-        let retired = error.0;
-        tokio::task::spawn_blocking(move || drop(retired))
-            .await
-            .map_err(|error| format!("dropping retired values failed: {error}"))?;
+    let retired = match tokio::time::timeout(ENGINE_SHUTDOWN, queue.reserve()).await {
+        Ok(Ok(permit)) => {
+            permit.send(retired);
+            return Ok(());
+        }
+        Ok(Err(_closed)) => retired,
+        Err(_elapsed) => {
+            drop(tokio::task::spawn_blocking(move || drop(retired)));
+            return Err(format!(
+                "the reclamation queue stayed full for {ENGINE_SHUTDOWN:?}"
+            ));
+        }
+    };
+    let dropped = tokio::task::spawn_blocking(move || drop(retired));
+    match tokio::time::timeout(ENGINE_SHUTDOWN, dropped).await {
+        Ok(result) => result.map_err(|error| format!("dropping retired values failed: {error}")),
+        Err(_elapsed) => Err(format!(
+            "dropping retired values exceeded {ENGINE_SHUTDOWN:?}"
+        )),
     }
-    Ok(())
 }
 
-/// After [`shutdown`]: retire the unread events and wait until the reclamation
-/// worker dropped everything handed to it.
+/// After [`shutdown`]: retire the unread events and wait (bounded) until the
+/// reclamation worker dropped everything handed to it.
 pub async fn retire_remaining(
     queue: &mpsc::Sender<reclaim::Retired>,
     events: mpsc::Receiver<Event>,
@@ -88,7 +105,8 @@ pub async fn retire_remaining(
     let mut retired = reclaim::Retired::new();
     reclaim::retire_receiver(events, &mut retired);
     retire_final(queue, retired).await?;
-    reclaim::barrier(queue)
+    tokio::time::timeout(ENGINE_SHUTDOWN, reclaim::barrier(queue))
         .await
+        .map_err(|_elapsed| format!("the reclamation barrier exceeded {ENGINE_SHUTDOWN:?}"))?
         .map_err(|error| format!("reclamation barrier failed: {error:?}"))
 }

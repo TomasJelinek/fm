@@ -1014,7 +1014,27 @@ impl Harness {
     /// Inspection-only escape hatch: the test caller owns the returned event.
     /// Delayed/inspected events do not qualify production final-owner retirement.
     pub fn receive(&mut self) -> Event {
+        self.receive_by(Instant::now() + teardown::UI_WAIT, "any Engine event")
+    }
+
+    /// Receive and apply Engine events until one matching `wanted` has been applied,
+    /// within one overall [`teardown::UI_WAIT`] (a steady stream of other events
+    /// cannot extend it).
+    #[track_caller]
+    pub fn apply_events_until(&mut self, what: &str, wanted: impl Fn(&Event) -> bool) {
         let deadline = Instant::now() + teardown::UI_WAIT;
+        loop {
+            let event = self.receive_by(deadline, what);
+            let found = wanted(&event);
+            self.apply_event(event);
+            if found {
+                return;
+            }
+        }
+    }
+
+    #[track_caller]
+    fn receive_by(&mut self, deadline: Instant, what: &str) -> Event {
         loop {
             if let Some(scope) = (self.begin_owned)() {
                 let event = self.events.try_recv();
@@ -1022,14 +1042,14 @@ impl Harness {
                 match event {
                     Ok(event) => return event,
                     Err(mpsc::error::TryRecvError::Disconnected) => {
-                        panic!("Engine event channel closed");
+                        panic!("Engine event channel closed while waiting for {what}");
                     }
                     Err(mpsc::error::TryRecvError::Empty) => {}
                 }
             }
             assert!(
                 Instant::now() < deadline,
-                "no Engine event within {:?}",
+                "{what} did not arrive within {:?}",
                 teardown::UI_WAIT
             );
             self.wait_tick();
@@ -1333,8 +1353,11 @@ impl Drop for Harness {
         let Some(runtime) = self.runtime.take() else {
             return;
         };
+        // Never panic before the runtime is shut down: this usually runs while a
+        // failed assertion unwinds, and dropping a runtime during a panic waits for
+        // its blocking pool without limit.
+        let mut failure = None;
         if let Some(mut engine) = self.engine.take() {
-            // Never panic here: this usually runs while a failed assertion unwinds.
             let mut errors = Vec::new();
             let result = runtime.block_on(async {
                 if let Err(error) = teardown::retire_final(&self.retire_queue, retired).await {
@@ -1359,15 +1382,17 @@ impl Drop for Harness {
             {
                 errors.push(error);
             }
-            if !std::thread::panicking() {
-                assert!(
-                    result.is_ok() && errors.is_empty(),
-                    "Engine shutdown failed: {result:?}, {errors:?}"
-                );
+            if result.is_err() || !errors.is_empty() {
+                failure = Some(format!("{result:?}, {errors:?}"));
             }
         }
         // Bound blocking-pool work (a provider call stuck in teardown) instead of
         // waiting for it without limit.
         runtime.shutdown_timeout(teardown::RUNTIME_SHUTDOWN);
+        if let Some(failure) = failure
+            && !std::thread::panicking()
+        {
+            panic!("Engine shutdown failed: {failure}");
+        }
     }
 }

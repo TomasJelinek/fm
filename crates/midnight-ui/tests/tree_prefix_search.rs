@@ -176,23 +176,39 @@ fn rapid_typing_escape_and_full_queue_converge_without_reopening_folders() {
         "only one options request is in flight"
     );
     // A queued backend completion cannot replace the latest committed input: apply
-    // unrelated events until the reprojection answering the earlier query arrives.
-    assert_eq!(
-        h.requests.borrow().len(),
-        1,
-        "the earlier query's reprojection is in flight"
-    );
-    loop {
-        let event = h.receive();
-        let reprojection = matches!(&event, Event::Tree(tree) if matches!(
-            tree.as_ref(),
-            TreeEvent::Reprojected { .. } | TreeEvent::ReprojectFailed { .. }
-        ));
-        h.apply_event(event);
-        if reprojection {
-            break;
+    // unrelated events until the reply to the earlier query's recorded request.
+    let (request, stamp) = {
+        let requests = h.requests.borrow();
+        assert_eq!(
+            requests.len(),
+            1,
+            "the earlier query's reprojection is in flight"
+        );
+        assert_ne!(
+            requests[0].options.search.query.as_str(),
+            "alp",
+            "the in-flight request carries an earlier query"
+        );
+        (requests[0].request, requests[0].view.stamp)
+    };
+    h.apply_events_until("the reply to the recorded reprojection", |event| {
+        let Event::Tree(tree) = event else {
+            return false;
+        };
+        match tree.as_ref() {
+            TreeEvent::Reprojected {
+                previous,
+                request: answered,
+                ..
+            } => *answered == request && *previous == stamp,
+            TreeEvent::ReprojectFailed {
+                stamp: answered_stamp,
+                request: answered,
+                ..
+            } => *answered == request && *answered_stamp == stamp,
+            _ => false,
         }
-    }
+    });
     assert_eq!(query(&h), "alp");
     ui::key(&h.ui.window, Key::Escape);
     h.until(|h| query(h).is_empty() && !pending(h));
