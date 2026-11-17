@@ -97,6 +97,22 @@ The default process limit is the smaller of four and the available CPU count. `-
 
 Each artifact runs from its package manifest directory, with private `TEMP`, `TMP`, `TMPDIR` and `MIDNIGHT_UI_RENDER_DIR` directories. Caller-provided installed-provider variables and `MIDNIGHT_NATIVE_TEST_ROOT` remain intact. Do not parallelize targets that mutate the same external fixture simply because their temporary directories differ.
 
+### Private plugin installation root
+
+Plugin discovery trusts an installation only when it and every ancestor can be changed by no other account (`midnight_plugin_host::validate_plugin_path`). Tests that install plugin fixtures (`midnight-image-viewer-host` catalog and startup tests, the opt-in `midnight-plugin-host`, `midnight-filesystem-host` and engine filesystem-plugin tests) therefore need a private root. By default they create fixtures below the checkout's `_build` or the temporary directory, which works for a checkout under your user profile. A checkout whose ancestors other accounts may change, for example on a secondary Windows drive with the default ACL (Authenticated Users: Modify), or a temporary directory redirected there, cannot pass: the `midnight-image-viewer-host` fixtures then stop with an explanation. Point `HOST_TEST_INSTALL_ROOT` at a private directory instead, as CI's `private-test-installation` action does:
+
+```powershell
+$root = Join-Path $env:USERPROFILE ('MidnightViewerTests-' + [guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Path $root | Out-Null
+$sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+$acl = New-Object Security.AccessControl.DirectorySecurity
+$acl.SetSecurityDescriptorSddlForm("D:P(A;OICI;FA;;;$sid)(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)", 'Access')
+Set-Acl -LiteralPath $root -AclObject $acl
+$env:HOST_TEST_INSTALL_ROOT = $root
+```
+
+On Linux, use a `chmod 700` directory on a native filesystem whose ancestors are not group- or world-writable (sticky `/tmp`-style ancestors are accepted); drvfs mounts such as `/mnt/d` report permissive modes and are refused.
+
 Listing and execution each have a 300-second deadline, configurable with `--timeout SECONDS`. On a failure the runner stops admitting new processes and lets already admitted children finish within their deadlines. On interruption or an exceptional wait, it terminates only its retained child process handles and waits for them; it does not kill by process name or manage arbitrary descendants. Tests requiring independent long-lived descendants need their own cleanup and should use a dedicated harness.
 
 Every admitted run retains separate listing/test logs, output directories and `summary.json` under a unique `_build/qa/targeted-tests` directory. `--log-dir` selects a new directory under `_build`; existing directories are refused. The summary records selected workspace, executable SHA-256, package cwd, filters, counts, process limit, thread budget, deadlines, errors and cases not run. Exit codes are 0 for success, 1 for test/execution failure, 2 for invalid inputs before execution, and 130 for interruption. Invalid receipts/selectors are rejected before any test child starts. Logs and artifacts remain available after failure.

@@ -22,7 +22,9 @@ impl Fixture {
             NEXT.fetch_add(1, Ordering::Relaxed)
         ));
         fs::create_dir(&root).unwrap();
-        Self(root.canonicalize().unwrap())
+        let fixture = Self(root.canonicalize().unwrap());
+        crate::require_private_fixture_root(&fixture.0);
+        fixture
     }
 }
 impl Drop for Fixture {
