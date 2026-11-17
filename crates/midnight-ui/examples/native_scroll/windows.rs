@@ -111,35 +111,6 @@ fn row_background(window: &MainWindow, color: slint::Color) -> bool {
     (pixel.r, pixel.g, pixel.b) == (color.red(), color.green(), color.blue())
 }
 
-fn capture_views(window: &MainWindow) {
-    let snapshot = window.window().take_snapshot().unwrap();
-    let width = snapshot.width();
-    let height = snapshot.height();
-    let stride = (width * 3 + 3) & !3;
-    let length = 54 + stride * height;
-    let mut bytes = Vec::with_capacity(length as usize);
-    bytes.extend_from_slice(b"BM");
-    bytes.extend_from_slice(&length.to_le_bytes());
-    bytes.extend_from_slice(&[0; 4]);
-    bytes.extend_from_slice(&54u32.to_le_bytes());
-    bytes.extend_from_slice(&40u32.to_le_bytes());
-    bytes.extend_from_slice(&width.to_le_bytes());
-    bytes.extend_from_slice(&(-(height as i32)).to_le_bytes());
-    bytes.extend_from_slice(&1u16.to_le_bytes());
-    bytes.extend_from_slice(&24u16.to_le_bytes());
-    bytes.extend_from_slice(&[0; 24]);
-    for row in snapshot.as_slice().chunks(width as usize) {
-        for pixel in row {
-            bytes.extend_from_slice(&[pixel.b, pixel.g, pixel.r]);
-        }
-        bytes.resize(bytes.len() + (stride - width * 3) as usize, 0);
-    }
-    let directory =
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../_build/qa/native-scroll");
-    std::fs::create_dir_all(&directory).unwrap();
-    std::fs::write(directory.join("panel-views.bmp"), bytes).unwrap();
-}
-
 fn seed_capture_icons(presenter: &Rc<RefCell<Presenter>>) {
     // The probe has no filesystem icon provider. Load fixture artwork outside
     // capture: normally afterward, or before warmup for --timed-fixture-icons.
@@ -361,6 +332,8 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     let pixel_captures = Rc::new(RefCell::new(Vec::new()));
     let capture_pixels = pixel_captures.clone();
     let wants_pixels = pixel_directory.is_some();
+    let view_capture = Rc::new(RefCell::new(None));
+    let capture_view = view_capture.clone();
     timer.start(
         slint::TimerMode::Repeated,
         Duration::from_millis(200),
@@ -464,7 +437,10 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
                 window.invoke_view_mode(1, 2);
             }
             if step == 43 && capture {
-                capture_views(&window);
+                // Readback stays on the UI thread; encoding and the file write
+                // run on a worker after the event loop.
+                *capture_view.borrow_mut() =
+                    Some(measurements::PixelProof::window("panel-views", &window));
             }
             if step == (if capture { 44 } else { 41 }) {
                 validation_capture.borrow_mut().push((
@@ -491,6 +467,13 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         std::thread::spawn(move || measurements::write_pixel_proof(&directory, captures))
             .join()
             .map_err(|_| std::io::Error::other("pixel artifact worker panicked"))??;
+    }
+    if let Some(view) = view_capture.borrow_mut().take() {
+        let directory =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../_build/qa/native-scroll");
+        std::thread::spawn(move || measurements::write_pixel_proof(&directory, vec![view]))
+            .join()
+            .map_err(|_| std::io::Error::other("view capture worker panicked"))??;
     }
     if std::env::args().any(|arg| arg == "--check") {
         check_frames(&capture_injections.borrow(), &samples.borrow(), row_height);
