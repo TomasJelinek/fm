@@ -3,6 +3,49 @@ use std::{ffi::OsStr, os::windows::ffi::OsStrExt, ptr};
 use windows_sys::Win32::Globalization::{GetLocaleInfoEx, GetNumberFormatEx, LOCALE_SDECIMAL};
 
 #[test]
+fn native_text_is_formatted_once_and_size_probed_only_when_long() {
+    use windows_sys::Win32::Foundation::SetLastError;
+    let mut capacities = Vec::new();
+    let short = wide_output(|buffer, capacity| {
+        capacities.push(capacity);
+        // SAFETY: the stack buffer advertised by `capacity` holds these three units.
+        unsafe { ptr::copy_nonoverlapping([97u16, 98, 0].as_ptr(), buffer, 3) };
+        3
+    })
+    .unwrap();
+    assert_eq!(short, [97, 98, 0]);
+    assert_eq!(capacities, [128], "one native call for an ordinary value");
+    capacities.clear();
+    let long = wide_output(|buffer, capacity| {
+        capacities.push(capacity);
+        if capacity == 0 {
+            return 300;
+        }
+        if capacity < 300 {
+            // SAFETY: plain thread error-code store, as the NLS API does on failure.
+            unsafe { SetLastError(122) };
+            return 0;
+        }
+        // SAFETY: the sized buffer holds `capacity` (300) writable units.
+        unsafe { std::slice::from_raw_parts_mut(buffer, 300).fill(120) };
+        300
+    })
+    .unwrap();
+    assert_eq!(long.len(), 300);
+    assert_eq!(capacities, [128, 0, 300]);
+    capacities.clear();
+    let error = wide_output(|_, capacity| {
+        capacities.push(capacity);
+        // SAFETY: plain thread error-code store.
+        unsafe { SetLastError(87) };
+        0
+    })
+    .unwrap_err();
+    assert_eq!(error.raw_os_error(), Some(87));
+    assert_eq!(capacities, [128], "other failures are not retried");
+}
+
+#[test]
 fn archive_calendar_is_formatted_without_normalizing_invalid_dates() {
     use midnight_core::ArchiveTimestamp;
     let service = WindowsFileSystem::new(None);

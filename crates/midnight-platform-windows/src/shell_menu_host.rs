@@ -5,12 +5,16 @@ use std::{
     cell::{Cell, RefCell},
     panic::{AssertUnwindSafe, catch_unwind},
     sync::{
-        OnceLock,
+        Arc, Mutex, OnceLock,
         atomic::{AtomicBool, Ordering},
-        mpsc::{self, Receiver, SyncSender},
+        mpsc::{self, SyncSender},
     },
     thread,
 };
+
+/// The one request handed to the worker. `busy` admits one request at a time, so a
+/// slot holds at most the current job; `show` withdraws it if the wake post fails.
+type JobSlot = Arc<Mutex<Option<Job>>>;
 use windows::{
     Win32::{
         Foundation::{LPARAM, LRESULT, WPARAM},
@@ -41,7 +45,7 @@ struct Job {
 }
 
 struct Worker {
-    sender: SyncSender<Job>,
+    slot: JobSlot,
     window: usize,
     busy: AtomicBool,
 }
@@ -64,16 +68,17 @@ pub(super) fn show(request: &ShellMenuRequest) -> Result<ShellMenuOutcome, FsErr
         .map_err(|_| failure(&request.paths[0], "A system menu is already open."))?;
     let _busy = BusyGuard(&worker.busy);
     let (reply, receiver) = mpsc::sync_channel(1);
-    worker
-        .sender
-        .try_send(Job {
-            request: request.clone(),
-            reply,
-        })
-        .map_err(|_| failure(&request.paths[0], "The native menu queue is unavailable."))?;
+    *worker.slot.lock().unwrap_or_else(|e| e.into_inner()) = Some(Job {
+        request: request.clone(),
+        reply,
+    });
     // SAFETY: the native worker owns this permanent HWND. Only scalar wake messages cross threads.
     if unsafe { PostMessageW(worker.window as RawWindow, SHOW_MENU, 0, 0) } == 0 {
-        return Err(failure(&request.paths[0], io::Error::last_os_error()));
+        let error = io::Error::last_os_error();
+        // No wake message will consume this job: withdraw it so the next request can
+        // still use the process-lifetime worker.
+        worker.slot.lock().unwrap_or_else(|e| e.into_inner()).take();
+        return Err(failure(&request.paths[0], error));
     }
     receiver
         .recv()
@@ -82,17 +87,18 @@ pub(super) fn show(request: &ShellMenuRequest) -> Result<ShellMenuOutcome, FsErr
 
 impl Worker {
     fn start() -> Result<Self, String> {
-        let (sender, receiver) = mpsc::sync_channel(1);
+        let slot = JobSlot::default();
+        let worker_slot = slot.clone();
         let (ready, started) = mpsc::sync_channel(1);
         thread::Builder::new()
             .name("midnight-shell-menu".into())
-            .spawn(move || run(receiver, ready))
+            .spawn(move || run(worker_slot, ready))
             .map_err(|error| error.to_string())?;
         let window = started
             .recv()
             .map_err(|_| "The Shell menu worker failed to start.".to_owned())??;
         Ok(Self {
-            sender,
+            slot,
             window,
             busy: AtomicBool::new(false),
         })
@@ -106,7 +112,7 @@ struct MenuMessages {
 }
 
 struct Host {
-    receiver: Receiver<Job>,
+    slot: JobSlot,
     window: Cell<RawWindow>,
     active: RefCell<Option<MenuMessages>>,
 }
@@ -138,13 +144,13 @@ impl Drop for ForegroundRestore {
     }
 }
 
-fn run(receiver: Receiver<Job>, ready: SyncSender<Result<usize, String>>) {
+fn run(slot: JobSlot, ready: SyncSender<Result<usize, String>>) {
     let Some(_com) = ComGuard::initialize(COINIT_APARTMENTTHREADED as u32) else {
         let _ = ready.send(Err("The system menu requires a Windows COM STA.".into()));
         return;
     };
     let host = Box::new(Host {
-        receiver,
+        slot,
         window: Cell::new(ptr::null_mut()),
         active: RefCell::new(None),
     });
@@ -291,7 +297,8 @@ unsafe extern "system" fn window_proc(
     if !state.is_null() {
         let host = unsafe { &*state };
         if message == SHOW_MENU {
-            if let Ok(job) = host.receiver.try_recv() {
+            let job = host.slot.lock().unwrap_or_else(|e| e.into_inner()).take();
+            if let Some(job) = job {
                 // Rust panics must not unwind through the native window procedure.
                 let result = catch_unwind(AssertUnwindSafe(|| host.display(&job.request)))
                     .unwrap_or_else(|_| {

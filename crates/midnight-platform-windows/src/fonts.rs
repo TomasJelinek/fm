@@ -5,6 +5,9 @@ use windows_sys::Win32::Graphics::Gdi::{
     DEFAULT_CHARSET, EnumFontFamiliesExW, GetDC, LOGFONTW, ReleaseDC, TEXTMETRICW,
 };
 
+/// `LF_FACESIZE - 1`: the longest face name GDI reports, possibly truncated.
+const TRUNCATED_UNITS: usize = 31;
+
 unsafe extern "system" fn collect(
     font: *const LOGFONTW,
     _: *const TEXTMETRICW,
@@ -19,6 +22,12 @@ unsafe extern "system" fn collect(
         .iter()
         .position(|&ch| ch == 0)
         .unwrap_or(font.lfFaceName.len());
+    // GDI truncates longer family names (for example Bahnschrift's named instances) to
+    // LF_FACESIZE - 1 units. Such a name matches no family in the renderer's font
+    // database, so a name of that exact length is not offered as a complete family.
+    if length >= TRUNCATED_UNITS {
+        return i32::from(names.len() < midnight_platform_common::fonts::MAX_FONT_FAMILIES);
+    }
     if let Ok(name) = String::from_utf16(&font.lfFaceName[..length])
         && !name.starts_with('@')
     {
@@ -67,6 +76,10 @@ mod tests {
             midnight_platform_common::fonts::normalize_families(families.clone())
         );
         for family in families {
+            assert!(
+                family.encode_utf16().count() < super::TRUNCATED_UNITS,
+                "possibly truncated GDI family name {family:?}"
+            );
             midnight_core::UserPreferences {
                 font_family: family,
                 ..Default::default()
