@@ -53,7 +53,11 @@ mod size_capture_tests;
 #[cfg(test)]
 #[path = "tree_sizes_runtime_tests.rs"]
 mod size_runtime_tests;
-pub(crate) use action_capture::CapturedSelection;
+#[cfg(test)]
+pub(crate) use action_capture::covering_chain;
+pub(crate) use action_capture::{
+    CapturedSelection, capture_failure, covering_ancestor, validate_native_leaf,
+};
 
 static NEXT_SESSION: AtomicU64 = AtomicU64::new(1);
 const QUEUE_CAPACITY: usize = 8;

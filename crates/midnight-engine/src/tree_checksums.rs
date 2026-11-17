@@ -1,8 +1,8 @@
 //! Checksum admission resolves occurrences on the model worker and retains their providers.
-use super::{CapturedSelection, Session};
+use super::{CapturedSelection, Session, capture_failure};
 use crate::providers::{ProviderError, ProviderTarget};
 use midnight_core::*;
-use std::{io, path::Path, sync::Arc};
+use std::{io, sync::Arc};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 struct Sources {
@@ -136,14 +136,5 @@ impl CapturedChecksumFiles for Sources {
 }
 
 fn failure(error: ProviderError) -> FsError {
-    let kind = match error {
-        ProviderError::Cancelled => io::ErrorKind::Interrupted,
-        ProviderError::Unsupported => io::ErrorKind::Unsupported,
-        _ => io::ErrorKind::InvalidData,
-    };
-    FsError::from_io(
-        "checksum capture",
-        Path::new(""),
-        io::Error::new(kind, error),
-    )
+    capture_failure("checksum capture", error)
 }

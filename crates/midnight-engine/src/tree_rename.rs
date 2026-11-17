@@ -2,14 +2,10 @@
 use crate::{
     providers::{ProviderError, ProviderTarget},
     retirement::{RetirementDomain, WorkerOwned},
-    tree_actor::{CapturedTarget, Session},
+    tree_actor::{CapturedTarget, Session, capture_failure, validate_native_leaf},
 };
 use midnight_core::*;
-use std::{
-    io,
-    path::{Component, Path},
-    sync::Arc,
-};
+use std::sync::Arc;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 pub(crate) const RETIREMENT_CAPACITY: usize = crate::tree_controller::CAPTURE_CAPACITY;
@@ -119,17 +115,11 @@ impl CapturedRenameTarget for Source {
         Ok(prepared)
     }
 }
-fn validate_path(path: &Path) -> Result<(), ProviderError> {
-    if !path.is_absolute()
-        || path.as_os_str().as_encoded_bytes().contains(&0)
-        || !matches!(path.components().next_back(), Some(Component::Normal(_)))
-        || path.file_name().is_none()
-    {
-        return Err(ProviderError::InvalidResponse(
-            "Rename requires a native leaf, not parent navigation.",
-        ));
-    }
-    Ok(())
+fn validate_path(path: &std::path::Path) -> Result<(), ProviderError> {
+    validate_native_leaf(
+        path,
+        "Rename requires a native leaf, not parent navigation.",
+    )
 }
 fn check_cancel(cancel: &Cancellation) -> Result<(), FsError> {
     if cancel.wait_if_paused() {
@@ -139,14 +129,5 @@ fn check_cancel(cancel: &Cancellation) -> Result<(), FsError> {
     }
 }
 fn failure(error: ProviderError) -> FsError {
-    let kind = match error {
-        ProviderError::Cancelled => io::ErrorKind::Interrupted,
-        ProviderError::Unsupported => io::ErrorKind::Unsupported,
-        _ => io::ErrorKind::InvalidData,
-    };
-    FsError::from_io(
-        "prepare tree Rename",
-        Path::new(""),
-        io::Error::new(kind, error),
-    )
+    capture_failure("prepare tree Rename", error)
 }

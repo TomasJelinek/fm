@@ -1,5 +1,5 @@
 //! Worker-owned native argument captures; selection and focus keep distinct command semantics.
-use super::{CapturedSelection, CapturedTarget, Session};
+use super::{CapturedSelection, CapturedTarget, Session, capture_failure};
 use crate::{
     providers::{ProviderError, ProviderTarget},
     retirement::WorkerOwned,
@@ -7,7 +7,6 @@ use crate::{
 use midnight_core::*;
 use std::{
     collections::HashMap,
-    io,
     path::{Component, Path},
     sync::Arc,
 };
@@ -134,6 +133,8 @@ impl Session {
     }
 }
 
+/// The panel root may be a volume root, so this refuses only relative paths, NULs
+/// and parent navigation. Selected and focused rows are leaves by construction.
 fn native(target: &CapturedTarget) -> Result<&Path, ProviderError> {
     let ProviderTarget::Native(path) = target.target.value()? else {
         return Err(ProviderError::Unsupported);
@@ -275,14 +276,5 @@ impl CapturedUserCommandSources for Sources {
 }
 
 fn failure(error: ProviderError) -> FsError {
-    let kind = match error {
-        ProviderError::Cancelled => io::ErrorKind::Interrupted,
-        ProviderError::Unsupported => io::ErrorKind::Unsupported,
-        _ => io::ErrorKind::InvalidData,
-    };
-    FsError::from_io(
-        "Custom Command capture",
-        Path::new(""),
-        io::Error::new(kind, error),
-    )
+    capture_failure("Custom Command capture", error)
 }

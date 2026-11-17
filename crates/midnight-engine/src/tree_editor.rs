@@ -1,15 +1,14 @@
 //! F4 admission retains the provider-resolved focused occurrence, not selection.
 use crate::{
     providers::{ProviderError, ProviderTarget},
-    tree_actor::{CapturedTarget, Session},
+    tree_actor::{CapturedTarget, Session, capture_failure, validate_native_leaf},
 };
 use midnight_core::{
     Cancellation, CapturedEditorFile, EntryKind, FsError, TreeEditorRequest, TreeRowId,
     TreeViewStamp,
 };
 use std::{
-    io,
-    path::{Component, Path, PathBuf},
+    path::{Path, PathBuf},
     sync::Arc,
 };
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
@@ -106,29 +105,16 @@ impl CapturedEditorFile for Source {
     }
 }
 
+/// A file occurrence is always a leaf; the same rule as Rename and metadata.
 fn validate_path(path: &Path) -> Result<(), ProviderError> {
-    if !path.is_absolute()
-        || path.as_os_str().as_encoded_bytes().contains(&0)
-        || path.components().next_back() == Some(Component::ParentDir)
-    {
-        return Err(ProviderError::InvalidResponse(
-            "Editor target must be an absolute native file, not parent navigation.",
-        ));
-    }
-    Ok(())
+    validate_native_leaf(
+        path,
+        "Editor target must be an absolute native file, not parent navigation.",
+    )
 }
 
 fn failure(error: ProviderError) -> FsError {
-    let kind = match error {
-        ProviderError::Cancelled => io::ErrorKind::Interrupted,
-        ProviderError::Unsupported => io::ErrorKind::Unsupported,
-        _ => io::ErrorKind::InvalidData,
-    };
-    FsError::from_io(
-        "external editor capture",
-        Path::new(""),
-        io::Error::new(kind, error),
-    )
+    capture_failure("external editor capture", error)
 }
 
 #[cfg(test)]
