@@ -91,10 +91,14 @@ impl Worker {
             self.positions.defer(sequence, position);
             return;
         }
-        if let Some(id) = self.search_request.take()
-            && let Some(session) = &self.session
-        {
-            session.cancel(id);
+        if let Some(id) = self.search_request.take() {
+            if let Some(session) = &self.session {
+                session.cancel(id);
+            }
+            // Its terminal event is now unrelated; a loaded-page seek sets no other status.
+            if self.status == SEARCHING {
+                self.status.clear();
+            }
         }
         // Inspect read authority before reset can cancel a speculative correction.
         if let Some(origin) = self.cached_position(position) {

@@ -54,16 +54,6 @@ fn source_search_reports_global_scalar_position_and_preserves_copy_after_prefere
     assert!(session.send(ViewerInput::Copy {
         frame: plain.revision
     }));
-    let deadline = Instant::now() + Duration::from_secs(5);
-    let mut copied = None;
-    while Instant::now() < deadline && copied.is_none() {
-        for output in session.mailbox.take() {
-            if let ViewerOutput::CopyText(text) = output {
-                copied = Some(text);
-            }
-        }
-        std::thread::sleep(Duration::from_millis(5));
-    }
-    assert_eq!(copied.as_deref(), Some("row 02001"));
+    assert_eq!(copied(&session), "row 02001");
     session.close();
 }

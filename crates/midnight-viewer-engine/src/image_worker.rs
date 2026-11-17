@@ -43,9 +43,17 @@ pub(crate) enum Event {
     Validated(u64),
     DocumentFrame {
         revision: u64,
-        frame: midnight_image_viewer_host::Frame,
+        raster: DocumentRaster,
     },
     Failed(String),
+}
+
+/// A premultiplied document viewport. The actor moves its pixels into the shared buffer the
+/// UI frame carries, so the viewer worker publishes it without copying.
+pub(crate) struct DocumentRaster {
+    pub width: u32,
+    pub height: u32,
+    pub rgba: Arc<[u8]>,
 }
 
 enum Render {
@@ -63,24 +71,32 @@ enum Render {
 }
 
 pub(crate) struct ImageWorker {
-    sender: SyncSender<Render>,
+    /// Dropped on cancellation, which also ends the idle actor's blocking receive.
+    sender: Option<SyncSender<Render>>,
     pub events: Receiver<Event>,
     cancel: Arc<AtomicBool>,
     thread: Option<JoinHandle<()>>,
 }
 
 impl ImageWorker {
+    /// An actor stand-in that delivers `events`. A `thread` stands for the actor's thread,
+    /// for example one still closing its session after cancellation.
     #[cfg(test)]
-    pub(crate) fn opened_for_test(pages: Vec<Metadata>, document: bool) -> Self {
+    pub(crate) fn for_test(events: Receiver<Event>, thread: Option<JoinHandle<()>>) -> Self {
         let (sender, _) = mpsc::sync_channel(1);
-        let (output, events) = mpsc::sync_channel(1);
-        output.send(Event::Opened { pages, document }).unwrap();
         Self {
-            sender,
+            sender: Some(sender),
             events,
             cancel: Arc::new(AtomicBool::new(false)),
-            thread: None,
+            thread,
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn opened_for_test(pages: Vec<Metadata>, document: bool) -> Self {
+        let (output, events) = mpsc::sync_channel(1);
+        output.send(Event::Opened { pages, document }).unwrap();
+        Self::for_test(events, None)
     }
 
     pub fn open(
@@ -164,8 +180,11 @@ impl ImageWorker {
                                 return Ok(());
                             }
                             wake();
+                            // Cancellation drops the only sender, so an idle actor blocks
+                            // here without polling and still observes cancellation.
                             while !stopped.load(Ordering::Acquire) {
-                                match requests.recv_timeout(Duration::from_millis(10)) {
+                                match requests.recv() {
+                                    Ok(_) if stopped.load(Ordering::Acquire) => break,
                                     Ok(request) => {
                                         let event = match request {
                                             Render::Tile {
@@ -228,7 +247,14 @@ impl ImageWorker {
                                                     )
                                                     .map_err(|error| error.to_string())?;
                                                 crate::image_pixels::premultiply(&mut frame.rgba);
-                                                Event::DocumentFrame { revision, frame }
+                                                Event::DocumentFrame {
+                                                    revision,
+                                                    raster: DocumentRaster {
+                                                        width: frame.width,
+                                                        height: frame.height,
+                                                        rgba: Arc::from(frame.rgba),
+                                                    },
+                                                }
                                             }
                                         };
                                         if stopped.load(Ordering::Acquire)
@@ -238,8 +264,7 @@ impl ImageWorker {
                                         }
                                         wake();
                                     }
-                                    Err(mpsc::RecvTimeoutError::Timeout) => {}
-                                    Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                                    Err(mpsc::RecvError) => break,
                                 }
                             }
                             Ok::<_, String>(())
@@ -280,38 +305,41 @@ impl ImageWorker {
             })
             .map_err(|error| error.to_string())?;
         Ok(Self {
-            sender,
+            sender: Some(sender),
             events,
             cancel,
             thread: Some(thread),
         })
     }
 
-    pub fn render(&self, revision: u64, key: Key, charge: Arc<Charge>) -> bool {
+    fn send(&self, request: Render) -> bool {
         self.sender
-            .try_send(Render::Tile {
-                revision,
-                key,
-                charge,
-            })
-            .is_ok()
+            .as_ref()
+            .is_some_and(|sender| sender.try_send(request).is_ok())
+    }
+
+    pub fn render(&self, revision: u64, key: Key, charge: Arc<Charge>) -> bool {
+        self.send(Render::Tile {
+            revision,
+            key,
+            charge,
+        })
     }
 
     pub fn validate(&self, revision: u64) -> bool {
-        self.sender.try_send(Render::Validate(revision)).is_ok()
+        self.send(Render::Validate(revision))
     }
     pub fn document(&self, revision: u64, page: usize, viewport: Viewport) -> bool {
-        self.sender
-            .try_send(Render::Document {
-                revision,
-                page,
-                viewport,
-            })
-            .is_ok()
+        self.send(Render::Document {
+            revision,
+            page,
+            viewport,
+        })
     }
 
-    pub fn cancel(&self) {
+    pub fn cancel(&mut self) {
         self.cancel.store(true, Ordering::Release);
+        self.sender = None;
     }
 
     pub fn finished(&self) -> bool {
@@ -342,7 +370,7 @@ mod tests {
         let (sender, requests) = mpsc::sync_channel(1);
         let (_, events) = mpsc::sync_channel(1);
         let worker = ImageWorker {
-            sender,
+            sender: Some(sender),
             events,
             cancel: Arc::new(AtomicBool::new(false)),
             thread: None,
@@ -379,7 +407,7 @@ mod tests {
         let (sender, requests) = mpsc::sync_channel(1);
         let (_, events) = mpsc::sync_channel(1);
         let worker = ImageWorker {
-            sender,
+            sender: Some(sender),
             events,
             cancel: Arc::new(AtomicBool::new(false)),
             thread: None,
@@ -412,7 +440,7 @@ mod tests {
         let (sender, requests) = mpsc::sync_channel(1);
         let (_, events) = mpsc::sync_channel(1);
         let worker = ImageWorker {
-            sender,
+            sender: Some(sender),
             events,
             cancel: Arc::new(AtomicBool::new(false)),
             thread: None,
@@ -444,10 +472,10 @@ mod tests {
         view.pending = None;
         view.document_frame = Some((
             revision,
-            midnight_image_viewer_host::Frame {
+            DocumentRaster {
                 width: 1000,
                 height: 700,
-                rgba: vec![255; 1000 * 700 * 4],
+                rgba: vec![255; 1000 * 700 * 4].into(),
             },
         ));
         assert!(matches!(view.request().unwrap(), Some(Paint::Raster(_))));

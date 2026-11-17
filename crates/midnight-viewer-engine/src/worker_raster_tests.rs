@@ -288,7 +288,7 @@ fn retained_horizontal_scrollbar_and_scrolled_reflow_publish_new_contexts() {
         first.raster.as_ref().unwrap().surface
     );
     drop(first);
-    worker.input(ViewerInput::Wrap(true), &output);
+    prefer_wrap(&mut worker, &output, true);
     let wrapped = paint(&mut worker, &output);
     assert_eq!(wrapped.raster.as_ref().unwrap().origin[0], 0.0);
     drop(horizontal);

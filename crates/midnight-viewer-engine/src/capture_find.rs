@@ -4,7 +4,6 @@ use midnight_core::{Cancellation, EntryKind, ViewerLaunch};
 use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
-    mpsc,
 };
 
 pub(crate) fn prepare(
@@ -40,10 +39,10 @@ pub(crate) fn prepare(
     if closed.load(Ordering::Acquire) {
         return Err("Viewer closed".into());
     }
-    let (_sender, ready) = mpsc::sync_channel(1);
     Ok(Order {
-        files: vec![(entry.path.clone(), Some(Ok(file)))],
+        files: Arc::from([entry.path.clone()]),
         current: 0,
-        ready,
+        focused: Ok(file),
+        capture: None,
     })
 }
