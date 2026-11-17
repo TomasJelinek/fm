@@ -152,24 +152,24 @@ async fn native_reservation_keeps_fifo_before_its_ui_payload_arrives() {
     assert!(
         matches!(h.next().await, CopyEvent::Progress(p) if p.state == CopyOperationState::Queued)
     );
-    let overtook = tokio::time::timeout(Duration::from_millis(200), async {
+    // The job reports the explicit dependency only once it is parked on the earlier
+    // native reservation; a job that overtook it would never set this wait reason.
+    let parked = tokio::time::timeout(Duration::from_secs(4), async {
         loop {
-            if let CopyEvent::Progress(progress) = h.next().await
-                && progress.state != CopyOperationState::Queued
-            {
-                break;
+            let status = snapshot(&h.controller.registry.lock().unwrap()[&OperationId(1)].status);
+            if status.wait_reason == Some(TransferWaitReason::EarlierTransfers) {
+                break status;
             }
+            tokio::time::sleep(Duration::from_millis(1)).await;
         }
     })
     .await
-    .is_ok();
+    .expect("later copy must wait for earlier native reservation");
+    assert_eq!(parked.state, CopyOperationState::Queued);
+    assert_eq!(fs::read_dir(&target).unwrap().count(), 0);
     drop(reservation);
     assert_eq!(h.terminal(1).await.state, CopyOperationState::Completed);
     h.close().await;
-    assert!(
-        !overtook,
-        "later copy must wait for earlier native reservation"
-    );
 }
 
 #[tokio::test]
@@ -570,7 +570,7 @@ async fn wait_for_retired_copy_capacity(h: &Harness) {
     assert!(capacity.is_closed(), "shutdown keeps Copy admission closed");
     tokio::time::timeout(Duration::from_secs(4), async {
         while capacity.available_permits() != MAX_JOBS {
-            tokio::task::yield_now().await;
+            tokio::time::sleep(Duration::from_millis(1)).await;
         }
     })
     .await
@@ -703,8 +703,8 @@ async fn decision_abort_keeps_full_and_partial_link_stages_under_the_dedicated_i
         h.controller.enqueue_options(fixture.options(1)).await;
         staged_link_decision(&mut h, partial).await;
         assert!(
-            h.io.clone().try_acquire_owned().is_err(),
-            "a staged decision retains its actual Copy permit"
+            h.io.clone().try_acquire_owned().is_ok(),
+            "a staged decision returns its disk slot; forced teardown reclaims it"
         );
         assert_eq!(fixture.control.staged_count(), 1);
         drop(registration);
@@ -813,7 +813,8 @@ async fn cancelling_staged_link_decisions_reuses_the_copy_permit_for_actual_clea
         h.controller.enqueue_options(fixture.options(1)).await;
         staged_link_decision(&mut h, partial).await;
         drop(registration);
-        assert!(h.io.clone().try_acquire_owned().is_err());
+        // The pending decision returned the slot; cancellation cleanup reclaims it below.
+        assert!(h.io.clone().try_acquire_owned().is_ok());
         h.controller.cancel(OperationId(1));
         tokio::time::timeout(Duration::from_secs(4), cleanup_entered.notified())
             .await

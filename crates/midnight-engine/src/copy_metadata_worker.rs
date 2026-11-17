@@ -26,13 +26,7 @@ impl Job {
         metadata: TransferMetadataPolicy,
     ) -> Result<(), FsError> {
         let pins = pins(&self.roots, &self.cancel)?;
-        let stages = match stages(
-            &self.roots,
-            &self.destination,
-            metadata,
-            false,
-            &self.cancel,
-        ) {
+        let stages = match stages(&self.roots, &self.destination, metadata, &self.cancel) {
             Ok(stages) => stages,
             Err(failure) => {
                 if failure.cleanup_failed {
@@ -73,41 +67,24 @@ pub(super) fn pins(
     }
     Ok(pins)
 }
+/// Required-metadata preflight (never ContentOnly): one metadata-capable stage per
+/// native regular-file root, each probed for the required metadata before copying.
 pub(super) fn stages(
     roots: &VecDeque<Box<dyn TransferSource>>,
     destination: &Arc<dyn TransferDirectory>,
     metadata: TransferMetadataPolicy,
-    proof: bool,
     cancel: &Cancellation,
 ) -> Result<HashMap<TransferIdentity, Box<dyn StagedTransferFile>>, StageFailure> {
     let mut stages: HashMap<_, Box<dyn StagedTransferFile>> = HashMap::new();
     for source in roots {
-        if source.entry().item.kind == EntryKind::Directory
-            && metadata == TransferMetadataPolicy::ContentOnly
-        {
-            continue;
-        }
         let mut cleanup_failure: Option<FsError> = None;
         let result = (|| {
-            let mut stage = if metadata == TransferMetadataPolicy::ContentOnly {
-                destination.stage_file(cancel)?
-            } else {
-                destination.stage_file_with_metadata(metadata, cancel)?
-            };
-            let probe = if proof {
-                stage
-                    .rewind_for_validation(cancel)
-                    .and_then(|guard| guard.revalidate(cancel))
+            let mut stage = destination.stage_file_with_metadata(metadata, cancel)?;
+            let probe = if metadata == TransferMetadataPolicy::RequireModifiedTime {
+                stage.modified_time(cancel).map(|_| ())
             } else {
                 Ok(())
-            }
-            .and_then(|()| {
-                if metadata == TransferMetadataPolicy::RequireModifiedTime {
-                    stage.modified_time(cancel).map(|_| ())
-                } else {
-                    Ok(())
-                }
-            });
+            };
             if let Err(failure) = probe {
                 cleanup_failure = stage.cleanup().err();
                 return Err(failure);

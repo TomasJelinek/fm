@@ -46,6 +46,11 @@ use ownership::{Owned, Scope};
 mod worker;
 pub(crate) use admission::{Admission, Reservation};
 use input::CopyInput;
+/// Whether `command` is a Copy-family command, from the same list guarded admission
+/// uses for its operation ID (`input::copy_command_id`).
+pub(crate) fn is_copy_command(command: &Command) -> bool {
+    input::copy_command_id(command).is_some()
+}
 pub(crate) fn check_move_bounds<'a>(
     destination: &Path,
     paths: impl IntoIterator<Item = &'a Path>,
@@ -314,16 +319,20 @@ impl Controller {
                 events,
             },
         );
-        if let Err(rejected) = sender.send(request) {
-            drop(rejected);
-            if ordered_id {
-                self.registry
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .remove(&progress.id);
+        match sender.send(request) {
+            // The consumer rescans now instead of on a timer.
+            Ok(()) => self.admission.wake(),
+            Err(rejected) => {
+                drop(rejected);
+                if ordered_id {
+                    self.registry
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .remove(&progress.id);
+                }
+                // A closed consumer is Engine shutdown, so no output publication may
+                // delay controls. The sealed input still retires independently.
             }
-            // A closed consumer is Engine shutdown, so no output publication may
-            // delay controls. The sealed input still retires independently.
         }
     }
     pub(crate) async fn decide(&self, decision: CopyDecision) {
@@ -535,76 +544,6 @@ async fn run_accepted(
     tokio::join!(work, events.clone().deliver(initial, finished));
 }
 
-#[cfg(test)]
-async fn acquire(budget: &Arc<Semaphore>, cancel: &Cancellation) -> Option<OwnedSemaphorePermit> {
-    if cancel.is_cancelled() {
-        return None;
-    }
-    let pending = budget.clone().acquire_owned();
-    tokio::pin!(pending);
-    let mut timer = tokio::time::interval(Duration::from_millis(25));
-    loop {
-        tokio::select! {
-            result = &mut pending => return result.ok(),
-            _ = timer.tick() => if cancel.is_cancelled() { return None; },
-        }
-    }
-}
-
-#[cfg(test)]
-async fn acquire_resources(
-    budget: &Arc<Semaphore>,
-    cancel: &Cancellation,
-    status: &Status,
-    outbox: &CopyOutbox,
-    tracker: Option<&Mutex<Tracker>>,
-) -> Option<OwnedSemaphorePermit> {
-    if cancel.is_cancelled() {
-        return None;
-    }
-    match budget.clone().try_acquire_owned() {
-        Ok(permit) => return Some(permit),
-        Err(tokio::sync::TryAcquireError::Closed) => return None,
-        Err(tokio::sync::TryAcquireError::NoPermits) => {}
-    }
-    set_resource_wait(status, tracker, Some(TransferWaitReason::Resources));
-    let permit = if tracker.is_some() {
-        // run_input owns this job's heartbeat and successfully delivered markers.
-        // A second publisher can lose a full-outbox clear or double the cadence.
-        acquire(budget, cancel).await
-    } else {
-        // Mutation admission precedes run_input, so it needs its own bounded retry.
-        publish_wait_snapshot(outbox, status);
-        let pending = acquire(budget, cancel);
-        tokio::pin!(pending);
-        let mut timer = tokio::time::interval_at(tokio::time::Instant::now() + CADENCE, CADENCE);
-        timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-        loop {
-            tokio::select! {
-                permit = &mut pending => break permit,
-                _ = timer.tick() => publish_wait_snapshot(outbox, status),
-            }
-        }
-    };
-    set_resource_wait(status, tracker, None);
-    if tracker.is_none() {
-        publish_wait_snapshot(outbox, status);
-    }
-    permit
-}
-
-#[cfg(test)]
-fn publish_wait_snapshot(outbox: &CopyOutbox, status: &Status) {
-    // A full result queue must not prevent cancelled native ownership retiring.
-    if outbox
-        .sender
-        .try_send(Event::Copy(CopyEvent::Progress(Arc::new(snapshot(status)))))
-        .is_ok()
-    {
-        (outbox.wakeup)();
-    }
-}
-
 fn set_resource_wait(
     status: &Status,
     tracker: Option<&Mutex<Tracker>>,
@@ -712,7 +651,7 @@ async fn execute_input(
         }
     }
     drop(predecessors);
-    if !wait_for_pause(&cancel, &status, outbox, throughput).await {
+    if !wait_for_pause(&cancel, &status, outbox, throughput, None).await {
         return retire_input(request, cancelled(&status), &status).await;
     }
     let Some(installation) = service.transfer() else {
@@ -758,36 +697,28 @@ async fn execute_input(
         }
     };
     // Wait-for-earlier is complete before either lifetime lease is attempted.
-    // Pair failure immediately rolls I/O back; legacy namespace owners can
-    // obtain the same configured disk budget they need to finish.
-    loop {
-        if cancel.is_cancelled() {
-            set_resource_wait(&status, Some(throughput), None);
-            return retire_input(request, cancelled(&status), &status).await;
+    let leases = match acquire_leases(
+        io_budget.gate(),
+        mutation_gate,
+        &cancel,
+        &status,
+        outbox,
+        throughput,
+    )
+    .await
+    {
+        Ok(Some(leases)) => leases,
+        Ok(None) => return retire_input(request, cancelled(&status), &status).await,
+        Err(error) => {
+            return retire_input(request, failed(&status, error, &cancel), &status).await;
         }
-        match crate::transfer_leases::try_pair(io_budget.gate(), mutation_gate) {
-            Ok(Some(leases)) => {
-                let resources = request.resources_mut();
-                resources.mutation = Some(leases.namespace);
-                if let Err(error) = resources.attach_io(io_budget.gate().clone(), leases.io) {
-                    return retire_input(request, failed(&status, error, &cancel), &status).await;
-                }
-                break;
-            }
-            Ok(None) => {
-                set_resource_wait(
-                    &status,
-                    Some(throughput),
-                    Some(TransferWaitReason::Resources),
-                );
-                tokio::time::sleep(Duration::from_millis(25)).await;
-            }
-            Err(error) => {
-                return retire_input(request, failed(&status, error, &cancel), &status).await;
-            }
-        }
+    };
+    let io = leases.io.clone();
+    let resources = request.resources_mut();
+    resources.mutation = Some(leases.namespace);
+    if let Err(error) = resources.attach_io(io_budget.gate().clone(), leases.io) {
+        return retire_input(request, failed(&status, error, &cancel), &status).await;
     }
-    set_resource_wait(&status, Some(throughput), None);
     let sequence = request.resources_mut().admission_sequence();
     let (claim, mut native) = match namespace.new_job(sequence) {
         Ok(owners) => owners,
@@ -814,8 +745,9 @@ async fn execute_input(
         decisions: &mut decisions,
         outbox,
         throughput,
+        io: &io,
     };
-    if !wait_for_pause(&cancel, &status, outbox, throughput).await {
+    if !ready_for_io(&io, &cancel, &status, outbox, throughput).await {
         return retire_input(command, cancelled(&status), &status).await;
     }
     let mut job = match prepare_job(command, installation.clone(), &mut waiter).await {
@@ -832,8 +764,12 @@ async fn execute_input(
     );
     sample_throughput(&status, throughput);
     publish(outbox, snapshot(&status)).await;
+    let watch = job
+        .resources_mut()
+        .namespace()
+        .map(crate::copy_namespace::Claim::watch);
     loop {
-        if !wait_for_pause(&cancel, &status, outbox, throughput).await {
+        if !ready_for_io(&io, &cancel, &status, outbox, throughput).await {
             break;
         }
         // Cancellation cannot abort an OS call or relinquish its permit early.
@@ -841,16 +777,16 @@ async fn execute_input(
             let step = ownership::run(&mut job, |job| {
                 let step = job.step();
                 let completed = job.take_completed_root();
-                (step, completed)
+                (step, completed, job.take_namespace_busy())
             });
             (job, step)
         })
         .await;
-        let (step, completed);
+        let (step, completed, busy);
         match executed {
             Ok((returned, Ok(result))) => {
                 job = returned;
-                (step, completed) = result;
+                (step, completed, busy) = result;
             }
             Ok((returned, Err(_))) => {
                 drop(returned);
@@ -868,6 +804,22 @@ async fn execute_input(
                     source,
                 }))
                 .await;
+        }
+        if let Some(since) = busy {
+            // A granted peer's namespace refused this change: wait for the registry
+            // (holding no disk slot) and retry automatically instead of asking.
+            io.release();
+            set_resource_wait(
+                &status,
+                Some(throughput),
+                Some(TransferWaitReason::Resources),
+            );
+            match &watch {
+                Some(watch) => wait_for_namespace(watch, since, false, &cancel).await,
+                None => tokio::time::sleep(NAMESPACE_RETRY_SPACING).await,
+            }
+            set_resource_wait(&status, Some(throughput), None);
+            continue;
         }
         match step {
             worker::Step::Done => break,
@@ -889,9 +841,10 @@ async fn execute_input(
         }
     }
     waiting.store(0, Ordering::Release);
-    // The original physical slot, namespace share and complete claim are still
-    // inside this job. Cleanup never reacquires a resource or honors cancellation
-    // by releasing native ownership before the outstanding call returns.
+    // The namespace share and complete claim are still inside this job. Checked
+    // teardown reclaims a released disk slot without waiting (cancellation cannot
+    // queue behind other jobs) and never releases native ownership before the
+    // outstanding call returns.
     match tokio::task::spawn_blocking(move || ownership::finish(job)).await {
         Ok(Ok(progress)) => progress,
         Ok(Err(_)) => retirement_unconfirmed(&status),
@@ -911,13 +864,22 @@ fn refresh_pause(status: &Status, cancel: &Cancellation) -> bool {
     progress.paused = paused;
     changed
 }
+/// A safe checkpoint between native steps. A paused job returns its disk slot (`io`)
+/// while it waits; `ready_for_io` readmits it before the next step. False: cancelled.
 async fn wait_for_pause(
     cancel: &Cancellation,
     status: &Status,
     outbox: &CopyOutbox,
     throughput: &Mutex<Tracker>,
+    io: Option<&midnight_work_budget::Permit>,
 ) -> bool {
     loop {
+        if let Some(io) = io
+            && cancel.pause_requested()
+        {
+            // Return the slot before acknowledging the pause: "paused" implies "no slot".
+            io.release();
+        }
         let ready = cancel.pause_checkpoint();
         let changed = refresh_pause(status, cancel);
         if changed || ready {
@@ -931,6 +893,162 @@ async fn wait_for_pause(
         }
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
+}
+
+/// Every native step runs under the job's own held disk slot. Before a step: wait while
+/// paused (holding no slot), yield the slot while a call-scoped request is queued (so a
+/// checksum, thumbnail or folder-size read waits for one step, not for this whole job),
+/// and readmit it through the FIFO gate. Returns false when cancelled; checked teardown
+/// then reclaims the slot without queuing.
+async fn ready_for_io(
+    io: &midnight_work_budget::Permit,
+    cancel: &Cancellation,
+    status: &Status,
+    outbox: &CopyOutbox,
+    throughput: &Mutex<Tracker>,
+) -> bool {
+    loop {
+        if !wait_for_pause(cancel, status, outbox, throughput, Some(io)).await {
+            return false;
+        }
+        if io.is_held() && io.is_contended() {
+            io.release();
+        }
+        if io.try_reacquire() {
+            return true;
+        }
+        let previous = snapshot(status).wait_reason;
+        set_resource_wait(
+            status,
+            Some(throughput),
+            Some(TransferWaitReason::Resources),
+        );
+        let admitted = interruptible(io.reacquire(), cancel).await;
+        set_resource_wait(status, Some(throughput), previous);
+        if admitted.is_some() {
+            return true;
+        }
+        if cancel.is_cancelled() {
+            return false;
+        }
+        // A pause requested while queued withdrew the request; wait at the checkpoint.
+    }
+}
+
+/// Await `future` unless the job is cancelled or paused first. Cancellation and pause are
+/// plain flags, observed on the cooperative-wait cadence; dropping the future withdraws it.
+async fn interruptible<F: std::future::Future>(
+    future: F,
+    cancel: &Cancellation,
+) -> Option<F::Output> {
+    tokio::pin!(future);
+    let mut interrupt = tokio::time::interval(Duration::from_millis(25));
+    interrupt.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        tokio::select! {
+            output = &mut future => return Some(output),
+            _ = interrupt.tick() => {
+                if cancel.is_cancelled() || cancel.pause_requested() {
+                    return None;
+                }
+            }
+        }
+    }
+}
+
+/// Refused namespace work never retries faster than this, whatever peers change.
+const NAMESPACE_RETRY_SPACING: Duration = Duration::from_millis(25);
+/// Fact changes and external renames, which do not signal the registry, are revalidated
+/// at least this often while a job waits for a namespace grant or change.
+const NAMESPACE_REVALIDATE: Duration = Duration::from_secs(1);
+
+/// A refused namespace grant or change waits for the registry instead of polling: any
+/// change after `since`, or (`structural`) only a grant, removal or quarantine. The
+/// caller holds no disk slot here; cancellation and pause end the wait at once.
+async fn wait_for_namespace(
+    watch: &crate::copy_namespace::Watch,
+    since: crate::copy_namespace::Seen,
+    structural: bool,
+    cancel: &Cancellation,
+) {
+    let started = tokio::time::Instant::now();
+    let changed = interruptible(watch.changed(since, structural), cancel);
+    let _ = tokio::time::timeout(NAMESPACE_REVALIDATE, changed).await;
+    if !cancel.is_cancelled() && !cancel.pause_requested() {
+        tokio::time::sleep_until(started + NAMESPACE_RETRY_SPACING).await;
+    }
+}
+
+/// Lifetime leases: the namespace share first, then the job's retained FIFO disk slot.
+/// Legacy namespace owners take their complete namespace before any disk slot and no
+/// disk-slot holder waits for a namespace share, so waiting for disk capacity while
+/// holding a share cannot deadlock. A paused job takes neither lease. None: cancelled.
+async fn acquire_leases(
+    gate: &Arc<midnight_work_budget::Gate>,
+    namespace: &Arc<Semaphore>,
+    cancel: &Cancellation,
+    status: &Status,
+    outbox: &CopyOutbox,
+    throughput: &Mutex<Tracker>,
+) -> Result<Option<crate::transfer_leases::Leases>, FsError> {
+    let closing = || {
+        FsError::from_io(
+            "acquire transfer namespace",
+            Path::new(""),
+            io::Error::new(io::ErrorKind::BrokenPipe, "Transfer namespace is closing."),
+        )
+    };
+    let result = loop {
+        if !wait_for_pause(cancel, status, outbox, throughput, None).await {
+            break Ok(None);
+        }
+        let share = match namespace.clone().try_acquire_owned() {
+            Ok(share) => share,
+            Err(tokio::sync::TryAcquireError::Closed) => break Err(closing()),
+            Err(tokio::sync::TryAcquireError::NoPermits) => {
+                set_resource_wait(
+                    status,
+                    Some(throughput),
+                    Some(TransferWaitReason::Resources),
+                );
+                match interruptible(namespace.clone().acquire_owned(), cancel).await {
+                    Some(Ok(share)) => share,
+                    Some(Err(_)) => break Err(closing()),
+                    None if cancel.is_cancelled() => break Ok(None),
+                    None => continue,
+                }
+            }
+        };
+        let admission = midnight_work_budget::Admission::Shared;
+        let disk = match gate.try_acquire_retained(admission) {
+            Some(disk) => disk,
+            None => {
+                set_resource_wait(
+                    status,
+                    Some(throughput),
+                    Some(TransferWaitReason::Resources),
+                );
+                match interruptible(gate.acquire_retained(admission), cancel).await {
+                    Some(disk) => disk,
+                    None if cancel.is_cancelled() => break Ok(None),
+                    // Paused while queued: hold neither lease during the pause.
+                    None => continue,
+                }
+            }
+        };
+        if cancel.is_cancelled() {
+            // Admitted in the same instant as the cancellation: a cancelled job never
+            // starts native work, so it returns both leases before retiring.
+            drop((disk, share));
+            break Ok(None);
+        }
+        break Ok(Some(crate::transfer_leases::Leases {
+            io: Arc::new(disk),
+            namespace: share,
+        }));
+    };
+    set_resource_wait(status, Some(throughput), None);
+    result
 }
 
 fn snapshot(status: &Status) -> CopyProgress {
@@ -1110,10 +1228,6 @@ mod retirement_diagnostics_tests;
 #[cfg(test)]
 #[path = "copy_tests.rs"]
 mod tests;
-
-#[cfg(test)]
-#[path = "copy_resource_wait_publication_tests.rs"]
-mod resource_wait_publication_tests;
 
 #[cfg(test)]
 #[path = "copy_link_tests.rs"]

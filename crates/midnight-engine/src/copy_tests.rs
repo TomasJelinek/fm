@@ -20,6 +20,8 @@ mod discovery;
 mod errors;
 #[path = "copy_eta_tests.rs"]
 mod eta;
+#[path = "copy_io_slot_tests.rs"]
+mod io_slot;
 #[path = "move_tests.rs"]
 mod moves;
 #[path = "move_native_tests.rs"]
@@ -30,6 +32,8 @@ mod pause;
 mod progress_discovery;
 #[path = "copy_progress_verification_tests.rs"]
 mod progress_verification;
+#[path = "copy_publication_tests.rs"]
+mod publication;
 #[path = "copy_queue_tests.rs"]
 mod queue;
 #[path = "copy_replacement_tests.rs"]
@@ -181,7 +185,7 @@ impl Harness {
         let capacity = self.controller.capacity();
         tokio::time::timeout(Duration::from_secs(4), async {
             while capacity.available_permits() != available {
-                tokio::task::yield_now().await;
+                tokio::time::sleep(Duration::from_millis(1)).await;
             }
         })
         .await
@@ -193,7 +197,7 @@ impl Harness {
                 match self.controller.reserve() {
                     Ok(reservation) => return reservation,
                     Err(error) if error.kind == io::ErrorKind::WouldBlock => {
-                        tokio::task::yield_now().await;
+                        tokio::time::sleep(Duration::from_millis(1)).await;
                     }
                     Err(error) => panic!("Copy admission unexpectedly refused: {error}"),
                 }
@@ -411,8 +415,11 @@ async fn selected_copy_rejects_relative_destination_before_opening_any_sources()
     h.close().await;
 }
 
+/// A pending user decision keeps the namespace share but returns the only disk slot; the
+/// controller accepts more work meanwhile and stale decisions stay ignored (the later
+/// exact-version Rename is still accepted).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn conflict_wait_accepts_more_work_and_rejects_stale_decisions() {
+async fn conflict_wait_releases_the_disk_slot_and_rejects_stale_decisions() {
     let temp = fixture();
     let destination = temp.path().join("destination");
     fs::create_dir(&destination).unwrap();
@@ -429,8 +436,11 @@ async fn conflict_wait_accepts_more_work_and_rejects_stale_decisions() {
     let conflict = h.conflict(1).await;
     assert_eq!(conflict.source.metadata.size, Some(9));
     assert_eq!(conflict.target.metadata.size, Some(4));
-    assert_eq!(h.io.available_permits(), 0);
-    assert_eq!(h.mutation.available_permits(), 31);
+    assert_eq!(h.io.available_permits(), 1);
+    assert_eq!(
+        h.mutation.available_permits(),
+        crate::transfer_leases::NAMESPACE_WEIGHT as usize - 1
+    );
     h.controller
         .enqueue(request(2, &[second], &destination))
         .await;
@@ -441,8 +451,6 @@ async fn conflict_wait_accepts_more_work_and_rejects_stale_decisions() {
             choice: CopyChoice::Skip,
         })
         .await;
-    tokio::time::sleep(Duration::from_millis(80)).await;
-    assert!(!destination.join("second").exists());
     h.controller
         .decide(CopyDecision {
             id: OperationId(1),
@@ -462,9 +470,57 @@ async fn conflict_wait_accepts_more_work_and_rejects_stale_decisions() {
         .await;
     assert_eq!(h.terminal(1).await.state, CopyOperationState::Completed);
     assert_eq!(h.terminal(2).await.state, CopyOperationState::Completed);
+    assert_eq!(fs::read(destination.join("second")).unwrap(), b"next");
     assert_eq!(fs::read(destination.join("first")).unwrap(), b"keep");
     assert_eq!(fs::read(destination.join("taken")).unwrap(), b"also keep");
     assert_eq!(fs::read(destination.join("renamed")).unwrap(), b"new bytes");
+    h.close().await;
+}
+
+/// A "different name" the destination cannot use asks again (fresh version, reason in
+/// the job details) instead of recording a failure and dropping the entry.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn invalid_rename_asks_again_and_keeps_the_entry() {
+    let temp = fixture();
+    let destination = temp.path().join("destination");
+    fs::create_dir(&destination).unwrap();
+    let source = temp.path().join("item");
+    fs::write(&source, b"new bytes").unwrap();
+    fs::write(destination.join("item"), b"keep").unwrap();
+    let mut h = Harness::native();
+    h.controller
+        .enqueue(request(1, std::slice::from_ref(&source), &destination))
+        .await;
+    let conflict = h.conflict(1).await;
+    h.controller
+        .decide(CopyDecision {
+            id: OperationId(1),
+            version: conflict.version,
+            choice: CopyChoice::Rename("nested/name".into()),
+        })
+        .await;
+    let again = h.conflict(1).await;
+    assert!(again.version > conflict.version);
+    assert_eq!(again.destination, conflict.destination);
+    let message = snapshot(&h.controller.registry.lock().unwrap()[&OperationId(1)].status)
+        .message
+        .clone();
+    assert!(message.contains("cannot be used here"), "{message}");
+    h.controller
+        .decide(CopyDecision {
+            id: OperationId(1),
+            version: again.version,
+            choice: CopyChoice::Rename("renamed".into()),
+        })
+        .await;
+    let done = h.terminal(1).await;
+    assert_eq!(done.state, CopyOperationState::Completed, "{done:?}");
+    assert!(
+        done.errors.is_empty() && done.message.is_empty(),
+        "{done:?}"
+    );
+    assert_eq!(fs::read(destination.join("renamed")).unwrap(), b"new bytes");
+    assert_eq!(fs::read(destination.join("item")).unwrap(), b"keep");
     h.close().await;
 }
 
@@ -749,7 +805,11 @@ async fn cancellation_cannot_start_the_next_copy_before_native_io_returns() {
     h.controller.cancel(OperationId(1));
     tokio::time::sleep(Duration::from_millis(80)).await;
     assert_eq!(h.io.available_permits(), 0);
-    assert_eq!(h.mutation.available_permits(), 31);
+    // The queued job holds its namespace share while it waits for the disk slot.
+    assert_eq!(
+        h.mutation.available_permits(),
+        crate::transfer_leases::NAMESPACE_WEIGHT as usize - 2
+    );
     assert_eq!(prepared.load(Ordering::Acquire), 1);
     assert_eq!(
         h.controller

@@ -10,12 +10,17 @@ enum Point {
     Write,
     Sync,
     Readback,
+    /// After the native publication returned: the recoverable-replacement window.
+    Publish,
 }
 struct Control {
     point: Point,
     entered: Notify,
     released: AtomicBool,
     stages: AtomicUsize,
+    /// Explicit cleanups of the blocked (second) stage. Linux stages are unnamed, so a
+    /// directory listing alone cannot prove that cancellation cleaned them.
+    cleanups: AtomicUsize,
 }
 struct Release(Arc<Control>);
 impl Drop for Release {
@@ -217,22 +222,32 @@ impl StagedTransferFile for Stage {
         name: &OsStr,
         cancel: &Cancellation,
     ) -> Result<TransferPublication, FsError> {
-        self.inner.publish_no_replace(name, cancel)
+        let publication = self.inner.publish_no_replace(name, cancel);
+        self.block(Point::Publish);
+        publication
     }
     fn publish_replace(
         &mut self,
         name: &OsStr,
         cancel: &Cancellation,
     ) -> Result<TransferPublication, FsError> {
-        self.inner.publish_replace(name, cancel)
+        let publication = self.inner.publish_replace(name, cancel);
+        self.block(Point::Publish);
+        publication
     }
     fn cleanup(&mut self) -> Result<(), FsError> {
+        if self.active {
+            self.control.cleanups.fetch_add(1, Ordering::SeqCst);
+        }
         self.inner.cleanup()
     }
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn queued_cancel_removes_only_unpublished_output_after_blocked_native_io() {
+    // Each case owns its harness, gates, fixtures and blocked native call, so the 24
+    // cases and their negative windows run concurrently instead of back to back.
+    let mut cases = tokio::task::JoinSet::new();
     for intent in [TransferIntent::Copy, TransferIntent::Move] {
         for verification in [
             TransferVerification::FullSha256,
@@ -240,9 +255,14 @@ async fn queued_cancel_removes_only_unpublished_output_after_blocked_native_io()
         ] {
             for point in [Point::Write, Point::Sync, Point::Readback] {
                 for replacement in [false, true] {
-                    cancelled_case(intent, verification, point, replacement).await;
+                    cases.spawn(cancelled_case(intent, verification, point, replacement));
                 }
             }
+        }
+    }
+    while let Some(case) = cases.join_next().await {
+        if let Err(error) = case {
+            std::panic::resume_unwind(error.into_panic());
         }
     }
 }
@@ -269,6 +289,7 @@ async fn cancelled_case(
         entered: Notify::new(),
         released: AtomicBool::new(false),
         stages: AtomicUsize::new(0),
+        cleanups: AtomicUsize::new(0),
     });
     let _release = Release(control.clone());
     let mut h = Harness::new(Some(Arc::new(Service {
@@ -342,4 +363,69 @@ async fn cancelled_case(
         if replacement { 2 } else { 1 },
         "owned partial output survived cancellation at {point:?}"
     );
+    assert_eq!(
+        control.cleanups.load(Ordering::SeqCst),
+        1,
+        "the cancelled stage is cleaned explicitly once at {point:?}"
+    );
+}
+
+/// Cancellation that arrives while a recoverable replacement is being published cannot
+/// undo the commit: the job ends Cancelled with the publication counted and the
+/// displaced original retained at its reported recovery path.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cancel_during_replacement_publication_keeps_publication_and_recovery_facts() {
+    for verification in [
+        TransferVerification::FullSha256,
+        TransferVerification::SizeAndSamples,
+    ] {
+        let (_temp, parent) = moves::protected_fixture();
+        let earlier = parent.join("earlier");
+        let source = parent.join("current");
+        let destination = parent.join("destination");
+        fs::create_dir(&destination).unwrap();
+        fs::write(&earlier, b"completed earlier").unwrap();
+        let bytes = vec![0x5a; 300_017];
+        fs::write(&source, &bytes).unwrap();
+        fs::write(destination.join("current"), b"old existing target").unwrap();
+        let control = Arc::new(Control {
+            point: Point::Publish,
+            entered: Notify::new(),
+            released: AtomicBool::new(false),
+            stages: AtomicUsize::new(0),
+            cleanups: AtomicUsize::new(0),
+        });
+        let _release = Release(control.clone());
+        let mut h = Harness::new(Some(Arc::new(Service {
+            inner: moves::CrossDeviceService(midnight_platform::LocalFileSystem::new(None)),
+            control: control.clone(),
+        })));
+        let mut request = request(1, &[earlier.clone(), source.clone()], &destination);
+        request.verification = verification;
+        h.controller.enqueue(request).await;
+        let conflict = h.conflict(1).await;
+        h.controller
+            .decide(CopyDecision {
+                id: conflict.id,
+                version: conflict.version,
+                choice: CopyChoice::ReplaceRecoverable { all: false },
+            })
+            .await;
+        tokio::time::timeout(Duration::from_secs(5), control.entered.notified())
+            .await
+            .unwrap();
+        h.controller.cancel(OperationId(1));
+        control.released.store(true, Ordering::Release);
+        let done = h.terminal(1).await;
+        h.close().await;
+        assert_eq!(done.state, CopyOperationState::Cancelled, "{done:?}");
+        assert_eq!(done.files_completed, 2, "{done:?}");
+        assert_eq!(done.recovery_count, 1, "{done:?}");
+        assert_eq!(fs::read(destination.join("current")).unwrap(), bytes);
+        assert_eq!(
+            fs::read(&done.recovery_paths[0]).unwrap(),
+            b"old existing target"
+        );
+        assert_eq!(fs::read(&source).unwrap(), bytes);
+    }
 }

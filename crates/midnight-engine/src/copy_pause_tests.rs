@@ -12,13 +12,17 @@ async fn paused(h: &mut Harness, id: u64) -> Arc<CopyProgress> {
     }
 }
 
+/// Two jobs paused before any work: resuming one runs exactly that job to completion
+/// (a paused job holds no disk slot), while the other stays paused until resumed.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn copy_and_move_pause_before_work_resume_only_exact_job_and_finish_normally() {
     for intent in [TransferIntent::Copy, TransferIntent::Move] {
         let (_temp, parent) = moves::protected_fixture();
-        let source = parent.join("pause-source");
+        let first = parent.join("pause-first");
+        let second = parent.join("pause-second");
         let destination = parent.join("pause-destination");
-        fs::write(&source, b"content retained through pause").unwrap();
+        fs::write(&first, b"content retained through pause").unwrap();
+        fs::write(&second, b"resumed alone").unwrap();
         fs::create_dir(&destination).unwrap();
         let mut h = Harness::native();
         let gate = h
@@ -27,31 +31,42 @@ async fn copy_and_move_pause_before_work_resume_only_exact_job_and_finish_normal
             .acquire_many_owned(crate::transfer_leases::NAMESPACE_WEIGHT)
             .await
             .unwrap();
-        let request = request(1, std::slice::from_ref(&source), &destination);
-        match intent {
-            TransferIntent::Copy => h.controller.enqueue(request).await,
-            TransferIntent::Move => h.controller.enqueue_move(request).await,
+        for (id, source) in [(1, &first), (2, &second)] {
+            let request = request(id, std::slice::from_ref(source), &destination);
+            match intent {
+                TransferIntent::Copy => h.controller.enqueue(request).await,
+                TransferIntent::Move => h.controller.enqueue_move(request).await,
+            }
+            h.controller.set_paused(OperationId(id), true).await;
         }
-        h.controller.set_paused(OperationId(1), true).await;
         drop(gate);
-        let stopped = paused(&mut h, 1).await;
-        assert_eq!(stopped.copied_bytes, 0);
-        assert_eq!(stopped.throughput.transfer_per_second, 0.0);
-        assert!(source.exists());
+        for id in [1, 2] {
+            let stopped = paused(&mut h, id).await;
+            assert_eq!(stopped.copied_bytes, 0);
+            assert_eq!(stopped.throughput.transfer_per_second, 0.0);
+        }
+        assert!(first.exists() && second.exists());
         assert_eq!(fs::read_dir(&destination).unwrap().count(), 0);
-        h.controller.set_paused(OperationId(999), false).await;
-        tokio::time::sleep(Duration::from_millis(40)).await;
-        assert_eq!(fs::read_dir(&destination).unwrap().count(), 0);
+        h.controller.set_paused(OperationId(2), false).await;
+        let resumed = h.terminal(2).await;
+        assert_eq!(resumed.state, CopyOperationState::Completed, "{resumed:?}");
+        let held = snapshot(&h.controller.registry.lock().unwrap()[&OperationId(1)].status);
+        assert!(held.paused && held.copied_bytes == 0, "{held:?}");
+        assert!(!destination.join("pause-first").exists());
         h.controller.set_paused(OperationId(1), false).await;
         let done = h.terminal(1).await;
         h.close().await;
         assert_eq!(done.state, CopyOperationState::Completed, "{done:?}");
         assert!(!done.pause_requested && !done.paused);
         assert_eq!(
-            fs::read(destination.join("pause-source")).unwrap(),
+            fs::read(destination.join("pause-first")).unwrap(),
             b"content retained through pause"
         );
-        assert_eq!(source.exists(), intent == TransferIntent::Copy);
+        assert_eq!(
+            fs::read(destination.join("pause-second")).unwrap(),
+            b"resumed alone"
+        );
+        assert_eq!(first.exists(), intent == TransferIntent::Copy);
     }
 }
 

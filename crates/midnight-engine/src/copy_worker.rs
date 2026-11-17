@@ -79,7 +79,7 @@ pub(super) struct Job {
     tracker: Arc<Mutex<Tracker>>,
     pass_ids: crate::operation_throughput::PassIds,
     finish_started: bool,
-    finish_candidate: Option<CopyProgress>,
+    namespace_busy: Option<crate::copy_namespace::Seen>,
     cancel: Cancellation,
     destination: Arc<dyn TransferDirectory>,
     roots: VecDeque<Box<dyn TransferSource>>,
@@ -403,6 +403,9 @@ impl Job {
             .collect();
         let mut parents = Vec::new();
         if !directories.is_empty() {
+            // Roots of one selection usually share a parent: check each distinct parent
+            // once (O(distinct parents x directory roots)), not once per root.
+            let mut checked = HashSet::new();
             for source in roots
                 .iter()
                 .filter(|source| source.native_identity().is_some())
@@ -415,6 +418,9 @@ impl Job {
                         "Copy source needs a parent.",
                     )
                 })?;
+                if !checked.insert(parent.to_path_buf()) {
+                    continue;
+                }
                 let directory = service.prepare_checksum_directory(parent, &cancel)?;
                 if directory.path() != parent {
                     return Err(error(
@@ -468,17 +474,14 @@ impl Job {
             .collect();
         let mut progress = snapshot(&status);
         progress.requested_roots = roots.len() as u64;
-        let link_retirement = Arc::new(link_job::LinkRetirement::new(
-            status.clone(),
-            cancel.clone(),
-        ));
+        let link_retirement = Arc::new(link_job::LinkRetirement::new());
         Self {
             retirement_witness: None,
             progress,
             tracker: Arc::new(Mutex::new(Tracker::default())),
             pass_ids: crate::operation_throughput::PassIds::default(),
             finish_started: false,
-            finish_candidate: None,
+            namespace_busy: None,
             status,
             cancel,
             destination,
@@ -560,7 +563,14 @@ impl Job {
         }
     }
 
+    /// Set when a granted peer's namespace refused the current entry's change: the entry
+    /// is retained, and the async owner retries it after the registry changes.
+    pub(super) fn take_namespace_busy(&mut self) -> Option<crate::copy_namespace::Seen> {
+        self.namespace_busy.take()
+    }
     pub(super) fn step(&mut self) -> Step {
+        crate::copy_namespace::clear_peer_refusal();
+        self.namespace_busy = None;
         let step = self.advance();
         // Completion is a root boundary, never an inferred percentage. In Move,
         // pending proof/finalization work must finish before reporting success.
@@ -644,6 +654,10 @@ impl Job {
         }
         if let Some(choice) = self.decision.take() {
             let conflict = self.conflict.take();
+            if conflict.is_some() {
+                // The conflict prompt is answered; its text must not outlive it.
+                self.progress.message.clear();
+            }
             match choice {
                 CopyChoice::Retry | CopyChoice::SkipAllErrors => return Step::Continue,
                 CopyChoice::Cancel => {
@@ -705,11 +719,39 @@ impl Job {
                             ),
                             (Some(Component::Normal(_)), 1)
                         );
-                    if !valid {
+                    // The destination decides which basenames it can represent (Windows:
+                    // reserved names, ':' or trailing dots). Probe before accepting, so a
+                    // typo never reaches publication of a verified stage.
+                    let refused = if valid {
+                        self.current.as_ref().and_then(|work| {
+                            match work.destination.inspect(&name, &self.cancel) {
+                                Err(error) if error.kind == io::ErrorKind::InvalidInput => {
+                                    Some(error.message)
+                                }
+                                _ => None,
+                            }
+                        })
+                    } else {
+                        Some("Enter one native basename without dot or path components.".into())
+                    };
+                    if let Some(reason) = refused {
+                        // Keep the entry (and any verified stage) and ask again.
+                        if let Some(mut again) = conflict
+                            && let Some(version) = self.version.checked_add(1)
+                        {
+                            self.version = version;
+                            again.version = version;
+                            self.progress.message = format!(
+                                "The name {} cannot be used here: {reason} Choose another name or action.",
+                                Path::new(&name).display()
+                            );
+                            self.conflict = Some(again.clone());
+                            return Step::Conflict(Arc::new(again));
+                        }
                         self.record(error(
                             &self.progress.destination_directory,
                             io::ErrorKind::InvalidInput,
-                            "Enter one native basename without dot or path components.",
+                            &reason,
                         ));
                         self.drop_current();
                         return Step::Continue;
@@ -900,7 +942,16 @@ impl Job {
                 Step::Continue
             }
             Ok(Action::Conflict(target)) => self.wait_for_conflict(work.into_inner(), target),
-            Err(failure) if failure.kind == io::ErrorKind::AlreadyExists => {
+            Err(failure) => {
+                if let Some(seen) = self.refused_by_peer(&mut work, failure.kind) {
+                    self.current = Some(work.into_inner());
+                    self.namespace_busy = Some(seen);
+                    return Step::Continue;
+                }
+                if failure.kind != io::ErrorKind::AlreadyExists {
+                    self.current = Some(work.into_inner());
+                    return self.wait_for_failure(failure, failures::Context::Entry);
+                }
                 // A late collision needs a new target pin and fresh consent.
                 work.consent = None;
                 work.replacement_prepared = false;
@@ -917,17 +968,52 @@ impl Job {
                     }
                 }
             }
-            Err(error) => {
-                self.current = Some(work.into_inner());
-                self.wait_for_failure(error, failures::Context::Entry)
-            }
         }
     }
 
+    /// A granted peer's namespace (opaque, latched or intersecting) refused this entry's
+    /// change before any native mutation. Adapters report that as `WouldBlock`, or as
+    /// `AlreadyExists` once fresh private names are exhausted. Keep the entry for an
+    /// automatic retry after the registry changes, unless it can no longer be retried;
+    /// a refusal by a quarantined claim never clears and takes the ordinary failure path.
+    fn refused_by_peer(
+        &mut self,
+        work: &mut EntryWork,
+        kind: io::ErrorKind,
+    ) -> Option<crate::copy_namespace::Seen> {
+        let refusal = crate::copy_namespace::take_peer_refusal()?;
+        let crate::copy_namespace::Refusal::Peer(seen) = refusal else {
+            return None;
+        };
+        if !matches!(
+            kind,
+            io::ErrorKind::WouldBlock | io::ErrorKind::AlreadyExists
+        ) || self.cancel.is_cancelled()
+            || work.link.as_ref().is_some_and(|link| !link.can_retry())
+        {
+            return None;
+        }
+        if let Some(copy) = work.copy.as_mut()
+            && copy.phase() == CopyPhase::Failed
+            && (!copy.can_retry() || copy.retry(&self.cancel).is_err())
+        {
+            return None;
+        }
+        Some(seen)
+    }
+
     fn prepare_entry(&mut self, work: &mut EntryWork) -> Result<Action, FsError> {
+        // A decision can return here only for an entry whose source is still owned; a
+        // consumed source (for example after a Move proof) must fail, not panic in the seal.
         work.source
             .as_ref()
-            .expect("unstarted entry source")
+            .ok_or_else(|| {
+                error(
+                    &work.entry.item.path,
+                    io::ErrorKind::InvalidInput,
+                    "This entry's source was already consumed and cannot be prepared again.",
+                )
+            })?
             .revalidate(&self.cancel)?;
         if link_job::is_link_kind(work.entry.item.kind) {
             return self.prepare_link(work);
@@ -1121,6 +1207,8 @@ impl Job {
                     self.progress.files_completed += 1;
                     self.record_recovery(recovery.path);
                 }
+                // An uncertain commit stops the job, as for links: later files would
+                // otherwise keep publishing into a destination whose state is unknown.
                 TransferPublication::RecoveryRequired {
                     published,
                     recovery,
@@ -1133,14 +1221,19 @@ impl Job {
                         self.record_recovery(item.path);
                     }
                     self.record(error);
+                    self.halt = true;
                 }
                 TransferPublication::PublishedDurabilityUnconfirmed { path, mut error } => {
+                    // The file was published, so it counts as completed (never as a
+                    // Move proof); the unconfirmed durability remains an error.
+                    self.progress.files_completed += 1;
                     error.message = format!(
                         "Target published at {}; durability is unconfirmed: {}",
                         path.display(),
                         error.message
                     );
                     self.record(error);
+                    self.halt = true;
                 }
             }
             if self.progress.files_completed > completed_before {
@@ -1255,8 +1348,6 @@ impl Job {
         };
         let automatic = !work.force_prompt;
         self.conflict = Some(conflict.clone());
-        self.progress.message =
-            "The destination exists. Choose how to resolve the conflict.".into();
         if automatic && self.replace_all && conflict.can_replace {
             self.decision = Some(CopyChoice::ReplaceRecoverable { all: true });
             return Step::Continue;
@@ -1265,6 +1356,8 @@ impl Job {
             self.decision = Some(CopyChoice::Merge { all: true });
             return Step::Continue;
         }
+        self.progress.message =
+            "The destination exists. Choose how to resolve the conflict.".into();
         Step::Conflict(Arc::new(conflict))
     }
     fn observe_target(&self, work: &mut EntryWork) -> Result<Option<TransferEntry>, FsError> {
@@ -1409,7 +1502,6 @@ impl Job {
         // dropping. The async caller publishes the returned terminal state only
         // after this worker and its I/O/mutation permits have been released.
         self.store_progress();
-        self.finish_candidate = Some(terminal_progress(self.progress.clone(), &self.cancel));
     }
     // Direct Job fixtures have no admission envelope. Runtime callers use Scope.
     #[cfg(test)]

@@ -222,7 +222,9 @@ impl Authority {
         )
     }
     fn assert_quarantined(&self) {
-        assert_eq!(self.io.snapshot().active_shared, 1);
+        // Native authority, the namespace share and admission capacity remain retained;
+        // the disk slot (an admission counter) is returned.
+        assert_eq!(self.io.snapshot().active_shared, 0);
         assert_eq!(self.namespace.available_permits(), 0);
         assert_eq!(self.capacity.available_permits(), 0);
         assert!(!self.finished.is_finished());

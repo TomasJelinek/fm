@@ -286,7 +286,8 @@ async fn unfilled_earlier_reservation_blocks_opt_in_but_later_immediate_bypasses
     }
     case.control.arm(0, Point::Cleanup);
     let mut h = Harness::with_slots(Some(case.service()), 2);
-    let reservation = h.controller.reserve().unwrap();
+    // The admission mutex refuses transient contention with the multi-thread consumer.
+    let reservation = h.reserve_ready().await;
     let observed = tokio::time::timeout(OBSERVE, async {
         case.enqueue(&h, 1, 1, false, true).await;
         let waiting = progress_where(&mut h, 1, |p| {
@@ -518,7 +519,7 @@ async fn blocked_delivery(terminal: bool) {
                 .unwrap()
                 .contains_key(&OperationId(1))
             {
-                tokio::task::yield_now().await;
+                tokio::time::sleep(Duration::from_millis(1)).await;
             }
         }
         case.enqueue(&h, 1, 2, false, false).await;

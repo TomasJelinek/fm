@@ -148,6 +148,8 @@ impl Admission {
             .unwrap_or_else(|error| error.into_inner());
         self.0.cancel.cancel();
         self.0.capacity.close();
+        // The consumer sleeps until notified; shutdown must wake it at once.
+        self.0.ready.notify_one();
     }
     pub(super) fn consumer(&self) -> Consumer {
         Consumer(self.clone())
@@ -221,6 +223,10 @@ impl Admission {
                 TrySendError::Full(command)
             }
         };
+        if !super::is_copy_command(&command) {
+            // Unreachable while the router shares this list; refusing beats a panic.
+            return Err(refused(command));
+        }
         let lease = match self.0.retirement.try_reserve_nowait() {
             Ok(lease) => lease,
             Err(_) => return Err(refused(command)),
@@ -326,8 +332,20 @@ impl Admission {
             if let Some(request) = ready {
                 return Some(request);
             }
-            tokio::select! { _ = notified => {}, _ = tokio::time::sleep(Duration::from_millis(25)) => {} }
+            // Reservations, fills and shutdown notify `ready`, so new work starts at
+            // once. The slow fallback only observes cancellation that arrives through
+            // the token alone and prunes reservations abandoned without a fill; it
+            // replaces the former 40 Hz idle polling.
+            tokio::select! {
+                _ = notified => {},
+                _ = tokio::time::sleep(Duration::from_secs(1)) => {},
+            }
         }
+    }
+
+    /// The consumer rescans when a reserved slot receives its payload.
+    pub(super) fn wake(&self) {
+        self.0.ready.notify_one();
     }
 }
 

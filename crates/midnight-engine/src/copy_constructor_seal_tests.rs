@@ -251,7 +251,8 @@ fn constructor_case(captured: bool, panic_metadata: bool) {
         assert!(retired.is_err());
         assert_eq!(counts.source_drops.load(Ordering::SeqCst), 0);
         assert_eq!(counts.directory_drops.load(Ordering::SeqCst), 0);
-        assert_eq!(gate.snapshot().active_shared, 1);
+        // Quarantine keeps native authority but returns the disk slot.
+        assert_eq!(gate.snapshot().active_shared, 0);
         assert_eq!(namespace.available_permits(), 0);
         assert_eq!(capacity.available_permits(), 0);
         assert!(!waiting.is_finished());

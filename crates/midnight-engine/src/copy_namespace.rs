@@ -41,13 +41,99 @@ pub(crate) struct Registry {
 struct Inner {
     state: Mutex<State>,
     changed: Condvar,
+    /// Wakes async waiters (refused grants, refused namespace changes) without polling.
+    notify: tokio::sync::Notify,
     io: Arc<Gate>,
 }
 #[derive(Default)]
 struct State {
     revision: u64,
+    /// Bumped when a claim is granted, removed or quarantined: the only events that can
+    /// end a conflict refusal (besides fact changes, which waiters revalidate slowly).
+    structure: u64,
     records: BTreeMap<u64, Record>,
     turn: Option<u64>,
+}
+/// Registry state observed when a grant or a namespace change was refused.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Seen {
+    revision: u64,
+    structure: u64,
+}
+impl State {
+    fn seen(&self) -> Seen {
+        Seen {
+            revision: self.revision,
+            structure: self.structure,
+        }
+    }
+}
+/// A grant attempt's outcome. `Busy`: admission is momentarily closed (a turn, closing
+/// claim or concurrent change); retry after the next change. `Conflict`: an intersecting
+/// or opaque claim (or a peer whose pins cannot be re-probed now) blocks the grant until a
+/// claim is granted, removed or quarantined.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Grant {
+    Granted,
+    Busy(Seen),
+    Conflict(Seen),
+}
+/// Why a granted job's namespace change was refused (see `take_peer_refusal`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Refusal {
+    /// A granted peer is opaque, latched or intersecting; retry after a registry change.
+    Peer(Seen),
+    /// A quarantined claim never clears; waiting would never end.
+    Quarantined,
+}
+thread_local! {
+    static PEER_REFUSAL: std::cell::Cell<Option<Refusal>> = const { std::cell::Cell::new(None) };
+}
+/// Fixture adapters record the refusal a real `reserve_private_child` would record.
+#[cfg(test)]
+pub(crate) fn refuse_for_test() {
+    PEER_REFUSAL.with(|refusal| {
+        refusal.set(Some(Refusal::Peer(Seen {
+            revision: 0,
+            structure: 0,
+        })))
+    });
+}
+/// Forget any refusal recorded by an earlier step on this (reused) blocking thread.
+pub(crate) fn clear_peer_refusal() {
+    PEER_REFUSAL.with(|refusal| refusal.set(None));
+}
+/// Whether this thread's current step had a namespace change refused because of a granted
+/// peer. Native adapters report such refusals as ordinary errors (`WouldBlock`, or
+/// `AlreadyExists` once fresh private names are exhausted); nothing was mutated yet.
+pub(crate) fn take_peer_refusal() -> Option<Refusal> {
+    PEER_REFUSAL.with(|refusal| refusal.take())
+}
+/// Async view of registry changes; no lock is held across an await.
+#[derive(Clone)]
+pub(crate) struct Watch(Arc<Inner>);
+impl Watch {
+    pub(crate) fn seen(&self) -> Seen {
+        self.0
+            .state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .seen()
+    }
+    /// Completes once the registry changed after `since`: any change, or with
+    /// `structural` only a grant, removal or quarantine.
+    pub(crate) async fn changed(&self, since: Seen, structural: bool) {
+        loop {
+            let notified = self.0.notify.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            let now = self.seen();
+            if now.structure != since.structure || (!structural && now.revision != since.revision) {
+                return;
+            }
+            notified.await;
+        }
+    }
 }
 struct Record {
     revision: u64,
@@ -194,7 +280,6 @@ struct ParentFacts {
 struct Index {
     objects: HashMap<TransferIdentity, Bucket>,
     slots: HashMap<Slot, Bucket>,
-    subtree_slots: HashMap<Slot, Bucket>,
     subtrees: HashMap<TransferIdentity, Bucket>,
     ancestors: HashMap<TransferIdentity, Bucket>,
     parents: HashMap<TransferIdentity, ParentFacts>,
@@ -308,9 +393,6 @@ impl Index {
                 self.parents.remove(&parent.identity);
             }
             adjust(&mut self.slots, slot(scope), mask, pin.root, add)?;
-            if scope.extent == TransferNamespaceExtent::Subtree {
-                adjust(&mut self.subtree_slots, slot(scope), mask, pin.root, add)?;
-            }
             if let Some(object) = scope.object {
                 adjust(&mut self.objects, object, mask, pin.root, add)?;
                 if scope.extent == TransferNamespaceExtent::Subtree {
@@ -526,6 +608,7 @@ impl Registry {
             inner: Arc::new(Inner {
                 state: Mutex::default(),
                 changed: Condvar::new(),
+                notify: tokio::sync::Notify::new(),
                 io,
             }),
         }
@@ -613,6 +696,22 @@ fn unconfirmed() -> FsError {
         "Native namespace teardown is unconfirmed; authority remains quarantined.",
     )
 }
+const QUARANTINE_BLOCK: &str = "transfer admission";
+/// A quarantined claim is never removed, so waiting for it would never end. Admission
+/// fails at once with an actionable, non-retryable error instead.
+fn blocked_by_quarantine() -> FsError {
+    FsError::from_io(
+        QUARANTINE_BLOCK,
+        Path::new(""),
+        io::Error::other(
+            "An earlier transfer's native cleanup could not be confirmed, so its files stay \
+             reserved. Restart the application to run further transfers.",
+        ),
+    )
+}
+pub(crate) fn is_blocked_by_quarantine(error: &FsError) -> bool {
+    error.operation == QUARANTINE_BLOCK
+}
 fn checked<T>(operation: impl FnOnce() -> T) -> Result<T, FsError> {
     match std::panic::catch_unwind(std::panic::AssertUnwindSafe(operation)) {
         Ok(value) => Ok(value),
@@ -622,10 +721,23 @@ fn checked<T>(operation: impl FnOnce() -> T) -> Result<T, FsError> {
         }
     }
 }
+/// Native probes and changes run under this job's own held slot. Peers' slots are only
+/// identity witnesses: a peer paused or awaiting a decision has released its capacity.
 fn admitted<R>(registry: &Inner, io: &Permit, operation: impl FnOnce() -> R) -> Result<R, FsError> {
+    if !io.is_held() {
+        return Err(unconfirmed());
+    }
     midnight_platform_common::transfer_io::with_transfer_io_permit_from(&registry.io, io, operation)
 }
 impl Inner {
+    /// Wake blocking waiters (condvar) and async waiters (`Watch::changed`).
+    fn signal(&self) {
+        self.changed.notify_all();
+        self.notify.notify_waiters();
+    }
+    fn restructure(state: &mut State) {
+        state.structure = state.structure.wrapping_add(1);
+    }
     fn bump(state: &mut State, sequence: u64) -> Result<(), FsError> {
         let record = state.records.get_mut(&sequence).ok_or_else(|| {
             failure(
@@ -653,11 +765,12 @@ impl Inner {
             record.state = FactsState::Quarantined;
             record.quarantined.store(true, Ordering::Release);
             let _ = Self::bump(&mut state, sequence);
+            Self::restructure(&mut state);
         }
         if state.turn == Some(sequence) {
             state.turn = None;
         }
-        self.changed.notify_all();
+        self.signal();
     }
     fn opaque(&self, sequence: u64, error: FsError) {
         let diagnostics = {
@@ -674,7 +787,7 @@ impl Inner {
             }
             let diagnostics = record.diagnostics.clone();
             let _ = Self::bump(&mut state, sequence);
-            self.changed.notify_all();
+            self.signal();
             diagnostics
         };
         let mut errors = diagnostics
@@ -808,20 +921,32 @@ impl Claim {
         Ok(())
     }
     pub(crate) fn try_grant(&self, cancel: &Cancellation) -> Result<bool, FsError> {
+        self.admit(cancel).map(|grant| grant == Grant::Granted)
+    }
+    pub(crate) fn watch(&self) -> Watch {
+        Watch(self.context.registry.clone())
+    }
+    pub(crate) fn admit(&self, cancel: &Cancellation) -> Result<Grant, FsError> {
         cancelled(cancel)?;
         let io = self.context.io_witness()?;
-        let Some(batch) = ProbeBatch::admission(&self.context.registry, self.context.sequence)?
-        else {
-            return Ok(false);
+        let batch = match ProbeBatch::admission(&self.context.registry, self.context.sequence)? {
+            Ok(batch) => batch,
+            Err(seen) => return Ok(Grant::Busy(seen)),
         };
-        let epoch = batch.epoch;
+        let seen = batch.seen;
+        let epoch = seen.revision;
         let records: Vec<_> = batch
             .snapshots
             .iter()
             .map(|snapshot| (snapshot.sequence, snapshot.granted, snapshot.opaque_latched))
             .collect();
-        let refreshed = admitted(&self.context.registry, &io, || batch.refresh(cancel, true))??;
         let sequence = self.context.sequence;
+        let Some(refreshed) = admitted(&self.context.registry, &io, || {
+            batch.refresh_admission(cancel, sequence)
+        })??
+        else {
+            return Ok(Grant::Conflict(seen));
+        };
         let candidate = refreshed
             .iter()
             .find(|(id, _)| *id == sequence)
@@ -869,16 +994,21 @@ impl Claim {
             .state
             .lock()
             .unwrap_or_else(|error| error.into_inner());
+        if state
+            .records
+            .values()
+            .any(|record| record.state == FactsState::Quarantined)
+        {
+            return Err(blocked_by_quarantine());
+        }
         if state.revision != epoch
             || state.turn.is_some()
-            || state.records.values().any(|record| {
-                matches!(
-                    record.state,
-                    FactsState::InFlight | FactsState::Closing | FactsState::Quarantined
-                )
-            })
+            || state
+                .records
+                .values()
+                .any(|record| matches!(record.state, FactsState::InFlight | FactsState::Closing))
         {
-            return Ok(false);
+            return Ok(Grant::Busy(state.seen()));
         }
         let mut retired = Vec::with_capacity(refreshed.len());
         for (sequence, facts) in refreshed {
@@ -898,11 +1028,17 @@ impl Claim {
                 .expect("candidate remains registered")
                 .granted = true;
             Inner::bump(&mut state, sequence)?;
+            Inner::restructure(&mut state);
         }
-        self.context.registry.changed.notify_all();
+        let grant = if allow {
+            Grant::Granted
+        } else {
+            Grant::Conflict(state.seen())
+        };
+        self.context.registry.signal();
         drop(state);
         drop(retired);
-        Ok(allow)
+        Ok(grant)
     }
     pub(crate) fn begin_closing(&self) -> Result<(), FsError> {
         let inner = &self.context.registry;
@@ -920,7 +1056,7 @@ impl Claim {
         if record.state != FactsState::Closing {
             record.state = FactsState::Closing;
             Inner::bump(&mut state, self.context.sequence)?;
-            inner.changed.notify_all();
+            inner.signal();
         }
         loop {
             let record = state
@@ -959,8 +1095,9 @@ impl Claim {
         }
         Inner::bump(&mut state, self.context.sequence)?;
         let retired = state.records.remove(&self.context.sequence);
+        Inner::restructure(&mut state);
         self.completed.store(true, Ordering::Release);
-        inner.changed.notify_all();
+        inner.signal();
         drop(state);
         drop(retired);
         Ok(())
@@ -1093,7 +1230,7 @@ impl Drop for NativeOwners {
         if let Some(record) = state.records.get_mut(&self.context.sequence) {
             record.native_closed = true;
         }
-        self.context.registry.changed.notify_all();
+        self.context.registry.signal();
     }
 }
 /// Remaining native owners never unwind out of a failed checked destruction.
@@ -1118,7 +1255,7 @@ struct Snapshot {
 }
 struct ProbeBatch {
     registry: Arc<Inner>,
-    epoch: u64,
+    seen: Seen,
     snapshots: Vec<Snapshot>,
 }
 impl ProbeBatch {
@@ -1144,7 +1281,7 @@ impl ProbeBatch {
         }
         Ok(Self {
             registry: registry.clone(),
-            epoch: state.revision,
+            seen: state.seen(),
             snapshots,
         })
     }
@@ -1170,7 +1307,8 @@ impl ProbeBatch {
         cancelled(cancel)?;
         self.refresh_one(&self.snapshots[0])
     }
-    fn admission(registry: &Arc<Inner>, sequence: u64) -> Result<Option<Self>, FsError> {
+    /// Err(seen): admission is momentarily closed (a turn, an in-flight or closing claim).
+    fn admission(registry: &Arc<Inner>, sequence: u64) -> Result<Result<Self, Seen>, FsError> {
         let mut state = registry
             .state
             .lock()
@@ -1185,15 +1323,20 @@ impl ProbeBatch {
                 "Complete namespace roots must be planned before grant.",
             ));
         }
-        if state.turn.is_some()
-            || state.records.values().any(|record| {
-                matches!(
-                    record.state,
-                    FactsState::InFlight | FactsState::Closing | FactsState::Quarantined
-                )
-            })
+        if state
+            .records
+            .values()
+            .any(|record| record.state == FactsState::Quarantined)
         {
-            return Ok(None);
+            return Err(blocked_by_quarantine());
+        }
+        if state.turn.is_some()
+            || state
+                .records
+                .values()
+                .any(|record| matches!(record.state, FactsState::InFlight | FactsState::Closing))
+        {
+            return Ok(Err(state.seen()));
         }
         let sequences = state
             .records
@@ -1201,7 +1344,7 @@ impl ProbeBatch {
             .filter(|(_, record)| record.planned)
             .map(|(sequence, _)| *sequence)
             .collect();
-        Self::reserve(registry, &mut state, sequences).map(Some)
+        Self::reserve(registry, &mut state, sequences).map(Ok)
     }
     fn refresh(
         self,
@@ -1225,6 +1368,32 @@ impl ProbeBatch {
             }
         }
         Ok(facts)
+    }
+    /// Admission refresh of every planned record. Only the candidate's own failure is
+    /// latched and fails it. A peer whose pins cannot be re-probed right now is not this
+    /// candidate's error and is never latched from here (its own turns report it); the
+    /// candidate simply stays ungranted (None) and retries later.
+    fn refresh_admission(
+        self,
+        cancel: &Cancellation,
+        candidate: u64,
+    ) -> Result<Option<Vec<(u64, Arc<Facts>)>>, FsError> {
+        let mut facts = Vec::with_capacity(self.snapshots.len());
+        for snapshot in &self.snapshots {
+            cancelled(cancel)?;
+            let result = self
+                .refresh_one(snapshot)
+                .and_then(|pins| Facts::revalidated(&snapshot.prior, pins));
+            match result {
+                Ok(value) => facts.push((snapshot.sequence, Arc::new(value))),
+                Err(error) if snapshot.sequence == candidate => {
+                    self.registry.opaque(snapshot.sequence, error.clone());
+                    return Err(error);
+                }
+                Err(_) => return Ok(None),
+            }
+        }
+        Ok(Some(facts))
     }
     fn refresh_one(&self, snapshot: &Snapshot) -> Result<Vec<PinFact>, FsError> {
         // Closing retains both resources until this counted probe has dropped
@@ -1328,7 +1497,7 @@ impl Drop for ProbeBatch {
                 record.probes -= 1;
             }
         }
-        self.registry.changed.notify_all();
+        self.registry.signal();
     }
 }
 
@@ -1646,6 +1815,18 @@ impl TransferNamespaceChange for Transaction {
                     ));
                 }
                 if conflicts {
+                    // The adapter reports this as an ordinary error after the turn; the
+                    // async owner waits for a registry change instead of asking the user.
+                    let quarantined = state
+                        .records
+                        .values()
+                        .any(|record| record.state == FactsState::Quarantined);
+                    let refusal = if quarantined {
+                        Refusal::Quarantined
+                    } else {
+                        Refusal::Peer(state.seen())
+                    };
+                    PEER_REFUSAL.with(|slot| slot.set(Some(refusal)));
                     return Ok(false);
                 }
                 break (prior, mapping, state);
@@ -1730,7 +1911,20 @@ impl TransferNamespaceChange for Transaction {
         let result = (|| {
             let io = self.context.io_witness()?;
             admitted(&self.context.registry, &io, || {
-                let incremental = self.incremental && !self.full_refresh;
+                // Committed facts are compared only by other granted claims, and every
+                // grant first re-probes all planned records. Without a granted peer
+                // (none can be granted while this turn is held), refresh only what this
+                // turn announced instead of every pin the job has accumulated.
+                let observed = self
+                    .context
+                    .registry
+                    .state
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .records
+                    .iter()
+                    .any(|(sequence, record)| *sequence != self.context.sequence && record.granted);
+                let incremental = !observed || (self.incremental && !self.full_refresh);
                 let batch = if incremental {
                     ProbeBatch::touched(
                         &self.context.registry,
@@ -1835,7 +2029,7 @@ impl TransferNamespaceChange for Transaction {
             if state.turn == Some(self.context.sequence) {
                 state.turn = None;
             }
-            self.context.registry.changed.notify_all();
+            self.context.registry.signal();
         }
         self.finished = true;
         result

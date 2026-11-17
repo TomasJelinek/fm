@@ -203,9 +203,8 @@ impl DiscoveryFixture {
     }
 
     async fn report(&mut self, count: usize) -> MutationItem {
-        // Cross the production discovery callback's 50ms coalescing interval.
-        // Synchronization itself is the explicit gate/acknowledgement, not this delay.
-        tokio::time::sleep(Duration::from_millis(75)).await;
+        // Test builds publish every discovery callback (no coalescing interval);
+        // synchronization is the explicit gate/acknowledgement.
         self.gate.advance(count);
         let (actual, item) = tokio::time::timeout(Duration::from_secs(4), self.observed.recv())
             .await

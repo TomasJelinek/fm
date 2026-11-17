@@ -185,7 +185,7 @@ async fn stale_progress_is_refused_while_terminal_delivery_is_blocked() {
         .unwrap();
     tokio::time::timeout(Duration::from_secs(1), async {
         while !outbox.sender.intermediates_closed() {
-            tokio::task::yield_now().await;
+            tokio::time::sleep(Duration::from_millis(1)).await;
         }
     })
     .await

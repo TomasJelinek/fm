@@ -272,7 +272,6 @@ fn cancelled_metadata_probe_promotes_cleanup_failure_over_interrupted() {
         &roots,
         &destination,
         TransferMetadataPolicy::RequireModifiedTime,
-        false,
         &cancel,
     ) else {
         panic!("cancelled metadata probe succeeded")

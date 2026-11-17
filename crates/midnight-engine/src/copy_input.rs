@@ -156,6 +156,32 @@ impl From<SelectedCopyRequest> for CopyInput {
     }
 }
 
+/// The one list of Copy-family commands (Copy, Move, metadata, options, archive and
+/// captured transfers) and their operation IDs. Guarded admission, the command router
+/// (`is_copy_command`) and `CopyInput::from_command` must agree on it.
+pub(crate) fn copy_command_id(command: &Command) -> Option<OperationId> {
+    fn metadata_id(request: &MetadataTransferRequest) -> OperationId {
+        match &request.input {
+            MetadataTransferInput::Paths(request) => request.id,
+            MetadataTransferInput::Selected(request) => request.id,
+            MetadataTransferInput::Clipboard(request) => request.id,
+        }
+    }
+    Some(match command {
+        Command::EnqueueCopy(request) | Command::EnqueueMove(request) => request.id,
+        Command::EnqueueSelectedCopy(request) | Command::EnqueueSelectedMove(request) => request.id,
+        Command::EnqueueClipboardMove(request) => request.id,
+        Command::EnqueueTransferWithMetadata(request) => metadata_id(request),
+        Command::EnqueueCopyWithOptions(request) => match &request.input {
+            CopyOptionsInput::Native(request) => metadata_id(request),
+            CopyOptionsInput::Captured(request) => request.id,
+        },
+        Command::EnqueueArchiveCopy(request) => request.id,
+        Command::EnqueueCapturedTransfer(request) => request.id,
+        _ => return None,
+    })
+}
+
 impl CopyInput {
     #[expect(
         clippy::result_large_err,

@@ -240,11 +240,17 @@ async fn throughput_timer_cannot_publish_terminal_before_native_resource_cleanup
         .await
         .unwrap();
     let mut observed_idle_cleanup = false;
-    let early = tokio::time::timeout(Duration::from_secs(1), async {
+    // Watch the heartbeat while cleanup is blocked: one further tick after the idle
+    // snapshot is enough for a premature terminal to show; the deadline only elapses
+    // when no idle snapshot arrives at all.
+    let early = tokio::time::timeout(Duration::from_secs(4), async {
         loop {
             if let CopyEvent::Progress(progress) = h.next().await {
                 if progress.state.is_terminal() {
-                    break progress;
+                    break Some(progress);
+                }
+                if observed_idle_cleanup {
+                    break None;
                 }
                 observed_idle_cleanup |= progress.state == CopyOperationState::Running
                     && !progress.throughput.samples.is_empty()
@@ -252,13 +258,14 @@ async fn throughput_timer_cannot_publish_terminal_before_native_resource_cleanup
             }
         }
     })
-    .await;
+    .await
+    .expect("blocked cleanup keeps publishing heartbeat progress");
     let capacity = (h.io.available_permits(), h.mutation.available_permits());
     released.store(true, Ordering::Release);
-    let premature = early.is_ok();
+    let premature = early.is_some();
     let done = match early {
-        Ok(progress) => progress,
-        Err(_) => h.terminal(1).await,
+        Some(progress) => progress,
+        None => h.terminal(1).await,
     };
     h.close().await;
     assert_eq!(capacity, (0, 31));
