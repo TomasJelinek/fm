@@ -34,10 +34,13 @@ input queue holds 64 commands. Rather than drop a key or button release and leav
 the page with stuck input, a command that does not fit stops the browser session:
 `Session::send` refuses it and every later command, and pending output is replaced by
 one terminal error (*Browser input overflowed while the page was busy; reopen the
-document.*) that `Session::drain` delivers. The viewer engine still reports a refused
-send as a busy queue (*Browser input queue is busy; try again.*) on each later input,
-which replaces that error on its status line until it treats a stopped session as
-closed. The host retains at most one pending painted frame. Replaced document generations and
+document.*) that `Session::drain` delivers. The viewer engine treats a refused send as
+a stopped session and handles it once. Unless the newest browser output it drained is
+an error, which stays visible as the reason, it reports *Browser closed; reopen the
+document.* through its error path (an opening without a frame fails with it). The
+terminal error the host publishes for the refused command is drained in the same loop
+pass and replaces that report; later refusals are silent. The host retains at most one
+pending painted frame. Replaced document generations and
 viewport revisions cannot publish stale pixels. Transport budgets bound messages
 and viewport memory, not complete file sizes. Frame acknowledgements and close/EOF
 release ownership. No UI callback performs file reads, discovery or process waits.
