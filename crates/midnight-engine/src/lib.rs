@@ -133,6 +133,8 @@ use tokio::{
 };
 
 const BATCH_SIZE: usize = 128;
+/// Upper bound for copy/mutation actors to finish their own retirement at shutdown.
+const ACTOR_SHUTDOWN: std::time::Duration = std::time::Duration::from_secs(5);
 
 #[derive(Clone)]
 struct Outbox {
@@ -440,6 +442,8 @@ impl EngineServices {
         let denied_navigations = elevation::DeniedNavigations::default();
         let mut navigation_high_water: [Option<NavigationId>; 2] = [None, None];
         let mut tasks = JoinSet::new();
+        // Actors that retire native ownership themselves; drained before `tasks` abort.
+        let mut actors = JoinSet::new();
         let mut find = find::Controller::new(
             scope.clone(),
             resources.find,
@@ -585,7 +589,7 @@ impl EngineServices {
             self.outbox.clone(),
             mutation_gate.clone(),
             transfer_leases::IoBudget::new(midnight_work_budget::shared_io()),
-            &mut tasks,
+            &mut actors,
         );
         let operations = operations::Controller::new(
             resources.operations,
@@ -597,7 +601,7 @@ impl EngineServices {
             self.outbox.clone(),
             mutation_gate,
             copies.admission().fence(),
-            &mut tasks,
+            &mut actors,
         );
         let mut drag_drop = drag_drop::Controller::new(
             resources.drag,
@@ -1240,6 +1244,18 @@ impl EngineServices {
         }
         checksums.shutdown().await;
         user_commands.shutdown().await;
+        // Copy and mutation actors exit by themselves after `shutdown`, once each job
+        // has released its native and captured owners through its checked retirement.
+        // Aborting them would drop those jobs outside that path; wait (bounded, in case
+        // the event consumer stopped draining) before aborting what remains.
+        let drained = tokio::time::timeout(ACTOR_SHUTDOWN, async {
+            while actors.join_next().await.is_some() {}
+        })
+        .await;
+        if drained.is_err() {
+            actors.abort_all();
+            while actors.join_next().await.is_some() {}
+        }
         tasks.abort_all();
         while tasks.join_next().await.is_some() {}
         tree_roots::shutdown(snapshots).await;

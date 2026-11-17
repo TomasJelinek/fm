@@ -153,6 +153,15 @@ async fn completed_sessions_are_released_and_do_not_exhaust_window_budget() {
         assert!(event.result.is_ok());
         controller.cancel(DesktopRequestId(id), 1);
         while tasks.join_next().await.is_some() {}
+        // The token returns on the cleanup worker after actual destruction; a leak
+        // would keep it (and eventually exhaust the six-token bound) forever.
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while controller.retained.available_permits() != MAX_RETAINED {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("a completed session must release its retention token");
     }
     assert!(controller.jobs.is_empty());
     assert_eq!(controller.budget.available_permits(), 2);

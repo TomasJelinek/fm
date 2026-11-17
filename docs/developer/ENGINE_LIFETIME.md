@@ -20,6 +20,10 @@ Normal completion acknowledges retirement of the run bundle. Independently survi
 native work can retain its own protected owner afterward; this acknowledgement is not
 a promise that a cancellation-ignoring native call has returned. No UI or executor
 destructor joins the cleanup thread. The application shutdown grace remains bounded.
+During a normal shutdown the Copy/Move and mutation actors are drained, for at most
+five seconds, before the remaining engine tasks are aborted: each job then releases
+its native and captured owners through its checked retirement instead of being
+dropped by an abort. The event consumer keeps draining until the run completes.
 
 ## One-time service configuration
 
