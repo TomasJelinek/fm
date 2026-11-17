@@ -42,6 +42,12 @@ pub fn open_path(path: &Path, flags: i32, context: &CallContext<'_>) -> Result<F
             "Absolute native path required.",
         ));
     }
+    #[cfg(test)]
+    if flags & libc::O_DIRECTORY != 0
+        && let Some(errno) = crate::rename_test_hooks::directory_open_failure(path)
+    {
+        return Err(Failure::from_io(std::io::Error::from_raw_os_error(errno)));
+    }
     // SAFETY: static terminated root and no variadic creation mode because O_CREAT is absent.
     let mut directory = owned(unsafe {
         libc::open(
@@ -190,10 +196,11 @@ fn stat_child(directory: i32, name: &CStr) -> Result<libc::stat, Failure> {
     Ok(value)
 }
 /// Display hint only: whether a listed link's target is a directory. Only the
-/// target's type is read: nothing is opened, an automount point is not mounted
-/// and network filesystems answer from cached attributes. Unresponsive servers
-/// along the link's path can still delay the lookup. Any failure, including a
-/// broken or inaccessible target, leaves an ordinary link.
+/// target's type is read: nothing is opened and an existing automount point is
+/// not mounted. The kernel still resolves the target path, so a server that
+/// stops answering along it, or an autofs map key that is not present yet,
+/// delays this lookup (and its listing page) until it answers. Any failure,
+/// including a broken or inaccessible target, leaves an ordinary link.
 fn link_to_directory(directory: i32, name: &CStr) -> bool {
     // SAFETY: zero initializes a plain native output structure.
     let mut value: libc::statx = unsafe { std::mem::zeroed() };
@@ -210,6 +217,30 @@ fn link_to_directory(directory: i32, name: &CStr) -> bool {
     status == 0
         && value.stx_mask & libc::STATX_TYPE != 0
         && u32::from(value.stx_mode) & libc::S_IFMT == libc::S_IFDIR
+}
+/// The listing's `link_to_directory` hint for a link named by an absolute path,
+/// so explicit Stat (and the SDK's kind revalidation of a listed link) agrees
+/// with the listing. A later directory open reports the target's own error.
+pub fn path_link_to_directory(path: &Path, context: &CallContext<'_>) -> Result<bool, Failure> {
+    let raw = path.as_os_str().as_bytes();
+    let Some(separator) = raw.iter().rposition(|byte| *byte == b'/') else {
+        return Ok(false);
+    };
+    let name = &raw[separator + 1..];
+    if name.is_empty() || name == b"." || name == b".." {
+        return Ok(false);
+    }
+    let name =
+        CString::new(name).map_err(|_| Failure::new(ErrorCode::Invalid, "NUL in native path."))?;
+    let parent = Path::new(std::ffi::OsStr::from_bytes(&raw[..separator.max(1)]));
+    let directory = match open_path(parent, libc::O_PATH | libc::O_DIRECTORY, context) {
+        Ok(directory) => link_to_directory(directory.as_raw_fd(), &name),
+        // Like any other probe failure, a parent that cannot be reopened now
+        // leaves an ordinary link. Cancellation is still reported.
+        Err(_) => false,
+    };
+    cancel(context)?;
+    Ok(directory)
 }
 pub fn filesystem(file: &File) -> Result<libc::statfs, Failure> {
     // SAFETY: zero initializes a plain native output structure.

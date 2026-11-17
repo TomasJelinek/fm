@@ -5,7 +5,7 @@ use std::{
     ffi::{CStr, CString},
     fs::File,
     os::{fd::AsRawFd, unix::ffi::OsStrExt},
-    path::Path,
+    path::{Path, PathBuf},
 };
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -30,6 +30,7 @@ struct Hooks {
     filesystem_type: Option<u64>,
     case_insensitive_lookup: bool,
     private_group: Option<bool>,
+    failed_directory_open: Option<(PathBuf, i32)>,
 }
 thread_local! {
     static HOOKS: RefCell<Hooks> = RefCell::default();
@@ -110,6 +111,22 @@ pub(crate) fn treat_filesystem_as_nfs() {
 }
 pub(crate) fn filesystem_type() -> Option<u64> {
     HOOKS.with(|hooks| hooks.borrow().filesystem_type)
+}
+/// Opening exactly this path as a directory fails with `errno`, as when that
+/// open triggers an automount whose server is offline. Type queries that do
+/// not mount it are unaffected.
+pub(crate) fn fail_directory_open(path: &Path, errno: i32) {
+    HOOKS.with(|hooks| hooks.borrow_mut().failed_directory_open = Some((path.to_owned(), errno)));
+}
+pub(crate) fn directory_open_failure(path: &Path) -> Option<i32> {
+    HOOKS.with(|hooks| {
+        hooks
+            .borrow()
+            .failed_directory_open
+            .as_ref()
+            .filter(|(failed, _)| failed == path)
+            .map(|(_, errno)| *errno)
+    })
 }
 /// Name lookups fall back to an ASCII case-insensitive match, as on vfat,
 /// exfat, CIFS or casefolded ext4 directories. Exact names still win.

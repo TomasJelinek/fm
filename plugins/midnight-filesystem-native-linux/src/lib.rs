@@ -34,6 +34,8 @@ midnight_filesystem_plugin_sdk::export_filesystem!(
 #[cfg(test)]
 extern crate self as midnight_filesystem_native_linux;
 #[cfg(test)]
+mod link_kind_tests;
+#[cfg(test)]
 mod rename_stage_tests;
 #[cfg(test)]
 mod rename_test_hooks;

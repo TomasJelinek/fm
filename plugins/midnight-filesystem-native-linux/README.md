@@ -20,18 +20,23 @@ directory-kind replacement and pinned-file reopening after FIFO substitution.
 
 Listing/read/stat/volumes/storage-space, optional raw labels/rich volume
 information and optional prepared same-parent Rename are provided. Each listed
-row costs one no-follow `fstatat`; nothing is opened and automount points are not
-mounted. A listed link is shown as a directory link when its target's cached type
-is a directory (`statx` without automount or attribute sync); unresponsive servers
-along a link's path can still delay that row. Physical PCIe NVMe/ATA storage is
-classified only after positive topology, identity and rotation checks; dm/md
-stacks are classified only when every backing leaf is proven local physical
-media, and virtual or removable devices remain Unknown. Rich capacity
-distinguishes physical total, free and caller available; mount fields come from
-the held descriptor's mount ID. Procfs/sysfs-style content without a reliable
-known length is explicitly Unsupported. Reads are live validated regular files,
-not snapshots: content is opened once, and each validation checks the current
-name through a metadata-only `O_PATH` descriptor.
+row costs one no-follow `fstatat`; nothing is opened and automount points are
+not mounted. A link is listed, and reported by Stat, as a directory link when
+its target is a directory: one `statx` of the target's type, which does not open
+it or trigger an existing automount point, so navigating into a link to an
+offline automount reports the mount's own error. The kernel still resolves the
+target path for that `statx`: a link into a network mount whose server stops
+answering (for example a hard-mounted NFS export), or to an autofs map key that
+is not present yet, holds its listing page until the server or automounter
+answers. Physical PCIe NVMe/ATA storage is classified only after positive
+topology, identity and rotation checks; dm/md stacks are classified only when
+every backing leaf is proven local physical media, and virtual or removable
+devices remain Unknown. Rich capacity distinguishes physical total, free and
+caller available; mount fields come from the held descriptor's mount ID.
+Procfs/sysfs-style content without a reliable known length is explicitly
+Unsupported. Reads are live validated regular files, not snapshots: content is
+opened once, and each validation checks the current name through a metadata-only
+`O_PATH` descriptor.
 
 Prepared Rename pins the selected entry and its parent before a name is chosen.
 The parent must be owned by the user or root and either sticky or writable only
