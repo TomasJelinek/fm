@@ -13,7 +13,12 @@ fn volume_query_handle_retains_pinned_root_directory_identity() {
         .last()
         .unwrap();
     let root = anchor(root_path).unwrap();
-    let query = open_volume(&root).unwrap();
+    let query = match open_volume(&root) {
+        Ok(query) => query,
+        // A share or other volume without a GUID path has no volume rule query.
+        Err(error) if error.kind == io::ErrorKind::Unsupported => return,
+        Err(error) => panic!("{error:?}"),
+    };
     assert!(Arc::ptr_eq(&query.root, &root));
     assert_eq!(
         identity(&query.file, &root.physical).unwrap(),
@@ -24,6 +29,32 @@ fn volume_query_handle_retains_pinned_root_directory_identity() {
         identity(&query.file, &query.root.physical).unwrap(),
         query.root.identity
     );
+}
+
+#[test]
+fn a_renamed_directory_is_never_bound_to_its_pooled_old_path() {
+    let temp = crate::test_fixtures::build_temp("namespace-pool-");
+    let cancel = Cancellation::default();
+    let old = temp.path().join("old 文档");
+    let new = temp.path().join("new 文档");
+    std::fs::create_dir(&old).unwrap();
+    // Another job (or a paused one awaiting a decision) still holds the pooled Parent.
+    let held = capture(&native::open_parent(&old).unwrap(), &old, &cancel).unwrap();
+    std::fs::rename(&old, &new).unwrap();
+    let fresh = capture(&native::open_parent(&new).unwrap(), &new, &cancel).unwrap();
+    assert!(
+        !Arc::ptr_eq(&held, &fresh),
+        "a stale pooled path is not reused"
+    );
+    assert_eq!(fresh.physical().file_name(), new.file_name());
+    fresh.validate(&cancel).unwrap();
+    assert!(
+        held.validate(&cancel).is_err(),
+        "the old holder sees its own change"
+    );
+    // The fresh entry now owns the pool slot.
+    let again = capture(&native::open_parent(&new).unwrap(), &new, &cancel).unwrap();
+    assert!(Arc::ptr_eq(&fresh, &again));
 }
 
 #[test]

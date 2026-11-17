@@ -10,7 +10,7 @@ fn native_drop_device_observes_actual_volume_without_capturing_a_source() {
     use windows_sys::Win32::Storage::FileSystem::{
         FILE_READ_ATTRIBUTES, FILE_READ_DATA, FILE_SHARE_READ, FILE_SHARE_WRITE,
     };
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::test_fixtures::build_temp("fixture-");
     let path = temp.path().join("ordinary file");
     fs::write(&path, b"content must remain unchanged").unwrap();
     let filesystem = crate::WindowsFileSystem::new(None);
@@ -502,6 +502,47 @@ fn retained_validation_survives_source_capture_and_proves_published_binding() {
     stage.read_to_end(&mut bytes).unwrap();
     assert_eq!(bytes, b"verified bytes");
     guard.revalidate(&cancel).unwrap();
+}
+
+#[test]
+fn native_directory_move_tolerates_child_changes_after_preparation() {
+    use midnight_core::{TransferNativeMoveOutcome, TransferSource};
+    let (_temp, parent) = fixture();
+    let source_path = parent.join("logs 文档");
+    fs::create_dir(&source_path).unwrap();
+    fs::write(source_path.join("first.log"), b"first").unwrap();
+    let destination_path = parent.join("archive");
+    fs::create_dir(&destination_path).unwrap();
+    let cancel = Cancellation::default();
+    let (source, capture) = prepare_native(&source_path, &cancel).unwrap();
+    let expected = source.entry().identity;
+    // An application keeps writing inside the directory being moved; NTFS updates the
+    // directory's write and change times, which must not read as a changed source.
+    fs::write(source_path.join("rotated.log"), b"rotated").unwrap();
+    capture.revalidate(&cancel).unwrap();
+    let destination = crate::WindowsFileSystem::new(None)
+        .prepare_transfer_destination(&destination_path, &cancel)
+        .unwrap();
+    let outcome = capture
+        .try_native_move(
+            destination.as_ref(),
+            std::ffi::OsStr::new("logs"),
+            None,
+            &cancel,
+        )
+        .unwrap();
+    assert!(matches!(outcome, TransferNativeMoveOutcome::Moved { .. }));
+    drop(source);
+    drop(capture);
+    let moved = destination_path.join("logs");
+    assert_eq!(fs::read(moved.join("rotated.log")).unwrap(), b"rotated");
+    let service = crate::WindowsFileSystem::new(None);
+    let moved_entry = service
+        .prepare_transfer_source(&moved, &cancel)
+        .unwrap()
+        .entry()
+        .identity;
+    assert_eq!(moved_entry, expected);
 }
 
 #[test]

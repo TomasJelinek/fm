@@ -37,7 +37,7 @@ pub(super) fn attempt_with(
     }
     checked(cancel, &capture.entry.item.path)?;
     validate_name(name).map_err(|e| error(target.path(), e))?;
-    capture.expected.revalidate(cancel)?;
+    capture.revalidate_source(cancel)?;
     // A destination reached through a volume mount point or a junction to another volume
     // is decided before pinning, so it enters the verified cross-device route.
     target.revalidate(cancel)?;
@@ -85,7 +85,7 @@ pub(super) fn attempt_with(
                     "destination already exists",
                 ));
             }
-            capture.expected.revalidate(cancel)?;
+            capture.revalidate_source(cancel)?;
             directory.revalidate(cancel)?;
             checked(cancel, &capture.entry.item.path)?;
             let moved = mutation.rename(&capture.file, directory.native_file(), name, cancel);
@@ -232,7 +232,7 @@ fn replace_existing(
     expected
         .revalidate(cancel)
         .map_err(|e| collision(&path, &format!("replacement consent changed: {e}")))?;
-    capture.expected.revalidate(cancel)?;
+    capture.revalidate_source(cancel)?;
     let recovery = destination::recovery::native_move_recovery_in(directory, cancel, mutation)?;
     let original_path = recovery.path().join("original");
     let original_receipt = TransferRecovery {

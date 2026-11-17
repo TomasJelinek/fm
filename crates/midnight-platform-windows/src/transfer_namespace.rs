@@ -88,6 +88,8 @@ struct OwnerRecord {
 struct OwnerState {
     objects: Arc<[TransferIdentity]>,
     remaining: AtomicUsize,
+    /// Observed only by tests; production decisions use `Job::owners_closed`.
+    #[cfg(test)]
     closed: AtomicBool,
     unconfirmed: AtomicBool,
 }
@@ -118,6 +120,7 @@ impl Drop for NativeOwner {
             if state.remaining.fetch_sub(1, Ordering::AcqRel) == 1
                 && !state.unconfirmed.load(Ordering::Acquire)
             {
+                #[cfg(test)]
                 state.closed.store(true, Ordering::Release);
                 if let Some(job) = &self._job {
                     for object in state.objects.iter() {
@@ -138,6 +141,7 @@ pub(super) fn owner(objects: &[TransferIdentity]) -> NativeOwner {
     let state = Arc::new(OwnerState {
         objects: objects.into(),
         remaining: AtomicUsize::new(1),
+        #[cfg(test)]
         closed: AtomicBool::new(false),
         unconfirmed: AtomicBool::new(false),
     });

@@ -250,7 +250,12 @@ pub(super) fn open_merge(
 }
 
 pub(in crate::transfer) fn supported(directory: &Directory) -> bool {
-    let Ok(path) = final_path(&directory.file) else {
+    // The volume GUID root names the volume that holds the directory even when it is
+    // mounted in a folder of another drive (a DOS path's drive letter would not).
+    // Shares have no volume GUID; their DOS root reports a remote drive.
+    let Ok(path) = final_path(&directory.file, VOLUME_NAME_GUID)
+        .or_else(|_| final_path(&directory.file, VOLUME_NAME_DOS))
+    else {
         return false;
     };
     let Some(root) = path
@@ -383,18 +388,43 @@ impl Stage {
         }
         replacement.expected.revalidate(cancel)?;
         mutation.prepare_rename(&self.file, &self.directory.file, name, cancel)?;
-        let recovery =
-            create_named_directory_in(&self.directory, cancel, ".midnight-recovery-", 0, mutation)?;
+        // DELETE lets a failed capture remove the still-empty private directory again.
+        let recovery = create_named_directory_in(
+            &self.directory,
+            cancel,
+            ".midnight-recovery-",
+            DELETE,
+            mutation,
+        )?;
         let staged_path = recovery.path.join("replacement");
         let staged_identity = identity(&self.file, &self.path)?;
-        mutation
-            .rename(
-                &self.file,
-                &recovery.file,
-                OsStr::new("replacement"),
-                cancel,
-            )
-            .map_err(|e| error(&self.path, e))?;
+        if let Err(failure) = mutation.rename(
+            &self.file,
+            &recovery.file,
+            OsStr::new("replacement"),
+            cancel,
+        ) {
+            // Nothing entered the recovery directory: remove it, or report it as
+            // recovery data instead of leaving an unreported hidden directory.
+            let mut failure = error(&self.path, failure);
+            let receipt = TransferRecovery {
+                path: recovery.path.clone(),
+                identity: Some(recovery.identity),
+            };
+            return match recovery.remove_empty_stage_in(mutation) {
+                Ok(()) => Err(failure),
+                Err(cleanup) => {
+                    failure.message.push_str(&format!(
+                        "; empty recovery directory cleanup failed: {cleanup}"
+                    ));
+                    Ok(TransferPublication::RecoveryRequired {
+                        published: None,
+                        recovery: vec![receipt],
+                        error: failure,
+                    })
+                }
+            };
+        }
         // From this point, even the verified replacement is persistent recovery data.
         // Drop must close its handle without deleting it if any later step fails.
         self.published = true;
@@ -450,14 +480,15 @@ pub(in crate::transfer) fn rename_into_untracked(
     let mut buffer = vec![0u64; length.div_ceil(size_of::<u64>())];
     let information = buffer.as_mut_ptr().cast::<FILE_RENAME_INFORMATION>();
     let mut status = IO_STATUS_BLOCK::default();
-    // SAFETY: aligned counted-name buffer and live source/parent handles. ReplaceIfExists
+    // SAFETY: aligned counted-name buffer and live source/parent handles. The name pointer
+    // derives from the allocation, not from the one-element FileName field. ReplaceIfExists
     // stays false; RootDirectory anchors both capture and publication without path traversal.
     let code = unsafe {
         (*information).RootDirectory = parent.as_raw_handle();
         (*information).FileNameLength = (wide.len() * 2) as u32;
         ptr::copy_nonoverlapping(
             wide.as_ptr(),
-            (*information).FileName.as_mut_ptr(),
+            ptr::addr_of_mut!((*information).FileName).cast::<u16>(),
             wide.len(),
         );
         NtSetInformationFile(
@@ -664,7 +695,14 @@ fn trusted_recovery_parent(file: &File) -> io::Result<()> {
                 }
                 // SAFETY: the checked native access-allowed ACE contains its mask and SID.
                 let ace = unsafe { &*raw.cast::<ACCESS_ALLOWED_ACE>() };
-                let sid = ptr::addr_of!(ace.SidStart).cast_mut().cast();
+                // The variable-length SID extends past the struct's SidStart field: derive
+                // its pointer from the GetAce allocation pointer, not from the reference.
+                // SAFETY: the offset lies inside the ACE whose size was checked above.
+                let sid = unsafe {
+                    raw.cast::<u8>()
+                        .add(std::mem::offset_of!(ACCESS_ALLOWED_ACE, SidStart))
+                        .cast()
+                };
                 if ace.Mask & mutable != 0 && !trusted(sid) {
                     return Err(io::Error::other(
                         "another identity can replace recovery entries or their parent",
