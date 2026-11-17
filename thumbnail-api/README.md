@@ -33,8 +33,8 @@ frame is persisted before presentation. Unavailable helpers retain ordinary icon
 there is no in-process decoder fallback.
 
 `api/tools/package` binary `worker-packages` emits a separate deterministic package
-registry and vendored SDK bundle under an explicit `_build` directory. It includes
-the filesystem API when that independent workspace is present. Existing viewer
-release archives and checksums remain unchanged. Plugin manifests must pin the
+registry and vendored SDK bundle under an explicit `_build` directory. It always
+packages the worker, thumbnail, filesystem and image-viewer APIs/SDKs and fails if
+any of them is missing. Existing viewer release archives and checksums remain unchanged. Plugin manifests must pin the
 released SDK version and registry before independent distribution; repository path
 overrides are development-only until that bundle is generated and verified.

@@ -1,19 +1,21 @@
 //! Independent release bundle for new executable-worker APIs. Existing viewer releases are untouched.
-use flate2::read::GzDecoder;
-use midnight_api_package::{REGISTRY, canonical_package, index_record};
+use midnight_api_package::{
+    bundle_configuration, canonical_package, crate_member, index_record, packaged_crate, run_cargo,
+};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::{
     error::Error,
     ffi::OsString,
     fs,
-    io::{Cursor, Read},
-    path::{Path, PathBuf},
-    process::Command,
+    path::PathBuf,
     time::{SystemTime, UNIX_EPOCH},
 };
 
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
+
+/// Local registry source name inside the worker API/SDK bundle configuration.
+const SOURCE: &str = "worker-releases";
 
 fn main() -> Result<()> {
     let mut arguments = std::env::args_os().skip(1);
@@ -37,8 +39,10 @@ fn main() -> Result<()> {
     fs::create_dir_all(registry.join("index"))?;
     fs::create_dir(output.join(".cargo"))?;
     let config = output.join(".cargo/config.toml");
-    fs::write(&config, configuration(false))?;
+    fs::write(&config, bundle_configuration(SOURCE, false))?;
     let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+    // Every package is required: archive, image and PDF plugins resolve their pinned
+    // versions from this one bundle, so a missing workspace must not be skipped.
     let packages = [
         ("worker-api", "midnight-worker-sdk"),
         ("thumbnail-api", "midnight-thumbnail-api"),
@@ -52,23 +56,18 @@ fn main() -> Result<()> {
     for (workspace, name) in packages {
         let manifest = root.join(workspace).join(name).join("Cargo.toml");
         if !manifest.is_file() {
-            if workspace == "filesystem-api"
-                || (workspace == "image-viewer-api" && !root.join(workspace).exists())
-            {
-                continue;
-            }
             return Err(format!("Missing public package {name}").into());
         }
         let workspace_manifest = root.join(workspace).join("Cargo.toml");
         if !workspaces.contains(&workspace_manifest) {
             workspaces.push(workspace_manifest);
         }
-        run(
+        run_cargo(
             &cargo,
             &root,
             &output,
-            vec![
-                "package".into(),
+            [
+                OsString::from("package"),
                 "--manifest-path".into(),
                 manifest.into_os_string(),
                 "--registry".into(),
@@ -80,17 +79,7 @@ fn main() -> Result<()> {
                 "--offline".into(),
             ],
         )?;
-        let archive = fs::read_dir(output.join("cargo/package"))?
-            .filter_map(std::result::Result::ok)
-            .map(|entry| entry.path())
-            .find(|path| {
-                path.file_name()
-                    .and_then(|file| file.to_str())
-                    .is_some_and(|file| {
-                        file.starts_with(&format!("{name}-")) && file.ends_with(".crate")
-                    })
-            })
-            .ok_or("Cargo did not emit the expected public worker package")?;
+        let archive = packaged_crate(&output, name)?;
         let filename = archive.file_name().ok_or("Missing package name")?;
         let archive_name = filename.to_str().ok_or("Invalid package name")?;
         let prefix = archive_name.trim_end_matches(".crate");
@@ -99,7 +88,7 @@ fn main() -> Result<()> {
             return Err("Worker API package exceeds budget".into());
         }
         let bytes = canonical_package(&original, prefix)?;
-        let manifest = member(&bytes, &format!("{prefix}/Cargo.toml"))?;
+        let manifest = crate_member(&bytes, &format!("{prefix}/Cargo.toml"))?;
         let manifest: toml::Value = toml::from_str(std::str::from_utf8(&manifest)?)?;
         let checksum = format!("{:x}", Sha256::digest(&bytes));
         let record = index_record(&manifest, &checksum)?;
@@ -121,56 +110,18 @@ fn main() -> Result<()> {
         vendor_arguments.extend(["--sync".into(), workspace.clone().into_os_string()]);
     }
     vendor_arguments.push(output.join("vendor").into_os_string());
-    run(&cargo, &root, &output, vendor_arguments)?;
-    fs::write(&config, configuration(true))?;
+    run_cargo(&cargo, &root, &output, vendor_arguments)?;
+    fs::write(&config, bundle_configuration(SOURCE, true))?;
     // Independent plugins may add their own crates.io dependencies. This registry-only config
     // selects our immutable API archives while allowing their own pinned vendor/cache policy.
-    fs::write(output.join(".cargo/registry.toml"), configuration(false))?;
+    fs::write(
+        output.join(".cargo/registry.toml"),
+        bundle_configuration(SOURCE, false),
+    )?;
     fs::write(
         output.join("artifacts.json"),
         serde_json::to_vec_pretty(&artifacts)?,
     )?;
     println!("Public worker API/SDK release bundle: {}", output.display());
     Ok(())
-}
-
-fn run(cargo: &OsString, root: &Path, output: &Path, arguments: Vec<OsString>) -> Result<()> {
-    let status = Command::new(cargo)
-        .current_dir(root)
-        .args(arguments)
-        .env("CARGO_TARGET_DIR", output.join("cargo"))
-        .status()?;
-    if !status.success() {
-        return Err(format!("Worker API packaging failed: {status}").into());
-    }
-    Ok(())
-}
-
-fn configuration(vendor: bool) -> String {
-    let mut config = format!(
-        "[registries.midnight]\nindex = {REGISTRY:?}\n\n[source.midnight]\nregistry = {REGISTRY:?}\nreplace-with = 'worker-releases'\n\n[source.worker-releases]\nlocal-registry = 'registry'\n"
-    );
-    if vendor {
-        config.push_str("\n[source.crates-io]\nreplace-with = 'third-party'\n\n[source.third-party]\ndirectory = 'vendor'\n");
-    }
-    config
-}
-
-fn member(archive: &[u8], name: &str) -> Result<Vec<u8>> {
-    for entry in tar::Archive::new(GzDecoder::new(Cursor::new(archive))).entries()? {
-        let entry = entry?;
-        if entry.path()?.as_ref() != Path::new(name) {
-            continue;
-        }
-        if !entry.header().entry_type().is_file() || entry.size() > 1024 * 1024 {
-            return Err("Invalid worker package manifest".into());
-        }
-        let mut bytes = Vec::new();
-        entry.take(1024 * 1024 + 1).read_to_end(&mut bytes)?;
-        if bytes.len() > 1024 * 1024 {
-            return Err("Oversized worker manifest".into());
-        }
-        return Ok(bytes);
-    }
-    Err(format!("Missing worker release member {name}").into())
 }
