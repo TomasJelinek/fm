@@ -93,13 +93,35 @@ fn replaced_document_rejects_old_keys_releases_and_permission_increases() {
     assert!(!accepts_input(&frames, first, first + 1, &key(true)));
 }
 
-/// A browser session the host already stopped: it refuses every command. `reason` models
-/// a host that publishes why the refused command stopped it, once.
+fn event(kind: api::EventKind) -> api::Event {
+    api::Event {
+        header: api::Header {
+            session: 1,
+            document: 1,
+            sequence: 1,
+        },
+        kind,
+    }
+}
+
+fn error(message: &str) -> api::Event {
+    event(api::EventKind::Error {
+        code: api::ErrorCode::Runtime,
+        message: message.into(),
+    })
+}
+
+/// A browser session the host already stopped: it refuses every command. Its queue holds
+/// the output the session published before it stopped. `reason` models a host that
+/// publishes why the refused command stopped it, once.
 struct Stopped(std::sync::Mutex<(Option<&'static str>, Vec<api::Event>)>);
 
 impl Stopped {
     fn new(reason: Option<&'static str>) -> Box<Self> {
         Box::new(Self(std::sync::Mutex::new((reason, Vec::new()))))
+    }
+    fn after(output: Vec<api::Event>) -> Box<Self> {
+        Box::new(Self(std::sync::Mutex::new((None, output))))
     }
 }
 
@@ -107,17 +129,7 @@ impl Browser for Stopped {
     fn send(&self, _: api::CommandKind) -> bool {
         let mut state = self.0.lock().unwrap();
         if let Some(message) = state.0.take() {
-            state.1.push(api::Event {
-                header: api::Header {
-                    session: 1,
-                    document: 1,
-                    sequence: 1,
-                },
-                kind: api::EventKind::Error {
-                    code: api::ErrorCode::Runtime,
-                    message: message.into(),
-                },
-            });
+            state.1.push(error(message));
         }
         false
     }
@@ -202,6 +214,53 @@ fn the_reason_a_host_publishes_for_a_refusal_stays_visible() {
     }
     assert_eq!(worker.status, REASON, "later refusals do not replace it");
     assert!(statuses(&output).is_empty());
+}
+
+#[test]
+fn a_drained_browser_error_stays_the_reason_when_later_input_is_refused() {
+    const FAILURE: &str = "Chromium disconnected";
+    // The host publishes an actor failure and wakes the worker before it marks the session
+    // stopped. A browser that cannot open the document reports that, then closes; this
+    // host consumes the Closed event, which another could forward.
+    for published in [
+        vec![error(FAILURE)],
+        vec![error(FAILURE), event(api::EventKind::Closed)],
+    ] {
+        let (mut worker, output) = web_worker(Stopped::after(published));
+        output.finish_open(Ok(()));
+        worker.poll_web(&output);
+        assert_eq!(worker.status, FAILURE);
+        assert_eq!(statuses(&output), [FAILURE]);
+        for input in [ViewerInput::Scroll { x: 0.0, y: 40.0 }, search()] {
+            worker.input(input, &output);
+            worker.poll_web(&output);
+        }
+        assert_eq!(
+            worker.status, FAILURE,
+            "a refusal does not replace the reason"
+        );
+        assert!(statuses(&output).is_empty());
+    }
+}
+
+#[test]
+fn output_after_a_browser_error_shows_that_the_session_outlived_it() {
+    const COPY: &str = "Selected text exceeds the 48 KiB copy budget; select a smaller range.";
+    // An oversized Copy does not end the session. The page then stops without a reason.
+    let state = event(api::EventKind::State(api::State {
+        title: String::new(),
+        url: String::new(),
+        loading: false,
+        editable: false,
+        zoom: 1.0,
+    }));
+    let (mut worker, output) = web_worker(Stopped::after(vec![error(COPY), state]));
+    output.finish_open(Ok(()));
+    worker.poll_web(&output);
+    assert_eq!(statuses(&output), [COPY]);
+    worker.input(ViewerInput::Scroll { x: 0.0, y: 40.0 }, &output);
+    assert_eq!(worker.status, BROWSER_CLOSED);
+    assert_eq!(statuses(&output), [BROWSER_CLOSED]);
 }
 
 #[test]

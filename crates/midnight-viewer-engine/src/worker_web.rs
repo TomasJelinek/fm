@@ -21,6 +21,11 @@ pub(super) trait Browser: Send {
     /// queued and the host closed the session rather than lose ordered input. A refusal
     /// is therefore never transient.
     fn send(&self, command: api::CommandKind) -> bool;
+    /// Take queued output in order, then the newest frame. A failure that stops the
+    /// session replaces pending output with one terminal error, which the host can publish
+    /// before `send` refuses commands. The host consumes the protocol's Closed event, so a
+    /// browser that closes itself, after the error of a document it could not open or
+    /// without one, is noticed only when `send` refuses input.
     fn drain(&self, maximum: usize) -> Vec<api::Event>;
     fn close(&self);
     fn finished(&self) -> bool;
@@ -80,8 +85,13 @@ pub(super) struct WebView {
     find_result: Option<String>,
     file_floor: u64,
     context_floor: u64,
-    /// The session stopped accepting input, and `Worker::browser_closed` reported it.
+    /// The session stopped accepting input, and `Worker::browser_closed` handled it.
     ended: bool,
+    /// The newest browser output drained is an error, which can be the reason the session
+    /// stopped (see `Browser::drain`). Any later output shows the session outlived it. An
+    /// accepted command does not: input sent before the host marks a failed session
+    /// stopped is accepted and never handled.
+    reason: bool,
 }
 
 impl WebView {
@@ -96,6 +106,7 @@ impl WebView {
             file_floor: floor,
             context_floor: floor,
             ended: false,
+            reason: false,
         }
     }
 }
@@ -246,6 +257,12 @@ impl Worker {
         // A full batch can leave events queued; the browser wakes only for newer output.
         self.web_backlog = events.len() >= WEB_BATCH;
         for event in events {
+            // Closed ends the session and must still see whether an error preceded it.
+            if let Some(web) = self.web.as_mut()
+                && !matches!(event.kind, api::EventKind::Closed)
+            {
+                web.reason = matches!(event.kind, api::EventKind::Error { .. });
+            }
             match event.kind {
                 api::EventKind::Frame(frame) => {
                     let Some(web) = self.web.as_ref() else { break };
@@ -323,21 +340,21 @@ impl Worker {
                 }
                 // Not every browser error ends the session (an oversized Copy does not).
                 api::EventKind::Error { message, .. } => self.error(message, output),
+                // For a host that forwards it; this one does not (see `Browser::drain`).
                 api::EventKind::Closed => self.browser_closed(output),
                 _ => {}
             }
         }
     }
 
-    /// The active browser session stopped and accepts no more input. Report that once:
-    /// later reports would replace the reason the host published for the stop, and wake
-    /// the UI for every pointer move over the stopped page.
+    /// The active browser session stopped and accepts no more input. Handle that once,
+    /// and report it only when no browser error is the newest output: such an error is the
+    /// stop's reason and stays visible. Later reports would replace a reason the host
+    /// publishes when it refuses a command, and wake the UI for every pointer move over
+    /// the stopped page.
     fn browser_closed(&mut self, output: &Mailbox) {
-        if self
-            .web
-            .as_mut()
-            .is_some_and(|web| !std::mem::replace(&mut web.ended, true))
-        {
+        let Some(web) = self.web.as_mut() else { return };
+        if !std::mem::replace(&mut web.ended, true) && !web.reason {
             self.error(BROWSER_CLOSED.into(), output);
         }
     }
