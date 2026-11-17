@@ -172,9 +172,17 @@ pub struct BranchResult {
     branch: BranchId,
     request: u64,
     kind: TreeRequest,
-    rows: Result<Vec<MountedEntry>, ProviderError>,
+    listing: Result<Listing, ProviderError>,
     identity: Option<SizeDirectoryIdentity>,
     _permit: Permit,
+}
+
+/// What one branch request observed.
+enum Listing {
+    /// Listed children: an expansion or refresh, or a probe of the hidden root.
+    Rows(Vec<MountedEntry>),
+    /// A disclosure probe's answer: whether the branch contains a folder.
+    Presence(bool),
 }
 
 impl BranchWork {
@@ -201,24 +209,32 @@ impl BranchWork {
     /// Run with a shared engine blocking-worker permit, never on the UI thread.
     pub fn run(self) -> BranchResult {
         let mut identity = None;
-        let rows = (|| {
+        let listing = (|| {
             identity = self.browse_identity()?;
             if identity.is_some_and(|identity| self.ancestor_identities.contains(&identity)) {
                 return Err(ProviderError::Failed(
                     "Directory target repeats an ancestor.".into(),
                 ));
             }
-            let rows = if self.root {
-                self.location.list(&self.node, &self.cancel)
+            let listing = if self.kind == TreeRequest::Probe && !self.root {
+                // Disclosure needs presence only: enumeration stops at the first
+                // folder and issues no child reference or row. A child that repeats
+                // an ancestor reference is therefore reported by Expand instead.
+                Listing::Presence(self.location.has_folders(&self.node, &self.cancel)?)
             } else {
-                self.location
-                    .list_folders(&self.node, &self.cancel, self.limit)
-            }?;
-            if rows.iter().any(|row| self.ancestors.contains(&row.node)) {
-                return Err(ProviderError::InvalidResponse(
-                    "ancestor cycle in directory branch",
-                ));
-            }
+                let rows = if self.root {
+                    self.location.list(&self.node, &self.cancel)
+                } else {
+                    self.location
+                        .list_folders(&self.node, &self.cancel, self.limit)
+                }?;
+                if rows.iter().any(|row| self.ancestors.contains(&row.node)) {
+                    return Err(ProviderError::InvalidResponse(
+                        "ancestor cycle in directory branch",
+                    ));
+                }
+                Listing::Rows(rows)
+            };
             // Two live observations reject a stable A-to-B retarget around this
             // listing. They do not promise atomic namespace or snapshot identity.
             if self.browse_identity()? != identity {
@@ -226,13 +242,13 @@ impl BranchWork {
                     "Directory target changed while listing.".into(),
                 ));
             }
-            Ok(rows)
+            Ok(listing)
         })();
         BranchResult {
             branch: self.branch,
             request: self.request,
             kind: self.kind,
-            rows,
+            listing,
             identity,
             _permit: self.permit,
         }
@@ -722,22 +738,25 @@ impl DirectoryTree {
             return false;
         }
         node.pending = None;
-        let rows = self.validate_chain(result.branch).and(result.rows);
-        let outcome = rows.and_then(|rows| {
-            if result.kind == TreeRequest::Probe {
-                self.nodes
-                    .get_mut(&result.branch)
-                    .ok_or(ProviderError::StaleReference)?
-                    .known = Some(!rows.is_empty());
-                Ok(())
-            } else {
-                self.install(
-                    result.branch,
-                    rows,
-                    result.kind == TreeRequest::Expand,
-                    result.request,
-                )
-            }
+        let listing = self.validate_chain(result.branch).and(result.listing);
+        let outcome = listing.and_then(|listing| {
+            let known = match listing {
+                Listing::Presence(present) => present,
+                Listing::Rows(rows) if result.kind == TreeRequest::Probe => !rows.is_empty(),
+                Listing::Rows(rows) => {
+                    return self.install(
+                        result.branch,
+                        rows,
+                        result.kind == TreeRequest::Expand,
+                        result.request,
+                    );
+                }
+            };
+            self.nodes
+                .get_mut(&result.branch)
+                .ok_or(ProviderError::StaleReference)?
+                .known = Some(known);
+            Ok(())
         });
         if outcome.is_ok()
             && result.kind != TreeRequest::Probe

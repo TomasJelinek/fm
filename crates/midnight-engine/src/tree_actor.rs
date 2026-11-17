@@ -1000,9 +1000,10 @@ pub(crate) fn preflight_root(
             .saturating_add(entry.path.capacity().saturating_mul(3))
             .saturating_add(entry.name.capacity().saturating_mul(2))
             .saturating_add(entry.display_name.capacity().saturating_mul(2))
+            // `Entry` boxes its archive node: charge that allocation too.
             .saturating_add(entry.virtual_node.as_ref().map_or(0, |node| {
-                node.raw_name
-                    .len()
+                std::mem::size_of::<midnight_core::ArchiveNode>()
+                    .saturating_add(node.raw_name.len())
                     .saturating_add(node.display_name.capacity())
             }))
             .saturating_add(

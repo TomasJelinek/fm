@@ -92,9 +92,13 @@ generation cancellation rules and prevent canceled option publications.
   replacement and shares the pane's existing two listing permits.
   Viewport probes are best-effort read-ahead: excess probes wait for a later
   publication/viewport update rather than reporting resource exhaustion. A probe
-  publishes only its result. Explicit expansion or refresh can replace a queued
-  probe and runs before background probes. A queue containing eight explicit
-  requests retains normal backpressure.
+  publishes only its result. It only asks whether the branch has a subfolder:
+  enumeration stops at the first one, retains no rows, issues no child
+  references and has no row limit, so only an expansion or refresh (a listing)
+  can exceed the listing budget or report a child that repeats an ancestor.
+  Explicit expansion or refresh can replace a queued probe and runs before
+  background probes. A queue containing eight explicit requests retains normal
+  backpressure.
 - Root construction and typed navigation validation hold a common listing
   permit. Explicit, probe and maintenance branch work retains both its branch
   and common permits through actual provider return, completion application,
@@ -117,6 +121,10 @@ generation cancellation rules and prevent canceled option publications.
   changed branches are not batched. A pass that ends without a newer
   publication settles its watch fence against the already acknowledged
   projection.
+- The watch compares a target's first probe with its accepted listing. The
+  root's complete listing is also its full observation, so an unchanged root
+  requests no pass when the tree opens. A folder-only branch has no full
+  observation of the files it hides, so its first probe still requests a pass.
 - Only provider-supplied failure text gets a details report. Admission,
   staleness, capacity and cancellation outcomes carry just their bounded
   message, so routine command races create no spool files. Reports live in a
@@ -147,14 +155,22 @@ cancels its branch independently. Cancellation never substitutes a fresh permit
 for a still-running callback.
 
 Model construction, projection, target resolution and session/command/completion
-retirement run on blocking workers, outside snapshot and mailbox mutexes. Branch
-jobs run separately so collapse and navigation can be processed while enumeration
-is blocked. Root-ready messages contain no provider resources.
+retirement run on the pane's model worker, outside snapshot and mailbox mutexes.
+Each model worker normally runs on a dedicated `midnight-tree-worker` thread for
+the controller's lifetime, outside Tokio's bounded blocking pool; only when the
+OS refuses that thread does the pool run the worker instead. The worker keeps
+the engine runtime's context to wait for permits and start branch jobs. Branch
+jobs run separately on that pool so collapse and navigation can be processed
+while enumeration is blocked. Root-ready messages contain no provider resources.
 
 Shutdown or disconnected command input closes both lanes and cancels their
 generations. Idle model workers terminate and drain their queues. Controller
 shutdown waits at most 200 ms per worker; an uncancellable provider callback
-retains its bounded worker and resources until its actual return. A late branch
-completion retires directly on its branch worker when the lane is already closed.
+retains its bounded worker and resources until its actual return. For a worker
+on its dedicated thread that join is the only wait: as for the engine's other
+dedicated actor threads, runtime shutdown does not wait for the thread, so a
+worker still blocked in a provider call outlives the runtime until the call
+returns and then exits. A late branch completion retires directly on its branch
+worker when the lane is already closed.
 Accepted navigation targets retain their independent lifetime until the receiver
 releases them through its normal background reclamation path.

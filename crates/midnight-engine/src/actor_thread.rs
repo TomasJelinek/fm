@@ -3,7 +3,11 @@
 //! native work share. If the OS refuses another thread, the pool runs the work
 //! instead, as before.
 use std::sync::{Arc, Mutex};
-use tokio::{sync::oneshot, task::JoinSet};
+use tokio::{
+    runtime::Handle,
+    sync::oneshot,
+    task::{JoinHandle, JoinSet},
+};
 
 /// Start `work` now; the task added to `tasks` completes when it returns or
 /// unwinds.
@@ -17,6 +21,27 @@ pub(crate) fn spawn(name: &str, tasks: &mut JoinSet<()>, work: impl FnOnce() + S
         Err(work) => {
             tasks.spawn_blocking(work);
         }
+    }
+}
+
+/// Start `work` now inside the caller's Tokio runtime context, as
+/// `spawn_blocking` would: it may use `Handle::current()`, spawn tasks and block
+/// on futures of that runtime. The returned handle completes when `work`
+/// returns or unwinds. Call it from that runtime's context. Unlike a blocking
+/// task, the dedicated thread does not delay runtime shutdown: work still
+/// running then keeps its thread until it returns.
+pub(crate) fn spawn_in_runtime(name: &str, work: impl FnOnce() + Send + 'static) -> JoinHandle<()> {
+    let runtime = Handle::current();
+    let context = runtime.clone();
+    let work = move || {
+        let _context = context.enter();
+        work();
+    };
+    match start(name, work) {
+        Ok(finished) => runtime.spawn(async move {
+            let _ = finished.await;
+        }),
+        Err(work) => runtime.spawn_blocking(work),
     }
 }
 
@@ -100,5 +125,48 @@ mod tests {
             lazy_observed.recv().unwrap().as_deref(),
             Some("midnight-test-lazy")
         );
+    }
+
+    #[test]
+    fn runtime_actors_need_no_blocking_pool_capacity_and_keep_the_runtime_context() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .max_blocking_threads(1)
+            .build()
+            .unwrap();
+        // The only blocking-pool thread stays occupied for the whole test.
+        let (release, gate) = std::sync::mpsc::channel::<()>();
+        let (entered, started) = std::sync::mpsc::channel();
+        let blocker = runtime.spawn_blocking(move || {
+            entered.send(()).unwrap();
+            let _ = gate.recv();
+        });
+        started
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap();
+        let (sender, observed) = std::sync::mpsc::channel();
+        runtime.block_on(async {
+            let actor = spawn_in_runtime("midnight-test-runtime-actor", move || {
+                // As on a blocking-pool thread, the caller's runtime is current.
+                let value = Handle::current().block_on(async { 7 });
+                sender
+                    .send((std::thread::current().name().map(str::to_owned), value))
+                    .unwrap();
+            });
+            let unwinding =
+                spawn_in_runtime("midnight-test-runtime-unwind", || panic!("actor unwinds"));
+            tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                actor.await.unwrap();
+                unwinding.await.unwrap();
+            })
+            .await
+            .expect("runtime actors must not wait for blocking-pool capacity");
+        });
+        assert_eq!(
+            observed.try_recv().unwrap(),
+            (Some("midnight-test-runtime-actor".to_owned()), 7)
+        );
+        release.send(()).unwrap();
+        runtime.block_on(blocker).unwrap();
     }
 }

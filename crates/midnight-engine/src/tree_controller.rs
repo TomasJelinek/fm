@@ -99,7 +99,12 @@ impl Controller {
                 copy_capacity.clone(),
             );
             worker.watch = watch.clone();
-            Some(tokio::task::spawn_blocking(move || worker.run()))
+            // The model worker lives as long as the controller: keep it off the
+            // bounded blocking pool that branch jobs, listings and scans share.
+            Some(crate::actor_thread::spawn_in_runtime(
+                "midnight-tree-worker",
+                move || worker.run(),
+            ))
         });
         Self {
             lanes,

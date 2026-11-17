@@ -18,6 +18,10 @@ pub(crate) struct ScopeTarget {
     pub(crate) path: PathBuf,
     pub(crate) directory_identity: Option<SizeDirectoryIdentity>,
     pub(crate) display: [u8; 32],
+    /// Full-directory observation (every entry, with listing metadata) of the
+    /// accepted listing, when known. A first probe equal to it is the accepted
+    /// state and needs no maintenance; without it, a first probe always does.
+    pub(crate) full: Option<[u8; 32]>,
     pub(crate) folders_only: bool,
     pub(crate) path_bytes: usize,
     pub(crate) _mounted: MountedTarget,
@@ -721,9 +725,11 @@ impl Runtime {
             }) else {
                 return Duration::ZERO;
             };
+            // A first observation compares with the accepted listing, so a
+            // target whose directory is unchanged since then stays quiet.
             let old = self.observed.entry(target.branch).or_insert(Observed {
                 basis: target.clone(),
-                full: None,
+                full: target.full,
                 failed: false,
                 poll_at: now,
             });

@@ -133,8 +133,32 @@ impl ArchiveMount for NavigationArchive {
     ) -> Result<Vec<u8>, FsError> {
         self.source().read(entry, offset, length, cancel)
     }
+    // A transparent wrapper: the trait defaults would drain a read the source can
+    // cancel cooperatively, and would hide its storage and cache identities. The
+    // source is the provider's leased target, which must forward them as well.
+    fn read_cooperative(
+        &self,
+        entry: u64,
+        offset: u64,
+        length: u32,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<Vec<u8>, FsError> {
+        self.source()
+            .read_cooperative(entry, offset, length, cancelled)
+    }
     fn validate(&self) -> Result<(), FsError> {
         self.source().validate()
+    }
+    fn native_container_locator(&self) -> Option<&std::path::Path> {
+        self.source().native_container_locator()
+    }
+    fn persistent_member_identity(
+        &self,
+        entry: u64,
+        expected_source_version: &[u8],
+    ) -> Result<Option<Vec<u8>>, FsError> {
+        self.source()
+            .persistent_member_identity(entry, expected_source_version)
     }
 }
 
@@ -164,6 +188,85 @@ mod retirement_tests {
             Ok(())
         }
     }
+
+    /// Records which source methods a navigation target reached.
+    #[derive(Debug, Default)]
+    struct Recording {
+        calls: std::sync::Mutex<Vec<&'static str>>,
+        container: std::path::PathBuf,
+    }
+    impl ArchiveMount for Recording {
+        fn id(&self) -> u64 {
+            2
+        }
+        fn list(&self, _: u64, _: &Cancellation) -> Result<Vec<ArchiveNode>, FsError> {
+            Ok(Vec::new())
+        }
+        fn read(&self, _: u64, _: u64, _: u32, _: &Cancellation) -> Result<Vec<u8>, FsError> {
+            self.calls.lock().unwrap().push("read");
+            Ok(vec![1])
+        }
+        fn read_cooperative(
+            &self,
+            _: u64,
+            _: u64,
+            _: u32,
+            cancelled: &dyn Fn() -> bool,
+        ) -> Result<Vec<u8>, FsError> {
+            self.calls.lock().unwrap().push("read_cooperative");
+            if cancelled() {
+                return Err(FsError::from_io(
+                    "test read",
+                    std::path::Path::new(""),
+                    std::io::ErrorKind::Interrupted.into(),
+                ));
+            }
+            Ok(vec![2])
+        }
+        fn validate(&self) -> Result<(), FsError> {
+            Ok(())
+        }
+        fn native_container_locator(&self) -> Option<&std::path::Path> {
+            Some(&self.container)
+        }
+        fn persistent_member_identity(
+            &self,
+            entry: u64,
+            expected_source_version: &[u8],
+        ) -> Result<Option<Vec<u8>>, FsError> {
+            Ok(Some(
+                [&entry.to_le_bytes()[..], expected_source_version].concat(),
+            ))
+        }
+    }
+
+    #[test]
+    fn navigation_archive_forwards_cooperative_reads_and_source_identities() {
+        let source = Arc::new(Recording {
+            container: std::path::PathBuf::from("container.zip"),
+            ..Recording::default()
+        });
+        let mount = NavigationArchive {
+            source: Some(source.clone()),
+            registration: None,
+        };
+        assert_eq!(mount.read_cooperative(7, 0, 1, &|| false).unwrap(), [2]);
+        // The source observes the cancellation itself instead of draining a read.
+        assert!(mount.read_cooperative(7, 0, 1, &|| true).is_err());
+        assert_eq!(
+            *source.calls.lock().unwrap(),
+            ["read_cooperative", "read_cooperative"]
+        );
+        assert_eq!(
+            mount.native_container_locator(),
+            Some(std::path::Path::new("container.zip"))
+        );
+        assert_eq!(
+            mount.persistent_member_identity(7, b"v1").unwrap(),
+            Some([&7u64.to_le_bytes()[..], b"v1"].concat())
+        );
+    }
+
     #[test]
     fn navigation_archive_drains_shared_and_last_empty_registration() {
         for shared in [true, false] {
