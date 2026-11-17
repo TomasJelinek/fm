@@ -51,7 +51,7 @@ fn nowait_reserve_and_unused_rollback_ignore_a_held_payload_queue_lock() {
 }
 
 #[test]
-fn legacy_and_nowait_reservations_share_the_same_exact_slot_capacity() {
+fn immediate_and_waiter_reservations_share_the_same_exact_slot_capacity() {
     let domain = RetirementDomain::try_start(3, 1).unwrap();
     let first = domain.try_reserve().unwrap();
     let second = domain.try_reserve().unwrap();
@@ -65,7 +65,6 @@ fn legacy_and_nowait_reservations_share_the_same_exact_slot_capacity() {
     assert_ne!(first.slot, second.slot);
     assert_ne!(first.slot, third.slot);
     assert_ne!(second.slot, third.slot);
-    assert!(domain.try_reserve().is_err());
     assert!(domain.try_reserve().is_err());
     drop((first, second, third, pending));
     exhaust(&domain, 3);
