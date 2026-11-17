@@ -80,9 +80,12 @@ A top-level fenced block longer than one read cannot prove its end inside a
 parse; plain reads that continue contiguously from where the parse stopped
 find its closing fence and prove the checkpoint after it, so sequential
 scrolling and search continue semantically after long fenced logs. A seek past
-such a fence before it was scanned, or any other single top-level block longer
-than a 64 KiB read, still ends checkpoint discovery until a checkpoint within
-32 KiB is known again; those pages show source text with literal markers.
+such a fence before it was scanned shows source text with literal markers until
+the viewer has read through the fence from its start. Any other single top-level
+block longer than a 64 KiB read (a long list, table, block quote or HTML block)
+ends checkpoint discovery: plain pages resynchronize only after fences, so pages
+more than 32 KiB past the last checkpoint before that block show source text
+with literal markers for the rest of the session.
 If invalid/control text expands beyond the decoded context budget, viewport
 and search reuse a nearby fragment of the same bounded read and discard the
 unproven parser context rather than skipping the requested content.
