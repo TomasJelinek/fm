@@ -353,8 +353,34 @@ fn persistent_short_names_disabled(
         && response.VolumeFlags & PERSISTENT_VOLUME_STATE_SHORT_NAME_CREATION_DISABLED != 0
 }
 
+/// Test seam for the namespace tests (see `docs/developer/TRANSFERS.md`): with
+/// `short-names-disabled` they run their qualified (incremental) branches on an NTFS
+/// volume that still creates 8.3 names (their fixtures never use short names); with
+/// `unqualified` they run the full-refresh branches on any volume. The forced mode is
+/// process-wide because pooled parent bindings and their mode are shared by
+/// concurrently running tests.
+#[cfg(test)]
+pub(super) const TEST_LOOKUP_ENV: &str = "MIDNIGHT_TEST_NAMESPACE_LOOKUP";
+
+/// `Some(true)`: assume 8.3-name creation is disabled; `Some(false)`: unqualified.
+fn forced_lookup() -> Option<bool> {
+    #[cfg(test)]
+    {
+        match std::env::var(TEST_LOOKUP_ENV).as_deref() {
+            Ok("short-names-disabled") => Some(true),
+            Ok("unqualified") => Some(false),
+            _ => None,
+        }
+    }
+    #[cfg(not(test))]
+    {
+        None
+    }
+}
+
 fn lookup_mode(directory: &File, volume: Option<&Volume>) -> LookupMode {
-    let Some(volume) = volume else {
+    let forced = forced_lookup();
+    let Some(volume) = volume.filter(|_| forced != Some(false)) else {
         return LookupMode::Unqualified;
     };
     let mut fs_name = [0u16; 32];
@@ -410,13 +436,7 @@ fn lookup_mode(directory: &File, volume: Option<&Volume>) -> LookupMode {
             std::ptr::null_mut(),
         )
     };
-    // Test seam: lets the qualified (incremental) branches of the namespace tests run on
-    // an NTFS volume that still creates 8.3 names; their fixtures never use short names.
-    #[cfg(test)]
-    let assumed = std::env::var_os("MIDNIGHT_TEST_ASSUME_SHORT_NAMES_DISABLED").is_some();
-    #[cfg(not(test))]
-    let assumed = false;
-    if !assumed && !persistent_short_names_disabled(query_result, returned, &response) {
+    if forced != Some(true) && !persistent_short_names_disabled(query_result, returned, &response) {
         return LookupMode::Unqualified;
     }
     // The root still belongs to the originally pinned volume after the query. A path

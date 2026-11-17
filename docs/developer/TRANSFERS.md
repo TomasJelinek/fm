@@ -462,7 +462,26 @@ an external change to one of their bindings is a job namespace error. Private pi
 witness the stages a job creates and then their published outputs; once every native
 owner of such an object has closed, the next refresh retires that alias, so published
 outputs neither accumulate claims nor turn later external changes into job errors.
-Their names stay covered by the original destination pins.
+Their names stay covered by the original destination pins. A retired output's object
+identity no longer takes part in peer admission: another job that reaches the same
+object through a different hard-link name is not excluded by it (this job never
+touches that object again). This retirement ruling awaits Architect/F1 confirmation.
+
+Windows Copy and Move require 128-bit `FileIdInfo` identities, because they compare
+identities across their own stage publications, Move captures and namespace pins.
+Volumes without them (FAT32, exFAT, some redirectors), whose 64-bit file indices
+change when an entry is renamed, are refused as sources and destinations with an
+explicit `Unsupported` error.
+
+The namespace unit tests take their qualified (incremental) branches on a volume
+whose persistent 8.3-name creation is disabled and their unqualified (full-refresh)
+branches elsewhere. In test builds `MIDNIGHT_TEST_NAMESPACE_LOOKUP` forces one mode
+process-wide (`short-names-disabled`, valid on any NTFS volume because the fixtures
+never use short names, or `unqualified`); pooled parent bindings are shared by
+concurrently running tests, so the mode cannot be per test. Every default `--lib` run
+also reruns `transfer::namespace::tests::` in a child process forced into the mode the
+build volume does not provide
+(`parent::tests::namespace_tests_pass_in_the_other_lookup_mode_too`).
 
 ## Current limits and next stage
 

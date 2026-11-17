@@ -201,11 +201,15 @@ fn native_file_stage_lifecycles_announce_exact_original_arcs_with_linear_root_re
     with_transfer_namespace_changes(context, || {
         let directory = announcement_directory(temp.path());
         let cancel = Cancellation::default();
-        const COUNT: usize = 64;
-        for index in 0..COUNT {
+        events.child(&directory, "selected-0", EntryKind::File);
+        // The qualified mode proves linear root refreshes at scale. The unqualified
+        // fallback refreshes every root on every turn; a smaller count characterizes
+        // that quadratic cost as well, at a sixteenth of the refreshes.
+        let count = if events.qualified() { 64 } else { 16 };
+        for index in 1..count {
             events.child(&directory, &format!("selected-{index}"), EntryKind::File);
         }
-        for _ in 0..COUNT {
+        for _ in 0..count {
             let mut stage = directory.stage_file(&cancel).unwrap();
             stage.write_all(b"native stage bytes").unwrap();
             stage.cleanup().unwrap();
@@ -222,23 +226,25 @@ fn native_file_stage_lifecycles_announce_exact_original_arcs_with_linear_root_re
         assert!(events.aliases.lock().unwrap().is_empty());
         assert_eq!(
             events.private_reservations.load(Ordering::SeqCst),
-            COUNT + 1
+            count + 1
         );
         let turns = events.turns.lock().unwrap();
-        assert_eq!(turns.len(), 2 * COUNT + 2);
+        assert_eq!(turns.len(), 2 * count + 2);
         if events.qualified() {
             assert!(turns.iter().all(|roots| !roots.is_empty()));
-            assert!(events.root_refreshes.load(Ordering::SeqCst) <= 4 * COUNT + 4);
+            assert!(events.root_refreshes.load(Ordering::SeqCst) <= 4 * count + 4);
         } else {
-            // No test-made lookup mode: an unqualified real volume keeps legacy
-            // full refresh. Build must qualify the positive branch on native NTFS.
+            // An unqualified volume (the build volume's native mode, or the forced
+            // `unqualified` mode) keeps the legacy full refresh. Every default run also
+            // runs these tests in the other mode in a child process; see
+            // `parent::tests::namespace_tests_pass_in_the_other_lookup_mode_too`.
             assert!(turns.iter().all(Vec::is_empty));
-            assert!(events.root_refreshes.load(Ordering::SeqCst) >= 2 * COUNT * COUNT);
+            assert!(events.root_refreshes.load(Ordering::SeqCst) >= 2 * count * count);
         }
         let job = current_job().unwrap();
         let index = job.index.lock().unwrap();
-        assert_eq!(index.pins.len(), COUNT);
-        assert_eq!(index.roots.len(), COUNT);
+        assert_eq!(index.pins.len(), count);
+        assert_eq!(index.roots.len(), count);
         assert_eq!(index.parents.len(), 1);
         assert!(index.objects.is_empty());
         assert_eq!(job.owners.lock().unwrap().len(), 1);
@@ -831,7 +837,15 @@ fn published_private_aliases_reannounce_exact_arcs_without_probing_unrelated_his
                 !job.owners_closed(object),
                 "the real readback guard still owns the file"
             );
-            assert_eq!(events.aliases.lock().unwrap().len(), index + 1);
+            // A qualified turn refreshes only its touched pins, so every publication
+            // alias stays registered. An unqualified turn's full refresh has already
+            // retired the previous output (its owners closed); the held first remains.
+            let expected = if events.qualified() {
+                index + 1
+            } else {
+                (index + 1).min(2)
+            };
+            assert_eq!(events.aliases.lock().unwrap().len(), expected);
             if events.qualified() {
                 assert!(events.retains_object(object));
                 assert!(
@@ -859,8 +873,10 @@ fn published_private_aliases_reannounce_exact_arcs_without_probing_unrelated_his
         assert_eq!(bytes, b"retained published bytes");
         drop(held);
         assert!(job.owners_closed(first_object));
-        // Untouched publication aliases stay registered until the host probes them.
-        assert_eq!(events.aliases.lock().unwrap().len(), COUNT);
+        // Untouched publication aliases stay registered until the host probes them; the
+        // unqualified full refreshes already probed and retired every closed one.
+        let registered = events.aliases.lock().unwrap().len();
+        assert_eq!(registered, if events.qualified() { COUNT } else { 2 });
         if events.qualified() {
             assert!(events.reannouncements.load(Ordering::SeqCst) >= COUNT);
             assert!(events.probes() <= 12 * COUNT + 8);
@@ -877,7 +893,11 @@ fn published_private_aliases_reannounce_exact_arcs_without_probing_unrelated_his
         let before = events.probes();
         events.refresh(None).unwrap();
         assert!(events.aliases.lock().unwrap().is_empty());
-        assert_eq!(events.probes() - before, COUNT + 1, "one probe per pin");
+        assert_eq!(
+            events.probes() - before,
+            registered + 1,
+            "one probe per pin"
+        );
         let peer_events = Arc::new(TouchedAliasEvents::default());
         let peer: Arc<dyn TransferNamespaceChanges> = Arc::new(TouchedAliasContext(peer_events));
         let peer_probe = with_transfer_namespace_changes(peer, || {
@@ -1141,11 +1161,13 @@ fn published_stages_do_not_accumulate_private_claims_after_actual_owner_close() 
     with_transfer_namespace_changes(context, || {
         let directory = announcement_directory(temp.path());
         let cancel = Cancellation::default();
-        const COUNT: usize = 64;
-        for index in 0..COUNT {
+        events.child(&directory, "output-0", EntryKind::File);
+        // As above: the unqualified full refresh is quadratic in the root count.
+        let count = if events.qualified() { 64 } else { 16 };
+        for index in 1..count {
             events.child(&directory, &format!("output-{index}"), EntryKind::File);
         }
-        for index in 0..COUNT {
+        for index in 0..count {
             let mut stage = directory.stage_file(&cancel).unwrap();
             stage.write_all(b"published native bytes").unwrap();
             stage
@@ -1166,10 +1188,10 @@ fn published_stages_do_not_accumulate_private_claims_after_actual_owner_close() 
             assert!(
                 events.root_refreshes.load(Ordering::SeqCst)
                     + events.alias_refreshes.load(Ordering::SeqCst)
-                    <= 12 * COUNT + 16
+                    <= 12 * count + 16
             );
         }
-        for index in 0..COUNT {
+        for index in 0..count {
             assert_eq!(
                 fs::read(temp.path().join(format!("output-{index}"))).unwrap(),
                 b"published native bytes"

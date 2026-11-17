@@ -1,5 +1,42 @@
 use super::*;
 
+/// Every default run covers both branches of the namespace tests: in-process in the
+/// build volume's native lookup mode, and in a child process forced into the other
+/// mode. The forced mode is process-wide because concurrently running tests share
+/// pooled parent bindings, whose lookup mode is part of their validation; a per-thread
+/// seam would make those tests disagree about one binding.
+#[test]
+fn namespace_tests_pass_in_the_other_lookup_mode_too() {
+    if std::env::var_os(TEST_LOOKUP_ENV).is_some() {
+        // Already a forced run: an explicit second pass or the child below.
+        return;
+    }
+    let base = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../_build/tmp");
+    std::fs::create_dir_all(&base).unwrap();
+    let temp = tempfile::tempdir_in(base).unwrap();
+    let directory = metadata_directory(temp.path()).unwrap();
+    let native = capture(&directory, temp.path(), &Cancellation::default())
+        .unwrap()
+        .mode;
+    let other = match native {
+        LookupMode::ShortNamesDisabled { .. } => "unqualified",
+        LookupMode::Unqualified => "short-names-disabled",
+    };
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["transfer::namespace::tests::", "--test-threads", "4"])
+        .env(TEST_LOOKUP_ENV, other)
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success()
+            && stdout.contains("test result: ok")
+            && !stdout.contains("ok. 0 passed"),
+        "namespace tests failed in the {other} lookup mode:\n{stdout}\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
 #[test]
 fn volume_query_handle_retains_pinned_root_directory_identity() {
     let base = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../_build/tmp");
