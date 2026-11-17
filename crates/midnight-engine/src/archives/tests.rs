@@ -243,16 +243,11 @@ async fn newest_navigation_waits_for_a_worker_held_by_a_superseded_listing() {
         let (navigation, result) = listed(&mut events).await;
         outcomes.insert(navigation, result.is_ok());
     }
-    assert_eq!(
-        outcomes[&NavigationId(1)],
-        false,
+    assert!(
+        !outcomes[&NavigationId(1)],
         "superseded result is discarded"
     );
-    assert_eq!(
-        outcomes[&NavigationId(2)],
-        true,
-        "newest navigation is listed"
-    );
+    assert!(outcomes[&NavigationId(2)], "newest navigation is listed");
     while tasks.join_next().await.is_some() {}
 }
 
