@@ -156,51 +156,61 @@ impl From<SelectedCopyRequest> for CopyInput {
     }
 }
 
-/// The one list of Copy-family commands (Copy, Move, metadata, options, archive and
-/// captured transfers) and their operation IDs. Guarded admission, the command router
-/// (`is_copy_command`) and `CopyInput::from_command` must agree on it.
-pub(crate) fn copy_command_id(command: &Command) -> Option<OperationId> {
-    fn metadata_id(request: &MetadataTransferRequest) -> OperationId {
-        match &request.input {
-            MetadataTransferInput::Paths(request) => request.id,
-            MetadataTransferInput::Selected(request) => request.id,
-            MetadataTransferInput::Clipboard(request) => request.id,
-        }
+fn metadata_id(request: &MetadataTransferRequest) -> OperationId {
+    match &request.input {
+        MetadataTransferInput::Paths(request) => request.id,
+        MetadataTransferInput::Selected(request) => request.id,
+        MetadataTransferInput::Clipboard(request) => request.id,
     }
-    Some(match command {
-        Command::EnqueueCopy(request) | Command::EnqueueMove(request) => request.id,
-        Command::EnqueueSelectedCopy(request) | Command::EnqueueSelectedMove(request) => request.id,
-        Command::EnqueueClipboardMove(request) => request.id,
-        Command::EnqueueTransferWithMetadata(request) => metadata_id(request),
-        Command::EnqueueCopyWithOptions(request) => match &request.input {
-            CopyOptionsInput::Native(request) => metadata_id(request),
-            CopyOptionsInput::Captured(request) => request.id,
-        },
-        Command::EnqueueArchiveCopy(request) => request.id,
-        Command::EnqueueCapturedTransfer(request) => request.id,
-        _ => return None,
-    })
+}
+fn options_id(request: &CopyOptionsRequest) -> OperationId {
+    match &request.input {
+        CopyOptionsInput::Native(request) => metadata_id(request),
+        CopyOptionsInput::Captured(request) => request.id,
+    }
+}
+
+/// Generates both views of the one Copy-family table, so the borrowed classification
+/// (guarded admission and the command router) and the consuming conversion
+/// (`convert_submission`) can never disagree about a variant.
+macro_rules! copy_family {
+    ($($variant:ident($request:ident) => $id:expr, $input:expr;)+) => {
+        /// The operation ID of a Copy-family command (Copy, Move, metadata, options,
+        /// archive and captured transfers); None for every other command.
+        pub(crate) fn copy_command_id(command: &Command) -> Option<OperationId> {
+            match command {
+                $(Command::$variant($request) => Some($id),)+
+                _ => None,
+            }
+        }
+
+        impl CopyInput {
+            #[expect(
+                clippy::result_large_err,
+                reason = "Return unmatched commands to their armed admission scope without an extra box."
+            )]
+            pub(super) fn from_command(command: Command) -> Result<Self, Command> {
+                match command {
+                    $(Command::$variant($request) => Ok($input),)+
+                    command => Err(command),
+                }
+            }
+        }
+    };
+}
+copy_family! {
+    EnqueueCopy(request) => request.id, request.into();
+    EnqueueSelectedCopy(request) => request.id, request.into();
+    EnqueueMove(request) => request.id, Self::move_paths(request);
+    EnqueueSelectedMove(request) => request.id, Self::move_selection(request);
+    EnqueueClipboardMove(request) => request.id, Self::move_clipboard(request);
+    EnqueueTransferWithMetadata(request) => metadata_id(request), Self::metadata(*request);
+    EnqueueCopyWithOptions(request) => options_id(request), Self::options(*request);
+    EnqueueArchiveCopy(request) => request.id, request.into();
+    EnqueueCapturedTransfer(request) => request.id, request.into();
 }
 
 impl CopyInput {
-    #[expect(
-        clippy::result_large_err,
-        reason = "Return unmatched commands to their armed admission scope without an extra box."
-    )]
-    pub(super) fn from_command(command: Command) -> Result<Self, Command> {
-        Ok(match command {
-            Command::EnqueueCopy(request) => request.into(),
-            Command::EnqueueSelectedCopy(request) => request.into(),
-            Command::EnqueueMove(request) => Self::move_paths(request),
-            Command::EnqueueSelectedMove(request) => Self::move_selection(request),
-            Command::EnqueueClipboardMove(request) => Self::move_clipboard(request),
-            Command::EnqueueTransferWithMetadata(request) => Self::metadata(*request),
-            Command::EnqueueCopyWithOptions(request) => Self::options(*request),
-            Command::EnqueueArchiveCopy(request) => request.into(),
-            Command::EnqueueCapturedTransfer(request) => request.into(),
-            command => return Err(command),
-        })
-    }
     pub(super) fn initialize_captured_intent(&mut self) {
         if let Sources::Captured(sources) = &self.sources {
             self.intent = sources.intent();

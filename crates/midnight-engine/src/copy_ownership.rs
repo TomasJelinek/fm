@@ -363,6 +363,18 @@ impl AuthoritySeal {
         }
         Ok(())
     }
+    /// After the job's last native work and before its pins close: report an external
+    /// change to any pinned binding as a job diagnostic (`Claim::revalidate_before_close`).
+    fn revalidate_namespace(&self) -> Result<(), Quarantined> {
+        let Some(claim) = self
+            .resources
+            .as_ref()
+            .and_then(|resources| resources.namespace.as_ref())
+        else {
+            return Ok(());
+        };
+        self.native_call(|| claim.revalidate_before_close())
+    }
     fn drop_retentions(&mut self) -> Result<(), Quarantined> {
         while let Some(native) = self.resources_mut().native.pop_front() {
             let native = Armed::new(native);
@@ -646,6 +658,10 @@ impl<T: CheckedRetirement> Scope<T> {
                 ));
             }
             if seal.native_call(|| drop(payload.into_inner())).is_err() || seal.is_quarantined() {
+                seal.quarantine();
+                return Err(Quarantined);
+            }
+            if seal.revalidate_namespace().is_err() || seal.is_quarantined() {
                 seal.quarantine();
                 return Err(Quarantined);
             }

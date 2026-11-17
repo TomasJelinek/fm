@@ -79,7 +79,10 @@ pub(super) struct Job {
     tracker: Arc<Mutex<Tracker>>,
     pass_ids: crate::operation_throughput::PassIds,
     finish_started: bool,
-    namespace_busy: Option<crate::copy_namespace::Seen>,
+    namespace_busy: Option<crate::copy_namespace::Blockers>,
+    /// The last final-name operation of the current entry step (publication, replacement
+    /// binding, directory creation, native rename) failed with `AlreadyExists`.
+    final_name_collision: bool,
     cancel: Cancellation,
     destination: Arc<dyn TransferDirectory>,
     roots: VecDeque<Box<dyn TransferSource>>,
@@ -482,6 +485,7 @@ impl Job {
             pass_ids: crate::operation_throughput::PassIds::default(),
             finish_started: false,
             namespace_busy: None,
+            final_name_collision: false,
             status,
             cancel,
             destination,
@@ -563,9 +567,10 @@ impl Job {
         }
     }
 
-    /// Set when a granted peer's namespace refused the current entry's change: the entry
-    /// is retained, and the async owner retries it after the registry changes.
-    pub(super) fn take_namespace_busy(&mut self) -> Option<crate::copy_namespace::Seen> {
+    /// Set when granted peers' namespace refused this step's change before any mutation:
+    /// the work is retained, and the async owner repeats the step once a refusing peer
+    /// changes (or is removed) instead of asking the user.
+    pub(super) fn take_namespace_busy(&mut self) -> Option<crate::copy_namespace::Blockers> {
         self.namespace_busy.take()
     }
     pub(super) fn step(&mut self) -> Step {
@@ -720,12 +725,19 @@ impl Job {
                             (Some(Component::Normal(_)), 1)
                         );
                     // The destination decides which basenames it can represent (Windows:
-                    // reserved names, ':' or trailing dots). Probe before accepting, so a
-                    // typo never reaches publication of a verified stage.
+                    // reserved names, ':' or trailing dots; every platform: overlong
+                    // names). Probe before accepting, so a typo never reaches
+                    // publication of a verified stage.
                     let refused = if valid {
                         self.current.as_ref().and_then(|work| {
                             match work.destination.inspect(&name, &self.cancel) {
-                                Err(error) if error.kind == io::ErrorKind::InvalidInput => {
+                                Err(error)
+                                    if matches!(
+                                        error.kind,
+                                        io::ErrorKind::InvalidInput
+                                            | io::ErrorKind::InvalidFilename
+                                    ) =>
+                                {
                                     Some(error.message)
                                 }
                                 _ => None,
@@ -835,6 +847,16 @@ impl Job {
                                 self.record(error);
                                 return Step::Done;
                             }
+                            // The exhausted frame stays on the stack, so the next step
+                            // repeats exactly this removal.
+                            let error = match self.peer_refusal(&error) {
+                                Refused::Retry(blockers) => {
+                                    self.namespace_busy = Some(blockers);
+                                    return Step::Continue;
+                                }
+                                Refused::Report(refused) => refused,
+                                Refused::No => error,
+                            };
                             return self
                                 .wait_for_failure(error, failures::Context::DirectoryRemoval);
                         }
@@ -913,6 +935,7 @@ impl Job {
     fn process(&mut self, work: EntryWork) -> Step {
         let mut work = ownership::Armed::new(work);
         self.progress.current_path = Some(work.entry().item.path.clone());
+        self.final_name_collision = false;
         let result = if work.link.is_some() {
             self.link_step(&mut work)
         } else if work.copy.is_some() {
@@ -943,12 +966,30 @@ impl Job {
             }
             Ok(Action::Conflict(target)) => self.wait_for_conflict(work.into_inner(), target),
             Err(failure) => {
-                if let Some(seen) = self.refused_by_peer(&mut work, failure.kind) {
-                    self.current = Some(work.into_inner());
-                    self.namespace_busy = Some(seen);
-                    return Step::Continue;
+                // A refused change is never a late collision: repeat it automatically,
+                // or report it as an ordinary failure when it cannot be repeated.
+                match self.peer_refusal(&failure) {
+                    Refused::Retry(blockers) => {
+                        let resumed = self.resume_refused_entry(&mut work);
+                        self.current = Some(work.into_inner());
+                        if resumed {
+                            self.namespace_busy = Some(blockers);
+                            return Step::Continue;
+                        }
+                        return self.wait_for_failure(failure, failures::Context::Entry);
+                    }
+                    Refused::Report(error) => {
+                        self.current = Some(work.into_inner());
+                        return self.wait_for_failure(error, failures::Context::Entry);
+                    }
+                    Refused::No => {}
                 }
-                if failure.kind != io::ErrorKind::AlreadyExists {
+                // Only the user's final name can collide late. Any other AlreadyExists
+                // (a private stage or recovery name) is an ordinary failure, never a
+                // silent immediate retry.
+                if failure.kind != io::ErrorKind::AlreadyExists
+                    || !std::mem::take(&mut self.final_name_collision)
+                {
                     self.current = Some(work.into_inner());
                     return self.wait_for_failure(failure, failures::Context::Entry);
                 }
@@ -971,35 +1012,59 @@ impl Job {
         }
     }
 
-    /// A granted peer's namespace (opaque, latched or intersecting) refused this entry's
-    /// change before any native mutation. Adapters report that as `WouldBlock`, or as
-    /// `AlreadyExists` once fresh private names are exhausted. Keep the entry for an
-    /// automatic retry after the registry changes, unless it can no longer be retried;
-    /// a refusal by a quarantined claim never clears and takes the ordinary failure path.
-    fn refused_by_peer(
-        &mut self,
-        work: &mut EntryWork,
-        kind: io::ErrorKind,
-    ) -> Option<crate::copy_namespace::Seen> {
-        let refusal = crate::copy_namespace::take_peer_refusal()?;
-        let crate::copy_namespace::Refusal::Peer(seen) = refusal else {
-            return None;
-        };
-        if !matches!(
-            kind,
-            io::ErrorKind::WouldBlock | io::ErrorKind::AlreadyExists
-        ) || self.cancel.is_cancelled()
-            || work.link.as_ref().is_some_and(|link| !link.can_retry())
-        {
-            return None;
+    /// Classify a failed step by the namespace refusal its last reservation recorded (see
+    /// `copy_namespace::take_peer_refusal`), whatever error kind the adapter reported:
+    /// granted peers (opaque, latched or intersecting) refused the change before any
+    /// native mutation, so the step can be repeated once one of them changes. A refusal
+    /// by a quarantined peer never clears: it becomes the non-retryable restart error.
+    fn peer_refusal(&self, failure: &FsError) -> Refused {
+        match crate::copy_namespace::take_peer_refusal() {
+            None => Refused::No,
+            Some(crate::copy_namespace::Refusal::Peer(_)) if self.cancel.is_cancelled() => {
+                Refused::Report(failure.clone())
+            }
+            Some(crate::copy_namespace::Refusal::Peer(blockers)) => Refused::Retry(blockers),
+            Some(crate::copy_namespace::Refusal::Quarantined) => {
+                Refused::Report(crate::copy_namespace::refused_by_quarantine(&failure.path))
+            }
         }
-        if let Some(copy) = work.copy.as_mut()
-            && copy.phase() == CopyPhase::Failed
-            && (!copy.can_retry() || copy.retry(&self.cancel).is_err())
-        {
-            return None;
+    }
+    /// Restore the refused entry's retry checkpoint. The refusal mutated nothing, so this
+    /// automatic retry repeats the refused publication, stage or directory creation.
+    fn resume_refused_entry(&self, work: &mut EntryWork) -> bool {
+        if work.link.as_ref().is_some_and(|link| !link.can_retry()) {
+            return false;
         }
-        Some(seen)
+        match work.copy.as_mut() {
+            Some(copy) if copy.phase() == CopyPhase::Failed => {
+                copy.can_retry() && copy.retry(&self.cancel).is_ok()
+            }
+            _ => true,
+        }
+    }
+    /// A Move source removal refused by peers: rebuild the finalizer through the ordinary
+    /// rehashing Retry (the proof stays required after any wait). Other Move phases have
+    /// no automatic retry checkpoint and take the ordinary failure path.
+    fn resume_refused_move(&mut self) -> Result<bool, FsError> {
+        if !self
+            .move_work
+            .as_ref()
+            .is_some_and(move_job::MoveWork::can_retry)
+        {
+            return Ok(false);
+        }
+        let mut work =
+            ownership::Armed::new(self.move_work.take().expect("failed move remains owned"));
+        let result = work.retry(self);
+        self.move_work = Some(work.into_inner());
+        result.map(|()| true)
+    }
+    /// Record that `result` came from an operation on the user's final name; only its
+    /// `AlreadyExists` is a late collision that asks for fresh consent.
+    fn at_final_name<T>(&mut self, result: Result<T, FsError>) -> Result<T, FsError> {
+        self.final_name_collision =
+            matches!(&result, Err(error) if error.kind == io::ErrorKind::AlreadyExists);
+        result
     }
 
     fn prepare_entry(&mut self, work: &mut EntryWork) -> Result<Action, FsError> {
@@ -1023,15 +1088,16 @@ impl Job {
         {
             // The provider distinguishes an exact same-name no-op, a case-only
             // rename, and a distinct hard-link alias without inferring from text.
-            if self.move_work.is_some()
-                && work.native_identity() == Some(target.identity)
-                && self.try_native_move(work)?
-            {
-                return Ok(Action::Done);
+            if self.move_work.is_some() && work.native_identity() == Some(target.identity) {
+                let moved = self.try_native_move(work);
+                if self.at_final_name(moved)? {
+                    return Ok(Action::Done);
+                }
             }
             return Ok(Action::Conflict(target));
         }
-        if self.try_native_move(work)? {
+        let moved = self.try_native_move(work);
+        if self.at_final_name(moved)? {
             return Ok(Action::Done);
         }
         self.prepare_move_copy(work)?;
@@ -1060,9 +1126,8 @@ impl Job {
                         &self.cancel,
                     )?
                 } else {
-                    let created = work
-                        .destination
-                        .create_directory(&work.name, &self.cancel)?;
+                    let created = work.destination.create_directory(&work.name, &self.cancel);
+                    let created = self.at_final_name(created)?;
                     self.progress.directories_created += 1;
                     created
                 };
@@ -1176,7 +1241,8 @@ impl Job {
                     return Ok(Action::Conflict(target));
                 }
             } else if !work.replacement_prepared {
-                work.copy
+                let prepared = work
+                    .copy
                     .as_mut()
                     .expect("started copy")
                     .prepare_replacement(
@@ -1184,7 +1250,8 @@ impl Job {
                         target,
                         TransferReplacementPolicy::RecoverableCurrentEntry,
                         &self.cancel,
-                    )?;
+                    );
+                self.at_final_name(prepared)?;
                 work.replacement_prepared = true;
             }
         }
@@ -1192,10 +1259,11 @@ impl Job {
         if copy.phase() == CopyPhase::ReadyToPublish {
             self.progress.phase = CopyOperationPhase::Publishing;
             let publication = if work.consent == Some(Consent::Replace) {
-                copy.publish_replace(&work.name, &self.cancel)?
+                copy.publish_replace(&work.name, &self.cancel)
             } else {
-                copy.publish(&work.name, &self.cancel)?
+                copy.publish(&work.name, &self.cancel)
             };
+            let publication = self.at_final_name(publication)?;
             let proof_eligible = matches!(
                 &publication,
                 TransferPublication::Published(_) | TransferPublication::Replaced { .. }
@@ -1527,7 +1595,21 @@ impl Job {
             Ok(false) => Step::Continue,
             Ok(true) if self.roots.is_empty() && self.stack.is_empty() => Step::Done,
             Ok(true) => Step::Continue,
-            Err(error) => self.wait_for_failure(error, failures::Context::Move),
+            Err(error) => {
+                let error = match self.peer_refusal(&error) {
+                    Refused::Retry(blockers) => match self.resume_refused_move() {
+                        Ok(true) => {
+                            self.namespace_busy = Some(blockers);
+                            return Step::Continue;
+                        }
+                        Ok(false) => error,
+                        Err(retry) => retry,
+                    },
+                    Refused::Report(refused) => refused,
+                    Refused::No => error,
+                };
+                self.wait_for_failure(error, failures::Context::Move)
+            }
         }
     }
 }
@@ -1629,6 +1711,17 @@ enum Action {
     Done,
     Directory(Arc<dyn TransferDirectory>),
     Conflict(TransferEntry),
+}
+
+/// How a failed step relates to a namespace refusal by granted peers.
+enum Refused {
+    /// Not refused by a peer: an ordinary failure (or a late final-name collision).
+    No,
+    /// Refused before any mutation; repeat the step once one of these peers changes.
+    Retry(crate::copy_namespace::Blockers),
+    /// Refused, but not repeatable (cancelled, or a quarantined peer that never clears):
+    /// report this error as an ordinary failure, never as a collision.
+    Report(FsError),
 }
 
 #[cfg(test)]

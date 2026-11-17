@@ -1,11 +1,8 @@
 //! Admission-ordered snapshots of confirmed Copy/Move retirement.
 use midnight_core::Cancellation;
-use std::{
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
-    time::Duration,
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
 };
 use tokio::sync::Notify;
 
@@ -140,7 +137,12 @@ impl Predecessors {
     }
 
     /// False means cancellation; neither cancellation nor owner loss completes a latch.
-    pub(crate) async fn wait(&self, cancel: &Cancellation) -> bool {
+    /// Completions and `controls` (cancellation) wake the wait; nothing polls.
+    pub(crate) async fn wait(
+        &self,
+        cancel: &Cancellation,
+        controls: &crate::copy_operations::Controls,
+    ) -> bool {
         for completion in &self.0 {
             loop {
                 let notified = completion.ready.notified();
@@ -154,7 +156,7 @@ impl Predecessors {
                 }
                 tokio::select! {
                     _ = notified => {},
-                    _ = tokio::time::sleep(Duration::from_millis(25)) => {},
+                    () = controls.until(|| cancel.is_cancelled()) => return false,
                 }
             }
         }

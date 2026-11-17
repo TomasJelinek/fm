@@ -79,33 +79,54 @@ pub(crate) enum Grant {
     Conflict(Seen),
 }
 /// Why a granted job's namespace change was refused (see `take_peer_refusal`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Refusal {
-    /// A granted peer is opaque, latched or intersecting; retry after a registry change.
-    Peer(Seen),
-    /// A quarantined claim never clears; waiting would never end.
+    /// Granted peers are opaque, latched or intersecting; retry once one of them changes.
+    Peer(Blockers),
+    /// A refusing peer is quarantined; its claim never clears, so waiting would never end.
     Quarantined,
+}
+/// The granted peers that refused a namespace change, each with its record revision at
+/// the refusal. The refusing job's own turns never end the wait: only these records can
+/// clear the refusal (the change's own facts are re-probed by every retry).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Blockers(Vec<Blocker>);
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Blocker {
+    sequence: u64,
+    revision: u64,
+    /// A latched peer stays opaque until its claim is removed.
+    latched: bool,
+}
+impl Blockers {
+    /// Whether a blocker can clear without being removed, so periodic revalidation of
+    /// external changes can help. A peer latched opaque only clears by its removal.
+    pub(crate) fn can_clear_in_place(&self) -> bool {
+        self.0.is_empty() || self.0.iter().any(|blocker| !blocker.latched)
+    }
 }
 thread_local! {
     static PEER_REFUSAL: std::cell::Cell<Option<Refusal>> = const { std::cell::Cell::new(None) };
 }
-/// Fixture adapters record the refusal a real `reserve_private_child` would record.
+/// Fixture adapters record the refusal a real `reserve_private_child` would record. It
+/// names no peer, so the async owner retries after the minimum spacing.
 #[cfg(test)]
 pub(crate) fn refuse_for_test() {
-    PEER_REFUSAL.with(|refusal| {
-        refusal.set(Some(Refusal::Peer(Seen {
-            revision: 0,
-            structure: 0,
-        })))
-    });
+    PEER_REFUSAL.with(|refusal| refusal.set(Some(Refusal::Peer(Blockers::default()))));
+}
+/// Fixture adapters record a refusal by a quarantined peer.
+#[cfg(test)]
+pub(crate) fn refuse_quarantined_for_test() {
+    PEER_REFUSAL.with(|refusal| refusal.set(Some(Refusal::Quarantined)));
 }
 /// Forget any refusal recorded by an earlier step on this (reused) blocking thread.
 pub(crate) fn clear_peer_refusal() {
     PEER_REFUSAL.with(|refusal| refusal.set(None));
 }
-/// Whether this thread's current step had a namespace change refused because of a granted
-/// peer. Native adapters report such refusals as ordinary errors (`WouldBlock`, or
-/// `AlreadyExists` once fresh private names are exhausted); nothing was mutated yet.
+/// Whether the last namespace reservation of this thread's current step was refused by
+/// granted peers. Every reservation first clears the record, so a refused attempt that a
+/// later reservation of the same step replaced (a fresh private name) is not reported.
+/// Adapters report the refusal as an ordinary error; the refused change mutated nothing.
 pub(crate) fn take_peer_refusal() -> Option<Refusal> {
     PEER_REFUSAL.with(|refusal| refusal.take())
 }
@@ -133,6 +154,38 @@ impl Watch {
             }
             notified.await;
         }
+    }
+    /// Completes once a refusing peer may have cleared: its record changed, was removed or
+    /// quarantined. A latched peer clears only by removal (or quarantine, which ends the
+    /// retry with an error). A refusal that names no peer completes at once.
+    pub(crate) async fn blockers_changed(&self, blockers: &Blockers) {
+        loop {
+            let notified = self.0.notify.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            if self.blockers_cleared(blockers) {
+                return;
+            }
+            notified.await;
+        }
+    }
+    fn blockers_cleared(&self, blockers: &Blockers) -> bool {
+        let state = self
+            .0
+            .state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        blockers.0.is_empty()
+            || blockers
+                .0
+                .iter()
+                .any(|blocker| match state.records.get(&blocker.sequence) {
+                    None => true,
+                    Some(record) => {
+                        record.state == FactsState::Quarantined
+                            || (!blocker.latched && record.revision != blocker.revision)
+                    }
+                })
     }
 }
 struct Record {
@@ -671,6 +724,29 @@ impl Registry {
     fn state(&self, sequence: u64) -> FactsState {
         self.inner.state.lock().unwrap().records[&sequence].state
     }
+    /// Granted claims in admission order.
+    #[cfg(test)]
+    pub(crate) fn granted_for_test(&self) -> Vec<u64> {
+        let state = self.inner.state.lock().unwrap();
+        state
+            .records
+            .iter()
+            .filter(|(_, record)| record.granted)
+            .map(|(sequence, _)| *sequence)
+            .collect()
+    }
+    /// Latch a claim opaque as a failed refresh would, without charging it a diagnostic.
+    #[cfg(test)]
+    pub(crate) fn latch_opaque_for_test(&self, sequence: u64) {
+        let mut state = self.inner.state.lock().unwrap();
+        let record = state.records.get_mut(&sequence).unwrap();
+        record.opaque_latched = true;
+        if record.state == FactsState::Stable {
+            record.state = FactsState::Opaque;
+        }
+        Inner::bump(&mut state, sequence).unwrap();
+        self.inner.signal();
+    }
 }
 
 fn failure(kind: io::ErrorKind, message: &str) -> FsError {
@@ -711,6 +787,14 @@ fn blocked_by_quarantine() -> FsError {
 }
 pub(crate) fn is_blocked_by_quarantine(error: &FsError) -> bool {
     error.operation == QUARANTINE_BLOCK
+}
+/// A running job's change refused by a quarantined peer: the same actionable,
+/// non-retryable error, reported for the refused path.
+pub(crate) fn refused_by_quarantine(path: &Path) -> FsError {
+    FsError {
+        path: path.to_owned(),
+        ..blocked_by_quarantine()
+    }
 }
 fn checked<T>(operation: impl FnOnce() -> T) -> Result<T, FsError> {
     match std::panic::catch_unwind(std::panic::AssertUnwindSafe(operation)) {
@@ -1040,6 +1124,38 @@ impl Claim {
         drop(state);
         drop(retired);
         Ok(grant)
+    }
+    /// The final full revalidation of a granted job's own pins, after its last native work
+    /// and before its owners close. Turns without a granted peer refresh only what they
+    /// announced, so an external change to an untouched pinned binding (a renamed source
+    /// or destination parent) surfaces here: it is latched and reported as a job
+    /// diagnostic, as it would have been by a full turn refresh. Never fails the teardown.
+    pub(crate) fn revalidate_before_close(&self) {
+        let registry = &self.context.registry;
+        let sequence = self.context.sequence;
+        let granted = registry
+            .state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .records
+            .get(&sequence)
+            .is_some_and(|record| record.granted && record.state != FactsState::Quarantined);
+        if !granted {
+            return;
+        }
+        let prepared = self
+            .context
+            .io_witness()
+            .and_then(|io| Ok((io, ProbeBatch::single(registry, sequence)?)));
+        let result = prepared.and_then(|(io, batch)| {
+            // `refresh` latches and records its own probe failures.
+            admitted(registry, &io, || {
+                let _ = batch.refresh(&Cancellation::default(), true);
+            })
+        });
+        if let Err(error) = result {
+            registry.opaque(sequence, error);
+        }
     }
     pub(crate) fn begin_closing(&self) -> Result<(), FsError> {
         let inner = &self.context.registry;
@@ -1667,6 +1783,8 @@ impl TransferNamespaceChange for Transaction {
         mut pin: Option<Arc<dyn TransferNamespacePin>>,
         cancel: &Cancellation,
     ) -> Result<bool, FsError> {
+        // The record describes this reservation only (see `take_peer_refusal`).
+        clear_peer_refusal();
         let io = match self.context.io_witness() {
             Ok(io) => io,
             Err(error) => {
@@ -1762,8 +1880,16 @@ impl TransferNamespaceChange for Transaction {
                         .filter(|(sequence, record)| {
                             **sequence != self.context.sequence && record.granted
                         })
-                        .map(|(_, record)| {
-                            (record.facts.clone(), record.opaque_latched, record.state)
+                        .map(|(sequence, record)| {
+                            (
+                                Blocker {
+                                    sequence: *sequence,
+                                    revision: record.revision,
+                                    latched: record.opaque_latched,
+                                },
+                                record.facts.clone(),
+                                record.state,
+                            )
                         })
                         .collect();
                     (
@@ -1778,11 +1904,16 @@ impl TransferNamespaceChange for Transaction {
                 let unsupported = candidate.is_opaque() && (!peers.is_empty() || !own_opaque);
                 // Closing retains its facts and owners. Its cleanup cannot change
                 // names while this transaction holds the mutation turn.
-                let conflicts = peers.iter().any(|(facts, opaque, state)| {
-                    *opaque
-                        || matches!(state, FactsState::Quarantined)
-                        || candidate.conflicts(facts)
-                });
+                let blockers: Vec<_> = peers
+                    .iter()
+                    .filter(|(blocker, facts, state)| {
+                        blocker.latched
+                            || *state == FactsState::Quarantined
+                            || candidate.conflicts(facts)
+                    })
+                    .map(|(blocker, _, state)| (*blocker, *state))
+                    .collect();
+                let conflicts = !blockers.is_empty();
                 let mapping = if unsupported || conflicts {
                     None
                 } else {
@@ -1815,15 +1946,17 @@ impl TransferNamespaceChange for Transaction {
                 }
                 if conflicts {
                     // The adapter reports this as an ordinary error after the turn; the
-                    // async owner waits for a registry change instead of asking the user.
-                    let quarantined = state
-                        .records
-                        .values()
-                        .any(|record| record.state == FactsState::Quarantined);
-                    let refusal = if quarantined {
+                    // async owner waits for one of these peers to change instead of
+                    // asking the user. The unchanged epoch keeps their revisions current.
+                    let refusal = if blockers
+                        .iter()
+                        .any(|(_, state)| *state == FactsState::Quarantined)
+                    {
                         Refusal::Quarantined
                     } else {
-                        Refusal::Peer(state.seen())
+                        Refusal::Peer(Blockers(
+                            blockers.into_iter().map(|(blocker, _)| blocker).collect(),
+                        ))
                     };
                     PEER_REFUSAL.with(|slot| slot.set(Some(refusal)));
                     return Ok(false);
@@ -1831,10 +1964,13 @@ impl TransferNamespaceChange for Transaction {
                 break (prior, mapping, state);
             };
             // Only the exact original registered capability opts in. Existing
-            // helpers which announce fresh temporary children remain full-refresh.
+            // helpers which announce fresh temporary children remain full-refresh
+            // whenever a granted peer can observe this job's facts (see `finish`).
             // An opted-in helper must announce EVERY affected original/private
             // binding before mutation, including displaced/recovery bindings. Intersection
-            // locates affected roots; it is never a substitute for full coverage.
+            // locates affected roots; it is never a substitute for full coverage: a job
+            // without a granted peer refreshes only touched pins per turn, and its
+            // untouched pins are revalidated by the next grant and before it closes.
             if !registered.is_empty() && !candidate.is_opaque() {
                 self.incremental = true;
             }
@@ -1913,7 +2049,9 @@ impl TransferNamespaceChange for Transaction {
                 // Committed facts are compared only by other granted claims, and every
                 // grant first re-probes all planned records. Without a granted peer
                 // (none can be granted while this turn is held), refresh only what this
-                // turn announced instead of every pin the job has accumulated.
+                // turn announced instead of every pin the job has accumulated; an
+                // external change to an untouched pin is then reported by the job's
+                // final revalidation (`Claim::revalidate_before_close`).
                 let observed = self
                     .context
                     .registry

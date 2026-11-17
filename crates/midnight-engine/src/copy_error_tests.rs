@@ -179,6 +179,25 @@ async fn cancel_partial_write_cleans_stage_and_releases_the_next_queued_job() {
     h.controller
         .enqueue(request(2, std::slice::from_ref(&next), &destination))
         .await;
+    // Job 2 waits for job 1 before Cancel: refused its namespace grant, it holds its own
+    // share (two are held) but neither job holds the only disk slot.
+    let waiting = h
+        .wait_status(2, |progress| {
+            progress.state == CopyOperationState::Preparing
+                && progress.wait_reason == Some(TransferWaitReason::Resources)
+        })
+        .await;
+    assert_eq!(waiting.files_completed, 0);
+    eventually(
+        || h.io.available_permits() == 1,
+        "neither the decision wait nor the grant wait holds the disk slot",
+    )
+    .await;
+    assert_eq!(
+        h.mutation.available_permits(),
+        NAMESPACE_WEIGHT as usize - 2
+    );
+    assert!(!destination.join("next.bin").exists());
     decide(&h, &error, CopyChoice::Cancel).await;
     let cancelled = h.terminal(1).await;
     assert_eq!(cancelled.state, CopyOperationState::Cancelled);

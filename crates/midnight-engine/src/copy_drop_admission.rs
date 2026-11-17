@@ -117,7 +117,7 @@ impl StagedDrop {
             .expect("published drop keeps its original sealed owner");
         let reservation = Reservation {
             owned,
-            payload,
+            payload: Payload::new(payload, &admission),
             completions,
         };
         drop(fence);

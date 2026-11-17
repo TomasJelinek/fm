@@ -1188,10 +1188,35 @@ fn poll_once<F: std::future::Future>(future: std::pin::Pin<&mut F>) -> bool {
     future.poll(&mut context).is_ready()
 }
 
-/// A running job's change refused because a granted peer turned opaque is recorded for
-/// its async owner, which retries after a registry change instead of asking the user.
+/// Run one empty turn of `job`, as a native step that announces nothing would.
+fn empty_turn(job: &Job) {
+    job.claim()
+        .changes()
+        .begin(&Cancellation::default())
+        .unwrap()
+        .finish()
+        .unwrap();
+}
+/// Reserve a fresh private child named `key` in `parent` for `job` and finish the turn.
+fn reserve_once(job: &Job, parent: &Arc<TransferNamespaceParent>, key: &[u8]) -> bool {
+    let mut change = job
+        .claim()
+        .changes()
+        .begin(&Cancellation::default())
+        .unwrap();
+    let (_, fresh) = pin(vec![entry(parent.clone(), key, None, false)]);
+    let reserved = change
+        .reserve_private_child(Some(fresh), &Cancellation::default())
+        .unwrap();
+    change.finish().unwrap();
+    reserved
+}
+
+/// The production wait for a refused change (`blockers_changed`) is not ended by the
+/// refused transaction's own finish or by any later turn of the refused job: only the
+/// refusing peer can clear it. A peer latched opaque clears only by its removal.
 #[test]
-fn refused_change_records_a_peer_refusal_and_the_watch_wakes_on_the_next_change() {
+fn refused_job_own_turns_never_end_its_wait_for_the_refusing_peer() {
     let registry = registry();
     let shared = parent(1, &[1, 0]);
     let mut first = one(
@@ -1212,37 +1237,136 @@ fn refused_change_records_a_peer_refusal_and_the_watch_wakes_on_the_next_change(
         failure(io::ErrorKind::Other, "source handles still open"),
     );
     clear_peer_refusal();
+    assert!(!reserve_once(&second, &shared, b".me-0001"));
+    let Some(Refusal::Peer(blockers)) = take_peer_refusal() else {
+        panic!("the peer refusal must be recorded");
+    };
+    assert_eq!(take_peer_refusal(), None, "a refusal is taken once");
+    assert!(
+        !blockers.can_clear_in_place(),
+        "a latched peer clears only by its removal"
+    );
+    let watch = second.claim().watch();
+    let cleared = watch.blockers_changed(&blockers);
+    tokio::pin!(cleared);
+    assert!(
+        !poll_once(cleared.as_mut()),
+        "the refused job's own transaction finish ended its wait for the opaque peer"
+    );
+    empty_turn(&second);
+    assert!(
+        !poll_once(cleared.as_mut()),
+        "a later own turn ended the wait"
+    );
+    empty_turn(&first);
+    assert!(
+        !poll_once(cleared.as_mut()),
+        "a latched peer's turn cannot clear its refusal"
+    );
+    first.close();
+    assert!(poll_once(cleared.as_mut()));
+}
+
+/// An intersecting (not latched) peer can clear its refusal by any change of its own
+/// record, such as its next turn; the refused job's turns still never end the wait.
+#[test]
+fn intersecting_peer_refusal_waits_for_that_peers_next_change() {
+    let registry = registry();
+    let shared = parent(1, &[1, 0]);
+    let first = one(
+        &registry,
+        1,
+        Write,
+        entry(shared.clone(), b"one", None, false),
+    );
+    let second = one(
+        &registry,
+        2,
+        Write,
+        entry(shared.clone(), b"two", None, false),
+    );
+    assert!(first.grant() && second.grant());
+    clear_peer_refusal();
+    // The second job announces the first job's own slot.
+    assert!(!reserve_once(&second, &shared, b"one"));
+    let Some(Refusal::Peer(blockers)) = take_peer_refusal() else {
+        panic!("the intersecting peer's refusal must be recorded");
+    };
+    assert!(blockers.can_clear_in_place());
+    let watch = second.claim().watch();
+    let cleared = watch.blockers_changed(&blockers);
+    tokio::pin!(cleared);
+    empty_turn(&second);
+    assert!(!poll_once(cleared.as_mut()));
+    empty_turn(&first);
+    assert!(poll_once(cleared.as_mut()));
+}
+
+/// A refused grant (`Grant::Conflict`) waits only for a grant, removal or quarantine:
+/// ordinary turns of the conflicting peer do not end it.
+#[test]
+fn refused_grant_waits_only_for_a_structural_change() {
+    let registry = registry();
+    let shared = parent(1, &[1, 0]);
+    let mut first = one(
+        &registry,
+        1,
+        Write,
+        entry(shared.clone(), b"one", None, false),
+    );
+    assert!(first.grant());
+    let second = one(&registry, 2, Write, entry(shared, b"one", None, false));
+    let Grant::Conflict(seen) = second.claim().admit(&Cancellation::default()).unwrap() else {
+        panic!("an intersecting candidate must be refused");
+    };
+    let watch = second.claim().watch();
+    let structural = watch.changed(seen, true);
+    tokio::pin!(structural);
+    assert!(!poll_once(structural.as_mut()));
+    empty_turn(&first);
+    assert!(!poll_once(structural.as_mut()));
+    first.close();
+    assert!(poll_once(structural.as_mut()));
+}
+
+/// The record describes the last reservation only: a refused fresh name replaced by an
+/// accepted one in the same step is not reported as a refusal.
+#[test]
+fn accepted_reservation_replaces_an_earlier_refusal_of_the_same_step() {
+    let registry = registry();
+    let shared = parent(1, &[1, 0]);
+    let first = one(
+        &registry,
+        1,
+        Write,
+        entry(shared.clone(), b"one", None, false),
+    );
+    let second = one(
+        &registry,
+        2,
+        Write,
+        entry(shared.clone(), b"two", None, false),
+    );
+    assert!(first.grant() && second.grant());
     let mut change = second
         .claim()
         .changes()
         .begin(&Cancellation::default())
         .unwrap();
-    let (_, fresh) = pin(vec![entry(shared.clone(), b".me-0001", None, false)]);
+    let (_, taken) = pin(vec![entry(shared.clone(), b"one", None, false)]);
+    let (_, free) = pin(vec![entry(shared.clone(), b".me-0004", None, false)]);
     assert!(
         !change
-            .reserve_private_child(Some(fresh), &Cancellation::default())
+            .reserve_private_child(Some(taken), &Cancellation::default())
+            .unwrap()
+    );
+    assert!(
+        change
+            .reserve_private_child(Some(free), &Cancellation::default())
             .unwrap()
     );
     change.finish().unwrap();
-    let Some(Refusal::Peer(seen)) = take_peer_refusal() else {
-        panic!("the peer refusal must be recorded");
-    };
-    assert_eq!(take_peer_refusal(), None, "a refusal is taken once");
-    let watch = second.claim().watch();
-    let structural = watch.changed(seen, true);
-    tokio::pin!(structural);
-    assert!(!poll_once(structural.as_mut()));
-    // A non-structural change (another turn) does not end a structural wait.
-    second
-        .claim()
-        .changes()
-        .begin(&Cancellation::default())
-        .unwrap()
-        .finish()
-        .unwrap();
-    assert!(!poll_once(structural.as_mut()));
-    first.close();
-    assert!(poll_once(structural.as_mut()));
+    assert_eq!(take_peer_refusal(), None);
 }
 
 #[test]
@@ -2233,6 +2357,60 @@ fn unobserved_finish_probes_only_announced_pins_and_the_next_grant_revalidates_a
     );
     assert!(!descendant.grant());
     assert!(control.calls.load(Ordering::SeqCst) > before);
+}
+
+/// A job without a granted peer refreshes only announced pins per turn. Its final
+/// revalidation before closing still latches an external change to an untouched pinned
+/// binding and records it as the job's diagnostic, as a full turn refresh would have.
+/// A claim that was never granted touched nothing and is not revalidated.
+#[test]
+fn final_revalidation_reports_an_untouched_pin_change_of_a_lone_job() {
+    let registry = registry();
+    let shared = parent(1, &[1, 0]);
+    let (_, touched) = pin(vec![entry(shared.clone(), b"touched", None, false)]);
+    let (untouched_control, untouched) =
+        pin(vec![entry(shared.clone(), b"untouched", None, false)]);
+    let mut job = Job::new(
+        &registry,
+        1,
+        vec![(Write, Some(touched.clone())), (Read, Some(untouched))],
+    );
+    assert!(job.grant());
+    let before = untouched_control.calls.load(Ordering::SeqCst);
+    let mut transaction = job
+        .claim()
+        .changes()
+        .begin(&Cancellation::default())
+        .unwrap();
+    assert!(
+        transaction
+            .reserve_private_child(Some(touched), &Cancellation::default())
+            .unwrap()
+    );
+    transaction.finish().unwrap();
+    assert_eq!(
+        untouched_control.calls.load(Ordering::SeqCst),
+        before,
+        "a lone job's turn refreshes only what it announced"
+    );
+    *untouched_control.probe.lock().unwrap() = Err(failure(
+        io::ErrorKind::InvalidInput,
+        "original namespace parent or ancestry changed",
+    ));
+    job.claim().revalidate_before_close();
+    assert!(untouched_control.calls.load(Ordering::SeqCst) > before);
+    let diagnostics = job.claim().take_diagnostics();
+    assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
+    assert!(diagnostics[0].message.contains("ancestry changed"));
+    assert_eq!(registry.state(1), FactsState::Opaque);
+
+    let (waiting_control, waiting) = pin(vec![entry(shared, b"touched", None, false)]);
+    let ungranted = Job::new(&registry, 2, vec![(Write, Some(waiting))]);
+    let planned = waiting_control.calls.load(Ordering::SeqCst);
+    ungranted.claim().revalidate_before_close();
+    assert_eq!(waiting_control.calls.load(Ordering::SeqCst), planned);
+    assert!(ungranted.claim().take_diagnostics().is_empty());
+    job.close();
 }
 
 #[test]

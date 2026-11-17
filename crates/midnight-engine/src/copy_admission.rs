@@ -84,8 +84,39 @@ impl Drop for Consumer {
 
 pub(crate) struct Reservation {
     owned: Owned<()>,
-    payload: oneshot::Sender<Request>,
+    payload: Payload,
     completions: Option<Arc<HashMap<std::path::PathBuf, TreeCopyOccurrence>>>,
+}
+/// The payload sender of a published reservation. Abandoning it unfilled wakes the
+/// consumer, which prunes the closed slot at once (not on its slow fallback), so
+/// abandoned reservations cannot keep the bounded slot queue full.
+struct Payload {
+    sender: Option<oneshot::Sender<Request>>,
+    admission: std::sync::Weak<Shared>,
+}
+impl Payload {
+    fn new(sender: oneshot::Sender<Request>, admission: &Admission) -> Self {
+        Self {
+            sender: Some(sender),
+            admission: Arc::downgrade(&admission.0),
+        }
+    }
+    fn into_sender(mut self) -> oneshot::Sender<Request> {
+        self.sender
+            .take()
+            .expect("an unfilled reservation owns its payload sender")
+    }
+}
+impl Drop for Payload {
+    fn drop(&mut self) {
+        if let Some(sender) = self.sender.take() {
+            // Close the slot before the consumer rescans.
+            drop(sender);
+            if let Some(shared) = self.admission.upgrade() {
+                shared.ready.notify_one();
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -158,6 +189,11 @@ impl Admission {
     #[cfg(test)]
     pub(crate) fn reserve(&self) -> Result<Reservation, FsError> {
         self.stage_drop()?.publish()
+    }
+    /// Published reservations the consumer has not yet received or pruned.
+    #[cfg(test)]
+    pub(crate) fn pending_slots(&self) -> usize {
+        self.0.state.lock().unwrap().slots.len()
     }
 
     #[cfg(test)]
@@ -332,9 +368,9 @@ impl Admission {
             if let Some(request) = ready {
                 return Some(request);
             }
-            // Reservations, fills and shutdown notify `ready`, so new work starts at
-            // once. The slow fallback only observes cancellation that arrives through
-            // the token alone and prunes reservations abandoned without a fill; it
+            // Reservations, fills, abandoned reservations and shutdown notify `ready`,
+            // so new work starts and closed slots are pruned at once. The slow fallback
+            // only observes cancellation that arrives through the token alone; it
             // replaces the former 40 Hz idle polling.
             tokio::select! {
                 _ = notified => {},
@@ -359,7 +395,10 @@ impl Reservation {
             payload,
             completions: _,
         } = self;
-        (ownership::attach_reserved_input(owned, input), payload)
+        (
+            ownership::attach_reserved_input(owned, input),
+            payload.into_sender(),
+        )
     }
     pub(crate) fn completions(
         &self,
@@ -376,7 +415,7 @@ impl Reservation {
             payload,
             completions: _,
         } = self;
-        ownership::map(owned, |_| input).map(|owned| (owned, payload))
+        ownership::map(owned, |_| input).map(|owned| (owned, payload.into_sender()))
     }
 }
 #[cfg(test)]

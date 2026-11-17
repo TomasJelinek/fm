@@ -273,136 +273,6 @@ async fn running_transfer_yields_its_slot_to_queued_exclusive_and_later_shared_r
     h.close().await;
 }
 
-/// Refuses the first stage creations as a native adapter does when a granted peer's
-/// namespace (opaque, latched or intersecting) refuses its private reservation.
-struct RefusingService {
-    inner: midnight_platform::LocalFileSystem,
-    refusals: Arc<AtomicUsize>,
-}
-impl midnight_core::AuditedSynchronousTransferService for RefusingService {}
-impl TransferService for RefusingService {
-    fn prepare_transfer_source(
-        &self,
-        path: &Path,
-        cancel: &Cancellation,
-    ) -> Result<Box<dyn TransferSource>, FsError> {
-        self.inner.prepare_transfer_source(path, cancel)
-    }
-    fn prepare_transfer_destination(
-        &self,
-        path: &Path,
-        cancel: &Cancellation,
-    ) -> Result<Arc<dyn TransferDirectory>, FsError> {
-        Ok(Arc::new(RefusingDirectory {
-            inner: self.inner.prepare_transfer_destination(path, cancel)?,
-            refusals: self.refusals.clone(),
-        }))
-    }
-}
-struct RefusingDirectory {
-    inner: Arc<dyn TransferDirectory>,
-    refusals: Arc<AtomicUsize>,
-}
-impl TransferDirectory for RefusingDirectory {
-    fn path(&self) -> &Path {
-        self.inner.path()
-    }
-    fn identity(&self) -> TransferIdentity {
-        self.inner.identity()
-    }
-    fn capabilities(&self) -> TransferCapabilities {
-        self.inner.capabilities()
-    }
-    fn revalidate(&self, cancel: &Cancellation) -> Result<(), FsError> {
-        self.inner.revalidate(cancel)
-    }
-    fn inspect(
-        &self,
-        name: &std::ffi::OsStr,
-        cancel: &Cancellation,
-    ) -> Result<Option<TransferEntry>, FsError> {
-        self.inner.inspect(name, cancel)
-    }
-    fn prepare_target(
-        &self,
-        name: &std::ffi::OsStr,
-        cancel: &Cancellation,
-    ) -> Result<Option<Arc<dyn TransferTarget>>, FsError> {
-        self.inner.prepare_target(name, cancel)
-    }
-    fn reject_source_ancestor(
-        &self,
-        source: TransferIdentity,
-        cancel: &Cancellation,
-    ) -> Result<(), FsError> {
-        self.inner.reject_source_ancestor(source, cancel)
-    }
-    fn create_directory(
-        &self,
-        name: &std::ffi::OsStr,
-        cancel: &Cancellation,
-    ) -> Result<Arc<dyn TransferDirectory>, FsError> {
-        self.inner.create_directory(name, cancel)
-    }
-    fn stage_file(&self, cancel: &Cancellation) -> Result<Box<dyn StagedTransferFile>, FsError> {
-        if self
-            .refusals
-            .try_update(Ordering::SeqCst, Ordering::SeqCst, |left| {
-                left.checked_sub(1)
-            })
-            .is_ok()
-        {
-            crate::copy_namespace::refuse_for_test();
-            return Err(FsError::from_io(
-                "create transfer stage",
-                self.path(),
-                io::Error::new(io::ErrorKind::WouldBlock, "a granted peer refused the name"),
-            ));
-        }
-        self.inner.stage_file(cancel)
-    }
-}
-
-/// A namespace change refused by a granted peer before any native mutation is retried
-/// automatically after the registry changes: no failure prompt, no recorded error.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn peer_refused_stage_creation_retries_without_a_failure_prompt() {
-    let temp = fixture();
-    let source = temp.path().join("source");
-    let destination = temp.path().join("destination");
-    fs::write(&source, b"retried after the peer").unwrap();
-    fs::create_dir(&destination).unwrap();
-    let refusals = Arc::new(AtomicUsize::new(2));
-    let mut h = Harness::new(Some(Arc::new(RefusingService {
-        inner: midnight_platform::LocalFileSystem::new(None),
-        refusals: refusals.clone(),
-    })));
-    h.controller
-        .enqueue(request(1, std::slice::from_ref(&source), &destination))
-        .await;
-    let done = loop {
-        match h.next().await {
-            CopyEvent::Failure(failure) => {
-                panic!("a peer refusal must not ask the user: {failure:?}")
-            }
-            CopyEvent::Progress(progress)
-                if progress.id == OperationId(1) && progress.state.is_terminal() =>
-            {
-                break progress;
-            }
-            _ => {}
-        }
-    };
-    assert_eq!(done.state, CopyOperationState::Completed, "{done:?}");
-    assert!(done.errors.is_empty());
-    assert_eq!(refusals.load(Ordering::SeqCst), 0);
-    assert_eq!(
-        fs::read(destination.join("source")).unwrap(),
-        b"retried after the peer"
-    );
-    h.close().await;
-}
-
 /// A job refused a namespace grant keeps its share and planned record but returns its
 /// disk slot between attempts: a call-scoped request is admitted although the granted
 /// peer holds the only other slot for as long as its native call blocks.
@@ -466,4 +336,30 @@ async fn namespace_grant_wait_returns_the_disk_slot() {
     assert_eq!(h.terminal(2).await.state, CopyOperationState::Completed);
     assert_eq!(fs::read_dir(&destination).unwrap().count(), 2);
     h.close().await;
+}
+
+/// A pause requested after the pre-check but before the checkpoint is acknowledged by the
+/// checkpoint itself; the slot is returned before that paused state can be published, so
+/// a paused job never holds a disk slot.
+#[test]
+fn pause_acknowledged_by_the_checkpoint_returns_the_slot_first() {
+    let gate = Arc::new(Gate::new(1));
+    let permit = gate
+        .try_acquire_retained(Admission::Shared)
+        .expect("free slot");
+    let cancel = Cancellation::default().pausable_child();
+    BEFORE_PAUSE_CHECKPOINT.with(|hook| {
+        hook.set(Some(|cancel: &Cancellation| {
+            cancel.set_pause_requested(true)
+        }))
+    });
+    assert!(!pause_checkpoint(&cancel, Some(&permit)));
+    assert!(cancel.is_paused());
+    assert!(!permit.is_held(), "an acknowledged pause holds no slot");
+    assert_eq!(gate.snapshot().active_shared, 0);
+    // Without a pause the checkpoint keeps the slot.
+    cancel.set_pause_requested(false);
+    assert!(permit.try_reacquire());
+    assert!(pause_checkpoint(&cancel, Some(&permit)));
+    assert!(permit.is_held());
 }

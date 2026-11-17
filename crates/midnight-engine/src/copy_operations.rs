@@ -108,12 +108,40 @@ impl InputRegistration {
     }
 }
 
+/// Job controls (cancel, pause, resume) and engine shutdown as an awaitable signal.
+/// Cancellation and pause stay plain flags; the controller notifies after every change
+/// and each wait re-checks its own flags, so no job polls while it waits. A slow
+/// re-check guards against a flag changed without a notification.
+#[derive(Clone, Default)]
+pub(crate) struct Controls(Arc<tokio::sync::Notify>);
+const CONTROL_RECHECK: Duration = Duration::from_secs(1);
+impl Controls {
+    pub(crate) fn changed(&self) {
+        self.0.notify_waiters();
+    }
+    /// Completes once `stop()` holds; it is re-checked after every control change.
+    pub(crate) async fn until(&self, stop: impl Fn() -> bool) {
+        loop {
+            let notified = self.0.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            if stop() {
+                return;
+            }
+            let _ = tokio::time::timeout(CONTROL_RECHECK, notified).await;
+        }
+    }
+}
+
 pub(crate) struct Controller {
     admission: Admission,
     outbox: Outbox,
     registry: Registry,
     cancel: Cancellation,
+    controls: Controls,
     highest: AtomicU64,
+    #[cfg(test)]
+    namespace: crate::copy_namespace::Registry,
     #[cfg(test)]
     retirement: tokio::sync::Mutex<crate::retirement::RetirementWaiter>,
 }
@@ -157,6 +185,9 @@ impl Controller {
         drop(intake);
         let registry = Registry::default();
         let cancel = admission.cancellation();
+        let namespace = crate::copy_namespace::Registry::new_with_io(io_budget.gate().clone());
+        #[cfg(test)]
+        let retained_namespace = namespace.clone();
         tasks.spawn(run(
             admission.consumer(),
             service,
@@ -165,16 +196,25 @@ impl Controller {
             cancel.clone(),
             mutation_gate,
             io_budget,
+            namespace,
         ));
         Self {
             admission,
             outbox,
             registry,
             cancel,
+            controls: Controls::default(),
             highest: AtomicU64::new(0),
+            #[cfg(test)]
+            namespace: retained_namespace,
             #[cfg(test)]
             retirement: tokio::sync::Mutex::new(intake),
         }
+    }
+    /// The actor's namespace registry, for tests that steer granted claims.
+    #[cfg(test)]
+    pub(crate) fn namespace(&self) -> &crate::copy_namespace::Registry {
+        &self.namespace
     }
     #[cfg(test)]
     pub(crate) fn capacity(&self) -> Arc<Semaphore> {
@@ -186,6 +226,10 @@ impl Controller {
     #[cfg(test)]
     pub(crate) fn reserve(&self) -> Result<Reservation, FsError> {
         self.admission.reserve()
+    }
+    #[cfg(test)]
+    pub(crate) fn pending_slots(&self) -> usize {
+        self.admission.pending_slots()
     }
     #[cfg(test)]
     pub(crate) async fn enqueue(&self, request: CopyRequest) {
@@ -290,7 +334,11 @@ impl Controller {
             .unwrap_or_else(|| self.cancel.pausable_child());
         let status = Arc::new(Mutex::new(progress.clone()));
         request.resources_mut().attach_status(status.clone());
-        let events = CopyOutbox::pending_with_shutdown(self.outbox.clone(), self.cancel.clone());
+        let events = CopyOutbox::pending_with_shutdown(
+            self.outbox.clone(),
+            self.cancel.clone(),
+            self.controls.clone(),
+        );
         let waiting = Arc::new(AtomicU64::new(0));
         let (decisions, decision_receiver) = mpsc::channel(8);
         if ordered_id {
@@ -358,10 +406,16 @@ impl Controller {
             progress.paused = job.cancel.is_paused();
             (progress.clone(), job.events.clone())
         };
+        self.controls.changed();
         publish(&events, progress).await;
     }
     pub(crate) fn cancel(&self, id: OperationId) {
         self.admission.cancel_pending(id);
+        self.cancel_registered(id);
+        // Waiting jobs re-check their flags now instead of polling for them.
+        self.controls.changed();
+    }
+    fn cancel_registered(&self, id: OperationId) {
         let registry = self.registry.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(job) = registry.get(&id) {
             job.cancel.cancel();
@@ -389,6 +443,7 @@ impl Controller {
     }
     pub(crate) fn shutdown(&self) {
         self.admission.shutdown();
+        self.controls.changed();
     }
 }
 impl Drop for Controller {
@@ -397,6 +452,10 @@ impl Drop for Controller {
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "The actor owns each shared lease source separately; a bundle would only rename them."
+)]
 async fn run(
     consumer: admission::Consumer,
     service: WorkerOwned<CopyServices>,
@@ -405,9 +464,9 @@ async fn run(
     cancel: Cancellation,
     mutation_gate: Arc<Semaphore>,
     io_budget: Arc<IoBudget>,
+    namespace: crate::copy_namespace::Registry,
 ) {
     let service = Arc::new(service);
-    let namespace = crate::copy_namespace::Registry::new_with_io(io_budget.gate().clone());
     let requests = consumer.admission();
     let mut jobs = JoinSet::new();
     loop {
@@ -644,7 +703,7 @@ async fn execute_input(
             Some(throughput),
             Some(TransferWaitReason::EarlierTransfers),
         );
-        let finished = predecessors.wait(&cancel).await;
+        let finished = predecessors.wait(&cancel, &outbox.controls).await;
         set_resource_wait(&status, Some(throughput), None);
         if !finished {
             return retire_input(request, cancelled(&status), &status).await;
@@ -805,9 +864,10 @@ async fn execute_input(
                 }))
                 .await;
         }
-        if let Some(since) = busy {
-            // A granted peer's namespace refused this change: wait for the registry
-            // (holding no disk slot) and retry automatically instead of asking.
+        if let Some(blockers) = busy {
+            // Granted peers refused this change: wait (holding no disk slot) until one
+            // of them changes, then repeat the step instead of asking. This job's own
+            // turns never end the wait.
             io.release();
             set_resource_wait(
                 &status,
@@ -815,7 +875,7 @@ async fn execute_input(
                 Some(TransferWaitReason::Resources),
             );
             match &watch {
-                Some(watch) => wait_for_namespace(watch, since, false, &cancel).await,
+                Some(watch) => wait_for_peers(watch, &blockers, &cancel, outbox).await,
                 None => tokio::time::sleep(NAMESPACE_RETRY_SPACING).await,
             }
             set_resource_wait(&status, Some(throughput), None);
@@ -864,8 +924,34 @@ fn refresh_pause(status: &Status, cancel: &Cancellation) -> bool {
     progress.paused = paused;
     changed
 }
+#[cfg(test)]
+thread_local! {
+    /// Runs once between the pause check and the checkpoint (pause-race tests).
+    static BEFORE_PAUSE_CHECKPOINT: std::cell::Cell<Option<fn(&Cancellation)>> =
+        const { std::cell::Cell::new(None) };
+}
+/// Acknowledge a requested pause only without the disk slot: "paused" implies "no slot".
+/// The slot is returned before the checkpoint, and again if a pause requested between the
+/// two checks was acknowledged, so it is never published as paused while holding it.
+fn pause_checkpoint(cancel: &Cancellation, io: Option<&midnight_work_budget::Permit>) -> bool {
+    if let Some(io) = io
+        && cancel.pause_requested()
+    {
+        io.release();
+    }
+    #[cfg(test)]
+    if let Some(hook) = BEFORE_PAUSE_CHECKPOINT.with(std::cell::Cell::take) {
+        hook(cancel);
+    }
+    let ready = cancel.pause_checkpoint();
+    if !ready && let Some(io) = io {
+        io.release();
+    }
+    ready
+}
 /// A safe checkpoint between native steps. A paused job returns its disk slot (`io`)
-/// while it waits; `ready_for_io` readmits it before the next step. False: cancelled.
+/// while it waits for resume or cancellation; `ready_for_io` readmits it before the next
+/// step. False: cancelled.
 async fn wait_for_pause(
     cancel: &Cancellation,
     status: &Status,
@@ -874,13 +960,7 @@ async fn wait_for_pause(
     io: Option<&midnight_work_budget::Permit>,
 ) -> bool {
     loop {
-        if let Some(io) = io
-            && cancel.pause_requested()
-        {
-            // Return the slot before acknowledging the pause: "paused" implies "no slot".
-            io.release();
-        }
-        let ready = cancel.pause_checkpoint();
+        let ready = pause_checkpoint(cancel, io);
         let changed = refresh_pause(status, cancel);
         if changed || ready {
             sample_throughput(status, throughput);
@@ -891,7 +971,10 @@ async fn wait_for_pause(
         if ready || cancel.is_cancelled() {
             return ready;
         }
-        tokio::time::sleep(Duration::from_millis(10)).await;
+        outbox
+            .controls
+            .until(|| cancel.is_cancelled() || !cancel.pause_requested())
+            .await;
     }
 }
 
@@ -923,7 +1006,7 @@ async fn ready_for_io(
             Some(throughput),
             Some(TransferWaitReason::Resources),
         );
-        let admitted = interruptible(io.reacquire(), cancel).await;
+        let admitted = interruptible(io.reacquire(), cancel, outbox).await;
         set_resource_wait(status, Some(throughput), previous);
         if admitted.is_some() {
             return true;
@@ -935,24 +1018,20 @@ async fn ready_for_io(
     }
 }
 
-/// Await `future` unless the job is cancelled or paused first. Cancellation and pause are
-/// plain flags, observed on the cooperative-wait cadence; dropping the future withdraws it.
+/// Await `future` unless the job is cancelled or paused first. Both are plain flags that
+/// the controller announces through `Controls`; dropping the future withdraws it.
 async fn interruptible<F: std::future::Future>(
     future: F,
     cancel: &Cancellation,
+    outbox: &CopyOutbox,
 ) -> Option<F::Output> {
-    tokio::pin!(future);
-    let mut interrupt = tokio::time::interval(Duration::from_millis(25));
-    interrupt.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-    loop {
-        tokio::select! {
-            output = &mut future => return Some(output),
-            _ = interrupt.tick() => {
-                if cancel.is_cancelled() || cancel.pause_requested() {
-                    return None;
-                }
-            }
-        }
+    let interrupted = outbox
+        .controls
+        .until(|| cancel.is_cancelled() || cancel.pause_requested());
+    tokio::select! {
+        biased;
+        () = interrupted => None,
+        output = future => Some(output),
     }
 }
 
@@ -962,18 +1041,41 @@ const NAMESPACE_RETRY_SPACING: Duration = Duration::from_millis(25);
 /// at least this often while a job waits for a namespace grant or change.
 const NAMESPACE_REVALIDATE: Duration = Duration::from_secs(1);
 
-/// A refused namespace grant or change waits for the registry instead of polling: any
-/// change after `since`, or (`structural`) only a grant, removal or quarantine. The
-/// caller holds no disk slot here; cancellation and pause end the wait at once.
+/// A refused namespace grant waits for the registry instead of polling: any change after
+/// `since`, or (`structural`) only a grant, removal or quarantine. The caller holds no
+/// disk slot here; cancellation and pause end the wait at once.
 async fn wait_for_namespace(
     watch: &crate::copy_namespace::Watch,
     since: crate::copy_namespace::Seen,
     structural: bool,
     cancel: &Cancellation,
+    outbox: &CopyOutbox,
 ) {
     let started = tokio::time::Instant::now();
-    let changed = interruptible(watch.changed(since, structural), cancel);
+    let changed = interruptible(watch.changed(since, structural), cancel, outbox);
     let _ = tokio::time::timeout(NAMESPACE_REVALIDATE, changed).await;
+    if !cancel.is_cancelled() && !cancel.pause_requested() {
+        tokio::time::sleep_until(started + NAMESPACE_RETRY_SPACING).await;
+    }
+}
+
+/// A namespace change refused by granted peers waits until one of them changes (or is
+/// removed); the refused job's own turns never end it. External changes that the
+/// registry cannot see are revalidated once per second, except against peers latched
+/// opaque, which clear only by their removal. No disk slot is held here.
+async fn wait_for_peers(
+    watch: &crate::copy_namespace::Watch,
+    blockers: &crate::copy_namespace::Blockers,
+    cancel: &Cancellation,
+    outbox: &CopyOutbox,
+) {
+    let started = tokio::time::Instant::now();
+    let changed = interruptible(watch.blockers_changed(blockers), cancel, outbox);
+    if blockers.can_clear_in_place() {
+        let _ = tokio::time::timeout(NAMESPACE_REVALIDATE, changed).await;
+    } else {
+        changed.await;
+    }
     if !cancel.is_cancelled() && !cancel.pause_requested() {
         tokio::time::sleep_until(started + NAMESPACE_RETRY_SPACING).await;
     }
@@ -1011,7 +1113,7 @@ async fn acquire_leases(
                     Some(throughput),
                     Some(TransferWaitReason::Resources),
                 );
-                match interruptible(namespace.clone().acquire_owned(), cancel).await {
+                match interruptible(namespace.clone().acquire_owned(), cancel, outbox).await {
                     Some(Ok(share)) => share,
                     Some(Err(_)) => break Err(closing()),
                     None if cancel.is_cancelled() => break Ok(None),
@@ -1028,7 +1130,7 @@ async fn acquire_leases(
                     Some(throughput),
                     Some(TransferWaitReason::Resources),
                 );
-                match interruptible(gate.acquire_retained(admission), cancel).await {
+                match interruptible(gate.acquire_retained(admission), cancel, outbox).await {
                     Some(disk) => disk,
                     None if cancel.is_cancelled() => break Ok(None),
                     // Paused while queued: hold neither lease during the pause.

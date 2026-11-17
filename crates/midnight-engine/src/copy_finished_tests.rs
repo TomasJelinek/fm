@@ -1,6 +1,7 @@
 use super::*;
+use crate::copy_operations::Controls;
 use midnight_core::{CopyOperationState, CopyProgress, OperationId, TransferIntent};
-use std::{future::Future, path::PathBuf, task::Poll};
+use std::{future::Future, path::PathBuf, task::Poll, time::Duration};
 
 #[test]
 fn unpublished_owner_and_preparation_do_not_publish_or_consume_a_sequence() {
@@ -150,7 +151,8 @@ async fn cancelled_wait_does_not_finish_predecessors_or_require_their_completion
     let (first, _) = registry.register().unwrap();
     let (second, wait) = registry.register().unwrap();
     let cancel = Cancellation::default();
-    let waiting = wait.wait(&cancel);
+    let controls = Controls::default();
+    let waiting = wait.wait(&cancel, &controls);
     tokio::pin!(waiting);
     std::future::poll_fn(|context| {
         assert!(waiting.as_mut().poll(context).is_pending());
@@ -158,11 +160,13 @@ async fn cancelled_wait_does_not_finish_predecessors_or_require_their_completion
     })
     .await;
     cancel.cancel();
-    assert!(
-        !tokio::time::timeout(Duration::from_secs(2), waiting)
-            .await
-            .unwrap()
-    );
+    controls.changed();
+    // The announced cancellation ends the wait at once, without a polling interval.
+    std::future::poll_fn(|context| {
+        assert_eq!(waiting.as_mut().poll(context), Poll::Ready(false));
+        Poll::Ready(())
+    })
+    .await;
     assert!(!wait.is_finished());
     first.finish();
     second.finish();
@@ -174,7 +178,8 @@ async fn explicit_completion_wakes_an_already_parked_waiter() {
     let (first, _) = registry.register().unwrap();
     let (second, wait) = registry.register().unwrap();
     let cancel = Cancellation::default();
-    let waiting = wait.wait(&cancel);
+    let controls = Controls::default();
+    let waiting = wait.wait(&cancel, &controls);
     tokio::pin!(waiting);
     std::future::poll_fn(|context| {
         assert!(waiting.as_mut().poll(context).is_pending());
@@ -205,7 +210,7 @@ async fn failed_and_cancelled_retirement_finish_without_satisfying_the_success_f
         receipt.finish(&progress);
         first.finish();
         let cancel = Cancellation::default();
-        assert!(wait.wait(&cancel).await);
+        assert!(wait.wait(&cancel, &Controls::default()).await);
         assert!(
             success_wait
                 .wait(&cancel, &progress.destination_directory)

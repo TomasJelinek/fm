@@ -217,6 +217,11 @@ impl LinkCopy {
         matches!(self.phase, Phase::Staging)
     }
 
+    /// The next step publishes the verified stage at the final name.
+    fn publishes_next(&self) -> bool {
+        matches!(self.phase, Phase::ReadyToPublish)
+    }
+
     pub(super) fn can_retry(&self) -> bool {
         !self.cleanup_attempted
             && !matches!(self.phase, Phase::Published | Phase::ConstructionFailed)
@@ -490,7 +495,14 @@ impl Job {
             return Ok(Action::Conflict(target));
         }
         let copy = work.link.as_mut().expect("started link copy");
-        let publication = copy.step(work.destination.as_ref(), &work.name, &self.cancel)?;
+        let publishes = copy.publishes_next();
+        let publication = copy.step(work.destination.as_ref(), &work.name, &self.cancel);
+        // Only publication uses the final name; a staging AlreadyExists is no collision.
+        let publication = if publishes {
+            self.at_final_name(publication)?
+        } else {
+            publication?
+        };
         self.progress.phase = copy.progress_phase();
         let Some(publication) = publication else {
             return Ok(Action::Keep);

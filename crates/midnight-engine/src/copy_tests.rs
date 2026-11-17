@@ -29,6 +29,8 @@ mod moves;
 mod native_moves;
 #[path = "copy_pause_tests.rs"]
 mod pause;
+#[path = "copy_peer_refusal_tests.rs"]
+mod peer_refusal;
 #[path = "copy_progress_discovery_tests.rs"]
 mod progress_discovery;
 #[path = "copy_progress_verification_tests.rs"]
@@ -82,6 +84,24 @@ async fn native_drop_reservations_share_the_actual_copy_job_capacity() {
     harness.controller.shutdown();
     assert!(harness.controller.reserve().is_err());
     while harness.tasks.join_next().await.is_some() {}
+}
+
+/// Wait until `ready()` holds; another thread or task makes it true. Spin on `yield_now`
+/// first: the common case finishes within microseconds and the yield lets the tasks of
+/// a current-thread runtime (such as the admission consumer) run. Then back off to 1 ms
+/// sleeps, so a slower wait does not burn a core. Fails only after 4 s.
+async fn eventually(mut ready: impl FnMut() -> bool, what: &str) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(4);
+    let mut spins = 0u32;
+    while !ready() {
+        assert!(std::time::Instant::now() < deadline, "{what}");
+        if spins < 1_000 {
+            spins += 1;
+            tokio::task::yield_now().await;
+        } else {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    }
 }
 
 fn fixture() -> tempfile::TempDir {
@@ -184,28 +204,44 @@ impl Harness {
     }
     async fn wait_capacity(&self, available: usize) {
         let capacity = self.controller.capacity();
-        tokio::time::timeout(Duration::from_secs(4), async {
-            while capacity.available_permits() != available {
-                tokio::time::sleep(Duration::from_millis(1)).await;
-            }
-        })
-        .await
-        .expect("checked retirement and delivery must return the expected admission capacity");
+        eventually(
+            || capacity.available_permits() == available,
+            "checked retirement and delivery must return the expected admission capacity",
+        )
+        .await;
     }
     async fn reserve_ready(&self) -> Reservation {
-        tokio::time::timeout(Duration::from_secs(4), async {
-            loop {
-                match self.controller.reserve() {
-                    Ok(reservation) => return reservation,
-                    Err(error) if error.kind == io::ErrorKind::WouldBlock => {
-                        tokio::time::sleep(Duration::from_millis(1)).await;
-                    }
-                    Err(error) => panic!("Copy admission unexpectedly refused: {error}"),
+        let mut reservation = None;
+        eventually(
+            || match self.controller.reserve() {
+                Ok(ready) => {
+                    reservation = Some(ready);
+                    true
                 }
-            }
-        })
-        .await
-        .expect("actual Copy admission must become ready")
+                Err(error) if error.kind == io::ErrorKind::WouldBlock => false,
+                Err(error) => panic!("Copy admission unexpectedly refused: {error}"),
+            },
+            "actual Copy admission must become ready",
+        )
+        .await;
+        reservation.expect("admission became ready")
+    }
+    /// Wait until the job's live status satisfies `ready`.
+    async fn wait_status(&self, id: u64, ready: impl Fn(&CopyProgress) -> bool) -> CopyProgress {
+        let mut matched = None;
+        eventually(
+            || {
+                let registry = self.controller.registry.lock().unwrap();
+                let status = registry
+                    .get(&OperationId(id))
+                    .map(|job| snapshot(&job.status));
+                matched = status.filter(|status| ready(status));
+                matched.is_some()
+            },
+            "the job must reach the expected live status",
+        )
+        .await;
+        matched.expect("status matched")
     }
     async fn enqueue_reserved_input(&self, input: CopyInput, reservation: Reservation) {
         let (input, sender) = reservation.attach_input(input);
@@ -507,10 +543,26 @@ async fn invalid_rename_asks_again_and_keeps_the_entry() {
         .message
         .clone();
     assert!(message.contains("cannot be used here"), "{message}");
+    // One lexically valid component that the destination itself refuses (longer than
+    // any native basename on both platforms): the probe asks again before publication.
     h.controller
         .decide(CopyDecision {
             id: OperationId(1),
             version: again.version,
+            choice: CopyChoice::Rename("n".repeat(300).into()),
+        })
+        .await;
+    let overlong = h.conflict(1).await;
+    assert!(overlong.version > again.version);
+    assert_eq!(overlong.destination, conflict.destination);
+    let message = snapshot(&h.controller.registry.lock().unwrap()[&OperationId(1)].status)
+        .message
+        .clone();
+    assert!(message.contains("cannot be used here"), "{message}");
+    h.controller
+        .decide(CopyDecision {
+            id: OperationId(1),
+            version: overlong.version,
             choice: CopyChoice::Rename("renamed".into()),
         })
         .await;
@@ -590,7 +642,7 @@ async fn move_clipboard_is_rejected_without_any_source_removal() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn queue_is_bounded_and_duplicate_ids_cannot_execute_twice() {
+async fn queue_is_bounded_and_the_overflow_job_is_rejected() {
     let temp = fixture();
     let source = temp.path().join("source");
     fs::write(&source, b"source").unwrap();
@@ -606,9 +658,6 @@ async fn queue_is_bounded_and_duplicate_ids_cannot_execute_twice() {
             .enqueue(request(id, std::slice::from_ref(&source), temp.path()))
             .await;
     }
-    h.controller
-        .enqueue(request(1, &[source], temp.path()))
-        .await;
     let rejected = h.terminal(33).await;
     assert_eq!(rejected.state, CopyOperationState::Failed);
     assert!(rejected.message.contains("32"));
@@ -626,6 +675,71 @@ async fn queue_is_bounded_and_duplicate_ids_cannot_execute_twice() {
         }
     }
     h.close().await;
+}
+
+/// Through the production admission path (a published reservation filled through
+/// `enqueue_input_reserved`, as native drops are) and with free capacity: a duplicate of
+/// a running operation's ID retires without a second preparation or terminal event, and
+/// the original keeps its controls.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn duplicate_id_with_free_capacity_never_runs_or_takes_over_the_original() {
+    let temp = fixture();
+    let source = temp.path().join("source");
+    let destination = temp.path().join("destination");
+    fs::write(&source, vec![3; 300_000]).unwrap();
+    fs::create_dir(&destination).unwrap();
+    let entered = Arc::new(Notify::new());
+    let released = Arc::new(AtomicBool::new(false));
+    let prepared = Arc::new(AtomicUsize::new(0));
+    let _release = ReleaseOnDrop(released.clone());
+    let mut h = Harness::new(Some(Arc::new(BlockingService {
+        inner: midnight_platform::LocalFileSystem::new(None),
+        entered: entered.clone(),
+        released: released.clone(),
+        prepared: prepared.clone(),
+        read_before_block: false,
+    })));
+    let original = h.reserve_ready().await;
+    h.enqueue_reserved_input(
+        request(1, std::slice::from_ref(&source), &destination).into(),
+        original,
+    )
+    .await;
+    tokio::time::timeout(Duration::from_secs(4), entered.notified())
+        .await
+        .expect("the original runs");
+    let duplicate = h.reserve_ready().await;
+    h.enqueue_reserved_input(
+        request(1, std::slice::from_ref(&source), &destination).into(),
+        duplicate,
+    )
+    .await;
+    // The duplicate's admission returns while the original still holds its own.
+    h.wait_capacity(MAX_JOBS - 1).await;
+    assert_eq!(
+        prepared.load(Ordering::Acquire),
+        1,
+        "a duplicate ID never prepares its sources"
+    );
+    // The registered controls still belong to the original.
+    h.controller.cancel(OperationId(1));
+    released.store(true, Ordering::Release);
+    let done = h.terminal(1).await;
+    assert_eq!(done.state, CopyOperationState::Cancelled, "{done:?}");
+    h.wait_capacity(MAX_JOBS).await;
+    h.controller.shutdown();
+    h.wait_shutdown().await;
+    while let Ok(event) = h.events.try_recv() {
+        if let Event::Copy(CopyEvent::Progress(progress)) = event {
+            assert!(
+                !(progress.id == OperationId(1) && progress.state.is_terminal()),
+                "a second terminal event for the duplicate ID: {progress:?}"
+            );
+        }
+    }
+    assert_eq!(prepared.load(Ordering::Acquire), 1);
+    assert_eq!(fs::read_dir(&destination).unwrap().count(), 0);
+    assert_eq!(fs::metadata(&source).unwrap().len(), 300_000);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

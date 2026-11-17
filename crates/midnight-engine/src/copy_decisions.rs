@@ -31,28 +31,29 @@ impl DecisionWaiter<'_> {
         self.waiting.store(version, Ordering::Release);
         publish(self.outbox, snapshot(self.status)).await;
         self.outbox.send(Event::Copy(event)).await;
-        let mut timer = tokio::time::interval(Duration::from_millis(25));
+        let cancel = self.cancel;
         loop {
-            if self.cancel.is_cancelled() {
+            if cancel.is_cancelled() {
                 break;
             }
+            // A decision or an announced cancellation wakes this wait; nothing polls.
             tokio::select! {
                 decision = self.decisions.recv() => match decision {
                     Some(decision) => {
                         let cancelling = matches!(decision.choice, CopyChoice::Cancel);
-                        if !self.cancel.is_cancelled() && decision.id == id
+                        if !cancel.is_cancelled() && decision.id == id
                             && decision.version == version && accept(decision) {
                             // An accepted Cancel needs no further step, so teardown never
                             // waits for a disk slot to process it.
                             if cancelling {
-                                self.cancel.cancel();
+                                cancel.cancel();
                             }
                             break;
                         }
                     }
-                    None => { self.cancel.cancel(); break; }
+                    None => { cancel.cancel(); break; }
                 },
-                _ = timer.tick() => {},
+                () = self.outbox.controls.until(|| cancel.is_cancelled()) => {},
             }
         }
         self.waiting.store(0, Ordering::Release);
@@ -66,13 +67,14 @@ impl DecisionWaiter<'_> {
 }
 
 pub(super) fn retryable_error(error: &FsError) -> bool {
+    // A quarantined claim never clears, so Retry could only repeat the refusal.
     !matches!(
         error.kind,
         io::ErrorKind::InvalidInput
             | io::ErrorKind::InvalidData
             | io::ErrorKind::Unsupported
             | io::ErrorKind::AlreadyExists
-    )
+    ) && !crate::copy_namespace::is_blocked_by_quarantine(error)
 }
 
 #[derive(Default)]
@@ -250,7 +252,14 @@ pub(super) async fn prepare_job(
                     };
                     match (watch, since) {
                         (Some(watch), Some(since)) => {
-                            wait_for_namespace(&watch, since, structural, waiter.cancel).await;
+                            wait_for_namespace(
+                                &watch,
+                                since,
+                                structural,
+                                waiter.cancel,
+                                waiter.outbox,
+                            )
+                            .await;
                         }
                         _ => tokio::time::sleep(NAMESPACE_RETRY_SPACING).await,
                     }
@@ -272,11 +281,9 @@ pub(super) async fn prepare_job(
         };
         // Recorded preparation failures include owned-stage residuals. Retry
         // cannot erase those or accumulate further abandoned cleanup stages.
-        // A quarantined claim never clears, so Retry could only repeat the refusal.
         if waiter.cancel.is_cancelled()
             || snapshot(waiter.status).failed != 0
             || !retryable_error(&error)
-            || crate::copy_namespace::is_blocked_by_quarantine(&error)
             || version == u64::MAX
         {
             let progress = failed(waiter.status, error, waiter.cancel);

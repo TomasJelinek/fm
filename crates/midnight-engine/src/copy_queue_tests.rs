@@ -451,7 +451,14 @@ async fn abandoning_many_native_slots_preserves_the_bounded_capacity_and_next_co
     let first = h.controller.reserve().unwrap();
     for _ in 0..MAX_JOBS * 8 {
         drop(h.controller.reserve().unwrap());
+        // Retirement returns the admission permit, and the abandoned slot wakes the
+        // consumer, which prunes it: only the unfilled `first` remains queued.
         h.wait_capacity(MAX_JOBS - 1).await;
+        eventually(
+            || h.controller.pending_slots() == 1,
+            "an abandoned reservation must leave the bounded slot queue",
+        )
+        .await;
     }
     assert_eq!(h.controller.capacity().available_permits(), MAX_JOBS - 1);
     h.controller
@@ -462,6 +469,29 @@ async fn abandoning_many_native_slots_preserves_the_bounded_capacity_and_next_co
     assert_eq!(h.controller.capacity().available_permits(), MAX_JOBS);
     h.close().await;
     assert_eq!(fs::read(target.join("source")).unwrap(), b"copied");
+}
+
+/// Abandoning an unfilled reservation wakes the admission consumer, which prunes the
+/// closed slot at once even though it already scanned that slot while it was unfilled;
+/// it does not wait for its one-second fallback.
+#[tokio::test]
+async fn abandoned_reservation_is_pruned_at_once_after_the_consumer_scanned_it() {
+    let h = Harness::native();
+    let reservation = h.controller.reserve().unwrap();
+    // The consumer scans the unfilled slot, keeps it and parks again.
+    for _ in 0..16 {
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(h.controller.pending_slots(), 1);
+    drop(reservation);
+    tokio::time::timeout(Duration::from_millis(500), async {
+        while h.controller.pending_slots() != 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("the abandoned slot must be pruned without waiting for the slow fallback");
+    h.close().await;
 }
 
 #[test]
