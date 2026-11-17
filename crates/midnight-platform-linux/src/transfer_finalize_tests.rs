@@ -124,8 +124,8 @@ fn unverified_hardlink_alias_refuses_move_admission() {
 }
 
 #[test]
-fn pending_old_name_writer_prevents_capture_and_resumes_only_after_source_is_retained() {
-    use std::time::{Duration, Instant};
+fn an_old_name_writer_is_released_at_once_and_still_prevents_capture() {
+    use std::{sync::mpsc, time::Duration};
     let Some((_temp, parent)) = fixture() else {
         return;
     };
@@ -135,33 +135,32 @@ fn pending_old_name_writer_prevents_capture_and_resumes_only_after_source_is_ret
     let (source, capture) = prepare_native(&path, &cancel).unwrap();
     capture.preflight_finalization(&cancel).unwrap();
     let writer_path = path.clone();
+    let (written, writer_done) = mpsc::channel();
     let writer = std::thread::spawn(move || {
         let mut writer = fs::File::options().write(true).open(writer_path).unwrap();
         writer.write_all(b"changed!").unwrap();
         writer.sync_all().unwrap();
+        let _ = written.send(());
     });
-    let deadline = Instant::now() + Duration::from_secs(2);
-    let observed = loop {
-        if capture.revalidate(&cancel).is_err() {
-            break true;
-        }
-        if Instant::now() >= deadline {
-            break false;
-        }
-        std::thread::yield_now();
-    };
-    let refused = capture.capture(&cancel).is_err();
-    let retained = path.exists();
-    drop(source);
-    drop(capture);
+    // The lease is released while the capture still holds it; an unreleased lease
+    // would hold the writer for /proc/sys/fs/lease-break-time (45 s by default).
+    // The deadline only elapses on failure.
+    writer_done
+        .recv_timeout(Duration::from_secs(10))
+        .expect("the writer stalled behind the source's read lease");
     writer.join().unwrap();
-    assert!(observed, "pending writer must trigger a lease break");
     assert!(
-        refused,
+        capture.revalidate(&cancel).is_err(),
+        "the released lease break must stay recorded"
+    );
+    assert!(
+        capture.capture(&cancel).is_err(),
         "a detected old-name writer must prevent source staging"
     );
-    assert!(retained);
-    assert_eq!(fs::read(path).unwrap(), b"changed!");
+    assert_eq!(fs::read(&path).unwrap(), b"changed!");
+    drop(source);
+    drop(capture);
+    assert_eq!(fs::read(&path).unwrap(), b"changed!");
     assert_eq!(fs::read_dir(parent).unwrap().count(), 1);
 }
 
