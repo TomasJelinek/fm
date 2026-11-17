@@ -1,4 +1,5 @@
 //! XML 1.0 lexical colouring only: no validation, entity expansion or external reads.
+use super::{Highlight, Poll, Spans};
 use midnight_plugin_sdk::api::viewer::*;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -28,19 +29,19 @@ enum Mode {
     },
 }
 
-pub(super) fn highlight(
+pub(super) fn highlight<F: Fn() -> bool>(
     text: &str,
     state: &mut State,
-    cancelled: impl Fn() -> bool,
-) -> Option<Vec<Span>> {
+    poll: &mut Poll<F>,
+) -> Option<Highlight> {
     // The caller caps the decoded input at 64 KiB. Commit only a complete scan;
     // a cancellation or exhausted bound must leave the last checkpoint intact.
     let mut current = *state;
-    let mut spans = Vec::new();
+    let mut spans = Spans::default();
     let bytes = text.as_bytes();
     let mut at = 0;
     while at < bytes.len() {
-        if cancelled() {
+        if poll.cancelled(at) {
             return None;
         }
         let start = at;
@@ -70,12 +71,12 @@ pub(super) fn highlight(
                     };
                     Some(STYLE_OPERATOR)
                 } else if bytes[at] == b'&' {
-                    let (end, role) = reference(text, at, &cancelled)?;
+                    let (end, role) = reference(text, at, poll)?;
                     at = end;
                     role
                 } else {
                     while at < bytes.len() && !matches!(bytes[at], b'<' | b'&') {
-                        if cancelled() {
+                        if poll.cancelled(at) {
                             return None;
                         }
                         at += text[at..].chars().next().unwrap().len_utf8();
@@ -99,7 +100,7 @@ pub(super) fn highlight(
                     current.mode = Mode::Quote { quote, processing };
                     Some(STYLE_STRING)
                 } else if name_start(text[at..].chars().next().unwrap()) {
-                    at = name_end(text, at, &cancelled)?;
+                    at = name_end(text, at, poll)?;
                     current.mode = Mode::Tag {
                         processing,
                         name: false,
@@ -113,7 +114,7 @@ pub(super) fn highlight(
             }
             Mode::Quote { quote, processing } => {
                 while at < bytes.len() {
-                    if cancelled() {
+                    if poll.cancelled(at) {
                         return None;
                     }
                     let closed = bytes[at] == quote;
@@ -129,7 +130,7 @@ pub(super) fn highlight(
                 Some(STYLE_STRING)
             }
             Mode::Comment { declaration } => {
-                let (end, closed) = delimited(text, at, b"-->", &cancelled)?;
+                let (end, closed) = delimited(text, at, b"-->", poll)?;
                 at = end;
                 if closed {
                     current.mode = declaration
@@ -138,7 +139,7 @@ pub(super) fn highlight(
                 Some(STYLE_COMMENT)
             }
             Mode::Cdata => {
-                let (end, closed) = delimited(text, at, b"]]>", &cancelled)?;
+                let (end, closed) = delimited(text, at, b"]]>", poll)?;
                 at = end;
                 if closed {
                     current.mode = Mode::Text;
@@ -150,7 +151,7 @@ pub(super) fn highlight(
                 mut quote,
             } => {
                 while at < bytes.len() {
-                    if cancelled() {
+                    if poll.cancelled(at) {
                         return None;
                     }
                     if let Some(delimiter) = quote {
@@ -187,47 +188,21 @@ pub(super) fn highlight(
             }
         };
         if let Some(role) = role {
-            push(&mut spans, start, at, role)?;
+            spans.push(start, at, role);
         }
-    }
-    if cancelled() {
-        return None;
     }
     *state = current;
-    Some(spans)
+    Some(spans.0)
 }
 
-fn push(spans: &mut Vec<Span>, start: usize, end: usize, role: u16) -> Option<()> {
-    if start == end {
-        return Some(());
-    }
-    if let Some(last) = spans.last_mut()
-        && last.end == start as u32
-        && last.role == role
-    {
-        last.end = end as u32;
-    } else {
-        if spans.len() == MAX_SPANS {
-            return None;
-        }
-        spans.push(Span {
-            start: start as u32,
-            end: end as u32,
-            role,
-            flags: 0,
-        });
-    }
-    Some(())
-}
-
-fn delimited(
+fn delimited<F: Fn() -> bool>(
     text: &str,
     mut at: usize,
     close: &[u8],
-    cancelled: &impl Fn() -> bool,
+    poll: &mut Poll<F>,
 ) -> Option<(usize, bool)> {
     while at < text.len() {
-        if cancelled() {
+        if poll.cancelled(at) {
             return None;
         }
         if text.as_bytes()[at..].starts_with(close) {
@@ -238,9 +213,9 @@ fn delimited(
     Some((at, false))
 }
 
-fn name_end(text: &str, mut at: usize, cancelled: &impl Fn() -> bool) -> Option<usize> {
+fn name_end<F: Fn() -> bool>(text: &str, mut at: usize, poll: &mut Poll<F>) -> Option<usize> {
     for ch in text[at..].chars() {
-        if cancelled() {
+        if poll.cancelled(at) {
             return None;
         }
         if !name_char(ch) {
@@ -251,10 +226,10 @@ fn name_end(text: &str, mut at: usize, cancelled: &impl Fn() -> bool) -> Option<
     Some(at)
 }
 
-fn reference(
+fn reference<F: Fn() -> bool>(
     text: &str,
     start: usize,
-    cancelled: &impl Fn() -> bool,
+    poll: &mut Poll<F>,
 ) -> Option<(usize, Option<u16>)> {
     let bytes = text.as_bytes();
     let mut at = start + 1;
@@ -267,7 +242,7 @@ fn reference(
         }
         let digits = at;
         while let Some(byte) = bytes.get(at) {
-            if cancelled() {
+            if poll.cancelled(at) {
                 return None;
             }
             if !(if hex {
@@ -287,7 +262,7 @@ fn reference(
         .and_then(|tail| tail.chars().next())
         .is_some_and(name_start)
     {
-        at = name_end(text, at, cancelled)?;
+        at = name_end(text, at, poll)?;
     } else {
         return Some((at, None));
     }

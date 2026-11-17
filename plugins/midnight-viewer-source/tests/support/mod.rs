@@ -28,6 +28,8 @@ struct State {
     pub base: u64,
     pub max_read: usize,
     pub reads: Vec<messages::ReadAt>,
+    // Like the real host, every cancellation poll takes the host state lock.
+    pub cancel_polls: u64,
 }
 pub struct Host {
     state: Box<Mutex<State>>,
@@ -46,7 +48,8 @@ unsafe extern "C" fn schedule(id: u64, work: *const abi::Work) -> u32 {
         .push_back(unsafe { *work });
     abi::OK
 }
-unsafe extern "C" fn cancelled(_: u64, _: u64) -> u32 {
+unsafe extern "C" fn cancelled(id: u64, _: u64) -> u32 {
+    unsafe { state(id) }.lock().unwrap().cancel_polls += 1;
     0
 }
 unsafe extern "C" fn notify(_: u64) {}
@@ -112,6 +115,7 @@ impl Host {
             base: 0,
             max_read: 65536,
             reads: Vec::new(),
+            cancel_polls: 0,
         }));
         let host = abi::HostApi {
             header: abi::Header {
@@ -157,6 +161,10 @@ impl Host {
     }
     pub fn reads(&self) -> Vec<messages::ReadAt> {
         self.state.lock().unwrap().reads.clone()
+    }
+    /// Host cancellation callbacks made by the plugin so far.
+    pub fn cancel_polls(&self) -> u64 {
+        self.state.lock().unwrap().cancel_polls
     }
     pub fn submit<T: codec::Model>(&mut self, kind: u32, value: &T) -> u64 {
         self.submit_bytes(kind, &codec::encode(value).unwrap())

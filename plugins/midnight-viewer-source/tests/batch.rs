@@ -8,7 +8,9 @@ fn batch_files_detect_case_insensitively_and_highlight_real_cmd_syntax() {
             .unwrap_or_else(|| panic!("batch language missing for {name}"));
         let code =
             "@ECHO off\r\nREM comment\r\n:: comment\r\nIF exist \"C:\\tools\\\" SET count=42\r\n";
-        let spans = syntax::highlight(code, language, &mut State::default(), || false).unwrap();
+        let spans = syntax::highlight(code, language, &mut State::default(), || false)
+            .unwrap()
+            .spans;
         for (token, role) in [
             ("ECHO", STYLE_KEYWORD),
             ("REM comment\r", STYLE_COMMENT),
@@ -32,7 +34,9 @@ fn batch_comment_words_inside_arguments_and_single_quotes_stay_plain() {
     let language = syntax::detect("x.bat", "").expect("batch syntax");
     let code =
         "echo reminder REM ordinary\necho 'unquoted\nIF exist file (\n  @rem nested comment\n)\n";
-    let spans = syntax::highlight(code, language, &mut State::default(), || false).unwrap();
+    let spans = syntax::highlight(code, language, &mut State::default(), || false)
+        .unwrap()
+        .spans;
     assert!(!spans.iter().any(|span| span.role == STYLE_STRING));
     let comments: Vec<_> = spans
         .iter()
