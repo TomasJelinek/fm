@@ -219,10 +219,7 @@ impl Clipboard {
     /// queue the events that arrive before their reply). True means events were served,
     /// transfers expired or events remain, and the caller re-checks its state.
     fn serve_queued(&mut self) -> Result<bool, FsError> {
-        let transfers = self.transfers.len();
-        self.transfers
-            .retain(|transfer| transfer.updated.elapsed() < TRANSFER_EXPIRY);
-        let mut changed = self.transfers.len() != transfers;
+        let mut changed = self.expire_transfers()?;
         for _ in 0..EVENTS_PER_PASS {
             // Flush first: a flush that cannot write reads, and queues, incoming events.
             self.connection.flush().map_err(error)?;
@@ -234,6 +231,44 @@ impl Clipboard {
         }
         self.connection.flush().map_err(error)?;
         Ok(true)
+    }
+
+    /// Drop the incremental transfers whose requestor stopped taking chunks; returns
+    /// whether any expired.
+    fn expire_transfers(&mut self) -> Result<bool, FsError> {
+        let mut expired = false;
+        let mut index = 0;
+        while index < self.transfers.len() {
+            if self.transfers[index].updated.elapsed() < TRANSFER_EXPIRY {
+                index += 1;
+            } else {
+                let transfer = self.transfers.swap_remove(index);
+                self.release_requestor(transfer.requestor)?;
+                expired = true;
+            }
+        }
+        Ok(expired)
+    }
+
+    /// Stop receiving the events of a requestor window that `start_transfer` selected,
+    /// once no transfer to it remains, so that its later property changes do not wake
+    /// this owner. Event masks are per client: the requestor's own selection stays. A
+    /// window that is gone already makes this an ignored error.
+    fn release_requestor(&self, requestor: u32) -> Result<(), FsError> {
+        if self
+            .transfers
+            .iter()
+            .all(|transfer| transfer.requestor != requestor)
+        {
+            self.connection
+                .change_window_attributes(
+                    requestor,
+                    &ChangeWindowAttributesAux::new().event_mask(EventMask::NO_EVENT),
+                )
+                .map_err(error)?
+                .ignore_error();
+        }
+        Ok(())
     }
 
     /// Whether other applications may still need this owner: it owns CLIPBOARD (the only
@@ -293,7 +328,8 @@ impl Clipboard {
                         .map_err(error)?
                         .check();
                     if sent.is_err() || transfer.offset == transfer.bytes.len() {
-                        self.transfers.swap_remove(index);
+                        let transfer = self.transfers.swap_remove(index);
+                        self.release_requestor(transfer.requestor)?;
                     } else {
                         transfer.offset = end;
                         transfer.updated = Instant::now();
@@ -458,6 +494,7 @@ impl Clipboard {
             .check()
             .is_err()
         {
+            self.release_requestor(request.requestor)?;
             return Ok(false);
         }
         self.transfers.push(Transfer {
@@ -798,7 +835,7 @@ mod tests {
         };
         let expected = files.clone();
         let (ready, started) = mpsc::sync_channel(1);
-        let (stop, stopped) = mpsc::sync_channel(1);
+        let (stop, stopped) = mpsc::sync_channel::<u32>(1);
         let wake = Wake::new().unwrap();
         let waker = wake.waker();
         let owner = thread::spawn(move || {
@@ -807,16 +844,31 @@ mod tests {
             ready.send(()).unwrap();
             // Serve every request and chunk from the event-driven wait, as the session does.
             let began = Instant::now();
-            while stopped.try_recv().is_err() && prompt(began) {
+            let requestor = loop {
+                if let Ok(requestor) = stopped.try_recv() {
+                    break requestor;
+                }
+                assert!(prompt(began), "the reader did not finish");
                 clipboard.wait(Some(&wake), FAILURE_WAIT / 2).unwrap();
-            }
+            };
+            // The finished transfer no longer selects the requestor window's events, so its
+            // later property changes cannot wake this idle owner.
+            assert!(clipboard.transfers.is_empty());
+            let attributes = clipboard
+                .connection
+                .get_window_attributes(requestor)
+                .unwrap()
+                .reply()
+                .unwrap();
+            assert_eq!(attributes.your_event_mask, EventMask::NO_EVENT);
         });
         started.recv_timeout(Duration::from_secs(5)).unwrap();
         let mut reader = Clipboard::new().unwrap();
         let received = reader.read();
-        let _ = stop.send(());
+        let _ = stop.send(reader.window);
         waker();
-        owner.join().unwrap();
+        let served = owner.join();
         assert_eq!(received.unwrap(), expected);
+        served.unwrap();
     }
 }
