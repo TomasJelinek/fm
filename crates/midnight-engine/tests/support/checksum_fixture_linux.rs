@@ -1,5 +1,9 @@
 pub fn fixture() -> tempfile::TempDir {
-    let root = std::env::temp_dir().join("midnight-checksums/_build/tmp");
-    std::fs::create_dir_all(&root).unwrap();
-    tempfile::tempdir_in(root).unwrap()
+    // A unique directory directly in this process's temporary directory: a
+    // fixed shared parent in `/tmp` would be owned by whichever account or CI
+    // job created it first and refuse everyone else's fixtures.
+    tempfile::Builder::new()
+        .prefix("midnight-checksums-")
+        .tempdir()
+        .unwrap()
 }

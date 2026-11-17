@@ -24,12 +24,11 @@ async fn engine_navigates_windows_unicode_paths_beyond_260_utf16_units() {
         .join(&component)
         .join(&component);
     assert!(directory.as_os_str().encode_wide().count() > 260);
+    // The standard library creates long paths through verbatim `\\?\` names, so
+    // every supported Windows filesystem can hold this fixture. A temporary
+    // directory that cannot is a failed precondition, not a silent pass.
     if let Err(error) = fs::create_dir_all(&directory) {
-        if error.kind() == std::io::ErrorKind::Unsupported || error.raw_os_error() == Some(206) {
-            eprintln!("SKIP: temporary filesystem does not support this long path: {error}");
-            return;
-        }
-        panic!("long-path fixture creation failed: {error}");
+        panic!("long-path fixture creation failed (point TEMP at an NTFS/ReFS directory): {error}");
     }
     fs::write(directory.join("ověření_中文_🧪.txt"), b"long Unicode path").unwrap();
 

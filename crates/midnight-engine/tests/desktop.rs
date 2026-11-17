@@ -273,7 +273,10 @@ impl PropertyService for Services {
     }
 }
 async fn next(events: &mut mpsc::Receiver<Event>) -> Event {
-    tokio::time::timeout(Duration::from_secs(4), events.recv())
+    // Only a failure reaches this bound. Helper children are this (large) test
+    // binary; the first launches after a build can wait several seconds for
+    // on-access malware scanning.
+    tokio::time::timeout(Duration::from_secs(20), events.recv())
         .await
         .unwrap()
         .unwrap()
