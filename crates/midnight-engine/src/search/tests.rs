@@ -26,7 +26,7 @@ fn request(query: &str, names: &[&str]) -> SearchRequest {
 }
 
 fn ready(request: &SearchRequest) -> SearchResult {
-    match compute(request, None, &|| false).0 {
+    match compute(request, None, &|| false, &|| false).0 {
         Computation::Ready(result) => result,
         Computation::Cancelled => panic!("unexpected cancellation"),
         Computation::Failed(error) => panic!("unexpected search error: {error}"),
@@ -119,14 +119,14 @@ fn cached_filter_projection_serves_only_the_same_source_and_filter() {
         expression: "a*".into(),
         ..Default::default()
     };
-    let (first, projection) = compute(&request, None, &|| false);
+    let (first, projection) = compute(&request, None, &|| false, &|| false);
     let Computation::Ready(first) = first else {
         panic!("first search failed")
     };
     let projection = projection.expect("validated projection is kept");
     assert!(projection.serves(&request));
     request.query = "an".into();
-    let (second, kept) = compute(&request, Some(projection), &|| false);
+    let (second, kept) = compute(&request, Some(projection), &|| false, &|| false);
     let Computation::Ready(second) = second else {
         panic!("cached search failed")
     };
@@ -134,7 +134,7 @@ fn cached_filter_projection_serves_only_the_same_source_and_filter() {
     assert_eq!(rows(&second), [(2, 2)]);
     let kept = kept.unwrap();
     request.query.clear();
-    let (empty, kept) = compute(&request, Some(kept), &|| false);
+    let (empty, kept) = compute(&request, Some(kept), &|| false, &|| false);
     let Computation::Ready(empty) = empty else {
         panic!("empty query failed")
     };
@@ -147,6 +147,106 @@ fn cached_filter_projection_serves_only_the_same_source_and_filter() {
     let mut other_source = request.clone();
     other_source.source = request.source.to_vec().into();
     assert!(!kept.serves(&other_source));
+}
+
+fn intent(serial: u64, request: Option<&SearchRequest>) -> Intent {
+    Intent {
+        serial,
+        revision: request.map(|request| request.revision),
+        request: request.cloned().map(Arc::new),
+    }
+}
+
+#[test]
+fn a_newer_query_during_the_projection_build_keeps_the_projection_for_reuse() {
+    let names: Vec<_> = (0..2_000).map(|row| format!("row-{row}")).collect();
+    let names: Vec<_> = names.iter().map(String::as_str).collect();
+    let mut first = request("row-1", &names);
+    first.filter = midnight_core::PanelFilter {
+        enabled: true,
+        expression: "row*".into(),
+        ..Default::default()
+    };
+    let mut next = first.clone();
+    next.revision = SearchRevision(2);
+    next.query = "row-12".into();
+    // The search actor's predicates over its intent channel. The next keystroke,
+    // for the same listing and filter, arrives at the build's first check.
+    let (input, observer) = watch::channel(intent(1, Some(&first)));
+    let typed = Cell::new(false);
+    let (computation, kept) = compute(
+        &first,
+        None,
+        &|| observer.has_changed().unwrap_or(true),
+        &|| {
+            if !typed.replace(true) {
+                input.send(intent(2, Some(&next))).unwrap();
+            }
+            projection_obsolete(&observer, &first)
+        },
+    );
+    assert!(
+        typed.get(),
+        "the keystroke arrived during the projection build"
+    );
+    assert!(
+        matches!(computation, Computation::Cancelled),
+        "the superseded query is not answered"
+    );
+    let kept = kept.expect("a query-only change keeps the finished projection");
+    assert!(kept.serves(&next));
+    assert_eq!(kept.filtered.len(), 2_000);
+    let index = kept.index.clone();
+    let rebuilt = Cell::new(false);
+    let (computation, _) = compute(&next, Some(kept), &|| false, &|| {
+        rebuilt.set(true);
+        false
+    });
+    let Computation::Ready(result) = computation else {
+        panic!("search with the kept projection failed")
+    };
+    assert!(!rebuilt.get(), "the next keystroke rebuilt the projection");
+    assert!(Arc::ptr_eq(&result.filtered_index, &index));
+    // "row-12", "row-120".."row-129" and "row-1200".."row-1299".
+    assert_eq!(result.matches.len(), 111);
+}
+
+#[test]
+fn only_another_listing_filter_or_cancellation_makes_the_projection_obsolete() {
+    let current = request("a", &["alpha", "beta"]);
+    let (input, observer) = watch::channel(intent(1, Some(&current)));
+    assert!(!projection_obsolete(&observer, &current), "no newer intent");
+    let mut typed = current.clone();
+    typed.revision = SearchRevision(2);
+    typed.query = "al".into();
+    input.send(intent(2, Some(&typed))).unwrap();
+    assert!(
+        !projection_obsolete(&observer, &current),
+        "a newer query reuses the projection"
+    );
+    let mut filtered = typed.clone();
+    filtered.filter.enabled = true;
+    filtered.filter.expression = "a*".into();
+    input.send(intent(3, Some(&filtered))).unwrap();
+    assert!(projection_obsolete(&observer, &current), "another filter");
+    let mut refreshed = typed.clone();
+    refreshed.source = current.source.to_vec().into();
+    input.send(intent(4, Some(&refreshed))).unwrap();
+    assert!(
+        projection_obsolete(&observer, &current),
+        "a refreshed listing"
+    );
+    input.send(intent(5, None)).unwrap();
+    assert!(
+        projection_obsolete(&observer, &current),
+        "cancellation or navigation"
+    );
+    input.send(intent(6, Some(&typed))).unwrap();
+    drop(input);
+    assert!(
+        projection_obsolete(&observer, &current),
+        "a stopped search actor"
+    );
 }
 
 #[test]
@@ -414,14 +514,14 @@ fn large_snapshot_is_cancellable_and_full_results_keep_valid_indices() {
         case_sensitive: true,
     };
     let polls = Cell::new(0);
-    assert!(matches!(
-        compute(&request, None, &|| {
-            polls.set(polls.get() + 1);
-            polls.get() >= 3
-        })
-        .0,
-        Computation::Cancelled
-    ));
+    let interrupted = || {
+        polls.set(polls.get() + 1);
+        polls.get() >= 3
+    };
+    // A newer intent for another listing or filter abandons the projection build.
+    let (computation, kept) = compute(&request, None, &interrupted, &interrupted);
+    assert!(matches!(computation, Computation::Cancelled));
+    assert!(kept.is_none(), "an abandoned build keeps no projection");
     let result = ready(&request);
     assert_eq!(result.matches.len(), 50_000);
     assert_eq!(result.index.by_id.get(&EntryId(50_000)), Some(&49_999));
@@ -445,7 +545,7 @@ fn duplicate_raw_paths_or_ids_cannot_create_an_ambiguous_selection_projection() 
             source[1].path = source[0].path.clone();
         }
         assert!(matches!(
-            compute(&request, None, &|| false).0,
+            compute(&request, None, &|| false, &|| false).0,
             Computation::Failed(_)
         ));
     }
@@ -466,17 +566,17 @@ fn measure_quick_search_keystrokes_with_and_without_the_cached_projection() {
     for query in queries {
         request.query = query.into();
         assert!(matches!(
-            compute(&request, None, &|| false).0,
+            compute(&request, None, &|| false, &|| false).0,
             Computation::Ready(_)
         ));
     }
     let uncached = started.elapsed();
     request.query.clear();
-    let mut projection = compute(&request, None, &|| false).1;
+    let mut projection = compute(&request, None, &|| false, &|| false).1;
     let started = std::time::Instant::now();
     for query in queries {
         request.query = query.into();
-        let (computation, kept) = compute(&request, projection.take(), &|| false);
+        let (computation, kept) = compute(&request, projection.take(), &|| false, &|| false);
         assert!(matches!(computation, Computation::Ready(_)));
         projection = kept;
     }

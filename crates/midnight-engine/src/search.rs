@@ -124,9 +124,12 @@ async fn run(snapshots: Snapshots, outbox: Outbox, mut input: watch::Receiver<In
             let observer = input.clone();
             let cached = projection.take().filter(|cached| cached.serves(&request));
             match tokio::task::spawn_blocking(move || {
-                compute(&work_request, cached, &|| {
-                    observer.has_changed().unwrap_or(true)
-                })
+                compute(
+                    &work_request,
+                    cached,
+                    &|| observer.has_changed().unwrap_or(true),
+                    &|| projection_obsolete(&observer, &work_request),
+                )
             })
             .await
             {
@@ -211,22 +214,45 @@ impl Projection {
     }
 }
 
+/// Whether the newest intent can no longer reuse this request's projection: it was
+/// cancelled or navigated away (no request), refreshed (another source snapshot)
+/// or changed the persistent filter. A newer query alone keeps the build useful.
+fn projection_obsolete(observer: &watch::Receiver<Intent>, request: &SearchRequest) -> bool {
+    match observer.has_changed() {
+        Ok(false) => false,
+        Ok(true) => !observer.borrow().request.as_ref().is_some_and(|latest| {
+            Arc::ptr_eq(&latest.source, &request.source) && latest.filter == request.filter
+        }),
+        Err(_) => true,
+    }
+}
+
 /// Returns the computation and the projection worth keeping for the next revision.
+///
+/// `cancelled` reports any newer intent and stops query matching; `obsolete`
+/// reports one that cannot reuse this (source, filter) and alone stops the
+/// projection build. Fast typing therefore finishes one build that the later
+/// keystrokes reuse instead of restarting it on every keystroke.
 fn compute(
     request: &SearchRequest,
     cached: Option<Projection>,
     cancelled: &dyn Fn() -> bool,
+    obsolete: &dyn Fn() -> bool,
 ) -> (Computation, Option<Projection>) {
     if cancelled() {
         return (Computation::Cancelled, cached);
     }
     let projection = match cached {
         Some(projection) => projection,
-        None => match project(request, cancelled) {
+        None => match project(request, obsolete) {
             Ok(projection) => projection,
             Err(computation) => return (computation, None),
         },
     };
+    if cancelled() {
+        // Superseded by a query for the same listing and filter: keep the build.
+        return (Computation::Cancelled, Some(projection));
+    }
     let query = UniCase::unicode(&request.query).to_folded_case();
     if query.is_empty() {
         let result = SearchResult {
@@ -274,9 +300,10 @@ fn compute(
 }
 
 /// Build and validate the persistent-filter projection once per (source, filter).
+/// `obsolete` abandons it only when no newer intent can reuse it.
 fn project(
     request: &SearchRequest,
-    cancelled: &dyn Fn() -> bool,
+    obsolete: &dyn Fn() -> bool,
 ) -> Result<Projection, Computation> {
     let filter = midnight_platform_common::filter::CompiledPanelFilter::new(&request.filter)
         .map_err(|error| {
@@ -289,7 +316,7 @@ fn project(
     let mut filtered = Vec::new();
     let mut index = DirectoryIndex::default();
     for (source_row, entry) in request.source.iter().enumerate() {
-        if source_row.is_multiple_of(CANCEL_INTERVAL) && cancelled() {
+        if source_row.is_multiple_of(CANCEL_INTERVAL) && obsolete() {
             return Err(Computation::Cancelled);
         }
         if !filter.matches_entry(entry) {
@@ -306,7 +333,7 @@ fn project(
     // A projected id/path must not also refer to a filtered-out source row. Validate
     // against the source without allocating another full-directory identity map.
     for (source_row, entry) in request.source.iter().enumerate() {
-        if source_row.is_multiple_of(CANCEL_INTERVAL) && cancelled() {
+        if source_row.is_multiple_of(CANCEL_INTERVAL) && obsolete() {
             return Err(Computation::Cancelled);
         }
         if let Some(row) = index.by_id.get(&entry.id)
