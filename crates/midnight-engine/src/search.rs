@@ -2,8 +2,8 @@
 
 use crate::{Outbox, Snapshots};
 use midnight_core::{
-    DirectoryIndex, Entry, EntryKind, Event, FsError, PaneId, PanelFilter, SearchMatch,
-    SearchRequest, SearchResult, SearchRevision,
+    DirectoryIndex, Entry, Event, FsError, PaneId, PanelFilter, SearchMatch, SearchRequest,
+    SearchResult, SearchRevision,
 };
 use std::{
     io,
@@ -252,7 +252,7 @@ fn compute(
         };
         // Matches are a subset of the validated projection, so their identities
         // stay unique and cannot alias an unmatched source row.
-        if !append_entry(&mut index, entry, matches.len()) {
+        if !index.push(entry) {
             return (ambiguous_projection(request), None);
         }
         matches.push(SearchMatch {
@@ -295,7 +295,7 @@ fn project(
         if !filter.matches_entry(entry) {
             continue;
         }
-        if !append_entry(&mut index, entry, filtered.len()) {
+        if !index.push(entry) {
             return Err(ambiguous_projection(request));
         }
         filtered.push(SearchMatch {
@@ -328,31 +328,6 @@ fn project(
         filtered: filtered.into(),
         index: Arc::new(index),
     })
-}
-
-/// Incremental counterpart of `DirectoryIndex::from_entries` for projected rows.
-/// Like it, only native rows have a path identity: archive members and network
-/// nodes (whose `path` is empty) are identified by their entry ID alone.
-fn append_entry(index: &mut DirectoryIndex, entry: &Entry, row: usize) -> bool {
-    if index.by_id.insert(entry.id, row).is_some()
-        || entry
-            .native_path()
-            .is_some_and(|path| index.by_path.insert(path.to_owned(), entry.id).is_some())
-    {
-        return false;
-    }
-    if row.is_multiple_of(64) {
-        index.directory_bits.push(0);
-    }
-    if matches!(entry.kind, EntryKind::Directory | EntryKind::DirectoryLink) {
-        index.directory_bits[row / 64] |= 1 << (row % 64);
-    }
-    index.file_sizes.push(if entry.kind == EntryKind::File {
-        entry.metadata.size
-    } else {
-        None
-    });
-    true
 }
 
 fn ambiguous_projection(request: &SearchRequest) -> Computation {

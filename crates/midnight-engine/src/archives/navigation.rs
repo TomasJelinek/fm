@@ -89,6 +89,10 @@ pub(super) fn run(request: &Request, mounts: &Mounts) -> Result<ArchiveListing, 
     for entry in &mut entries {
         timestamps::localize(entry, request.locale.as_deref());
     }
+    // Name and extension order use the same backend locale keys as native listings.
+    if let Some(locale) = request.locale.as_deref() {
+        prepare_sort_keys(&mut entries, locale, &request.cancel)?;
+    }
     sort_entries_with_sizes(&mut entries, request.sort, |entry| {
         crate::archive_sizes::published::size(entry, sizes.as_deref())
     });

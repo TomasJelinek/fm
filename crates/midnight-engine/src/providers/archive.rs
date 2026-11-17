@@ -53,7 +53,7 @@ pub(crate) fn captured_archive_root(
         super::registry::check_cancel(cancel)?;
         let node = entry
             .virtual_node
-            .as_ref()
+            .as_deref()
             .ok_or(ProviderError::InvalidResponse(
                 "native entry in archive root snapshot",
             ))?;
