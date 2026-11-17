@@ -1,5 +1,5 @@
 use super::*;
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{PermissionsExt, symlink};
 
 fn channel(socket: UnixStream) -> Channel {
     Channel::new(
@@ -37,6 +37,60 @@ fn native_names_and_metadata_preserve_raw_unix_identity() {
     assert_eq!(reply[0].size, Some(3));
     assert_eq!(reply[0].unix_mode.unwrap() & 0o777, 0o640);
     assert_eq!(reply[0].native_attributes, None);
+}
+
+#[test]
+fn links_report_their_own_metadata_and_directory_targets() {
+    let directory = tempfile::tempdir().unwrap();
+    fs::create_dir(directory.path().join("folder")).unwrap();
+    symlink("folder", directory.path().join("folder-link")).unwrap();
+    symlink("missing", directory.path().join("dangling")).unwrap();
+    let reply = crate::helper::reply(
+        Request {
+            path: encode_path(directory.path()),
+        },
+        &Cancellation::default(),
+    )
+    .unwrap();
+    let kind = |name: &str| {
+        let entry = reply
+            .iter()
+            .find(|entry| entry.name == name.as_bytes())
+            .unwrap();
+        // A link's mode is the link's own (lstat), never its target's.
+        if name != "folder" {
+            assert_eq!(entry.unix_mode.unwrap() & 0o170000, 0o120000, "{name}");
+        }
+        entry.kind
+    };
+    assert_eq!(kind("folder"), 0);
+    assert_eq!(kind("folder-link"), 1);
+    assert_eq!(kind("dangling"), 3);
+}
+
+#[test]
+fn helper_outside_a_root_owned_installation_is_refused_with_guidance() {
+    // A temporary directory is user-owned or below a world-writable /tmp, so it never qualifies.
+    let directory = tempfile::tempdir().unwrap();
+    let helper = directory.path().join("midnight-elevated-listing");
+    fs::write(&helper, b"#!/bin/sh\n").unwrap();
+    fs::set_permissions(&helper, fs::Permissions::from_mode(0o755)).unwrap();
+    let error = protected_helper(&helper).unwrap_err();
+    assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+    let message = error.to_string();
+    assert!(message.contains("root-owned installation"), "{message}");
+    assert!(message.contains("/opt/midnight-explorer"), "{message}");
+}
+
+#[test]
+fn root_owned_system_executable_is_a_protected_location() {
+    // A root-owned executable in a root-only directory chain on a normal (suid) mount.
+    let candidate = ["/usr/bin/env", "/usr/bin/true"]
+        .into_iter()
+        .map(Path::new)
+        .find(|path| fs::symlink_metadata(path).is_ok_and(|value| value.is_file()))
+        .expect("a regular system executable");
+    protected_helper(candidate).unwrap();
 }
 
 #[test]
@@ -123,6 +177,30 @@ fn one_shot_handshake_and_framed_reply_survive_peer_close() {
 }
 
 #[test]
+fn large_frames_cross_many_socket_buffers_through_readiness_waits() {
+    let (left, right) = UnixStream::pair().unwrap();
+    let entries: Vec<_> = (0..20_000u32)
+        .map(|index| protocol::WireEntry {
+            name: format!("entry-{index:08}-{}", "x".repeat(200)).into_bytes(),
+            kind: 2,
+            size: Some(u64::from(index)),
+            modified: None,
+            native_attributes: None,
+            unix_mode: Some(0o100644),
+        })
+        .collect();
+    let expected = entries.len();
+    // About 4.5 MiB: both ends repeatedly wait for readiness on full or empty buffers.
+    let writer = thread::spawn(move || {
+        protocol::write_reply(&mut channel(right), &Ok(entries)).unwrap();
+    });
+    let reply = protocol::read_reply(&mut channel(left)).unwrap().unwrap();
+    writer.join().unwrap();
+    assert_eq!(reply.len(), expected);
+    assert_eq!(reply[19_999].size, Some(19_999));
+}
+
+#[test]
 fn blocked_channel_read_cancels_and_deadline_is_enforced() {
     let (left, _right) = UnixStream::pair().unwrap();
     let mut blocked = channel(left);
@@ -142,7 +220,7 @@ fn blocked_channel_read_cancels_and_deadline_is_enforced() {
 }
 
 #[test]
-fn truncated_reply_and_second_request_are_rejected() {
+fn truncated_reply_is_rejected() {
     let (left, mut right) = UnixStream::pair().unwrap();
     right.write_all(b"MELIST01\x20\0\0\0\x01").unwrap();
     drop(right);
@@ -150,13 +228,36 @@ fn truncated_reply_and_second_request_are_rejected() {
         protocol::read_reply(&mut channel(left)).unwrap_err().kind(),
         io::ErrorKind::UnexpectedEof
     );
+}
+
+#[test]
+fn monitor_detects_a_second_request_or_closure_and_stops_on_request() {
+    let pid = std::process::id();
+    let created = stamp(pid).unwrap();
+    let far = || Instant::now() + Duration::from_secs(60);
+    // A second request wakes the watcher immediately.
     let (left, mut right) = UnixStream::pair().unwrap();
-    assert!(!disconnected(&left));
+    let (stop, stopped) = UnixStream::pair().unwrap();
     right.write_all(b"unexpected second request").unwrap();
-    assert!(disconnected(&left));
+    assert!(requester_gone(&left, &stopped, pid, created, far()));
+    // So does the requester closing its end.
     let (left, right) = UnixStream::pair().unwrap();
     drop(right);
-    assert!(disconnected(&left));
+    assert!(requester_gone(&left, &stopped, pid, created, far()));
+    // Closing the stop end ends watching without a violation.
+    let (left, _right) = UnixStream::pair().unwrap();
+    drop(stop);
+    assert!(!requester_gone(&left, &stopped, pid, created, far()));
+    // A changed requester identity is detected on the periodic check.
+    let (left, _right) = UnixStream::pair().unwrap();
+    let (_stop, stopped) = UnixStream::pair().unwrap();
+    assert!(requester_gone(
+        &left,
+        &stopped,
+        pid,
+        created.wrapping_add(1),
+        far()
+    ));
 }
 
 #[test]
@@ -206,7 +307,7 @@ fn malformed_helper_arguments_fail_before_connecting_or_reading_a_directory() {
 #[test]
 fn disconnected_parent_terminates_the_dedicated_helper_process() {
     let socket = PrivateSocket::new(&unique_nonce()).unwrap();
-    let mut child = Command::new(std::env::current_exe().unwrap())
+    let child = Command::new(std::env::current_exe().unwrap())
         .args([
             "--exact",
             "native::tests::disconnect_monitor_child",
@@ -227,30 +328,38 @@ fn disconnected_parent_terminates_the_dedicated_helper_process() {
         .stderr(Stdio::null())
         .spawn()
         .unwrap();
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let pid = child.id();
+    let (finished, exit) = mpsc::channel();
+    let waiter = thread::spawn(move || {
+        let mut child = child;
+        let _ = finished.send(child.wait());
+    });
+    let deadline = Instant::now() + Duration::from_secs(10);
     let peer = loop {
         match socket.listener.accept() {
             Ok((peer, _)) => break peer,
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
                 assert!(Instant::now() < deadline, "monitor child failed to connect");
-                thread::sleep(TICK);
+                wait_ready(
+                    socket.listener.as_raw_fd(),
+                    libc::POLLIN,
+                    slice(deadline, CANCEL_POLL),
+                )
+                .unwrap();
             }
             Err(error) => panic!("{error}"),
         }
     };
     drop(peer);
-    loop {
-        if let Some(status) = child.try_wait().unwrap() {
-            assert_eq!(status.code(), Some(1));
-            break;
-        }
-        if Instant::now() >= deadline {
-            let _ = child.kill();
-            let _ = child.wait();
+    let status = exit
+        .recv_timeout(Duration::from_secs(10))
+        .unwrap_or_else(|_| {
+            // SAFETY: the waiter has not reaped this child, so its PID cannot have been reused.
+            unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) };
             panic!("disconnected monitor did not terminate helper");
-        }
-        thread::sleep(TICK);
-    }
+        });
+    waiter.join().unwrap();
+    assert_eq!(status.unwrap().code(), Some(1));
 }
 
 #[test]
@@ -267,12 +376,16 @@ fn disconnect_monitor_child() {
         .unwrap();
     let socket = UnixStream::connect(path).unwrap();
     verify_parent(&socket, parent, unsafe { libc::getuid() }, created).unwrap();
-    monitor_peer(
-        socket,
+    let _monitor = Monitor::start(
+        &socket,
         parent,
         created,
-        Instant::now() + Duration::from_secs(5),
+        Instant::now() + Duration::from_secs(30),
         Cancellation::default(),
-    );
-    panic!("monitor must exit the dedicated child");
+    )
+    .unwrap();
+    // The monitor exits this dedicated process when the requester disconnects.
+    loop {
+        thread::park();
+    }
 }

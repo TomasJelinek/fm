@@ -101,6 +101,14 @@ no per-plugin content pin. The EXE hash in an ON registration selects a runtime;
 loaders still validate actual packages. The helper never launches the app or
 changes user preferences.
 
+The deployment also copies `midnight-elevated-listing.exe`, but **Retry with
+authorization** does not run a helper from this per-user runtime: the helper runs as
+an administrator, so the runtime's user must not be able to replace it. Authorized
+listing needs an installation that only administrators can change, for example a
+folder below `C:\Program Files`; see the
+[directory authorization helper](../../SECURITY.md#directory-authorization-helper).
+Plugins keep using the per-user runtime.
+
 Tests use `-RegistrationDirectory` with a protected disposable fixture. That
 override requires `-RegisterRuntime`; no test needs to edit the actual profile.
 See [the resolution design](../superpowers/specs/2026-11-07-trusted-runtime-resolution.md)

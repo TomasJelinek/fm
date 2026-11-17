@@ -5,12 +5,12 @@ use crate::{
 };
 use midnight_core::Cancellation;
 use std::{
-    ffi::OsString,
-    fs::{self, File, OpenOptions},
+    ffi::{OsStr, OsString},
+    fs::{self, DirEntry, FileType},
     io::{self, Read, Write},
     os::windows::{
         ffi::{OsStrExt, OsStringExt},
-        fs::{MetadataExt, OpenOptionsExt},
+        fs::{FileTypeExt, MetadataExt},
         io::{AsRawHandle, FromRawHandle, OwnedHandle},
     },
     path::{Path, PathBuf},
@@ -19,22 +19,23 @@ use std::{
 };
 use windows_sys::Win32::{
     Foundation::{
-        ERROR_NO_DATA, ERROR_PIPE_BUSY, ERROR_PIPE_CONNECTED, ERROR_PIPE_LISTENING, FILETIME,
-        HANDLE, INVALID_HANDLE_VALUE, LocalFree, WAIT_TIMEOUT,
+        ERROR_PIPE_BUSY, FILETIME, GENERIC_READ, GENERIC_WRITE, HANDLE, INVALID_HANDLE_VALUE,
+        LocalFree, WAIT_TIMEOUT,
     },
     Security::{
         Authorization::ConvertStringSecurityDescriptorToSecurityDescriptorW, SECURITY_ATTRIBUTES,
     },
     Storage::FileSystem::{
-        CreateFileW, FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS,
-        FILE_FLAG_FIRST_PIPE_INSTANCE, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_READ,
-        OPEN_EXISTING, PIPE_ACCESS_DUPLEX, ReadFile, WriteFile,
+        CreateFileW, FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_FIRST_PIPE_INSTANCE,
+        FILE_FLAG_OVERLAPPED, OPEN_EXISTING, PIPE_ACCESS_DUPLEX, SECURITY_IDENTIFICATION,
+        SECURITY_SQOS_PRESENT,
     },
     System::{
+        Com::{COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE, CoInitializeEx, CoUninitialize},
         Pipes::{
-            ConnectNamedPipe, CreateNamedPipeW, GetNamedPipeClientProcessId,
-            GetNamedPipeServerProcessId, PIPE_NOWAIT, PIPE_READMODE_BYTE,
-            PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE, PeekNamedPipe, SetNamedPipeHandleState,
+            CreateNamedPipeW, GetNamedPipeClientProcessId, GetNamedPipeServerProcessId,
+            PIPE_READMODE_BYTE, PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE, PIPE_WAIT,
+            WaitNamedPipeW,
         },
         Threading::{
             GetCurrentProcess, GetCurrentProcessId, GetProcessId, GetProcessTimes, OpenProcess,
@@ -50,11 +51,17 @@ use windows_sys::Win32::{
     },
 };
 
+#[path = "windows_channel.rs"]
+mod channel;
 #[path = "windows_children.rs"]
 mod children;
+#[path = "windows_trust.rs"]
+mod trust;
+use channel::{Channel, Monitor};
 
 const TIMEOUT: Duration = Duration::from_secs(300);
-const TICK: Duration = Duration::from_millis(10);
+/// Wait between attempts while another client holds the single pipe instance.
+const BUSY_WAIT: Duration = Duration::from_millis(50);
 
 pub(crate) fn encode_path(path: &Path) -> Vec<u8> {
     path.as_os_str()
@@ -84,7 +91,16 @@ pub(crate) fn metadata(value: &fs::Metadata) -> (Option<u32>, Option<u32>) {
 pub(crate) fn is_redirected(value: &fs::Metadata) -> bool {
     value.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
 }
-fn wide(value: &std::ffi::OsStr) -> io::Result<Vec<u16>> {
+/// Directory symbolic links and junctions are directory links by their own attributes. The
+/// elevated helper never opens a link target: a target could be another process's pipe server.
+pub(crate) fn is_directory_link(_: &DirEntry, file_type: &FileType) -> bool {
+    file_type.is_symlink_dir()
+}
+/// Refuse a helper that a non-administrative account could change before it runs elevated.
+pub(crate) fn protected_helper(helper: &Path) -> io::Result<()> {
+    trust::pin_helper(helper).map(drop)
+}
+fn wide(value: &OsStr) -> io::Result<Vec<u16>> {
     let mut result: Vec<_> = value.encode_wide().collect();
     if result.contains(&0) {
         return Err(protocol::invalid("NUL in helper argument"));
@@ -130,34 +146,22 @@ fn parse_nonce(value: &OsString) -> io::Result<([u8; 32], String)> {
     Ok((raw, text.to_owned()))
 }
 fn pipe_name(nonce: &str) -> io::Result<Vec<u16>> {
-    wide(std::ffi::OsStr::new(&format!(
+    wide(OsStr::new(&format!(
         r"\\.\pipe\MidnightExplorer.List.{nonce}"
     )))
 }
-fn lock_executable(helper: &Path) -> io::Result<Vec<File>> {
-    let mut locks = Vec::new();
-    for path in helper.ancestors() {
-        let file = OpenOptions::new()
-            .read(true)
-            .share_mode(FILE_SHARE_READ)
-            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS)
-            .open(path)?;
-        if is_redirected(&file.metadata()?) {
-            return Err(io::Error::new(
-                io::ErrorKind::PermissionDenied,
-                "Redirected helper path",
-            ));
-        }
-        locks.push(file);
-    }
-    // Revalidate after locks prevent replacement of any checked component.
-    midnight_plugin_host::validate_plugin_path(helper).map_err(io::Error::other)?;
-    Ok(locks)
+fn query_process(pid: u32) -> io::Result<OwnedHandle> {
+    // SAFETY: query/wait access only; ownership is taken only after success.
+    handle(unsafe {
+        OpenProcess(
+            PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE,
+            0,
+            pid,
+        )
+    })
 }
 fn server(name: &[u16]) -> io::Result<OwnedHandle> {
-    let sddl = wide(std::ffi::OsStr::new(
-        "D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GA;;;OW)",
-    ))?;
+    let sddl = wide(OsStr::new("D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GA;;;OW)"))?;
     let mut descriptor = ptr::null_mut();
     // SAFETY: a terminated static descriptor string and valid output pointer.
     if unsafe {
@@ -180,8 +184,8 @@ fn server(name: &[u16]) -> io::Result<OwnedHandle> {
     let raw = unsafe {
         CreateNamedPipeW(
             name.as_ptr(),
-            PIPE_ACCESS_DUPLEX | FILE_FLAG_FIRST_PIPE_INSTANCE,
-            PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_NOWAIT | PIPE_REJECT_REMOTE_CLIENTS,
+            PIPE_ACCESS_DUPLEX | FILE_FLAG_FIRST_PIPE_INSTANCE | FILE_FLAG_OVERLAPPED,
+            PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
             1,
             64 * 1024,
             64 * 1024,
@@ -190,6 +194,7 @@ fn server(name: &[u16]) -> io::Result<OwnedHandle> {
         )
     };
     let error = io::Error::last_os_error();
+    // SAFETY: ConvertStringSecurityDescriptorToSecurityDescriptorW allocated the descriptor.
     unsafe {
         LocalFree(descriptor);
     }
@@ -200,57 +205,81 @@ fn server(name: &[u16]) -> io::Result<OwnedHandle> {
     }
 }
 
+/// Run the consent launch on its own short-lived STA: Shell verbs may be delegated to COM
+/// extensions, and a backend worker thread must not keep an apartment afterwards.
+fn launch_elevated(
+    executable: Vec<u16>,
+    parameters: Vec<u16>,
+    directory: Vec<u16>,
+) -> io::Result<OwnedHandle> {
+    let verb = wide(OsStr::new("runas"))?;
+    thread::Builder::new()
+        .name("authorization-launch".into())
+        .spawn(move || {
+            // SAFETY: this new thread initializes and later uninitializes its own apartment.
+            let apartment = unsafe {
+                CoInitializeEx(
+                    ptr::null(),
+                    (COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE) as u32,
+                )
+            };
+            // SAFETY: SHELLEXECUTEINFOW is a plain C structure; all-zero is a valid start.
+            let mut launch: SHELLEXECUTEINFOW = unsafe { std::mem::zeroed() };
+            launch.cbSize = size_of::<SHELLEXECUTEINFOW>() as u32;
+            launch.fMask = SEE_MASK_NOCLOSEPROCESS | SEE_MASK_NOASYNC | SEE_MASK_FLAG_NO_UI;
+            launch.lpVerb = verb.as_ptr();
+            launch.lpFile = executable.as_ptr();
+            launch.lpParameters = parameters.as_ptr();
+            launch.lpDirectory = directory.as_ptr();
+            launch.nShow = SW_HIDE;
+            // SAFETY: all terminated strings remain live; this is the sole explicit UAC launch.
+            let result = if unsafe { ShellExecuteExW(&mut launch) } == 0 {
+                Err(io::Error::last_os_error())
+            } else {
+                handle(launch.hProcess)
+            };
+            if apartment >= 0 {
+                // SAFETY: balances the successful initialization on this thread.
+                unsafe { CoUninitialize() };
+            }
+            result
+        })?
+        .join()
+        .map_err(|_| io::Error::other("Authorization launch failed"))?
+}
+
 pub(crate) fn list(helper: &Path, request: &Request, cancel: &Cancellation) -> io::Result<Reply> {
     if cancel.is_cancelled() {
         return Err(cancelled());
     }
     let mut child = children::Reservation::acquire()?;
-    let _locks = lock_executable(helper)?;
+    // The pins prevent replacement of every validated component until this call returns,
+    // which is after the elevated process has opened its image.
+    let pins = trust::pin_helper(helper)?;
+    let pinned = pins
+        .first()
+        .ok_or_else(|| protocol::invalid("Missing authorization helper"))?;
+    let executable = trust::shell_path(helper, pinned);
     let (nonce, text) = nonce()?;
     let pipe = server(&pipe_name(&text)?)?;
-    let executable = wide(helper.as_os_str())?;
-    let directory = wide(
-        helper
-            .parent()
-            .ok_or_else(|| protocol::invalid("Missing helper parent"))?
-            .as_os_str(),
-    )?;
-    let verb = wide(std::ffi::OsStr::new("runas"))?;
+    let directory = executable
+        .parent()
+        .ok_or_else(|| protocol::invalid("Missing helper parent"))?;
     // SAFETY: querying our own process identity does not transfer a handle.
     let parent = unsafe { GetCurrentProcessId() };
     let created = stamp(unsafe { GetCurrentProcess() })?;
-    let args = wide(std::ffi::OsStr::new(&format!(
-        "--pipe {text} {parent} {created}"
-    )))?;
-    let mut launch: SHELLEXECUTEINFOW = unsafe { std::mem::zeroed() };
-    launch.cbSize = size_of::<SHELLEXECUTEINFOW>() as u32;
-    launch.fMask = SEE_MASK_NOCLOSEPROCESS | SEE_MASK_NOASYNC | SEE_MASK_FLAG_NO_UI;
-    launch.lpVerb = verb.as_ptr();
-    launch.lpFile = executable.as_ptr();
-    launch.lpParameters = args.as_ptr();
-    launch.lpDirectory = directory.as_ptr();
-    launch.nShow = SW_HIDE;
-    // SAFETY: all terminated strings remain live; this is the sole explicit UAC launch.
-    if unsafe { ShellExecuteExW(&mut launch) } == 0 {
-        return Err(io::Error::last_os_error());
-    }
-    let peer = child.launched(handle(launch.hProcess)?)?;
-    let deadline = Instant::now() + TIMEOUT;
-    loop {
-        check(cancel, peer.as_raw_handle(), deadline)?;
-        if unsafe { ConnectNamedPipe(pipe.as_raw_handle(), ptr::null_mut()) } != 0 {
-            break;
-        }
-        let error = io::Error::last_os_error();
-        match error.raw_os_error().map(|v| v as u32) {
-            Some(ERROR_PIPE_CONNECTED) => break,
-            Some(ERROR_PIPE_LISTENING | ERROR_NO_DATA) => thread::sleep(TICK),
-            _ => return Err(error),
-        }
-    }
+    let parameters = wide(OsStr::new(&format!("--pipe {text} {parent} {created}")))?;
+    let process = launch_elevated(
+        wide(executable.as_os_str())?,
+        parameters,
+        wide(directory.as_os_str())?,
+    )?;
+    let peer = child.launched(process)?;
+    let mut io = Channel::new(pipe, cancel.clone(), Instant::now() + TIMEOUT)?;
+    io.connect(peer.as_raw_handle())?;
     let mut client_pid = 0;
     // SAFETY: pipe and retained launched-process handles are live; output is initialized.
-    if unsafe { GetNamedPipeClientProcessId(pipe.as_raw_handle(), &mut client_pid) } == 0
+    if unsafe { GetNamedPipeClientProcessId(io.pipe().as_raw_handle(), &mut client_pid) } == 0
         || client_pid != unsafe { GetProcessId(peer.as_raw_handle()) }
     {
         return Err(io::Error::new(
@@ -258,12 +287,8 @@ pub(crate) fn list(helper: &Path, request: &Request, cancel: &Cancellation) -> i
             "Unexpected helper process",
         ));
     }
-    let mut io = Channel {
-        pipe,
-        peer,
-        cancel: cancel.clone(),
-        deadline,
-    };
+    // The nonce is visible in the pipe name and command line; the PID and process-time checks
+    // above and in the helper bind the channel. Matching it rejects a stale or foreign helper.
     io.write_all(&nonce)?;
     let mut proof = [0; 32];
     io.read_exact(&mut proof)?;
@@ -271,7 +296,47 @@ pub(crate) fn list(helper: &Path, request: &Request, cancel: &Cancellation) -> i
         return Err(protocol::invalid("Helper nonce mismatch"));
     }
     protocol::write_request(&mut io, request)?;
-    protocol::read_reply(&mut io)
+    let reply = protocol::read_reply(&mut io);
+    drop(pins);
+    reply
+}
+
+/// Open the requester's pipe as an elevated client. Identification-only quality of service
+/// means no pipe server, even one that squats on the name, can impersonate this process.
+fn connect_client(name: &[u16], requester: HANDLE, deadline: Instant) -> io::Result<OwnedHandle> {
+    loop {
+        if Instant::now() >= deadline {
+            return Err(io::Error::new(io::ErrorKind::TimedOut, "Helper timeout"));
+        }
+        // SAFETY: requester is retained by the caller; a zero timeout never blocks.
+        if unsafe { WaitForSingleObject(requester, 0) } != WAIT_TIMEOUT {
+            return Err(io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                "Requesting process ended",
+            ));
+        }
+        // SAFETY: a terminated pipe name; ownership is taken only on success.
+        let raw = unsafe {
+            CreateFileW(
+                name.as_ptr(),
+                GENERIC_READ | GENERIC_WRITE,
+                0,
+                ptr::null(),
+                OPEN_EXISTING,
+                FILE_FLAG_OVERLAPPED | SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION,
+                ptr::null_mut(),
+            )
+        };
+        if raw != INVALID_HANDLE_VALUE {
+            return handle(raw);
+        }
+        let error = io::Error::last_os_error();
+        if error.raw_os_error() != Some(ERROR_PIPE_BUSY as i32) {
+            return Err(error);
+        }
+        // SAFETY: a terminated pipe name; this bounded wait returns when an instance listens.
+        unsafe { WaitNamedPipeW(name.as_ptr(), channel::millis(BUSY_WAIT)) };
+    }
 }
 
 pub(crate) fn serve(args: &[OsString]) -> io::Result<()> {
@@ -291,45 +356,17 @@ fn serve_with_monitor(args: &[OsString], terminate: fn()) -> io::Result<()> {
         .to_str()
         .and_then(|v| v.parse().ok())
         .ok_or_else(|| protocol::invalid("Invalid parent identity"))?;
-    let peer = handle(unsafe {
-        OpenProcess(
-            PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE,
-            0,
-            parent_pid,
-        )
-    })?;
+    let peer = query_process(parent_pid)?;
     if stamp(peer.as_raw_handle())? != created {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
             "Parent process changed",
         ));
     }
-    let name = pipe_name(&text)?;
     let deadline = Instant::now() + TIMEOUT;
-    let cancel = Cancellation::default();
-    let pipe = loop {
-        check(&cancel, peer.as_raw_handle(), deadline)?;
-        let raw = unsafe {
-            CreateFileW(
-                name.as_ptr(),
-                0xc000_0000,
-                0,
-                ptr::null(),
-                OPEN_EXISTING,
-                0,
-                ptr::null_mut(),
-            )
-        };
-        if raw != INVALID_HANDLE_VALUE {
-            break handle(raw)?;
-        }
-        let error = io::Error::last_os_error();
-        if error.raw_os_error() != Some(ERROR_PIPE_BUSY as i32) {
-            return Err(error);
-        }
-        thread::sleep(TICK);
-    };
+    let pipe = connect_client(&pipe_name(&text)?, peer.as_raw_handle(), deadline)?;
     let mut server_pid = 0;
+    // SAFETY: the live pipe handle and an initialized output.
     if unsafe { GetNamedPipeServerProcessId(pipe.as_raw_handle(), &mut server_pid) } == 0
         || server_pid != parent_pid
     {
@@ -338,18 +375,8 @@ fn serve_with_monitor(args: &[OsString], terminate: fn()) -> io::Result<()> {
             "Unexpected requesting process",
         ));
     }
-    let mode = PIPE_NOWAIT;
-    if unsafe { SetNamedPipeHandleState(pipe.as_raw_handle(), &mode, ptr::null(), ptr::null()) }
-        == 0
-    {
-        return Err(io::Error::last_os_error());
-    }
-    let mut io = Channel {
-        pipe,
-        peer,
-        cancel: cancel.clone(),
-        deadline,
-    };
+    let cancel = Cancellation::default();
+    let mut io = Channel::new(pipe, cancel.clone(), deadline)?;
     let mut challenge = [0; 32];
     io.read_exact(&mut challenge)?;
     if challenge != nonce {
@@ -357,295 +384,12 @@ fn serve_with_monitor(args: &[OsString], terminate: fn()) -> io::Result<()> {
     }
     io.write_all(&nonce)?;
     let request = protocol::read_request(&mut io)?;
-    let monitor_pipe = io.pipe.try_clone()?;
-    let monitor_peer = io.peer.try_clone()?;
-    let monitor_cancel = cancel.clone();
-    let monitor = thread::spawn(move || {
-        while !monitor_cancel.is_cancelled() {
-            if check(&monitor_cancel, monitor_peer.as_raw_handle(), deadline).is_err()
-                || unsafe {
-                    PeekNamedPipe(
-                        monitor_pipe.as_raw_handle(),
-                        ptr::null_mut(),
-                        0,
-                        ptr::null_mut(),
-                        ptr::null_mut(),
-                        ptr::null_mut(),
-                    )
-                } == 0
-            {
-                monitor_cancel.cancel();
-                // This dedicated process owns only directory reads and the private channel.
-                // End even if a native filesystem call is stuck and cannot poll cancellation.
-                terminate();
-                break;
-            }
-            thread::sleep(TICK);
-        }
-    });
+    let monitor = Monitor::start(io.pipe(), peer, deadline, cancel.clone(), terminate)?;
     let reply = crate::helper::reply(request, &cancel);
-    let result = protocol::write_reply(&mut io, &reply);
-    cancel.cancel();
-    let _ = monitor.join();
-    result
-}
-
-fn check(cancel: &Cancellation, peer: HANDLE, deadline: Instant) -> io::Result<()> {
-    if cancel.is_cancelled() {
-        return Err(io::Error::new(
-            io::ErrorKind::ConnectionAborted,
-            "Authorized listing cancelled",
-        ));
-    }
-    if Instant::now() >= deadline {
-        return Err(io::Error::new(io::ErrorKind::TimedOut, "Helper timeout"));
-    }
-    // SAFETY: peer is retained for this call; a zero timeout never blocks.
-    if unsafe { WaitForSingleObject(peer, 0) } != WAIT_TIMEOUT {
-        return Err(io::Error::new(
-            io::ErrorKind::BrokenPipe,
-            "Peer process ended",
-        ));
-    }
-    Ok(())
-}
-struct Channel {
-    pipe: OwnedHandle,
-    peer: OwnedHandle,
-    cancel: Cancellation,
-    deadline: Instant,
-}
-impl Read for Channel {
-    fn read(&mut self, data: &mut [u8]) -> io::Result<usize> {
-        if data.is_empty() {
-            return Ok(0);
-        }
-        loop {
-            if self.cancel.is_cancelled() {
-                return Err(io::Error::new(
-                    io::ErrorKind::ConnectionAborted,
-                    "Authorized listing cancelled",
-                ));
-            }
-            if Instant::now() >= self.deadline {
-                return Err(io::Error::new(io::ErrorKind::TimedOut, "Helper timeout"));
-            }
-            let mut count = 0;
-            let ok = unsafe {
-                ReadFile(
-                    self.pipe.as_raw_handle(),
-                    data.as_mut_ptr(),
-                    data.len().min(u32::MAX as usize) as u32,
-                    &mut count,
-                    ptr::null_mut(),
-                )
-            };
-            if ok != 0 && count != 0 {
-                return Ok(count as usize);
-            }
-            let error = io::Error::last_os_error();
-            if ok == 0 && error.raw_os_error() != Some(ERROR_NO_DATA as i32) {
-                return Err(error);
-            }
-            check(&self.cancel, self.peer.as_raw_handle(), self.deadline)?;
-            thread::sleep(TICK);
-        }
-    }
-}
-impl Write for Channel {
-    fn write(&mut self, data: &[u8]) -> io::Result<usize> {
-        if data.is_empty() {
-            return Ok(0);
-        }
-        loop {
-            check(&self.cancel, self.peer.as_raw_handle(), self.deadline)?;
-            let mut count = 0;
-            let ok = unsafe {
-                WriteFile(
-                    self.pipe.as_raw_handle(),
-                    data.as_ptr(),
-                    data.len().min(64 * 1024) as u32,
-                    &mut count,
-                    ptr::null_mut(),
-                )
-            };
-            if ok != 0 && count != 0 {
-                return Ok(count as usize);
-            }
-            if ok == 0 {
-                return Err(io::Error::last_os_error());
-            }
-            thread::sleep(TICK);
-        }
-    }
-    fn flush(&mut self) -> io::Result<()> {
-        Ok(())
-    }
+    monitor.stop();
+    protocol::write_reply(&mut io, &reply)
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn windows_paths_preserve_unpaired_surrogates_and_reject_nul() {
-        let path = PathBuf::from(OsString::from_wide(&[b'C' as u16, 58, 92, 0xd800]));
-        assert_eq!(decode_path(&encode_path(&path)).unwrap(), path);
-        assert!(decode_path(&[0]).is_err());
-        assert!(decode_path(&[0, 0]).is_err());
-    }
-    #[test]
-    fn authenticated_channel_reads_unicode_directory_without_elevation() {
-        let qa = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../_build/qa/elevation");
-        fs::create_dir_all(&qa).unwrap();
-        let fixture = tempfile::Builder::new()
-            .prefix("pipe-")
-            .tempdir_in(qa)
-            .unwrap();
-        fs::write(fixture.path().join("Příliš_中文_🧪.txt"), b"test").unwrap();
-        let (nonce, text) = nonce().unwrap();
-        let pipe = server(&pipe_name(&text).unwrap()).unwrap();
-        let pid = unsafe { GetCurrentProcessId() };
-        let created = stamp(unsafe { GetCurrentProcess() }).unwrap();
-        let args = vec![
-            "--pipe".into(),
-            text.into(),
-            pid.to_string().into(),
-            created.to_string().into(),
-        ];
-        let helper = thread::spawn(move || serve_with_monitor(&args, || {}));
-        let peer = handle(unsafe {
-            OpenProcess(
-                PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE,
-                0,
-                pid,
-            )
-        })
-        .unwrap();
-        let cancel = Cancellation::default();
-        let deadline = Instant::now() + Duration::from_secs(5);
-        loop {
-            check(&cancel, peer.as_raw_handle(), deadline).unwrap();
-            if unsafe { ConnectNamedPipe(pipe.as_raw_handle(), ptr::null_mut()) } != 0
-                || io::Error::last_os_error().raw_os_error() == Some(ERROR_PIPE_CONNECTED as i32)
-            {
-                break;
-            }
-            thread::sleep(TICK);
-        }
-        let mut peer_pid = 0;
-        assert_ne!(
-            unsafe { GetNamedPipeClientProcessId(pipe.as_raw_handle(), &mut peer_pid) },
-            0
-        );
-        assert_eq!(peer_pid, pid);
-        let mut channel = Channel {
-            pipe,
-            peer,
-            cancel,
-            deadline,
-        };
-        channel.write_all(&nonce).unwrap();
-        let mut proof = [0; 32];
-        channel.read_exact(&mut proof).unwrap();
-        assert_eq!(proof, nonce);
-        protocol::write_request(
-            &mut channel,
-            &Request {
-                path: encode_path(fixture.path()),
-            },
-        )
-        .unwrap();
-        let entries = protocol::read_reply(&mut channel).unwrap().unwrap();
-        assert_eq!(entries.len(), 1);
-        assert_eq!(
-            decode_path(&entries[0].name).unwrap(),
-            PathBuf::from("Příliš_中文_🧪.txt")
-        );
-        assert_eq!(entries[0].size, Some(4));
-        helper.join().unwrap().unwrap();
-    }
-
-    fn test_channel() -> (Channel, OwnedHandle) {
-        let (_, text) = nonce().unwrap();
-        let name = pipe_name(&text).unwrap();
-        let pipe = server(&name).unwrap();
-        let client = handle(unsafe {
-            CreateFileW(
-                name.as_ptr(),
-                0xc000_0000,
-                0,
-                ptr::null(),
-                OPEN_EXISTING,
-                0,
-                ptr::null_mut(),
-            )
-        })
-        .unwrap();
-        let connected = unsafe { ConnectNamedPipe(pipe.as_raw_handle(), ptr::null_mut()) };
-        assert!(
-            connected != 0
-                || io::Error::last_os_error().raw_os_error() == Some(ERROR_PIPE_CONNECTED as i32)
-        );
-        let peer = handle(unsafe {
-            OpenProcess(
-                PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE,
-                0,
-                GetCurrentProcessId(),
-            )
-        })
-        .unwrap();
-        (
-            Channel {
-                pipe,
-                peer,
-                cancel: Cancellation::default(),
-                deadline: Instant::now() + Duration::from_secs(2),
-            },
-            client,
-        )
-    }
-    #[test]
-    fn complete_buffered_reply_survives_closed_peer_and_empty_read_cancels() {
-        let (mut channel, client) = test_channel();
-        let reply: Reply = Ok(vec![]);
-        let mut bytes = Vec::new();
-        protocol::write_reply(&mut bytes, &reply).unwrap();
-        let mut written = 0;
-        assert_ne!(
-            unsafe {
-                WriteFile(
-                    client.as_raw_handle(),
-                    bytes.as_ptr(),
-                    bytes.len() as u32,
-                    &mut written,
-                    ptr::null_mut(),
-                )
-            },
-            0
-        );
-        assert_eq!(written as usize, bytes.len());
-        drop(client);
-        assert_eq!(protocol::read_reply(&mut channel).unwrap(), reply);
-        let (mut channel, _client) = test_channel();
-        let cancel = channel.cancel.clone();
-        let stopper = thread::spawn(move || {
-            thread::sleep(Duration::from_millis(20));
-            cancel.cancel();
-        });
-        assert_eq!(
-            channel.read_exact(&mut [0]).unwrap_err().kind(),
-            io::ErrorKind::ConnectionAborted
-        );
-        stopper.join().unwrap();
-        assert_eq!(
-            channel.write_all(&[1]).unwrap_err().kind(),
-            io::ErrorKind::ConnectionAborted
-        );
-    }
-
-    #[test]
-    fn helper_rejects_untrusted_startup_arguments_before_connecting() {
-        assert!(serve(&[]).is_err());
-        assert!(serve(&["--pipe".into(), "bad".into(), "1".into(), "1".into()]).is_err());
-    }
-}
+#[path = "windows_tests.rs"]
+mod tests;

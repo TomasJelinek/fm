@@ -31,9 +31,11 @@ fn collect(request: Request, cancel: &Cancellation) -> io::Result<Vec<WireEntry>
         }
         let entry = entry?;
         let file_type = entry.file_type()?;
-        let metadata = fs::symlink_metadata(entry.path()).ok();
+        // Enumeration metadata describes the entry itself: Windows reuses the directory's find
+        // data and Linux uses a directory-relative no-follow stat, so no entry is opened.
+        let metadata = entry.metadata().ok();
         let kind = if file_type.is_symlink() {
-            if fs::metadata(entry.path()).is_ok_and(|value| value.is_dir()) {
+            if native::is_directory_link(&entry, &file_type) {
                 1
             } else {
                 3
