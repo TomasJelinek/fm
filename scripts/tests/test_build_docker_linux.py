@@ -114,6 +114,7 @@ sys.exit(98)
                     "--env", "HOME=/workspace/.tools/docker/home",
                     "--env", "CARGO_HOME=/workspace/.tools/docker/cargo",
                     "--env", "RUSTUP_HOME=/opt/rustup",
+                    "--env", "RUSTUP_AUTO_INSTALL=0",
                     "--env", "PATH=/opt/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
                     "--env", "CARGO_TARGET_DIR=/workspace/_build",
                     "--env", "TMPDIR=/workspace/_build/tmp",
@@ -272,6 +273,29 @@ sys.exit(98)
         result = self.run_helper()
         self.assertEqual(result.returncode, 53, result.stderr)
         self.assertEqual([call[0] for call in self.docker_calls()], ["image", "run"])
+
+    def test_image_setup_installs_the_pinned_toolchain_with_components(self):
+        # The build container cannot write RUSTUP_HOME, so the image must contain
+        # the exact rust-toolchain.toml channel and components (not `rustup show`).
+        scratch = self.root / "scratch"
+        scratch.mkdir()
+        (self.root / "rust-toolchain.toml").write_text(
+            '[toolchain]\nchannel = "1.2.3"\nprofile = "minimal"\n'
+            'components = ["rustfmt", "clippy"]\n', encoding="utf-8")
+        self.command("curl", 'printf "exit 0\\n" > "$7"\n')
+        self.command("apt-get", "exit 0\n")
+        for name in ("rm", "chmod"):
+            self.command(name, 'printf "%s\\n" "$*" >> "$DOCKER_HELPER_LOG.' + name + '"\n')
+        self.environment.update(MIDNIGHT_DOCKER_WORKSPACE=str(self.root), TMPDIR=str(scratch))
+        self.environment["PATH"] = (str(self.bin) + os.pathsep
+                                    + os.path.dirname(shutil.which("python3")) + os.pathsep + "/bin")
+        result = subprocess.run(["/bin/sh", str(self.root / "scripts/docker-install-deps.sh")],
+                                env=self.environment, text=True, capture_output=True, timeout=20)
+        self.assertEqual(result.returncode, 99, result.stderr)  # the rustup fixture's status
+        rustup = [call["arguments"] for call in self.calls() if call["tool"] == "rustup"]
+        self.assertEqual(rustup, [["toolchain", "install", "1.2.3", "--profile", "minimal",
+                                   "--component", "rustfmt", "--component", "clippy"]])
+        self.assertNotIn(["show"], rustup)
 
 
 if __name__ == "__main__":
