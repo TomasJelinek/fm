@@ -50,6 +50,12 @@ zero. The current local broker supplies a known length and one reader per
 instance; plugins must preserve the general schema's optional length semantics.
 `display_name` is display-only and does not authorize OS access.
 
+The host captures a file's content identity when the viewer navigates to it,
+including Space/Backspace navigation, so a session starts from the current file.
+`Open.revision` then stays fixed: reads after the source changes fail instead of
+mixing revisions, and a mode change of the displayed file keeps that identity.
+Navigating to the file again captures its current content for a new session.
+
 `ReadAt.length` is nonzero and bounded; `offset + length` must not overflow `u64`.
 Successful `ReadReply.bytes` must equal the separate raw buffer's length and be
 no greater than the requested length. Its revision and offset must match the

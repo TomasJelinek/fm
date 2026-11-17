@@ -973,10 +973,15 @@ the current plugin. Unknown or budget-limited syntax stays readable as plain tex
 
 Each viewer starts at the main window's size. Escape closes it, including from its
 search field. Space in the content area advances through the captured panel order,
-wrapping after the last regular file. Ctrl+F opens search; F3/Shift+F3 find the next/
+wrapping after the last regular file; Backspace goes back. In very large folders
+(an order beyond 8 MiB of paths, roughly 25,000–65,000 files) navigation cycles
+within a window centered on the opened file. Each file is captured when it is
+opened, so a file changed after the viewer started shows its current content.
+Ctrl+F opens search; F3/Shift+F3 find the next/
 previous match. Scrollbars, the wheel, arrows, Page Up/Down and Ctrl+Home/End navigate
-without loading the complete file. Drag selects text; Ctrl+A selects the loaded page
-and Ctrl+C copies the selection. These shortcuts are configurable in Options → Keyboard.
+without loading the complete file. Drag selects text; Ctrl+A selects the visible text
+of the loaded page and Ctrl+C copies the selection. These shortcuts are configurable
+in Options → Keyboard.
 Text and source modes support word wrap using the Wrap control or Ctrl+W. Binary
 files open with byte offsets, hexadecimal bytes and a printable character column;
 their columns remain fixed when wrapping is enabled for text.
