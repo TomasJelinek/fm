@@ -76,6 +76,9 @@ pub(super) struct Worker {
     copy_capacity: Arc<Semaphore>,
     pub(super) watch: Option<crate::watch::Handle>,
     refresh_ticket: Option<crate::watch::RefreshTicket>,
+    /// Test observer, notified each time `run` waits to retry namespace admission.
+    #[cfg(test)]
+    namespace_retries: Option<Arc<tokio::sync::Notify>>,
 }
 impl Worker {
     pub fn new(
@@ -120,6 +123,8 @@ impl Worker {
             pending_publication: None,
             inflight: false,
             maintenance_inflight: false,
+            #[cfg(test)]
+            namespace_retries: None,
         }
     }
     pub fn run(mut self) {
@@ -180,9 +185,15 @@ impl Worker {
                     }),
                     // Queueing on the fair transfer-namespace semaphore would reserve
                     // released transfer shares and block new transfers. Retry admission.
-                    Wait::Namespace => runtime.block_on(async {
-                        let _ = tokio::time::timeout(NAMESPACE_POLL, notified).await;
-                    }),
+                    Wait::Namespace => {
+                        #[cfg(test)]
+                        if let Some(retries) = &self.namespace_retries {
+                            retries.notify_one();
+                        }
+                        runtime.block_on(async {
+                            let _ = tokio::time::timeout(NAMESPACE_POLL, notified).await;
+                        });
+                    }
                 }
                 self.pump();
             } else {

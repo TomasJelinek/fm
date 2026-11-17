@@ -676,3 +676,66 @@ async fn queued_observations_superseded_by_completion_do_not_report_errors() {
         Err(mpsc::error::TryRecvError::Empty)
     ));
 }
+
+/// Closes the lane even when an assertion fails, so a running worker returns
+/// and the test runtime can shut down.
+struct CloseOnDrop(Arc<Mailbox>);
+impl Drop for CloseOnDrop {
+    fn drop(&mut self) {
+        self.0.close();
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_running_worker_retries_maintenance_without_reserving_transfer_shares() {
+    // A transfer holds one namespace share while the fixture's pass is pending.
+    let (mut fixture, held) = fixture_with_gate(true);
+    fixture.receiver.try_recv().unwrap(); // Output filler.
+    fixture.gate.release();
+    let retries = Arc::new(Notify::new());
+    fixture.worker.namespace_retries = Some(retries.clone());
+    let Fixture {
+        worker,
+        lane,
+        mutation,
+        mut receiver,
+        ..
+    } = fixture;
+    let closing = CloseOnDrop(lane);
+    let running = tokio::task::spawn_blocking(move || worker.run());
+    // Without any input the worker waits and then retries admission itself. A
+    // waiter queued on the fair gate would instead wait for this very share and
+    // hold every other one meanwhile.
+    for _ in 0..2 {
+        tokio::time::timeout(Duration::from_secs(2), retries.notified())
+            .await
+            .expect("the waiting worker retries namespace admission");
+    }
+    assert_eq!(
+        mutation.available_permits(),
+        NAMESPACE_WEIGHT as usize - 1,
+        "a waiting tree holds no namespace share"
+    );
+    let later = mutation.clone().try_acquire_owned();
+    assert!(
+        later.is_ok(),
+        "a later transfer starts while maintenance waits"
+    );
+    drop(later);
+    drop(held);
+    let event = tokio::time::timeout(Duration::from_secs(2), receiver.recv())
+        .await
+        .expect("maintenance runs once every share is free")
+        .unwrap();
+    assert!(
+        matches!(&event, Event::Tree(tree)
+            if matches!(**tree, TreeEvent::Refreshed { result: Ok(()), .. })),
+        "{event:?}"
+    );
+    assert_eq!(mutation.available_permits(), NAMESPACE_WEIGHT as usize);
+    drop(closing);
+    tokio::time::timeout(Duration::from_secs(2), running)
+        .await
+        .unwrap()
+        .unwrap();
+}
