@@ -4,24 +4,20 @@
 /// fallback. Descriptions are deliberately not treated as list titles.
 pub fn viewer_plugin_name(id: &str, name: Option<&str>) -> String {
     let supplied = name.map(str::trim).filter(|name| !name.is_empty());
+    // A bundled viewer's title: shown when there is no manifest name (retained settings of
+    // an uninstalled viewer have none) or the manifest still has its older short name.
     let legacy = match id {
-        "midnight.viewer.basic" => Some(("Text and binary viewer", "Basic")),
-        "midnight.viewer.source" => Some(("Source viewer", "Source")),
-        "midnight.viewer.markdown" => Some(("Markdown viewer", "Markdown")),
-        "midnight.viewer.image" => Some(("Image viewer", "Images")),
-        "midnight.viewer.pdf" => Some(("PDF viewer", "PDF")),
-        // Still required. Linux HTML packages whose `web-viewer.json` was synthesized by
-        // `plugins/midnight-viewer-html/scripts/package-linux.py`, instead of copied from
-        // the project manifest as on Windows, name the viewer "Chromium HTML". Installed
-        // viewer packages are separate from the executable (the Linux README installs
-        // `viewers/` with its own copy step), so an application update can keep such a
-        // package, and its manifest name is read again at every catalog refresh. Remove
-        // this alias only once no supported installation can still hold one.
-        "midnight.viewer.html" => Some(("HTML viewer", "Chromium HTML")),
+        "midnight.viewer.basic" => Some(("Text and binary viewer", Some("Basic"))),
+        "midnight.viewer.source" => Some(("Source viewer", Some("Source"))),
+        "midnight.viewer.markdown" => Some(("Markdown viewer", Some("Markdown"))),
+        "midnight.viewer.image" => Some(("Image viewer", Some("Images"))),
+        "midnight.viewer.pdf" => Some(("PDF viewer", Some("PDF"))),
+        // No released HTML viewer manifest had another name.
+        "midnight.viewer.html" => Some(("HTML viewer", None)),
         _ => None,
     };
     let title = if let Some((current, old)) = legacy
-        && supplied.is_none_or(|value| value == old)
+        && supplied.is_none_or(|value| Some(value) == old)
     {
         current.to_owned()
     } else if let Some(name) = supplied {
@@ -54,7 +50,7 @@ mod tests {
             ("midnight.viewer.basic", None, "Text and binary viewer"),
             ("midnight.viewer.source", None, "Source viewer"),
             ("midnight.viewer.image", Some("Images"), "Image viewer"),
-            ("midnight.viewer.html", Some("Chromium HTML"), "HTML viewer"),
+            ("midnight.viewer.html", None, "HTML viewer"),
             ("vendor.data_tools", None, "Data tools viewer"),
         ] {
             assert_eq!(viewer_plugin_name(id, old), expected);
