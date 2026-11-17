@@ -256,7 +256,7 @@ fn generated_content_keeps_its_per_process_spool_root_until_retirement() {
     }
     let temporary = tempfile::tempdir().unwrap();
     let root = temporary.path().join("midnight-explorer-file-list-7");
-    let candidates = [crate::size_warnings::SpoolRoot {
+    let candidates = [crate::private_spool::SpoolRoot {
         path: root.clone(),
         per_process: true,
     }];

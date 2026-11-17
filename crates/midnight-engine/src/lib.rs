@@ -79,6 +79,7 @@ mod operations;
 mod outbox_tests;
 mod path_picker;
 mod preferences;
+mod private_spool;
 pub mod providers;
 pub mod reclaim;
 mod rectangle_summary;

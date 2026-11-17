@@ -4,8 +4,8 @@
 mod tests;
 use super::file_list_actor::{Retention, sizes::Captured};
 use super::file_list_records::{captured_record, check, error, selected};
+use crate::private_spool::{PrivateSpool, SpoolContent, create_private_spool, private_spool_roots};
 use crate::retirement::{RetirementLease, WorkerOwned};
-use crate::size_warnings::{PrivateSpool, SpoolContent, create_private_spool, private_spool_roots};
 use midnight_core::*;
 use midnight_worker_platform::spool::{MAX_IO, PrivateSpoolDirectory, Spool};
 use std::{collections::BTreeMap, fmt, io, sync::Arc};

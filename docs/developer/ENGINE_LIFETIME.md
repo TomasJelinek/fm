@@ -215,7 +215,7 @@ previous generation intact. Native destination pins and captured size reports st
 inside the guarded job, including confirmation queued before native execution.
 Generated content uses an anonymous spool (`O_TMPFILE` on Linux, delete-on-close on
 Windows) in the first usable private root of this user, chosen by the root policy
-that all generated-content spools share (`size_warnings::private_spool_roots`). On
+that all generated-content spools share (`private_spool::private_spool_roots`). On
 Linux the candidates start with `$XDG_CACHE_HOME` (or `~/.cache`)
 `/midnight-explorer/file-list`, which is disk-backed (small diagnostic reports skip
 it), then `$XDG_RUNTIME_DIR/midnight-explorer/file-list`. The temporary directory
