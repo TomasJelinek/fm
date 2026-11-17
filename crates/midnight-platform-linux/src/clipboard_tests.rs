@@ -151,9 +151,11 @@ fn wait_timeouts_become_ppoll_timespecs_and_saturate() {
     let zero = timespec(Duration::ZERO);
     assert_eq!((zero.tv_sec, zero.tv_nsec), (0, 0));
     assert_eq!(timespec(Duration::MAX).tv_sec, i64::MAX);
-    // The kernel accepts the saturated timeout; a pending wake still ends it at once.
+    // The kernel accepts the saturated timeout (ppoll rejects an invalid one with
+    // EINVAL). The eventfd is signaled directly, not through the waker under test, so
+    // that this wait ends at once even if the waker were broken.
     let wake = Wake::new().unwrap();
-    wake.waker()();
+    rustix::io::write(&*wake.0, &1u64.to_ne_bytes()).unwrap();
     let started = Instant::now();
     assert!(!wait(Some(&wake), None, Duration::MAX).unwrap());
     assert!(prompt(started));
