@@ -20,8 +20,8 @@
 //! only while it still has the identity it was created with. A failed change
 //! that also leaves its staging directory behind names it in an error of kind
 //! Other, never as a plain conflict or cancellation; after a failed capture
-//! request that directory is reported as possibly holding the item. Staging
-//! contents are never removed recursively.
+//! request, one that holds the staged name or cannot be inspected is reported as
+//! possibly holding the item. Staging contents are never removed recursively.
 //! renameat2(RENAME_NOREPLACE) support is required. Recursive operations use
 //! openat2 (Linux 5.6+) and fail explicitly if these kernel guarantees are absent.
 //! Preparation retains two file descriptors per selected item; exhaustion fails
