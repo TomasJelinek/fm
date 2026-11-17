@@ -287,7 +287,7 @@ async fn cancelling_or_shutting_down_a_predecessor_wait_never_holds_execution_ca
         let reservation = h.controller.reserve().unwrap();
         let mut mutations = Mutations::new(&mut h, &source);
         mutations.confirm().await;
-        assert_eq!(h.mutation.available_permits(), 32);
+        assert_eq!(h.mutation.available_permits(), NAMESPACE_WEIGHT as usize);
         assert_eq!(h.io.available_permits(), 1);
         if shutdown {
             mutations.controller.shutdown();
@@ -559,7 +559,7 @@ fn assert_link_resources_held_until_drop(
     assert_eq!(owners, expected_owners);
     assert!(
         snapshots.iter().all(|(_, io, mutation, capacity)| {
-            *io == 0 && *mutation == 31 && *capacity == MAX_JOBS - 1
+            *io == 0 && *mutation == NAMESPACE_WEIGHT as usize - 1 && *capacity == MAX_JOBS - 1
         }),
         "cleanup and every native/provider destructor retain all leases: {snapshots:?}"
     );
@@ -568,15 +568,8 @@ fn assert_link_resources_held_until_drop(
 async fn wait_for_retired_copy_capacity(h: &Harness) {
     let capacity = h.controller.capacity();
     assert!(capacity.is_closed(), "shutdown keeps Copy admission closed");
-    tokio::time::timeout(Duration::from_secs(4), async {
-        while capacity.available_permits() != MAX_JOBS {
-            tokio::time::sleep(Duration::from_millis(1)).await;
-        }
-    })
-    .await
-    .expect("actual cleanup and retained-owner destruction must return every Copy permit");
+    h.wait_capacity(MAX_JOBS).await;
     assert!(capacity.is_closed());
-    assert_eq!(capacity.available_permits(), MAX_JOBS);
 }
 
 async fn staged_link_decision(h: &mut Harness, partial: bool) {
@@ -629,7 +622,10 @@ async fn shutdown_during_blocked_link_sync_keeps_actual_return_ownership_and_wor
     h.tasks.abort_all();
     while h.tasks.join_next().await.is_some() {}
     assert_eq!(h.io.available_permits(), 0);
-    assert_eq!(h.mutation.available_permits(), 31);
+    assert_eq!(
+        h.mutation.available_permits(),
+        NAMESPACE_WEIGHT as usize - 1
+    );
     assert_eq!(h.controller.capacity().available_permits(), MAX_JOBS - 1);
     assert!(fixture.control.drop_threads().is_empty());
     assert_eq!(fixture.control.cleanups.load(Ordering::SeqCst), 0);
@@ -640,7 +636,10 @@ async fn shutdown_during_blocked_link_sync_keeps_actual_return_ownership_and_wor
         .await
         .unwrap();
     assert_eq!(h.io.available_permits(), 0);
-    assert_eq!(h.mutation.available_permits(), 31);
+    assert_eq!(
+        h.mutation.available_permits(),
+        NAMESPACE_WEIGHT as usize - 1
+    );
     assert_eq!(h.controller.capacity().available_permits(), MAX_JOBS - 1);
     assert!(fixture.control.owner_drops().is_empty());
     assert_eq!(fixture.control.staged_count(), 1);
@@ -714,7 +713,10 @@ async fn decision_abort_keeps_full_and_partial_link_stages_under_the_dedicated_i
             .await
             .unwrap();
         assert_eq!(h.io.available_permits(), 0);
-        assert_eq!(h.mutation.available_permits(), 31);
+        assert_eq!(
+            h.mutation.available_permits(),
+            NAMESPACE_WEIGHT as usize - 1
+        );
         assert_eq!(h.controller.capacity().available_permits(), MAX_JOBS - 1);
         assert!(fixture.control.owner_drops().is_empty());
         assert!(registered.upgrade().is_some());
@@ -722,7 +724,7 @@ async fn decision_abort_keeps_full_and_partial_link_stages_under_the_dedicated_i
         release.0.take().unwrap().send(()).unwrap();
         wait_for_retired_copy_capacity(&h).await;
         assert_eq!(h.io.available_permits(), 1);
-        assert_eq!(h.mutation.available_permits(), 32);
+        assert_eq!(h.mutation.available_permits(), NAMESPACE_WEIGHT as usize);
         assert_eq!(fixture.control.cleanups.load(Ordering::SeqCst), 1);
         assert_eq!(fixture.control.staged_count(), 0);
         assert_eq!(

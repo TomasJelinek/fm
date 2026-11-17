@@ -58,7 +58,9 @@ async fn replayed_id_retires_without_forging_events_or_removing_original_cancel_
     let held = !replay.closed();
     replay.release();
     let returned = wait_async(Duration::from_secs(8), || {
-        replay.closed() && sender.admission.capacity().available_permits() == 31
+        replay.closed()
+            && sender.admission.capacity().available_permits()
+                == crate::copy_operations::MAX_JOBS - 1
     })
     .await;
     // Returning the same admission means the replay runner/delivery tail ended.

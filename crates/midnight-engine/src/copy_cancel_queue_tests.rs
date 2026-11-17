@@ -340,7 +340,7 @@ async fn cancelled_case(
         !premature_terminal,
         "terminal cancellation before native {point:?} returned"
     );
-    assert_eq!(held, (0, 31));
+    assert_eq!(held, (0, NAMESPACE_WEIGHT as usize - 1));
     assert_eq!(done.state, CopyOperationState::Cancelled, "{done:?}");
     assert!(done.errors.is_empty(), "{done:?}");
     assert_eq!(done.verification, verification);

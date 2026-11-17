@@ -227,7 +227,7 @@ impl Admission {
             // Unreachable while the router shares this list; refusing beats a panic.
             return Err(refused(command));
         }
-        let lease = match self.0.retirement.try_reserve_nowait() {
+        let lease = match self.0.retirement.try_reserve() {
             Ok(lease) => lease,
             Err(_) => return Err(refused(command)),
         };

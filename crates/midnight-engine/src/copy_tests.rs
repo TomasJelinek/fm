@@ -1,4 +1,5 @@
 use super::*;
+use crate::transfer_leases::NAMESPACE_WEIGHT;
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -439,7 +440,7 @@ async fn conflict_wait_releases_the_disk_slot_and_rejects_stale_decisions() {
     assert_eq!(h.io.available_permits(), 1);
     assert_eq!(
         h.mutation.available_permits(),
-        crate::transfer_leases::NAMESPACE_WEIGHT as usize - 1
+        NAMESPACE_WEIGHT as usize - 1
     );
     h.controller
         .enqueue(request(2, &[second], &destination))
@@ -808,7 +809,7 @@ async fn cancellation_cannot_start_the_next_copy_before_native_io_returns() {
     // The queued job holds its namespace share while it waits for the disk slot.
     assert_eq!(
         h.mutation.available_permits(),
-        crate::transfer_leases::NAMESPACE_WEIGHT as usize - 2
+        NAMESPACE_WEIGHT as usize - 2
     );
     assert_eq!(prepared.load(Ordering::Acquire), 1);
     assert_eq!(
@@ -831,7 +832,7 @@ async fn cancellation_cannot_start_the_next_copy_before_native_io_returns() {
     assert_eq!(completed.verified_bytes, 16);
     assert_eq!(prepared.load(Ordering::Acquire), 2);
     assert_eq!(h.io.available_permits(), 1);
-    assert_eq!(h.mutation.available_permits(), 32);
+    assert_eq!(h.mutation.available_permits(), NAMESPACE_WEIGHT as usize);
     assert_eq!(fs::read_dir(&destination).unwrap().count(), 1);
     assert_eq!(
         fs::read(destination.join("next-source")).unwrap(),

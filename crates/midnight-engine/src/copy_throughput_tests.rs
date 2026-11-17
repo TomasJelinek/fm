@@ -99,7 +99,7 @@ async fn blocked_copy_emits_zero_activity_without_releasing_native_capacity() {
     assert_eq!(sampled.completed_roots, 0);
     assert!(done.current_file_size.is_none());
     assert_eq!(done.current_file_copied, 0);
-    assert_eq!(capacity, (0, 31));
+    assert_eq!(capacity, (0, NAMESPACE_WEIGHT as usize - 1));
     assert_eq!(done.state, CopyOperationState::Cancelled);
     assert_eq!(done.throughput.transfer_per_second, 0.0);
 }
@@ -268,7 +268,7 @@ async fn throughput_timer_cannot_publish_terminal_before_native_resource_cleanup
         None => h.terminal(1).await,
     };
     h.close().await;
-    assert_eq!(capacity, (0, 31));
+    assert_eq!(capacity, (0, NAMESPACE_WEIGHT as usize - 1));
     assert!(
         !premature,
         "terminal progress cannot precede native resource release"

@@ -29,7 +29,7 @@ fn unexpected_non_copy_conversion_retains_original_finished_and_quarantines_capa
         id: OperationId(1),
     };
     let owned = domain
-        .try_reserve_nowait()
+        .try_reserve()
         .unwrap()
         .own(Scope::new(submission, resources));
     assert!(!observed.is_finished() && !successor.is_finished());

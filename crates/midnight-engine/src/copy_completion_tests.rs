@@ -77,6 +77,7 @@ async fn partially_skipped_folder_is_not_reported_complete() {
         .enqueue(request(1, &[folder, last.clone()], &destination))
         .await;
     let mut completed = Vec::new();
+    let (mut merged, mut skipped) = (0, 0);
     loop {
         match h.next().await {
             CopyEvent::RootCompleted {
@@ -84,15 +85,18 @@ async fn partially_skipped_folder_is_not_reported_complete() {
                 ..
             } => completed.push(path),
             CopyEvent::Conflict(c) => {
+                let choice = if c.can_merge {
+                    merged += 1;
+                    CopyChoice::Merge { all: false }
+                } else {
+                    skipped += 1;
+                    CopyChoice::Skip
+                };
                 h.controller
                     .decide(CopyDecision {
                         id: c.id,
                         version: c.version,
-                        choice: if c.can_merge {
-                            CopyChoice::Merge { all: false }
-                        } else {
-                            CopyChoice::Skip
-                        },
+                        choice,
                     })
                     .await
             }
@@ -115,6 +119,11 @@ async fn partially_skipped_folder_is_not_reported_complete() {
             _ => {}
         }
     }
+    assert_eq!(
+        (merged, skipped),
+        (1, 1),
+        "the folder is merged and only its child is skipped"
+    );
     assert_eq!(completed, vec![last]);
     assert_eq!(
         fs::read(destination.join("folder/child")).unwrap(),

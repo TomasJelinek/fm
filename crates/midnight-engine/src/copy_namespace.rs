@@ -920,6 +920,7 @@ impl Claim {
         drop(retired);
         Ok(())
     }
+    #[cfg(test)]
     pub(crate) fn try_grant(&self, cancel: &Cancellation) -> Result<bool, FsError> {
         self.admit(cancel).map(|grant| grant == Grant::Granted)
     }
@@ -1258,6 +1259,8 @@ struct ProbeBatch {
     seen: Seen,
     snapshots: Vec<Snapshot>,
 }
+/// Fresh facts per record sequence, in snapshot order.
+type Refreshed = Vec<(u64, Arc<Facts>)>;
 impl ProbeBatch {
     fn reserve(
         registry: &Arc<Inner>,
@@ -1346,11 +1349,7 @@ impl ProbeBatch {
             .collect();
         Self::reserve(registry, &mut state, sequences).map(Ok)
     }
-    fn refresh(
-        self,
-        cancel: &Cancellation,
-        latch: bool,
-    ) -> Result<Vec<(u64, Arc<Facts>)>, FsError> {
+    fn refresh(self, cancel: &Cancellation, latch: bool) -> Result<Refreshed, FsError> {
         let mut facts = Vec::with_capacity(self.snapshots.len());
         for snapshot in &self.snapshots {
             cancelled(cancel)?;
@@ -1377,7 +1376,7 @@ impl ProbeBatch {
         self,
         cancel: &Cancellation,
         candidate: u64,
-    ) -> Result<Option<Vec<(u64, Arc<Facts>)>>, FsError> {
+    ) -> Result<Option<Refreshed>, FsError> {
         let mut facts = Vec::with_capacity(self.snapshots.len());
         for snapshot in &self.snapshots {
             cancelled(cancel)?;

@@ -57,9 +57,7 @@ fn paused_retirement() -> (crate::retirement::RetirementDomain, WorkerPause) {
     )
 }
 fn all_payload_leases_returned(domain: &crate::retirement::RetirementDomain) -> bool {
-    let leases: Vec<_> = (0..32)
-        .filter_map(|_| domain.try_reserve_nowait().ok())
-        .collect();
+    let leases: Vec<_> = (0..32).filter_map(|_| domain.try_reserve().ok()).collect();
     leases.len() == 32
 }
 
@@ -142,7 +140,7 @@ fn state_contention_returns_original_capture_and_restores_capacity_before_cleanu
     let locked = admission.0.state.lock().unwrap();
     let _ = release.send(());
     let returned_while_locked = observed.recv_timeout(Duration::from_secs(2)).is_ok();
-    let restored = admission.capacity().available_permits() == 32;
+    let restored = admission.capacity().available_permits() == MAX_JOBS;
     let leases_restored = all_payload_leases_returned(&domain);
     let untouched = probe.calls() == 0 && !probe.closed();
     drop(locked);
@@ -200,7 +198,7 @@ fn fence_contention_rolls_back_without_publishing_finished_or_holding_state_mute
     let _ = release.send(());
     let returned_while_locked = observed.recv_timeout(Duration::from_secs(2)).is_ok();
     let state_free = admission.0.state.try_lock().is_ok();
-    let restored = admission.capacity().available_permits() == 32;
+    let restored = admission.capacity().available_permits() == MAX_JOBS;
     let leases_restored = all_payload_leases_returned(&domain);
     let untouched = probe.calls() == 0 && !probe.closed();
     drop(locked);
@@ -235,7 +233,7 @@ fn unavailable_actual_retirement_lease_refuses_without_a_finished_latch() {
     let (command, probe) = case.capture(1, false, false);
     let identity = capture_identity(&command);
     let result = sender.try_send(command);
-    let restored = admission.capacity().available_permits() == 32;
+    let restored = admission.capacity().available_permits() == MAX_JOBS;
     let untouched = probe.calls() == 0 && !probe.closed();
     let pristine = empty(&admission);
     let intact = reclaim_full(result, &identity, 1);
@@ -292,10 +290,15 @@ async fn successful_send_is_already_in_the_next_actual_reservation_snapshot() {
     probe.release();
     let closed = wait_async(OBSERVE, || probe.closed()).await;
     let finished = wait_async(OBSERVE, || predecessors.is_finished()).await;
-    let first_returned =
-        wait_async(OBSERVE, || admission.capacity().available_permits() == 31).await;
+    let first_returned = wait_async(OBSERVE, || {
+        admission.capacity().available_permits() == MAX_JOBS - 1
+    })
+    .await;
     drop(next);
-    let all_returned = wait_async(OBSERVE, || admission.capacity().available_permits() == 32).await;
+    let all_returned = wait_async(OBSERVE, || {
+        admission.capacity().available_permits() == MAX_JOBS
+    })
+    .await;
     let leases_returned = wait_async(OBSERVE, || all_payload_leases_returned(&domain)).await;
     drop(receiver);
     assert!(sent && published && earlier_pending && closed && finished);
@@ -310,7 +313,7 @@ async fn successful_send_is_already_in_the_next_actual_reservation_snapshot() {
             && all_returned
             && leases_returned
     );
-    assert_eq!(admission.capacity().available_permits(), 32);
+    assert_eq!(admission.capacity().available_permits(), MAX_JOBS);
     assert!(!probe.timed_out());
 }
 
@@ -402,7 +405,10 @@ async fn two_producers_cannot_publish_a_later_admission_ahead_of_the_locked_firs
     drop(predecessors);
     drop(receiver);
     let closed = wait_async(OBSERVE, || first_probe.closed() && second_probe.closed()).await;
-    let returned = wait_async(OBSERVE, || admission.capacity().available_permits() == 32).await;
+    let returned = wait_async(OBSERVE, || {
+        admission.capacity().available_permits() == MAX_JOBS
+    })
+    .await;
     assert!(
         paused
             && refused
@@ -442,7 +448,7 @@ fn panic_edge(point: faults::Point, registered: bool) {
         Ok(Ok(())) => false,
     };
     let held = wait_sync(OBSERVE, || probe.close_entered());
-    let capacity_held = admission.capacity().available_permits() == 31;
+    let capacity_held = admission.capacity().available_permits() == MAX_JOBS - 1;
     let state_free = match admission.0.state.try_lock() {
         Ok(_) | Err(std::sync::TryLockError::Poisoned(_)) => true,
         Err(std::sync::TryLockError::WouldBlock) => false,
@@ -457,7 +463,9 @@ fn panic_edge(point: faults::Point, registered: bool) {
     let finished = wait_sync(OBSERVE, || predecessors.is_finished());
     drop(next);
     drop(receiver);
-    let returned = wait_sync(OBSERVE, || admission.capacity().available_permits() == 32);
+    let returned = wait_sync(OBSERVE, || {
+        admission.capacity().available_permits() == MAX_JOBS
+    });
     assert!(
         panicked
             && held
@@ -513,7 +521,7 @@ fn foreign_receiver_entry_keeps_both_engines_provider_ownership_protected() {
     drop(first.run(second_receiver));
     let foreign_held = wait_sync(OBSERVE, || second_probe.close_entered());
     let own_receiver_still_owns = !first_probe.closed();
-    let capacity_held = second_admission.capacity().available_permits() == 31;
+    let capacity_held = second_admission.capacity().available_permits() == MAX_JOBS - 1;
     second_probe.release();
     let foreign_closed = wait_sync(OBSERVE, || second_probe.closed());
     drop(first_receiver);
@@ -552,11 +560,14 @@ async fn outstanding_typed_permit_after_receiver_close_retires_the_accepted_guar
         }
     };
     let held = wait_async(OBSERVE, || probe.close_entered()).await;
-    let capacity_held = admission.capacity().available_permits() == 31;
+    let capacity_held = admission.capacity().available_permits() == MAX_JOBS - 1;
     let not_closed = !probe.closed();
     probe.release();
     let closed = wait_async(OBSERVE, || probe.closed()).await;
-    let returned = wait_async(OBSERVE, || admission.capacity().available_permits() == 32).await;
+    let returned = wait_async(OBSERVE, || {
+        admission.capacity().available_permits() == MAX_JOBS
+    })
+    .await;
     drop(engine);
     assert!(
         transport_closed && accepted && held && capacity_held && not_closed && closed && returned

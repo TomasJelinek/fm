@@ -181,7 +181,9 @@ impl Drop for Job {
     }
 }
 fn registry() -> Registry {
-    Registry::new_with_io(Arc::new(midnight_work_budget::Gate::new(32)))
+    Registry::new_with_io(Arc::new(midnight_work_budget::Gate::new(
+        midnight_work_budget::MAX_IO_LIMIT,
+    )))
 }
 fn one(
     registry: &Registry,
@@ -823,7 +825,9 @@ fn subtree_ancestry_conflicts_in_both_directions_and_reciprocal_union_is_atomic(
     assert!(first.grant());
     assert!(!reciprocal.grant());
     assert!(!child.grant());
-    let nested_registry = Registry::new_with_io(Arc::new(midnight_work_budget::Gate::new(32)));
+    let nested_registry = Registry::new_with_io(Arc::new(midnight_work_budget::Gate::new(
+        midnight_work_budget::MAX_IO_LIMIT,
+    )));
     let nested = one(
         &nested_registry,
         1,
