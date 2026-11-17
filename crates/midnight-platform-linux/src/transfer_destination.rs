@@ -22,7 +22,10 @@ const COPY_PARENT: &str = "Copy creates folders only inside a parent that other 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum NewDirectory {
     /// A copied folder. Where a filesystem cannot store POSIX modes, its
-    /// mount-provided permissions are accepted (ownership is still required).
+    /// mount-provided permissions are accepted only while no other user can
+    /// write to it (group write only for the user's private group, without an
+    /// access ACL); ownership is still required. Copy requires a protected
+    /// parent, so the module rule's equally-open-parent case does not apply.
     Copy,
     /// Private Move staging or replacement recovery: exactly mode 0700.
     Private,
@@ -508,9 +511,9 @@ impl Directory {
             );
             let created = file.metadata().map_err(|e| error(&path, e))?;
             pinned = Some((created.dev(), created.ino()));
-            let mode = crate::ownership::check_created_directory(&file).map_err(|failure| {
-                unsupported(&path, &format!("The new folder cannot be used: {failure}"))
-            })?;
+            let mode = crate::ownership::check_created_directory(&*self.file, &file).map_err(
+                |failure| unsupported(&path, &format!("The new folder cannot be used: {failure}")),
+            )?;
             if purpose == NewDirectory::Private
                 && mode != crate::ownership::CreatedDirectory::Private
             {

@@ -357,6 +357,40 @@ fn private_group_writable_parents_allow_move_and_copied_folders() {
     assert_eq!(fs::read(&source).unwrap(), b"original");
 }
 
+/// A copied folder whose mount-provided mode is wider than its protected parent
+/// would let other users change what the parent protects.
+#[test]
+fn copied_folders_wider_than_their_protected_parent_are_refused_and_removed() {
+    use std::{ffi::OsStr, os::unix::fs::PermissionsExt};
+    let (_temp, parent) = fixture();
+    fs::set_permissions(&parent, fs::Permissions::from_mode(0o755)).unwrap();
+    let provider = crate::LinuxFileSystem::new(None);
+    let cancel = Cancellation::default();
+    let target = provider
+        .prepare_transfer_destination(&parent, &cancel)
+        .unwrap();
+    let refused = crate::ownership::simulation::with_mount_mode(0o777, || {
+        target.create_directory(OsStr::new("copied"), &cancel)
+    });
+    let refused = match refused {
+        Ok(_) => panic!("a copied folder wider than its parent was admitted"),
+        Err(error) => error,
+    };
+    assert_eq!(refused.kind, std::io::ErrorKind::Unsupported);
+    assert!(
+        refused.message.contains("The new folder cannot be used"),
+        "{}",
+        refused.message
+    );
+    assert_eq!(fs::read_dir(&parent).unwrap().count(), 0);
+    // A mount-provided mode that only the user can write is admitted.
+    let admitted = crate::ownership::simulation::with_mount_mode(0o755, || {
+        target.create_directory(OsStr::new("copied"), &cancel)
+    });
+    assert!(admitted.is_ok());
+    assert!(parent.join("copied").is_dir());
+}
+
 /// With a POSIX access ACL the group bits are its mask, so a 0775 parent of the
 /// user's private group can still let other users replace or remove names.
 #[test]

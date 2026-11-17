@@ -239,7 +239,7 @@ The recovery directory is `.midnight-recovery-<random>` beneath the destination
 folder. Windows uses a protected owner-only DACL; Linux requires owned private
 recovery and a parent protected against other-user name replacement (owned by the
 user or root, and sticky or writable only by the user and the user's private
-group). These are
+group, without a POSIX access ACL). These are
 not isolation from root/administrators or malicious processes of the same user.
 An error after namespace mutation is a structured outcome, never a request to
 delete recovery data during cleanup:

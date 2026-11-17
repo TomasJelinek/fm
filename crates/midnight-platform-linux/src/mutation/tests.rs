@@ -730,6 +730,103 @@ fn rename_and_permanent_delete_accept_mount_provided_staging_permissions() {
     crate::ownership::simulation::with_mount_mode(0o755, || rename_and_delete_in(fixture.path()));
 }
 
+/// The equally-open-parent case compares the staging folder's group with its
+/// parent's and requires neither to carry an access ACL; prints SKIP when the
+/// fixture is of another group (a set-group-ID ancestor) or carries an access
+/// ACL (a default ACL above it).
+fn equally_open_parent_supported(directory: &Path, test: &str) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    let group = fs::metadata(directory).unwrap().gid();
+    if group != rustix::process::getegid().as_raw() {
+        eprintln!("SKIP {test}: the fixture group {group} is not the effective group");
+        return false;
+    }
+    if rustix::fs::getxattr_query(directory, "system.posix_acl_access").is_ok() {
+        eprintln!("SKIP {test}: the fixture carries an access ACL");
+        return false;
+    }
+    true
+}
+
+#[test]
+fn rename_and_permanent_delete_accept_a_stage_as_open_as_its_unprotected_parent() {
+    use std::os::unix::fs::PermissionsExt;
+    // A share mounted with dir_mode=0777, or vfat/exfat with umask=000: every
+    // folder, the staging folder included, is equally open to all users.
+    let fixture = tempfile::tempdir().unwrap();
+    if !equally_open_parent_supported(fixture.path(), "stages as open as their parent") {
+        return;
+    }
+    fs::set_permissions(fixture.path(), fs::Permissions::from_mode(0o777)).unwrap();
+    crate::ownership::simulation::with_mount_mode(0o777, || rename_and_delete_in(fixture.path()));
+}
+
+#[test]
+fn a_stage_wider_than_its_parent_is_refused_and_removed() {
+    use std::os::unix::fs::PermissionsExt;
+    let fixture = tempfile::tempdir().unwrap();
+    fs::set_permissions(fixture.path(), fs::Permissions::from_mode(0o755)).unwrap();
+    let original = fixture.path().join("photo.jpg");
+    fs::write(&original, b"pixels").unwrap();
+    let cancel = Cancellation::default();
+    let prepared = LinuxFileSystem::new(None)
+        .prepare(&original, &cancel)
+        .unwrap();
+    // New folders of this mount would let every user change what the parent
+    // protects.
+    crate::ownership::simulation::with_mount_mode(0o777, || {
+        for _ in 0..3 {
+            let refused = prepared.rename(OsStr::new("renamed.jpg"), &cancel);
+            assert_eq!(refused.unwrap_err().kind, ErrorKind::Unsupported);
+            let refused = prepared.delete(DeleteMode::Permanent, &cancel, &mut |_| {});
+            assert_eq!(refused.unwrap_err().kind, ErrorKind::Unsupported);
+        }
+    });
+    assert_eq!(fs::read(&original).unwrap(), b"pixels");
+    assert!(staging_residue(fixture.path()).is_empty());
+    assert_eq!(fs::read_dir(fixture.path()).unwrap().count(), 1);
+}
+
+#[test]
+fn a_failed_capture_reports_where_the_item_may_be_instead_of_an_unused_stage() {
+    let fixture = tempfile::tempdir().unwrap();
+    let source = fixture.path().join("source");
+    fs::write(&source, b"selected").unwrap();
+    let cancel = Cancellation::default();
+    let prepared = super::Prepared::new(&source, None, &cancel).unwrap();
+    // A failed capture request may still have moved the item into the stage (a
+    // lost reply on a network or FUSE filesystem). Here an entry already at the
+    // staged name makes it fail and keeps the stage from being removed.
+    let staged = super::Staged::create(&prepared).unwrap();
+    let occupied = staged.path.join(super::STAGED_NAME);
+    fs::write(&occupied, b"occupant").unwrap();
+    let failure = staged.capture(&prepared, &cancel).unwrap_err();
+    assert_eq!(failure.kind, ErrorKind::AlreadyExists);
+    assert!(
+        failure.message.contains(&format!(
+            "the item may have been moved into {}",
+            occupied.display()
+        )),
+        "{}",
+        failure.message
+    );
+    assert!(!failure.message.contains("unused"), "{}", failure.message);
+    assert_eq!(fs::read(&source).unwrap(), b"selected");
+    // Without a capture request the stage cannot hold the item.
+    let staged = super::Staged::create(&prepared).unwrap();
+    fs::write(staged.path.join("other"), b"other").unwrap();
+    fs::rename(&source, fixture.path().join("moved")).unwrap();
+    let failure = staged.capture(&prepared, &cancel).unwrap_err();
+    assert!(
+        failure.message.contains(&format!(
+            "the unused staging directory remains at {}",
+            staged.path.display()
+        )),
+        "{}",
+        failure.message
+    );
+}
+
 #[test]
 fn refused_staging_directories_are_removed_and_the_source_is_untouched() {
     let fixture = tempfile::tempdir().unwrap();
