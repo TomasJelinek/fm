@@ -89,8 +89,10 @@ Debug native package build; tests, lints and the package share one native-target
 dependency build. Pass `release` as the build script's profile argument for an
 optimized package. Build scripts write the actual native target and DLL/SO
 filename into the installed manifest, and replace the package's copy of the
-plugin's notices. They install only that package. They do not edit application
-code or another plugin.
+plugin's notices. They replace only a `notices` directory that they generated
+(marked by `notices/.midnight-generated`) or that lies below a `_build` directory,
+and refuse any other existing one. They install only that package. They do not edit
+application code or another plugin.
 
 The [Source](../../plugins/midnight-viewer-source/README.md) and
 [Markdown](../../plugins/midnight-viewer-markdown/README.md) plugins use the same

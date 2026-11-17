@@ -30,13 +30,41 @@ $manifest = $manifest -replace 'target = "[^"]+"', "target = `"$nativeTarget`""
 foreach ($notice in @('LICENSE', 'README.md', 'THIRD-PARTY.md')) {
     Copy-Item -LiteralPath (Join-Path $pluginRoot $notice) -Destination $OutputDirectory
 }
-# Replace the generated notices so a removed dependency's notice cannot survive.
+# Replace only notices that this script generated (they carry its marker) or that lie
+# in a _build output tree, so a removed dependency's notice cannot survive a rebuild.
+# The marker is never removed: an interrupted build is completed by the next one.
 $notices = Join-Path $OutputDirectory 'notices'
+$marker = Join-Path $notices '.midnight-generated'
+$markerText = "midnight-viewer-source notices`n"
 if (Test-Path -LiteralPath $notices) {
-    if ((Get-Item -LiteralPath $notices -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) {
-        throw 'Package notices must not be a link'
+    $pending = [Collections.Generic.Stack[IO.DirectoryInfo]]::new()
+    $pending.Push([IO.DirectoryInfo]::new($notices))
+    if (-not $pending.Peek().Exists -or ($pending.Peek().Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+        throw 'Package notices must be a directory, not a link'
     }
-    Remove-Item -LiteralPath $notices -Recurse -Force
+    while ($pending.Count -gt 0) {
+        foreach ($entry in $pending.Pop().EnumerateFileSystemInfos()) {
+            if ($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+                throw "Package notices must not contain links: $($entry.FullName)"
+            }
+            if ($entry -is [IO.DirectoryInfo]) { $pending.Push($entry) }
+        }
+    }
+    $generated = (Test-Path -LiteralPath $marker -PathType Leaf) -and [IO.File]::ReadAllText($marker) -ceq $markerText
+    $underBuild = $OutputDirectory -match '[/\\]_build([/\\]|$)'
+    for ($part = $OutputDirectory; $underBuild -and $part; $part = Split-Path -Parent $part) {
+        if ((Get-Item -LiteralPath $part -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) { $underBuild = $false }
+    }
+    if (-not ($generated -or $underBuild)) {
+        throw "Refusing to replace notices that this script did not generate: $notices"
+    }
+    Get-ChildItem -LiteralPath $notices -Force | Where-Object Name -cne '.midnight-generated' |
+        Remove-Item -Recurse -Force
+} else {
+    New-Item -ItemType Directory -Path $notices | Out-Null
 }
-Copy-Item -LiteralPath (Join-Path $pluginRoot 'notices') -Destination $OutputDirectory -Recurse -Force
+[IO.File]::WriteAllText($marker, $markerText)
+Get-ChildItem -LiteralPath (Join-Path $pluginRoot 'notices') | ForEach-Object {
+    Copy-Item -LiteralPath $_.FullName -Destination $notices -Recurse -Force
+}
 Write-Output "Viewer package: $OutputDirectory"
