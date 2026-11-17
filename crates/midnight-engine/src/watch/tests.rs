@@ -170,6 +170,17 @@ struct Files {
     metadata_reads: AtomicUsize,
 }
 
+/// Lets the fake's blocked probe return when dropped. Hold one for as long as a test
+/// keeps a probe blocked: a failed assertion then still releases the spinning blocking
+/// thread instead of hanging the runtime's shutdown forever.
+struct ReleaseOnDrop(Arc<Files>);
+
+impl Drop for ReleaseOnDrop {
+    fn drop(&mut self) {
+        self.0.release.store(true, Ordering::SeqCst);
+    }
+}
+
 impl Files {
     fn put(&self, path: &str, length: u64) {
         let mut entry = Entry::new(
@@ -655,6 +666,7 @@ async fn a_blocked_probe_cannot_starve_the_other_pane() {
         blocked_path: Some("left".into()),
         ..Files::default()
     });
+    let _release = ReleaseOnDrop(files.clone());
     files.put("right", 7);
     let (controller, mut tasks, mut events) =
         controller(files.clone(), None, Duration::from_millis(30));

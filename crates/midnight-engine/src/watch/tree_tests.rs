@@ -431,6 +431,7 @@ async fn blocked_probe_is_logically_cancelled_but_keeps_provider_scope_until_ret
         ignore_cancel: true,
         ..Default::default()
     });
+    let release = ReleaseOnDrop(files.clone());
     files.put(path.to_str().unwrap(), 7);
     let (session, scope) = scope(&files, path.to_str().unwrap());
     let stamp = scope.stamp;
@@ -453,7 +454,7 @@ async fn blocked_probe_is_logically_cancelled_but_keeps_provider_scope_until_ret
         "blocked probe must retain provider ownership"
     );
     assert!(events.try_recv().is_err());
-    files.release.store(true, Ordering::SeqCst);
+    drop(release);
     files.wait_probes(1).await;
     stop(&controller, &mut tasks).await;
     assert!(retained.upgrade().is_none());
