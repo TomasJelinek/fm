@@ -58,9 +58,9 @@ fn pin_exact(parent: &File, name: &CStr) -> Result<File, Failure> {
     owned(fd as i32)
 }
 
-/// Observe an owned descriptor's current locator and reopen it without allocating
-/// pathname scratch. The caller separately confirms both descriptor identities.
-pub(crate) fn observe_locator(file: &File, bytes: &mut Vec<u8>) -> Result<File, Failure> {
+/// The NUL-terminated `/proc/self/fd/<descriptor>` link of `file`, built in a
+/// fixed stack buffer without allocating.
+fn descriptor_link(file: &File) -> Result<[u8; 32], Failure> {
     const PREFIX: &[u8] = b"/proc/self/fd/";
     let mut descriptor = u32::try_from(file.as_raw_fd())
         .map_err(|_| Failure::new(ErrorCode::Invalid, "Invalid retained descriptor."))?;
@@ -74,9 +74,17 @@ pub(crate) fn observe_locator(file: &File, bytes: &mut Vec<u8>) -> Result<File, 
             break;
         }
     }
+    // At most 14 prefix bytes and 10 digits; the remaining zero bytes terminate it.
     let mut link = [0u8; 32];
     link[..PREFIX.len()].copy_from_slice(PREFIX);
     link[PREFIX.len()..PREFIX.len() + digits.len() - start].copy_from_slice(&digits[start..]);
+    Ok(link)
+}
+
+/// Observe an owned descriptor's current locator and reopen it without allocating
+/// pathname scratch. The caller separately confirms both descriptor identities.
+pub(crate) fn observe_locator(file: &File, bytes: &mut Vec<u8>) -> Result<File, Failure> {
+    let link = descriptor_link(file)?;
     bytes.resize(bytes.capacity(), 0);
     if bytes.is_empty() {
         return Err(Failure::new(
@@ -259,6 +267,55 @@ pub(crate) fn rmdir(parent: &File, name: &CStr) -> Result<(), Failure> {
         return Err(error());
     }
     Ok(())
+}
+/// The extended attribute that holds an inode's POSIX access ACL.
+const ACCESS_ACL: &CStr = c"system.posix_acl_access";
+
+/// Whether `directory` may carry a POSIX access ACL. Only a missing attribute
+/// (ENODATA) or a filesystem without POSIX ACLs (EOPNOTSUPP) proves that it has
+/// none; success or any other failure counts as an ACL. The attribute is read
+/// through the descriptor; kernels that refuse xattr calls on `O_PATH`
+/// descriptors (EBADF) are asked through the descriptor's `/proc/self/fd` link.
+pub(crate) fn may_have_access_acl(directory: &File) -> bool {
+    // SAFETY: a live descriptor and a static terminated name; a zero size only
+    // queries the value length, so no output buffer is written.
+    let queried = unsafe {
+        libc::fgetxattr(
+            directory.as_raw_fd(),
+            ACCESS_ACL.as_ptr(),
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    let mut failure = if queried < 0 {
+        last_errno()
+    } else {
+        return true;
+    };
+    if failure == Some(libc::EBADF) {
+        let Ok(link) = descriptor_link(directory) else {
+            return true;
+        };
+        // SAFETY: the generated link is terminated in the fixed stack buffer and
+        // names the live descriptor; a zero size writes no output buffer.
+        let queried = unsafe {
+            libc::getxattr(
+                link.as_ptr().cast(),
+                ACCESS_ACL.as_ptr(),
+                std::ptr::null_mut(),
+                0,
+            )
+        };
+        failure = if queried < 0 {
+            last_errno()
+        } else {
+            return true;
+        };
+    }
+    !matches!(failure, Some(libc::ENODATA | libc::EOPNOTSUPP))
+}
+fn last_errno() -> Option<i32> {
+    std::io::Error::last_os_error().raw_os_error()
 }
 pub(crate) fn effective_uid() -> u32 {
     // SAFETY: geteuid has no arguments or ownership requirements.

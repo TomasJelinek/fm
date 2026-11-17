@@ -350,7 +350,8 @@ impl Stage {
     /// only the caller can change. A restrictive umask or default ACL is corrected
     /// to 0700. Filesystems whose permissions come from mount options (vfat, exfat,
     /// NTFS, CIFS without POSIX extensions, many FUSE mounts) keep their mode,
-    /// which is accepted only while no other user may write to the stage.
+    /// which is accepted only while no other user may write to the stage (group
+    /// write only for the private group, without an access ACL; see `ownership`).
     fn admit(prepared: &Prepared, file: &File) -> Result<(Identity, u32, File), Failure> {
         let identity = Identity::of(file)?;
         let metadata = file.metadata().map_err(Failure::from_io)?;
@@ -372,9 +373,7 @@ impl Stage {
             let _ = sys::make_private(&stage_sync);
             let current = stage_sync.metadata().map_err(Failure::from_io)?;
             mode = current.mode() & 0o777;
-            if mode != 0o700
-                && !ownership::writable_only_by_caller(current.uid(), current.gid(), mode)
-            {
+            if mode != 0o700 && !ownership::writable_only_by_caller(&stage_sync, &current) {
                 return Err(Failure::new(
                     ErrorCode::Unsupported,
                     "This filesystem would let other users change the Rename stage.",
