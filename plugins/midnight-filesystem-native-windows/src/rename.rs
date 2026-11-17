@@ -777,8 +777,7 @@ pub(super) mod tests {
             Ok(())
         });
         let request = rename_request(prepared.handle, "destination");
-        let result =
-            native::test_call(&client.api, client.instance, request.clone(), &cancel).unwrap();
+        let result = client.flagged(request.clone(), &cancel);
         assert!(matches!(
             state(result.clone()).outcome,
             RenameOutcome::Renamed {
@@ -791,15 +790,12 @@ pub(super) mod tests {
         assert_eq!(identity_at(&destination), before);
         assert_eq!(fs::read(&destination).unwrap(), b"committed source");
         assert_eq!(
-            native::test_call(
-                &client.api,
-                client.instance,
+            client.flagged(
                 Request::GetRenameState {
                     prepared: prepared.handle
                 },
                 &cancel
-            )
-            .unwrap(),
+            ),
             result
         );
         assert_eq!(client.call(request), result);

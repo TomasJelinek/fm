@@ -140,6 +140,32 @@ fn cancellation_after_capture_restores_independently_of_cancelled_token() {
 }
 
 #[test]
+fn cancellation_before_the_capture_request_removes_the_stage_on_unqualified_storage() {
+    let _reset = hooks::reset();
+    let (temp, client, prepared, original) = setup();
+    // Remote or FUSE storage: only an issued request could complete later.
+    hooks::treat_filesystem_as_unqualified();
+    let cancelled = Arc::new(AtomicBool::new(false));
+    let flag = cancelled.clone();
+    hooks::at(Boundary::AfterStageCreate, move |_| {
+        flag.store(true, Ordering::Release)
+    });
+    let outcome = controlled_call(&client, prepared.handle, &cancelled);
+    assert!(
+        matches!(
+            outcome,
+            RenameOutcome::Unchanged(Failure {
+                code: ErrorCode::Cancelled,
+                ..
+            })
+        ),
+        "{outcome:?}"
+    );
+    assert_eq!(identity(&temp.path.join("source")), original);
+    assert_eq!(fs::read_dir(&temp.path).unwrap().count(), 1);
+}
+
+#[test]
 fn restoration_never_replaces_a_new_winner_and_reports_exact_raw_source() {
     let _reset = hooks::reset();
     let temp = Temp::new();

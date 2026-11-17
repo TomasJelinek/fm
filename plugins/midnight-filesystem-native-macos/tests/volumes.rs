@@ -23,9 +23,15 @@ fn native_volumes_keep_raw_roots_and_report_independent_capacity() {
     }) else {
         panic!("Volume information failed")
     };
-    assert!(info.capacity.total.is_some_and(|total| total > 0));
-    assert!(info.capacity.free <= info.capacity.total);
-    assert!(info.capacity.available <= info.capacity.total);
+    // Option ordering would accept a missing value; require each measured field.
+    let total = info.capacity.total.unwrap();
+    assert!(total > 0);
+    assert!(info.capacity.free.is_some_and(|free| free <= total));
+    assert!(
+        info.capacity
+            .available
+            .is_some_and(|available| available <= total)
+    );
     assert!(info.filesystem.is_some());
     assert!(info.root.is_some());
     assert!(info.read_only.is_some());

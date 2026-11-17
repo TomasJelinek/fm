@@ -1,4 +1,5 @@
 use super::*;
+use crate::adapter::test_clock;
 use std::{
     mem::{offset_of, size_of},
     sync::{
@@ -277,19 +278,23 @@ fn late_native_failure(open: bool, cancelled: bool) -> (Failure, usize) {
         ..Default::default()
     });
     let cancel = Arc::new(AtomicBool::new(false));
+    let expired = Arc::new(AtomicBool::new(false));
     let worker_cancel = cancel.clone();
+    let worker_expired = expired.clone();
     let worker_api = api.clone();
     let worker = std::thread::spawn(move || {
+        test_clock::follow(worker_expired);
         let cancelled = || worker_cancel.load(Ordering::SeqCst);
         let ctx = Context {
             cancelled: &cancelled,
-            deadline: Instant::now() + Duration::from_secs(1),
+            deadline: Instant::now() + Duration::from_secs(10),
         };
         begin_with(&Windows::root().target, &ctx, worker_api)
             .and_then(|mut cursor| cursor.next(&ctx))
     });
     gate.wait();
-    std::thread::sleep(Duration::from_millis(1100));
+    // The request deadline elapses while the native call is still blocked.
+    expired.store(true, Ordering::SeqCst);
     assert_eq!(api.closed.load(Ordering::SeqCst), 0);
     cancel.store(cancelled, Ordering::SeqCst);
     gate.release();
@@ -480,17 +485,21 @@ fn a_success_count_without_fresh_native_bytes_cannot_replay_the_previous_page() 
 fn blocked_return_after_deadline_is_timed_out_and_releases_only_after_actual_return() {
     let gate = Arc::new(Gate::default());
     let api = Fake::new(vec![Step::Block(gate.clone())]);
+    let expired = Arc::new(AtomicBool::new(false));
+    let worker_expired = expired.clone();
     let thread_api = api.clone();
     let worker = std::thread::spawn(move || {
+        test_clock::follow(worker_expired);
         let ctx = Context {
             cancelled: &|| false,
-            deadline: Instant::now() + Duration::from_secs(1),
+            deadline: Instant::now() + Duration::from_secs(10),
         };
         let mut cursor = begin_with(&Windows::root().target, &ctx, thread_api).unwrap();
         cursor.next(&ctx)
     });
     gate.wait();
-    std::thread::sleep(Duration::from_millis(1100));
+    // The request deadline elapses while the native call is still blocked.
+    expired.store(true, Ordering::SeqCst);
     assert_eq!(api.closed.load(Ordering::SeqCst), 0);
     gate.release();
     assert_eq!(

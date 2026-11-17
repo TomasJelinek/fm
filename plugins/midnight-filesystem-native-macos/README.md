@@ -12,7 +12,9 @@ remain addresses and names; display text may be lossy for invalid Unicode. Darwi
 filesystem normalization is not repeated in the provider. Component-relative
 lookup preserves dot/dot-dot and trailing slash semantics without an application
 PATH_MAX limit. Explicit directory navigation follows native directory links;
-metadata listing does not follow final links or open file contents.
+metadata listing does not follow final links or open file contents. A row whose
+metadata cannot be read (for example in a readable but not searchable directory)
+keeps the kernel's entry type without metadata, as the Linux provider does.
 
 Reads retain the original descriptor and compare device/inode/generation, length,
 modification/change/birth times before and after each SDK read. A changed or
@@ -27,9 +29,12 @@ is used. Data is never read from an unvalidated special entry.
 Volume enumeration uses bounded `getfsstat(MNT_NOWAIT)` snapshots and retries a
 saturated array instead of publishing it as a complete list. Persistent churn or
 exhausted budgets fails explicitly. Kernel fields that could be truncated are
-unavailable rather than shortened navigation identities. Rich information keeps
-physical total/free and caller-available capacity separate. The native volume
-label is explicitly unavailable; a mount basename is not presented as its label.
+unavailable rather than shortened navigation identities: enumeration leaves out
+a mount whose root could be truncated or is not absolute instead of failing the
+whole list, and volume information reports such a root as unavailable. Rich
+information keeps physical total/free and caller-available capacity separate.
+The native volume label is explicitly unavailable; a mount basename is not
+presented as its label.
 Known network filesystem types are Network. All other storage is Unknown until
 positive native physical SSD evidence is implemented; APFS alone is not SSD proof.
 

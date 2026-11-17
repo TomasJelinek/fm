@@ -1,3 +1,4 @@
+#[path = "network_support/mod.rs"]
 mod support;
 use midnight_filesystem_network::{adapter::*, api::*};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -83,6 +84,9 @@ fn real_abi_keeps_restore_metadata_and_manual_resolution_separate_from_activatio
     else {
         panic!("manual target must work before discovery")
     };
+    // ASCII escapes keep this check meaningful if an editor re-encodes the input literal.
+    assert_eq!(share.display, "\u{6587}\u{6863}");
+    assert_eq!(share.raw_name, "fixture-\u{6587}\u{6863}".as_bytes());
     assert_eq!(ENUMERATIONS.load(Ordering::Relaxed), 0);
     assert_eq!(ACTIVATIONS.load(Ordering::Relaxed), 0);
     assert!(matches!(

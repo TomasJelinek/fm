@@ -12,7 +12,7 @@ use std::{
     },
     path::Path,
 };
-use support::{Client, Temp};
+use support::{Client, Temp, junction};
 
 #[test]
 fn prepare_close_preserves_namespace_and_pins_current_object() {
@@ -636,20 +636,4 @@ fn assert_failed(response: Response, expected: ErrorCode) {
         panic!("request must fail without namespace writes: {response:?}");
     };
     assert_eq!(failure.code, expected);
-}
-
-fn junction(path: &Path, target: &Path) {
-    // As in cloud_content.rs, mklink /J needs no symlink privilege. Only this
-    // fresh fixture is created through cmd; Rust owns all cleanup.
-    let output = std::process::Command::new("cmd.exe")
-        .args(["/D", "/C", "mklink", "/J"])
-        .arg(path.to_str().unwrap().replace('/', "\\"))
-        .arg(target.to_str().unwrap().replace('/', "\\"))
-        .output()
-        .unwrap();
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
 }

@@ -31,7 +31,8 @@ discovery settles. A known server can also be entered as `smb://server/` in the
 panel path. Other distributions supply equivalent GIO/GVfs/discovery packages.
 
 The catalog streams up to 128 entries per page and caches only complete listings
-for 30 seconds. Refresh retires old cursors and prevents stale publication.
+for 30 seconds; on Linux each asynchronous GIO request returns up to 32 discovery
+records. Refresh retires old cursors and prevents stale publication.
 All plugin instances share two active discovery permits, 4096 retained nodes,
 64 mounts and a 16 MiB common catalog budget. Cancellation and the 10-second
 per-call deadline are cooperative: a blocked OS call retains its permit until it
@@ -60,8 +61,8 @@ build this plugin. Packages install to `filesystems/network.{windows,linux}`.
 
 Standalone public-only checks use `cargo test --manifest-path
 plugins/midnight-filesystem-network/Cargo.toml --locked`, formatting and strict
-Clippy. Ordinary tests use injected fixtures or owned temporary local files;
-they never discover the real LAN. The ignored Linux unavailable-runtime probe
+Clippy. Ordinary tests use injected fixtures or owned local files under the
+repository's `_build` directory; they never discover the real LAN. The ignored Linux unavailable-runtime probe
 requires `GIO_USE_VFS=local` and rejects use with real network discovery enabled.
 
 ## Linux runtime

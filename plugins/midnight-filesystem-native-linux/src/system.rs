@@ -42,6 +42,12 @@ pub fn open_path(path: &Path, flags: i32, context: &CallContext<'_>) -> Result<F
             "Absolute native path required.",
         ));
     }
+    #[cfg(test)]
+    if flags & libc::O_DIRECTORY != 0
+        && let Some(errno) = crate::rename_test_hooks::directory_open_failure(path)
+    {
+        return Err(Failure::from_io(std::io::Error::from_raw_os_error(errno)));
+    }
     // SAFETY: static terminated root and no variadic creation mode because O_CREAT is absent.
     let mut directory = owned(unsafe {
         libc::open(
@@ -131,49 +137,33 @@ impl Directory {
             if name.to_bytes() == b"." || name.to_bytes() == b".." {
                 continue;
             }
-            // SAFETY: DIR remains live; child is statted via O_PATH without opening file contents.
-            let fd = unsafe {
-                libc::openat(
-                    libc::dirfd(self.handle),
-                    name.as_ptr(),
-                    libc::O_PATH | libc::O_NOFOLLOW | libc::O_CLOEXEC,
-                )
-            };
-            let mut info = if fd >= 0 {
-                crate::adapter::info(&owned(fd)?.metadata().map_err(Failure::from_io)?)
-            } else {
-                let error = os_error();
-                if error.code == ErrorCode::NotFound {
-                    return Err(error);
-                }
-                // SAFETY: the current dirent is still live and its type is a small kernel tag.
-                let kind = match unsafe { (*entry).d_type } {
-                    libc::DT_DIR => Kind::Directory,
-                    libc::DT_REG => Kind::File,
-                    libc::DT_LNK => Kind::Symlink,
-                    _ => Kind::Other,
-                };
-                NativeInfo {
-                    kind,
-                    metadata: Metadata::default(),
+            // SAFETY: the DIR is live and its descriptor stays owned by it.
+            let directory = unsafe { libc::dirfd(self.handle) };
+            // One no-follow metadata query per row: the child is neither opened
+            // nor mounted when it is an automount point.
+            let mut info = match stat_child(directory, name) {
+                Ok(value) => crate::adapter::stat_info(&value),
+                Err(error) if error.code == ErrorCode::NotFound => return Err(error),
+                Err(_) => {
+                    // SAFETY: the current dirent is still live and its type is a small kernel tag.
+                    let kind = match unsafe { (*entry).d_type } {
+                        libc::DT_DIR => Kind::Directory,
+                        libc::DT_REG => Kind::File,
+                        libc::DT_LNK => Kind::Symlink,
+                        _ => Kind::Other,
+                    };
+                    NativeInfo {
+                        kind,
+                        metadata: Metadata::default(),
+                    }
                 }
             };
             if info.kind == Kind::Symlink {
                 cancel(context)?;
-                // SAFETY: the live DIR and terminated child name are retained.
-                // O_PATH|O_DIRECTORY only probes directory kind; it neither reads
-                // target contents nor replaces the link's no-follow metadata.
-                let target = owned(unsafe {
-                    libc::openat(
-                        libc::dirfd(self.handle),
-                        name.as_ptr(),
-                        libc::O_PATH | libc::O_DIRECTORY | libc::O_CLOEXEC,
-                    )
-                });
-                cancel(context)?;
-                if target.is_ok() {
+                if link_to_directory(directory, name) {
                     info.kind = Kind::DirectoryLink;
                 }
+                cancel(context)?;
             }
             return Ok(Some(NativeEntry {
                 name: OsString::from_vec(name.to_bytes().to_vec()),
@@ -187,6 +177,70 @@ impl Drop for Directory {
         // SAFETY: exactly one DIR owns the descriptor; no dirent borrow remains.
         unsafe { libc::closedir(self.handle) };
     }
+}
+fn stat_child(directory: i32, name: &CStr) -> Result<libc::stat, Failure> {
+    // SAFETY: zero initializes a plain native output structure.
+    let mut value: libc::stat = unsafe { std::mem::zeroed() };
+    // SAFETY: live directory descriptor, terminated child name and complete output.
+    if unsafe {
+        libc::fstatat(
+            directory,
+            name.as_ptr(),
+            &mut value,
+            libc::AT_SYMLINK_NOFOLLOW | libc::AT_NO_AUTOMOUNT,
+        )
+    } != 0
+    {
+        return Err(os_error());
+    }
+    Ok(value)
+}
+/// Display hint only: whether a listed link's target is a directory. Only the
+/// target's type is read: nothing is opened and an existing automount point is
+/// not mounted. The kernel still resolves the target path, so a server that
+/// stops answering along it, or an autofs map key that is not present yet,
+/// delays this lookup (and its listing page) until it answers. Any failure,
+/// including a broken or inaccessible target, leaves an ordinary link.
+fn link_to_directory(directory: i32, name: &CStr) -> bool {
+    // SAFETY: zero initializes a plain native output structure.
+    let mut value: libc::statx = unsafe { std::mem::zeroed() };
+    // SAFETY: live directory descriptor, terminated child name and complete output.
+    let status = unsafe {
+        libc::statx(
+            directory,
+            name.as_ptr(),
+            libc::AT_NO_AUTOMOUNT | libc::AT_STATX_DONT_SYNC,
+            libc::STATX_TYPE,
+            &mut value,
+        )
+    };
+    status == 0
+        && value.stx_mask & libc::STATX_TYPE != 0
+        && u32::from(value.stx_mode) & libc::S_IFMT == libc::S_IFDIR
+}
+/// The listing's `link_to_directory` hint for a link named by an absolute path,
+/// so explicit Stat (and the SDK's kind revalidation of a listed link) agrees
+/// with the listing. A later directory open reports the target's own error.
+pub fn path_link_to_directory(path: &Path, context: &CallContext<'_>) -> Result<bool, Failure> {
+    let raw = path.as_os_str().as_bytes();
+    let Some(separator) = raw.iter().rposition(|byte| *byte == b'/') else {
+        return Ok(false);
+    };
+    let name = &raw[separator + 1..];
+    if name.is_empty() || name == b"." || name == b".." {
+        return Ok(false);
+    }
+    let name =
+        CString::new(name).map_err(|_| Failure::new(ErrorCode::Invalid, "NUL in native path."))?;
+    let parent = Path::new(std::ffi::OsStr::from_bytes(&raw[..separator.max(1)]));
+    let directory = match open_path(parent, libc::O_PATH | libc::O_DIRECTORY, context) {
+        Ok(directory) => link_to_directory(directory.as_raw_fd(), &name),
+        // Like any other probe failure, a parent that cannot be reopened now
+        // leaves an ordinary link. Cancellation is still reported.
+        Err(_) => false,
+    };
+    cancel(context)?;
+    Ok(directory)
 }
 pub fn filesystem(file: &File) -> Result<libc::statfs, Failure> {
     // SAFETY: zero initializes a plain native output structure.

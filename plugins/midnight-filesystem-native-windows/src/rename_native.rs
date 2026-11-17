@@ -427,13 +427,15 @@ impl RenameBuffer {
         let information = buffer.as_mut_ptr().cast::<FILE_RENAME_INFORMATION>();
         // SAFETY: zeroed u64 storage is aligned for FILE_RENAME_INFORMATION and
         // covers its full header, counted name and an extra zero UTF-16 terminator.
+        // The variable-length name pointer is derived from the buffer pointer, not
+        // from a reference to the declared one-element FileName array.
         unsafe {
             (*information).Anonymous.ReplaceIfExists = false;
             (*information).RootDirectory = ptr::null_mut();
             (*information).FileNameLength = name_bytes as u32;
             ptr::copy_nonoverlapping(
                 wide.as_ptr(),
-                (*information).FileName.as_mut_ptr(),
+                (&raw mut (*information).FileName).cast::<u16>(),
                 wide.len(),
             );
         }
@@ -1034,99 +1036,6 @@ fn resource_limit() -> io::Error {
         io::ErrorKind::OutOfMemory,
         "Rename native allocation or scan budget exceeded.",
     )
-}
-/// Test-only access to the real synchronous SDK boundary with a live cancel flag.
-#[cfg(test)]
-pub(super) fn test_call(
-    api: &midnight_filesystem_plugin_api::abi::Api,
-    instance: u64,
-    request: midnight_filesystem_plugin_api::Request,
-    cancelled: &std::sync::atomic::AtomicBool,
-) -> Result<midnight_filesystem_plugin_api::Response, u32> {
-    use midnight_filesystem_plugin_api::{
-        DEFAULT_REPLY_BYTES, DEFAULT_REQUEST_BYTES, abi::*, decode_response, encode_request,
-    };
-    use std::sync::atomic::{AtomicBool, Ordering};
-
-    unsafe extern "C" fn cancellation(context: u64) -> u32 {
-        // SAFETY: test_call created this context from its live borrowed AtomicBool.
-        // The synchronous ABI borrows the callback/context only until call returns.
-        let flag = unsafe { &*(context as usize as *const AtomicBool) };
-        u32::from(flag.load(Ordering::Acquire))
-    }
-
-    struct Release<'a> {
-        release: unsafe extern "C" fn(u64, u64) -> u32,
-        instance: u64,
-        buffer: u64,
-        status: &'a mut u32,
-    }
-    impl Drop for Release<'_> {
-        fn drop(&mut self) {
-            // SAFETY: the producing instance remains owned by the caller until
-            // this helper returns. The guard releases this returned buffer once,
-            // including descriptor/codec errors and unwinding during decoding.
-            *self.status = unsafe { (self.release)(self.instance, self.buffer) };
-        }
-    }
-
-    api.validate(size_of::<Api>() as u32)?;
-    let call = api.call.ok_or(INVALID)?;
-    let release = api.release_buffer.ok_or(INVALID)?;
-    let payload = encode_request(&request, DEFAULT_REQUEST_BYTES as usize).map_err(|_| INVALID)?;
-    let context = u64::try_from(cancelled as *const AtomicBool as usize).map_err(|_| INVALID)?;
-    let input = Call {
-        struct_size: size_of::<Call>() as u32,
-        operation: request.operation() as u32,
-        payload: Slice {
-            data: payload.as_ptr(),
-            len: payload.len() as u64,
-        },
-        cancel: Cancellation {
-            context,
-            cancelled: Some(cancellation),
-        },
-    };
-    let mut output = Buffer::default();
-    // SAFETY: payload, input, output and the borrowed AtomicBool remain mapped
-    // until this synchronous call finishes. The SDK retains no cancellation data.
-    let status = unsafe { call(instance, &input, &mut output) };
-    if status != OK {
-        if output.id != 0 {
-            // SAFETY: release uses only the producing instance and returned ID;
-            // do not inspect failed-call bytes, but retire any disclosed buffer.
-            unsafe { release(instance, output.id) };
-        }
-        return Err(status);
-    }
-    let mut release_status = OK;
-    let decoded = {
-        let _release = Release {
-            release,
-            instance,
-            buffer: output.id,
-            status: &mut release_status,
-        };
-        (|| {
-            output.validate(DEFAULT_REPLY_BYTES)?;
-            let length = usize::try_from(output.bytes.len).map_err(|_| INVALID)?;
-            if output.id == 0 || length == 0 || length > isize::MAX as usize {
-                return Err(INVALID);
-            }
-            // SAFETY: successful SDK output owns length immutable readable bytes
-            // until the release guard drops. Bounded validation rejects null data
-            // and oversized lengths before constructing this nonempty byte view.
-            let bytes = unsafe { std::slice::from_raw_parts(output.bytes.data, length) };
-            decode_response(bytes, DEFAULT_REPLY_BYTES as usize).map_err(|_| INVALID)
-        })()
-    };
-    decoded.and_then(|response| {
-        if release_status == OK {
-            Ok(response)
-        } else {
-            Err(release_status)
-        }
-    })
 }
 /// Test-only ACL owner. Explicit restore reports errors; unwind cleanup is a
 /// best-effort guard for owned fixtures, separate from production pin disposal.

@@ -4,48 +4,6 @@ use midnight_filesystem_plugin_api::{abi::*, *};
 use support::{Client, Temp, address};
 
 #[test]
-fn optional_rich_volume_query_is_supported_by_native_provider() {
-    let fixture = Temp::new();
-    let client = Client::new();
-    let payload = encode_request(
-        &Request::SpaceInfo {
-            address: address(&fixture.path),
-        },
-        DEFAULT_REQUEST_BYTES as usize,
-    )
-    .unwrap();
-    let call = Call {
-        struct_size: size_of::<Call>() as u32,
-        operation: 16,
-        payload: Slice {
-            data: payload.as_ptr(),
-            len: payload.len() as u64,
-        },
-        cancel: Cancellation::default(),
-    };
-    let mut buffer = Buffer::default();
-    // SAFETY: request/output and client descriptor remain live for the synchronous call.
-    let status = unsafe { client.api.call.unwrap()(client.instance, &call, &mut buffer) };
-    assert_eq!(
-        status, OK,
-        "native plugin must support optional rich volume queries"
-    );
-    buffer.validate(DEFAULT_REPLY_BYTES).unwrap();
-    // SAFETY: successful call owns this buffer until release through its original instance.
-    let data = unsafe { std::slice::from_raw_parts(buffer.bytes.data, buffer.bytes.len as usize) };
-    let response = decode_response(data, DEFAULT_REPLY_BYTES as usize);
-    // SAFETY: successful buffer is released exactly once before the client is destroyed.
-    assert_eq!(
-        unsafe { client.api.release_buffer.unwrap()(client.instance, buffer.id) },
-        OK
-    );
-    assert!(
-        matches!(response, Ok(Response::VolumeInformation(_))),
-        "{response:?}"
-    );
-}
-
-#[test]
 fn native_volume_details_preserve_capacity_label_and_failures() {
     let fixture = Temp::new();
     let client = Client::new();
@@ -58,7 +16,27 @@ fn native_volume_details_preserve_capacity_label_and_failures() {
     let Response::VolumeInformation(info) = client.call(request(&directory)) else {
         panic!("Missing rich native information")
     };
-    assert!(info.root.is_some());
+    // The root is named as Win32 names it (for example C:\), not \\?\C:\.
+    let root = info.root.as_ref().unwrap();
+    let units: Vec<u16> = root
+        .bytes
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|unit| u16::from_le_bytes(*unit))
+        .collect();
+    let root = String::from_utf16(&units).unwrap().to_lowercase();
+    let fixture_path = win32_form(
+        &std::fs::canonicalize(&fixture.path)
+            .unwrap()
+            .to_string_lossy()
+            .to_lowercase(),
+    );
+    assert!(!root.starts_with(r"\\?\"), "{root}");
+    assert!(
+        fixture_path.starts_with(&root),
+        "{root} must contain {fixture_path}"
+    );
     assert!(
         info.filesystem
             .as_ref()
@@ -110,6 +88,21 @@ fn native_volume_details_accept_raw_and_long_directory_identities() {
             Response::VolumeInformation(_)
         ));
     }
+}
+/// The Win32 form the plugin publishes for a lowercased verbatim path:
+/// `\\?\unc\server\share\...` becomes `\\server\share\...` (a checkout on a
+/// share or mapped drive) and `\\?\c:\...` becomes `c:\...`.
+fn win32_form(verbatim: &str) -> String {
+    match verbatim.strip_prefix(r"\\?\unc\") {
+        Some(share) => format!(r"\\{share}"),
+        None => verbatim.trim_start_matches(r"\\?\").to_owned(),
+    }
+}
+#[test]
+fn verbatim_fixture_paths_compare_in_their_win32_form() {
+    assert_eq!(win32_form(r"\\?\c:\work\x"), r"c:\work\x");
+    assert_eq!(win32_form(r"\\?\unc\server\share\x"), r"\\server\share\x");
+    assert_eq!(win32_form(r"c:\work\x"), r"c:\work\x");
 }
 fn raw_name() -> std::ffi::OsString {
     use std::os::windows::ffi::OsStringExt;

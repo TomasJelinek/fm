@@ -96,14 +96,21 @@ fn runtime() -> Result<Arc<Symbols>, Failure> {
         .clone()
 }
 pub(super) struct Gio;
+/// Discovery records requested per asynchronous GIO call. A page of up to 128
+/// records then costs a few round trips through the private context, not one each.
+const BATCH: c_int = 32;
 pub struct Cursor {
     api: Arc<Symbols>,
     context: MainContext,
     enumerator: OwnedObject,
+    /// The owned record list of the last request and its next unread node.
+    batch: Option<Finished>,
+    unread: *mut GList,
 }
 // SAFETY: the cursor is exclusively borrowed for each operation. No operation or callback
 // remains pending between calls; the private GMainContext is acquired on the calling thread.
-// GIO references and the context may move between workers, never be accessed concurrently.
+// GIO references, the owned record list and the context may move between workers, never
+// be accessed concurrently.
 unsafe impl Send for Cursor {}
 
 struct OwnedObject {
@@ -445,41 +452,52 @@ impl Backend for Gio {
             api,
             context: main,
             enumerator,
+            batch: None,
+            unread: ptr::null_mut(),
         })
     }
     fn next(&self, cursor: &mut Cursor, context: &Context<'_>) -> Result<Option<Entry>, Failure> {
-        let api = &cursor.api;
-        let result = run(
-            api,
-            &cursor.context,
-            context,
-            Finish::List(api.g_file_enumerator_next_files_finish),
-            |cancel, callback, data| {
-                // SAFETY: exclusive cursor means no overlapping operations on its enumerator.
-                unsafe {
-                    (api.g_file_enumerator_next_files_async)(
-                        cursor.enumerator.pointer,
-                        1,
-                        0,
-                        cancel,
-                        callback,
-                        data,
-                    );
-                }
-            },
-        )?;
-        if result.pointer.is_null() {
-            return Ok(None);
+        if cursor.unread.is_null() {
+            // Release the consumed records before requesting more.
+            cursor.batch = None;
+            let api = &cursor.api;
+            let result = run(
+                api,
+                &cursor.context,
+                context,
+                Finish::List(api.g_file_enumerator_next_files_finish),
+                |cancel, callback, data| {
+                    // SAFETY: exclusive cursor means no overlapping operations on its enumerator.
+                    unsafe {
+                        (api.g_file_enumerator_next_files_async)(
+                            cursor.enumerator.pointer,
+                            BATCH,
+                            0,
+                            cancel,
+                            callback,
+                            data,
+                        );
+                    }
+                },
+            )?;
+            if result.pointer.is_null() {
+                return Ok(None);
+            }
+            cursor.unread = result.pointer.cast();
+            cursor.batch = Some(result);
         }
-        // SAFETY: next_files_finish returned an owned GList of live GFileInfo objects.
-        let info = unsafe { (*result.pointer.cast::<GList>()).data };
+        let api = &cursor.api;
+        // SAFETY: unread is a live node of the owned batch list held by this cursor;
+        // next_files_finish transferred that GList of live GFileInfo objects.
+        let (info, next) = unsafe { ((*cursor.unread).data, (*cursor.unread).next) };
+        cursor.unread = next;
         if info.is_null() {
             return Err(Failure::new(
                 ErrorCode::Io,
                 "GIO returned an invalid discovery record.",
             ));
         }
-        // SAFETY: info remains owned by result; attribute strings are borrowed until result drops.
+        // SAFETY: the cursor's batch owns info; attribute strings are copied before it drops.
         let (uri, display) = unsafe {
             let kind = (api.g_file_info_get_file_type)(info);
             if !matches!(kind, 2 | 5 | 6) {

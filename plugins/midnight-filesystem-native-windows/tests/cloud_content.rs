@@ -134,19 +134,3 @@ fn content_policy_rejects_links_and_replacement_without_returning_other_bytes() 
     assert_eq!(fs::read(&outside).unwrap(), b"not selected");
     assert_eq!(client.call(Request::CloseRead { reader }), Response::Unit);
 }
-
-fn junction(path: &std::path::Path, target: &std::path::Path) {
-    // Junction creation needs no symlink privilege. Both names are fresh owned
-    // fixture paths; only creation uses cmd, and Rust owns all cleanup.
-    let output = std::process::Command::new("cmd.exe")
-        .args(["/D", "/C", "mklink", "/J"])
-        .arg(path.to_str().unwrap().replace('/', "\\"))
-        .arg(target.to_str().unwrap().replace('/', "\\"))
-        .output()
-        .unwrap();
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-}

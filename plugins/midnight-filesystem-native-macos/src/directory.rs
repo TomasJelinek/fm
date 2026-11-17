@@ -1,6 +1,9 @@
 use crate::{adapter, system};
 use midnight_filesystem_plugin_api::*;
-use midnight_filesystem_plugin_sdk::{CallContext, native::NativeEntry};
+use midnight_filesystem_plugin_sdk::{
+    CallContext,
+    native::{NativeEntry, NativeInfo},
+};
 use std::{
     ffi::{CStr, OsString},
     os::{
@@ -53,11 +56,26 @@ impl Directory {
                 continue;
             }
             // SAFETY: a live DIR owns its descriptor throughout the metadata query.
-            let value = system::stat_at(unsafe { libc::dirfd(self.handle) }, name)?;
+            let info = match system::stat_at(unsafe { libc::dirfd(self.handle) }, name) {
+                Ok(value) => adapter::info(&value),
+                Err(error) if error.code == ErrorCode::NotFound => return Err(error),
+                // A readable but not searchable directory still lists its names:
+                // keep the kernel's entry type without metadata, as on Linux.
+                Err(_) => NativeInfo {
+                    // SAFETY: the current dirent is still live and its type is a small kernel tag.
+                    kind: match unsafe { (*pointer).d_type } {
+                        libc::DT_DIR => Kind::Directory,
+                        libc::DT_REG => Kind::File,
+                        libc::DT_LNK => Kind::Symlink,
+                        _ => Kind::Other,
+                    },
+                    metadata: Metadata::default(),
+                },
+            };
             system::cancel(context)?;
             return Ok(Some(NativeEntry {
                 name: OsString::from_vec(name.to_bytes().to_vec()),
-                info: adapter::info(&value),
+                info,
             }));
         }
     }

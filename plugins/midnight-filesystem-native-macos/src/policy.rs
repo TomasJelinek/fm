@@ -1,4 +1,22 @@
 use midnight_filesystem_plugin_api::{ErrorCode, Failure, StorageKind, VolumeCapacity};
+use std::collections::HashSet;
+
+/// Navigable mount roots from raw `f_mntonname` fields, in order and without
+/// duplicates. A field that may be truncated or is not absolute is left out:
+/// one such mount neither fails the whole list nor becomes a shortened root.
+pub(crate) fn mount_roots<'a>(fields: impl IntoIterator<Item = &'a [u8]>) -> Vec<Vec<u8>> {
+    let mut seen = HashSet::new();
+    let mut roots = Vec::new();
+    for field in fields {
+        let Ok(root) = native_field(field) else {
+            continue;
+        };
+        if root.starts_with(b"/") && seen.insert(root.clone()) {
+            roots.push(root);
+        }
+    }
+    roots
+}
 
 pub(crate) fn native_field(bytes: &[u8]) -> Result<Vec<u8>, Failure> {
     let end = bytes
@@ -76,6 +94,22 @@ mod tests {
         assert!(native_field(b"unterminated").is_err());
         assert!(native_field(b"full\0").is_err());
         assert_eq!(native_field(b"\0\0").unwrap(), b"");
+    }
+
+    #[test]
+    fn unrepresentable_mount_roots_are_left_out_instead_of_failing_the_list() {
+        let fields: [&[u8]; 6] = [
+            b"/\0\0",
+            b"/Volumes/raw\xff\0\0",
+            b"/Volumes/full-length\0",
+            b"relative\0\0",
+            b"/Volumes/raw\xff\0\0",
+            b"unterminated",
+        ];
+        assert_eq!(
+            mount_roots(fields),
+            [b"/".to_vec(), b"/Volumes/raw\xff".to_vec()]
+        );
     }
 
     #[test]

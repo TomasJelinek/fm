@@ -81,7 +81,14 @@ fn open_with_hook(
     // Qualification precedes every content open. A later path substitution can
     // invalidate provenance, but cannot make us open a device or FIFO for data.
     before_data_open();
+    #[cfg(test)]
+    DATA_OPENS.with(|opens| opens.set(opens.get() + 1));
     system::reopen_regular(&file)
+}
+#[cfg(test)]
+thread_local! {
+    /// Content opens on this thread; validation must not add any.
+    static DATA_OPENS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 #[cfg(test)]
 #[allow(unsafe_code)]
@@ -112,13 +119,17 @@ impl NativeReader for Reader {
         if Snapshot::of(&self.file)? != self.snapshot {
             return Err(changed());
         }
-        let current = open(&self.path, context).map_err(|error| {
-            if error.code == ErrorCode::Cancelled {
-                error
-            } else {
-                changed()
-            }
-        })?;
+        // Only Reader::open opens content. The current name is checked through a
+        // metadata-only no-follow descriptor: an equal device and inode exclude a
+        // link, FIFO or device substitute, and equal length and times exclude edits.
+        let current = system::open_path(&self.path, libc::O_PATH | libc::O_NOFOLLOW, context)
+            .map_err(|error| {
+                if error.code == ErrorCode::Cancelled {
+                    error
+                } else {
+                    changed()
+                }
+            })?;
         if Snapshot::of(&current)? != self.snapshot {
             return Err(changed());
         }
