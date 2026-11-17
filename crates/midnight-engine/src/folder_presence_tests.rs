@@ -577,7 +577,10 @@ fn rows_of_an_unproven_listing_stay_exclusive_without_row_identity_queries() {
             [(root.join("empty"), true), (root.join("link"), true)],
             "{kind:?}"
         );
-        assert_eq!(*files.classified.lock().unwrap(), [root.clone()]);
+        assert_eq!(
+            *files.classified.lock().unwrap(),
+            std::slice::from_ref(&root)
+        );
         // Only a shared listing queries its own device; rows are never queried.
         let identified = files.identified.lock().unwrap();
         assert_eq!(identified.len(), usize::from(kind == StorageKind::LocalSsd));
@@ -625,7 +628,5 @@ fn presence_identity_cost_probe() {
             assert!(device(filesystem.as_ref(), row, &cancel).is_some());
         }
     });
-    println!(
-        "200 rows: presence probes median {probes:?}, identity queries median {identities:?}"
-    );
+    println!("200 rows: presence probes median {probes:?}, identity queries median {identities:?}");
 }
