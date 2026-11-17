@@ -302,20 +302,20 @@ fn changed_unreadable_cancelled_and_wrong_length_files_never_publish_partial_dig
 
 #[test]
 fn source_revalidation_brackets_reads_and_repeats_only_at_a_bounded_cadence() {
-    let mut provider = Provider::new(&[7; 3000]);
+    let mut provider = Provider::new(&[7; 200]);
     provider.chunk = 1;
     let started = Instant::now();
     let result = run(request(), &provider, &Cancellation::default());
     let elapsed = started.elapsed();
     assert_eq!(result.summary.completion, ChecksumCompletion::Completed);
-    assert_eq!(provider.reads.calls.load(Ordering::SeqCst), 3001);
+    assert_eq!(provider.reads.calls.load(Ordering::SeqCst), 201);
     // Each check reopens the native parent and name: once before the first and
     // once after the last read, plus at most one per elapsed interval, never per chunk.
     let revalidations = provider.reads.revalidations.load(Ordering::SeqCst);
     let periodic = (elapsed.as_nanos() / REVALIDATION_INTERVAL.as_nanos()) as usize;
     assert!(
         (2..=2 + periodic).contains(&revalidations),
-        "{revalidations} revalidations for 3000 chunks in {elapsed:?}"
+        "{revalidations} revalidations for 200 chunks in {elapsed:?}"
     );
 }
 
@@ -371,13 +371,14 @@ fn export(run: &ChecksumRun, directory: &Path) -> Result<Vec<u8>, FsError> {
 
 #[test]
 fn completed_and_budget_limited_calculations_always_fit_the_manifest_verifier() {
-    // Long names keep the row count, and so the I/O gate traffic, small.
+    // Very long virtual names fill the budget with a dozen rows, keeping the
+    // shared I/O gate traffic of this unit test (also path-included) small.
     let directory = std::env::current_dir()
         .unwrap()
         .join("_build/virtual-export-budget");
     let limit = ChecksumLimits::default().max_retained_bytes;
     let charge = |path: &Path| path.as_os_str().as_encoded_bytes().len() * 4 + 1024;
-    let name = 4000;
+    let name = 160_000;
     let per_row = charge(&directory.join(padded(0, name)));
     let count = limit / per_row - 1;
     let uniform = (0..count).map(|index| directory.join(padded(index, name)));

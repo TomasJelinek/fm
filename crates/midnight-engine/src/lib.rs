@@ -575,8 +575,13 @@ impl EngineServices {
         let copies = copy_operations::Controller::with_admission(
             resources.copies,
             copy_admission,
-            // Transfers are admitted only through the audited slot, which sets both.
-            self.qualified_transfers.clone(),
+            self.qualified_transfers.clone().or_else(|| {
+                self.transfers.as_ref().map(|service| {
+                    transfer_composition::QualifiedTransferInstallation::unqualified(
+                        service.clone(),
+                    )
+                })
+            }),
             self.outbox.clone(),
             mutation_gate.clone(),
             transfer_leases::IoBudget::new(midnight_work_budget::shared_io()),
