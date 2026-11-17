@@ -20,8 +20,10 @@ fn native_volume_details_preserve_capacity_label_and_failures() {
     let root = info.root.as_ref().unwrap();
     let units: Vec<u16> = root
         .bytes
-        .chunks_exact(2)
-        .map(|unit| u16::from_le_bytes([unit[0], unit[1]]))
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|unit| u16::from_le_bytes(*unit))
         .collect();
     let root = String::from_utf16(&units).unwrap().to_lowercase();
     let fixture_path = std::fs::canonicalize(&fixture.path)
