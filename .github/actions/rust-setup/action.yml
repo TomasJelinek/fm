@@ -10,11 +10,11 @@ runs:
       run: |
         $toolchain = Get-Content -LiteralPath rust-toolchain.toml -Raw
         $channel = [regex]::Match($toolchain, '(?m)^channel = "([^"]+)"').Groups[1].Value
-        $profile = [regex]::Match($toolchain, '(?m)^profile = "([^"]+)"').Groups[1].Value
+        $toolchainProfile = [regex]::Match($toolchain, '(?m)^profile = "([^"]+)"').Groups[1].Value
         $listed = [regex]::Match($toolchain, '(?m)^components = \[([^\]]*)\]').Groups[1].Value
         $components = @([regex]::Matches($listed, '"([^"]+)"') | ForEach-Object { '--component'; $_.Groups[1].Value })
-        if (-not $channel -or -not $profile) { throw 'rust-toolchain.toml lacks a channel or profile' }
-        rustup toolchain install $channel --profile $profile @components
+        if (-not $channel -or -not $toolchainProfile) { throw 'rust-toolchain.toml lacks a channel or profile' }
+        rustup toolchain install $channel --profile $toolchainProfile @components
         if ($LASTEXITCODE -ne 0) { throw 'Pinned toolchain installation failed' }
     # Registry and Git downloads only; build outputs stay job-local.
     - uses: actions/cache@v4

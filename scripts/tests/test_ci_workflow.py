@@ -44,7 +44,7 @@ class WorkflowTests(unittest.TestCase):
 
     def test_rust_setup_reads_the_toolchain_file(self):
         action = (ROOT / ".github/actions/rust-setup/action.yml").read_text(encoding="utf-8")
-        self.assertIn("rustup toolchain install $channel --profile $profile @components", action)
+        self.assertIn("rustup toolchain install $channel --profile $toolchainProfile @components", action)
         self.assertIn("rust-toolchain.toml", action)
 
     def test_superseded_runs_are_cancelled_and_pull_requests_run_once(self):
