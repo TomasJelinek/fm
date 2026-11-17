@@ -27,7 +27,9 @@ pub(crate) fn spawn(name: &str, tasks: &mut JoinSet<()>, work: impl FnOnce() + S
 /// Start `work` now inside the caller's Tokio runtime context, as
 /// `spawn_blocking` would: it may use `Handle::current()`, spawn tasks and block
 /// on futures of that runtime. The returned handle completes when `work`
-/// returns or unwinds. Call it from that runtime's context.
+/// returns or unwinds. Call it from that runtime's context. Unlike a blocking
+/// task, the dedicated thread does not delay runtime shutdown: work still
+/// running then keeps its thread until it returns.
 pub(crate) fn spawn_in_runtime(name: &str, work: impl FnOnce() + Send + 'static) -> JoinHandle<()> {
     let runtime = Handle::current();
     let context = runtime.clone();

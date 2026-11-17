@@ -58,13 +58,13 @@ Unknown, loading, collapsed-with-children, expanded, confirmed empty and failed
 are distinct states. Probes do not expand a branch. A probe of a descendant asks
 only whether it contains a folder or directory link: enumeration stops at the
 first one, and the probe issues no child reference or row and has no row limit,
-so a folder with more children than an expansion may list still shows as
+so a folder with more children than a listing may hold still shows as
 collapsed-with-children. Only the entries inspected before that first folder are
-validated; a child that repeats an ancestor reference fails the later expansion,
-not the probe. An expanded branch requires Refresh rather than Probe, preventing
-an empty hint contradicting visible rows. Failure retains the previous successful
-children, with an explicit error. The hidden root has a state accessor too;
-failed root loading is not an empty folder.
+validated; a child that repeats an ancestor reference fails a later expansion or
+refresh, not the probe. An expanded branch requires Refresh rather than Probe,
+preventing an empty hint contradicting visible rows. Failure retains the previous
+successful children, with an explicit error. The hidden root has a state accessor
+too; failed root loading is not an empty folder.
 
 Refresh reconciles children by mount-scoped node identity, preserves surviving
 occurrence IDs, removes obsolete descendants and rejects ancestor cycles. It
@@ -170,8 +170,8 @@ be selected by clicks, ranges or rectangles. Ctrl+I inverts non-directory entrie
 and retains both folder and directory-link selection.
 
 The production controller owns these sessions on one persistent model worker per
-pane, a dedicated thread outside Tokio's blocking pool; branch listings still run
-as separate blocking jobs. Completed-root notifications, bounded command
+pane, normally a dedicated thread outside Tokio's blocking pool; branch listings
+still run as separate blocking jobs. Completed-root notifications, bounded command
 admission, loading and collapse publications, selection and typed navigation use
 the real Engine command/event boundary. Selection, viewport, reprojection and
 operation captures require the exact `Commit` of the current projection. Branch
