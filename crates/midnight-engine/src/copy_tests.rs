@@ -15,6 +15,8 @@ mod cancel_queue;
 mod completion;
 #[path = "copy_concurrency_regression_tests.rs"]
 mod concurrency_regression;
+#[path = "copy_conflict_display_tests.rs"]
+mod conflict_display;
 #[path = "copy_discovery_tests.rs"]
 mod discovery;
 #[path = "copy_error_tests.rs"]

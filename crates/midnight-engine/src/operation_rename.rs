@@ -6,8 +6,16 @@ use std::{ffi::OsString, io, path::Path};
 pub(super) struct ConflictState {
     next: AtomicU64,
     pending: Mutex<Option<(u64, std::sync::mpsc::SyncSender<CopyChoice>)>>,
+    /// Formats the two displayed entries; transfer adapters report raw times.
+    locale: Option<Arc<dyn LocaleService>>,
 }
 impl ConflictState {
+    pub(super) fn localized(locale: Option<Arc<dyn LocaleService>>) -> Self {
+        Self {
+            locale,
+            ..Self::default()
+        }
+    }
     pub(super) fn resolve(&self, decision: CopyDecision) {
         let pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
         if let Some((version, sender)) = pending.as_ref()
@@ -29,6 +37,14 @@ impl ConflictState {
             return CopyChoice::Cancel;
         };
         conflict.version = previous + 1;
+        crate::transfer_composition::localize_displayed(
+            &mut conflict.source,
+            self.locale.as_deref(),
+        );
+        crate::transfer_composition::localize_displayed(
+            &mut conflict.target,
+            self.locale.as_deref(),
+        );
         let (sender, receiver) = std::sync::mpsc::sync_channel(1);
         *self.pending.lock().unwrap_or_else(|e| e.into_inner()) = Some((conflict.version, sender));
         let sent = outbox.blocking_send(

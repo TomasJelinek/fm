@@ -74,6 +74,9 @@ impl EntryWork {
 
 pub(super) struct Job {
     retirement_witness: Option<crate::transfer_composition::TransferRetirementWitness>,
+    /// Formats only the two entries of a displayed conflict prompt; adapters
+    /// report raw times for every enumerated or inspected entry.
+    locale: Option<crate::transfer_composition::QualifiedLocaleInstallation>,
     status: Status,
     progress: CopyProgress,
     tracker: Arc<Mutex<Tracker>>,
@@ -129,6 +132,12 @@ impl Job {
     }
     pub(super) fn retirement_is_checked(&self) -> bool {
         self.retirement_witness.is_some()
+    }
+    pub(super) fn set_locale(
+        &mut self,
+        locale: crate::transfer_composition::QualifiedLocaleInstallation,
+    ) {
+        self.locale = Some(locale);
     }
     pub(super) fn set_drop_completions(
         &mut self,
@@ -480,6 +489,7 @@ impl Job {
         let link_retirement = Arc::new(link_job::LinkRetirement::new());
         Self {
             retirement_witness: None,
+            locale: None,
             progress,
             tracker: Arc::new(Mutex::new(Tracker::default())),
             pass_ids: crate::operation_throughput::PassIds::default(),
@@ -1399,7 +1409,7 @@ impl Job {
             && !self.protected_roots.contains(&target.identity);
         let guarded = work.target.is_some() && distinct;
         let target_kind = target.item.kind;
-        let conflict = CopyConflict {
+        let mut conflict = CopyConflict {
             id: self.progress.id,
             version,
             source: work.entry().item.clone(),
@@ -1415,15 +1425,23 @@ impl Job {
                 && target_kind == EntryKind::Directory,
         };
         let automatic = !work.force_prompt;
-        self.conflict = Some(conflict.clone());
         if automatic && self.replace_all && conflict.can_replace {
+            self.conflict = Some(conflict);
             self.decision = Some(CopyChoice::ReplaceRecoverable { all: true });
             return Step::Continue;
         }
         if automatic && self.merge_all && conflict.can_merge {
+            self.conflict = Some(conflict);
             self.decision = Some(CopyChoice::Merge { all: true });
             return Step::Continue;
         }
+        // Only a prompt the user sees formats its entries' times. The stored copy
+        // is the one any re-prompt (refused name, resume) publishes again.
+        if let Some(locale) = &self.locale {
+            locale.localize(&mut conflict.source);
+            locale.localize(&mut conflict.target);
+        }
+        self.conflict = Some(conflict.clone());
         self.progress.message =
             "The destination exists. Choose how to resolve the conflict.".into();
         Step::Conflict(Arc::new(conflict))

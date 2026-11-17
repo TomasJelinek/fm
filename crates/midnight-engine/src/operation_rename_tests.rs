@@ -10,6 +10,10 @@ struct Run {
 }
 impl Run {
     fn start(parent: &Path, name: &str) -> Self {
+        Self::localized(parent, name, None)
+    }
+    /// As `prepare_on_worker` installs the actor's locale for conflict prompts.
+    fn localized(parent: &Path, name: &str, locale: Option<Arc<dyn LocaleService>>) -> Self {
         let entries: Arc<[Entry]> = vec![Entry::new(
             EntryId(1),
             parent.join("source.txt"),
@@ -41,6 +45,7 @@ impl Run {
         .unwrap();
         job.confirm(Some(name.into())).unwrap();
         job.set_state(OperationState::Running);
+        job.rename_conflicts = Arc::new(ConflictState::localized(locale));
         let decisions = job.rename_conflicts.clone();
         let (sender, events) = mpsc::channel(8);
         let task = tokio::task::spawn_blocking(move || {
@@ -206,6 +211,40 @@ fn rename_alternate_basename_rule_matches_confirmation() {
             "{invalid:?}"
         );
     }
+}
+
+/// The Windows adapter reports raw times; each displayed prompt formats its two
+/// entries (the Linux adapter still formats them itself until its follow-up).
+#[cfg(windows)]
+#[tokio::test]
+async fn rename_conflict_prompts_format_only_their_displayed_entries() {
+    use crate::transfer_composition::tests::CountingLocale;
+    let temp = fixture();
+    let locale = Arc::new(CountingLocale::default());
+    let mut run = Run::localized(temp.path(), "existing.txt", Some(locale.clone()));
+    let conflict = run.conflict().await;
+    assert_eq!(locale.calls(), 2);
+    for item in [&conflict.source, &conflict.target] {
+        assert!(item.metadata.modified.is_some(), "{item:?}");
+        assert_eq!(
+            item.metadata.localized_modified,
+            Some(CountingLocale::text())
+        );
+    }
+    // A changed target is a fresh prompt and is formatted again.
+    fs::write(temp.path().join("existing.txt"), b"changed").unwrap();
+    run.decide(&conflict, CopyChoice::ReplaceRecoverable { all: false });
+    let fresh = run.conflict().await;
+    assert!(fresh.version > conflict.version);
+    assert_eq!(
+        fresh.target.metadata.localized_modified,
+        Some(CountingLocale::text())
+    );
+    assert_eq!(locale.calls(), 4);
+    run.decide(&fresh, CopyChoice::Skip);
+    assert_eq!(run.finish().await.state, OperationState::Cancelled);
+    preserved(temp.path(), b"changed");
+    assert_eq!(locale.calls(), 4);
 }
 
 #[tokio::test]

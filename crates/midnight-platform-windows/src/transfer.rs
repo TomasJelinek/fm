@@ -182,10 +182,11 @@ fn classified_with_metadata(
         item: MutationItem {
             path: path.to_owned(),
             kind: native.kind(),
+            // Raw time only: NLS formatting is presentation, and the engine formats
+            // just the entries a prompt displays, never every enumerated entry.
             metadata: EntryMetadata {
                 size: (!directory).then_some(metadata.len()),
                 modified: metadata.modified().ok(),
-                localized_modified: metadata.modified().ok().and_then(crate::locale::modified),
                 native_attributes: Some(native.attributes),
                 ..EntryMetadata::default()
             },

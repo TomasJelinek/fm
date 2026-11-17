@@ -561,6 +561,7 @@ impl EngineServices {
             resources.file_lists,
             scope.clone(),
             self.transfers.clone(),
+            self.locale.clone(),
             mutation_gate.clone(),
             self.outbox.clone(),
             snapshots.clone(),
@@ -582,13 +583,16 @@ impl EngineServices {
         let copies = copy_operations::Controller::with_admission(
             resources.copies,
             copy_admission,
-            self.qualified_transfers.clone().or_else(|| {
-                self.transfers.as_ref().map(|service| {
-                    transfer_composition::QualifiedTransferInstallation::unqualified(
-                        service.clone(),
-                    )
-                })
-            }),
+            self.qualified_transfers
+                .clone()
+                .map(|installation| installation.with_locale(self.qualified_locale.clone()))
+                .or_else(|| {
+                    self.transfers.as_ref().map(|service| {
+                        transfer_composition::QualifiedTransferInstallation::unqualified(
+                            service.clone(),
+                        )
+                    })
+                }),
             self.outbox.clone(),
             mutation_gate.clone(),
             transfer_leases::IoBudget::new(midnight_work_budget::shared_io()),

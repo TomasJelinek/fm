@@ -431,3 +431,91 @@ fn replaced_merge_directory_identity_cannot_be_reused_by_old_consent() {
     );
     assert_eq!(fs::read_dir(&directory).unwrap().count(), 0);
 }
+
+/// Review P1-T1-2: every reported entry carries its raw modified time only. The
+/// engine formats the few entries a prompt displays from that raw time.
+#[test]
+fn transfer_entries_report_raw_modified_times_for_lazy_display_formatting() {
+    use midnight_core::LocaleService;
+    let temp = fixture();
+    let directory = temp.path().join("listing");
+    fs::create_dir(&directory).unwrap();
+    for name in ["a.txt", "b.txt"] {
+        fs::write(directory.join(name), name).unwrap();
+    }
+    let provider = WindowsFileSystem::new(None);
+    let cancel = Cancellation::default();
+    let mut source = provider
+        .prepare_transfer_source(&directory, &cancel)
+        .unwrap();
+    let mut entries = vec![source.entry().clone()];
+    while let Some(child) = source.next_child(&cancel).unwrap() {
+        entries.push(child.entry().clone());
+    }
+    let destination = provider
+        .prepare_transfer_destination(temp.path(), &cancel)
+        .unwrap();
+    entries.push(
+        destination
+            .inspect(OsStr::new("listing"), &cancel)
+            .unwrap()
+            .unwrap(),
+    );
+    entries.push(
+        destination
+            .prepare_target(OsStr::new("listing"), &cancel)
+            .unwrap()
+            .unwrap()
+            .entry()
+            .clone(),
+    );
+    assert_eq!(entries.len(), 5);
+    for entry in &entries {
+        let modified = entry.item.metadata.modified.expect("raw modified time");
+        assert_eq!(entry.item.metadata.localized_modified, None, "{entry:?}");
+        assert!(provider.format_datetime(modified).is_some(), "{entry:?}");
+    }
+}
+
+/// Opt-in measurement for review P1-T1-2: the formatting that every listed child
+/// used to carry, against the listing itself. Run with `--ignored --nocapture`.
+#[test]
+#[ignore = "timing measurement; run explicitly"]
+fn measure_per_entry_localization_cost_of_a_large_transfer_listing() {
+    use midnight_core::LocaleService;
+    use std::time::{Duration, Instant};
+    const FILES: usize = 5_000;
+    let temp = fixture();
+    let directory = temp.path().join("large");
+    fs::create_dir(&directory).unwrap();
+    for index in 0..FILES {
+        fs::write(directory.join(format!("{index:05}.bin")), b"x").unwrap();
+    }
+    let provider = WindowsFileSystem::new(None);
+    let cancel = Cancellation::default();
+    let (mut listing, mut formatting) = (Duration::MAX, Duration::MAX);
+    for _ in 0..5 {
+        let started = Instant::now();
+        let mut source = provider
+            .prepare_transfer_source(&directory, &cancel)
+            .unwrap();
+        let mut times = Vec::with_capacity(FILES);
+        while let Some(child) = source.next_child(&cancel).unwrap() {
+            times.push(child.entry().item.metadata.modified.unwrap());
+        }
+        listing = listing.min(started.elapsed());
+        assert_eq!(times.len(), FILES);
+        // Exactly what the adapter used to attach to each listed child.
+        let started = Instant::now();
+        for time in &times {
+            assert!(std::hint::black_box(provider.format_datetime(*time)).is_some());
+        }
+        formatting = formatting.min(started.elapsed());
+    }
+    eprintln!(
+        "{FILES} listed children (best of 5): listing {listing:?}; per-entry formatting removed \
+         {formatting:?} ({:.2} us/entry, {:.1}% of the former listing time)",
+        formatting.as_secs_f64() * 1e6 / FILES as f64,
+        100.0 * formatting.as_secs_f64() / (listing + formatting).as_secs_f64(),
+    );
+}
