@@ -426,7 +426,9 @@ fn take_free(pool: &Arc<Semaphore>, at_most: usize) -> Option<OwnedSemaphorePerm
 /// Snapshots and pins a directory's children with at most `cap` pins. The executing
 /// job's reserve is used first. Free shared pins are borrowed only when no reserve pin
 /// is free or the adapter refused the directory as larger than the pins taken; both
-/// native adapters refuse that with `ErrorKind::Other` before opening any child.
+/// native adapters refuse that with `ErrorKind::Other` before opening any child. Windows
+/// also reports a directory replaced just before enumeration as `Other`, which then
+/// costs one more listing; the caller's diagnostic keeps the adapter's text for it.
 fn list_children(
     target: &dyn PreparedMutation,
     job: &worker::Job,
@@ -455,10 +457,17 @@ fn list_children(
     target.metadata_children(&job.cancel, lease.count())
 }
 
-/// Names why a directory could not be pinned, instead of the adapter's size refusal.
+/// Names why a directory could not be pinned, then keeps the adapter's own text: an
+/// adapter can report another failure with the same `ErrorKind::Other` as its refusal.
 /// Fewer pins than the per-job cap means borrowing took every free shared target, so
 /// all shared targets then belonged to this job (`own_shared`) or to other pending jobs.
-fn pin_shortfall(path: &Path, pinned: usize, cap: usize, own_shared: usize) -> FsError {
+fn pin_shortfall(
+    path: &Path,
+    pinned: usize,
+    cap: usize,
+    own_shared: usize,
+    refusal: &FsError,
+) -> FsError {
     let size = match pinned {
         0 => "none of this folder's entries could be pinned".to_owned(),
         pinned => format!("this folder has more entries than the {pinned} that could be pinned"),
@@ -472,13 +481,17 @@ fn pin_shortfall(path: &Path, pinned: usize, cap: usize, own_shared: usize) -> F
     } else {
         format!(
             "one metadata job pins at most {MAX_METADATA_TARGETS} targets, including its \
-             selection and the folders it is still processing"
+             selected targets and the listed entries it has not processed yet"
         )
     };
     error(
         path,
         io::ErrorKind::Other,
-        &format!("{size}, because {cause}; this folder and its contents were not changed"),
+        &format!(
+            "{size}, because {cause}; this folder and its contents were not changed. \
+             The file system reported: {}",
+            refusal.message
+        ),
     )
 }
 
@@ -609,6 +622,7 @@ pub(super) fn execute(mut job: worker::Job, outbox: Outbox) -> OperationProgress
                                 lease.count(),
                                 cap,
                                 own_shared,
+                                &refusal,
                             ));
                         }
                         Err(error) => frame.issue = Some(error),

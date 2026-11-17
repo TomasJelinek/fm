@@ -52,11 +52,12 @@ type Running = (
 );
 pub(crate) const MAX_JOBS: usize = 32;
 /// Recursive metadata traversal pins of the executing job, separate from the shared
-/// 256-target budget that holds every pending job's selection. Only the executing job
-/// uses them, and it is exclusive because every executing mutation job holds all
-/// `NAMESPACE_WEIGHT` mutation-gate shares. Traversal never waits for a pin from this
-/// reserve or the shared budget: pending jobs keep their pins while they wait for the
-/// executing job, so any wait could deadlock (E6-7).
+/// 256-target budget that holds the selected targets of every prepared, queued and
+/// executing metadata job. Only the executing job uses them, and it is exclusive because
+/// every executing mutation job holds all `NAMESPACE_WEIGHT` mutation-gate shares.
+/// Traversal never waits for a pin from this reserve or the shared budget: pending jobs
+/// keep their pins while they wait for the executing job, so any wait could deadlock
+/// (E6-7).
 const METADATA_TRAVERSAL_RESERVE: usize = MAX_METADATA_DEPTH;
 
 enum Message {

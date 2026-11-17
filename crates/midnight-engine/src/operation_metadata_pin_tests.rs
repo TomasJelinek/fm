@@ -9,11 +9,15 @@ use std::{
     path::{Path, PathBuf},
     time::SystemTime,
 };
-use tokio::time::Instant;
+use tokio::{sync::OwnedSemaphorePermit, time::Instant};
 
 /// Bounds waits that elapse only when traversal waits for pins or deadlocks.
 const FAILURE_BOUND: Duration = Duration::from_secs(10);
-const PER_JOB_CAUSE: &str = "one metadata job pins at most 256 targets";
+const PER_JOB_CAUSE: &str = "one metadata job pins at most 256 targets, including its \
+                             selected targets and the listed entries it has not processed yet";
+/// The text both native adapters give their budget refusal, kept after the diagnostic.
+const NATIVE_REFUSAL: &str =
+    "The file system reported: metadata directory snapshot exceeds its resource budget";
 
 fn edited_time() -> SystemTime {
     UNIX_EPOCH + Duration::from_secs(1_600_000_000)
@@ -148,7 +152,8 @@ async fn contended_traversal_fails_promptly_and_names_the_holding_jobs() {
     assert!(
         message.contains("more entries than the 1 that could be pinned")
             && message.contains("other pending metadata jobs hold 255 of the 256")
-            && message.contains("were not changed"),
+            && message.contains("were not changed")
+            && message.ends_with(NATIVE_REFUSAL),
         "{message}"
     );
     assert_eq!(reserve.available_permits(), 1);
@@ -301,6 +306,10 @@ struct Probe {
     listings: Mutex<Vec<(PathBuf, usize, Observed)>>,
     /// Free pins seen while each target's metadata snapshot was read.
     snapshots: Mutex<Vec<(PathBuf, Observed)>>,
+    /// Free pins seen at every `item()` read of a `Quirk::Watched` node.
+    item_reads: Mutex<Vec<Observed>>,
+    /// Shared targets a `Quirk::Seizes` node took for other jobs.
+    others: Mutex<Option<OwnedSemaphorePermit>>,
     edited: Mutex<Vec<PathBuf>>,
 }
 
@@ -311,6 +320,8 @@ impl Probe {
             shared: Arc::new(Semaphore::new(MAX_METADATA_TARGETS)),
             listings: Mutex::default(),
             snapshots: Mutex::default(),
+            item_reads: Mutex::default(),
+            others: Mutex::default(),
             edited: Mutex::default(),
         })
     }
@@ -338,6 +349,19 @@ impl Probe {
     }
 }
 
+/// How one in-memory node departs from an ordinary file or folder.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Quirk {
+    Plain,
+    /// Records the free pins at every `item()` read.
+    Watched,
+    /// When edited, takes every free shared target, as other jobs' previews would.
+    Seizes,
+    /// Fails every listing with ErrorKind::Other, as Windows reports a folder replaced
+    /// between revalidation and enumeration, although that is no budget refusal.
+    Replaced,
+}
+
 /// An in-memory tree whose enumeration refuses more entries than the pins taken for it,
 /// with ErrorKind::Other before any child is opened, as both native adapters do.
 #[derive(Debug)]
@@ -345,20 +369,22 @@ struct Node {
     item: MutationItem,
     children: Vec<Arc<Node>>,
     probe: Arc<Probe>,
+    quirk: Quirk,
 }
 
 impl Node {
     fn file(probe: &Arc<Probe>, path: PathBuf) -> Arc<Self> {
-        Self::new(probe, path, EntryKind::File, vec![])
+        Self::new(probe, path, EntryKind::File, vec![], Quirk::Plain)
     }
     fn directory(probe: &Arc<Probe>, path: PathBuf, children: Vec<Arc<Node>>) -> Arc<Self> {
-        Self::new(probe, path, EntryKind::Directory, children)
+        Self::new(probe, path, EntryKind::Directory, children, Quirk::Plain)
     }
     fn new(
         probe: &Arc<Probe>,
         path: PathBuf,
         kind: EntryKind,
         children: Vec<Arc<Node>>,
+        quirk: Quirk,
     ) -> Arc<Self> {
         Arc::new(Self {
             item: MutationItem {
@@ -368,12 +394,17 @@ impl Node {
             },
             children,
             probe: probe.clone(),
+            quirk,
         })
     }
 }
 
 impl PreparedMutation for Node {
     fn item(&self) -> &MutationItem {
+        if self.quirk == Quirk::Watched {
+            let observed = self.probe.observed();
+            self.probe.item_reads.lock().unwrap().push(observed);
+        }
         &self.item
     }
     fn metadata_snapshot(&self, _: &Cancellation) -> Result<MetadataSnapshot, FsError> {
@@ -396,6 +427,13 @@ impl PreparedMutation for Node {
         let observed = self.probe.observed();
         let mut listings = self.probe.listings.lock().unwrap();
         listings.push((self.item.path.clone(), max_targets, observed));
+        if self.quirk == Quirk::Replaced {
+            return Err(FsError::from_io(
+                "enumerate metadata targets",
+                &self.item.path,
+                io::Error::other("the directory changed before enumeration"),
+            ));
+        }
         if self.children.len() > max_targets {
             return Err(FsError::from_io(
                 "snapshot metadata targets",
@@ -420,6 +458,12 @@ impl PreparedMutation for Node {
             .lock()
             .unwrap()
             .push(self.item.path.clone());
+        if self.quirk == Quirk::Seizes {
+            let shared = &self.probe.shared;
+            let free = shared.available_permits() as u32;
+            let held = shared.clone().try_acquire_many_owned(free).unwrap();
+            *self.probe.others.lock().unwrap() = Some(held);
+        }
         let mut outcome = MetadataOutcome::unchanged(self.item.path.clone());
         outcome.changes.modified = true;
         outcome
@@ -595,23 +639,35 @@ async fn traversal_that_exhausts_its_own_budget_fails_without_waiting() {
     let edited = probe.edited.lock().unwrap();
     assert!(!edited.iter().any(|path| path.starts_with(&failed)));
     assert_eq!(edited.len(), 509);
-    // The parent borrows once beyond its reserve; every subfolder is then listed
-    // once, from the reserve its finished siblings returned.
-    let (_, (_, left)) = probe.listings_of(&parent)[1];
+    // The parent borrows once beyond its reserve: its first 64 entries hold reserve
+    // pins and the other 191 borrowed ones, which leaves 64 shared targets free.
+    let reserve = METADATA_TRAVERSAL_RESERVE;
     let listings = probe.listings.lock().unwrap();
-    assert_eq!(listings.len(), MAX_METADATA_TARGETS - 1 + 2);
-    assert!(
-        listings
-            .iter()
-            .filter(|(path, _, _)| path != &parent)
-            .all(|(_, _, (_, shared))| *shared >= left),
-        "subfolders never borrow shared targets"
+    assert_eq!(
+        listings[..2],
+        [
+            (parent.clone(), reserve, (0, MAX_METADATA_TARGETS - 1)),
+            (parent.clone(), MAX_METADATA_TARGETS - 1, (0, reserve)),
+        ]
     );
+    // Subfolder k may pin k more targets: the root, the subfolder itself and its 254 - k
+    // waiting siblings hold the rest. It is listed once, with only the reserve pins its
+    // finished siblings returned, and the shared targets the finished siblings borrowed
+    // stay free, so no subfolder borrows a single shared target.
+    let subfolders: Vec<_> = (0..MAX_METADATA_TARGETS - 1)
+        .map(|k| {
+            let folder = parent.join(format!("{k:03}"));
+            (folder, k.min(reserve), (0, k.max(reserve)))
+        })
+        .collect();
+    assert_eq!(listings[2..], subfolders);
 }
 
 #[tokio::test]
 async fn depth_refusal_never_reserves_or_borrows_targets() {
-    let probe = Probe::new(METADATA_TRAVERSAL_RESERVE);
+    // One reserve pin more than the chain needs and the free shared targets would both
+    // show any pin the refused folder took in the counts its `item()` reads observe.
+    let probe = Probe::new(METADATA_TRAVERSAL_RESERVE + 1);
     let paths: Vec<PathBuf> = (0..=MAX_METADATA_DEPTH)
         .scan(PathBuf::new(), |path, depth| {
             path.push(format!("D{depth:02}"));
@@ -619,7 +675,13 @@ async fn depth_refusal_never_reserves_or_borrows_targets() {
         })
         .collect();
     let deepest = paths[MAX_METADATA_DEPTH].clone();
-    let mut node = Node::directory(&probe, deepest.clone(), files(&probe, &deepest, 1));
+    let mut node = Node::new(
+        &probe,
+        deepest.clone(),
+        EntryKind::Directory,
+        files(&probe, &deepest, 1),
+        Quirk::Watched,
+    );
     for path in paths[..MAX_METADATA_DEPTH].iter().rev() {
         node = Node::directory(&probe, path.clone(), vec![node]);
     }
@@ -631,6 +693,17 @@ async fn depth_refusal_never_reserves_or_borrows_targets() {
         progress.errors[0].message.contains("depth budget"),
         "{:?}",
         progress.errors[0]
+    );
+    // The 64 folders below the root hold reserve pins and the root its shared one. Every
+    // read of the refused folder, from its parent's snapshot pass through the read that
+    // builds its depth error to its outcome, sees the same free pins: it took none.
+    let reads = probe.item_reads.lock().unwrap();
+    assert!(
+        !reads.is_empty()
+            && reads
+                .iter()
+                .all(|read| *read == (1, MAX_METADATA_TARGETS - 1)),
+        "{reads:?}"
     );
     let listings = probe.listings.lock().unwrap();
     assert_eq!(
@@ -644,4 +717,75 @@ async fn depth_refusal_never_reserves_or_borrows_targets() {
             .all(|(_, _, (_, shared))| *shared == MAX_METADATA_TARGETS - 1),
         "a chain within the depth budget fits in the reserve"
     );
+}
+
+#[tokio::test]
+async fn shortfall_counts_only_the_shared_targets_other_jobs_hold() {
+    // Five entries exceed a two-pin reserve, so the parent borrows shared pins for its
+    // last three. While its second file is edited, other jobs take every free shared
+    // target. The subfolder that follows holds a borrowed pin, its two waiting siblings
+    // hold one each, and the two reserve pins its finished siblings returned cannot
+    // pin its three entries.
+    let probe = Probe::new(2);
+    let parent = PathBuf::from("PARENT");
+    let folder = parent.join("002");
+    let mut children = files(&probe, &parent, 5);
+    children[1] = Node::new(
+        &probe,
+        parent.join("001"),
+        EntryKind::File,
+        vec![],
+        Quirk::Seizes,
+    );
+    children[2] = Node::directory(&probe, folder.clone(), files(&probe, &folder, 3));
+    let root = Node::directory(&probe, parent.clone(), children);
+    let (progress, result) = execute(fake_job(&probe, root)).await;
+    assert_eq!(progress.state, OperationState::CompletedWithErrors);
+    assert_eq!((result.processed, result.changed, result.failed), (6, 5, 1));
+    assert_eq!(probe.listings_of(&parent), [(2, (0, 255)), (255, (0, 2))]);
+    assert_eq!(
+        probe.listings_of(&folder),
+        [(2, (0, 0))],
+        "nothing is free to borrow, so the folder is not listed again"
+    );
+    // Other jobs hold every shared target but this job's root pin and the borrowed pins
+    // of the subfolder and its two waiting siblings; the diagnostic counts exactly those.
+    let others = probe.others.lock().unwrap().take().unwrap();
+    assert_eq!(others.num_permits(), MAX_METADATA_TARGETS - 4);
+    assert_eq!(progress.errors.len(), 1);
+    assert_eq!(progress.errors[0].path, folder);
+    let message = &progress.errors[0].message;
+    assert!(
+        message.contains("more entries than the 2 that could be pinned")
+            && message.contains("other pending metadata jobs hold 252 of the 256 shared targets")
+            && message.ends_with(NATIVE_REFUSAL),
+        "{message}"
+    );
+    assert_eq!(probe.observed(), (2, MAX_METADATA_TARGETS - 252));
+}
+
+#[tokio::test]
+async fn shortfall_keeps_the_adapter_text_of_a_misclassified_listing_error() {
+    // Windows reports a folder replaced between revalidation and enumeration with
+    // ErrorKind::Other too. Taken for a budget refusal, it costs one more listing with
+    // borrowed targets, and its own text stays visible after the pin diagnostic.
+    let probe = Probe::new(METADATA_TRAVERSAL_RESERVE);
+    let parent = PathBuf::from("PARENT");
+    let root = Node::new(
+        &probe,
+        parent.clone(),
+        EntryKind::Directory,
+        files(&probe, &parent, 1),
+        Quirk::Replaced,
+    );
+    let (progress, result) = execute(fake_job(&probe, root)).await;
+    assert_eq!(progress.state, OperationState::CompletedWithErrors);
+    assert_eq!((result.processed, result.changed, result.failed), (1, 0, 1));
+    assert_eq!(probe.listings_of(&parent), [(64, (0, 255)), (255, (0, 64))]);
+    let message = &progress.errors[0].message;
+    assert!(
+        message.ends_with("The file system reported: the directory changed before enumeration"),
+        "{message}"
+    );
+    assert_eq!(probe.observed(), (64, MAX_METADATA_TARGETS));
 }

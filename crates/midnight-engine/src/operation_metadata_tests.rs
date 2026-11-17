@@ -605,12 +605,16 @@ async fn recursive_budget_is_checked_before_any_child_is_renamed() {
         fs::read(h.directory.path().join("PARENT/SECOND")).unwrap(),
         b"unchanged"
     );
-    // Without a traversal reserve the single free shared target is borrowed; the
-    // refusal names the jobs holding the rest rather than the native size text.
+    // Without a traversal reserve the single free shared target is borrowed. The refusal
+    // names the jobs holding the rest and then keeps the native adapter's own text.
     let message = &progress.errors[0].message;
     assert!(
         message.contains("more entries than the 1 that could be pinned")
-            && message.contains("other pending metadata jobs hold 254 of the 256"),
+            && message.contains("other pending metadata jobs hold 254 of the 256")
+            && message.ends_with(
+                "The file system reported: metadata directory snapshot exceeds its \
+                 resource budget"
+            ),
         "{message}"
     );
 }
