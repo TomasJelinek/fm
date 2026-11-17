@@ -3,9 +3,7 @@ use midnight_core::{TransferNativeMoveOutcome, TransferReplacementPolicy};
 use std::{fs, os::unix::fs::symlink};
 
 pub(super) fn fixture() -> tempfile::TempDir {
-    let root = std::env::temp_dir().join("midnight-native-move/_build/tmp");
-    fs::create_dir_all(&root).unwrap();
-    tempfile::tempdir_in(root).unwrap()
+    crate::test_support::temporary("native-move-")
 }
 
 #[test]
@@ -170,9 +168,9 @@ fn validation_seek_uses_retained_inode_after_its_original_name_changes() {
 
 #[test]
 fn native_tmpfs_move_needs_no_ext_specific_content_proof_capability() {
-    let root = Path::new("/dev/shm/_build/midnight-native-move");
-    fs::create_dir_all(root).unwrap();
-    let temp = tempfile::tempdir_in(root).unwrap();
+    let Some(temp) = crate::test_support::shm_temporary("native-move-", "native tmpfs move") else {
+        return;
+    };
     let source = temp.path().join("source");
     fs::write(&source, b"keep inode").unwrap();
     let before = fs::metadata(&source).unwrap().ino();
@@ -239,9 +237,10 @@ fn native_admission_pins_only_metadata_for_unreadable_raw_named_file() {
 
 #[test]
 fn native_tmpfs_replacement_is_advertised_without_copy_proof_capability() {
-    let root = Path::new("/dev/shm/_build/midnight-native-move");
-    fs::create_dir_all(root).unwrap();
-    let temp = tempfile::tempdir_in(root).unwrap();
+    let Some(temp) = crate::test_support::shm_temporary("native-move-", "native tmpfs replacement")
+    else {
+        return;
+    };
     let source = temp.path().join("source");
     let target = temp.path().join("target");
     fs::write(&source, b"new bytes").unwrap();
@@ -287,9 +286,11 @@ fn native_tmpfs_replacement_is_advertised_without_copy_proof_capability() {
 #[test]
 fn native_cross_device_outcome_leaves_names_and_contents_unchanged() {
     let source_root = fixture();
-    let other_root = Path::new("/dev/shm/_build/midnight-native-move");
-    fs::create_dir_all(other_root).unwrap();
-    let destination_root = tempfile::tempdir_in(other_root).unwrap();
+    let Some(destination_root) =
+        crate::test_support::shm_temporary("native-move-", "native cross-device outcome")
+    else {
+        return;
+    };
     let source = source_root.path().join("source");
     fs::write(&source, b"original").unwrap();
     assert_ne!(

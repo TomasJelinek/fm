@@ -358,7 +358,12 @@ impl PreparedMutation for Prepared {
         });
         match result {
             Ok(()) => {
-                staged.cleanup()?;
+                staged.cleanup().map_err(|cleanup| {
+                    completed_with_residue(
+                        &format!("The entry was renamed to {}", destination.display()),
+                        cleanup,
+                    )
+                })?;
                 Ok(destination)
             }
             Err(failure) => Err(staged.restore(self, failure)),
@@ -384,10 +389,23 @@ impl PreparedMutation for Prepared {
             cancel,
             progress,
         ) {
-            Ok(()) => staged.cleanup(),
+            Ok(()) => staged
+                .cleanup()
+                .map_err(|cleanup| completed_with_residue("The entry was deleted", cleanup)),
             Err(failure) => Err(staged.restore(self, failure)),
         }
     }
+}
+
+/// The mutation itself completed; only removing its empty private staging
+/// directory failed. The error states both facts and the residual path.
+fn completed_with_residue(completed: &str, mut cleanup: FsError) -> FsError {
+    cleanup.message = format!(
+        "{completed}, but its empty staging directory {} could not be removed: {}",
+        cleanup.path.display(),
+        cleanup.message
+    );
+    cleanup
 }
 
 struct Staged {

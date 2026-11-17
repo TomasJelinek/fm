@@ -41,10 +41,14 @@ impl Fixture {
         .unwrap();
     }
     fn lookup(&self, executable: &Path) -> Option<String> {
+        self.lookup_within(executable, BUDGET)
+    }
+    fn lookup_within(&self, executable: &Path, budget: Budget) -> Option<String> {
         icon_name(
             executable,
             &[&self.applications],
             self.bin.as_os_str(),
+            budget,
             &Cancellation::default(),
         )
     }
@@ -158,6 +162,7 @@ fn metadata_symlink_escape_and_pre_cancelled_lookup_are_refused() {
             &program,
             &[&fixture.applications],
             fixture.bin.as_os_str(),
+            BUDGET,
             &cancel
         )
         .is_none()
@@ -169,10 +174,29 @@ fn enumerating_beyond_the_metadata_budget_never_returns_a_partial_match() {
     let fixture = Fixture::new();
     let program = fixture.program("editor");
     fixture.desktop("valid", "Exec=editor\nIcon=valid");
-    for index in 0..512 {
+    for index in 0..16 {
         fixture.desktop(&format!("other-{index}"), "Exec=other\nIcon=other");
     }
-    assert!(fixture.lookup(&program).is_none());
+    let budget = |entries| Budget {
+        entries,
+        total_bytes: BUDGET.total_bytes,
+    };
+    assert_eq!(
+        fixture.lookup_within(&program, budget(17)).as_deref(),
+        Some("valid")
+    );
+    assert!(fixture.lookup_within(&program, budget(16)).is_none());
+}
+
+#[test]
+fn a_full_desktop_catalog_beyond_512_entries_still_resolves_icons() {
+    let fixture = Fixture::new();
+    let program = fixture.program("editor");
+    fixture.desktop("valid", "Exec=editor\nIcon=valid");
+    for index in 0..600 {
+        fixture.desktop(&format!("other-{index}"), "Exec=other\nIcon=other");
+    }
+    assert_eq!(fixture.lookup(&program).as_deref(), Some("valid"));
 }
 
 #[test]
@@ -215,14 +239,24 @@ fn file_and_aggregate_read_limits_do_not_accept_partial_metadata() {
     assert!(fixture.lookup(&program).is_none());
     fs::remove_file(fixture.applications.join("too-large.desktop")).unwrap();
     fixture.desktop("valid", "Exec=editor\nIcon=host");
-    // Each whole file is below the per-file cap; their aggregate exceeds 4 MiB.
-    for index in 0..66 {
+    // Each whole file is below the per-file cap; their aggregate exceeds the budget.
+    for index in 0..4 {
         fixture.desktop(
             &format!("padding-{index}"),
             &format!("#{}", "x".repeat(64_000)),
         );
     }
-    assert!(fixture.lookup(&program).is_none());
+    let budget = |total_bytes| Budget {
+        entries: BUDGET.entries,
+        total_bytes,
+    };
+    assert_eq!(
+        fixture
+            .lookup_within(&program, budget(512 * 1024))
+            .as_deref(),
+        Some("host")
+    );
+    assert!(fixture.lookup_within(&program, budget(200_000)).is_none());
 }
 
 #[test]
@@ -235,6 +269,7 @@ fn relative_search_entries_and_invalid_output_requests_keep_fallback() {
             &program,
             &[&fixture.applications],
             OsStr::new(".:relative:"),
+            BUDGET,
             &Cancellation::default()
         )
         .is_none()
@@ -244,6 +279,7 @@ fn relative_search_entries_and_invalid_output_requests_keep_fallback() {
             Path::new("editor"),
             &[&fixture.applications],
             fixture.bin.as_os_str(),
+            BUDGET,
             &Cancellation::default()
         )
         .is_none()
@@ -269,6 +305,7 @@ fn an_existing_unenumerable_catalog_never_returns_another_roots_match() {
             &program,
             &[&fixture.applications, &blocked],
             fixture.bin.as_os_str(),
+            BUDGET,
             &Cancellation::default()
         )
         .is_none()
@@ -280,6 +317,7 @@ fn an_existing_unenumerable_catalog_never_returns_another_roots_match() {
             &program,
             &[&fixture.applications, &blocked],
             fixture.bin.as_os_str(),
+            BUDGET,
             &Cancellation::default()
         )
         .is_none(),

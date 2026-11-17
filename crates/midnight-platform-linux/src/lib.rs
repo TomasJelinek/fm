@@ -18,7 +18,6 @@ mod file_clipboard;
 mod file_drag_drop;
 mod user_commands;
 pub use clipboard::NativeClipboard;
-pub use file_drag_drop::NativeFileDragDrop;
 #[cfg(test)]
 mod discovery_tests;
 mod find;
@@ -40,6 +39,8 @@ mod size_directory;
 #[allow(unsafe_code)]
 mod sort_keys;
 mod storage_kind;
+#[cfg(test)]
+mod test_support;
 mod transfer;
 mod volume_information;
 mod watch;

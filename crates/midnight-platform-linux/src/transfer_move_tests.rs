@@ -49,9 +49,7 @@ fn retained_validation_survives_source_capture_and_proves_published_binding() {
 }
 
 fn fixture() -> (tempfile::TempDir, PathBuf) {
-    let root = std::env::temp_dir().join("midnight-move/_build/tmp");
-    fs::create_dir_all(&root).unwrap();
-    let temp = tempfile::tempdir_in(root).unwrap();
+    let temp = crate::test_support::temporary("move-");
     let parent = temp.path().to_owned();
     (temp, parent)
 }

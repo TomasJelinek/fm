@@ -277,6 +277,41 @@ fn trash_preserves_raw_paths_and_complete_directories_in_private_isolated_storag
 }
 
 #[test]
+fn trash_labels_never_split_a_unicode_character() {
+    let fixture = tempfile::tempdir().unwrap();
+    let trash = fixture.path().join("data/Trash");
+    // "í" occupies bytes 32 and 33; a raw 32-byte cut would leave invalid UTF-8.
+    let report = fixture.path().join("Výroční_zpráva_2026_finální_verze.pdf");
+    fs::write(&report, b"report").unwrap();
+    let mut raw = vec![b'r'; 31];
+    raw.extend_from_slice(&[0xff, 0xfe, b'x']);
+    let raw = fixture.path().join(OsString::from_vec(raw));
+    fs::write(&raw, b"raw").unwrap();
+    let cancel = Cancellation::default();
+    for path in [&report, &raw] {
+        super::Prepared::new(path, Some(trash.clone()), &cancel)
+            .unwrap()
+            .delete(DeleteMode::Trash, &cancel, &mut |_| {})
+            .unwrap();
+    }
+    let labels: Vec<OsString> = fs::read_dir(trash.join("files"))
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .collect();
+    assert_eq!(labels.len(), 2);
+    assert!(labels.iter().any(|label| {
+        label
+            .to_str()
+            .is_some_and(|label| label.starts_with("Výroční_zpráva_2026_fináln-"))
+    }));
+    // Names that are not UTF-8 keep their first 32 raw bytes.
+    assert!(labels.iter().any(|label| {
+        let bytes = label.as_encoded_bytes();
+        bytes.starts_with(&[b'r'; 31]) && bytes[31..].starts_with(&[0xff, b'-'])
+    }));
+}
+
+#[test]
 fn trash_never_overwrites_an_earlier_copy_of_the_same_name() {
     let fixture = tempfile::tempdir().unwrap();
     let trash = fixture.path().join("Trash");
@@ -608,6 +643,25 @@ fn xdg_trash_location_uses_only_absolute_environment_paths() {
     assert_eq!(super::trash::home_trash(None, None), None);
 }
 
+#[test]
+fn a_failed_staging_cleanup_reports_the_completed_mutation_and_its_residue() {
+    let staging = Path::new("/data/.midnight-mutation-1-2-3");
+    let cleanup = midnight_core::FsError::from_io(
+        "mutate entry",
+        staging,
+        std::io::Error::new(ErrorKind::DirectoryNotEmpty, "Directory not empty"),
+    );
+    let reported = super::completed_with_residue("The entry was deleted", cleanup);
+    assert!(
+        reported
+            .message
+            .starts_with("The entry was deleted, but its empty staging directory")
+    );
+    assert!(reported.message.contains("/data/.midnight-mutation-1-2-3"));
+    assert_eq!(reported.path, staging);
+    assert_eq!(reported.kind, ErrorKind::DirectoryNotEmpty);
+}
+
 fn staging_residue(directory: &Path) -> Vec<OsString> {
     fs::read_dir(directory)
         .unwrap()
@@ -668,6 +722,38 @@ fn refused_staging_directories_are_removed_and_the_source_is_untouched() {
     assert_eq!(fs::read(&original).unwrap(), b"pixels");
     assert!(staging_residue(fixture.path()).is_empty());
     assert_eq!(fs::read_dir(fixture.path()).unwrap().count(), 1);
+}
+
+/// Run: `cargo test -p midnight-platform-linux --lib permanent_delete_timing --
+/// --ignored --nocapture`.
+#[test]
+#[ignore = "timing harness for permanent tree deletion; prints measurements"]
+fn permanent_delete_timing() {
+    const FILES: usize = 20_000;
+    let fixture = tempfile::tempdir().unwrap();
+    let tree = fixture.path().join("tree");
+    for directory in 0..20 {
+        fs::create_dir_all(tree.join(directory.to_string())).unwrap();
+    }
+    for index in 0..FILES {
+        fs::write(
+            tree.join((index % 20).to_string()).join(index.to_string()),
+            [],
+        )
+        .unwrap();
+    }
+    let cancel = Cancellation::default();
+    let prepared = LinuxFileSystem::new(None).prepare(&tree, &cancel).unwrap();
+    let start = std::time::Instant::now();
+    prepared
+        .delete(DeleteMode::Permanent, &cancel, &mut |_| {})
+        .unwrap();
+    let elapsed = start.elapsed();
+    assert!(!tree.exists());
+    eprintln!(
+        "TIMING permanent delete of {FILES} files: {elapsed:?} ({:?}/file)",
+        elapsed / FILES as u32
+    );
 }
 
 #[test]

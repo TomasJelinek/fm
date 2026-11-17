@@ -3,9 +3,7 @@ use std::fs;
 use std::os::unix::fs::{PermissionsExt, symlink};
 
 fn fixture() -> tempfile::TempDir {
-    let root = std::env::temp_dir().join("midnight-native-drag/_build/tmp");
-    fs::create_dir_all(&root).unwrap();
-    tempfile::tempdir_in(root).unwrap()
+    crate::test_support::temporary("native-drag-")
 }
 
 #[test]

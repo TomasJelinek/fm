@@ -6,11 +6,7 @@ use std::{
 };
 
 fn temporary() -> tempfile::TempDir {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../_build")
-        .canonicalize()
-        .unwrap();
-    tempfile::tempdir_in(root).unwrap()
+    crate::test_support::workspace_temporary("executable-open-")
 }
 
 fn fixture(path: &Path, bytes: &[u8], mode: u32) {

@@ -1,5 +1,7 @@
 //! Iterative, handle-relative traversal. openat2 rejects even same-device bind
-//! mounts, and O_NOFOLLOW ensures directory links are never traversed.
+//! mounts of directories, and O_NOFOLLOW ensures directory links are never
+//! traversed. A non-directory mount point is refused by its device or by unlink
+//! itself (EBUSY).
 use super::*;
 use rustix::fs::Dir;
 
@@ -35,22 +37,26 @@ pub(super) fn delete(
                 continue;
             }
             let path = frame.path.join(name);
-            let pinned = File::from(
-                openat2(
-                    &*frame.directory,
-                    name,
-                    OFlags::PATH | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-                    Mode::empty(),
-                    ResolveFlags::BENEATH | ResolveFlags::NO_XDEV | ResolveFlags::NO_SYMLINKS,
-                )
-                .map_err(|e| native_error(&path, e))?,
-            );
-            let identity = Identity::of(&pinned, &path)?;
+            // One no-follow lookup on the held directory is both the identity and the
+            // live check immediately before unlink. Directories are opened below with
+            // RESOLVE_NO_XDEV; a non-directory from another device can only be a mount.
+            let current = statat(&*frame.directory, name, AtFlags::SYMLINK_NOFOLLOW)
+                .map_err(|e| native_error(&path, e))?;
+            let identity = Identity::from_stat(&current);
             if identity.kind == FileType::Directory {
                 let child = open_frame(&frame.directory, name, identity, &path)?;
                 stack.push(child);
             } else {
-                unlink(&frame.directory, name, identity, &path, cancel)?;
+                if identity.device != frame.identity.device {
+                    return Err(error(
+                        &path,
+                        ErrorKind::Unsupported,
+                        "deletion does not cross mount boundaries",
+                    ));
+                }
+                check_cancel(cancel, &path)?;
+                unlinkat(&*frame.directory, name, AtFlags::empty())
+                    .map_err(|e| native_error(&path, e))?;
                 progress(&path);
             }
         } else {

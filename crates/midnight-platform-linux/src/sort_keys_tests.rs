@@ -75,6 +75,55 @@ fn raw_unix_names_fall_back_without_replacement_and_long_keys_use_dynamic_storag
     );
 }
 
+fn exact_two_pass_key(locale: &Collator, value: &str) -> Vec<u8> {
+    let source: Vec<_> = value
+        .chars()
+        .map(|value| value as libc::wchar_t)
+        .chain(Some(0))
+        .collect();
+    let mut output = vec![0; locale.transform(&source, &mut []).unwrap() + 1];
+    let written = locale.transform(&source, &mut output).unwrap();
+    output[..=written]
+        .iter()
+        .copied()
+        .flat_map(weight_bytes)
+        .collect()
+}
+
+#[test]
+fn single_pass_keys_equal_exactly_sized_transforms_including_the_retry_path() {
+    let mut locales = vec![Collator::new(c"C").unwrap()];
+    // Real collation rules where available; otherwise C still covers both paths.
+    for name in [c"cs_CZ.UTF-8", c"en_US.UTF-8", c"C.UTF-8"] {
+        if let Ok(locale) = Collator::new(name) {
+            locales.push(locale);
+        }
+    }
+    let long = format!("{}a", "文".repeat(4096));
+    let samples = [
+        "",
+        "a",
+        "Ch",
+        "ch",
+        "Výroční zpráva – finální.pdf",
+        "Straße",
+        "æble",
+        "e\u{301}",
+        "👩🏽‍💻 notes",
+        "日本語のファイル",
+        "עברית",
+        &long,
+    ];
+    for locale in &locales {
+        for value in samples {
+            let expected = exact_two_pass_key(locale, value);
+            assert_eq!(locale.key(OsStr::new(value)).unwrap().unwrap(), expected);
+            let retried = locale.key_estimated(OsStr::new(value), |_| 1).unwrap();
+            assert_eq!(retried.unwrap(), expected, "{value:?}");
+        }
+    }
+}
+
 #[test]
 fn missing_configured_locale_uses_posix_fallback() {
     assert!(Collator::new(c"midnight_missing_test_locale").is_err());
@@ -108,6 +157,43 @@ fn captured_locale_exposes_native_keys_through_the_backend_trait() {
             .collation_key(OsStr::new("name.txt"))
             .unwrap()
             .is_some()
+    );
+}
+
+/// Run with `MIDNIGHT_COLLATION_TIMING_LOCALE=cs_CZ.UTF-8 cargo test -p
+/// midnight-platform-linux --lib collation_key_timing -- --ignored --nocapture`;
+/// a missing locale falls back to C.
+#[test]
+#[ignore = "timing harness for collation keys; prints measurements"]
+fn collation_key_timing() {
+    let name =
+        std::env::var("MIDNIGHT_COLLATION_TIMING_LOCALE").unwrap_or_else(|_| "en_US.UTF-8".into());
+    let locale = Collator::with_fallback(&std::ffi::CString::new(name.clone()).unwrap()).unwrap();
+    let names: Vec<String> = (0..100_000)
+        .map(|index| format!("Výroční zpráva {index:06} – finální verze.pdf"))
+        .collect();
+    // Interleave the single-pass keys with the former sizing-plus-transform work
+    // in one process so machine load affects both alike; report the best round.
+    let mut single = std::time::Duration::MAX;
+    let mut two_pass = std::time::Duration::MAX;
+    for _ in 0..5 {
+        let start = std::time::Instant::now();
+        for value in &names {
+            std::hint::black_box(locale.key(OsStr::new(value)).unwrap());
+        }
+        single = single.min(start.elapsed());
+        let start = std::time::Instant::now();
+        for value in &names {
+            std::hint::black_box(exact_two_pass_key(&locale, value));
+        }
+        two_pass = two_pass.min(start.elapsed());
+    }
+    let count = names.len() as u32;
+    eprintln!(
+        "TIMING {count} collation keys ({name}; C if missing): single pass {single:?} \
+         ({:?}/key), former two passes {two_pass:?} ({:?}/key)",
+        single / count,
+        two_pass / count
     );
 }
 

@@ -13,13 +13,11 @@ use std::{
     time::Duration,
 };
 fn fixture() -> tempfile::TempDir {
-    // Linux runner places TMPDIR on its native filesystem: DrvFS cannot preserve
-    // arbitrary Unix bytes or create O_TMPFILE. Every owned fixture stays under _build.
-    let root = std::env::temp_dir().join("midnight-transfer/_build/tmp");
-    fs::create_dir_all(&root).unwrap();
+    // Linux runners place TMPDIR on a native filesystem below `_build`: DrvFS cannot
+    // preserve arbitrary Unix bytes or create O_TMPFILE. Unique and removed on drop.
     tempfile::Builder::new()
         .prefix("transfer-linux-")
-        .tempdir_in(root)
+        .tempdir()
         .unwrap()
 }
 fn ready(source: &Path, directory: &Path) -> VerifiedFileCopy {
@@ -292,6 +290,11 @@ fn recoverable_replacement_retains_the_original_after_stage_drop() {
     use midnight_core::{TransferPublication, TransferReplacementPolicy};
     use std::io::{Read, Seek, SeekFrom, Write};
     let temp = fixture();
+    // Recoverable replacement is qualified on local ext filesystems only.
+    if !rustix::fs::statfs(temp.path()).is_ok_and(|stat| stat.f_type == 0xef53) {
+        eprintln!("SKIP recoverable replacement: the temporary directory is not on ext");
+        return;
+    }
     let target = temp.path().join("target 文档");
     fs::write(&target, b"original").unwrap();
     let provider = LinuxFileSystem::new(None);

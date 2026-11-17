@@ -2,17 +2,18 @@
 use super::*;
 use std::{fs, io::Write, os::unix::fs::OpenOptionsExt};
 
-fn fixture() -> (tempfile::TempDir, PathBuf) {
-    let root = std::env::temp_dir().join("midnight-move/_build/tmp");
-    fs::create_dir_all(&root).unwrap();
-    let temp = tempfile::tempdir_in(root).unwrap();
+/// Verified Move removal is qualified on local ext filesystems only.
+fn fixture() -> Option<(tempfile::TempDir, PathBuf)> {
+    let temp = crate::test_support::ext_temporary("move-finalize-", "verified Move finalization")?;
     let parent = temp.path().to_owned();
-    (temp, parent)
+    Some((temp, parent))
 }
 
 #[test]
 fn ordinary_move_finalization_unlinks_the_selected_source_and_cleans_empty_stage() {
-    let (_temp, parent) = fixture();
+    let Some((_temp, parent)) = fixture() else {
+        return;
+    };
     let path = parent.join("source 文档");
     fs::write(&path, b"verified original").unwrap();
     let cancel = Cancellation::default();
@@ -47,7 +48,9 @@ fn ordinary_move_finalization_unlinks_the_selected_source_and_cleans_empty_stage
 
 #[test]
 fn existing_writer_refuses_finalization_and_original_is_restored() {
-    let (_temp, parent) = fixture();
+    let Some((_temp, parent)) = fixture() else {
+        return;
+    };
     let path = parent.join("source");
     fs::write(&path, b"original").unwrap();
     let mut writer = fs::File::options().write(true).open(&path).unwrap();
@@ -68,7 +71,9 @@ fn existing_writer_refuses_finalization_and_original_is_restored() {
 #[allow(unsafe_code)]
 fn an_existing_writable_mapping_refuses_move_admission_after_writer_fd_closes() {
     use std::os::fd::AsRawFd;
-    let (_temp, parent) = fixture();
+    let Some((_temp, parent)) = fixture() else {
+        return;
+    };
     let path = parent.join("mapped-source");
     fs::write(&path, vec![42; 4096]).unwrap();
     let writer = fs::File::options()
@@ -103,7 +108,9 @@ fn an_existing_writable_mapping_refuses_move_admission_after_writer_fd_closes() 
 
 #[test]
 fn unverified_hardlink_alias_refuses_move_admission() {
-    let (_temp, parent) = fixture();
+    let Some((_temp, parent)) = fixture() else {
+        return;
+    };
     let path = parent.join("source");
     fs::write(&path, b"original").unwrap();
     fs::hard_link(&path, parent.join("alias")).unwrap();
@@ -119,7 +126,9 @@ fn unverified_hardlink_alias_refuses_move_admission() {
 #[test]
 fn pending_old_name_writer_prevents_capture_and_resumes_only_after_source_is_retained() {
     use std::time::{Duration, Instant};
-    let (_temp, parent) = fixture();
+    let Some((_temp, parent)) = fixture() else {
+        return;
+    };
     let path = parent.join("old-source-name");
     fs::write(&path, b"original").unwrap();
     let cancel = Cancellation::default();
@@ -158,7 +167,9 @@ fn pending_old_name_writer_prevents_capture_and_resumes_only_after_source_is_ret
 
 #[test]
 fn an_observed_lease_break_refuses_removal_even_if_writer_open_was_nonblocking() {
-    let (_temp, parent) = fixture();
+    let Some((_temp, parent)) = fixture() else {
+        return;
+    };
     let path = parent.join("source");
     fs::write(&path, b"original").unwrap();
     let cancel = Cancellation::default();
@@ -190,7 +201,9 @@ fn an_observed_lease_break_refuses_removal_even_if_writer_open_was_nonblocking()
 #[test]
 fn cancelling_or_dropping_finalization_preserves_and_restores_original() {
     for cancelled in [false, true] {
-        let (_temp, parent) = fixture();
+        let Some((_temp, parent)) = fixture() else {
+            return;
+        };
         let path = parent.join("source");
         fs::write(&path, b"original").unwrap();
         let cancel = Cancellation::default();
@@ -216,7 +229,9 @@ fn cancelling_or_dropping_finalization_preserves_and_restores_original() {
 
 #[test]
 fn a_replaced_stage_entry_is_never_unlinked_by_finalization() {
-    let (_temp, parent) = fixture();
+    let Some((_temp, parent)) = fixture() else {
+        return;
+    };
     let path = parent.join("source");
     fs::write(&path, b"original").unwrap();
     let cancel = Cancellation::default();

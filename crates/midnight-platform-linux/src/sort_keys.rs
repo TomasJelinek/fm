@@ -42,6 +42,15 @@ impl Collator {
     }
 
     fn key(&self, value: &OsStr) -> io::Result<Option<Vec<u8>>> {
+        // A few weights per character and level, plus level separators.
+        self.key_estimated(value, |units| units.saturating_mul(6).saturating_add(16))
+    }
+
+    fn key_estimated(
+        &self,
+        value: &OsStr,
+        estimate: fn(usize) -> usize,
+    ) -> io::Result<Option<Vec<u8>>> {
         let Some(text) = value.to_str() else {
             return Ok(None);
         };
@@ -57,29 +66,42 @@ impl Collator {
         source.try_reserve_exact(count).map_err(io::Error::other)?;
         source.extend(text.chars().map(|value| value as libc::wchar_t));
         source.push(0);
-        let required = self.transform(&source, &mut [])?;
-        // Include the wchar terminator in byte comparison: on signed-wchar
-        // targets a negative next weight must sort before a terminating zero.
-        let units = required
-            .checked_add(1)
-            .ok_or_else(|| io::Error::other("The native collation key size overflowed."))?;
-        let bytes = units
-            .checked_mul(4)
-            .filter(|bytes| *bytes <= MAX_COLLATION_KEY_BYTES)
-            .ok_or_else(|| {
-                io::Error::other("The native collation key exceeds its 4 MiB resource budget.")
-            })?;
+        // glibc computes all weights even for a sizing-only call, so transform into
+        // an estimated buffer and repeat only when the key turns out to be longer.
+        // The wchar terminator is part of the key: on signed-wchar targets a
+        // negative next weight must sort before a terminating zero.
+        let budget = MAX_COLLATION_KEY_BYTES / 4;
+        let mut units = estimate(count).clamp(1, budget);
         let mut output = Vec::new();
-        output.try_reserve_exact(units).map_err(io::Error::other)?;
-        output.resize(units, 0);
-        let written = self.transform(&source, &mut output)?;
-        if written >= output.len() || output[written] != 0 {
+        let written = loop {
+            output.clear();
+            output.try_reserve_exact(units).map_err(io::Error::other)?;
+            output.resize(units, 0);
+            let required = self.transform(&source, &mut output)?;
+            if required < units {
+                break required;
+            }
+            let needed = required
+                .checked_add(1)
+                .filter(|needed| *needed <= budget)
+                .ok_or_else(|| {
+                    io::Error::other("The native collation key exceeds its 4 MiB resource budget.")
+                })?;
+            if needed <= units {
+                return Err(io::Error::other(
+                    "The native collation key changed size during capture.",
+                ));
+            }
+            units = needed;
+        };
+        if output[written] != 0 {
             return Err(io::Error::other(
                 "The native collation key changed size during capture.",
             ));
         }
         let mut key = Vec::new();
-        key.try_reserve_exact(bytes).map_err(io::Error::other)?;
+        key.try_reserve_exact((written + 1) * 4)
+            .map_err(io::Error::other)?;
         key.extend(output[..=written].iter().copied().flat_map(weight_bytes));
         Ok(Some(key))
     }

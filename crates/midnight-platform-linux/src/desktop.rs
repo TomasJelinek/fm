@@ -11,13 +11,15 @@ use std::{
     process::{Command, Stdio},
 };
 
-const TERMINALS: &[&str] = &[
-    "/usr/bin/xterm",
-    "/usr/bin/konsole",
-    "/usr/bin/gnome-terminal",
-    "/usr/bin/xfce4-terminal",
-    "/usr/bin/x-terminal-emulator",
+/// The Debian/Ubuntu alternative is the user's configured terminal (policy requires
+/// xterm-compatible `-e`). Desktop terminals follow; xterm is the last resort.
+const CONFIGURED_TERMINAL: &str = "/usr/bin/x-terminal-emulator";
+const DESKTOP_TERMINALS: &[(&str, &str)] = &[
+    ("KDE", "/usr/bin/konsole"),
+    ("GNOME", "/usr/bin/gnome-terminal"),
+    ("XFCE", "/usr/bin/xfce4-terminal"),
 ];
+const FALLBACK_TERMINAL: &str = "/usr/bin/xterm";
 const INTERACTIVE_WRAPPER: &str = include_str!("terminal_prompt.sh");
 const COMMAND_WRAPPER: &str = concat!(
     "_me_terminal_shell=$2\neval \"$1\"\nset -- \"$_me_terminal_shell\"\n",
@@ -172,9 +174,8 @@ fn interactive_shell(preferred: Option<&std::ffi::OsStr>) -> PathBuf {
 }
 
 fn terminal_executable() -> io::Result<&'static Path> {
-    TERMINALS
-        .iter()
-        .map(Path::new)
+    terminal_candidates(std::env::var_os("XDG_CURRENT_DESKTOP").as_deref())
+        .into_iter()
         .find(|path| is_executable(path))
         .ok_or_else(|| {
             io::Error::new(
@@ -182,6 +183,27 @@ fn terminal_executable() -> io::Result<&'static Path> {
                 "No supported system terminal is installed.",
             )
         })
+}
+
+/// Fixed absolute candidates in priority order; `desktop` is `XDG_CURRENT_DESKTOP`
+/// (a colon-separated list such as `ubuntu:GNOME`), which only reorders them.
+fn terminal_candidates(desktop: Option<&std::ffi::OsStr>) -> Vec<&'static Path> {
+    let current = desktop.map(|value| value.as_bytes()).unwrap_or_default();
+    let own = |name: &str| {
+        current
+            .split(|byte| *byte == b':')
+            .any(|part| part.eq_ignore_ascii_case(name.as_bytes()))
+    };
+    let mut candidates = vec![Path::new(CONFIGURED_TERMINAL)];
+    candidates.extend(
+        DESKTOP_TERMINALS
+            .iter()
+            .filter(|(name, _)| own(name))
+            .chain(DESKTOP_TERMINALS.iter().filter(|(name, _)| !own(name)))
+            .map(|(_, path)| Path::new(*path)),
+    );
+    candidates.push(Path::new(FALLBACK_TERMINAL));
+    candidates
 }
 
 pub(crate) fn executable_terminal(path: &Path) -> io::Result<Command> {

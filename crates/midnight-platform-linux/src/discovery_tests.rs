@@ -6,13 +6,7 @@ use midnight_core::{
 use std::fs;
 
 fn fixture() -> tempfile::TempDir {
-    let qa = std::env::temp_dir().join("_build/midnight-discovery");
-    fs::create_dir_all(&qa).unwrap();
-    let qa = qa.canonicalize().unwrap();
-    tempfile::Builder::new()
-        .prefix("metadata-")
-        .tempdir_in(qa)
-        .unwrap()
+    crate::test_support::temporary("metadata-")
 }
 #[test]
 fn discovery_counts_nested_unicode_without_consuming_copy_iterator_or_mutating_sources() {
