@@ -14,7 +14,7 @@ version = "0.1.0"
 
 [[package]]
 name = "midnight-thumbnail-sdk"
-version = "0.2.1"
+version = "0.2.0"
 dependencies = [
  "midnight-thumbnail-api",
  "midnight-worker-sdk",

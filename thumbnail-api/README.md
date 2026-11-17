@@ -1,4 +1,4 @@
-# Thumbnail executable API 0.1.0 and SDK 0.2.1
+# Thumbnail executable API 0.1.0
 
 This workspace is separate from the already published viewer API/SDK 0.1.0.
 It neither changes those packages nor extends their binary viewer ABI.
@@ -18,11 +18,10 @@ The worker host first sends `MWS1` limits. Before reading any media request the 
 verifies Windows AppContainer/job restrictions or installs Linux seccomp/rlimits,
 then replies `MWR1`. `MTH1` length-prefixed messages follow. Requests specify a
 source length, maximum dimensions, request identity and frame index 0–5. Helpers
-read/seek through bounded read-only broker messages. Each read asks for at most
-256 KiB within the captured length, and the SDK fails it unless the reply has
-exactly that length, as the image-viewer SDK does; a short reply means the source
-changed. SDK 0.2.1 adds this check (0.2.0 accepted a shorter nonempty reply);
-the released 0.2.0 package is not replaced. Responses contain exact-size
+read/seek through bounded read-only broker messages. The host answers each read with
+exactly the requested length or fails the request; a short source read means the
+source changed. The SDK 0.2.0 broker does not check this itself: it accepts a shorter
+nonempty reply, where the image-viewer SDK fails closed. Responses contain exact-size
 straight-alpha RGBA8 sRGB pixels or a failure; no paths, URLs, HTML or executable
 content are accepted as results. The parent validates identity, size, source
 revision, cancellation and deadlines before accepting a frame.
@@ -35,6 +34,7 @@ there is no in-process decoder fallback.
 `api/tools/package` binary `worker-packages` emits a separate deterministic package
 registry and vendored SDK bundle under an explicit `_build` directory. It always
 packages the worker, thumbnail, filesystem and image-viewer APIs/SDKs and fails if
-any of them is missing. Existing viewer release archives and checksums remain unchanged. Plugin manifests must pin the
-released SDK version and registry before independent distribution; repository path
-overrides are development-only until that bundle is generated and verified.
+any of them is missing. Existing viewer release archives and checksums remain
+unchanged. Plugin manifests must pin the released SDK version and registry before
+independent distribution; repository path overrides are development-only until that
+bundle is generated and verified.
