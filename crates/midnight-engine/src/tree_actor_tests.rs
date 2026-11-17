@@ -887,6 +887,56 @@ fn tree_limit_rejection_preserves_the_complete_flat_listing_before_provider_work
 }
 
 #[test]
+fn root_preflight_charges_the_boxed_node_of_each_archive_row() {
+    // Captions fill the preflight budget to within one archive node per row.
+    let count = 4_000;
+    let node = std::mem::size_of::<midnight_core::ArchiveNode>();
+    let inline = |caption: usize| std::mem::size_of::<midnight_core::Entry>() + 1 + 2 * caption;
+    let caption = (TreeProjection::MAX_BYTES / count - inline(0)) / 2;
+    let entries: Arc<[midnight_core::Entry]> = (0..count as u64)
+        .map(|id| {
+            let mut entry = midnight_core::Entry::from_archive(midnight_core::ArchiveNode {
+                id: midnight_core::VirtualEntryId {
+                    mount: 1,
+                    entry: id + 2,
+                },
+                parent: 1,
+                raw_name: Arc::from(*b"a"),
+                display_name: String::new(),
+                kind: EntryKind::File,
+                size: None,
+                readable: true,
+                modified: None,
+            });
+            entry.display_name = String::with_capacity(caption);
+            entry
+        })
+        .collect::<Vec<_>>()
+        .into();
+    let charged = entries
+        .iter()
+        .map(|entry| {
+            assert!(entry.path.capacity() == 0 && entry.name.capacity() == 0);
+            inline(entry.display_name.capacity())
+        })
+        .sum::<usize>();
+    assert!(charged <= TreeProjection::MAX_BYTES);
+    assert!(charged + count * node > TreeProjection::MAX_BYTES);
+    let root = TreeRootSnapshot {
+        pane: PaneId::Left,
+        navigation: NavigationId(1),
+        index: Arc::new(midnight_core::DirectoryIndex::from_entries(&entries)),
+        entries,
+    };
+    assert!(root.within_payload_budget());
+    assert_eq!(
+        preflight_root(&root, &Cancellation::default()),
+        Err(ProviderError::ResourceLimited),
+        "each boxed archive node counts toward the root budget"
+    );
+}
+
+#[test]
 fn filtering_retains_unselectable_ancestor_context_and_rebases_selection_by_occurrence() {
     let mut fixture = fixture();
     let first = fixture.session.projection().clone();
