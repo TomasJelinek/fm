@@ -663,15 +663,7 @@ mod tests {
         }
 
         fn replace(&self, cancellation: &AtomicBool) -> RenameState {
-            state(
-                native::test_call(
-                    &self.client.api,
-                    self.client.instance,
-                    self.request(),
-                    cancellation,
-                )
-                .unwrap(),
-            )
+            state(self.client.flagged(self.request(), cancellation))
         }
 
         fn query(&self) -> RenameState {
@@ -1035,15 +1027,7 @@ mod tests {
                 conflict: fixture.consent.token,
             },
         };
-        let result = state(
-            native::test_call(
-                &fixture.client.api,
-                fixture.client.instance,
-                request(),
-                &cancellation,
-            )
-            .unwrap(),
-        );
+        let result = state(fixture.client.flagged(request(), &cancellation));
         assert!(
             matches!(
                 &result.outcome,

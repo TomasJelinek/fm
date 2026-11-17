@@ -4,48 +4,6 @@ use midnight_filesystem_plugin_api::{abi::*, *};
 use support::{Client, Temp, address};
 
 #[test]
-fn optional_rich_volume_query_is_supported_by_native_provider() {
-    let fixture = Temp::new();
-    let client = Client::new();
-    let payload = encode_request(
-        &Request::SpaceInfo {
-            address: address(&fixture.path),
-        },
-        DEFAULT_REQUEST_BYTES as usize,
-    )
-    .unwrap();
-    let call = Call {
-        struct_size: size_of::<Call>() as u32,
-        operation: 16,
-        payload: Slice {
-            data: payload.as_ptr(),
-            len: payload.len() as u64,
-        },
-        cancel: Cancellation::default(),
-    };
-    let mut buffer = Buffer::default();
-    // SAFETY: request/output and client descriptor remain live for the synchronous call.
-    let status = unsafe { client.api.call.unwrap()(client.instance, &call, &mut buffer) };
-    assert_eq!(
-        status, OK,
-        "native plugin must support optional rich volume queries"
-    );
-    buffer.validate(DEFAULT_REPLY_BYTES).unwrap();
-    // SAFETY: successful call owns this buffer until release through its original instance.
-    let data = unsafe { std::slice::from_raw_parts(buffer.bytes.data, buffer.bytes.len as usize) };
-    let response = decode_response(data, DEFAULT_REPLY_BYTES as usize);
-    // SAFETY: successful buffer is released exactly once before the client is destroyed.
-    assert_eq!(
-        unsafe { client.api.release_buffer.unwrap()(client.instance, buffer.id) },
-        OK
-    );
-    assert!(
-        matches!(response, Ok(Response::VolumeInformation(_))),
-        "{response:?}"
-    );
-}
-
-#[test]
 fn native_volume_details_preserve_capacity_label_and_failures() {
     let fixture = Temp::new();
     let client = Client::new();

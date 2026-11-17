@@ -1,11 +1,21 @@
 use super::*;
-use std::{path::PathBuf, sync::atomic::AtomicUsize, time::Instant};
+use std::{
+    path::{Path, PathBuf},
+    sync::atomic::AtomicUsize,
+    time::Instant,
+};
 
 struct Directory(PathBuf);
 impl Directory {
     fn new() -> Self {
         static NEXT: AtomicUsize = AtomicUsize::new(1);
-        let path = std::env::temp_dir().join(format!(
+        // Fixtures stay in the repository's _build output, never in system temp.
+        let base = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../_build/goal/network-plugin/gio-fixtures");
+        std::fs::create_dir_all(&base).unwrap();
+        let base = base.canonicalize().unwrap();
+        assert!(base.components().any(|part| part.as_os_str() == "_build"));
+        let path = base.join(format!(
             "midnight-network-gio-{}-{}",
             std::process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed)

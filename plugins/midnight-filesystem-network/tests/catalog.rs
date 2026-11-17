@@ -1,3 +1,4 @@
+#[path = "network_support/mod.rs"]
 mod support;
 use midnight_filesystem_network::{adapter::*, api::*};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -78,7 +79,7 @@ fn real_abi_keeps_restore_metadata_and_manual_resolution_separate_from_activatio
         mount: share_mount,
         node: share,
     } = client.call(Request::ResolveText {
-        text: "文档".into(),
+        text: "æ–‡æ¡£".into(),
     })
     else {
         panic!("manual target must work before discovery")

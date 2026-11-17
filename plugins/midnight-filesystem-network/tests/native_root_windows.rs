@@ -1,5 +1,6 @@
 #![cfg(windows)]
 //! Opt-in native root enumeration through the real public ABI; never opens a child.
+#[path = "network_support/mod.rs"]
 mod support;
 use midnight_filesystem_network::{api::*, windows::Windows};
 use std::collections::HashSet;

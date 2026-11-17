@@ -38,7 +38,7 @@ impl Context<'_> {
                 ErrorCode::Cancelled,
                 "Network request cancelled.",
             ))
-        } else if Instant::now() >= self.deadline {
+        } else if deadline_elapsed(self.deadline) {
             Err(Failure::new(
                 ErrorCode::TimedOut,
                 "Network request timed out.",
@@ -46,6 +46,45 @@ impl Context<'_> {
         } else {
             Ok(())
         }
+    }
+}
+
+fn deadline_elapsed(deadline: Instant) -> bool {
+    #[cfg(all(test, windows))]
+    if test_clock::expired() {
+        return true;
+    }
+    Instant::now() >= deadline
+}
+
+/// Unit tests expire the deadlines checked on one thread at an exact point
+/// instead of sleeping until a real deadline passes (used by the WNet tests).
+#[cfg(all(test, windows))]
+pub(crate) mod test_clock {
+    use std::{
+        cell::RefCell,
+        sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        },
+    };
+
+    thread_local! {
+        static EXPIRED: RefCell<Option<Arc<AtomicBool>>> = const { RefCell::new(None) };
+    }
+
+    /// Deadlines checked on the calling thread count as elapsed once `flag` is set.
+    pub(crate) fn follow(flag: Arc<AtomicBool>) {
+        EXPIRED.with(|expired| *expired.borrow_mut() = Some(flag));
+    }
+
+    pub(super) fn expired() -> bool {
+        EXPIRED.with(|expired| {
+            expired
+                .borrow()
+                .as_ref()
+                .is_some_and(|flag| flag.load(Ordering::SeqCst))
+        })
     }
 }
 

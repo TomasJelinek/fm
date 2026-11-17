@@ -13,7 +13,7 @@ use std::{
     },
     path::{Path, PathBuf},
 };
-use support::{Client, Temp, address};
+use support::{Client, Temp, address, junction};
 use windows_sys::Win32::{Storage::FileSystem::*, System::WindowsProgramming::DRIVE_FIXED};
 
 fn text(name: &OsStr) -> NativeText {
@@ -345,22 +345,6 @@ fn make_change_time_older(path: &Path) {
             )
         },
         0
-    );
-}
-
-fn junction(path: &Path, target: &Path) {
-    // Match the existing native tests: junction creation needs no symlink
-    // privilege. Names are fresh owned fixture paths, and Rust owns cleanup.
-    let output = std::process::Command::new("cmd.exe")
-        .args(["/D", "/C", "mklink", "/J"])
-        .arg(path.to_str().unwrap().replace('/', "\\"))
-        .arg(target.to_str().unwrap().replace('/', "\\"))
-        .output()
-        .unwrap();
-    assert!(
-        output.status.success(),
-        "Nonprivileged junction fixture failed: {}",
-        String::from_utf8_lossy(&output.stderr)
     );
 }
 

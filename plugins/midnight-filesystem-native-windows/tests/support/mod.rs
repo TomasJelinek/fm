@@ -3,7 +3,7 @@ use midnight_filesystem_plugin_api::{abi::*, *};
 use std::{
     os::windows::ffi::OsStrExt,
     path::{Path, PathBuf},
-    sync::atomic::{AtomicU64, Ordering},
+    sync::atomic::{AtomicBool, AtomicU64, Ordering},
 };
 
 pub struct Client {
@@ -42,6 +42,28 @@ impl Client {
         unsafe extern "C" fn callback(value: u64) -> u32 {
             u32::from(value != 0)
         }
+        self.invoke(request, cancel, callback)
+    }
+    /// Cancellation follows a live flag that the test may set during the call.
+    pub fn flagged(&self, request: Request, cancelled: &AtomicBool) -> Response {
+        unsafe extern "C" fn callback(context: u64) -> u32 {
+            // SAFETY: `flagged` passes the address of its borrowed flag; the
+            // synchronous call uses this context only until it returns.
+            let flag = unsafe { &*(context as usize as *const AtomicBool) };
+            u32::from(flag.load(Ordering::Acquire))
+        }
+        self.invoke(
+            request,
+            cancelled as *const AtomicBool as usize as u64,
+            callback,
+        )
+    }
+    fn invoke(
+        &self,
+        request: Request,
+        context: u64,
+        callback: unsafe extern "C" fn(u64) -> u32,
+    ) -> Response {
         let bytes = encode_request(&request, DEFAULT_REQUEST_BYTES as usize).unwrap();
         let request = Call {
             struct_size: size_of::<Call>() as u32,
@@ -51,7 +73,7 @@ impl Client {
                 len: bytes.len() as u64,
             },
             cancel: Cancellation {
-                context: cancel,
+                context,
                 cancelled: Some(callback),
             },
         };
@@ -92,6 +114,79 @@ impl Drop for Client {
         // SAFETY: calls/reply buffers quiesce before this owner; native state closes on the backend test thread.
         assert_eq!(unsafe { self.api.destroy.unwrap()(self.instance) }, OK);
     }
+}
+/// Create a directory junction at the fresh fixture `path` targeting `target`,
+/// in-process and with the names `mklink /J` writes. Junctions need no symlink
+/// privilege; the caller's fixture owns all cleanup.
+pub fn junction(path: &Path, target: &Path) {
+    use std::os::windows::{fs::OpenOptionsExt, io::AsRawHandle};
+    use windows_sys::Win32::{
+        Storage::FileSystem::{FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT},
+        System::{
+            IO::DeviceIoControl, Ioctl::FSCTL_SET_REPARSE_POINT,
+            SystemServices::IO_REPARSE_TAG_MOUNT_POINT,
+        },
+    };
+    let absolute: Vec<u16> = std::path::absolute(target)
+        .unwrap()
+        .as_os_str()
+        .encode_wide()
+        .collect();
+    let verbatim: Vec<u16> = r"\\?\".encode_utf16().collect();
+    let print = absolute
+        .strip_prefix(verbatim.as_slice())
+        .unwrap_or(&absolute);
+    let substitute: Vec<u16> = r"\??\"
+        .encode_utf16()
+        .chain(print.iter().copied())
+        .collect();
+    std::fs::create_dir(path).unwrap();
+    let directory = std::fs::OpenOptions::new()
+        .write(true)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(path)
+        .unwrap();
+    // REPARSE_DATA_BUFFER: tag, data length and reserved, then the mount-point
+    // name offsets/lengths in bytes and both NUL-terminated names.
+    let bytes = |units: &[u16]| u16::try_from(units.len() * 2).unwrap();
+    let data_length = 8 + bytes(&substitute) + 2 + bytes(print) + 2;
+    let mut buffer = Vec::new();
+    buffer.extend(IO_REPARSE_TAG_MOUNT_POINT.to_le_bytes());
+    for value in [
+        data_length,
+        0,
+        0,
+        bytes(&substitute),
+        bytes(&substitute) + 2,
+        bytes(print),
+    ] {
+        buffer.extend(value.to_le_bytes());
+    }
+    for unit in substitute.iter().chain(&[0]).chain(print).chain(&[0]) {
+        buffer.extend(unit.to_le_bytes());
+    }
+    let mut returned = 0;
+    // SAFETY: the owned directory handle and the complete input buffer remain
+    // live through this synchronous control call; no output buffer is used.
+    let set = unsafe {
+        DeviceIoControl(
+            directory.as_raw_handle(),
+            FSCTL_SET_REPARSE_POINT,
+            buffer.as_ptr().cast(),
+            u32::try_from(buffer.len()).unwrap(),
+            std::ptr::null_mut(),
+            0,
+            &mut returned,
+            std::ptr::null_mut(),
+        )
+    };
+    assert_ne!(
+        set,
+        0,
+        "junction fixture {}: {}",
+        path.display(),
+        std::io::Error::last_os_error()
+    );
 }
 pub fn address(path: &Path) -> Address {
     Address {
