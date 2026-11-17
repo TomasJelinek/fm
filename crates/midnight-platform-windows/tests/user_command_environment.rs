@@ -91,14 +91,55 @@ fn native_shell_record_is_omitted_only_during_capture_and_cannot_be_overridden()
 }
 
 #[test]
+fn cmd_private_records_are_dropped_during_capture_but_rejected_by_the_encoder() {
+    // cmd.exe exports `=ExitCode`/`=ExitCodeAscii` to every child it starts, so an
+    // application launched from a Command Prompt inherits them.
+    let private = [
+        ("=ExitCode", "00000001"),
+        ("=ExitCodeAscii", "A"),
+        ("=::", "::\\"),
+        ("=C:extra", "value"),
+        ("=1:", "value"),
+        ("=", "value"),
+    ];
+    let mut inherited: Vec<(OsString, OsString)> = private
+        .iter()
+        .map(|(name, value)| ((*name).into(), (*value).into()))
+        .collect();
+    inherited.push(("=C:".into(), r"C:\captured".into()));
+    inherited.push(("NORMAL".into(), "kept".into()));
+    let block = environment::snapshot_with_inherited(inherited, &[]).unwrap();
+    let records = block[..block.len() - 1]
+        .split(|unit| *unit == 0)
+        .filter(|record| !record.is_empty())
+        .map(OsString::from_wide)
+        .collect::<Vec<_>>();
+    for (name, _) in private {
+        let prefix = format!("{name}=");
+        assert!(
+            !records
+                .iter()
+                .any(|record| record.to_string_lossy().starts_with(&prefix)),
+            "{name} must not reach the child block"
+        );
+    }
+    assert!(records.contains(&OsString::from(r"=C:=C:\captured")));
+    assert!(records.contains(&OsString::from("NORMAL=kept")));
+    for (name, value) in private {
+        assert!(
+            environment::build(vec![(name.into(), value.into())], &[]).is_err(),
+            "the block encoder stays strict for {name}"
+        );
+    }
+}
+
+#[test]
 fn shell_capture_keeps_nul_name_and_ordinal_duplicate_rejection() {
     for (name, value) in [
         ("", "value"),
         ("ordinary=name", "value"),
         ("bad\0name", "value"),
-        ("=C:extra", "value"),
-        ("=1:", "value"),
-        ("=ExitCode", "value"),
+        ("=ExitCode", "value\0tail"),
         ("=::", "value\0tail"),
         ("NORMAL", "value\0tail"),
         ("=C:", "value\0tail"),
