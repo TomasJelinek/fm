@@ -93,8 +93,8 @@ fn save_at(parent: &Path, pixels: &SnapshotPixels, cancel: &Cancellation) -> io:
 }
 
 fn private_directory(directory: &impl std::os::fd::AsFd) -> io::Result<()> {
-    let metadata = rustix::fs::fstat(directory)?;
-    if metadata.st_uid != rustix::process::geteuid().as_raw() || metadata.st_mode & 0o022 != 0 {
+    // Group write is accepted only for this user's private group, without an ACL.
+    if !crate::ownership::writable_only_by_caller(directory)? {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
             "Managed icon directories must be owned by this user and not writable by other users.",
@@ -119,6 +119,14 @@ mod tests {
         );
         fs::set_permissions(application.join("icons"), fs::Permissions::from_mode(0o777)).unwrap();
         assert!(save_at(&application, &pixels, &Cancellation::default()).is_err());
+        // Group write is accepted only for this user's private group.
+        fs::set_permissions(application.join("icons"), fs::Permissions::from_mode(0o775)).unwrap();
+        let group =
+            std::os::unix::fs::MetadataExt::gid(&fs::metadata(application.join("icons")).unwrap());
+        assert_eq!(
+            save_at(&application, &pixels, &Cancellation::default()).is_ok(),
+            crate::ownership::caller_private_group(group)
+        );
         fs::set_permissions(application.join("icons"), fs::Permissions::from_mode(0o700)).unwrap();
         let outside = root.path().join("outside");
         fs::write(&outside, b"untouched").unwrap();
@@ -129,5 +137,39 @@ mod tests {
         let linked = root.path().join("linked");
         symlink(&application, &linked).unwrap();
         assert!(save_at(&linked, &pixels, &Cancellation::default()).is_err());
+    }
+
+    /// An access ACL makes the group bits its mask, so a 0775 private-group
+    /// folder can still let another user write.
+    #[test]
+    fn storage_shared_through_an_access_acl_is_refused() {
+        let root = tempfile::tempdir().unwrap();
+        let application = root.path().join("application");
+        let pixels = SnapshotPixels::new(1, 1, vec![20, 40, 60, 255]).unwrap();
+        let cancel = Cancellation::default();
+        save_at(&application, &pixels, &cancel).unwrap();
+        let group = std::os::unix::fs::MetadataExt::gid(&fs::metadata(&application).unwrap());
+        if !crate::ownership::caller_private_group(group) {
+            eprintln!(
+                "SKIP ACL-shared icon storage: group {group} is not this user's private group"
+            );
+            return;
+        }
+        if !crate::test_support::share_through_access_acl(&application, "ACL-shared icon storage") {
+            return;
+        }
+        assert_eq!(
+            fs::metadata(&application).unwrap().permissions().mode() & 0o7777,
+            0o775
+        );
+        let refused = save_at(&application, &pixels, &cancel).unwrap_err();
+        assert_eq!(refused.kind(), io::ErrorKind::PermissionDenied);
+        // The same 0775 private-group folder without the ACL is the caller's alone.
+        crate::test_support::remove_access_acl(&application);
+        assert_eq!(
+            fs::metadata(&application).unwrap().permissions().mode() & 0o7777,
+            0o775
+        );
+        save_at(&application, &pixels, &cancel).unwrap();
     }
 }

@@ -12,11 +12,10 @@ use std::{
 };
 
 fn fixture() -> tempfile::TempDir {
-    let root = std::env::temp_dir().join("midnight-transfer/_build/tmp");
-    fs::create_dir_all(&root).unwrap();
+    // Unique and removed on drop; CI points TMPDIR below `_build`.
     tempfile::Builder::new()
         .prefix("cancel-stage-")
-        .tempdir_in(root)
+        .tempdir()
         .unwrap()
 }
 

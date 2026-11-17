@@ -282,7 +282,9 @@ fn rename(
     result.current_path = item.item.path.with_file_name(name);
     result.changes.renamed = true;
     // Cleanup may fail after publication; the outcome must still describe the completed rename.
-    staged.cleanup()
+    staged
+        .cleanup()
+        .map_err(|cleanup| completed_with_residue("The entry was renamed", cleanup))
 }
 
 fn record_staged_path(item: &Prepared, staged: &Staged, result: &mut MetadataOutcome) {

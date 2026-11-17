@@ -6,6 +6,10 @@ use std::{
     os::fd::AsRawFd,
 };
 
+/// A selected Copy root may itself be a mount point (a volume selected in its
+/// parent's listing); its descendants never cross into another mount.
+const ROOT_RESOLVE: ResolveFlags = ResolveFlags::BENEATH.union(ResolveFlags::NO_SYMLINKS);
+
 pub(super) struct Source {
     entry: TransferEntry,
     parent: Arc<File>,
@@ -18,6 +22,10 @@ pub(super) struct Source {
     entries: Option<Dir>,
     move_enabled: bool,
     namespace: Arc<namespace::Bindings>,
+    /// The selected root is the root of another mount than its parent.
+    mount_root: bool,
+    /// Bindings shared by this directory's children.
+    children: namespace::ChildBindings,
 }
 impl Source {
     pub(super) fn enable_move(&mut self) {
@@ -39,11 +47,82 @@ impl Source {
         source.make_readable(cancel)?;
         Ok(source)
     }
+    /// A selected Copy root, which may be the root of a mounted filesystem.
+    pub(super) fn open_root(
+        parent: Arc<File>,
+        parent_path: PathBuf,
+        name: &OsStr,
+        cancel: &Cancellation,
+    ) -> Result<Self, FsError> {
+        let attempt = Self::open_with(
+            parent.clone(),
+            parent_path.clone(),
+            name,
+            false,
+            None,
+            cancel,
+        );
+        let mut source = match attempt {
+            Err(failure) if failure.kind == io::ErrorKind::CrossesDevices => {
+                Self::open_with(parent, parent_path, name, true, None, cancel)?
+            }
+            result => result?,
+        };
+        source.make_readable(cancel)?;
+        Ok(source)
+    }
     /// Retain only metadata authority; native Move never opens file contents.
     pub(super) fn open_move(
         parent: Arc<File>,
         parent_path: PathBuf,
         name: &OsStr,
+        cancel: &Cancellation,
+    ) -> Result<Self, FsError> {
+        Self::open_move_with(parent, parent_path, name, None, cancel)
+    }
+    /// `namespace` reuses bindings already computed for the parent directory.
+    pub(super) fn open_move_with(
+        parent: Arc<File>,
+        parent_path: PathBuf,
+        name: &OsStr,
+        namespace: Option<Arc<namespace::Bindings>>,
+        cancel: &Cancellation,
+    ) -> Result<Self, FsError> {
+        Self::open_with(parent, parent_path, name, false, namespace, cancel).map_err(
+            |mut failure| {
+                if failure.kind == io::ErrorKind::CrossesDevices {
+                    failure.kind = io::ErrorKind::Unsupported;
+                    failure.message =
+                        "This entry is a mount point. Move never crosses mounts, and \
+                                   Copy does not enter another mount below a selected folder."
+                            .into();
+                }
+                failure
+            },
+        )
+    }
+    /// The bindings of this directory, shared by all of its children.
+    pub(super) fn child_namespace(&self) -> Result<Arc<namespace::Bindings>, FsError> {
+        self.children.get(&self.file, &self.entry.item.path)
+    }
+    fn child_source(&self, name: &OsStr, cancel: &Cancellation) -> Result<Self, FsError> {
+        let namespace = self.child_namespace()?;
+        let mut source = Self::open_move_with(
+            self.file.clone(),
+            self.entry.item.path.clone(),
+            name,
+            Some(namespace),
+            cancel,
+        )?;
+        source.make_readable(cancel)?;
+        Ok(source)
+    }
+    fn open_with(
+        parent: Arc<File>,
+        parent_path: PathBuf,
+        name: &OsStr,
+        mount_root: bool,
+        namespace: Option<Arc<namespace::Bindings>>,
         cancel: &Cancellation,
     ) -> Result<Self, FsError> {
         let path = parent_path.join(name);
@@ -55,7 +134,7 @@ impl Source {
                 name,
                 OFlags::PATH | OFlags::NOFOLLOW | OFlags::CLOEXEC,
                 Mode::empty(),
-                RESOLVE,
+                if mount_root { ROOT_RESOLVE } else { RESOLVE },
             )
             .map_err(|e| error(&path, e.into()))?,
         );
@@ -76,9 +155,12 @@ impl Source {
             metadata.ctime_nsec(),
         );
         let parent_identity = identity(&parent, &parent_path)?;
-        let namespace = namespace::Bindings::for_parent(&parent, &parent_path)?;
+        let namespace = match namespace {
+            Some(namespace) => namespace,
+            None => namespace::Bindings::for_parent(&parent, &parent_path)?,
+        };
         Ok(Self {
-            entry: entry(&file, &path)?,
+            entry: snapshot,
             parent,
             parent_path,
             parent_identity,
@@ -89,6 +171,8 @@ impl Source {
             entries: None,
             move_enabled: false,
             namespace,
+            mount_root,
+            children: namespace::ChildBindings::default(),
         })
     }
     fn make_readable(&mut self, cancel: &Cancellation) -> Result<(), FsError> {
@@ -125,6 +209,10 @@ impl TransferSource for Source {
         cancel: &Cancellation,
     ) -> Result<Option<Arc<dyn midnight_core::TransferNamespacePin>>, FsError> {
         self.revalidate(cancel)?;
+        if self.mount_root {
+            // Parent-relative binding pins never cross mounts: conservative unknown.
+            return Ok(None);
+        }
         let pin = self.namespace.pin(
             &self.parent,
             &self.parent_path,
@@ -142,14 +230,7 @@ impl TransferSource for Source {
         visit: &mut dyn FnMut(&MutationItem),
     ) -> Result<(), FsError> {
         self.revalidate(cancel)?;
-        crate::mutation::discovery::walk(
-            &self.parent,
-            &self.file,
-            &self.name,
-            &self.entry.item.path,
-            cancel,
-            visit,
-        )?;
+        crate::mutation::discovery::walk(&self.file, &self.entry.item.path, cancel, visit)?;
         self.revalidate(cancel)
     }
     fn open_child(
@@ -164,13 +245,8 @@ impl TransferSource for Source {
                 "named child requires a directory",
             ));
         }
-        Self::open(
-            self.file.clone(),
-            self.entry.item.path.clone(),
-            name,
-            cancel,
-        )
-        .map(|source| Box::new(source) as Box<dyn TransferSource>)
+        self.child_source(name, cancel)
+            .map(|source| Box::new(source) as Box<dyn TransferSource>)
     }
     fn next_move_child(
         &mut self,
@@ -188,6 +264,7 @@ impl TransferSource for Source {
                     self.file.clone(),
                     self.entry.item.path.clone(),
                     &name,
+                    self.child_namespace()?,
                     cancel,
                 )
             })
@@ -263,7 +340,11 @@ impl TransferSource for Source {
                 &self.name,
                 OFlags::PATH | OFlags::NOFOLLOW | OFlags::CLOEXEC,
                 Mode::empty(),
-                RESOLVE,
+                if self.mount_root {
+                    ROOT_RESOLVE
+                } else {
+                    RESOLVE
+                },
             )
             .map_err(|e| error(path, e.into()))?,
         );
@@ -326,13 +407,8 @@ impl TransferSource for Source {
     ) -> Result<Option<Box<dyn TransferSource>>, FsError> {
         self.next_name(cancel)?
             .map(|name| {
-                Self::open(
-                    self.file.clone(),
-                    self.entry.item.path.clone(),
-                    &name,
-                    cancel,
-                )
-                .map(|source| Box::new(source) as Box<dyn TransferSource>)
+                self.child_source(&name, cancel)
+                    .map(|source| Box::new(source) as Box<dyn TransferSource>)
             })
             .transpose()
     }

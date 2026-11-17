@@ -31,7 +31,9 @@ pub(super) fn move_entry(
     })?;
     check_cancel(cancel, &prepared.item.path)?;
     let trash = Trash::open(root, prepared.identity)?;
-    if Identity::of(&trash.files, root)?.device != prepared.identity.device {
+    // Directories report their filesystem's device; a non-directory may report an
+    // overlayfs layer's device instead (see `filesystem_root`).
+    if Identity::of(&trash.files, root)?.device != prepared.parent_identity.device {
         return Err(error(
             &prepared.item.path,
             ErrorKind::Unsupported,
@@ -74,7 +76,9 @@ pub(super) fn move_entry(
     match result {
         Ok(()) => {
             progress(&prepared.item.path);
-            staged.cleanup()
+            staged
+                .cleanup()
+                .map_err(|cleanup| completed_with_residue("The entry was moved to Trash", cleanup))
         }
         Err(failure) => Err(reservation.remove(&trash, staged.restore(prepared, failure))),
     }
@@ -140,14 +144,10 @@ impl Trash {
 
     fn reserve(&self, prepared: &Prepared) -> Result<Reservation, FsError> {
         loop {
-            // Shorten only the internal trash label, never the native source.
-            let mut bytes = prepared
-                .name
-                .as_bytes()
-                .iter()
-                .copied()
-                .take(32)
-                .collect::<Vec<_>>();
+            // Shorten only the internal trash label, never the native source. A valid
+            // UTF-8 name is cut at a character boundary so every trash viewer can
+            // decode the label; other names keep their first raw bytes.
+            let mut bytes = prepared.name.as_bytes()[..label_length(&prepared.name)].to_vec();
             bytes.extend_from_slice(format!("-{}", unique_name("midnight")).as_bytes());
             let name = OsString::from_vec(bytes);
             let mut info_name = name.clone();
@@ -210,6 +210,21 @@ impl Reservation {
                 .push_str(&format!("; unused trash metadata remains: {cleanup}"));
         }
         failure
+    }
+}
+
+/// Bytes of `name` kept in a trash label: at most 32, never splitting a character.
+fn label_length(name: &OsStr) -> usize {
+    const MAX_LABEL: usize = 32;
+    match name.to_str() {
+        Some(text) => {
+            let mut length = text.len().min(MAX_LABEL);
+            while !text.is_char_boundary(length) {
+                length -= 1;
+            }
+            length
+        }
+        None => name.len().min(MAX_LABEL),
     }
 }
 

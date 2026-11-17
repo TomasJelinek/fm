@@ -2,11 +2,7 @@ use super::*;
 use std::{ffi::OsStr, io::Write, os::unix::fs::symlink, process::Stdio};
 
 fn temporary() -> tempfile::TempDir {
-    let directory = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../_build")
-        .canonicalize()
-        .unwrap();
-    tempfile::tempdir_in(directory).unwrap()
+    crate::test_support::workspace_temporary("terminal-shell-")
 }
 
 fn launch_shell(shell: &Path, source: &str, home: &Path, cwd: &Path, input: &[u8]) -> String {
@@ -78,6 +74,119 @@ fn configured_shell_is_one_absolute_executable_path_not_shell_source() {
         non_executable
     );
     assert!(!temporary.path().join("sentinel").exists());
+}
+
+#[test]
+fn configured_and_desktop_terminals_take_priority_over_xterm() {
+    let order = |desktop: Option<&str>| {
+        terminal_candidates(desktop.map(OsStr::new))
+            .into_iter()
+            .map(|path| path.to_str().unwrap().rsplit('/').next().unwrap())
+            .collect::<Vec<_>>()
+    };
+    let configured = "x-terminal-emulator";
+    assert_eq!(
+        order(None),
+        [
+            configured,
+            "konsole",
+            "gnome-terminal",
+            "xfce4-terminal",
+            "xterm"
+        ]
+    );
+    assert_eq!(
+        order(Some("ubuntu:GNOME")),
+        [
+            configured,
+            "gnome-terminal",
+            "konsole",
+            "xfce4-terminal",
+            "xterm"
+        ]
+    );
+    assert_eq!(
+        order(Some("KDE")),
+        [
+            configured,
+            "konsole",
+            "gnome-terminal",
+            "xfce4-terminal",
+            "xterm"
+        ]
+    );
+    assert_eq!(
+        order(Some("xfce")),
+        [
+            configured,
+            "xfce4-terminal",
+            "konsole",
+            "gnome-terminal",
+            "xterm"
+        ]
+    );
+    assert!(
+        terminal_candidates(Some(OsStr::new("X-Cinnamon")))
+            .iter()
+            .all(|path| path.is_absolute())
+    );
+}
+
+/// GNOME Terminal and Xfce Terminal return at once when started through their
+/// Debian wrappers or without their own options, so the tracked process would
+/// no longer reflect the open terminal.
+#[test]
+fn the_configured_alternative_launches_a_recognized_terminal_with_its_own_options() {
+    let installed = |_: &Path| true;
+    for (target, program, options) in [
+        (
+            "/usr/bin/gnome-terminal.wrapper",
+            "/usr/bin/gnome-terminal",
+            &["--wait", "--"][..],
+        ),
+        (
+            "/usr/bin/konsole",
+            "/usr/bin/konsole",
+            &["--nofork", "-e"][..],
+        ),
+        (
+            "/usr/bin/xfce4-terminal.wrapper",
+            "/usr/bin/xfce4-terminal",
+            &["--disable-server", "--execute"][..],
+        ),
+        ("/usr/bin/xterm", "/usr/bin/xterm", &["-e"][..]),
+        // Other terminals keep the alternative's name and the policy's `-e`.
+        ("/usr/bin/terminator", CONFIGURED_TERMINAL, &["-e"][..]),
+        ("/usr/bin/tilix.wrapper", CONFIGURED_TERMINAL, &["-e"][..]),
+    ] {
+        let executable = configured_terminal(Some(Path::new(target)), installed);
+        assert_eq!(executable, Path::new(program), "{target}");
+        let request = TerminalRequest {
+            shell: ShellFlavor::Posix,
+            mode: TerminalMode::Standard,
+            command: String::new(),
+            working_directory: PathBuf::from("/"),
+        };
+        let command =
+            terminal_command_with_shell(&executable, &request, Path::new("/bin/sh")).unwrap();
+        let arguments: Vec<_> = command.get_args().take(options.len()).collect();
+        assert_eq!(
+            arguments,
+            options.iter().map(OsStr::new).collect::<Vec<_>>(),
+            "{target}"
+        );
+    }
+    // A wrapper without its terminal beside it, or an unresolvable alternative.
+    assert_eq!(
+        configured_terminal(Some(Path::new("/usr/bin/gnome-terminal.wrapper")), |_| {
+            false
+        }),
+        Path::new(CONFIGURED_TERMINAL)
+    );
+    assert_eq!(
+        configured_terminal(None, installed),
+        Path::new(CONFIGURED_TERMINAL)
+    );
 }
 
 #[test]

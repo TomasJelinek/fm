@@ -13,13 +13,11 @@ use std::{
     time::Duration,
 };
 fn fixture() -> tempfile::TempDir {
-    // Linux runner places TMPDIR on its native filesystem: DrvFS cannot preserve
-    // arbitrary Unix bytes or create O_TMPFILE. Every owned fixture stays under _build.
-    let root = std::env::temp_dir().join("midnight-transfer/_build/tmp");
-    fs::create_dir_all(&root).unwrap();
+    // Linux runners place TMPDIR on a native filesystem below `_build`: DrvFS cannot
+    // preserve arbitrary Unix bytes or create O_TMPFILE. Unique and removed on drop.
     tempfile::Builder::new()
         .prefix("transfer-linux-")
-        .tempdir_in(root)
+        .tempdir()
         .unwrap()
 }
 fn ready(source: &Path, directory: &Path) -> VerifiedFileCopy {
@@ -183,6 +181,51 @@ fn iteration_preserves_raw_names_and_exclusive_creation_rejects_merge() {
 }
 
 #[test]
+fn a_selected_mount_point_is_a_copy_root_but_nested_mounts_are_never_entered() {
+    use midnight_core::EntryKind;
+    use std::os::unix::fs::MetadataExt;
+    let device = |path: &str| fs::metadata(path).map(|metadata| metadata.dev()).ok();
+    if device("/dev").is_none()
+        || device("/dev") == device("/")
+        || device("/dev/shm") == device("/dev")
+    {
+        eprintln!("SKIP mount-point copy roots: /dev and /dev/shm are not separate mounts here");
+        return;
+    }
+    let provider = LinuxFileSystem::new(None);
+    let cancel = Cancellation::default();
+    // Selecting a mounted volume in its parent's listing (here devtmpfs at /dev).
+    let mut source = provider
+        .prepare_transfer_source(Path::new("/dev"), &cancel)
+        .unwrap();
+    assert_eq!(source.entry().item.kind, EntryKind::Directory);
+    source.revalidate(&cancel).unwrap();
+    // Parent-relative namespace pins never cross mounts: conservative unknown.
+    assert!(source.native_namespace_scope(&cancel).unwrap().is_none());
+    let mut nested = None;
+    for _ in 0..100_000 {
+        match source.next_child(&cancel) {
+            Ok(Some(_)) => {}
+            Ok(None) => break,
+            Err(error) if error.path == Path::new("/dev/shm") => nested = Some(error),
+            // Device nodes and links below /dev are refused without being opened.
+            Err(_) => {}
+        }
+    }
+    let nested = nested.expect("the nested /dev/shm mount was not reported");
+    assert_eq!(nested.kind, std::io::ErrorKind::Unsupported);
+    assert!(nested.message.contains("mount point"), "{nested}");
+    let mut visited = Vec::new();
+    match source.discover(&cancel, &mut |item| {
+        visited.push((item.path.clone(), item.kind))
+    }) {
+        Ok(()) => assert!(visited.contains(&(Path::new("/dev/shm").into(), EntryKind::Other))),
+        // An unreadable device directory may still end discovery, never a mount.
+        Err(error) => assert_ne!(error.kind, std::io::ErrorKind::CrossesDevices, "{error}"),
+    }
+}
+
+#[test]
 fn copied_directories_refuse_nonsticky_shared_parents_before_creating_anything() {
     let temp = fixture();
     fs::set_permissions(temp.path(), fs::Permissions::from_mode(0o777)).unwrap();
@@ -247,6 +290,11 @@ fn recoverable_replacement_retains_the_original_after_stage_drop() {
     use midnight_core::{TransferPublication, TransferReplacementPolicy};
     use std::io::{Read, Seek, SeekFrom, Write};
     let temp = fixture();
+    // Recoverable replacement is qualified on local ext filesystems only.
+    if !rustix::fs::statfs(temp.path()).is_ok_and(|stat| stat.f_type == 0xef53) {
+        eprintln!("SKIP recoverable replacement: the temporary directory is not on ext");
+        return;
+    }
     let target = temp.path().join("target 文档");
     fs::write(&target, b"original").unwrap();
     let provider = LinuxFileSystem::new(None);

@@ -273,11 +273,11 @@ fn inspect(parent: &File, name: &OsStr, path: &Path) -> Result<Option<Witness>, 
         Err(rustix::io::Errno::NOENT) => return Ok(None),
         Err(e) => return Err(error(path, e.into())),
     };
-    let entry = entry(&file, path)?;
+    // One metadata read; a witness never needs the localized display time.
     let meta = file.metadata().map_err(|e| error(path, e))?;
     Ok(Some(Witness {
-        identity: entry.identity,
-        kind: entry.item.kind,
+        identity: identity_of(&meta),
+        kind: kind_of(&meta),
         revision: (
             meta.len(),
             meta.mtime(),
@@ -683,6 +683,33 @@ impl Drop for Bindings {
         {
             bindings.remove(key);
         }
+    }
+}
+
+/// The bindings of one directory for all of its children. `parent_key` walks `..`
+/// to the filesystem root, so a recursive transfer computes it once per directory
+/// and namespace owner rather than once per child. A later ancestry change makes
+/// announcements report incomplete geometry, as for any other stale binding.
+#[derive(Default)]
+pub(super) struct ChildBindings(Mutex<Option<OwnedBindings>>);
+type OwnedBindings = (Weak<dyn TransferNamespaceChanges>, Arc<Bindings>);
+
+impl ChildBindings {
+    pub(super) fn get(&self, parent: &Arc<File>, path: &Path) -> Result<Arc<Bindings>, FsError> {
+        let Some(owner) = current_transfer_namespace_changes() else {
+            return Ok(Arc::new(Bindings::default()));
+        };
+        let mut cached = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        // The retained weak owner keeps its allocation, so an equal address is the
+        // same live owner.
+        if let Some((cached_owner, bindings)) = cached.as_ref()
+            && std::ptr::addr_eq(cached_owner.as_ptr(), Arc::as_ptr(&owner))
+        {
+            return Ok(bindings.clone());
+        }
+        let bindings = Bindings::for_parent(parent, path)?;
+        *cached = Some((Arc::downgrade(&owner), bindings.clone()));
+        Ok(bindings)
     }
 }
 

@@ -3,9 +3,7 @@ use super::*;
 use std::{ffi::OsString, fs, os::unix::ffi::OsStringExt};
 
 fn fixture() -> (tempfile::TempDir, std::path::PathBuf) {
-    let root = std::env::temp_dir().join("midnight-move/_build/tmp");
-    fs::create_dir_all(&root).unwrap();
-    let temp = tempfile::tempdir_in(root).unwrap();
+    let temp = crate::test_support::temporary("move-cleanup-");
     let parent = temp.path().to_owned();
     (temp, parent)
 }

@@ -1,24 +1,38 @@
 //! Read-only metadata traversal through pinned directory identities, without following links.
+//! Mount points below the selected root are reported as unsupported entries, not entered.
 use super::*;
-use rustix::fs::Dir;
+use rustix::{fd::OwnedFd, fs::Dir};
 use std::os::unix::fs::MetadataExt;
+
+const CHILD: ResolveFlags = ResolveFlags::BENEATH
+    .union(ResolveFlags::NO_XDEV)
+    .union(ResolveFlags::NO_SYMLINKS);
 
 struct Frame {
     directory: Arc<File>,
     entries: Dir,
     path: PathBuf,
 }
+/// Visits `source` (pinned by the caller, which revalidates its binding) and its
+/// descendants. The root is opened through its pinned handle, so a selected root
+/// that is itself a mount point can be enumerated.
 pub(crate) fn walk(
-    parent: &Arc<File>,
     source: &File,
-    name: &OsStr,
     path: &Path,
     cancel: &Cancellation,
     visit: &mut dyn FnMut(&MutationItem),
 ) -> Result<(), FsError> {
     check_cancel(cancel, path)?;
     let mut stack = Vec::new();
-    if let Some(frame) = inspect(parent, source, name, path, cancel, visit)? {
+    let root = || {
+        openat(
+            source,
+            ".",
+            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC,
+            Mode::empty(),
+        )
+    };
+    if let Some(frame) = inspect(source, path, root, cancel, visit)? {
         stack.push(frame);
     }
     while let Some(frame) = stack.last_mut() {
@@ -33,17 +47,37 @@ pub(crate) fn walk(
             continue;
         }
         let path = frame.path.join(name);
-        let source = File::from(
+        let source = match openat2(
+            &*frame.directory,
+            name,
+            OFlags::PATH | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::empty(),
+            CHILD,
+        ) {
+            Ok(source) => File::from(source),
+            Err(rustix::io::Errno::XDEV) => {
+                // A nested mount point is never entered; the operation itself
+                // reports it as unsupported. Discovery continues with its siblings.
+                visit(&MutationItem {
+                    path,
+                    kind: EntryKind::Other,
+                    metadata: EntryMetadata::default(),
+                });
+                continue;
+            }
+            Err(error) => return Err(native_error(&path, error)),
+        };
+        let directory = frame.directory.clone();
+        let child = || {
             openat2(
-                &*frame.directory,
+                &*directory,
                 name,
-                OFlags::PATH | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+                OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
                 Mode::empty(),
-                ResolveFlags::BENEATH | ResolveFlags::NO_XDEV | ResolveFlags::NO_SYMLINKS,
+                CHILD,
             )
-            .map_err(|error| native_error(&path, error))?,
-        );
-        if let Some(child) = inspect(&frame.directory, &source, name, &path, cancel, visit)? {
+        };
+        if let Some(child) = inspect(&source, &path, child, cancel, visit)? {
             if stack.len() >= 128 {
                 return Err(error(
                     &path,
@@ -57,10 +91,9 @@ pub(crate) fn walk(
     Ok(())
 }
 fn inspect(
-    parent: &Arc<File>,
     source: &File,
-    name: &OsStr,
     path: &Path,
+    open_directory: impl FnOnce() -> rustix::io::Result<OwnedFd>,
     cancel: &Cancellation,
     visit: &mut dyn FnMut(&MutationItem),
 ) -> Result<Option<Frame>, FsError> {
@@ -90,16 +123,7 @@ fn inspect(
     if kind != EntryKind::Directory {
         return Ok(None);
     }
-    let directory = File::from(
-        openat2(
-            &**parent,
-            name,
-            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-            Mode::empty(),
-            ResolveFlags::BENEATH | ResolveFlags::NO_XDEV | ResolveFlags::NO_SYMLINKS,
-        )
-        .map_err(|error| native_error(path, error))?,
-    );
+    let directory = File::from(open_directory().map_err(|error| native_error(path, error))?);
     if Identity::of(&directory, path)? != Identity::of(source, path)? {
         return Err(error(
             path,

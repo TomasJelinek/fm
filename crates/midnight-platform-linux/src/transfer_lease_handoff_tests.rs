@@ -100,6 +100,29 @@ fn rejected_native_grant_drops_worker_file_before_error_acknowledgement() {
 }
 
 #[test]
+fn a_writer_breaking_the_lease_is_released_promptly_and_the_break_is_recorded() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("source");
+    std::fs::write(&path, b"lease break").unwrap();
+    let lease = ReadLease::acquire(Arc::new(File::open(&path).unwrap()), &path).unwrap();
+    lease.revalidate(&path).unwrap();
+    let (opened, writer_opened) = mpsc::channel();
+    let writer_path = path.clone();
+    let writer = thread::spawn(move || {
+        let result = std::fs::OpenOptions::new().write(true).open(writer_path);
+        let _ = opened.send(result.is_ok());
+    });
+    // An unreleased lease holds this open for /proc/sys/fs/lease-break-time
+    // (45 s by default); the deadline only elapses on failure.
+    let opened = writer_opened
+        .recv_timeout(Duration::from_secs(10))
+        .expect("the writer stalled behind a broken read lease");
+    assert!(opened);
+    assert!(lease.revalidate(&path).is_err());
+    writer.join().unwrap();
+}
+
+#[test]
 fn abandoned_success_reply_unlocks_and_drops_its_returned_file_locally() {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("source");

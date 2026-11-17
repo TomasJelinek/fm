@@ -13,9 +13,7 @@ use std::{
 #[test]
 fn recursive_delete_pauses_after_one_entry_then_resumes_or_cancels_without_more_deletions() {
     for cancel_instead in [false, true] {
-        let qa = std::env::temp_dir().join("midnight-pause-delete/_build");
-        fs::create_dir_all(&qa).unwrap();
-        let fixture = tempfile::tempdir_in(qa.canonicalize().unwrap()).unwrap();
+        let fixture = crate::test_support::temporary("pause-delete-");
         let tree = fixture.path().join("tree");
         fs::create_dir(&tree).unwrap();
         for name in ["a", "b", "c"] {

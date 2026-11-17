@@ -35,7 +35,7 @@ use source::Outgoing;
 const TRANSFER_TIMEOUT: Duration = Duration::from_secs(5);
 const EVENT_BUDGET: usize = 128;
 
-pub struct NativeFileDragDrop;
+pub(crate) struct NativeFileDragDrop;
 
 impl FileDragDropService for crate::LinuxFileSystem {
     fn open_session(

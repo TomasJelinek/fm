@@ -1,4 +1,12 @@
 //! Read-only, handle-relative Find sources. No implicit links or child mount crossings.
+//!
+//! A chosen location is resolved like panel navigation: ordinary symbolic links in
+//! its ancestors are followed (a merged-/usr `/lib/modules` or a folder entered
+//! through a directory link), procfs magic links are not, and the final component
+//! must not be a link. Descendants are opened relative to their pinned parent
+//! without links or mount crossings. Each directory's visible binding is checked
+//! once when its enumeration starts; entries created, removed or renamed inside it
+//! afterwards do not abort the search. Every result is revalidated by its own path.
 use midnight_core::*;
 use rustix::fs::{CWD, Dir, Mode, OFlags, ResolveFlags, openat, openat2};
 use std::{
@@ -11,6 +19,8 @@ use std::{
 const CHILD_RESOLVE: ResolveFlags = ResolveFlags::BENEATH
     .union(ResolveFlags::NO_SYMLINKS)
     .union(ResolveFlags::NO_XDEV);
+/// Absolute locations: ancestor symlinks are followed, magic links are refused.
+const PATH_RESOLVE: ResolveFlags = ResolveFlags::NO_MAGICLINKS;
 const PROBE: OFlags = OFlags::PATH.union(OFlags::NOFOLLOW).union(OFlags::CLOEXEC);
 const DIRECTORY: OFlags = OFlags::RDONLY
     .union(OFlags::DIRECTORY)
@@ -38,21 +48,15 @@ impl FindService for crate::LinuxFileSystem {
             ));
         }
         let probe = File::from(
-            openat2(CWD, path, PROBE, Mode::empty(), ResolveFlags::NO_SYMLINKS)
+            openat2(CWD, path, PROBE, Mode::empty(), PATH_RESOLVE)
                 .map_err(|error| failure(path, error))?,
         );
         let entry = snapshot(&probe, path)?;
         ordinary(&entry)?;
         let file = if entry.kind == EntryKind::Directory {
             File::from(
-                openat2(
-                    CWD,
-                    path,
-                    DIRECTORY,
-                    Mode::empty(),
-                    ResolveFlags::NO_SYMLINKS,
-                )
-                .map_err(|error| failure(path, error))?,
+                openat2(CWD, path, DIRECTORY, Mode::empty(), PATH_RESOLVE)
+                    .map_err(|error| failure(path, error))?,
             )
         } else {
             probe
@@ -127,14 +131,8 @@ impl FindSource for Source {
     fn revalidate(&self, cancel: &Cancellation) -> Result<(), FsError> {
         checked(cancel, &self.entry.path)?;
         let visible = File::from(
-            openat2(
-                CWD,
-                &self.entry.path,
-                PROBE,
-                Mode::empty(),
-                ResolveFlags::NO_SYMLINKS,
-            )
-            .map_err(|error| failure(&self.entry.path, error))?,
+            openat2(CWD, &self.entry.path, PROBE, Mode::empty(), PATH_RESOLVE)
+                .map_err(|error| failure(&self.entry.path, error))?,
         );
         if !snapshot(&visible, &self.entry.path)?.matches_capture(&self.entry)
             || !snapshot(&self.file, &self.entry.path)?.matches_capture(&self.entry)
@@ -144,7 +142,7 @@ impl FindSource for Source {
         Ok(())
     }
     fn next_child(&mut self, cancel: &Cancellation) -> Result<Option<FindChild>, FsError> {
-        self.revalidate(cancel)?;
+        checked(cancel, &self.entry.path)?;
         if self.entry.kind != EntryKind::Directory {
             return Err(find_error(
                 &self.entry.path,
@@ -153,6 +151,9 @@ impl FindSource for Source {
             ));
         }
         if self.children.is_none() {
+            // The visible binding is checked once; the pinned directory is then
+            // enumerated even while entries inside it change.
+            self.revalidate(cancel)?;
             self.children =
                 Some(Dir::read_from(&self.file).map_err(|error| failure(&self.entry.path, error))?);
         }
@@ -243,6 +244,21 @@ fn snapshot(file: &File, path: &Path) -> Result<FindEntry, FsError> {
     };
     let mut object = [0; 16];
     object[..8].copy_from_slice(&metadata.ino().to_le_bytes());
+    // A directory's size and times change with every entry created, removed or
+    // renamed inside it. Enumeration uses the pinned handle and result navigation
+    // needs only its identity, so directory revisions carry no content state.
+    let revision = if kind == EntryKind::Directory {
+        FindRevision([0; 6])
+    } else {
+        FindRevision([
+            metadata.len(),
+            metadata.mtime() as u64,
+            metadata.mtime_nsec() as u64,
+            metadata.ctime() as u64,
+            metadata.ctime_nsec() as u64,
+            metadata.mode() as u64,
+        ])
+    };
     Ok(FindEntry {
         path: path.to_owned(),
         kind,
@@ -250,14 +266,7 @@ fn snapshot(file: &File, path: &Path) -> Result<FindEntry, FsError> {
             device: metadata.dev(),
             object,
         },
-        revision: FindRevision([
-            metadata.len(),
-            metadata.mtime() as u64,
-            metadata.mtime_nsec() as u64,
-            metadata.ctime() as u64,
-            metadata.ctime_nsec() as u64,
-            metadata.mode() as u64,
-        ]),
+        revision,
         metadata: EntryMetadata {
             size: (kind == EntryKind::File).then_some(metadata.len()),
             modified: metadata.modified().ok(),

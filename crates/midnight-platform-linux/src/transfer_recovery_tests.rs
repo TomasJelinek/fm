@@ -4,7 +4,9 @@ use std::{fs, os::unix::fs::symlink};
 #[test]
 fn preserving_output_retains_mode_and_extended_attributes_after_replacement() {
     use rustix::fs::{XattrFlags, fchmod, fgetxattr, fsetxattr};
-    let temp = fixture();
+    let Some(temp) = fixture() else {
+        return;
+    };
     let target = temp.path().join("target");
     fs::write(&target, b"original").unwrap();
     let original = File::open(&target).unwrap();
@@ -80,7 +82,9 @@ fn preserving_output_retains_mode_and_extended_attributes_after_replacement() {
 
 #[test]
 fn preserving_output_refuses_privileged_mode_without_changing_original() {
-    let temp = fixture();
+    let Some(temp) = fixture() else {
+        return;
+    };
     let target = temp.path().join("target");
     fs::write(&target, b"original").unwrap();
     rustix::fs::fchmod(File::open(&target).unwrap(), Mode::from_raw_mode(0o4600)).unwrap();
@@ -107,13 +111,18 @@ fn preserving_output_refuses_privileged_mode_without_changing_original() {
     assert_eq!(fs::metadata(&target).unwrap().mode() & 0o7777, 0o4600);
 }
 
-fn fixture() -> tempfile::TempDir {
-    let root = std::env::temp_dir().join("midnight-transfer/_build/tmp");
-    fs::create_dir_all(&root).unwrap();
-    tempfile::tempdir_in(root).unwrap()
+/// Recoverable replacement is qualified on local ext filesystems only.
+fn fixture() -> Option<tempfile::TempDir> {
+    crate::test_support::ext_temporary("recovery-", "recoverable replacement")
 }
 
 fn stage(path: &Path) -> Stage {
+    stage_with(path, OFlags::empty())
+}
+
+/// `O_EXCL` makes the anonymous inode unlinkable, so `linkat` fails after the
+/// private recovery directory already exists.
+fn stage_with(path: &Path, extra: OFlags) -> Stage {
     let cancel = Cancellation::default();
     let directory = Directory::from_file(
         File::from(openat(CWD, path, DIRECTORY, Mode::empty()).unwrap()),
@@ -127,7 +136,7 @@ fn stage(path: &Path) -> Stage {
         openat(
             &*directory.file,
             ".",
-            OFlags::RDWR | OFlags::TMPFILE | OFlags::CLOEXEC,
+            OFlags::RDWR | OFlags::TMPFILE | OFlags::CLOEXEC | extra,
             Mode::RUSR | Mode::WUSR,
         )
         .unwrap(),
@@ -155,8 +164,80 @@ fn stage(path: &Path) -> Stage {
 }
 
 #[test]
+fn a_failed_recovery_link_removes_the_empty_recovery_directory() {
+    let Some(temp) = fixture() else {
+        return;
+    };
+    let target = temp.path().join("target");
+    fs::write(&target, b"consented original").unwrap();
+    let mut stage = stage_with(temp.path(), OFlags::EXCL);
+    for _ in 0..2 {
+        let failure = stage
+            .replace(OsStr::new("target"), &Cancellation::default(), || {
+                panic!("an unlinked stage must not reach the exchange")
+            })
+            .expect_err("the stage link failed before any destination mutation");
+        assert_eq!(failure.kind, io::ErrorKind::NotFound);
+    }
+    drop(stage);
+    assert_eq!(fs::read(&target).unwrap(), b"consented original");
+    let entries: Vec<_> = fs::read_dir(temp.path())
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .collect();
+    assert_eq!(entries, [OsStr::new("target")]);
+}
+
+#[test]
+fn a_recovery_directory_removed_before_its_parent_sync_failed_is_not_a_residual() {
+    let Some(temp) = fixture() else {
+        return;
+    };
+    let target = temp.path().join("target");
+    fs::write(&target, b"consented original").unwrap();
+    let mut stage = stage_with(temp.path(), OFlags::EXCL);
+    // Every directory operation works through an O_PATH handle except fsync
+    // (EBADF), so only the parent sync after the successful rmdir fails.
+    stage.directory = Directory::from_file(
+        File::from(
+            openat(
+                CWD,
+                temp.path(),
+                OFlags::PATH | OFlags::DIRECTORY | OFlags::CLOEXEC,
+                Mode::empty(),
+            )
+            .unwrap(),
+        ),
+        temp.path().to_owned(),
+    )
+    .unwrap();
+    let failure = stage
+        .replace(OsStr::new("target"), &Cancellation::default(), || {
+            panic!("an unlinked stage must not reach the exchange")
+        })
+        .expect_err("a removed recovery directory must not be reported as a residual");
+    assert_eq!(failure.kind, io::ErrorKind::NotFound);
+    assert!(
+        failure
+            .message
+            .contains("the empty recovery directory was removed"),
+        "{}",
+        failure.message
+    );
+    drop(stage);
+    assert_eq!(fs::read(&target).unwrap(), b"consented original");
+    let entries: Vec<_> = fs::read_dir(temp.path())
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .collect();
+    assert_eq!(entries, [OsStr::new("target")]);
+}
+
+#[test]
 fn replacement_at_the_last_revalidation_boundary_is_retained_after_exchange() {
-    let temp = fixture();
+    let Some(temp) = fixture() else {
+        return;
+    };
     let target = temp.path().join("target");
     fs::write(&target, b"consented original").unwrap();
     let mut stage = stage(temp.path());
@@ -189,7 +270,9 @@ fn replacement_at_the_last_revalidation_boundary_is_retained_after_exchange() {
 
 #[test]
 fn a_late_symlink_is_retained_as_a_link_and_its_target_is_never_opened() {
-    let temp = fixture();
+    let Some(temp) = fixture() else {
+        return;
+    };
     let target = temp.path().join("target");
     let outside = temp.path().join("outside");
     fs::write(&target, b"original").unwrap();
@@ -221,7 +304,9 @@ fn a_late_symlink_is_retained_as_a_link_and_its_target_is_never_opened() {
 
 #[test]
 fn a_late_missing_target_retains_verified_bytes_without_deleting_the_original() {
-    let temp = fixture();
+    let Some(temp) = fixture() else {
+        return;
+    };
     let target = temp.path().join("target");
     fs::write(&target, b"original").unwrap();
     let mut stage = stage(temp.path());
@@ -249,7 +334,9 @@ fn a_late_missing_target_retains_verified_bytes_without_deleting_the_original() 
 
 #[test]
 fn substituted_recovery_stage_is_detected_without_touching_final_destination() {
-    let temp = fixture();
+    let Some(temp) = fixture() else {
+        return;
+    };
     let target = temp.path().join("target");
     fs::write(&target, b"original").unwrap();
     let mut stage = stage(temp.path());
@@ -284,7 +371,7 @@ fn substituted_recovery_stage_is_detected_without_touching_final_destination() {
 
 #[test]
 fn displayed_target_metadata_and_revision_cannot_straddle_a_concurrent_edit() {
-    let temp = fixture();
+    let temp = crate::test_support::temporary("conflict-display-");
     let target = temp.path().join("target");
     fs::write(&target, b"old").unwrap();
     let file =

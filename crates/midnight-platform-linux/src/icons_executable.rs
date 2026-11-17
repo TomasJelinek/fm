@@ -9,11 +9,22 @@ use std::{
 };
 
 const APPLICATION_ROOTS: &[&str] = &["/usr/share/applications", "/usr/local/share/applications"];
-const MAX_ENTRIES: usize = 512;
 const MAX_FILE_BYTES: usize = 64 * 1024;
-const MAX_TOTAL_BYTES: usize = 4 * 1024 * 1024;
 const MAX_PATH_BYTES: usize = 32 * 1024;
 const MAX_PATH_ENTRIES: usize = 64;
+
+/// Per-lookup enumeration and read budgets. Full KDE/GNOME installations list
+/// several hundred to a few thousand entries with many MiB of translations;
+/// exceeding a budget never yields an icon from a partial catalog.
+#[derive(Clone, Copy)]
+struct Budget {
+    entries: usize,
+    total_bytes: usize,
+}
+const BUDGET: Budget = Budget {
+    entries: 4096,
+    total_bytes: 32 * 1024 * 1024,
+};
 
 pub(super) fn load(
     home: Option<&Path>,
@@ -26,7 +37,7 @@ pub(super) fn load(
     }
     let roots: Vec<_> = APPLICATION_ROOTS.iter().map(Path::new).collect();
     let search_path = std::env::var_os("PATH").unwrap_or_default();
-    let name = icon_name(executable, &roots, &search_path, cancel)?;
+    let name = icon_name(executable, &roots, &search_path, BUDGET, cancel)?;
     let icon = super::load_named_icon(home, &[&name], size, cancel);
     if cancel.is_cancelled() { None } else { icon }
 }
@@ -35,6 +46,7 @@ fn icon_name(
     executable: &Path,
     roots: &[&Path],
     search_path: &OsStr,
+    budget: Budget,
     cancel: &Cancellation,
 ) -> Option<String> {
     if cancel.is_cancelled() || !executable.is_absolute() {
@@ -66,7 +78,7 @@ fn icon_name(
                 return None;
             }
             count += 1;
-            if count > MAX_ENTRIES {
+            if count > budget.entries {
                 // A partial enumeration cannot rule out a conflicting icon mapping.
                 return None;
             }
@@ -88,7 +100,7 @@ fn icon_name(
             }
             // Leave one byte for the bounded reader's oversize probe. The existing
             // descriptor reader also verifies regular-file type after opening.
-            let limit = MAX_FILE_BYTES.min((MAX_TOTAL_BYTES - bytes).saturating_sub(1));
+            let limit = MAX_FILE_BYTES.min((budget.total_bytes - bytes).saturating_sub(1));
             if limit == 0 {
                 return None;
             }

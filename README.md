@@ -347,10 +347,15 @@ enabled when qualifying filesystem operations and desktop integration. See
 [Fedora's C++ setup](https://developer.fedoraproject.org/tech/languages/c/cpp_installation.html)
 and the [Zypper manual](https://manpages.opensuse.org/Tumbleweed/zypper/zypper.8.en.html).
 
-For command-line execution, install a currently recognized terminal: `xterm`,
-Konsole, GNOME Terminal or Xfce Terminal. For example, `sudo dnf install xterm`
-or `sudo zypper install xterm`. An arbitrary desktop's default terminal is not
-automatically supported by the current launcher.
+For command-line execution, the launcher uses the first installed recognized
+terminal: the Debian/Ubuntu `x-terminal-emulator` alternative (your configured
+default), then the current desktop's Konsole, GNOME Terminal or Xfce Terminal, the
+other two of those, and `xterm` last. When the alternative points to one of these
+four, also through a Debian `.wrapper` script, that terminal is started directly
+with its own options; another configured terminal is started through the
+alternative with `-e`. Fedora Workstation's default Ptyxis and GNOME Console are
+not recognized yet; install a listed terminal, for example
+`sudo dnf install gnome-terminal` or `sudo zypper install xterm`.
 
 To install Rust manually, use the [official rustup instructions](https://rust-lang.org/tools/install/),
 then open a new terminal or load rustup's environment with `. "$HOME/.cargo/env"`.

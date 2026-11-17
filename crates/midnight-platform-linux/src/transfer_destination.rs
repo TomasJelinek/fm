@@ -15,6 +15,19 @@ mod preservation;
 #[path = "transfer_recovery.rs"]
 pub(super) mod recovery;
 
+const RECOVERY_PARENT: &str = "Private recovery requires a parent that other users cannot change: owned by you or root, and sticky or writable only by you and your private group. Choose Copy to retain the source; no Move fallback is performed.";
+const COPY_PARENT: &str = "Copy creates folders only inside a parent that other users cannot change: owned by you or root, and sticky or writable only by you and your private group.";
+
+/// The use of a directory created by this provider.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum NewDirectory {
+    /// A copied folder. Where a filesystem cannot store POSIX modes, its
+    /// mount-provided permissions are accepted (ownership is still required).
+    Copy,
+    /// Private Move staging or replacement recovery: exactly mode 0700.
+    Private,
+}
+
 #[derive(Clone)]
 pub(super) struct Directory {
     file: Arc<File>,
@@ -56,25 +69,34 @@ impl Directory {
         self.namespace.changed(&self.file, &self.path, name);
     }
     pub(super) fn check_recovery_parent(&self, cancel: &Cancellation) -> Result<(), FsError> {
+        self.check_protected_parent(cancel, RECOVERY_PARENT)
+    }
+    /// Other users must be unable to replace or remove our names in this
+    /// directory; see `crate::ownership::protected_parent` for the exact rule.
+    fn check_protected_parent(&self, cancel: &Cancellation, refusal: &str) -> Result<(), FsError> {
         self.revalidate(cancel)?;
-        let parent = self.file.metadata().map_err(|e| error(&self.path, e))?;
-        let owner = rustix::process::geteuid().as_raw();
-        if (parent.uid() != owner && parent.uid() != 0)
-            || (parent.mode() & 0o022 != 0 && parent.mode() & 0o1000 == 0)
-        {
-            return Err(unsupported(
-                &self.path,
-                "Private recovery requires an owned or trusted sticky parent. Choose Copy to retain the source; no Move fallback is performed.",
-            ));
+        if !crate::ownership::protected_parent(&*self.file).map_err(|e| error(&self.path, e))? {
+            return Err(unsupported(&self.path, refusal));
         }
         Ok(())
     }
     pub(super) fn from_file(file: File, path: PathBuf) -> Result<Self, FsError> {
+        Self::from_file_with(file, path, None)
+    }
+    /// `namespace` reuses bindings already computed for this same directory.
+    pub(super) fn from_file_with(
+        file: File,
+        path: PathBuf,
+        namespace: Option<Arc<namespace::Bindings>>,
+    ) -> Result<Self, FsError> {
         if !file.metadata().map_err(|e| error(&path, e))?.is_dir() {
             return Err(invalid(&path, "destination is not a directory"));
         }
         let file = Arc::new(file);
-        let namespace = namespace::Bindings::for_parent(&file, &path)?;
+        let namespace = match namespace {
+            Some(namespace) => namespace,
+            None => namespace::Bindings::for_parent(&file, &path)?,
+        };
         Ok(Self {
             identity: identity(&file, &path)?,
             file,
@@ -264,7 +286,15 @@ impl Directory {
                 OFlags::RDWR | OFlags::TMPFILE | OFlags::CLOEXEC,
                 Mode::RUSR | Mode::WUSR,
             )
-            .map_err(|e| error(&self.path, e.into()))?,
+            .map_err(|e| match e {
+                // EISDIR: a kernel without O_TMPFILE treats it as O_DIRECTORY.
+                rustix::io::Errno::OPNOTSUPP | rustix::io::Errno::ISDIR => unsupported(
+                    &self.path,
+                    "This filesystem cannot create anonymous O_TMPFILE copies; verified Copy on \
+                     Linux needs a local filesystem such as ext4, XFS, Btrfs or tmpfs.",
+                ),
+                e => error(&self.path, e.into()),
+            })?,
         );
         Ok(Stage {
             file: Some(file),
@@ -436,37 +466,71 @@ impl Directory {
         cancel: &Cancellation,
         change: &mut namespace::Change<'_>,
     ) -> Result<Arc<dyn TransferDirectory>, FsError> {
+        self.create_child_directory(name, cancel, change, NewDirectory::Copy)
+            .map(|directory| Arc::new(directory) as Arc<dyn TransferDirectory>)
+    }
+
+    pub(super) fn create_child_directory(
+        &self,
+        name: &OsStr,
+        cancel: &Cancellation,
+        change: &mut namespace::Change<'_>,
+        purpose: NewDirectory,
+    ) -> Result<Self, FsError> {
         self.revalidate(cancel)?;
         validate_name(name, &self.path)?;
         // mkdirat does not return an inode handle. Until openat2 completes, protect
         // the new name against a different unprivileged UID replacing it. A sticky
         // directory is safe only when its owner is us or trusted root. Same-UID and
         // privileged namespace mutation remain outside this provider's contract.
-        self.check_recovery_parent(cancel)?;
-        let owner = rustix::process::geteuid().as_raw();
+        self.check_protected_parent(
+            cancel,
+            match purpose {
+                NewDirectory::Copy => COPY_PARENT,
+                NewDirectory::Private => RECOVERY_PARENT,
+            },
+        )?;
         let path = self.path.join(name);
         self.namespace_announce(name, change, cancel)?;
         mkdirat(&*self.file, name, Mode::RWXU).map_err(|e| error(&path, e.into()))?;
         self.namespace_changed(name);
-        let file = File::from(
-            openat2(
-                &*self.file,
-                name,
-                DIRECTORY | OFlags::NOFOLLOW,
-                Mode::empty(),
-                RESOLVE,
-            )
-            .map_err(|e| error(&path, e.into()))?,
-        );
-        let created = file.metadata().map_err(|e| error(&path, e))?;
-        if created.uid() != owner || created.mode() & 0o077 != 0 {
-            return Err(unsupported(
-                &path,
-                "The newly created copy directory is not private and owned; it was left untouched.",
-            ));
-        }
-        Self::from_file(file, path)
-            .map(|directory| Arc::new(directory) as Arc<dyn TransferDirectory>)
+        let mut pinned = None;
+        let adopted = (|| {
+            let file = File::from(
+                openat2(
+                    &*self.file,
+                    name,
+                    DIRECTORY | OFlags::NOFOLLOW,
+                    Mode::empty(),
+                    RESOLVE,
+                )
+                .map_err(|e| error(&path, e.into()))?,
+            );
+            let created = file.metadata().map_err(|e| error(&path, e))?;
+            pinned = Some((created.dev(), created.ino()));
+            let mode = crate::ownership::check_created_directory(&file).map_err(|failure| {
+                unsupported(&path, &format!("The new folder cannot be used: {failure}"))
+            })?;
+            if purpose == NewDirectory::Private
+                && mode != crate::ownership::CreatedDirectory::Private
+            {
+                return Err(unsupported(
+                    &path,
+                    "Private staging requires a filesystem that stores owner-only permissions.",
+                ));
+            }
+            Self::from_file(file, path.clone())
+        })();
+        adopted.map_err(|mut failure| {
+            // Nothing was published into the refused directory this call created.
+            match crate::ownership::remove_refused_directory(&*self.file, name, pinned) {
+                Ok(()) => self.namespace_changed(name),
+                Err(cleanup) => failure
+                    .message
+                    .push_str(&format!("; the empty new folder remains: {cleanup}")),
+            }
+            failure
+        })
     }
 }
 
