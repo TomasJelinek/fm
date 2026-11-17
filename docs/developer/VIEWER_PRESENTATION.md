@@ -82,10 +82,21 @@ updates retain it for the same surface, and initial viewport-only pixels pass it
 to retained presentation when the generation and effective viewport match. A new
 layout surface uses the replacement viewport. This mapping preserves the backend's
 effective raster scale when its pixel budget reduces resolution below native DPI.
-At native resolution one texel maps to one physical pixel: the canvas size sent to
-the backend is rounded to whole physical pixels, and a canvas that is not a whole
-number of physical pixels (fractional DPI, or 22.5 pixels of chrome at 125%)
-clips the remaining fraction instead of resampling every glyph.
+At native resolution one texel maps to one physical pixel. The canvas size sent
+to the backend is rounded to whole physical pixels, and a canvas that is not a
+whole number of physical pixels (fractional DPI, or 22.5 pixels of chrome at
+125%) clips the remaining fraction instead of resampling every glyph. A canvas
+origin between physical pixels (the 6-pixel padding is 7.5 pixels at 125%) does
+not resample either: the window offsets the retained body, gutter and
+viewport-only images by the origin's sub-pixel phase, so their texels start on
+whole physical pixels. FemtoVG in Slint 1.18 also aligns an image's draw origin
+itself; the software renderer only rounds the image rectangle, and floating-point
+noise at a half-pixel origin could grow a raster by one row and repeat a row of
+texels. Software-rendered tests check one-pixel checkerboards at 110%, 125% and
+175% with several guard sizes. The `texel_alignment` example checks a native
+window with either renderer, including a control with the former stretched
+mapping, for example after `$env:SLINT_SCALE_FACTOR = '1.25'`:
+`cargo run -p midnight-viewer-ui --example texel_alignment -- --femtovg`.
 
 The UI crate's bounded pixel-preparation worker converts immutable backend RGBA
 of text and legacy surfaces into safe shared Slint pixel buffers off the event

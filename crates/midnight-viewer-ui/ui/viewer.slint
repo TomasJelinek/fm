@@ -19,6 +19,14 @@ export component ViewerWindow inherits Window {
     // Keep the frame's logical viewport while mode controls change the canvas.
     in property <length> raster-viewport-width: canvas.width;
     in property <length> raster-viewport-height: canvas.height;
+    // Sub-pixel phase of the canvas origin, within half a physical pixel. Raster
+    // images subtract it so that their texels start on whole physical pixels: at
+    // a half-pixel origin, rounding noise otherwise lets the software renderer
+    // grow an image by one row or column, which repeats a row of texels.
+    private property <physical-length> canvas-left: canvas.absolute-position.x;
+    private property <physical-length> canvas-top: canvas.absolute-position.y;
+    private property <length> canvas-phase-x: (root.canvas-left / 1phx - round(root.canvas-left / 1phx)) * 1phx;
+    private property <length> canvas-phase-y: (root.canvas-top / 1phx - round(root.canvas-top / 1phx)) * 1phx;
     in property <float> raster-offset-x;
     in property <float> raster-offset-y;
     in property <int> raster-upload-count;
@@ -206,20 +214,20 @@ export component ViewerWindow inherits Window {
                     accessible-value: root.accessible-text;
                     Image {
                         source: root.surface;
-                        x: root.image-mode ? (canvas.width - root.image-width) / 2 : 0px;
-                        y: root.image-mode ? (canvas.height - root.image-height) / 2 : 0px;
+                        x: root.image-mode ? (canvas.width - root.image-width) / 2 : -root.canvas-phase-x;
+                        y: root.image-mode ? (canvas.height - root.image-height) / 2 : -root.canvas-phase-y;
                         width: root.image-mode ? root.image-width : root.raster-viewport-width;
                         height: root.image-mode ? root.image-height : root.raster-viewport-height;
                         image-fit: fill;
                         visible: !root.tiled && !root.retained-raster;
                     }
                     if root.retained-raster: Rectangle {
-                        x: root.raster-gutter-width * root.raster-viewport-width;
+                        x: root.raster-gutter-width * root.raster-viewport-width - root.canvas-phase-x;
                         width: canvas.width - self.x; height: canvas.height; clip: true;
                         Image {
                             source: root.surface;
                             x: root.raster-offset-x * root.raster-viewport-width;
-                            y: root.raster-offset-y * root.raster-viewport-height;
+                            y: root.raster-offset-y * root.raster-viewport-height - root.canvas-phase-y;
                             width: root.raster-width * root.raster-viewport-width;
                             height: root.raster-height * root.raster-viewport-height;
                             image-fit: fill;
@@ -227,8 +235,8 @@ export component ViewerWindow inherits Window {
                     }
                     if root.retained-raster && root.raster-gutter-width > 0: Image {
                         source: root.raster-gutter;
-                        x: 0px;
-                        y: root.raster-offset-y * root.raster-viewport-height;
+                        x: -root.canvas-phase-x;
+                        y: root.raster-offset-y * root.raster-viewport-height - root.canvas-phase-y;
                         width: root.raster-gutter-width * root.raster-viewport-width;
                         height: root.raster-height * root.raster-viewport-height;
                         image-fit: fill;

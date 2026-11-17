@@ -82,12 +82,23 @@ The frontend moves covered pixels without waiting for a new backend raster and
 keeps the gutter horizontally fixed. Each guard targets 256 logical pixels per
 side, converted using the effective raster scale, including the initial parent
 DPI. The combined body and gutter still fit the 24 MiB snapshot cap, so guards
-shrink when necessary. Guard refills retain the existing 12 KiB text and 512-line
-request ceilings; a higher DPI does not enlarge those source budgets. An uncovered
+shrink when necessary. Guard refills retain the existing request ceilings: 12 KiB
+for text and source, 64 KiB for Markdown and 4 KiB for binary, at most 512 lines;
+a higher DPI does not enlarge those source budgets. An uncovered
 frontier pauses displayed motion until usable pixels arrive; it is not an inferred
 end of file. Settling can request exact fractional glyph phase.
 The [retained-raster contract](../superpowers/plans/2026-11-11-retained-viewer-raster.md)
 defines coverage, continuation and snapshot budgets.
+
+A refill paints only the lines, Markdown blocks, table cells and glyphs whose ink
+can reach the raster. That reach is a conservative bound, not a font guarantee:
+4 em vertically and 8 em horizontally around each glyph origin (stacked marks
+carry their own origins), plus the exact extent of every underline and
+strikethrough. It covers the glyphs of real text fonts; a malformed or unusual
+font whose ink extends further can lose that ink at raster edges. The renderer
+can paint directly into a caller-owned buffer of the exact raster size
+(`rasterize_into`, `paint_over_into`), so a frame can be shared without a second
+full-surface copy.
 
 Raster pixel coordinates map through the frame's retained logical viewport,
 not through the current clipping canvas. Source/Markdown controls appearing with
@@ -151,8 +162,12 @@ delayed frames. Engine tests check bounded ingress, input barriers and exact
 viewport completion. Opening regressions compare actual body/gutter marker bounds
 before and after source controls appear, including retained activation and hit
 testing. Placement tests check captured DPI before the first physical sizing and
-preserve later native scale changes. Pixel-preparation tests exercise one-batch
-backpressure, metadata buffer reuse, failed wakes, invalid buffers and cancellation.
+preserve later native scale changes. One-pixel checkerboards at a fractional scale
+and canvas origin prove texel-exact retained and viewport-only presentation; the
+`texel_alignment` example repeats that check in a native window. Pixel-preparation
+tests exercise one-batch backpressure, metadata buffer reuse, failed wakes,
+invalid buffers and cancellation. Renderer tests compare culled painting with
+unculled painting, including far decorations and ink above table cells.
 Generated fixtures and logs belong under `_build/`.
 
 For native measurements, build the `midnight-viewer-ui` example
