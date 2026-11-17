@@ -17,12 +17,14 @@ pub use content::{CapturedFile, ContentResources, ContentSource};
 #[cfg(windows)]
 #[path = "installation_windows.rs"]
 mod installation;
-#[cfg(target_os = "linux")]
-#[path = "installation_linux.rs"]
-mod installation;
-#[cfg(not(any(windows, target_os = "linux")))]
-#[path = "installation_unsupported.rs"]
-mod installation;
+#[cfg(not(windows))]
+mod installation {
+    /// Executable-relative discovery. Linux reports the kernel-resolved path
+    /// (`/proc/self/exe`), so no launch-spelling normalization is needed there.
+    pub(crate) fn resolve() -> Result<std::path::PathBuf, crate::Error> {
+        Ok(std::env::current_exe()?)
+    }
+}
 /// Resolve the installation used by every plugin host on a backend worker.
 ///
 /// Windows first uses a protected executable directory. Otherwise, a protected

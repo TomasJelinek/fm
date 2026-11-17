@@ -41,6 +41,35 @@ fn validated_plugin_code_stays_pinned_after_last_session_reference() {
 }
 
 #[test]
+#[ignore = "requires HOST_TEST_PLUGIN pointing to separately built basic DLL/SO"]
+fn concurrent_first_loads_register_one_pinned_library() {
+    let library = std::env::var_os("HOST_TEST_PLUGIN").expect("HOST_TEST_PLUGIN");
+    let root = fixture_root();
+    let installed = package(root.path(), "concurrent", "midnight.viewer.basic", "");
+    copy_library(library, installed.join("fixture.dll"));
+    let runtime = Runtime::discover(root.path()).unwrap();
+    let info = runtime.catalog()[0].clone();
+    let start = std::sync::Arc::new(std::sync::Barrier::new(4));
+    let loads: Vec<_> = (0..4)
+        .map(|_| {
+            let (info, start) = (info.clone(), start.clone());
+            std::thread::spawn(move || {
+                start.wait();
+                crate::loaded::Loaded::acquire(&info).unwrap()
+            })
+        })
+        .collect();
+    let loaded: Vec<_> = loads.into_iter().map(|load| load.join().unwrap()).collect();
+    // Unlocked opens may race; exactly one registered library is shared by all callers.
+    assert!(
+        loaded
+            .windows(2)
+            .all(|pair| std::sync::Arc::ptr_eq(&pair[0], &pair[1]))
+    );
+    assert!(runtime.is_loaded("midnight.viewer.basic"));
+}
+
+#[test]
 fn absent_viewers_directory_is_an_empty_catalog() {
     let root = fixture_root();
     assert!(Runtime::discover(root.path()).is_ok());
@@ -354,15 +383,10 @@ fn real_plugin_loads_reads_cancels_and_quiesces() {
         )
         .unwrap();
     let limit = Instant::now() + Duration::from_secs(10);
-    let mut opened = false;
-    while !opened && Instant::now() < limit {
-        opened = session
-            .drain(64)
-            .iter()
-            .any(|e| matches!(e.kind, EventKind::Opened(_)));
-        std::thread::sleep(Duration::from_millis(5));
-    }
-    assert!(opened, "plugin did not open");
+    assert!(
+        drain_until(&session, limit, |e| matches!(e.kind, EventKind::Opened(_))),
+        "plugin did not open"
+    );
     let request = session
         .viewport(api::messages::Viewport {
             source_anchor: 0,
@@ -372,16 +396,15 @@ fn real_plugin_loads_reads_cancels_and_quiesces() {
         })
         .unwrap();
     let mut text = None;
-    while text.is_none() && Instant::now() < limit {
-        for event in session.drain(64) {
-            assert_eq!(event.generation, 42);
-            if let EventKind::TextPage(page) = event.kind {
-                assert_eq!(event.request_id, request);
-                text = Some(page.text);
-            }
+    drain_until(&session, limit, |event| {
+        assert_eq!(event.generation, 42);
+        if let EventKind::TextPage(page) = event.kind {
+            assert_eq!(event.request_id, request);
+            text = Some(page.text);
+            return true;
         }
-        std::thread::sleep(Duration::from_millis(5));
-    }
+        false
+    });
     assert!(text.expect("text page").contains("Čeština 中文 😀"));
     let find = session
         .search(api::messages::Search {
@@ -391,14 +414,12 @@ fn real_plugin_loads_reads_cancels_and_quiesces() {
             case_sensitive: true,
         })
         .unwrap();
-    let mut found = false;
-    while !found && Instant::now() < limit {
-        found = session.drain(64).iter().any(|event| {
+    assert!(
+        drain_until(&session, limit, |event| {
             event.request_id == find && matches!(event.kind, EventKind::SearchMatch(_))
-        });
-        std::thread::sleep(Duration::from_millis(5));
-    }
-    assert!(found, "real plugin search result");
+        }),
+        "real plugin search result"
+    );
     std::fs::write(&path, b"changed native revision").unwrap();
     let changed = session
         .viewport(api::messages::Viewport {
@@ -408,15 +429,12 @@ fn real_plugin_loads_reads_cancels_and_quiesces() {
             max_lines: 32,
         })
         .unwrap();
-    let mut rejected = false;
-    while !rejected && Instant::now() < limit {
-        rejected = session
-            .drain(64)
-            .iter()
-            .any(|event| event.request_id == changed && matches!(event.kind, EventKind::Failed(_)));
-        std::thread::sleep(Duration::from_millis(5));
-    }
-    assert!(rejected, "read broker must reject changed revision");
+    assert!(
+        drain_until(&session, limit, |event| {
+            event.request_id == changed && matches!(event.kind, EventKind::Failed(_))
+        }),
+        "read broker must reject changed revision"
+    );
     let search = session
         .search(api::messages::Search {
             query: "absent".into(),
@@ -427,10 +445,45 @@ fn real_plugin_loads_reads_cancels_and_quiesces() {
         .unwrap();
     session.cancel(search);
     session.close();
-    while !session.is_closed() && Instant::now() < limit {
-        std::thread::sleep(Duration::from_millis(5));
+    assert!(closed_by(&[session], limit), "library did not quiesce");
+}
+
+/// Drain until `accept` takes an event, woken by the session's ready notification
+/// rather than a sleep. Returns false only when the failure deadline elapses.
+fn drain_until(
+    session: &Session,
+    deadline: std::time::Instant,
+    mut accept: impl FnMut(HostEvent) -> bool,
+) -> bool {
+    use std::sync::mpsc::{TrySendError, sync_channel};
+    let (ready, wake) = sync_channel(1);
+    session.notify_on_ready(std::sync::Arc::new(move || {
+        !matches!(ready.try_send(()), Err(TrySendError::Disconnected(_)))
+    }));
+    loop {
+        let mut accepted = false;
+        for event in session.drain(64) {
+            accepted |= accept(event);
+        }
+        if accepted {
+            return true;
+        }
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        if remaining.is_zero() || wake.recv_timeout(remaining).is_err() {
+            return false;
+        }
     }
-    assert!(session.is_closed(), "library did not quiesce");
+}
+
+/// Backend cleanup publishes no notification; poll the condition until the deadline.
+fn closed_by(sessions: &[Session], deadline: std::time::Instant) -> bool {
+    while sessions.iter().any(|session| !session.is_closed()) {
+        if std::time::Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    true
 }
 
 #[test]
@@ -489,16 +542,11 @@ fn session_quota_is_process_wide_and_closed_sessions_release_retained_output() {
     let extra = other.open("midnight.viewer.basic", captured, 5, api::viewer::MODE_TEXT);
     let rejected = extra.is_err();
     drop(extra);
-    std::thread::sleep(std::time::Duration::from_millis(30));
     for session in &sessions {
         session.close();
     }
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-    while sessions.iter().any(|session| !session.is_closed())
-        && std::time::Instant::now() < deadline
-    {
-        std::thread::sleep(std::time::Duration::from_millis(5));
-    }
+    assert!(closed_by(&sessions, deadline), "sessions did not quiesce");
     assert!(rejected, "another Runtime bypassed aggregate quota");
     for session in sessions {
         assert!(session.is_closed());
