@@ -103,8 +103,13 @@ workers also keep a 64 MiB container limit (see [filesystem API](FILESYSTEM_API.
 Deadline expiry, a cancelled startup, mount teardown and any failed exchange
 terminate the worker. An exchange fails on a worker-reported failure, a protocol
 violation, a pipe, source or staging I/O failure, or a detected source change.
-Checks the host applies after an exchange completes (listing-page ID order, parent
-and size limits, and protocol-1 content length) fail only that request.
+A listing page breaks the protocol when a member ID is below 2, not increasing or
+equal to the listed directory, when a member has another parent, or when the page is
+empty but announces more; so does protocol-1 content longer than requested. Such a
+reply ends the worker even if its request was cancelled meanwhile. The host's own
+listing limits (100,000 nodes and 8 MiB of raw and display names) are not protocol
+violations: a legitimate large directory can reach them, so they fail only that
+listing.
 Cancelling a listing or member read never ends the shared worker: a listing
 stops between pages and discards an in-flight page, protocol-3 member reads cancel
 cooperatively, and protocol-1/2 reads finish their exchange while the host discards

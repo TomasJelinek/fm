@@ -19,6 +19,9 @@ const DEADLINE: Duration = Duration::from_secs(20);
 /// A hard request token has no wake signal; the supervisor observes it this often
 /// while such an exchange is active. Idle mounts and token-free exchanges never poll.
 const CANCEL_POLL: Duration = Duration::from_millis(10);
+/// Host limits on one directory listing: members, and their raw plus display name bytes.
+const MAX_LISTED_NODES: usize = 100_000;
+const MAX_LISTED_NAME_BYTES: usize = 8 * 1024 * 1024;
 
 #[path = "session_close.rs"]
 mod close;
@@ -368,7 +371,9 @@ impl Mount {
     /// whole mount, uses it. `cancelled` is a member read's own cancellation, which
     /// preserves the mount: protocol 3 delivers it cooperatively at staging
     /// checkpoints, earlier protocols finish the exchange first, and a cancelled read
-    /// never returns or caches newly staged content.
+    /// never returns or caches newly staged content. Every other failure ends the
+    /// worker, including a terminal reply that breaks a wire rule of its request, so a
+    /// misbehaving worker never keeps serving the other owners of the mount.
     fn exchange_read(
         &self,
         cancel: Option<&Cancellation>,
@@ -559,6 +564,9 @@ impl Mount {
                         ) {
                             return Err(fail(io::ErrorKind::InvalidData.into()));
                         }
+                        if !keeps_wire_rules(&operation, &other) {
+                            return Err(fail(io::ErrorKind::InvalidData.into()));
+                        }
                         self.validate()?;
                         return Ok(other);
                     }
@@ -608,6 +616,7 @@ impl Mount {
         if cancelled() {
             return Err(interrupted());
         }
+        // The exchange never returns content longer than requested (keeps_wire_rules).
         match self.exchange_read(None, Some(cancelled), |request| Message::Read {
             request,
             entry,
@@ -615,13 +624,44 @@ impl Mount {
             length,
         })? {
             Message::Content { .. } if cancelled() => Err(interrupted()),
-            Message::Content { bytes, .. } if bytes.len() <= length as usize => Ok(bytes),
+            Message::Content { bytes, .. } => Ok(bytes),
             _ => Err(FsError::from_io(
                 "archive read",
                 &self.container,
                 io::ErrorKind::InvalidData.into(),
             )),
         }
+    }
+}
+/// Wire rules (PROTOCOL.md) that a terminal reply keeps for its own request. A listing
+/// page holds members of the listed directory in increasing ID order after the
+/// request's cursor, member IDs begin at 2, and only a final page may be empty.
+/// Content never exceeds the requested length; staged protocols receive content
+/// through a lease that the host bounds instead.
+fn keeps_wire_rules(operation: &Message, reply: &Message) -> bool {
+    match (operation, reply) {
+        (
+            Message::List {
+                directory, after, ..
+            },
+            Message::Entries { entries, more, .. },
+        ) => {
+            (!*more || !entries.is_empty())
+                && entries
+                    .iter()
+                    .try_fold(*after, |previous, node| {
+                        (node.id >= 2
+                            && node.id > previous
+                            && node.id != *directory
+                            && node.parent == *directory)
+                            .then_some(node.id)
+                    })
+                    .is_some()
+        }
+        (Message::Read { length, .. }, Message::Content { bytes, .. }) => {
+            bytes.len() <= *length as usize
+        }
+        _ => true,
     }
 }
 impl ArchiveMount for Mount {
@@ -691,7 +731,8 @@ impl ArchiveMount for Mount {
     }
     /// Each page is one bounded exchange. Cancellation ends the listing between pages
     /// and discards an in-flight page, rather than terminating a worker that other tabs,
-    /// viewers and jobs share. The idle-progress watchdog still ends a stuck worker.
+    /// viewers and jobs share. The idle-progress watchdog still ends a stuck worker, and
+    /// a page that breaks a wire rule fails its exchange, which ends the worker too.
     fn list(&self, directory: u64, cancel: &Cancellation) -> Result<Vec<ArchiveNode>, FsError> {
         let interrupted = || {
             FsError::from_io(
@@ -722,24 +763,14 @@ impl ArchiveMount for Mount {
                     io::ErrorKind::InvalidData.into(),
                 ));
             };
-            if more && entries.is_empty() {
-                return Err(FsError::from_io(
-                    "archive list",
-                    &self.container,
-                    io::ErrorKind::InvalidData.into(),
-                ));
-            }
             for node in entries {
                 names = names
                     .saturating_add(node.name.len())
                     .saturating_add(node.display.len());
-                if node.id < 2
-                    || node.id <= after
-                    || node.id == directory
-                    || node.parent != directory
-                    || result.len() >= 100_000
-                    || names > 8 * 1024 * 1024
-                {
+                // Host limits, not wire rules: a legitimate large directory reaches them,
+                // so they fail only this listing and the worker keeps serving the other
+                // owners of the mount.
+                if result.len() >= MAX_LISTED_NODES || names > MAX_LISTED_NAME_BYTES {
                     return Err(FsError::from_io(
                         "archive list",
                         &self.container,
