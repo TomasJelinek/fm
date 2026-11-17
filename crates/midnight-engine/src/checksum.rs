@@ -264,7 +264,7 @@ impl Controller {
     }
     #[cfg(test)]
     pub fn new(retirement: Retirement, service: Arc<dyn TransferService>) -> Self {
-        let service = Service::new(retirement.service, Some(service));
+        let service = Service::new(retirement.service, Some(service), None);
         let mut controller = Self::from_service(service);
         controller.retirement = Some(retirement.domain);
         controller
@@ -527,6 +527,7 @@ fn execute(
             request,
             work.source.as_deref(),
             work.service.provider(),
+            work.service.storage(),
             &work.cancel,
             work.reservation.retention(),
             send,
@@ -534,6 +535,7 @@ fn execute(
         Request::Verify(request) => verify::verify(
             request,
             work.service.provider(),
+            work.service.storage(),
             &work.cancel,
             work.reservation.retention(),
             send,

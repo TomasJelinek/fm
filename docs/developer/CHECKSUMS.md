@@ -88,11 +88,22 @@ cancellation and retains completed rows. Backend tasks keep native resources unt
 their actual calls return; UI cancellation never releases an I/O permit early.
 
 Each native checksum or verification call (open, enumeration, read chunk,
-revalidation) takes the process-wide disk gate with Exclusive admission, one call
-at a time. It therefore waits while any running transfer holds its Shared slot and,
-once queued, is served before later gate requests. A manifest save waits for the
-mutation gate with one queued acquisition, so later Delete/Rename requests cannot
-overtake it. Idle checksum actors do not poll; shutdown wakes them.
+revalidation) takes the process-wide disk gate for that call only, so other disk
+users interleave between a run's chunks. Admission follows the
+[storage policy](DISK_OPERATIONS.md#meaning-and-storage-policy): a source volume
+positively identified as a local SSD is read with Shared admission beside other
+disk I/O; unknown, rotational and network volumes (and every read when no storage
+classifier is installed) use Exclusive admission. Calculation classifies the
+directory of each selected entry once (consecutive entries of one directory share
+the query) and a recursively selected directory by its own path: a walk never
+leaves the root's volume, but the root itself can be a mount point. Verification
+classifies the manifest's directory once, because every entry is confined to its
+volume. An Exclusive call waits until no Shared holder remains (see the
+[transfer contract](TRANSFERS.md) for how long a running transfer keeps its slot)
+and, once queued, is served before later gate requests. A manifest save keeps
+Exclusive admission for its few namespace calls and waits for the mutation gate
+with one queued acquisition, so later Delete/Rename requests cannot overtake it.
+Idle checksum actors do not poll; shutdown wakes them.
 
 Main-window shutdown hides owned tool windows without borrowing Presenter through
 an already borrowed shutdown callback. A closing flag prevents late refresh from

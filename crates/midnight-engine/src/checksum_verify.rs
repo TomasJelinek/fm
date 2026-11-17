@@ -11,12 +11,13 @@ use std::{
 pub(super) fn verify(
     request: ChecksumVerifyRequest,
     service: &dyn TransferService,
+    storage: &dyn worker::Storage,
     cancel: &Cancellation,
     retention: Arc<ChecksumRetention>,
     mut emit: impl FnMut(ChecksumUpdate) -> bool,
 ) -> Arc<ChecksumRun> {
-    let prepared = prepare(&request, service, cancel);
-    let (directory, manifest) = match prepared {
+    let prepared = prepare(&request, service, storage, cancel);
+    let (directory, manifest, ssd) = match prepared {
         Ok(value) => value,
         Err(error) => {
             return Arc::new(ChecksumRun {
@@ -73,6 +74,8 @@ pub(super) fn verify(
             limits: request.limits,
         },
         &provider,
+        // Every entry is confined to the manifest directory's volume.
+        &worker::Known(ssd),
         cancel,
         retention,
         |update| match update {
@@ -135,11 +138,13 @@ fn set_counts(progress: &mut ChecksumProgress, counts: &ChecksumProgress) {
     progress.missing = counts.missing;
 }
 
+/// Also returns whether the manifest directory is a confirmed local SSD.
 fn prepare(
     request: &ChecksumVerifyRequest,
     service: &dyn TransferService,
+    storage: &dyn worker::Storage,
     cancel: &Cancellation,
-) -> Result<(Arc<dyn TransferDirectory>, format::ParsedManifest), FsError> {
+) -> Result<(Arc<dyn TransferDirectory>, format::ParsedManifest, bool), FsError> {
     request.validate().map_err(|message| {
         worker::failure(&request.manifest, io::ErrorKind::InvalidInput, message)
     })?;
@@ -158,10 +163,14 @@ fn prepare(
             "Manifest requires a filename.",
         )
     })?;
-    let directory = worker::with_io(cancel, parent, || {
+    let ssd = storage.confirmed_local_ssd(parent);
+    let admission = midnight_work_budget::storage_admission(ssd);
+    let directory = worker::with_io(admission, cancel, parent, || {
         service.prepare_checksum_directory(parent, cancel)
     })?;
-    let mut source = worker::with_io(cancel, path, || directory.open_read_child(name, cancel))?;
+    let mut source = worker::with_io(admission, cancel, path, || {
+        directory.open_read_child(name, cancel)
+    })?;
     let entry = source.entry().clone();
     if entry.item.path != *path
         || entry.item.kind != EntryKind::File
@@ -189,7 +198,7 @@ fn prepare(
     let mut bytes = Vec::with_capacity(length as usize);
     let mut buffer = vec![0; CHECKSUM_BUFFER_BYTES];
     let revalidate = |source: &dyn TransferSource| {
-        worker::with_io(cancel, path, || {
+        worker::with_io(admission, cancel, path, || {
             directory.revalidate(cancel)?;
             source.revalidate(cancel)
         })
@@ -199,7 +208,9 @@ fn prepare(
     revalidate(source.as_ref())?;
     let mut cadence = worker::Cadence::new(worker::REVALIDATION_INTERVAL);
     loop {
-        let count = match worker::with_io(cancel, path, || source.read_chunk(&mut buffer, cancel)) {
+        let count = match worker::with_io(admission, cancel, path, || {
+            source.read_chunk(&mut buffer, cancel)
+        }) {
             Err(error) if error.kind == io::ErrorKind::Interrupted && !cancel.is_cancelled() => {
                 continue;
             }
@@ -230,7 +241,7 @@ fn prepare(
     }
     let parsed = format::parse_manifest(&bytes, path, request.limits, cancel)?;
     revalidate(source.as_ref())?;
-    Ok((directory, parsed))
+    Ok((directory, parsed, ssd))
 }
 
 struct Contained {

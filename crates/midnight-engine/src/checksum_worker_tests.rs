@@ -31,6 +31,8 @@ impl Drop for ReleaseOnDrop {
 struct Reads {
     bytes: AtomicU64,
     calls: AtomicUsize,
+    /// Reads made while holding exclusive disk admission.
+    exclusive: AtomicUsize,
     revalidations: AtomicUsize,
     buffer: AtomicUsize,
     interrupted: AtomicBool,
@@ -41,6 +43,7 @@ impl Default for Reads {
         Self {
             bytes: AtomicU64::new(0),
             calls: AtomicUsize::new(0),
+            exclusive: AtomicUsize::new(0),
             revalidations: AtomicUsize::new(0),
             buffer: AtomicUsize::new(0),
             interrupted: AtomicBool::new(false),
@@ -149,6 +152,9 @@ impl TransferSource for Source {
             }
         }
         self.provider.reads.calls.fetch_add(1, Ordering::SeqCst);
+        if holds_exclusive_io() {
+            self.provider.reads.exclusive.fetch_add(1, Ordering::SeqCst);
+        }
         self.provider
             .reads
             .buffer
@@ -223,6 +229,7 @@ fn run(request: ChecksumRequest, provider: &Provider, cancel: &Cancellation) -> 
     calculate(
         request,
         provider,
+        &UNCLASSIFIED,
         cancel,
         ChecksumRetention::new(()),
         |_| true,
@@ -330,6 +337,7 @@ fn due_revalidation_stops_a_changed_source_before_its_end() {
     let result = super::run(
         request(),
         &provider,
+        &UNCLASSIFIED,
         &Cancellation::default(),
         ChecksumRetention::new(()),
         settings,
@@ -415,6 +423,7 @@ fn completed_and_budget_limited_calculations_always_fit_the_manifest_verifier() 
     let verified = calculate_for_verification(
         request,
         &provider,
+        &UNCLASSIFIED,
         &Cancellation::default(),
         ChecksumRetention::new(()),
         |_| true,
@@ -572,4 +581,124 @@ async fn cancellation_and_shutdown_retain_an_inflight_read_and_its_io_permit() {
     .await
     .unwrap();
     assert!(permit.is_some(), "shutdown must release its I/O permit");
+}
+
+/// A directory root holding one file of the provider's data on the same volume.
+struct Mounted(Provider);
+struct Folder {
+    entry: TransferEntry,
+    child: Option<Box<dyn TransferSource>>,
+}
+impl TransferService for Mounted {
+    fn prepare_transfer_source(
+        &self,
+        path: &Path,
+        cancel: &Cancellation,
+    ) -> Result<Box<dyn TransferSource>, FsError> {
+        Ok(Box::new(Folder {
+            entry: TransferEntry {
+                item: MutationItem {
+                    path: path.to_owned(),
+                    kind: EntryKind::Directory,
+                    metadata: EntryMetadata::default(),
+                },
+                identity: TransferIdentity {
+                    device: 1,
+                    object: [2; 16],
+                },
+            },
+            child: Some(self.0.prepare_transfer_source(&path.join("file"), cancel)?),
+        }))
+    }
+    fn prepare_transfer_destination(
+        &self,
+        path: &Path,
+        cancel: &Cancellation,
+    ) -> Result<Arc<dyn TransferDirectory>, FsError> {
+        self.0.prepare_transfer_destination(path, cancel)
+    }
+}
+impl TransferSource for Folder {
+    fn entry(&self) -> &TransferEntry {
+        &self.entry
+    }
+    fn revalidate(&self, _: &Cancellation) -> Result<(), FsError> {
+        Ok(())
+    }
+    fn read_chunk(&mut self, _: &mut [u8], _: &Cancellation) -> Result<usize, FsError> {
+        Err(failure(
+            &self.entry.item.path,
+            io::ErrorKind::Unsupported,
+            "a directory",
+        ))
+    }
+    fn next_child(&mut self, _: &Cancellation) -> Result<Option<Box<dyn TransferSource>>, FsError> {
+        Ok(self.child.take())
+    }
+}
+
+#[test]
+fn only_confirmed_local_ssd_reads_share_the_disk_gate_and_a_directory_is_classified_once() {
+    for ssd in [true, false] {
+        let provider = Provider::new(b"abcdefgh");
+        let mut request = request();
+        let directory = request.targets[0].path.parent().unwrap().to_owned();
+        for name in ["second", "third"] {
+            let mut target = request.targets[0].clone();
+            target.path.set_file_name(name);
+            request.targets.push(target);
+        }
+        let volumes = Recorded::new(move |_| ssd);
+        let result = calculate(
+            request,
+            &provider,
+            &volumes,
+            &Cancellation::default(),
+            ChecksumRetention::new(()),
+            |_| true,
+        );
+        assert_eq!(result.summary.completion, ChecksumCompletion::Completed);
+        assert_eq!(result.rows.len(), 3);
+        assert_eq!(volumes.queries(), [directory], "one query per directory");
+        let reads = provider.reads.calls.load(Ordering::SeqCst);
+        let exclusive = provider.reads.exclusive.load(Ordering::SeqCst);
+        assert!(reads > 0);
+        // Unknown, rotational and network storage is never read beside other I/O.
+        assert_eq!(exclusive, if ssd { 0 } else { reads }, "ssd: {ssd}");
+    }
+}
+
+#[test]
+fn a_recursive_directory_root_is_read_as_its_own_volume_allows() {
+    // A selected directory can be a mount point of a volume unlike its parent's.
+    for root_ssd in [true, false] {
+        let provider = Provider::new(b"abc");
+        let mut request = request();
+        request.recursive = true;
+        let root = request.targets[0].path.clone();
+        let parent = root.parent().unwrap().to_owned();
+        let volumes = Recorded::new({
+            let root = root.clone();
+            move |path| (path == root) == root_ssd
+        });
+        let result = calculate(
+            request,
+            &Mounted(provider.clone()),
+            &volumes,
+            &Cancellation::default(),
+            ChecksumRetention::new(()),
+            |_| true,
+        );
+        assert_eq!(result.summary.completion, ChecksumCompletion::Completed);
+        assert_eq!(result.rows.len(), 1);
+        assert_eq!(volumes.queries(), [parent, root]);
+        let reads = provider.reads.calls.load(Ordering::SeqCst);
+        let exclusive = provider.reads.exclusive.load(Ordering::SeqCst);
+        assert!(reads > 0);
+        assert_eq!(
+            exclusive,
+            if root_ssd { 0 } else { reads },
+            "root ssd: {root_ssd}"
+        );
+    }
 }

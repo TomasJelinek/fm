@@ -25,6 +25,7 @@ async fn checksum_retirement_covers_dequeued_and_queued_captures_when_adapter_ab
     let mut controller = Controller::new(
         Retirement::testing(),
         Some(Arc::new(Provider(None))),
+        None,
         Outbox {
             sender,
             wakeup: Arc::new(|| {}),
@@ -89,6 +90,7 @@ fn checksum_retirement_covers_service_when_runtime_stops_before_actor_is_polled(
         Controller::new(
             Retirement::testing(),
             Some(Arc::new(Provider(Some(dropped)))),
+            None,
             Outbox {
                 sender,
                 wakeup: Arc::new(|| {}),
@@ -111,7 +113,7 @@ async fn checksum_retirement_covers_completed_unconsumed_preparation_output() {
     let _quota = checksum::test_quota_fixture().await;
     let resources = Retirement::testing();
     let lease = resources.domain.try_reserve().unwrap();
-    let service = Service::new(resources.service, Some(Arc::new(Provider(None))));
+    let service = Service::new(resources.service, Some(Arc::new(Provider(None))), None);
     let (dropped, received) = channel::channel();
     let resolved = Arc::new(AtomicUsize::new(0));
     let request = captured(1, dropped, resolved.clone());
@@ -156,6 +158,7 @@ async fn checksum_retirement_keeps_rejected_capture_slot_and_quota_until_drop_fi
     let (sender, _events) = mpsc::channel(1);
     let controller = Arc::new(Controller::new(
         resources,
+        None,
         None,
         Outbox {
             sender,
@@ -229,7 +232,7 @@ fn checksum_retirement_covers_unstarted_blocking_preparation_at_runtime_shutdown
     use crate::checksum::retirement_fixture::{DropGate, ReleaseGate};
     let resources = Retirement::testing();
     let lease = resources.domain.try_reserve().unwrap();
-    let service = Service::new(resources.service, Some(Arc::new(Provider(None))));
+    let service = Service::new(resources.service, Some(Arc::new(Provider(None))), None);
     let (dropped, received) = channel::channel();
     let resolved = Arc::new(AtomicUsize::new(0));
     let start = lease.own(Start {

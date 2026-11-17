@@ -140,6 +140,7 @@ fn recursive_mount_boundaries_are_skipped_before_content_reads_or_subtree_traver
         let run = worker::calculate(
             request,
             &service,
+            &worker::UNCLASSIFIED,
             &Cancellation::default(),
             ChecksumRetention::new(()),
             |_| true,

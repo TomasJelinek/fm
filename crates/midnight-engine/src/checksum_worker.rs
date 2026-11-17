@@ -1,15 +1,71 @@
 //! Serial, pinned native reads. Called only from a bounded backend blocking worker.
 use md5::Md5;
 use midnight_core::*;
+use midnight_work_budget::Admission;
 use sha1::Sha1;
 use sha2::{Digest, Sha256, Sha512};
 use std::{
     collections::HashSet,
     io,
-    path::Path,
+    path::{Path, PathBuf},
     sync::Arc,
     time::{Duration, Instant},
 };
+
+/// Source storage classification for the process-wide disk gate. As for folder
+/// sizes, thumbnails and the image viewer, only a positively identified local SSD
+/// reads beside other disk I/O (`Shared`); unknown, rotational and network storage
+/// is read alone (`Exclusive`).
+pub(super) trait Storage: Sync {
+    fn confirmed_local_ssd(&self, path: &Path) -> bool;
+}
+impl Storage for Arc<dyn FileSystem> {
+    fn confirmed_local_ssd(&self, path: &Path) -> bool {
+        self.storage_kind(path)
+            .is_ok_and(|kind| kind == StorageKind::LocalSsd)
+    }
+}
+/// Storage already classified for every path of a run; `Known(false)` when no
+/// classifier exists.
+pub(super) struct Known(pub(super) bool);
+impl Storage for Known {
+    fn confirmed_local_ssd(&self, _: &Path) -> bool {
+        self.0
+    }
+}
+pub(super) const UNCLASSIFIED: Known = Known(false);
+
+/// Test storage: `rule` classifies each path; every query is recorded.
+#[cfg(test)]
+pub(super) struct Recorded {
+    pub(super) rule: Box<dyn Fn(&Path) -> bool + Send + Sync>,
+    pub(super) queries: std::sync::Mutex<Vec<PathBuf>>,
+}
+#[cfg(test)]
+impl Recorded {
+    pub(super) fn new(rule: impl Fn(&Path) -> bool + Send + Sync + 'static) -> Self {
+        Self {
+            rule: Box::new(rule),
+            queries: std::sync::Mutex::default(),
+        }
+    }
+    pub(super) fn queries(&self) -> Vec<PathBuf> {
+        self.queries.lock().unwrap().clone()
+    }
+}
+#[cfg(test)]
+impl Storage for Recorded {
+    fn confirmed_local_ssd(&self, path: &Path) -> bool {
+        self.queries.lock().unwrap().push(path.to_owned());
+        (self.rule)(path)
+    }
+}
+/// In a native call: whether the caller's own disk permit is exclusive. Shared
+/// and exclusive admission exclude each other, so other tests cannot blur this.
+#[cfg(test)]
+pub(super) fn holds_exclusive_io() -> bool {
+    midnight_work_budget::shared_io().snapshot().exclusive
+}
 
 /// Native revalidation reopens a source's parent and name (and, for manifest
 /// entries, every ancestor), so it is not repeated after every 256 KiB chunk.
@@ -56,6 +112,7 @@ pub(super) fn calculate_captured(
     request: ChecksumRequest,
     source: Option<&dyn CapturedChecksumFiles>,
     service: &dyn TransferService,
+    storage: &dyn Storage,
     cancel: &Cancellation,
     retention: Arc<ChecksumRetention>,
     emit: impl FnMut(ChecksumUpdate) -> bool,
@@ -109,17 +166,26 @@ pub(super) fn calculate_captured(
             retention,
         });
     }
-    calculate(request, service, cancel, retention, emit)
+    calculate(request, service, storage, cancel, retention, emit)
 }
 
 pub(super) fn calculate(
     request: ChecksumRequest,
     service: &dyn TransferService,
+    storage: &dyn Storage,
     cancel: &Cancellation,
     retention: Arc<ChecksumRetention>,
     emit: impl FnMut(ChecksumUpdate) -> bool,
 ) -> Arc<ChecksumRun> {
-    run(request, service, cancel, retention, CALCULATION, emit)
+    run(
+        request,
+        service,
+        storage,
+        cancel,
+        retention,
+        CALCULATION,
+        emit,
+    )
 }
 
 /// Manifest entries are compared, never exported, so they use only the parsed
@@ -127,6 +193,7 @@ pub(super) fn calculate(
 pub(super) fn calculate_for_verification(
     request: ChecksumRequest,
     service: &dyn TransferService,
+    storage: &dyn Storage,
     cancel: &Cancellation,
     retention: Arc<ChecksumRetention>,
     emit: impl FnMut(ChecksumUpdate) -> bool,
@@ -135,12 +202,13 @@ pub(super) fn calculate_for_verification(
         exportable: false,
         ..CALCULATION
     };
-    run(request, service, cancel, retention, settings, emit)
+    run(request, service, storage, cancel, retention, settings, emit)
 }
 
 fn run(
     request: ChecksumRequest,
     service: &dyn TransferService,
+    storage: &dyn Storage,
     cancel: &Cancellation,
     retention: Arc<ChecksumRetention>,
     settings: Settings,
@@ -155,6 +223,9 @@ fn run(
         request: &request,
         settings,
         cancel,
+        storage,
+        admission: Admission::Exclusive,
+        classified: None,
         retention: retention.clone(),
         rows: Vec::new(),
         batch: Vec::new(),
@@ -179,11 +250,18 @@ fn run(
             }
             continue;
         }
-        let opened = with_io(cancel, &target.path, || {
+        // An entry lives on its directory's volume.
+        state.classify_parent(target.path.parent().unwrap_or(&target.path));
+        let opened = with_io(state.admission, cancel, &target.path, || {
             service.prepare_transfer_source(&target.path, cancel)
         });
         match opened {
             Ok(source) => {
+                // A walk never crosses a native volume boundary, but a selected
+                // directory can itself be a mount point of another volume.
+                if request.recursive && source.entry().item.kind == EntryKind::Directory {
+                    state.admission = state.admission_of(&target.path);
+                }
                 if !matches_capture(source.entry(), target) {
                     if request.recursive
                         && (target.kind == Some(EntryKind::Directory)
@@ -253,6 +331,11 @@ struct State<'a, F> {
     request: &'a ChecksumRequest,
     settings: Settings,
     cancel: &'a Cancellation,
+    storage: &'a dyn Storage,
+    /// Disk admission for the current root's volume.
+    admission: Admission,
+    /// The last classified directory; selected entries usually share one.
+    classified: Option<(PathBuf, Admission)>,
     retention: Arc<ChecksumRetention>,
     rows: Vec<Arc<ChecksumRow>>,
     batch: Vec<Arc<ChecksumRow>>,
@@ -270,6 +353,21 @@ struct State<'a, F> {
 impl<F: FnMut(ChecksumUpdate) -> bool> State<'_, F> {
     fn stopped(&self) -> bool {
         self.cancel.is_cancelled() || !self.budgets.is_empty()
+    }
+    fn admission_of(&self, path: &Path) -> Admission {
+        midnight_work_budget::storage_admission(self.storage.confirmed_local_ssd(path))
+    }
+    /// Admission for an entry of `directory`, queried once per distinct consecutive
+    /// directory (selected entries usually share one).
+    fn classify_parent(&mut self, directory: &Path) {
+        self.admission = match &self.classified {
+            Some((path, admission)) if path == directory => *admission,
+            _ => {
+                let admission = self.admission_of(directory);
+                self.classified = Some((directory.to_owned(), admission));
+                admission
+            }
+        };
     }
     fn budget(&mut self, budget: ChecksumBudget) {
         self.incomplete = true;
@@ -351,7 +449,7 @@ impl<F: FnMut(ChecksumUpdate) -> bool> State<'_, F> {
                     EntryKind::Directory if self.request.recursive => {
                         if stack.len() >= self.request.limits.max_depth { self.budget(ChecksumBudget::Depth); break; }
                         if !self.directories.insert(entry.identity) { continue; }
-                        if let Err(error) = with_io(self.cancel, &entry.item.path, || source.revalidate(self.cancel)) {
+                        if let Err(error) = with_io(self.admission, self.cancel,&entry.item.path, || source.revalidate(self.cancel)) {
                             self.failed(&entry.item.path, Some(&entry), ChecksumRowState::ReadError, error);
                             self.incomplete = true;
                         } else { stack.push(source); }
@@ -365,7 +463,9 @@ impl<F: FnMut(ChecksumUpdate) -> bool> State<'_, F> {
                 break;
             };
             let parent_path = parent.entry().item.path.clone();
-            let next = with_io(self.cancel, &parent_path, || parent.next_child(self.cancel));
+            let next = with_io(self.admission, self.cancel, &parent_path, || {
+                parent.next_child(self.cancel)
+            });
             match next {
                 Ok(Some(child)) => {
                     if self.charge(&child.entry().item.path) {
@@ -394,7 +494,7 @@ impl<F: FnMut(ChecksumUpdate) -> bool> State<'_, F> {
         let mut hashers = Hashers::new(self.request.algorithms);
         let mut read = 0u64;
         let result = (|| {
-            with_io(self.cancel, &entry.item.path, || {
+            with_io(self.admission, self.cancel, &entry.item.path, || {
                 source.revalidate(self.cancel)
             })?;
             let mut cadence = Cadence::new(self.settings.revalidation);
@@ -406,7 +506,7 @@ impl<F: FnMut(ChecksumUpdate) -> bool> State<'_, F> {
                         "Checksum calculation cancelled.",
                     ));
                 }
-                let count = match with_io(self.cancel, &entry.item.path, || {
+                let count = match with_io(self.admission, self.cancel, &entry.item.path, || {
                     source.read_chunk(&mut self.buffer, self.cancel)
                 }) {
                     Err(error)
@@ -454,13 +554,13 @@ impl<F: FnMut(ChecksumUpdate) -> bool> State<'_, F> {
                 }
                 hashers.update(&self.buffer[..count]);
                 if cadence.due() {
-                    with_io(self.cancel, &entry.item.path, || {
+                    with_io(self.admission, self.cancel, &entry.item.path, || {
                         source.revalidate(self.cancel)
                     })?;
                 }
                 self.progress();
             }
-            with_io(self.cancel, &entry.item.path, || {
+            with_io(self.admission, self.cancel, &entry.item.path, || {
                 source.revalidate(self.cancel)
             })?;
             if entry.item.metadata.size != Some(read) {
@@ -662,15 +762,16 @@ impl Hashers {
     }
 }
 
+/// One call-scoped admission on the process-wide disk gate per native call, so
+/// other disk users interleave between a run's chunks (see `Storage`).
 pub(super) fn with_io<T>(
+    admission: Admission,
     cancel: &Cancellation,
     path: &Path,
     action: impl FnOnce() -> Result<T, FsError>,
 ) -> Result<T, FsError> {
     let _permit = midnight_work_budget::shared_io()
-        .acquire(midnight_work_budget::Admission::Exclusive, || {
-            cancel.is_cancelled()
-        })
+        .acquire(admission, || cancel.is_cancelled())
         .ok_or_else(|| failure(path, io::ErrorKind::Interrupted, "Checksum I/O cancelled."))?;
     action()
 }

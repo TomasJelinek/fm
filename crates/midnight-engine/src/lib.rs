@@ -573,6 +573,7 @@ impl EngineServices {
         let checksums = checksum_actor::Controller::new(
             resources.checksums,
             self.transfers.clone(),
+            Some(self.filesystem.clone()),
             self.outbox.clone(),
             mutation_gate.clone(),
         );

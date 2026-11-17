@@ -73,13 +73,16 @@ pub(crate) struct Controller {
     task: Option<JoinHandle<()>>,
 }
 impl Controller {
+    /// `storage` classifies source volumes for disk admission (a confirmed local
+    /// SSD is read beside other I/O); without it every checksum read is exclusive.
     pub(crate) fn new(
         retirement: Retirement,
         service: Option<Arc<dyn TransferService>>,
+        storage: Option<Arc<dyn FileSystem>>,
         outbox: Outbox,
         mutation: Arc<Semaphore>,
     ) -> Self {
-        let service = Service::new(retirement.service, service);
+        let service = Service::new(retirement.service, service, storage);
         let available = service.available();
         let (input, receiver) = mpsc::channel(32);
         let state = Arc::new(Mutex::new(State::default()));

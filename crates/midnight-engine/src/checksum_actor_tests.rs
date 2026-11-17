@@ -104,6 +104,7 @@ fn setup(
     let controller = Controller::new(
         Retirement::testing(),
         Some(Arc::new(Provider(barrier))),
+        None,
         outbox,
         gate,
     );
@@ -223,7 +224,7 @@ async fn cancelled_native_export_keeps_mutation_permit_and_shutdown_waits_for_cl
 #[tokio::test]
 async fn full_queue_rejects_whole_request_without_superseding_an_admitted_generation() {
     let retirement = Retirement::testing();
-    let service = Service::new(retirement.service, None);
+    let service = Service::new(retirement.service, None, None);
     let (input, _receiver) = mpsc::channel(32);
     let controller = Controller {
         input,
@@ -509,6 +510,7 @@ async fn four_retained_result_windows_leave_room_to_recalculate_one() {
     let controller = Controller::new(
         Retirement::testing(),
         Some(Arc::new(Files)),
+        None,
         Outbox {
             sender,
             wakeup: Arc::new(|| {}),
