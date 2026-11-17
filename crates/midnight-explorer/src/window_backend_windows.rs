@@ -84,7 +84,16 @@ mod tests {
             if mode == "on" {
                 command.env("WGPU_DEBUG", "1").env("WGPU_VALIDATION", "1");
             }
-            let output = command.output().unwrap();
+            // Other tests of this binary may start workers; the creation lock covers only the
+            // spawn, never the wait for the probe's output.
+            command
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped());
+            let output = midnight_worker_platform::spawn_command(&mut command)
+                .unwrap()
+                .wait_with_output()
+                .unwrap();
             assert!(
                 output.status.success(),
                 "{mode}: {}{}",

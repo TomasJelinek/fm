@@ -22,6 +22,7 @@ midnight-compare-engine = { path = "../midnight-compare-engine" }
 midnight-compare-ui = { path = "../midnight-compare-ui" }
 midnight-thumbnail-host = { path = "../midnight-thumbnail-host" }
 midnight-plugin-host = { path = "../midnight-plugin-host" }
+midnight-worker-platform = { path = "../midnight-worker-platform" }
 tokio.workspace = true
 slint = { workspace = true, features = ["unstable-winit-030", "unstable-wgpu-30"] }
 tracing = "0.1"

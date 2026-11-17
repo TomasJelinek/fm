@@ -56,8 +56,9 @@ impl UserCommandService for WindowsFileSystem {
             return Err(error(directory, io::ErrorKind::Interrupted.into()));
         }
         let _error_mode = LaunchErrorMode::new().map_err(|cause| error(executable, cause))?;
-        command
-            .spawn()
+        // The program inherits every inheritable handle: wait for any worker or browser
+        // creation that briefly holds inheritable pipe ends. The lock covers only the spawn.
+        midnight_worker_platform::spawn_command(&mut command)
             .map(|child| Box::new(child) as Box<dyn TerminalProcess>)
             .map_err(|cause| error(executable, cause))
     }

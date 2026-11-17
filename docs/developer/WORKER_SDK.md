@@ -51,7 +51,11 @@ rule. An in-process launcher that inherits every inheritable handle, such as
 `std::process::Command`, can capture a worker's pipe ends only if it runs during
 that single call. `midnight_worker_platform::spawn_command` spawns such a command
 under the lock, which it holds for the creation call only, never while the child
-runs or while its output or exit status is awaited.
+runs or while its output or exit status is awaited. The application starts external
+editors, Custom Command programs and the software-rendering restart through it.
+Terminal launches call `CreateProcessW` without handle inheritance, and Shell
+launches (`ShellExecuteEx`) pass no handles; code that third-party Shell extensions
+run inside the process is outside this rule.
 
 The optional FFmpeg provider requires ReadAndExecute access for that fixed
 worker SID on exactly `avcodec-63.dll`, `avformat-63.dll`, `avutil-61.dll` and
