@@ -12,8 +12,11 @@ use std::{
 };
 
 /// The Debian/Ubuntu alternative is the user's configured terminal (policy requires
-/// xterm-compatible `-e`). Desktop terminals follow; xterm is the last resort.
+/// xterm-compatible `-e`). A recognized terminal behind it is launched directly (see
+/// `configured_terminal`). Desktop terminals follow; xterm is the last resort.
 const CONFIGURED_TERMINAL: &str = "/usr/bin/x-terminal-emulator";
+/// Terminals whose own options `terminal_host_command` knows, by program name.
+const RECOGNIZED_TERMINALS: &[&str] = &["gnome-terminal", "konsole", "xfce4-terminal", "xterm"];
 const DESKTOP_TERMINALS: &[(&str, &str)] = &[
     ("KDE", "/usr/bin/konsole"),
     ("GNOME", "/usr/bin/gnome-terminal"),
@@ -60,7 +63,7 @@ impl TerminalService for LinuxFileSystem {
         let executable = terminal_executable().map_err(|cause| {
             FsError::from_io("find system terminal", &request.working_directory, cause)
         })?;
-        terminal_command(executable, request)
+        terminal_command(&executable, request)
             .and_then(|mut command| command.spawn())
             .map(|child| Box::new(child) as Box<dyn TerminalProcess>)
             .map_err(|error| FsError::from_io("launch terminal", &request.working_directory, error))
@@ -97,7 +100,7 @@ pub(crate) fn prepare_user_terminal(
     let executable = terminal_executable().map_err(|cause| {
         FsError::from_io("find system terminal", &request.working_directory, cause)
     })?;
-    prepare_user_terminal_with(executable, request, environment, cancel)
+    prepare_user_terminal_with(&executable, request, environment, cancel)
 }
 fn prepare_user_terminal_with(
     executable: &Path,
@@ -173,8 +176,8 @@ fn interactive_shell(preferred: Option<&std::ffi::OsStr>) -> PathBuf {
         .to_path_buf()
 }
 
-fn terminal_executable() -> io::Result<&'static Path> {
-    terminal_candidates(std::env::var_os("XDG_CURRENT_DESKTOP").as_deref())
+fn terminal_executable() -> io::Result<PathBuf> {
+    let candidate = terminal_candidates(std::env::var_os("XDG_CURRENT_DESKTOP").as_deref())
         .into_iter()
         .find(|path| is_executable(path))
         .ok_or_else(|| {
@@ -182,7 +185,30 @@ fn terminal_executable() -> io::Result<&'static Path> {
                 io::ErrorKind::NotFound,
                 "No supported system terminal is installed.",
             )
+        })?;
+    Ok(if candidate == Path::new(CONFIGURED_TERMINAL) {
+        configured_terminal(fs::canonicalize(candidate).ok().as_deref(), is_executable)
+    } else {
+        candidate.to_path_buf()
+    })
+}
+
+/// The program to launch for the configured alternative resolving to `target`.
+/// A recognized terminal, also behind its Debian `*.wrapper` script, is launched
+/// itself when `installed` beside the target, so its own options keep the launched
+/// process alive until the window closes (the wrappers and plain `-e` would return
+/// at once). Any other target keeps the alternative and its policy-defined `-e`.
+fn configured_terminal(target: Option<&Path>, installed: impl Fn(&Path) -> bool) -> PathBuf {
+    target
+        .and_then(|target| {
+            let name = target.file_name()?.to_str()?;
+            let name = name.strip_suffix(".wrapper").unwrap_or(name);
+            RECOGNIZED_TERMINALS
+                .contains(&name)
+                .then(|| target.with_file_name(name))
         })
+        .filter(|program| installed(program))
+        .unwrap_or_else(|| PathBuf::from(CONFIGURED_TERMINAL))
 }
 
 /// Fixed absolute candidates in priority order; `desktop` is `XDG_CURRENT_DESKTOP`
@@ -208,7 +234,7 @@ fn terminal_candidates(desktop: Option<&std::ffi::OsStr>) -> Vec<&'static Path> 
 
 pub(crate) fn executable_terminal(path: &Path) -> io::Result<Command> {
     executable_terminal_with(
-        terminal_executable()?,
+        &terminal_executable()?,
         path,
         &interactive_shell(std::env::var_os("SHELL").as_deref()),
     )
