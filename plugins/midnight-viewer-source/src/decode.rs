@@ -39,7 +39,8 @@ pub struct Tail {
     pub lines: usize,
 }
 
-/// Incomplete scalars and CR are left unread unless EOF is known.
+/// Incomplete scalars, and a CR whose next unit is still incomplete, are left
+/// unread unless EOF is known.
 pub fn decode(
     bytes: &[u8],
     offset: u64,
@@ -98,11 +99,11 @@ fn decode_until(
             break;
         };
         if ch == '\r' {
-            if at + size == bytes.len() && !eof {
-                break;
-            }
-            if let Some(('\n', next)) = scalar(&bytes[at + size..], encoding, eof) {
-                size += next;
+            match scalar(&bytes[at + size..], encoding, eof) {
+                // An incomplete look-ahead may still be the LF of this CRLF.
+                None if !eof => break,
+                Some(('\n', next)) => size += next,
+                _ => {}
             }
             ch = '\n';
         } else if ch.is_control() && ch != '\n' && ch != '\t' {
