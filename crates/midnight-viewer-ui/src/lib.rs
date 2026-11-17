@@ -1,6 +1,8 @@
 //! Thin UI adapters. Reading, parsing, search, layout and selection run on the backend.
 #![deny(unsafe_code)]
 
+#[cfg(test)]
+mod control_sync_tests;
 mod image_camera;
 mod image_motion;
 #[cfg(test)]
@@ -55,6 +57,11 @@ pub use midnight_ui_input::WindowPlacement;
 
 pub type KeyResolver = Rc<dyn Fn(&ShortcutChord, bool) -> Option<String>>;
 /// Called once after initial backend content is ready, fails, or closes before readiness.
+///
+/// Closing a window that has not displayed content reports `Err` synchronously
+/// from inside the close call (`ViewerWindows::close_all`, Escape or the window's
+/// close button). The callback may re-enter `ViewerWindows`; no manager state is
+/// borrowed while it runs.
 pub type OpenReady = Box<dyn FnOnce(Result<(), String>)>;
 type PreferencesListener = Rc<dyn Fn(ViewerPreferenceChange)>;
 type PreferencesRelay = Rc<RefCell<PreferencesListener>>;
@@ -98,6 +105,9 @@ struct OpenWindow {
     frame_generation: Cell<u64>,
     raster_size: Cell<(u32, u32)>,
     modes: RefCell<Vec<u16>>,
+    /// Chooser index of the mode presented by the last frame or requested since.
+    /// The chooser is two-way bound, so a refused request restores this value.
+    mode_index: Cell<i32>,
     preferences_listener: PreferencesRelay,
     image_info: RefCell<Option<ViewerImageInfo>>,
     font_catalog_ready: Cell<bool>,
@@ -201,12 +211,13 @@ impl ViewerWindows {
 
     /// Restore without reporting a user edit or writing application settings.
     pub fn restore_preferences(&self, preferences: std::sync::Arc<ViewerPreferences>) {
-        for open in self
-            .windows
-            .borrow()
-            .iter()
-            .filter(|open| !open.closed.get())
-        {
+        // Release closed windows, and do not hold the list while presenting.
+        let windows = {
+            let mut windows = self.windows.borrow_mut();
+            windows.retain(|window| !window.closed.get());
+            windows.clone()
+        };
+        for open in &windows {
             let previous = open.session.preferences();
             let raster_zoom_changed = previous.image_zoom != preferences.image_zoom;
             let layout_changed = previous.wrap != preferences.wrap
@@ -334,6 +345,7 @@ impl ViewerWindows {
             frame_generation: Cell::new(0),
             raster_size: Cell::new((1, 1)),
             modes: RefCell::new(Vec::new()),
+            mode_index: Cell::new(0),
             preferences_listener: self.preferences_listener.clone(),
             image_info: RefCell::new(None),
             font_catalog_ready: Cell::new(false),
@@ -385,17 +397,27 @@ impl ViewerWindows {
     }
 
     pub fn close_all(&self) {
-        for open in self.windows.borrow_mut().drain(..) {
+        // `close` reports cancellation to `OpenReady` callbacks, which may
+        // re-enter this manager. Never run them while the list is borrowed.
+        let windows = std::mem::take(&mut *self.windows.borrow_mut());
+        for open in windows {
             close(&open);
         }
     }
 }
 
+/// A canvas need not be a whole number of physical pixels (for example 22.5 px
+/// of chrome at 125%). Round to the nearest raster size: presentation maps it 1:1
+/// to physical pixels and clips at most half a pixel instead of stretching.
+fn physical_extent(logical: f32, scale: f32) -> u32 {
+    (logical * scale).round().max(1.0) as u32
+}
+
 fn window_geometry(window: &ViewerWindow) -> ViewerGeometry {
     let scale = geometry_properties(window);
     ViewerGeometry {
-        width: (window.get_content_width() * scale).max(1.0) as u32,
-        height: (window.get_content_height() * scale).max(1.0) as u32,
+        width: physical_extent(window.get_content_width(), scale),
+        height: physical_extent(window.get_content_height(), scale),
         scale,
     }
 }
@@ -424,8 +446,8 @@ fn layout_geometry(window: &ViewerWindow) -> Option<ViewerGeometry> {
         return None;
     }
     Some(ViewerGeometry {
-        width: (width * scale).max(1.0) as u32,
-        height: (height * scale).max(1.0) as u32,
+        width: physical_extent(width, scale),
+        height: physical_extent(height, scale),
         scale,
     })
 }
@@ -440,8 +462,7 @@ fn apply_mode(open: &OpenWindow, mode: u16, image_mode: bool, reset_policy: bool
     let web_mode = mode == VIEWER_MODE_HTML;
     let web_changed = web_mode != window.get_web_mode();
     if web_changed || reset_policy {
-        window.set_web_network(false);
-        window.set_web_scripts(false);
+        web_input::present_policy(open, Default::default());
     }
     if web_changed {
         window.invoke_focus_content();
@@ -761,8 +782,12 @@ fn present_outputs(
                             || open.raster_size.get() != (frame.width, frame.height)
                             || window.get_image_mode())
                     {
-                        window.set_raster_viewport_width(window.get_content_width().max(1.0));
-                        window.set_raster_viewport_height(window.get_content_height().max(1.0));
+                        let viewport = raster_presentation::logical_viewport(
+                            open,
+                            [frame.width, frame.height],
+                        );
+                        window.set_raster_viewport_width(viewport[0]);
+                        window.set_raster_viewport_height(viewport[1]);
                     }
                     if window.get_retained_raster() {
                         raster_presentation::clear(open);
@@ -818,13 +843,13 @@ fn present_outputs(
                             .collect::<Vec<slint::SharedString>>(),
                     )));
                 }
-                window.set_mode_index(
-                    frame
-                        .modes
-                        .iter()
-                        .position(|mode| *mode == frame.mode)
-                        .unwrap_or(0) as i32,
-                );
+                let mode_index = frame
+                    .modes
+                    .iter()
+                    .position(|mode| *mode == frame.mode)
+                    .unwrap_or(0) as i32;
+                open.mode_index.set(mode_index);
+                window.set_mode_index(mode_index);
                 open.frame.set(frame.revision);
                 open.frame_generation.set(frame.generation);
                 let image_mode = frame.image.is_some();
@@ -973,8 +998,7 @@ fn present_outputs(
                     && !open.layout.borrow().awaiting_frame
                     && open.text_position.borrow().context_available()
                 {
-                    window.set_web_network(policy.network);
-                    window.set_web_scripts(policy.scripts);
+                    web_input::present_policy(open, *policy);
                     window.set_zoom_percent((zoom * 100.0) as f32);
                 }
             }
@@ -1048,15 +1072,27 @@ fn bind(open: &Rc<OpenWindow>) {
     });
     let weak = Rc::downgrade(open);
     open.window.on_change_mode(move |index| {
-        if let Some(open) = weak.upgrade()
-            && let Ok(index) = usize::try_from(index)
-            && let Some(mode) = open.modes.borrow().get(index)
-            && index != open.window.get_mode_index() as usize
-            && open.enqueue(ViewerInput::Mode(*mode))
+        let Some(open) = weak.upgrade() else {
+            return;
+        };
+        // The two-way bound chooser already shows `index`; compare with the mode
+        // in force, and restore it when the request cannot be delivered.
+        let current = open.mode_index.get();
+        if index == current {
+            return;
+        }
+        let mode = usize::try_from(index)
+            .ok()
+            .and_then(|index| open.modes.borrow().get(index).copied());
+        if let Some(mode) = mode
+            && open.enqueue(ViewerInput::Mode(mode))
         {
+            open.mode_index.set(index);
             open.text_position.borrow_mut().changing_content();
             open.window
                 .set_position_context(format!("mode:{index}").into());
+        } else {
+            open.window.set_mode_index(current);
         }
     });
     let native = Rc::new(RefCell::new(midnight_ui_input::ShortcutState::default()));

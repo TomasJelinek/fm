@@ -15,6 +15,16 @@ pub(super) struct Native {
     dragging: bool,
     last_click: Option<(std::time::Instant, api::PointerButton, [f64; 2], u8)>,
     shortcut_keys: std::collections::HashMap<String, String>,
+    /// Document policy in force (offline for every new document).
+    policy: api::Policy,
+}
+
+/// Show the policy in force. Online/JavaScript are two-way bound check boxes that
+/// change themselves on click, so a refused change must restore this state.
+pub(super) fn present_policy(open: &OpenWindow, policy: api::Policy) {
+    open.web_native.borrow_mut().policy = policy;
+    open.window.set_web_network(policy.network);
+    open.window.set_web_scripts(policy.scripts);
 }
 
 pub(super) fn send(open: &OpenWindow, input: api::CommandKind) -> bool {
@@ -289,10 +299,16 @@ pub(super) fn observe(open: &OpenWindow, event: &WindowEvent, shortcuts: bool) -
     let mut native = open.web_native.borrow_mut();
     let point = native.cursor.map(|[x, y]| [x - left, y - top]);
     let inside = point.is_some_and(|[x, y]| x >= 0.0 && y >= 0.0 && x < width && y < height);
+    // The surface is drawn over its logical raster viewport (1:1 physical pixels
+    // at native resolution), which can differ from the canvas by a clipped half pixel.
     let (raster_width, raster_height) = open.raster_size.get();
+    let drawn = [
+        f64::from(open.window.get_raster_viewport_width()) * scale,
+        f64::from(open.window.get_raster_viewport_height()) * scale,
+    ];
     let ratio = [
-        f64::from(raster_width) / width.max(1.0),
-        f64::from(raster_height) / height.max(1.0),
+        f64::from(raster_width) / drawn[0].max(1.0),
+        f64::from(raster_height) / drawn[1].max(1.0),
     ];
     let surface_point = |[x, y]: [f64; 2]| [x * ratio[0], y * ratio[1]];
     let modifiers = native.modifiers;
@@ -470,10 +486,12 @@ pub(super) fn bind(open: &Rc<OpenWindow>) {
                 scripts: network && scripts,
             };
             if send(&open, api::CommandKind::Policy(policy)) {
-                open.window.set_web_network(policy.network);
-                open.window.set_web_scripts(policy.scripts);
+                present_policy(&open, policy);
                 open.text_position.borrow_mut().changing_content();
                 open.window.set_surface(slint::Image::default());
+            } else {
+                let current = open.web_native.borrow().policy;
+                present_policy(&open, current);
             }
         }
     });

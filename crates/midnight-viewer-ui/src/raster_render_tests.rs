@@ -239,6 +239,115 @@ fn retained_rendered_body_moves_beside_fixed_gutter_and_both_share_vertical_moti
     manager.close_all();
 }
 
+/// The retained fixture with its guards around a `viewport` of physical pixels.
+fn sized(revision: u64, viewport: [u32; 2]) -> Box<ViewerFrame> {
+    let mut frame = frame(revision);
+    let body = viewport.map(|extent| extent + 105);
+    frame.width = body[0];
+    frame.height = body[1];
+    frame.pixels = pixels(body[0], body[1], false);
+    let info = frame.raster.as_mut().unwrap();
+    info.viewport = viewport;
+    let gutter = info.gutter.as_mut().unwrap();
+    gutter.height = body[1];
+    gutter.pixels = pixels(GUTTER, body[1], true);
+    frame
+}
+
+#[test]
+fn native_rasters_map_each_texel_to_one_physical_pixel_on_fractional_canvases() {
+    let (_runtime, manager, open, service) = image_presentation_tests::open();
+    open.timer.stop();
+    *open.input.borrow_mut() = Rc::new(|_| true);
+    let content = || {
+        [
+            open.window.get_content_width(),
+            open.window.get_content_height(),
+        ]
+    };
+    let fractional = |extent: f32| ((extent - extent.round()).abs()) > 0.01;
+    // Chrome makes the canvas a fraction of a physical pixel at these scales.
+    let logical = open
+        .window
+        .window()
+        .size()
+        .to_logical(open.window.window().scale_factor());
+    let scale = [1.1_f32, 1.3, 1.15, 1.7]
+        .into_iter()
+        .find(|&scale| {
+            open.window
+                .window()
+                .dispatch_event(WindowEvent::ScaleFactorChanged {
+                    scale_factor: scale,
+                });
+            open.window.window().set_size(logical);
+            Bitmap::capture();
+            content().iter().all(|extent| fractional(extent * scale))
+        })
+        .expect("a scale with a fractional physical canvas");
+    let canvas = content();
+    let geometry = window_geometry(&open.window);
+    let native = [geometry.width, geometry.height];
+    assert_eq!(native, canvas.map(|extent| (extent * scale).round() as u32));
+    let mapped = || {
+        [
+            open.window.get_raster_viewport_width() * scale,
+            open.window.get_raster_viewport_height() * scale,
+        ]
+    };
+    let one_to_one =
+        |mapped: [f32; 2]| (0..2).all(|axis| (mapped[axis] - native[axis] as f32).abs() < 1e-3);
+
+    // Retained text at native resolution: the canvas clips the sub-pixel rest.
+    present_outputs(
+        &open,
+        &service,
+        &|_| {},
+        vec![ViewerOutput::Frame(sized(open.frame.get() + 1, native))],
+    );
+    assert!(open.window.get_retained_raster());
+    assert!(
+        one_to_one(mapped()),
+        "{:?} stretched over {native:?}",
+        mapped()
+    );
+    // A budget-reduced raster still covers the whole canvas.
+    present_outputs(
+        &open,
+        &service,
+        &|_| {},
+        vec![ViewerOutput::Frame(sized(
+            open.frame.get() + 1,
+            native.map(|extent| extent / 2),
+        ))],
+    );
+    assert_eq!(
+        [
+            open.window.get_raster_viewport_width(),
+            open.window.get_raster_viewport_height()
+        ],
+        canvas
+    );
+    // Viewport-only (legacy and HTML) frames use the same native mapping.
+    let ViewerOutput::Frame(mut legacy) =
+        text_presentation_tests::frame(open.frame.get() + 1, 0, 0.2)
+    else {
+        unreachable!()
+    };
+    legacy.generation = 8;
+    legacy.width = native[0];
+    legacy.height = native[1];
+    legacy.pixels = vec![255; native[0] as usize * native[1] as usize * 4].into();
+    present_outputs(&open, &service, &|_| {}, vec![ViewerOutput::Frame(legacy)]);
+    assert!(!open.window.get_retained_raster());
+    assert!(
+        one_to_one(mapped()),
+        "{:?} stretched over {native:?}",
+        mapped()
+    );
+    manager.close_all();
+}
+
 #[test]
 fn retained_rendered_settled_crop_equals_the_viewport_only_reference() {
     let (_runtime, manager, open, service) = image_presentation_tests::open();

@@ -7,8 +7,10 @@ use std::{
     rc::Rc,
 };
 
-// At most32MiB in the cache/model and another32MiB in the previous Slint
+// At most 32 MiB in the cache/model and another 32 MiB in the previous Slint
 // model while a repaint replaces its items. Driver-deferred GPU releases are separate.
+// Must match the engine's tile cache bounds (`image_tiles.rs` CACHE_BYTES and
+// CACHE_ENTRIES): a larger working set is refused here.
 const MAX_BYTES: usize = 32 * 1024 * 1024;
 const MAX_ENTRIES: usize = 128;
 const EDGE: f64 = 256.0;

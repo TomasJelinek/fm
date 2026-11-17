@@ -41,7 +41,6 @@ export component ViewerWindow inherits Window {
     in property <color> accent: #8bb7ef;
     in property <float> position;
     in property <float> displayed-position;
-    out property <float> displayed-vertical-position: root.displayed-position;
     out property <float> vertical-thumb-position: vbar.shown-position;
     out property <length> vertical-bar-left: vbar.absolute-position.x;
     out property <length> vertical-bar-top: vbar.absolute-position.y;
@@ -51,13 +50,16 @@ export component ViewerWindow inherits Window {
     in property <float> horizontal-position;
     in property <float> horizontal-extent: 1;
     in property <[string]> modes;
-    in property <int> mode-index;
+    // Widgets that assign their own value (ComboBox selection, CheckBox toggle,
+    // model resets) drop one-way bindings. These stay two-way bound, and Rust
+    // re-sets them to the state actually in force after every change.
+    in-out property <int> mode-index;
     in-out property <bool> wrap-enabled;
     in property <bool> wrap-available;
     in property <bool> image-mode;
     in property <bool> web-mode;
-    in property <bool> web-network;
-    in property <bool> web-scripts;
+    in-out property <bool> web-network;
+    in-out property <bool> web-scripts;
     in property <bool> source-mode;
     in property <bool> markdown-mode;
     in property <bool> font-available: true;
@@ -113,7 +115,6 @@ export component ViewerWindow inherits Window {
     callback image-drag(float, float);
     callback document-turn(int);
     callback web-policy(bool, bool);
-    callback close-viewer();
     callback deliver-output();
     callback frame-presented();
     public function focus-search() { root.search-visible = true; search-edit.focus(); }
@@ -146,11 +147,11 @@ export component ViewerWindow inherits Window {
             }
             if root.web-mode: HorizontalLayout {
                     spacing: 4px; height: max(32px, root.control-height);
-                    CheckBox { text: "Online"; checked: root.web-network; horizontal-stretch: 0;
+                    CheckBox { text: "Online"; checked <=> root.web-network; horizontal-stretch: 0;
                         accessible-label: "Allow network for this document only";
                         Tooltip { text: @markdown("Allow network for this document only. This creates a fresh browser context and removes access to local assets. Turning Online off also disables JavaScript."); }
                         toggled => { root.web-policy(self.checked, root.web-scripts && self.checked); content-focus.focus(); } }
-                    CheckBox { text: root.compact ? "JS" : "JavaScript"; checked: root.web-scripts; enabled: root.web-network; horizontal-stretch: 0;
+                    CheckBox { text: root.compact ? "JS" : "JavaScript"; checked <=> root.web-scripts; enabled: root.web-network; horizontal-stretch: 0;
                         accessible-label: "Allow scripts to read and transmit this document";
                         Tooltip { text: @markdown("Allow JavaScript to read and transmit this document. Requires Online. Local assets remain unavailable."); }
                         toggled => { root.web-policy(root.web-network, self.checked); content-focus.focus(); } }
@@ -380,9 +381,16 @@ export component ViewerWindow inherits Window {
                     accessible-label: "Font and presentation";
                     clicked => { root.typography-visible = !root.typography-visible; }
                 }
-                if !root.image-mode: ComboBox { model: root.modes; current-index: root.mode-index;
+                if !root.image-mode: ComboBox { model: root.modes; current-index <=> root.mode-index;
                     accessible-label: "Viewer mode"; width: 130px;
-                    selected(value) => { root.change-mode(self.current-index); } }
+                    selected(value) => {
+                        root.change-mode(self.current-index);
+                        // A refused request restores mode-index. The ComboBox would
+                        // otherwise re-resolve its index from the chosen value later.
+                        if root.mode-index >= 0 && root.mode-index < root.modes.length {
+                            self.current-value = root.modes[root.mode-index];
+                        }
+                    } }
             }
         }
     }
