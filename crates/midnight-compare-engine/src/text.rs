@@ -3,7 +3,10 @@ use midnight_core::{ViewerAppearance, ViewerGeometry};
 use midnight_plugin_host::CapturedFile;
 use midnight_viewer_render::{TextOptions, TextRenderer, Viewport};
 use similar::{DiffTag, TextDiff};
-use std::{sync::atomic::AtomicBool, time::Duration};
+use std::{
+    sync::{Arc, atomic::AtomicBool},
+    time::Duration,
+};
 
 const MAX_BYTES: u64 = 4 * 1024 * 1024;
 const MAX_LINES: usize = 100_000;
@@ -25,9 +28,18 @@ pub(crate) struct TextComparison {
     pub top: usize,
     pub horizontal: f32,
     vertical_remainder: f32,
+    /// Logical row height and fully visible rows of the last painted frame.
+    row_height: f32,
+    page_rows: usize,
 }
 
-pub(crate) fn read(file: &CapturedFile, cancel: &AtomicBool) -> Result<String, String> {
+/// Each 256 KiB block is admitted by the storage policy: shared on a confirmed local SSD,
+/// exclusive otherwise, so a long copy cannot hold back comparisons of SSD files.
+pub(crate) fn read(
+    file: &CapturedFile,
+    confirmed_ssd: bool,
+    cancel: &AtomicBool,
+) -> Result<String, String> {
     if file.length() > MAX_BYTES {
         return Err("Text comparison supports at most 4 MiB per file.".into());
     }
@@ -36,9 +48,10 @@ pub(crate) fn read(file: &CapturedFile, cancel: &AtomicBool) -> Result<String, S
         check_cancel(cancel)?;
         let budget = midnight_work_budget::shared_io();
         let _permit = budget
-            .acquire(midnight_work_budget::storage_admission(false), || {
-                cancel.load(std::sync::atomic::Ordering::Acquire)
-            })
+            .acquire(
+                midnight_work_budget::storage_admission(confirmed_ssd),
+                || cancel.load(std::sync::atomic::Ordering::Acquire),
+            )
             .ok_or("Comparison cancelled.")?;
         let amount = (file.length() - bytes.len() as u64).min(256 * 1024) as u32;
         let block = file
@@ -76,10 +89,7 @@ fn decode(bytes: &[u8]) -> Result<String, String> {
         let bytes = bytes.strip_prefix(&[0xef, 0xbb, 0xbf]).unwrap_or(bytes);
         std::str::from_utf8(bytes).map_err(|_| "Text comparison requires UTF-8 or UTF-16 with a BOM; this file is binary or uses another encoding.")?.to_owned()
     };
-    if text
-        .chars()
-        .any(|c| c == '\0' || (c.is_control() && !matches!(c, '\n' | '\r' | '\t')))
-    {
+    if text.chars().any(|c| c.is_control() && !text_control(c)) {
         return Err("The selected file contains binary control characters.".into());
     }
     if text.split_inclusive('\n').take(MAX_LINES + 1).count() > MAX_LINES {
@@ -123,23 +133,26 @@ impl TextComparison {
                 });
             }
         }
-        #[cfg(test)]
-        let renderer_started = std::time::Instant::now();
-        #[cfg(test)]
-        crate::trace_first_frame("renderer-start", renderer_started);
-        let renderer = TextRenderer::default();
-        #[cfg(test)]
-        crate::trace_first_frame("renderer-complete", renderer_started);
         Ok(Self {
             lines,
             rows,
             differences,
-            renderer,
+            renderer: TextRenderer::default(),
             fonts: None,
             top: 0,
             horizontal: 0.0,
             vertical_remainder: 0.0,
+            row_height: 24.0,
+            page_rows: 1,
         })
+    }
+
+    /// Install the fixed-pitch catalog scanned by the worker's font thread and resolve the
+    /// preferred family against it. Until then frames use the generic monospace family
+    /// and carry no font choices, so the first frame never waits for the font scan.
+    pub fn set_font_catalog(&mut self, families: Arc<[String]>, preferred: &str) {
+        let selected = resolve_family(&families, preferred);
+        self.fonts = Some(FontChoices { families, selected });
     }
 
     pub fn scroll(&mut self, rows: i64) {
@@ -148,11 +161,18 @@ impl TextComparison {
             .saturating_add_signed(rows as isize)
             .min(self.rows.len().saturating_sub(1));
     }
+    /// Wheel distances use the painted row height, so they match the visible rows at
+    /// every font size.
     pub fn scroll_pixels(&mut self, pixels: f32) {
-        self.vertical_remainder -= pixels / 24.0;
+        self.vertical_remainder -= pixels / self.row_height;
         let rows = self.vertical_remainder.trunc();
         self.vertical_remainder -= rows;
         self.scroll(rows as i64);
+    }
+    /// A page moves by the rows that were fully visible, never skipping or repeating one.
+    pub fn scroll_pages(&mut self, pages: i32) {
+        self.vertical_remainder = 0.0;
+        self.scroll(i64::from(pages).saturating_mul(self.page_rows as i64));
     }
     pub fn seek(&mut self, amount: f64) {
         if amount.is_finite() {
@@ -195,28 +215,6 @@ impl TextComparison {
         appearance: &ViewerAppearance,
         cancel: &AtomicBool,
     ) -> Result<Frame, String> {
-        #[cfg(test)]
-        let first_paint = self.fonts.is_none();
-        if self.fonts.is_none() {
-            #[cfg(test)]
-            let catalog_started = std::time::Instant::now();
-            #[cfg(test)]
-            crate::trace_first_frame("font-catalog-start", catalog_started);
-            let families = midnight_viewer_render::monospace_families(|| {
-                cancel.load(std::sync::atomic::Ordering::Acquire)
-            })
-            .ok_or("Comparison cancelled.")?;
-            #[cfg(test)]
-            crate::trace_first_frame("font-catalog-complete", catalog_started);
-            let selected = resolve_family(&families, &appearance.family);
-            self.fonts = Some(FontChoices { families, selected });
-        }
-        #[cfg(test)]
-        let paint_started = std::time::Instant::now();
-        #[cfg(test)]
-        if first_paint {
-            crate::trace_first_frame("text-paint-start", paint_started);
-        }
         let family = self
             .fonts
             .as_ref()
@@ -230,6 +228,8 @@ impl TextComparison {
             .ceil()
             .max(12.0) as u32;
         let count = height.div_ceil(row_height).min(256) as usize;
+        self.row_height = row_height as f32 / geometry.scale;
+        self.page_rows = (height / row_height).max(1) as usize;
         let mut accessible_text = String::new();
         for (visible, row) in self.rows.iter().skip(self.top).take(count).enumerate() {
             check_cancel(cancel)?;
@@ -258,7 +258,7 @@ impl TextComparison {
                             } else {
                                 " "
                             },
-                            text.trim_end_matches(['\r', '\n']),
+                            visible_controls(text.trim_end_matches(['\r', '\n'])),
                             ending
                         )
                     })
@@ -328,10 +328,6 @@ impl TextComparison {
                 self.rows.len()
             )
         };
-        #[cfg(test)]
-        if first_paint {
-            crate::trace_first_frame("text-paint-complete", paint_started);
-        }
         Ok(Frame {
             fonts: self.fonts.clone(),
             geometry_revision: 0,
@@ -359,6 +355,29 @@ impl TextComparison {
         fonts.selected = family.into();
         true
     }
+}
+
+/// Text controls common in sources and logs: tab, line breaks, vertical tab, form feed
+/// (page breaks) and escape (terminal colour codes). Other controls mark binary content.
+fn text_control(c: char) -> bool {
+    matches!(c, '\t' | '\n' | '\r' | '\u{0b}' | '\u{0c}' | '\u{1b}')
+}
+
+/// Show the accepted invisible controls as Unicode control pictures (tabs keep their
+/// layout), so a difference in them is visible and not rendered as tofu.
+fn visible_controls(text: &str) -> std::borrow::Cow<'_, str> {
+    if !text.contains(['\u{0b}', '\u{0c}', '\u{1b}']) {
+        return text.into();
+    }
+    text.chars()
+        .map(|c| match c {
+            '\u{0b}' | '\u{0c}' | '\u{1b}' => {
+                char::from_u32(0x2400 + u32::from(c)).unwrap_or(char::REPLACEMENT_CHARACTER)
+            }
+            other => other,
+        })
+        .collect::<String>()
+        .into()
 }
 
 fn resolve_family(families: &[String], preferred: &str) -> String {
@@ -443,6 +462,65 @@ mod tests {
         );
     }
     #[test]
+    fn form_feed_vertical_tab_and_ansi_escape_are_text_shown_as_control_pictures() {
+        let text = "page 1\u{0c}\n\u{1b}[31mred\u{1b}[0m\u{0b}x\n";
+        assert_eq!(decode(text.as_bytes()).unwrap(), text);
+        for binary in ["a\u{1}b", "a\u{7f}b", "a\u{85}b"] {
+            assert!(decode(binary.as_bytes()).is_err(), "{binary:?}");
+        }
+        assert_eq!(visible_controls("a\u{0c}b\u{1b}c\u{0b}"), "a␌b␛c␋");
+        assert_eq!(visible_controls("tab\tkept"), "tab\tkept");
+        let mut diff = TextComparison::new(text, "page 1\n", &AtomicBool::new(false)).unwrap();
+        let geometry = ViewerGeometry {
+            width: 400,
+            height: 100,
+            scale: 1.0,
+        };
+        let frame = diff
+            .paint(geometry, &appearance(12.0), &AtomicBool::new(false))
+            .unwrap();
+        assert!(frame.accessible_text.contains("page 1␌"));
+        assert!(frame.accessible_text.contains("␛[31mred␛[0m␋x"));
+    }
+
+    fn appearance(font_size: f32) -> ViewerAppearance {
+        ViewerAppearance {
+            family: "monospace".into(),
+            font_size,
+            foreground: [255; 4],
+            background: [0, 0, 0, 255],
+            selection: [40, 60, 90, 255],
+            accent: [90, 150, 220, 255],
+        }
+    }
+
+    #[test]
+    fn pages_advance_by_fully_visible_rows_at_every_font_size() {
+        let left: String = (0..400).map(|row| format!("row {row}\n")).collect();
+        let cancel = AtomicBool::new(false);
+        for (font_size, scale) in [(12.0, 1.0), (15.0, 1.0), (20.0, 1.0), (12.0, 2.0)] {
+            let mut diff = TextComparison::new(&left, &left, &cancel).unwrap();
+            let height = 300;
+            let geometry = ViewerGeometry {
+                width: 400,
+                height,
+                scale,
+            };
+            diff.paint(geometry, &appearance(font_size), &cancel)
+                .unwrap();
+            let row_height = (font_size * scale * 1.6).ceil();
+            let visible = (height as f32 / row_height).floor() as usize;
+            diff.scroll_pages(1);
+            assert_eq!(diff.top, visible, "font {font_size} at scale {scale}");
+            diff.scroll_pages(-1);
+            assert_eq!(diff.top, 0);
+            // Wheel pixels are logical; one painted row height scrolls exactly one row.
+            diff.scroll_pixels(-(row_height / scale));
+            assert_eq!(diff.top, 1, "font {font_size} at scale {scale}");
+        }
+    }
+
+    #[test]
     fn rejects_binary_invalid_encoding_and_limits() {
         assert!(decode(b"a\0b").is_err());
         assert!(decode(&[0xff]).is_err());
@@ -499,6 +577,48 @@ mod tests {
         std::fs::write(&path, "before").unwrap();
         let file = CapturedFile::capture(&path).unwrap();
         std::fs::write(&path, "after mutation").unwrap();
-        assert!(read(&file, &AtomicBool::new(false)).is_err());
+        assert!(read(&file, false, &AtomicBool::new(false)).is_err());
+    }
+
+    #[test]
+    fn confirmed_ssd_reads_share_the_io_gate_and_unknown_storage_stays_exclusive() {
+        use midnight_plugin_host::{ContentSource, Error};
+        #[derive(Debug)]
+        struct Observed(std::sync::Mutex<Vec<midnight_work_budget::Snapshot>>);
+        impl ContentSource for Observed {
+            fn length(&self) -> u64 {
+                2
+            }
+            fn display_name(&self) -> String {
+                "observed.txt".into()
+            }
+            fn version(&self) -> Vec<u8> {
+                vec![1]
+            }
+            fn validate(&self) -> Result<(), Error> {
+                Ok(())
+            }
+            fn read_at(&self, _: u64, _: u32) -> Result<Vec<u8>, Error> {
+                self.0
+                    .lock()
+                    .unwrap()
+                    .push(midnight_work_budget::shared_io().snapshot());
+                Ok(b"a\n".to_vec())
+            }
+        }
+        for confirmed_ssd in [true, false] {
+            let source = std::sync::Arc::new(Observed(Default::default()));
+            let file = CapturedFile::from_source(source.clone()).unwrap();
+            assert_eq!(
+                read(&file, confirmed_ssd, &AtomicBool::new(false)).unwrap(),
+                "a\n"
+            );
+            let snapshot = source.0.lock().unwrap()[0];
+            if confirmed_ssd {
+                assert!(!snapshot.exclusive && snapshot.active_shared >= 1);
+            } else {
+                assert!(snapshot.exclusive);
+            }
+        }
     }
 }

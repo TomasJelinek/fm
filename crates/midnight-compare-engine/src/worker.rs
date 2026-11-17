@@ -1,17 +1,22 @@
+use crate::discovery::{FixedPitchFonts, FontCatalog, ImageViewers};
 use crate::file_choice::{self, Picker, resolve};
 use crate::{
-    FileChoice, Input, Mailbox, NativeCapture, Output, check_cancel, images::Images,
+    FileChoice, Input, Mailbox, NativeCapture, Output, StorageHint, check_cancel, images::Images,
     text::TextComparison,
 };
 use midnight_core::{FileCompareLaunch, ViewerAppearance, ViewerGeometry};
 use midnight_plugin_host::CapturedFile;
 use std::{
     sync::{
+        Arc,
         atomic::AtomicBool,
         mpsc::{Receiver, RecvTimeoutError},
     },
     time::Duration,
 };
+
+/// While the font catalog is pending, inputs are awaited at most this long between checks.
+const FONT_POLL: Duration = Duration::from_millis(20);
 
 enum Content {
     Text(Box<TextComparison>),
@@ -25,7 +30,10 @@ struct Viewport {
 
 pub(crate) struct Capture<'a> {
     pub factory: &'a NativeCapture,
-    pub cancel: &'a AtomicBool,
+    pub storage: Option<&'a StorageHint>,
+    pub viewers: &'a ImageViewers,
+    pub fonts: &'a Arc<FixedPitchFonts>,
+    pub cancel: &'a Arc<AtomicBool>,
 }
 
 impl Capture<'_> {
@@ -34,6 +42,31 @@ impl Capture<'_> {
         let result = (self.factory)(path, self.cancel);
         check_cancel(self.cancel)?;
         result
+    }
+
+    /// Only a positive local-SSD answer admits this source's reads as shared I/O.
+    fn confirmed_ssd(&self, path: &std::path::Path) -> bool {
+        self.storage.is_some_and(|storage| storage(path))
+    }
+
+    /// Image viewers are optional: a missing registered runtime or a failed discovery
+    /// cannot disable text comparison. A failure is reported on the status line and
+    /// returned, so a comparison that then fails can explain it; the next comparison
+    /// discovers again. Opening an image session revalidates its package.
+    fn image_providers(
+        &self,
+        output: &Mailbox,
+    ) -> (Arc<[midnight_image_viewer_host::Provider]>, Option<String>) {
+        match self.viewers.get(|| {
+            output.put(Output::Status("Checking installed image viewers…".into()));
+        }) {
+            Ok(providers) => (providers, None),
+            Err(error) => {
+                let reason = format!("Installed image viewers could not be checked: {error}");
+                output.put(Output::Status(reason.clone()));
+                (Arc::from([]), Some(reason))
+            }
+        }
     }
 }
 
@@ -84,10 +117,12 @@ pub(crate) fn run(
             }
             Err(choice) => {
                 output.put(Output::ChooseFiles(choice));
+                // Session::close sets the cancellation flag before it queues Close, so a
+                // blocking receive needs no polling interval.
                 loop {
                     check_cancel(cancel)?;
-                    match receiver.recv_timeout(Duration::from_millis(30)) {
-                        Ok(Input::Close) | Err(RecvTimeoutError::Disconnected) => return Ok(()),
+                    match receiver.recv() {
+                        Ok(Input::Close) | Err(_) => return Ok(()),
                         Ok(Input::Compare(paths)) => break Ok(paths),
                         Ok(Input::Browse { side, paths, owner }) => {
                             break Err(picker.browse(side, paths, owner));
@@ -114,10 +149,6 @@ fn compare(
     capture: &Capture<'_>,
 ) -> Result<(), String> {
     let cancel = capture.cancel;
-    #[cfg(test)]
-    let first_frame_started = std::time::Instant::now();
-    #[cfg(test)]
-    crate::trace_first_frame("capture-start", first_frame_started);
     let left = capture.open(&paths[0]).map_err(|error| {
         format!(
             "File A could not be opened: {error}\n{}",
@@ -131,13 +162,10 @@ fn compare(
         )
     })?;
     let sources = [left, right];
-    #[cfg(test)]
-    crate::trace_first_frame("capture-complete", first_frame_started);
-    // Image viewers are optional: a missing registered runtime cannot disable text diff.
-    let providers = midnight_plugin_host::installed_executable()
-        .ok()
-        .and_then(|executable| midnight_image_viewer_host::discover(&executable).ok())
-        .unwrap_or_default();
+    let ssd = paths.each_ref().map(|path| capture.confirmed_ssd(path));
+    check_cancel(cancel)?;
+    let (providers, viewers_unavailable) = capture.image_providers(output);
+    check_cancel(cancel)?;
     let selected = paths.each_ref().map(|path| {
         path.extension()
             .and_then(|extension| extension.to_str())
@@ -158,41 +186,53 @@ fn compare(
                 .into(),
         );
     }
-    let mut content = match selected {
-        [Some(left), Some(right)] => {
-            output.put(Output::Status(
-                "Decoding images in restricted workers…".into(),
-            ));
-            Content::Images(Box::new(Images::open([left, right], &sources, cancel)?))
-        }
-        [None, None] => {
-            output.put(Output::Status("Reading and comparing text…".into()));
-            #[cfg(test)]
-            crate::trace_first_frame("text-read-start", first_frame_started);
-            let left = crate::text::read(&sources[0], cancel)?;
-            #[cfg(test)]
-            crate::trace_first_frame("left-text-read-complete", first_frame_started);
-            let right = crate::text::read(&sources[1], cancel)?;
-            #[cfg(test)]
-            crate::trace_first_frame("text-reads-complete", first_frame_started);
-            let text = TextComparison::new(&left, &right, cancel)?;
-            #[cfg(test)]
-            crate::trace_first_frame("text-prepare-complete", first_frame_started);
-            Content::Text(Box::new(text))
-        }
-        _ => return Err("Select two supported images or two text files.".into()),
-    };
+    let mut fonts: Option<FontCatalog> = None;
+    let mut content = (|| -> Result<Content, String> {
+        Ok(match selected {
+            [Some(left), Some(right)] => {
+                output.put(Output::Status(
+                    "Decoding images in restricted workers…".into(),
+                ));
+                Content::Images(Box::new(Images::open(
+                    [left, right],
+                    &sources,
+                    ssd,
+                    cancel,
+                )?))
+            }
+            [None, None] => {
+                // The catalog scan overlaps the reads and the diff. A catalog the service
+                // already holds is ready at once, so the first frame uses the preferred family.
+                fonts = Some(capture.fonts.request(cancel));
+                output.put(Output::Status("Reading and comparing text…".into()));
+                let left = crate::text::read(&sources[0], ssd[0], cancel)?;
+                let right = crate::text::read(&sources[1], ssd[1], cancel)?;
+                let text = TextComparison::new(&left, &right, cancel)?;
+                Content::Text(Box::new(text))
+            }
+            _ => return Err("Select two supported images or two text files.".to_owned()),
+        })
+    })()
+    .map_err(|message| match &viewers_unavailable {
+        // Without the viewer list every file was compared as text; say why.
+        Some(reason) => format!("{message}\n{reason}"),
+        None => message,
+    })?;
     viewport.geometry = bounded(viewport.geometry);
     let mut dirty = true;
-    #[cfg(test)]
-    let mut first_frame = true;
     loop {
         check_cancel(cancel)?;
-        if dirty {
-            #[cfg(test)]
-            if first_frame {
-                crate::trace_first_frame("first-frame-revalidate", first_frame_started);
+        if let Some(reply) = fonts.as_ref().and_then(FontCatalog::reply) {
+            fonts = None;
+            // A cancelled scan ends the comparison at the next check; a failed scan keeps
+            // the generic family without a chooser list.
+            if let (Some(families), Content::Text(text)) = (reply, &mut content) {
+                // Paint in the resolved family and publish the chooser list.
+                text.set_font_catalog(families, &appearance.family);
+                dirty = true;
             }
+        }
+        if dirty {
             for source in &sources {
                 source
                     .revalidate()
@@ -202,10 +242,6 @@ fn compare(
                 Content::Text(text) => text.paint(viewport.geometry, appearance, cancel)?,
                 Content::Images(images) => images.paint(viewport.geometry, cancel)?,
             };
-            #[cfg(test)]
-            if first_frame {
-                crate::trace_first_frame("first-frame-painted", first_frame_started);
-            }
             frame.geometry_revision = viewport.revision;
             check_cancel(cancel)?;
             for source in &sources {
@@ -218,16 +254,20 @@ fn compare(
                 frame,
                 names: paths.each_ref().map(|path| path.display().to_string()),
             });
-            #[cfg(test)]
-            if first_frame {
-                crate::trace_first_frame("first-frame-published", first_frame_started);
-                first_frame = false;
-            }
             dirty = false;
         }
-        match receiver.recv_timeout(Duration::from_millis(30)) {
-            Ok(Input::Close) | Err(RecvTimeoutError::Disconnected) => break,
-            Err(RecvTimeoutError::Timeout) => continue,
+        // Idle comparisons block until input, Close or the session's disconnection; only a
+        // pending font catalog bounds the wait.
+        let input = if fonts.is_some() {
+            match receiver.recv_timeout(FONT_POLL) {
+                Err(RecvTimeoutError::Timeout) => continue,
+                result => result.map_err(|_| ()),
+            }
+        } else {
+            receiver.recv().map_err(|_| ())
+        };
+        match input {
+            Ok(Input::Close) | Err(()) => break,
             Ok(input) => {
                 dirty |= apply(
                     input,
@@ -272,6 +312,8 @@ fn apply(
             text.scroll_pixels(y);
             text.horizontal = (text.horizontal - x).clamp(0.0, 262144.0);
         }
+        (Content::Text(text), Input::Lines(lines)) => text.scroll(i64::from(lines)),
+        (Content::Text(text), Input::Pages(pages)) => text.scroll_pages(pages),
         (Content::Text(text), Input::Seek(value)) => text.seek(value),
         (Content::Text(text), Input::Difference { backwards }) => text.difference(backwards),
         (Content::Text(text), Input::DifferenceEdge { last }) => text.difference_edge(last),
@@ -281,6 +323,13 @@ fn apply(
         (Content::Images(images), Input::Fit) => images.fit(),
         (Content::Images(images), Input::Scroll { x, y }) => {
             images.pan(x * geometry.scale, y * geometry.scale)
+        }
+        // A key line pans 24 logical pixels; a page pans one viewport height.
+        (Content::Images(images), Input::Lines(lines)) => {
+            images.pan(0.0, -(lines as f32) * 24.0 * geometry.scale)
+        }
+        (Content::Images(images), Input::Pages(pages)) => {
+            images.pan(0.0, -(pages as f32) * geometry.height as f32)
         }
         _ => return false,
     }

@@ -74,6 +74,7 @@ fn target(mount: Arc<BlockingMount>, token: u64) -> Target {
         extension: "raw".into(),
         selected: false,
         hovered: false,
+        confirmed_ssd: false,
         capture: ArchiveThumbnailSource {
             mount,
             node: ArchiveNode {
@@ -95,13 +96,13 @@ fn target(mount: Arc<BlockingMount>, token: u64) -> Target {
     }
 }
 struct Running {
-    input: Arc<Mutex<Mailbox>>,
+    input: Arc<Shared>,
     gate: Arc<Gate>,
     worker: Option<thread::JoinHandle<()>>,
 }
 impl Drop for Running {
     fn drop(&mut self) {
-        self.input.lock().unwrap().stopped = true;
+        self.input.signal(|mailbox| mailbox.stopped = true);
         self.gate.release();
         if let Some(worker) = self.worker.take() {
             worker.join().unwrap();
@@ -117,17 +118,13 @@ fn cancelled_shared_archive_reads_retain_both_real_worker_slots_until_they_drain
     ));
     let gate = Arc::new(Gate::default());
     let mount = Arc::new(BlockingMount(gate.clone()));
-    let input = Arc::new(Mutex::new(Mailbox {
-        next: Some(View {
+    let input = Shared::new();
+    input.signal(|mailbox| {
+        mailbox.next = Some(View {
             generation: 1,
             targets: vec![target(mount.clone(), 1), target(mount.clone(), 2)],
-        }),
-        retries: HashMap::new(),
-        stopped: false,
-        clear_cache: false,
-        cache_location: None,
-        notice: None,
-    }));
+        });
+    });
     let (started_tx, started) = mpsc::sync_channel(4);
     let (drained_tx, drained) = mpsc::sync_channel(4);
     let renderer: Renderer = Arc::new(move |target, _, work, _, cancel| {
@@ -175,12 +172,14 @@ fn cancelled_shared_archive_reads_retain_both_real_worker_slots_until_they_drain
     ];
     first.sort_unstable();
     assert_eq!(first, [1, 2]);
-    input.lock().unwrap().next = Some(View {
-        generation: 2,
-        targets: vec![target(mount.clone(), 3)],
+    input.signal(|mailbox| {
+        mailbox.next = Some(View {
+            generation: 2,
+            targets: vec![target(mount.clone(), 3)],
+        });
     });
     let deadline = Instant::now() + Duration::from_secs(3);
-    while input.lock().unwrap().next.is_some() && Instant::now() < deadline {
+    while input.lock().next.is_some() && Instant::now() < deadline {
         thread::sleep(Duration::from_millis(1));
     }
     assert!(matches!(

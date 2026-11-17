@@ -33,6 +33,22 @@ impl Output {
         self.events.push_back(event);
         Ok(())
     }
+    /// Replace pending output with the one diagnostic a stopped session can still deliver.
+    fn terminal(&mut self, document: u64, message: String) {
+        self.frame = None;
+        self.events.clear();
+        self.events.push_back(api::Event {
+            header: api::Header {
+                session: 1,
+                document,
+                sequence: 1,
+            },
+            kind: api::EventKind::Error {
+                code: api::ErrorCode::Runtime,
+                message,
+            },
+        });
+    }
 }
 
 /// Bounded nonblocking command endpoint. Construction, destruction and drain belong on the
@@ -43,6 +59,7 @@ pub struct Session {
     output: Arc<Mutex<Output>>,
     closed: Arc<AtomicBool>,
     document: Arc<AtomicU64>,
+    wake: Arc<dyn Fn() -> bool + Send + Sync>,
     thread: Option<JoinHandle<()>>,
 }
 
@@ -64,6 +81,7 @@ impl Session {
         let document = Arc::new(AtomicU64::new(1));
         let requested_document = document.clone();
         let events = output.clone();
+        let actor_wake = wake.clone();
         let resources = resources.or_else(|| {
             source
                 .resources()
@@ -81,9 +99,13 @@ impl Session {
                     &events,
                     &stopped,
                     &requested_document,
-                    &wake,
+                    &actor_wake,
                 );
-                if let Err(message) = result {
+                // A requested close needs no diagnostic, and a failed send already published
+                // the reason; a transport error caused by that stop must not replace it.
+                if let Err(message) = result
+                    && !stopped.load(Ordering::Acquire)
+                {
                     // Only diagnostics, never document contents or URLs, are sent to presentation.
                     if let Ok(mut output) = events.lock() {
                         output.frame = None;
@@ -100,7 +122,7 @@ impl Session {
                             },
                         });
                     }
-                    wake();
+                    actor_wake();
                 }
                 stopped.store(true, Ordering::Release);
             })
@@ -111,6 +133,7 @@ impl Session {
             output,
             closed,
             document,
+            wake,
             thread: Some(thread),
         })
     }
@@ -134,7 +157,7 @@ impl Session {
                 })
                 .is_err()
             {
-                self.close();
+                self.fail("Browser document IDs are exhausted; reopen the document.");
                 return false;
             }
             if let Ok(mut output) = self.output.lock() {
@@ -162,11 +185,23 @@ impl Session {
             })
         });
         if !accepted {
-            // Never lose ordered button/key releases and leave a page with stuck input.
-            self.closed.store(true, Ordering::Release);
+            // Never lose ordered button/key releases and leave a page with stuck input:
+            // the browser stops, and presentation is told why instead of retrying it.
+            self.fail("Browser input overflowed while the page was busy; reopen the document.");
             return false;
         }
         true
+    }
+
+    /// Stop the session with a terminal diagnostic the presentation drains like any error.
+    fn fail(&self, message: &str) {
+        if self.closed.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        if let Ok(mut output) = self.output.lock() {
+            output.terminal(self.document.load(Ordering::Acquire), message.into());
+        }
+        (self.wake)();
     }
 
     pub fn drain(&self, maximum: usize) -> Vec<api::Event> {
@@ -250,6 +285,49 @@ mod tests {
         assert_eq!(output.frame.as_ref().unwrap().header.sequence, 300);
         assert!(output.events.is_empty());
     }
+    #[test]
+    fn input_overflow_stops_the_session_with_a_drained_terminal_error() {
+        let woken = Arc::new(AtomicU64::new(0));
+        let count = woken.clone();
+        let output = Arc::new(Mutex::new(Output::default()));
+        output
+            .lock()
+            .unwrap()
+            .put(event(1, api::EventKind::Ready))
+            .unwrap();
+        let session = Session {
+            input: Arc::new(Mutex::new(
+                midnight_web_viewer_sdk::CommandQueue::new(2).unwrap(),
+            )),
+            sequence: AtomicU64::new(1),
+            output,
+            closed: Arc::new(AtomicBool::new(false)),
+            document: Arc::new(AtomicU64::new(1)),
+            wake: Arc::new(move || {
+                count.fetch_add(1, Ordering::SeqCst);
+                true
+            }),
+            thread: None,
+        };
+        assert!(session.send(api::CommandKind::Copy));
+        assert!(session.send(api::CommandKind::Copy));
+        assert!(!session.send(api::CommandKind::Copy), "the queue is full");
+        assert!(session.closed.load(Ordering::Acquire));
+        assert_eq!(woken.load(Ordering::SeqCst), 1);
+        let events = session.drain(8);
+        assert!(
+            matches!(&events[..], [api::Event { kind: api::EventKind::Error { message, .. }, .. }]
+                if message.contains("overflowed")),
+            "a silently closed browser would keep reporting a transient busy queue"
+        );
+        assert!(!session.send(api::CommandKind::Copy));
+        assert_eq!(
+            woken.load(Ordering::SeqCst),
+            1,
+            "the failure is reported once"
+        );
+    }
+
     #[test]
     fn control_events_are_bounded_and_not_silently_dropped() {
         let mut output = Output::default();

@@ -1,11 +1,11 @@
 //! A bounded presentation-only wheel impulse, independent of native input APIs.
 use std::time::Duration;
 
-pub const WHEEL_DURATION: Duration = Duration::from_millis(200);
+const WHEEL_DURATION: Duration = Duration::from_millis(200);
 // Wake high-refresh displays often enough; spend time only at a real redraw.
 pub const WHEEL_FRAME: Duration = Duration::from_millis(8);
 const MAX_FRAME_TIME: Duration = Duration::from_millis(16);
-pub const MAX_PENDING_PIXELS: f64 = 2400.0;
+const MAX_PENDING_PIXELS: f64 = 2400.0;
 
 #[derive(Default)]
 pub struct WheelMotion {

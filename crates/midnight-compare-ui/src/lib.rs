@@ -44,26 +44,12 @@ struct OpenWindow {
     requested_font: RefCell<Option<String>>,
     surfaces: RefCell<images::Surfaces>,
 }
+/// Inputs waiting for room in the bounded session queue.
+const MAX_PENDING: usize = 64;
+
 impl OpenWindow {
     fn send(&self, input: Input) {
-        let mut pending = self.pending.borrow_mut();
-        if let Some(old) = pending.last_mut().filter(|old| {
-            !matches!(
-                input,
-                Input::Difference { .. } | Input::DifferenceEdge { .. } | Input::Zoom(_)
-            ) && std::mem::discriminant(*old) == std::mem::discriminant(&input)
-        }) {
-            if let (Input::Scroll { x, y }, Input::Scroll { x: new_x, y: new_y }) =
-                (&mut *old, &input)
-            {
-                *x = (*x + new_x).clamp(-262144.0, 262144.0);
-                *y = (*y + new_y).clamp(-262144.0, 262144.0);
-            } else {
-                *old = input;
-            }
-        } else if pending.len() < 64 {
-            pending.push(input);
-        }
+        queue_input(&mut self.pending.borrow_mut(), input);
     }
     fn close(&self) {
         if !self.closed.replace(true) {
@@ -353,6 +339,79 @@ fn bind(open: &Rc<OpenWindow>, keys: KeyResolver) {
     });
 }
 
+/// Navigation only moves the view, so a full queue may shed it. Every other input sets
+/// state the window already shows (geometry, image mode, font, fit or actual pixels) or
+/// answers a file choice that keeps the chooser busy until it is handled.
+fn navigation(input: &Input) -> bool {
+    matches!(
+        input,
+        Input::Scroll { .. }
+            | Input::Lines(_)
+            | Input::Pages(_)
+            | Input::Seek(_)
+            | Input::Difference { .. }
+            | Input::DifferenceEdge { .. }
+            | Input::Zoom(_)
+    )
+}
+
+/// State inputs of one kind: a newer one makes a queued one obsolete.
+fn same_state(old: &Input, new: &Input) -> bool {
+    matches!(
+        (old, new),
+        (Input::Resize(..), Input::Resize(..))
+            | (Input::Mode(_), Input::Mode(_))
+            | (Input::FontFamily(_), Input::FontFamily(_))
+            | (
+                Input::Fit | Input::ActualPixels,
+                Input::Fit | Input::ActualPixels
+            )
+            | (
+                Input::Compare(_) | Input::Browse { .. },
+                Input::Compare(_) | Input::Browse { .. }
+            )
+            | (Input::Close, Input::Close)
+    )
+}
+
+/// Coalesce repeated inputs and bound the queue without dropping state. A state input
+/// replaces a queued one of its kind and is queued last, after the navigation it
+/// follows, so at most one of each kind waits and a full queue always holds navigation.
+/// The oldest navigation input is shed first.
+fn queue_input(pending: &mut Vec<Input>, input: Input) {
+    if !navigation(&input) {
+        pending.retain(|old| !same_state(old, &input));
+        pending.push(input);
+    } else if let Some(old) = pending.last_mut().filter(|old| {
+        !matches!(
+            input,
+            Input::Difference { .. } | Input::DifferenceEdge { .. } | Input::Zoom(_)
+        ) && std::mem::discriminant(*old) == std::mem::discriminant(&input)
+    }) {
+        match (&mut *old, input) {
+            (Input::Scroll { x, y }, Input::Scroll { x: new_x, y: new_y }) => {
+                *x = (*x + new_x).clamp(-262144.0, 262144.0);
+                *y = (*y + new_y).clamp(-262144.0, 262144.0);
+            }
+            // Key repeats accumulate; replacing them would lose steps.
+            (Input::Lines(lines), Input::Lines(more))
+            | (Input::Pages(lines), Input::Pages(more)) => {
+                *lines = lines.saturating_add(more);
+            }
+            // A newer absolute position replaces the queued one.
+            (old, input) => *old = input,
+        }
+    } else {
+        pending.push(input);
+    }
+    while pending.len() > MAX_PENDING {
+        let Some(oldest) = pending.iter().position(navigation) else {
+            break;
+        };
+        pending.remove(oldest);
+    }
+}
+
 fn key(open: &OpenWindow, action: &str) -> bool {
     // File fields own editing/navigation keys, even if mapped globally for the viewer.
     if open.window.get_choosing_files() && action != "viewer.close" {
@@ -369,18 +428,12 @@ fn key(open: &OpenWindow, action: &str) -> bool {
         "compare.last-difference" => Input::DifferenceEdge { last: true },
         "viewer.first" => Input::Seek(0.0),
         "viewer.last" => Input::Seek(1.0),
-        "viewer.up" => Input::Scroll { x: 0.0, y: 24.0 },
-        "viewer.down" => Input::Scroll { x: 0.0, y: -24.0 },
+        "viewer.up" => Input::Lines(-1),
+        "viewer.down" => Input::Lines(1),
         "viewer.left" => Input::Scroll { x: 48.0, y: 0.0 },
         "viewer.right" => Input::Scroll { x: -48.0, y: 0.0 },
-        "viewer.page-up" => Input::Scroll {
-            x: 0.0,
-            y: open.window.get_content_height(),
-        },
-        "viewer.page-down" => Input::Scroll {
-            x: 0.0,
-            y: -open.window.get_content_height(),
-        },
+        "viewer.page-up" => Input::Pages(-1),
+        "viewer.page-down" => Input::Pages(1),
         "viewer.zoom-in" => Input::Zoom(1.25),
         "viewer.zoom-out" => Input::Zoom(0.8),
         "viewer.fit" => Input::Fit,
@@ -392,4 +445,117 @@ fn key(open: &OpenWindow, action: &str) -> bool {
 }
 fn color(value: [u8; 4]) -> slint::Color {
     slint::Color::from_argb_u8(value[3], value[0], value[1], value[2])
+}
+
+#[cfg(test)]
+mod queue_tests {
+    use super::*;
+
+    fn resize(width: u32, revision: u64) -> Input {
+        Input::Resize(
+            ViewerGeometry {
+                width,
+                height: 10,
+                scale: 1.0,
+            },
+            revision,
+        )
+    }
+
+    fn count(pending: &[Input], kind: impl Fn(&Input) -> bool) -> usize {
+        pending.iter().filter(|input| kind(input)).count()
+    }
+
+    #[test]
+    fn a_full_queue_keeps_the_newest_geometry_and_accumulates_key_steps() {
+        let mut pending = Vec::new();
+        queue_input(&mut pending, resize(100, 1));
+        for _ in 0..3 {
+            queue_input(&mut pending, Input::Lines(1));
+        }
+        queue_input(&mut pending, Input::Pages(-1));
+        queue_input(&mut pending, Input::Pages(-1));
+        assert!(matches!(
+            pending[..],
+            [Input::Resize(_, 1), Input::Lines(3), Input::Pages(-2)]
+        ));
+        // A mode click and a font choice made during a long decode, then a held key.
+        queue_input(&mut pending, Input::Mode(ImageMode::OnionSkin));
+        queue_input(&mut pending, Input::FontFamily("Cascadia Mono".into()));
+        for _ in 0..2 * MAX_PENDING {
+            queue_input(&mut pending, Input::Zoom(1.25));
+        }
+        assert_eq!(pending.len(), MAX_PENDING);
+        // State inputs survive a navigation flood.
+        assert!(
+            matches!(pending[0], Input::Resize(_, 1)),
+            "{:?}",
+            pending[0]
+        );
+        assert!(matches!(pending[1], Input::Mode(ImageMode::OnionSkin)));
+        assert!(matches!(&pending[2], Input::FontFamily(family) if family == "Cascadia Mono"));
+        assert_eq!(
+            count(&pending, |input| matches!(input, Input::Zoom(_))),
+            MAX_PENDING - 3,
+            "the oldest navigation is shed first"
+        );
+        queue_input(&mut pending, resize(200, 2));
+        assert_eq!(pending.len(), MAX_PENDING);
+        assert!(
+            matches!(pending.last(), Some(Input::Resize(geometry, 2)) if geometry.width == 200),
+            "the newest geometry is never dropped"
+        );
+        assert_eq!(
+            count(&pending, |input| matches!(input, Input::Resize(..))),
+            1
+        );
+        assert_eq!(count(&pending, |input| matches!(input, Input::Mode(_))), 1);
+        assert_eq!(
+            count(&pending, |input| matches!(input, Input::FontFamily(_))),
+            1
+        );
+    }
+
+    #[test]
+    fn newer_state_replaces_queued_state_of_its_kind_and_stays_after_earlier_navigation() {
+        let mut pending = Vec::new();
+        let paths = [std::path::PathBuf::from("a.txt"), "b.txt".into()];
+        queue_input(&mut pending, Input::Compare(paths.clone()));
+        // Alternating state kinds cannot fill the queue: one of each kind waits.
+        for round in 0..MAX_PENDING {
+            queue_input(&mut pending, Input::Mode(ImageMode::Swipe));
+            queue_input(&mut pending, Input::Zoom(2.0));
+            queue_input(
+                &mut pending,
+                if round % 2 == 0 {
+                    Input::Fit
+                } else {
+                    Input::ActualPixels
+                },
+            );
+            queue_input(&mut pending, Input::FontFamily(format!("Mono {round}")));
+        }
+        assert_eq!(pending.len(), MAX_PENDING);
+        assert!(
+            matches!(&pending[0], Input::Compare(queued) if *queued == paths),
+            "a queued file choice is never dropped"
+        );
+        assert_eq!(count(&pending, |input| !navigation(input)), 4);
+        // The last fit choice follows the zoom steps queued before it.
+        let fit = pending
+            .iter()
+            .position(|input| matches!(input, Input::Fit | Input::ActualPixels))
+            .unwrap();
+        assert!(matches!(pending[fit], Input::ActualPixels));
+        assert!(matches!(pending[fit - 1], Input::Zoom(_)));
+        let last = format!("Mono {}", MAX_PENDING - 1);
+        assert!(matches!(pending.last(), Some(Input::FontFamily(family)) if *family == last));
+        // Consecutive absolute positions keep only the newest.
+        let mut pending = vec![resize(100, 1)];
+        queue_input(&mut pending, Input::Mode(ImageMode::Swipe));
+        queue_input(&mut pending, Input::Seek(0.25));
+        queue_input(&mut pending, Input::Seek(0.75));
+        assert_eq!(pending.len(), 3);
+        assert!(matches!(pending[2], Input::Seek(position) if position == 0.75));
+    }
 }

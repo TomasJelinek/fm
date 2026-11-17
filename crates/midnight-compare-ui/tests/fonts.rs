@@ -4,16 +4,11 @@ use slint::{
     ComponentHandle, Model,
     platform::software_renderer::{MinimalSoftwareWindow, RepaintBufferType},
 };
-use std::{
-    cell::RefCell,
-    rc::Rc,
-    sync::Arc,
-    time::{Duration, Instant},
-};
+use std::{cell::RefCell, rc::Rc, sync::Arc};
 
 #[path = "support/mod.rs"]
 mod support;
-use support::TestPlatform;
+use support::{TestPlatform, wait_for};
 
 #[test]
 fn comparator_offers_fixed_pitch_fonts_persists_explicit_choice_and_fits_small_window() {
@@ -52,7 +47,9 @@ fn comparator_offers_fixed_pitch_fonts_persists_explicit_choice_and_fits_small_w
         .unwrap()
         .upgrade()
         .unwrap();
-    wait_for(|| window.get_fonts_ready());
+    wait_for(&window, "finish font discovery", || {
+        window.get_fonts_ready()
+    });
     let families = window.get_font_families();
     assert_eq!(families.row_data(0).unwrap(), "System monospace");
     assert!(
@@ -72,25 +69,33 @@ fn comparator_offers_fixed_pitch_fonts_persists_explicit_choice_and_fits_small_w
     window.invoke_change_font(-1);
     window.invoke_change_font(20_000);
     assert!(saved.borrow().is_empty());
-    if families.row_count() > 1 {
+    let choices = families.row_count() > 1;
+    if choices {
         // Rapid choices must retain the last explicit choice, even before the next frame.
         window.invoke_change_font(0);
         window.invoke_change_font(1);
         window.invoke_change_font(0);
-        wait_for(|| window.get_font_index() == 0);
-        assert_eq!(saved.borrow().last().unwrap(), "monospace");
-        for _ in 0..10 {
-            std::thread::sleep(Duration::from_millis(20));
-            slint::platform::update_timers_and_animations();
-        }
         assert_eq!(window.get_font_index(), 0);
+        assert_eq!(saved.borrow().last().unwrap(), "monospace");
     }
+    let geometry = window.get_geometry_revision();
     native.set_size(slint::PhysicalSize::new(320, 200));
     window
         .window()
         .dispatch_event(slint::platform::WindowEvent::Resized {
             size: slint::LogicalSize::new(320.0, 200.0),
         });
+    // The worker handles inputs in order and the resize follows the choices, so once
+    // its frame is presented every frame painted before the last choice took effect has
+    // been presented or replaced.
+    wait_for(&window, "present the resized frame", || {
+        window.get_geometry_revision() > geometry
+            && window.get_frame_revision() == window.get_geometry_revision()
+    });
+    if choices {
+        // Those frames must not have moved the selection back.
+        assert_eq!(window.get_font_index(), 0);
+    }
     window.set_compact(true);
     let mut pixels = vec![slint::Rgb8Pixel::default(); 320 * 200];
     native.draw_if_needed(|renderer| {
@@ -102,16 +107,4 @@ fn comparator_offers_fixed_pitch_fonts_persists_explicit_choice_and_fits_small_w
     manager.close_all();
     drop(runtime);
     std::fs::remove_dir_all(&directory).unwrap();
-}
-
-fn wait_for(done: impl Fn() -> bool) {
-    let deadline = Instant::now() + Duration::from_secs(15);
-    while !done() {
-        assert!(
-            Instant::now() < deadline,
-            "Comparator did not finish font discovery/rendering"
-        );
-        std::thread::sleep(Duration::from_millis(10));
-        slint::platform::update_timers_and_animations();
-    }
 }

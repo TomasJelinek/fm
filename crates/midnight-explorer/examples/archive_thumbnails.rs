@@ -211,6 +211,7 @@ fn target(capture: Capture, extension: &str, selected: bool) -> Target {
         extension: extension.into(),
         selected,
         hovered: false,
+        confirmed_ssd: false,
         capture,
     }
 }

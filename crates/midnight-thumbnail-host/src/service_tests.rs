@@ -27,25 +27,27 @@ fn target(token: u64) -> Target {
         extension: "raw".into(),
         selected: false,
         hovered: false,
+        confirmed_ssd: false,
         capture: Arc::new(|_| Ok(Arc::new(Bytes))),
     }
 }
-
-#[test]
-fn a_larger_cached_decode_covers_smaller_requests_even_when_the_source_image_is_tiny() {
+/// Private cache stores need an owner-only ancestry, so every test uses the same
+/// repository build location unless CI supplies its native test root.
+fn private_root() -> tempfile::TempDir {
     let parent = std::env::var_os("MIDNIGHT_NATIVE_TEST_ROOT")
         .map(PathBuf::from)
         .unwrap_or_else(|| {
             std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
                 .ancestors()
                 .nth(2)
-                .unwrap()
+                .expect("thumbnail host belongs to the repository crates directory")
                 .join("_build/private-tests")
         });
     std::fs::create_dir_all(&parent).unwrap();
-    let root = tempfile::tempdir_in(parent).unwrap();
-    let target = target(77);
-    let provider = Provider {
+    tempfile::tempdir_in(parent).unwrap()
+}
+fn fixture_provider(executable: PathBuf) -> Provider {
+    Provider {
         manifest: Manifest {
             protocol: 1,
             id: "fixture".into(),
@@ -54,8 +56,222 @@ fn a_larger_cached_decode_covers_smaller_requests_even_when_the_source_image_is_
             extensions: vec!["raw".into()],
             video: false,
         },
-        executable: root.path().join("decoder-deliberately-absent"),
+        executable,
+    }
+}
+/// Run the backend loop on its own thread; dropping the guard stops and joins it.
+struct Backend {
+    shared: Arc<Shared>,
+    worker: Option<thread::JoinHandle<()>>,
+}
+impl Backend {
+    fn start(output: mpsc::SyncSender<Ready>, cache: Arc<Mutex<Cache>>, render: Renderer) -> Self {
+        let shared = Shared::new();
+        let input = shared.clone();
+        let worker = thread::spawn(move || {
+            run(
+                input,
+                output,
+                vec![fixture_provider(PathBuf::new())],
+                cache,
+                render,
+            )
+        });
+        Self {
+            shared,
+            worker: Some(worker),
+        }
+    }
+    fn view(&self, generation: u64, targets: Vec<Target>) {
+        self.shared.signal(|mailbox| {
+            mailbox.next = Some(View {
+                generation,
+                targets,
+            });
+        });
+    }
+    fn wait_processed(&self, count: u64) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while self.shared.lock().processed < count {
+            assert!(
+                Instant::now() < deadline,
+                "backend did not process completions"
+            );
+            thread::yield_now();
+        }
+    }
+    fn stop(&mut self) {
+        self.shared.signal(|mailbox| mailbox.stopped = true);
+        if let Some(worker) = self.worker.take() {
+            worker.join().unwrap();
+        }
+    }
+}
+impl Drop for Backend {
+    fn drop(&mut self) {
+        if !thread::panicking() {
+            self.stop();
+        } else {
+            self.shared.signal(|mailbox| mailbox.stopped = true);
+        }
+    }
+}
+
+#[test]
+fn confirmed_ssd_capture_shares_the_io_gate_and_unknown_storage_stays_exclusive() {
+    let root = private_root();
+    let cache = Mutex::new(Cache::open(&root.path().join("cache"), 1024 * 1024, 0).unwrap());
+    let provider = fixture_provider(root.path().join("decoder-deliberately-absent"));
+    let work = Work {
+        generation: 1,
+        token: 7,
+        edge: 96,
+        frame: 0,
     };
+    for confirmed_ssd in [true, false] {
+        let observed = Arc::new(Mutex::new(None));
+        let gate = observed.clone();
+        let target = Target {
+            confirmed_ssd,
+            capture: Arc::new(move |_| {
+                *gate.lock().unwrap() = Some(midnight_work_budget::shared_io().snapshot());
+                Err(io::Error::other("admission observed"))
+            }),
+            ..target(7)
+        };
+        assert!(render(&target, &provider, work, &cache, &AtomicBool::new(false)).is_err());
+        let snapshot = observed.lock().unwrap().take().unwrap();
+        if confirmed_ssd {
+            // A long transfer holding shared slots must not block warm SSD thumbnails.
+            assert!(!snapshot.exclusive && snapshot.active_shared >= 1);
+        } else {
+            assert!(
+                snapshot.exclusive,
+                "unknown storage keeps exclusive capture"
+            );
+        }
+    }
+}
+
+#[test]
+fn an_interruption_nobody_requested_backs_off_instead_of_respawning_the_job() {
+    let root = private_root();
+    let cache = Arc::new(Mutex::new(
+        Cache::open(&root.path().join("cache"), 1024 * 1024, 0).unwrap(),
+    ));
+    let (calls_tx, calls) = mpsc::channel();
+    let render: Renderer = Arc::new(move |_, _, work, _, _| {
+        calls_tx.send(work.token).unwrap();
+        if work.token == 1 {
+            // A stopped archive mount reports Interrupted for every member read.
+            Err(io::ErrorKind::Interrupted.into())
+        } else {
+            Err(io::Error::other("unsupported fixture"))
+        }
+    });
+    let (output, _ready) = mpsc::sync_channel(4);
+    let mut backend = Backend::start(output, cache, render);
+    backend.view(1, vec![target(1)]);
+    assert_eq!(calls.recv_timeout(Duration::from_secs(5)).unwrap(), 1);
+    backend.wait_processed(1);
+    // Revisit the same generation: only the new row may start while row 1 backs off.
+    backend.view(1, vec![target(1), target(2)]);
+    assert_eq!(calls.recv_timeout(Duration::from_secs(5)).unwrap(), 2);
+    backend.stop();
+    assert_eq!(
+        calls.try_iter().collect::<Vec<_>>(),
+        Vec::<u64>::new(),
+        "an uncancelled interruption must not respawn its decoder immediately"
+    );
+}
+
+#[test]
+fn saturated_presentation_still_cancels_stale_work_and_delivers_after_polling() {
+    let root = private_root();
+    let cache = Arc::new(Mutex::new(
+        Cache::open(&root.path().join("cache"), 1024 * 1024, 0).unwrap(),
+    ));
+    let (release_tx, release) = mpsc::channel::<()>();
+    let release = Mutex::new(release);
+    let (events_tx, events) = mpsc::channel();
+    let render: Renderer = Arc::new(move |_, _, work, _, cancel| {
+        match work.token {
+            2 if work.generation == 1 => release
+                .lock()
+                .unwrap()
+                .recv_timeout(Duration::from_secs(5))
+                .unwrap(),
+            3 => {
+                events_tx.send("3 started").unwrap();
+                let deadline = Instant::now() + Duration::from_secs(5);
+                while !cancel.load(Ordering::Acquire) && Instant::now() < deadline {
+                    thread::yield_now();
+                }
+                events_tx
+                    .send(if cancel.load(Ordering::Acquire) {
+                        "3 cancelled"
+                    } else {
+                        "3 timed out"
+                    })
+                    .unwrap();
+                return Err(io::ErrorKind::Interrupted.into());
+            }
+            _ => {}
+        }
+        Ok(CachedFrame {
+            edge: work.edge,
+            frame: Arc::new(Frame {
+                id: 0,
+                width: 1,
+                height: 1,
+                frame: 0,
+                rgba: vec![work.token as u8; 4],
+            }),
+        })
+    });
+    let (output, ready) = mpsc::sync_channel(1);
+    let mut backend = Backend::start(output, cache, render);
+    // Like Service::poll, taking a frame frees a slot and signals the backend.
+    let poll = |backend: &Backend| {
+        let frame = ready.recv_timeout(Duration::from_secs(5)).unwrap();
+        backend.shared.signal(|_| {});
+        frame
+    };
+    let notified = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let count = notified.clone();
+    backend.shared.lock().ready_notifier = Some(Arc::new(move || {
+        count.fetch_add(1, Ordering::SeqCst);
+    }));
+    backend.view(1, vec![target(1), target(2), target(3)]);
+    // Row 1 fills the one-slot queue; row 3 starts in its freed worker slot.
+    assert_eq!(
+        events.recv_timeout(Duration::from_secs(5)).unwrap(),
+        "3 started"
+    );
+    release_tx.send(()).unwrap();
+    backend.wait_processed(2);
+    // Row 2 now waits for presentation. A new view must still cancel stale row 3.
+    backend.view(2, vec![target(2)]);
+    assert_eq!(
+        events.recv_timeout(Duration::from_secs(5)).unwrap(),
+        "3 cancelled"
+    );
+    let first = poll(&backend);
+    assert_eq!((first.generation, first.token), (1, 1));
+    // Generation 1 left the view, so its stashed row-2 frame is never presented; row 2 is
+    // rendered again for generation 2 and delivered once presentation has room.
+    let second = poll(&backend);
+    assert_eq!((second.generation, second.token), (2, 2));
+    backend.stop();
+    assert!(ready.try_recv().is_err());
+    assert_eq!(notified.load(Ordering::SeqCst), 2);
+}
+
+#[test]
+fn a_larger_cached_decode_covers_smaller_requests_even_when_the_source_image_is_tiny() {
+    let root = private_root();
+    let target = target(77);
+    let provider = fixture_provider(root.path().join("decoder-deliberately-absent"));
     let identity = blake3::hash(&target.identity);
     let key = Key::new("fixture", identity.as_bytes(), &Bytes, (256, 256), "v1", 0).unwrap();
     let expected = Frame {
@@ -107,28 +323,8 @@ fn reopened_disk_frame_bypasses_decoder_and_content_reads_but_not_source_revisio
             panic!("a valid disk hit must not read/decode source content")
         }
     }
-    let parent = std::env::var_os("MIDNIGHT_NATIVE_TEST_ROOT")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                .ancestors()
-                .nth(2)
-                .expect("thumbnail host is in repository crates")
-                .join("_build/private-tests")
-        });
-    std::fs::create_dir_all(&parent).unwrap();
-    let root = tempfile::tempdir_in(parent).unwrap();
-    let mut provider = Provider {
-        manifest: Manifest {
-            protocol: 1,
-            id: "fixture".into(),
-            version: "v1".into(),
-            executable: "decoder-deliberately-absent".into(),
-            extensions: vec!["raw".into()],
-            video: false,
-        },
-        executable: root.path().join("decoder-deliberately-absent"),
-    };
+    let root = private_root();
+    let mut provider = fixture_provider(root.path().join("decoder-deliberately-absent"));
     let target = Target {
         capture: Arc::new(|_| Ok(Arc::new(MetadataOnly(9)))),
         ..target(77)
@@ -235,17 +431,7 @@ fn every_animation_sample_retains_the_same_captured_source_revision() {
 
 #[test]
 fn a_rejected_delivery_retries_from_cache_after_the_view_changes_without_recapturing() {
-    let parent = std::env::var_os("MIDNIGHT_NATIVE_TEST_ROOT")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                .ancestors()
-                .nth(2)
-                .unwrap()
-                .join("_build/private-tests")
-        });
-    std::fs::create_dir_all(&parent).unwrap();
-    let root = tempfile::tempdir_in(parent).unwrap();
+    let root = private_root();
     let mut cache = Cache::open(&root.path().join("cache"), 1024 * 1024, 0).unwrap();
     let captures = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let count = captures.clone();
@@ -278,27 +464,10 @@ fn a_rejected_delivery_retries_from_cache_after_the_view_changes_without_recaptu
             )
             .unwrap();
     }
-    let input = Arc::new(Mutex::new(Mailbox {
-        next: None,
-        retries: HashMap::new(),
-        stopped: false,
-        clear_cache: false,
-        cache_location: None,
-        notice: None,
-    }));
+    let shared = Shared::new();
     let (output, ready) = mpsc::sync_channel(4);
-    let worker_input = input.clone();
-    let provider = Provider {
-        manifest: Manifest {
-            protocol: 1,
-            id: "fixture".into(),
-            version: "v1".into(),
-            executable: "decoder-deliberately-absent".into(),
-            extensions: vec!["raw".into()],
-            video: false,
-        },
-        executable: root.path().join("decoder-deliberately-absent"),
-    };
+    let worker_input = shared.clone();
+    let provider = fixture_provider(root.path().join("decoder-deliberately-absent"));
     let worker = thread::spawn(move || {
         run(
             worker_input,
@@ -309,7 +478,7 @@ fn a_rejected_delivery_retries_from_cache_after_the_view_changes_without_recaptu
         );
     });
     let mut service = Service {
-        mailbox: input,
+        shared,
         ready,
         thread: Some(worker),
     };
@@ -321,10 +490,6 @@ fn a_rejected_delivery_retries_from_cache_after_the_view_changes_without_recaptu
     let second = service.ready.recv_timeout(Duration::from_secs(3)).unwrap();
     let rejected = if first.token == 1 { first } else { second };
     assert_eq!(rejected.edge, 256);
-    assert!(matches!(
-        service.ready.recv_timeout(Duration::from_millis(100)),
-        Err(mpsc::RecvTimeoutError::Timeout)
-    ));
     assert!(service.set_view(View {
         generation: 1,
         targets: vec![targets[0].clone()]
@@ -346,38 +511,18 @@ fn a_rejected_delivery_retries_from_cache_after_the_view_changes_without_recaptu
         2,
         "retry keeps the visible token's immutable source capture"
     );
-    assert!(matches!(
-        service.ready.recv_timeout(Duration::from_millis(100)),
-        Err(mpsc::RecvTimeoutError::Timeout)
-    ));
     service.stop();
     service.thread.take().unwrap().join().unwrap();
+    // Every delivery has happened once the backend has exited: nothing else was sent.
+    assert!(service.ready.try_recv().is_err());
 }
 
 #[test]
 fn increasing_one_visible_edge_reuses_its_pinned_capture_and_leaves_other_cached_frames() {
-    let parent = std::env::var_os("MIDNIGHT_NATIVE_TEST_ROOT")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                .ancestors()
-                .nth(2)
-                .unwrap()
-                .join("_build/private-tests")
-        });
-    std::fs::create_dir_all(&parent).unwrap();
-    let root = tempfile::tempdir_in(parent).unwrap();
+    let root = private_root();
     let cache = Arc::new(Mutex::new(
         Cache::open(&root.path().join("cache"), 1024 * 1024, 0).unwrap(),
     ));
-    let input = Arc::new(Mutex::new(Mailbox {
-        next: None,
-        retries: HashMap::new(),
-        stopped: false,
-        clear_cache: false,
-        cache_location: None,
-        notice: None,
-    }));
     let (output, ready) = mpsc::sync_channel(4);
     let captures = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let count = captures.clone();
@@ -424,42 +569,15 @@ fn increasing_one_visible_edge_reuses_its_pinned_capture_and_leaves_other_cached
             edge: work.edge,
         })
     });
-    let worker_input = input.clone();
-    let worker_cache = cache.clone();
-    let worker = thread::spawn(move || {
-        run(
-            worker_input,
-            output,
-            vec![Provider {
-                executable: PathBuf::new(),
-                manifest: Manifest {
-                    protocol: 1,
-                    id: "fixture".into(),
-                    version: "v1".into(),
-                    executable: "fixture".into(),
-                    extensions: vec!["raw".into()],
-                    video: false,
-                },
-            }],
-            worker_cache,
-            render,
-        )
-    });
-    input.lock().unwrap().next = Some(View {
-        generation: 1,
-        targets: targets(96),
-    });
+    let mut backend = Backend::start(output, cache.clone(), render);
+    backend.view(1, targets(96));
     for _ in 0..2 {
         assert_eq!(ready.recv_timeout(Duration::from_secs(3)).unwrap().edge, 96);
     }
-    input.lock().unwrap().next = Some(View {
-        generation: 1,
-        targets: targets(256),
-    });
+    backend.view(1, targets(256));
     let upgrade = ready.recv_timeout(Duration::from_secs(3)).unwrap();
     assert_eq!((upgrade.token, upgrade.edge), (1, 256));
-    input.lock().unwrap().stopped = true;
-    worker.join().unwrap();
+    backend.stop();
     assert_eq!(
         captures.load(Ordering::SeqCst),
         2,
@@ -481,32 +599,10 @@ fn increasing_one_visible_edge_reuses_its_pinned_capture_and_leaves_other_cached
 
 #[test]
 fn clearing_waits_for_old_decode_and_only_new_generation_may_repopulate() {
-    let parent = std::env::var_os("MIDNIGHT_NATIVE_TEST_ROOT")
-        .map(PathBuf::from)
-        .or_else(|| {
-            std::env::var_os("CARGO_TARGET_DIR")
-                .map(|path| PathBuf::from(path).join("private-tests"))
-        })
-        .unwrap_or_else(|| {
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                .ancestors()
-                .nth(2)
-                .expect("thumbnail host belongs to the repository crates directory")
-                .join("_build/private-tests")
-        });
-    std::fs::create_dir_all(&parent).unwrap();
-    let root = tempfile::tempdir_in(parent).unwrap();
+    let root = private_root();
     let cache = Arc::new(Mutex::new(
         Cache::open(&root.path().join("cache"), 1024 * 1024, 0).unwrap(),
     ));
-    let input = Arc::new(Mutex::new(Mailbox {
-        next: None,
-        retries: HashMap::new(),
-        stopped: false,
-        clear_cache: false,
-        cache_location: None,
-        notice: None,
-    }));
     let (ready_tx, ready) = mpsc::sync_channel(4);
     let (started_tx, started) = mpsc::sync_channel(1);
     let render: Renderer = Arc::new(move |target, _, work, cache, cancel| {
@@ -537,47 +633,22 @@ fn clearing_waits_for_old_decode_and_only_new_generation_may_repopulate() {
                 edge: work.edge,
             })
     });
-    let worker_input = input.clone();
-    let worker_cache = cache.clone();
-    let worker = thread::spawn(move || {
-        run(
-            worker_input,
-            ready_tx,
-            vec![Provider {
-                executable: PathBuf::new(),
-                manifest: Manifest {
-                    protocol: 1,
-                    id: "fixture".into(),
-                    version: "v1".into(),
-                    executable: "fixture".into(),
-                    extensions: vec!["raw".into()],
-                    video: false,
-                },
-            }],
-            worker_cache,
-            render,
-        )
-    });
-    input.lock().unwrap().next = Some(View {
-        generation: 1,
-        targets: vec![target(1)],
-    });
+    let mut backend = Backend::start(ready_tx, cache.clone(), render);
+    backend.view(1, vec![target(1)]);
     started.recv_timeout(Duration::from_secs(3)).unwrap();
-    {
-        let mut mailbox = input.lock().unwrap();
+    backend.shared.signal(|mailbox| {
         mailbox.clear_cache = true;
         mailbox.next = Some(View {
             generation: 2,
             targets: vec![target(2)],
         });
-    }
+    });
     let result = ready.recv_timeout(Duration::from_secs(3)).unwrap();
     assert_eq!(
         (result.generation, result.token, result.frame.rgba[0]),
         (2, 2, 2)
     );
-    input.lock().unwrap().stopped = true;
-    worker.join().unwrap();
+    backend.stop();
     let mut cache = cache.lock().unwrap();
     assert!(
         cache.get(&key(&[1]), &Bytes).unwrap().is_none(),

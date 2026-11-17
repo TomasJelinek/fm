@@ -130,7 +130,8 @@ impl Store {
 }
 
 /// The provider removes its own synthetic origin before requesting a relative URL.
-/// Reject schemes, authority changes and traversal even when percent encoded.
+/// Reject schemes, authority changes and traversal above the captured scope, even when
+/// percent encoded. `..` resolves lexically, like a browser, within the scope.
 fn resolve_segments(base: &[String], url: &str) -> Result<Vec<String>, String> {
     let path = url.split(['?', '#']).next().unwrap_or("");
     if path.is_empty() || path.starts_with('/') || path.starts_with('\\') {
@@ -164,7 +165,14 @@ fn resolve_segments(base: &[String], url: &str) -> Result<Vec<String>, String> {
         if segment.is_empty() || segment == "." {
             continue;
         }
-        if segment == ".." || segment.ends_with(['.', ' ']) {
+        if segment == ".." {
+            // `css/site.css` may name `../img/logo.png`; nothing may leave the scope root.
+            result
+                .pop()
+                .ok_or("HTML resource traversal above the document folder is forbidden")?;
+            continue;
+        }
+        if segment.ends_with(['.', ' ']) {
             return Err("HTML resource traversal is forbidden".into());
         }
         result.push(segment.to_owned());

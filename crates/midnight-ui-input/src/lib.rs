@@ -15,4 +15,4 @@ pub use native_scroll::{
 };
 pub use placement::WindowPlacement;
 pub use scroll_press::PressState;
-pub use wheel_motion::{MAX_PENDING_PIXELS, WHEEL_DURATION, WHEEL_FRAME, WheelMotion};
+pub use wheel_motion::{WHEEL_FRAME, WheelMotion};

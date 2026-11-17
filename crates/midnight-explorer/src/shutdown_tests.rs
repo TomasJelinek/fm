@@ -126,6 +126,50 @@ fn failed_panic_retirement_still_shuts_down_and_resumes_the_original_payload_wit
     assert_eq!(*phases.borrow(), ["spare failed", "runtime shutdown"]);
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn final_reclamation_is_bounded_by_the_exit_deadline() {
+    /// A destructor blocked like a handle close on an unreachable share.
+    struct Blocked(std::sync::mpsc::Receiver<()>);
+    impl Drop for Blocked {
+        fn drop(&mut self) {
+            let _ = self.0.recv_timeout(Duration::from_secs(10));
+        }
+    }
+    let queue = reclaim::start(&tokio::runtime::Handle::current(), Arc::new(|| {}));
+    let (release, blocked) = std::sync::mpsc::channel();
+    let started = Instant::now();
+    retire_final(
+        &queue,
+        vec![Box::new(Blocked(blocked))],
+        started + Duration::from_millis(100),
+    )
+    .await;
+    let waited = started.elapsed();
+    release.send(()).unwrap();
+    assert!(
+        waited < Duration::from_secs(5),
+        "a blocked destructor kept the exit waiting for {waited:?}"
+    );
+    // An idle reclaimer is awaited, so normal exits still reclaim everything first.
+    let (dropped, observed) = std::sync::mpsc::channel();
+    struct Probe(std::sync::mpsc::Sender<std::thread::ThreadId>);
+    impl Drop for Probe {
+        fn drop(&mut self) {
+            let _ = self.0.send(std::thread::current().id());
+        }
+    }
+    retire_final(
+        &queue,
+        vec![Box::new(Probe(dropped))],
+        Instant::now() + Duration::from_secs(10),
+    )
+    .await;
+    assert_ne!(
+        observed.try_recv().expect("reclaimed before returning"),
+        std::thread::current().id()
+    );
+}
+
 #[test]
 fn normal_results_preserve_existing_cleanup_error_and_software_retry_behavior() {
     for (attempt, expected_error, retry_expected) in [

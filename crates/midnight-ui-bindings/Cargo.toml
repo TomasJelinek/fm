@@ -15,6 +15,8 @@ doctest = false
 slint.workspace = true
 
 [build-dependencies]
+# Not called: build.rs compiles once through i-slint-compiler. Keeping slint-build keeps
+# the unified i-slint-compiler features identical to a normal slint_build compile.
 slint-build.workspace = true
 i-slint-compiler = { version = "=1.18.1", default-features = false, features = ["rust"] }
 spin_on = "=0.1.1"

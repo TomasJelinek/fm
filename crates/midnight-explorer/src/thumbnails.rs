@@ -1,4 +1,5 @@
 //! Composition bridge: copy bounded visible identities, and present completed RGBA buffers.
+use crate::wake_gate::WakeGate;
 use midnight_core::Command;
 use midnight_thumbnail_host::scheduler::Work;
 use midnight_thumbnail_host::service::{Service, View};
@@ -8,7 +9,8 @@ use std::{
     cell::{Cell, RefCell},
     collections::HashMap,
     rc::Rc,
-    time::Duration,
+    sync::Arc,
+    time::{Duration, Instant},
 };
 #[path = "thumbnail_content.rs"]
 mod content;
@@ -118,6 +120,228 @@ pub(crate) fn install(
     )
 }
 
+/// One delivery pass presents at most this many frames or spends this long uploading,
+/// whichever comes first; frames left over are taken by the next wake or pulse.
+const DELIVERY_FRAMES: usize = 16;
+const DELIVERY_TIME: Duration = Duration::from_millis(8);
+
+thread_local! {
+    /// The UI thread's bridge, reached by backend wakes through the Slint event loop.
+    static BRIDGE: RefCell<std::rc::Weak<RefCell<Bridge>>> =
+        const { RefCell::new(std::rc::Weak::new()) };
+}
+
+struct Bridge {
+    window: slint::Weak<MainWindow>,
+    presenter: Rc<RefCell<Presenter>>,
+    service: Rc<Service>,
+    capture: content::Factory,
+    send: Rc<dyn Fn(Command) -> bool>,
+    epoch: Rc<Cell<u64>>,
+    wake: Arc<WakeGate>,
+    deliveries: Deliveries,
+    tokens: HashMap<String, u64>,
+    next_token: u64,
+    tick: u64,
+    last_epoch: u64,
+}
+
+impl Bridge {
+    /// The periodic pulse: follow view changes and animation, and take ready frames.
+    fn pulse(&mut self) {
+        let Some(window) = self.window.upgrade() else {
+            self.service.stop();
+            return;
+        };
+        if !window.window().is_visible() {
+            return;
+        }
+        if let Some(path) = self.service.take_cache_location() {
+            window.set_thumbnail_cache_location(path.to_string_lossy().as_ref().into());
+        }
+        let rows = window_targets(&window, &self.presenter);
+        let presenter = self.presenter.clone();
+        let mut state = presenter.borrow_mut();
+        // Native command artwork shares visible admission, but never enters an image decoder.
+        // Retry a rejected send on the next pulse, even when the visible rows are unchanged.
+        state.refresh_command_icons(&rows, self.send.as_ref());
+        let scale = window.window().scale_factor();
+        let mut refresh_all = false;
+        let mut changed = Vec::new();
+        if self.epoch.get() != self.last_epoch {
+            self.deliveries = Deliveries::default();
+            self.tokens.clear();
+            self.last_epoch = self.epoch.get();
+            refresh_all = true;
+        }
+        if let Some(notice) = self.service.take_notice() {
+            state.report_thumbnail_error(notice);
+            refresh_all = true;
+        }
+        if self.deliveries.changed(&rows, scale) {
+            // Entering/leaving an animated state can change the displayed
+            // frame. Viewport scheduling alone has no presentation change.
+            for row in self.deliveries.previous.iter().chain(&rows) {
+                let old_active = self
+                    .deliveries
+                    .previous
+                    .iter()
+                    .find(|old| old.identity == row.identity)
+                    .is_some_and(|old| old.selected || old.hovered);
+                let new_active = rows
+                    .iter()
+                    .find(|new| new.identity == row.identity)
+                    .is_some_and(|new| new.selected || new.hovered);
+                if old_active != new_active {
+                    changed.push(row.identity.clone());
+                }
+            }
+            retain_source_tokens(&mut self.tokens, &self.deliveries.previous, &rows);
+            let targets = rows
+                .iter()
+                .filter_map(|row| {
+                    if matches!(
+                        row.content,
+                        midnight_ui::ThumbnailContent::ExecutableIcon(_)
+                    ) {
+                        return None;
+                    }
+                    let token = if let Some(token) = self.tokens.get(&row.identity) {
+                        *token
+                    } else {
+                        let token = self.next_token;
+                        self.next_token = self.next_token.checked_add(1)?;
+                        self.tokens.insert(row.identity.clone(), token);
+                        token
+                    };
+                    self.capture.target(row, token, physical_edge(row, scale))
+                })
+                .collect();
+            self.service.set_view(View {
+                generation: self.epoch.get(),
+                targets,
+            });
+            // Budget refusals wait for a changed view. Retain only bounded metadata,
+            // never the decoded pixels, and keep the same pinned source token.
+            let (tokens, service) = (&self.tokens, &self.service);
+            self.deliveries.set_view(rows, scale, |work| {
+                let Some((identity, _)) = tokens.iter().find(|(_, token)| **token == work.token)
+                else {
+                    return true;
+                };
+                let retained = state.thumbnail_coverage(identity, work.frame);
+                retained >= work.edge || service.retry_delivery(work, retained)
+            });
+        }
+        self.take_ready(&mut state, scale, &mut changed);
+        self.tick = self.tick.wrapping_add(1);
+        if self.tick.is_multiple_of(2) && state.advance_thumbnail_animation() {
+            changed.extend(state.animated_thumbnail_identities());
+        }
+        // Slint can synchronously read presenter-backed models while refreshing.
+        // Finish all mutations before it borrows the presenter again.
+        drop(state);
+        if refresh_all {
+            midnight_ui::refresh(&window, &presenter.borrow());
+        } else if !changed.is_empty() {
+            midnight_ui::refresh_thumbnail_rows(&window, &presenter.borrow(), &changed);
+        }
+    }
+
+    /// A backend wake: present ready frames without waiting for the next pulse.
+    fn deliver(&mut self) {
+        let Some(window) = self.window.upgrade() else {
+            return;
+        };
+        if !window.window().is_visible() || self.epoch.get() != self.last_epoch {
+            return;
+        }
+        let presenter = self.presenter.clone();
+        let mut changed = Vec::new();
+        let scale = window.window().scale_factor();
+        let exhausted = self.take_ready(&mut presenter.borrow_mut(), scale, &mut changed);
+        if !changed.is_empty() {
+            midnight_ui::refresh_thumbnail_rows(&window, &presenter.borrow(), &changed);
+        }
+        if exhausted {
+            // Frames may remain: schedule another pass instead of waiting for the pulse.
+            wake_bridge(&self.wake);
+        }
+    }
+
+    /// Present ready frames within one bounded pass. Returns whether the budget ended it.
+    fn take_ready(&mut self, state: &mut Presenter, scale: f32, changed: &mut Vec<String>) -> bool {
+        let started = Instant::now();
+        for _ in 0..DELIVERY_FRAMES {
+            if started.elapsed() >= DELIVERY_TIME {
+                return true;
+            }
+            let Some(ready) = self.service.poll() else {
+                return false;
+            };
+            if ready.generation != self.epoch.get() {
+                continue;
+            }
+            let Some((identity, _)) = self.tokens.iter().find(|(_, token)| **token == ready.token)
+            else {
+                continue;
+            };
+            if self
+                .deliveries
+                .previous
+                .iter()
+                .find(|row| &row.identity == identity)
+                .is_none_or(|row| ready.edge < physical_edge(row, scale))
+            {
+                continue;
+            }
+            let frame = &ready.frame;
+            if state.receive_thumbnail_at_resolution(
+                identity,
+                frame.frame,
+                frame.width,
+                frame.height,
+                ready.edge,
+                &frame.rgba,
+            ) {
+                changed.push(identity.clone());
+            }
+            self.deliveries.record(
+                Work {
+                    generation: ready.generation,
+                    token: ready.token,
+                    edge: ready.edge,
+                    frame: frame.frame,
+                },
+                state.thumbnail_coverage(identity, frame.frame),
+            );
+        }
+        true
+    }
+}
+
+/// Schedule one delivery pass on the UI thread; coalesced until that pass releases.
+fn wake_bridge(gate: &Arc<WakeGate>) {
+    if !gate.request() {
+        return;
+    }
+    let pass = gate.clone();
+    let scheduled = slint::invoke_from_event_loop(move || {
+        // Release before draining: a frame queued after this point schedules another pass.
+        pass.release();
+        let bridge = BRIDGE.with(|bridge| bridge.borrow().upgrade());
+        if let Some(bridge) = bridge
+            && let Ok(mut bridge) = bridge.try_borrow_mut()
+        {
+            bridge.deliver();
+        }
+    });
+    if scheduled.is_err() {
+        // No event loop: the periodic pulse still delivers every frame.
+        gate.release();
+    }
+}
+
 fn install_service(
     window: &MainWindow,
     presenter: Rc<RefCell<Presenter>>,
@@ -135,153 +359,29 @@ fn install_service(
         clear_state.borrow_mut().clear_thumbnail_images();
         clear.clear_cache();
     });
+    let wake = Arc::new(WakeGate::default());
+    let ready = wake.clone();
+    service.set_ready_notifier(Arc::new(move || wake_bridge(&ready)));
+    let bridge = Rc::new(RefCell::new(Bridge {
+        window: window.as_weak(),
+        presenter,
+        service,
+        capture,
+        send,
+        epoch,
+        wake,
+        deliveries: Deliveries::default(),
+        tokens: HashMap::new(),
+        next_token: 1,
+        tick: 0,
+        last_epoch: 1,
+    }));
+    BRIDGE.with(|slot| *slot.borrow_mut() = Rc::downgrade(&bridge));
     let timer = slint::Timer::default();
-    let window = window.as_weak();
-    let mut deliveries = Deliveries::default();
-    let mut tokens: HashMap<String, u64> = HashMap::new();
-    let mut next_token = 1u64;
-    let mut tick = 0u64;
-    let mut last_epoch = 1u64;
     timer.start(
         slint::TimerMode::Repeated,
         Duration::from_millis(100),
-        move || {
-            let Some(window) = window.upgrade() else {
-                service.stop();
-                return;
-            };
-            if !window.window().is_visible() {
-                return;
-            }
-            if let Some(path) = service.take_cache_location() {
-                window.set_thumbnail_cache_location(path.to_string_lossy().as_ref().into());
-            }
-            let rows = window_targets(&window, &presenter);
-            let mut state = presenter.borrow_mut();
-            // Native command artwork shares visible admission, but never enters an image decoder.
-            // Retry a rejected send on the next pulse, even when the visible rows are unchanged.
-            state.refresh_command_icons(&rows, send.as_ref());
-            let scale = window.window().scale_factor();
-            let mut refresh_all = false;
-            let mut changed = Vec::new();
-            if epoch.get() != last_epoch {
-                deliveries = Deliveries::default();
-                tokens.clear();
-                last_epoch = epoch.get();
-                refresh_all = true;
-            }
-            if let Some(notice) = service.take_notice() {
-                state.report_thumbnail_error(notice);
-                refresh_all = true;
-            }
-            if deliveries.changed(&rows, scale) {
-                // Entering/leaving an animated state can change the displayed
-                // frame. Viewport scheduling alone has no presentation change.
-                for row in deliveries.previous.iter().chain(&rows) {
-                    let old_active = deliveries
-                        .previous
-                        .iter()
-                        .find(|old| old.identity == row.identity)
-                        .is_some_and(|old| old.selected || old.hovered);
-                    let new_active = rows
-                        .iter()
-                        .find(|new| new.identity == row.identity)
-                        .is_some_and(|new| new.selected || new.hovered);
-                    if old_active != new_active {
-                        changed.push(row.identity.clone());
-                    }
-                }
-                retain_source_tokens(&mut tokens, &deliveries.previous, &rows);
-                let targets = rows
-                    .iter()
-                    .filter_map(|row| {
-                        if matches!(
-                            row.content,
-                            midnight_ui::ThumbnailContent::ExecutableIcon(_)
-                        ) {
-                            return None;
-                        }
-                        let token = if let Some(token) = tokens.get(&row.identity) {
-                            *token
-                        } else {
-                            let token = next_token;
-                            next_token = next_token.checked_add(1)?;
-                            tokens.insert(row.identity.clone(), token);
-                            token
-                        };
-                        capture.target(row, token, physical_edge(row, scale))
-                    })
-                    .collect();
-                service.set_view(View {
-                    generation: epoch.get(),
-                    targets,
-                });
-                // Budget refusals wait for a changed view. Retain only bounded metadata,
-                // never the decoded pixels, and keep the same pinned source token.
-                deliveries.set_view(rows, scale, |work| {
-                    let Some((identity, _)) =
-                        tokens.iter().find(|(_, token)| **token == work.token)
-                    else {
-                        return true;
-                    };
-                    let retained = state.thumbnail_coverage(identity, work.frame);
-                    retained >= work.edge || service.retry_delivery(work, retained)
-                });
-            }
-            // Capacity four bounds pixel uploads per pulse even if a backend finishes rapidly.
-            for _ in 0..4 {
-                let Some(ready) = service.poll() else {
-                    break;
-                };
-                if ready.generation != epoch.get() {
-                    continue;
-                }
-                let Some((identity, _)) = tokens.iter().find(|(_, token)| **token == ready.token)
-                else {
-                    continue;
-                };
-                if deliveries
-                    .previous
-                    .iter()
-                    .find(|row| &row.identity == identity)
-                    .is_none_or(|row| ready.edge < physical_edge(row, scale))
-                {
-                    continue;
-                }
-                let frame = &ready.frame;
-                if state.receive_thumbnail_at_resolution(
-                    identity,
-                    frame.frame,
-                    frame.width,
-                    frame.height,
-                    ready.edge,
-                    &frame.rgba,
-                ) {
-                    changed.push(identity.clone());
-                }
-                deliveries.record(
-                    Work {
-                        generation: ready.generation,
-                        token: ready.token,
-                        edge: ready.edge,
-                        frame: frame.frame,
-                    },
-                    state.thumbnail_coverage(identity, frame.frame),
-                );
-            }
-            tick = tick.wrapping_add(1);
-            if tick.is_multiple_of(2) && state.advance_thumbnail_animation() {
-                changed.extend(state.animated_thumbnail_identities());
-            }
-            // Slint can synchronously read presenter-backed models while refreshing.
-            // Finish all mutations before it borrows the presenter again.
-            drop(state);
-            if refresh_all {
-                midnight_ui::refresh(&window, &presenter.borrow());
-            } else if !changed.is_empty() {
-                midnight_ui::refresh_thumbnail_rows(&window, &presenter.borrow(), &changed);
-            }
-        },
+        move || bridge.borrow_mut().pulse(),
     );
     Controller {
         timer,

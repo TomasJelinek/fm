@@ -89,6 +89,10 @@ fn archive_capture_is_deferred_and_never_uses_a_display_or_member_native_path() 
     assert_eq!(queries.load(Ordering::Relaxed), 0);
     assert_eq!(mount.calls.load(Ordering::Relaxed), 0);
     assert_eq!(prepared.extension, "png", "route by raw provider name");
+    assert!(
+        !prepared.confirmed_ssd,
+        "member captures never inherit the panel's shared I/O admission"
+    );
     let source = (prepared.capture)(&AtomicBool::new(false)).unwrap();
     assert_eq!(queries.load(Ordering::Relaxed), 1);
     assert!(!source.confirmed_local_ssd());
@@ -167,6 +171,27 @@ fn cancellation_during_storage_query_prevents_member_capture() {
         1,
         "only initial mount validation"
     );
+}
+
+#[test]
+fn native_capture_admission_follows_only_the_positive_ssd_hint() {
+    let factory = Factory {
+        native: Arc::new(|_, _| panic!("target preparation must not capture content")),
+        storage: Arc::new(|_| panic!("native rows carry their own storage hint")),
+    };
+    for confirmed_ssd in [true, false] {
+        let row = ThumbnailTarget {
+            identity: "native:picture".into(),
+            content: ThumbnailContent::Native(std::env::current_dir().unwrap().join("文档.PNG")),
+            selected: false,
+            hovered: false,
+            confirmed_ssd,
+            edge: 96,
+        };
+        let prepared = factory.target(&row, 3, 96).unwrap();
+        assert_eq!(prepared.confirmed_ssd, confirmed_ssd);
+        assert_eq!(prepared.extension, "png");
+    }
 }
 
 #[test]

@@ -51,6 +51,27 @@ fn urls_cannot_escape_authority_or_smuggle_native_paths() {
 }
 
 #[test]
+fn parent_segments_resolve_inside_the_scope_but_never_above_it() {
+    let stylesheet: Vec<String> = vec!["css".into(), "site.css".into()];
+    assert_eq!(
+        resolve_segments(&stylesheet, "../img/logo.png").unwrap(),
+        vec!["img", "logo.png"]
+    );
+    assert_eq!(
+        resolve_segments(&stylesheet, "fonts/../%2e%2e/img/a.png").unwrap(),
+        vec!["img", "a.png"]
+    );
+    for escape in ["../../secret", "../%2e%2e/secret", "img/../../../x"] {
+        assert!(resolve_segments(&stylesheet, escape).is_err(), "{escape}");
+    }
+    // The main document is the scope root: any parent segment escapes.
+    assert!(resolve_segments(&[], "../x").is_err());
+    assert!(resolve_segments(&[], "a/../../x").is_err());
+    // Resolving back to the root itself names no resource.
+    assert!(resolve_segments(&stylesheet, "..").is_err());
+}
+
+#[test]
 fn permissions_revoke_old_resource_ids_and_never_restore_them() {
     let mut store = Store::new(CapturedFile::from_source(Arc::new(Bytes)).unwrap(), None);
     let first = store.reset(false).unwrap();

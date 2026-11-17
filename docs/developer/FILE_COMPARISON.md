@@ -59,6 +59,48 @@ worker. The UI stores original PathBuf values separately from lossy display stri
 an unchanged field keeps the exact native bytes/UTF-16. An edited field explicitly
 supplies a new Unicode path. No MAX_PATH buffer is introduced.
 
+## Reading, fonts and input
+
+Text is read in 256 KiB blocks and image sources by the restricted image viewers;
+every read is admitted by the process-wide I/O gate. The application installs
+`Service::with_storage_hint`, which answers on the worker from the installed native
+filesystem's storage kind of each file's folder: only a positively identified local
+SSD is admitted as shared I/O, so a long copy cannot hold back such comparisons.
+Unknown, rotational and network storage, and a service without a hint, stay
+exclusive. Installed image viewers are discovered by the first comparison that needs
+them (status *Checking installed image viewers…*) and kept for the service; opening an
+image session still revalidates its package. A failed discovery is not kept: text
+comparison continues, the failure is shown on the status line and added to the message
+of a comparison that then fails (for example two images read as text), and the next
+comparison discovers again.
+
+Text must be UTF-8, or UTF-16 with a byte order mark. Tab, line breaks, vertical tab,
+form feed (page breaks in sources) and escape (coloured logs) are text; the last three
+are shown as the control pictures ␋, ␌ and ␛. NUL and other control characters
+mark the file as binary.
+
+The installed fixed-pitch families are scanned on a `comparator-fonts` thread, started
+when a text comparison begins reading; the scan reads every installed family and can
+take seconds on a loaded machine. The preferred family is resolved against the catalog
+(case-insensitive match, else Consolas, else generic monospace). A completed catalog is
+kept for the service, so every later text comparison resolves the preferred family
+before its first frame. Only a comparison that starts while no scan has completed
+paints its first frame in the generic monospace family and is repainted when the
+catalog arrives; its font chooser stays disabled (*Loading fonts…*) until then. Closing
+the comparison cancels its scan, which then keeps no partial catalog.
+
+Arrow keys move exactly one row (`Input::Lines`), Page Up/Down move by the rows that
+were fully visible (`Input::Pages`), and wheel distances are converted with the painted
+row height, so paging neither skips nor repeats lines at any font size. Images pan 24
+logical pixels per line and one viewport per page. The UI keeps at most 64 inputs
+while the worker is busy. Repeated line, page and scroll steps accumulate. State
+inputs (geometry, image mode, font, Fit or Actual pixels, and a file-choice request)
+are never dropped: a newer one replaces the queued one of its kind and is queued after
+the navigation that preceded it. A full queue therefore always holds navigation (scroll,
+line and page steps, seek, difference and zoom), and sheds the oldest such input first.
+An idle worker blocks on its input queue instead of polling; only a pending font
+catalog bounds that wait.
+
 ## Presentation and tests
 
 The same native comparator window hosts the File A / File B form and the resulting

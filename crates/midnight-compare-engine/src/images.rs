@@ -3,9 +3,10 @@ use crate::{
     image_cache::{LayoutCache, LayoutRequest},
 };
 use midnight_core::ViewerGeometry;
-use midnight_image_viewer_host::{ImageSession, Provider};
+use midnight_image_viewer_host::{ImageSession, Provider, Source};
 use midnight_plugin_host::CapturedFile;
 use std::{
+    io,
     sync::{Arc, atomic::AtomicBool},
     time::Duration,
 };
@@ -19,27 +20,48 @@ pub(crate) struct Images {
     origin: [f64; 2],
 }
 
+/// A captured comparison file with its positively established storage hint, so the
+/// decoder's source reads use the same shared-I/O admission as other readers.
+struct StorageSource {
+    file: CapturedFile,
+    confirmed_ssd: bool,
+}
+impl Source for StorageSource {
+    fn length(&self) -> u64 {
+        Source::length(&self.file)
+    }
+    fn version(&self) -> Vec<u8> {
+        Source::version(&self.file)
+    }
+    fn validate(&self) -> io::Result<()> {
+        Source::validate(&self.file)
+    }
+    fn read_at(&self, offset: u64, length: u32) -> io::Result<Vec<u8>> {
+        Source::read_at(&self.file, offset, length)
+    }
+    fn confirmed_local_ssd(&self) -> bool {
+        self.confirmed_ssd
+    }
+}
+
 impl Images {
     pub fn open(
         providers: [&Provider; 2],
         sources: &[CapturedFile; 2],
+        confirmed_ssd: [bool; 2],
         cancel: &AtomicBool,
     ) -> Result<Self, String> {
-        let left = ImageSession::open(
-            providers[0],
-            Arc::new(sources[0].clone()),
-            cancel,
-            Duration::from_secs(15),
-        )
-        .map_err(|error| format!("Left image: {error}"))?;
+        let source = |side: usize| -> Arc<dyn Source> {
+            Arc::new(StorageSource {
+                file: sources[side].clone(),
+                confirmed_ssd: confirmed_ssd[side],
+            })
+        };
+        let left = ImageSession::open(providers[0], source(0), cancel, Duration::from_secs(15))
+            .map_err(|error| format!("Left image: {error}"))?;
         check_cancel(cancel)?;
-        let right = ImageSession::open(
-            providers[1],
-            Arc::new(sources[1].clone()),
-            cancel,
-            Duration::from_secs(15),
-        )
-        .map_err(|error| format!("Right image: {error}"))?;
+        let right = ImageSession::open(providers[1], source(1), cancel, Duration::from_secs(15))
+            .map_err(|error| format!("Right image: {error}"))?;
         Ok(Self {
             sessions: [left, right],
             cache: LayoutCache::default(),

@@ -304,10 +304,33 @@ fn selection_and_size_keep_source_tokens_but_changed_content_replaces_them() {
     );
 }
 
+/// A software window whose timers follow an explicitly advanced clock.
+struct ClockPlatform {
+    window: Rc<MinimalSoftwareWindow>,
+    clock: Rc<Cell<Duration>>,
+}
+impl Platform for ClockPlatform {
+    fn create_window_adapter(&self) -> Result<Rc<dyn WindowAdapter>, PlatformError> {
+        Ok(self.window.clone())
+    }
+    fn duration_since_start(&self) -> Duration {
+        self.clock.get()
+    }
+}
+
 #[test]
 fn preview_initialization_failure_keeps_the_main_window_alive() {
     let native = MinimalSoftwareWindow::new(RepaintBufferType::ReusedBuffer);
-    slint::platform::set_platform(Box::new(TestPlatform(native.clone()))).unwrap();
+    let clock = Rc::new(Cell::new(Duration::ZERO));
+    slint::platform::set_platform(Box::new(ClockPlatform {
+        window: native.clone(),
+        clock: clock.clone(),
+    }))
+    .unwrap();
+    let pulse = || {
+        clock.set(clock.get() + Duration::from_millis(100));
+        slint::platform::update_timers_and_animations();
+    };
     let window = MainWindow::new().unwrap();
     let root = std::env::current_dir().unwrap();
     let presenter = Rc::new(RefCell::new(Presenter::new(root.clone(), root)));
@@ -336,17 +359,24 @@ fn preview_initialization_failure_keeps_the_main_window_alive() {
     );
     // Startup waits hidden for preferences. A timer pulse in that interval must
     // not permanently stop thumbnail workers before the first visible frame.
-    std::thread::sleep(Duration::from_millis(150));
-    slint::platform::update_timers_and_animations();
+    pulse();
+    pulse();
     assert!(service.set_view(View {
         generation: 1,
         targets: Vec::new()
     }));
+    // Discovery waits for preview demand; clearing the cache is such a request.
+    window.invoke_thumbnail_clear_cache();
     window.show().unwrap();
     let deadline = Instant::now() + Duration::from_secs(5);
-    while window.get_message_generation() == 0 && Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(10));
-        slint::platform::update_timers_and_animations();
+    while window.get_message_generation() == 0 {
+        assert!(
+            Instant::now() < deadline,
+            "the discovery failure notice was not presented"
+        );
+        // The backend fails discovery on its own thread; each pulse polls its notice.
+        std::thread::yield_now();
+        pulse();
         native.draw_if_needed(|renderer| {
             renderer.render(&mut pixels, 1000);
         });

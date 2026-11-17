@@ -274,10 +274,15 @@ cargo run -p midnight-explorer --locked -- --left "C:\Users" --right "C:\Windows
 cargo run -p midnight-explorer --locked --release
 ```
 
-For a filesystem smoke check that exits without opening the UI:
+For a filesystem smoke check that exits without opening the UI, wait for the
+process and read its exit code. `me.exe` is a GUI-subsystem program: a console
+neither waits for it nor shows its standard output, so its volume and entry counts
+and `--help` text are visible only through `cargo run` (or a redirected stream):
 
 ```powershell
-.\_build\debug\me.exe --smoke-test --left "C:\Users" --right "C:\Windows"
+$smoke = Start-Process .\_build\debug\me.exe -Wait -PassThru -ArgumentList '--smoke-test', '--left', 'C:\Users', '--right', 'C:\Windows'
+$smoke.ExitCode
+cargo run -p midnight-explorer --locked -- --smoke-test --left "C:\Users" --right "C:\Windows"
 ```
 
 An existing development checkout may have a private toolchain/cache under
@@ -504,8 +509,10 @@ the default file manager.
 GPU acceleration is optional. Normal rendering uses Slint FemtoVG-WGPU with
 system-font fallback; Windows prefers Direct3D. When default GPU selection or
 initial window/device setup fails before the first window is shown, the app
-retries once with Slint's CPU renderer. Existing file operations and already
-visible windows are never restarted by this startup recovery. Explicit
+retries once with Slint's CPU renderer. The first process waits for that software
+child and exits with the child's own status (codes that do not fit an exit byte
+become 1). Existing file operations and already visible windows are never
+restarted by this startup recovery. Explicit
 `SLINT_BACKEND` choices remain authoritative; `--software` selects CPU rendering:
 
 ```sh
@@ -754,7 +761,10 @@ editor scope and shortcuts reserved for later stages.
   sharper image is prepared for that file; smaller sizes reuse larger cached
   images. The setting previews immediately, Cancel restores it and OK saves it.
   See the [size and cache policy](docs/superpowers/specs/2026-11-09-thumbnail-size-and-cache.md)
-  for display scaling, cache reuse and storage layout.
+  for display scaling, cache reuse and storage layout. The persistent cache holds
+  at most 512 MiB and 8,192 files; the backend keeps a 4 MiB warm memory cache (the
+  64 MiB memory figure in that dated design was not adopted). Preview decoders and
+  the cache inventory are prepared only when previews are first shown.
 - Click column headers: change sorting. Cursor and selection remain attached to
   the original raw filesystem paths when the listing order changes.
   Repeated clicks toggle ascending/descending order. Completed folder sizes are

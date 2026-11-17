@@ -10,11 +10,8 @@ use slint::{
         software_renderer::{MinimalSoftwareWindow, RepaintBufferType},
     },
 };
-use std::{
-    rc::Rc,
-    sync::Arc,
-    time::{Duration, Instant},
-};
+use std::{rc::Rc, sync::Arc, time::Duration};
+use support::wait_for;
 
 struct TestPicker {
     requests: std::sync::mpsc::Sender<midnight_core::PathPickerRequest>,
@@ -33,18 +30,6 @@ impl midnight_core::PathPickerService for TestPicker {
             .unwrap()
             .recv_timeout(Duration::from_secs(5))
             .unwrap())
-    }
-}
-
-fn wait_until(mut condition: impl FnMut() -> bool) {
-    let start = Instant::now();
-    while !condition() {
-        slint::platform::update_timers_and_animations();
-        assert!(
-            start.elapsed() < Duration::from_secs(15),
-            "Comparator UI timed out"
-        );
-        std::thread::sleep(Duration::from_millis(5));
     }
 }
 
@@ -133,7 +118,9 @@ fn manual_form_is_resizable_edits_paths_retries_and_closes_on_escape() {
     window
         .window()
         .dispatch_event(WindowEvent::WindowActiveChanged(true));
-    wait_until(|| window.get_choosing_files());
+    wait_for(&window, "offer the file choice", || {
+        window.get_choosing_files()
+    });
     assert_eq!(window.get_file_a().as_str(), known.to_str().unwrap());
     assert!(window.get_file_b().is_empty());
     assert!(!window.get_content_focused());
@@ -146,7 +133,7 @@ fn manual_form_is_resizable_edits_paths_retries_and_closes_on_escape() {
     window.invoke_browse_file(0);
     window.invoke_compare_chosen_files();
     let mut request = None;
-    wait_until(|| {
+    wait_for(&window, "forward the picker request", || {
         requested
             .try_recv()
             .map(|value| {
@@ -158,7 +145,9 @@ fn manual_form_is_resizable_edits_paths_retries_and_closes_on_escape() {
     assert_eq!(request.owner, midnight_core::PathPickerOwner::X11(42));
     assert!(request.title.contains("B"));
     responses.send(None).unwrap();
-    wait_until(|| !window.get_choice_busy());
+    wait_for(&window, "finish the cancelled picker", || {
+        !window.get_choice_busy()
+    });
     assert!(window.get_file_b().is_empty());
     assert!(requested.try_recv().is_err());
     window.invoke_focus_files();
@@ -166,19 +155,27 @@ fn manual_form_is_resizable_edits_paths_retries_and_closes_on_escape() {
     assert_eq!(window.get_file_b(), "invalid-relative.txt");
     key(&window, Key::Return.into());
     assert!(window.get_choice_busy());
-    wait_until(|| !window.get_choice_busy());
+    wait_for(&window, "reject the invalid path", || {
+        !window.get_choice_busy()
+    });
     assert!(window.get_choosing_files());
     assert!(window.get_choice_message().contains("File B"));
     assert!(window.get_choice_error());
     assert_eq!(window.get_file_b(), "invalid-relative.txt");
     // Compare can retry in the same native window; backend opens only explicitly submitted paths.
     window.invoke_browse_file(1);
-    wait_until(|| requested.try_recv().is_ok());
+    wait_for(&window, "forward the second picker request", || {
+        requested.try_recv().is_ok()
+    });
     responses.send(Some(known.clone())).unwrap();
-    wait_until(|| !window.get_choice_busy());
+    wait_for(&window, "finish the second picker", || {
+        !window.get_choice_busy()
+    });
     assert_eq!(window.get_file_b(), known.to_str().unwrap());
     window.invoke_compare_chosen_files();
-    wait_until(|| !window.get_choosing_files());
+    wait_for(&window, "start the chosen comparison", || {
+        !window.get_choosing_files()
+    });
     assert!(window.get_surface().size().width > 0);
     assert!(window.get_content_focused());
     key(&window, Key::Escape.into());
@@ -189,7 +186,9 @@ fn manual_form_is_resizable_edits_paths_retries_and_closes_on_escape() {
     window
         .window()
         .dispatch_event(WindowEvent::WindowActiveChanged(true));
-    wait_until(|| window.get_choosing_files());
+    wait_for(&window, "offer the file choice again", || {
+        window.get_choosing_files()
+    });
     assert!(!window.get_content_focused());
     key(&window, Key::Escape.into());
     assert!(

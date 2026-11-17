@@ -501,6 +501,10 @@ fn native_plugin_feeds_selected_source_markdown_image_and_pdf() {
         assert!(!pdf.image.as_ref().unwrap().fitted);
     }
     session.close();
+    drop(session);
+    drop(service);
+    // Released captures no longer pin the authored fixtures; keep the QA directory clean.
+    let _ = std::fs::remove_dir_all(&root);
 }
 
 #[derive(Debug)]

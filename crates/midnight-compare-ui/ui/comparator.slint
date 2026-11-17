@@ -68,7 +68,8 @@ export component ComparatorWindow inherits Window {
     in property <bool> image-mode;
     in property <[string]> font-families: ["Loading fonts…"];
     in property <bool> fonts-ready;
-    in property <int> font-index;
+    // Two-way: the chooser keeps following Rust after a user choice or a model change.
+    in-out property <int> font-index;
     callback change-font(int);
     in property <float> position;
     in property <int> geometry-revision;
@@ -125,7 +126,7 @@ export component ComparatorWindow inherits Window {
                 if !root.image-mode: Button { horizontal-stretch: 0; text: root.compact ? "‹ Difference" : "Previous difference"; clicked => { root.difference(true); content.focus(); } }
                 if !root.image-mode: Button { horizontal-stretch: 0; text: root.compact ? "Difference ›" : "Next difference"; clicked => { root.difference(false); content.focus(); } }
                 if !root.image-mode && !root.compact: FontChoice {
-                    model: root.font-families; current-index: root.font-index;
+                    model: root.font-families; current-index <=> root.font-index;
                     enabled: root.fonts-ready;
                     selected(value) => { root.change-font(self.current-index); content.focus(); }
                 }
@@ -138,19 +139,20 @@ export component ComparatorWindow inherits Window {
             if root.image-mode: HorizontalLayout {
                 height: max(26px, root.effective-ui-size + 8px); spacing: 6px;
                 Text { text: root.mode == 0 ? "Drag to pan" : root.mode == 1 ? "Divider" : "Right opacity"; color: root.foreground; vertical-alignment: center; }
+                // Shares `amount` with canvas drags and Rust, so the thumb never goes stale.
                 Slider {
                     visible: root.mode != 0; enabled: root.mode != 0;
-                    horizontal-stretch: 1; minimum: 0; maximum: 100; step: 1;
-                    value: root.amount * 100;
+                    horizontal-stretch: 1; minimum: 0; maximum: 1; step: 0.01;
+                    value <=> root.amount;
                     accessible-label: root.mode == 1 ? "Swipe divider" : "Right image opacity";
-                    changed(value) => { root.amount = value / 100; root.change-amount(root.amount); }
+                    changed(value) => { root.change-amount(value); }
                 }
                 Text { min-width: 34px; text: root.mode == 0 ? "" : round(root.amount * 100) + "%"; color: root.foreground; vertical-alignment: center; horizontal-alignment: right; }
             }
             if !root.image-mode && root.compact: HorizontalLayout {
                 height: root.control-height;
                 FontChoice {
-                    model: root.font-families; current-index: root.font-index;
+                    model: root.font-families; current-index <=> root.font-index;
                     enabled: root.fonts-ready;
                     selected(value) => { root.change-font(self.current-index); content.focus(); }
                 }

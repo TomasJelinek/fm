@@ -72,8 +72,16 @@ pub(crate) fn service(
     runtime: &tokio::runtime::Handle,
     filesystem: Arc<midnight_native_filesystem_host::InstalledProvider>,
 ) -> midnight_compare_engine::Service {
+    let storage = filesystem.clone();
     midnight_compare_engine::Service::with_native_capture(
         runtime.clone(),
         crate::native_content::factory(filesystem),
     )
+    // Queried by the comparison worker; any error or other kind stays exclusive.
+    .with_storage_hint(Arc::new(move |path| {
+        use midnight_core::StorageService;
+        storage
+            .storage_kind(path.parent().unwrap_or(path))
+            .is_ok_and(|kind| kind == midnight_core::StorageKind::LocalSsd)
+    }))
 }
