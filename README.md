@@ -246,7 +246,8 @@ is on a shared drive. Plugin code is never loaded from an unsafe shared director
 Each `build.bat` run then removes the earlier installations it deployed for the
 same build output, keeping any that is still running or selected by another
 registration; installations made directly with `scripts/deploy-private.ps1` are
-never removed. After a raw Cargo build, or after adding/removing plugin packages,
+never removed. Concurrent `build.bat` runs for the same build output in one logon
+session deploy one at a time (the second waits). After a raw Cargo build, or after adding/removing plugin packages,
 deploy and register explicitly:
 
 ```powershell

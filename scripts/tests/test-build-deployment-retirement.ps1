@@ -20,6 +20,9 @@ Set-Acl -LiteralPath $testRoot -AclObject $acl
 $originalProfile = $env:USERPROFILE
 $junction = $null
 $held = $null
+$process = $null
+$lock = $null
+$waiting = $null
 try {
     # Deployments go to the (isolated) profile root; registration stays in the fixture.
     $profileRoot = Join-Path $testRoot 'profile'
@@ -92,14 +95,36 @@ try {
     $junction = Join-Path $profileRoot 'MidnightExplorer-20200101-000000-0000000d/redirect'
     New-Item -ItemType Junction -Path $junction -Target (Join-Path $testRoot 'link-target') | Out-Null
 
-    # A running copy keeps its installation: here an open executable stands in for it.
-    $held = [IO.File]::Open((Join-Path $profileRoot "$($first[0])/me.exe"), [IO.FileMode]::Open,
+    # A running executable keeps its installation. A loaded image holds no open handle,
+    # so the directory rename would succeed: only the write-open probe protects it.
+    $running = Join-Path $profileRoot "$($first[0])/viewers/running-worker.exe"
+    Copy-Item -LiteralPath (Join-Path $env:SystemRoot 'System32/PING.EXE') -Destination $running
+    $process = Start-Process -FilePath $running -ArgumentList '-n', '600', '127.0.0.1' -WindowStyle Hidden -PassThru
+    $writable = $true
+    try { [IO.File]::Open($running, [IO.FileMode]::Open, [IO.FileAccess]::Write, [IO.FileShare]::ReadWrite).Dispose() }
+    catch [IO.IOException] { $writable = $false }
+    if ($writable -or $process.HasExited) { throw 'Precondition: the copied executable is not running' }
+    # A file held open without delete sharing makes the rename fail instead.
+    $opened = 'MidnightExplorer-20200101-000000-0000000f'
+    New-Item -ItemType Directory -Path (Join-Path $profileRoot $opened) | Out-Null
+    [IO.File]::WriteAllText((Join-Path $profileRoot "$opened/plugin.toml"), 'open plugin manifest')
+    [IO.File]::WriteAllText((Join-Path $profileRoot "$opened/.midnight-build-deployment"),
+        "schema_version = 1`nlaunch_key = `"$key`"`ninstallation = `"$opened`"`n")
+    $held = [IO.File]::Open((Join-Path $profileRoot "$opened/plugin.toml"), [IO.FileMode]::Open,
         [IO.FileAccess]::Read, [IO.FileShare]::Read)
     $output = Deploy-Build
-    $second = @(Installations | Where-Object { $_ -notin $first -and -not $planted.ContainsKey($_) })
+    $second = @(Installations | Where-Object { $_ -notin $first -and $_ -ne $opened -and -not $planted.ContainsKey($_) })
     if ($second.Count -ne 1 -or (Selected) -cne $second[0]) { throw 'Second build deployment is not registered' }
-    if (-not (Test-Path -LiteralPath (Join-Path $profileRoot $first[0]))) { throw 'An installation in use was removed' }
-    if ($output -notmatch ('kept[^\r\n]*' + [regex]::Escape($first[0]))) { throw 'A kept installation was not reported' }
+    foreach ($name in @($first[0], $opened)) {
+        if (-not (Test-Path -LiteralPath (Join-Path $profileRoot "$name/.midnight-build-deployment"))) {
+            throw "An installation in use was changed: $name"
+        }
+        if ($output -notmatch ('kept[^\r\n]*' + [regex]::Escape($name))) { throw "A kept installation was not reported: $name" }
+    }
+    if (-not (Test-Path -LiteralPath $running)) { throw 'The running executable was removed' }
+    $process.Kill()
+    if (-not $process.WaitForExit(30000)) { throw 'The running executable did not exit' }
+    $process = $null
     $held.Dispose()
     $held = $null
 
@@ -108,7 +133,9 @@ try {
     Copy-Item -LiteralPath $script:pointer -Destination $otherPointer
     $null = Deploy-Build
     $third = Selected
-    if (Test-Path -LiteralPath (Join-Path $profileRoot $first[0])) { throw 'The idle superseded installation remained' }
+    foreach ($name in @($first[0], $opened)) {
+        if (Test-Path -LiteralPath (Join-Path $profileRoot $name)) { throw "The idle superseded installation remained: $name" }
+    }
     if (-not (Test-Path -LiteralPath (Join-Path $profileRoot $second[0]))) { throw 'A selected installation was removed' }
     Remove-Item -LiteralPath $otherPointer
 
@@ -138,8 +165,50 @@ try {
         throw 'An unowned directory was changed'
     }
     if (@(Get-ChildItem -LiteralPath $registry -Filter '*.toml').Count -ne 5) { throw 'Registration records changed' }
-    Write-Output 'Build deployment retirement checks passed: refused combinations, in-use, selected, unrecognized-state, unowned, linked and retired trees.'
+
+    # Deployments of one build output run one at a time: a second one waits, before it
+    # creates its installation, while another holds the lock of this launch key.
+    $lock = New-Object Threading.Mutex($false, "Local\MidnightBuildDeployment-$key")
+    if (-not $lock.WaitOne(0)) { throw 'The build deployment lock is unexpectedly held' }
+    $script:build++
+    [IO.File]::WriteAllText((Join-Path $source 'me.exe'), "build $script:build")
+    $start = New-Object Diagnostics.ProcessStartInfo((Get-Process -Id $PID).Path)
+    $start.Arguments = "-NoLogo -NoProfile -NonInteractive -File `"$deploy`" -SourceDirectory `"$source`" " +
+        "-RegisterRuntime -RegistrationDirectory `"$registry`" -ReplaceBuildDeployment"
+    $start.UseShellExecute = $false
+    $start.CreateNoWindow = $true
+    $start.RedirectStandardOutput = $true
+    $start.RedirectStandardError = $true
+    $waiting = [Diagnostics.Process]::Start($start)
+    $errors = $waiting.StandardError.ReadToEndAsync()
+    $deadline = [DateTime]::UtcNow.AddSeconds(60)
+    do {
+        $line = $waiting.StandardOutput.ReadLineAsync()
+        $left = $deadline - [DateTime]::UtcNow
+        if ($left -le [TimeSpan]::Zero -or -not $line.Wait($left)) { throw 'The second deployment did not wait for the lock' }
+        if ($null -eq $line.Result) { throw "The second deployment ended without waiting: $($errors.Result)" }
+    } until ($line.Result -match 'Waiting for another build deployment')
+    # The child PowerShell may create AppData in this test's USERPROFILE.
+    $remaining = @(Get-ChildItem -LiteralPath $profileRoot -Force | ForEach-Object Name |
+        Where-Object { $_ -like 'MidnightExplorer-*' } | Sort-Object)
+    if (($remaining -join '|') -cne ($expected -join '|')) {
+        throw "A waiting deployment created an installation: $($remaining -join ', ')"
+    }
+    $lock.ReleaseMutex()
+    $rest = $waiting.StandardOutput.ReadToEndAsync()
+    if (-not $waiting.WaitForExit(120000)) { throw 'The waiting deployment did not finish' }
+    if ($waiting.ExitCode -ne 0) { throw "The waiting deployment failed: $($rest.Result) $($errors.Result)" }
+    $sixth = Selected
+    if ($sixth -in $remaining) { throw 'The waiting deployment did not register its own installation' }
+    if (Test-Path -LiteralPath (Join-Path $profileRoot $fifth)) { throw 'The waiting deployment kept the superseded installation' }
+    Write-Output 'Build deployment retirement checks passed: refused combinations, running and open installations, selected, unrecognized-state, unowned, linked and retired trees, serialized deployments.'
 } finally {
+    if ($waiting -and -not $waiting.HasExited) { $waiting.Kill(); [void]$waiting.WaitForExit(30000) }
+    if ($lock) {
+        try { $lock.ReleaseMutex() } catch { }
+        $lock.Dispose()
+    }
+    if ($process -and -not $process.HasExited) { $process.Kill(); [void]$process.WaitForExit(30000) }
     if ($held) { $held.Dispose() }
     $env:USERPROFILE = $originalProfile
     if ($junction -and (Test-Path -LiteralPath $junction)) { [IO.Directory]::Delete($junction) }

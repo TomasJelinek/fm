@@ -5,7 +5,9 @@ build, run, replace an installation, or change checkout/ancestor permissions.
 -ReplaceBuildDeployment (used by build.bat) marks the new installation as the build
 deployment of SourceDirectory and, after registering it, removes earlier build
 deployments of the same build output that this script created and that no
-launcher pointer selects and no running process uses.
+launcher pointer selects and no running process uses. Build deployments of one
+build output run one at a time per logon session (a named mutex); a second run
+waits for the first.
 #>
 param(
     [string]$SourceDirectory,
@@ -468,20 +470,33 @@ function Get-PlainTree([string]$Directory) {
     return ,$entries
 }
 
-function Remove-SupersededBuildDeployment([string]$Directory, [bool]$Retired) {
-    # A running host maps plugin libraries and workers map their executables; such
-    # an installation stays intact. A mapped image cannot be opened for writing.
+function Assert-NoMappedImage([string]$Directory) {
+    # A running host maps plugin libraries and workers map their executables. A mapped
+    # image cannot be opened for writing, so this throws while any of them is in use.
     foreach ($entry in (Get-PlainTree $Directory)) {
         if ($entry -is [IO.FileInfo] -and $entry.Extension -in @('.exe', '.dll')) {
             [IO.File]::Open($entry.FullName, [IO.FileMode]::Open, [IO.FileAccess]::Write,
                 [IO.FileShare]::ReadWrite).Dispose()
         }
     }
+}
+
+function Remove-SupersededBuildDeployment([string]$Directory, [bool]$Retired) {
+    # Only this probe protects running code: a loaded image holds no open file handle,
+    # so renaming its directory succeeds. The rename fails only while a file inside is
+    # open without delete sharing.
+    Assert-NoMappedImage $Directory
     if (-not $Retired) {
-        # The rename also fails while any file inside is open. It retires the name
-        # first, so a partly deleted tree is never at a registered location.
+        # Retire the name first, so a partly deleted tree is never at a registered
+        # location. A process that started from the old path before the rename is
+        # visible now; its installation is then restored and kept.
         $retiredPath = $Directory + '.superseded'
         [IO.Directory]::Move($Directory, $retiredPath)
+        try { Assert-NoMappedImage $retiredPath }
+        catch {
+            [IO.Directory]::Move($retiredPath, $Directory)
+            throw
+        }
         $Directory = $retiredPath
     }
     # Delete files, then directories deepest first, and the marker last: a failure
@@ -503,27 +518,57 @@ function Remove-SupersededBuildDeployment([string]$Directory, [bool]$Retired) {
 
 function Remove-SupersededBuildDeployments([string]$Parent, [string]$LaunchKey, [string]$Current,
     [string]$Registry) {
-    try { $selected = Get-SelectedInstallations $Registry }
-    catch { Write-Warning "Earlier build installations were kept: $_"; return }
+    # The caller holds the build deployment lock of this launch key, so no other build
+    # deployment of this output registers meanwhile. The selection is still read again
+    # right before each owned candidate is retired.
     foreach ($directory in [IO.Directory]::GetDirectories($Parent, 'MidnightExplorer-*')) {
         $match = [regex]::Match([IO.Path]::GetFileName($directory), $buildDeploymentName)
         if (-not $match.Success) { continue }
         $name = $match.Groups[1].Value
         $installation = Join-Path $Parent $name
-        if ([string]::Equals($installation, $Current, [StringComparison]::OrdinalIgnoreCase) -or
-            $selected.Contains($installation)) { continue }
+        if ([string]::Equals($installation, $Current, [StringComparison]::OrdinalIgnoreCase)) { continue }
         try {
             if ((Get-Item -LiteralPath $directory -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) { continue }
             $marker = Join-Path $directory $buildDeploymentMarker
             if (-not (Test-Path -LiteralPath $marker -PathType Leaf)) { continue }
             if ((Read-SmallPlainFile $marker) -cne (Get-BuildDeploymentMarkerText $LaunchKey $name)) { continue }
             Assert-PrivatePath $directory $true
+        } catch {
+            Write-Warning "Superseded build installation kept (changed): $directory ($_)"
+            continue
+        }
+        try { $selected = Get-SelectedInstallations $Registry }
+        catch { Write-Warning "Earlier build installations were kept: $_"; return }
+        if ($selected.Contains($installation)) { continue }
+        try {
             Remove-SupersededBuildDeployment $directory $match.Groups[2].Success
             Write-Output "Removed superseded build installation: $installation"
         } catch {
             Write-Warning "Superseded build installation kept (in use or changed): $directory ($_)"
         }
     }
+}
+
+function Enter-BuildDeploymentLock([string]$LaunchKey) {
+    # One build deployment per build output and logon session at a time, from its
+    # marker through copy, registration and cleanup: otherwise a run could retire an
+    # installation that another run has just registered (a loaded image does not stop
+    # the rename, and a new installation has no image loaded yet) or is still copying.
+    $lock = New-Object Threading.Mutex($false, "Local\MidnightBuildDeployment-$LaunchKey")
+    $acquired = $false
+    try { $acquired = $lock.WaitOne(0) }
+    catch [Threading.AbandonedMutexException] { $acquired = $true }
+    if (-not $acquired) {
+        # Write-Host: this function's output is the lock itself.
+        Write-Host 'Waiting for another build deployment of this build output to finish...'
+        try { $acquired = $lock.WaitOne([TimeSpan]::FromMinutes(30)) }
+        catch [Threading.AbandonedMutexException] { $acquired = $true }
+    }
+    if (-not $acquired) {
+        $lock.Dispose()
+        throw 'Another build deployment of this build output did not finish within 30 minutes'
+    }
+    return $lock
 }
 
 if ($RegistrationDirectory -and -not $RegisterRuntime) {
@@ -599,6 +644,7 @@ while ($pending.Count -gt 0) {
 Assert-PlainPath $executable
 $launchStamp = $null
 $launchLease = $null
+$deploymentLock = $null
 try {
     if ($RegisterRuntime) {
         Assert-PlainPath $originalSourceDirectory
@@ -613,6 +659,7 @@ try {
             Assert-PrivatePath $existingPointer $true
         }
     }
+    if ($ReplaceBuildDeployment) { $deploymentLock = Enter-BuildDeploymentLock $launchStamp.Key }
     # Preflight completes before creating any installation. Only this new directory
     # receives a protected ACL; files and subdirectories inherit it when created.
     New-Item -ItemType Directory -Path $Destination | Out-Null
@@ -712,5 +759,9 @@ try {
     }
 
 } finally {
+    if ($null -ne $deploymentLock) {
+        $deploymentLock.ReleaseMutex()
+        $deploymentLock.Dispose()
+    }
     if ($null -ne $launchLease) { $launchLease.Dispose() }
 }
