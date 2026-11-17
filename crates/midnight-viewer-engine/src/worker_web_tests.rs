@@ -220,8 +220,8 @@ fn the_reason_a_host_publishes_for_a_refusal_stays_visible() {
 fn a_drained_browser_error_stays_the_reason_when_later_input_is_refused() {
     const FAILURE: &str = "Chromium disconnected";
     // The host publishes an actor failure and wakes the worker before it marks the session
-    // stopped. A browser that cannot open the document reports that, then closes; this
-    // host consumes the Closed event, which another could forward.
+    // stopped. A browser that cannot open the document reports that, then closes, and the
+    // host forwards its Closed event after the error.
     for published in [
         vec![error(FAILURE)],
         vec![error(FAILURE), event(api::EventKind::Closed)],
@@ -241,6 +241,57 @@ fn a_drained_browser_error_stays_the_reason_when_later_input_is_refused() {
         );
         assert!(statuses(&output).is_empty());
     }
+}
+
+#[test]
+fn a_browser_that_closes_itself_is_reported_once_without_waiting_for_input() {
+    let (mut worker, output) = web_worker(Stopped::after(vec![event(api::EventKind::Closed)]));
+    worker.poll_web(&output);
+    assert_eq!(worker.status, BROWSER_CLOSED);
+    assert_eq!(
+        output.take_open_result(),
+        Some(Err(BROWSER_CLOSED.into())),
+        "a browser that closed before its first frame fails the opening"
+    );
+    assert_eq!(statuses(&output), [BROWSER_CLOSED]);
+    worker.input(ViewerInput::Scroll { x: 0.0, y: 40.0 }, &output);
+    worker.poll_web(&output);
+    assert_eq!(worker.status, BROWSER_CLOSED);
+    assert!(
+        statuses(&output).is_empty(),
+        "a later refusal adds no report"
+    );
+}
+
+#[test]
+fn the_closure_of_a_painted_page_is_reported_after_its_last_frame() {
+    let (mut worker, output) = web_worker(Stopped::after(Vec::new()));
+    let (width, height) = (worker.geometry.width, worker.geometry.height);
+    let frame = event(api::EventKind::Frame(api::Frame {
+        viewport_revision: 1,
+        acknowledged_input: 0,
+        width,
+        height,
+        rgba: vec![0; width as usize * height as usize * 4],
+    }));
+    worker.web.as_mut().unwrap().session = Stopped::after(vec![
+        event(api::EventKind::Ready),
+        frame,
+        event(api::EventKind::Closed),
+    ]);
+    worker.poll_web(&output);
+    assert_eq!(worker.status, BROWSER_CLOSED);
+    let outputs = output.take();
+    let frame = outputs
+        .iter()
+        .position(|output| matches!(output, ViewerOutput::Frame(_)));
+    let report = outputs.iter().position(
+        |output| matches!(output, ViewerOutput::Status(status) if status == BROWSER_CLOSED),
+    );
+    assert!(
+        frame.is_some() && frame < report,
+        "the frame's status line must not replace the report"
+    );
 }
 
 #[test]
