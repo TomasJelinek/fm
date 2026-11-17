@@ -31,9 +31,10 @@ application delivery remain pending.
   change and names that folder, or says that another program moved, removed or
   replaced it. The job ends Completed with errors; nothing needs to be retried, and
   the issue never asks a name-conflict question or reads as a cancellation. A
-  Properties (metadata) rename in the same situation still counts its item as failed,
-  although the new name is revealed, and does not apply that item's remaining
-  permission and time changes.
+  Properties (metadata) rename in the same situation still counts its item as failed
+  (its error is never a name conflict either) and does not apply that item's
+  remaining permission and time changes; a single edited item is still revealed
+  under its new name.
 - Closing Jobs only closes the ledger. It does not cancel independent operations.
 - Successfully completed automatic progress closes. A manually reopened progress
   window stays open; so does manually opened Jobs.
