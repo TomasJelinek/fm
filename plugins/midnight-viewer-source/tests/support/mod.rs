@@ -3,8 +3,53 @@ use midnight_plugin_sdk::api::{abi, codec, messages};
 use std::{
     collections::{HashMap, VecDeque},
     mem::MaybeUninit,
-    sync::Mutex,
+    sync::{Condvar, Mutex, PoisonError},
+    time::{Duration, Instant},
 };
+
+/// The SDK admits at most 16 live plugin instances per loaded library and
+/// rejects further `create` calls with `QUEUE_FULL` (ABI_AND_LIFECYCLE.md),
+/// while libtest runs one test per hardware thread. Each `Host` holds one of
+/// these slots from before `create` until after `destroy`, so surplus tests
+/// queue here instead of failing.
+const INSTANCE_SLOTS: usize = 16;
+/// Elapses only when slots leak or a test that holds one hangs.
+const SLOT_WAIT: Duration = Duration::from_secs(120);
+static SLOTS_USED: Mutex<usize> = Mutex::new(0);
+static SLOT_FREED: Condvar = Condvar::new();
+
+/// One SDK instance slot, returned on drop while `release` is set, also when
+/// a test panics. It stays taken while the plugin instance outlives its host.
+struct Slot {
+    release: bool,
+}
+impl Slot {
+    fn acquire() -> Self {
+        let deadline = Instant::now() + SLOT_WAIT;
+        let mut used = SLOTS_USED.lock().unwrap_or_else(PoisonError::into_inner);
+        while *used >= INSTANCE_SLOTS {
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                drop(used);
+                panic!("No plugin instance slot became free within {SLOT_WAIT:?}");
+            }
+            used = SLOT_FREED
+                .wait_timeout(used, left)
+                .unwrap_or_else(PoisonError::into_inner)
+                .0;
+        }
+        *used += 1;
+        Self { release: true }
+    }
+}
+impl Drop for Slot {
+    fn drop(&mut self) {
+        if self.release {
+            *SLOTS_USED.lock().unwrap_or_else(PoisonError::into_inner) -= 1;
+            SLOT_FREED.notify_one();
+        }
+    }
+}
 
 #[derive(Clone, Debug)]
 pub struct Event {
@@ -36,6 +81,8 @@ pub struct Host {
     api: abi::PluginApi,
     instance: u64,
     next: u64,
+    // Fields drop after `Drop::drop`, so the slot outlives `destroy`.
+    slot: Slot,
 }
 unsafe fn state<'a>(id: u64) -> &'a Mutex<State> {
     unsafe { &*(id as *const Mutex<State>) }
@@ -142,6 +189,7 @@ impl Host {
         );
         let api: abi::PluginApi = unsafe { api.assume_init() };
         let mut instance = 0;
+        let slot = Slot::acquire();
         assert_eq!(
             unsafe { api.create.unwrap()(&host, slice(&[]), &mut instance) },
             abi::OK
@@ -151,6 +199,7 @@ impl Host {
             api,
             instance,
             next: 1,
+            slot,
         }
     }
     pub fn short_reads(&self, maximum: usize) {
@@ -311,11 +360,15 @@ impl Host {
 }
 impl Drop for Host {
     fn drop(&mut self) {
+        // The instance occupies its SDK slot until `destroy` succeeds.
+        self.slot.release = false;
         unsafe {
             self.api.begin_shutdown.unwrap()(self.instance);
         }
         self.finish();
         assert!(self.state.lock().unwrap().buffers.is_empty());
-        assert_eq!(unsafe { self.api.destroy.unwrap()(self.instance) }, abi::OK);
+        let destroyed = unsafe { self.api.destroy.unwrap()(self.instance) };
+        self.slot.release = destroyed == abi::OK;
+        assert_eq!(destroyed, abi::OK);
     }
 }

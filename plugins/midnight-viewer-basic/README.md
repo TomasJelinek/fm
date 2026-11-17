@@ -30,6 +30,8 @@ DLL/SO manifest. The checked-in manifest is the Windows template. The default
 output is `BUILD_ROOT/package/midnight-viewer-basic`; copy that directory under
 `viewers/` beside the host executable. Remove it and restart to remove capability.
 The platform-neutral ABI tests use real SDK dispatch and host service callbacks.
+Their test host keeps at most the SDK's 16 live plugin instances per test process
+and queues further hosts, so tests running in parallel never fail with `QUEUE_FULL`.
 The distribution's host tests own native DLL/SO loading and routing checks.
 
 ## Behavior and limits
