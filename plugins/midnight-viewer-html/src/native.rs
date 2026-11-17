@@ -1,7 +1,6 @@
 //! Audited CEF boundary; no browser objects or native buffers cross the public protocol.
 use cef::*;
 use midnight_web_viewer_api as api;
-use std::collections::HashMap;
 use std::sync::{
     Arc, Mutex,
     atomic::{AtomicBool, AtomicU64, Ordering},
@@ -15,6 +14,12 @@ mod resources;
 
 use crate::output::Output;
 
+/// Longest wait between CEF message-loop pumps; a command wakes the loop at once.
+const PUMP_INTERVAL: Duration = Duration::from_millis(2);
+/// Commands handled before the next pump, so a burst of resource replies or input
+/// costs one turn instead of one pump plus a fixed sleep each.
+const MAX_COMMANDS_PER_TURN: usize = 64;
+
 pub(super) struct Document {
     header: api::Header,
     source: api::Resource,
@@ -27,13 +32,45 @@ pub(super) struct Document {
     closed: AtomicBool,
     finding: Mutex<crate::find::FindQueue>,
     request_sequence: AtomicU64,
-    pending: Mutex<HashMap<u64, Arc<Mutex<resources::Stream>>>>,
+    requests: Mutex<resources::Requests>,
     selection: Mutex<crate::selection::Selection>,
     mouse_buttons: AtomicU64,
+    wheel_remainder: Mutex<[f64; 2]>,
     host_shortcuts: bool,
 }
 
 impl Document {
+    fn new(
+        header: api::Header,
+        source: api::Resource,
+        policy: crate::policy::DocumentPolicy,
+        viewport: api::Viewport,
+        output: Arc<Output>,
+        host_shortcuts: bool,
+    ) -> Result<Self, &'static str> {
+        Ok(Self {
+            header,
+            source,
+            policy,
+            viewport: Mutex::new(viewport),
+            surface: Mutex::new(crate::surface::Surface::new(
+                viewport.revision,
+                viewport.width,
+                viewport.height,
+            )?),
+            layers: Mutex::new(crate::surface::Layers::default()),
+            output,
+            active: AtomicBool::new(true),
+            closed: AtomicBool::new(false),
+            finding: Mutex::new(crate::find::FindQueue::default()),
+            request_sequence: AtomicU64::new(1),
+            requests: Mutex::new(resources::Requests::default()),
+            selection: Mutex::new(crate::selection::Selection::default()),
+            mouse_buttons: AtomicU64::new(0),
+            wheel_remainder: Mutex::new([0.0; 2]),
+            host_shortcuts,
+        })
+    }
     fn emit(&self, kind: api::EventKind) {
         if self.active.load(Ordering::Acquire) {
             self.output.emit(self.header, kind);
@@ -45,29 +82,12 @@ impl Document {
             message: message.into(),
         });
     }
-    fn request(
-        &self,
-        stream: Arc<Mutex<resources::Stream>>,
-        event: impl FnOnce(u64) -> api::EventKind,
-    ) -> bool {
-        let id = self.request_sequence.fetch_add(1, Ordering::Relaxed);
-        let Ok(mut pending) = self.pending.lock() else {
-            return false;
-        };
-        if pending.len() >= 128 || id == u64::MAX {
-            return false;
-        }
-        pending.insert(id, stream);
-        drop(pending);
-        self.emit(event(id));
-        true
-    }
     fn retire(&self) {
         self.active.store(false, Ordering::Release);
-        let streams: Vec<_> = self
-            .pending
+        let streams = self
+            .requests
             .lock()
-            .map(|mut p| p.drain().map(|(_, s)| s).collect())
+            .map(|mut requests| requests.drain())
             .unwrap_or_default();
         for stream in streams {
             let callback = if let Ok(mut stream) = stream.lock() {
@@ -81,9 +101,7 @@ impl Document {
                 callback.cancel();
             }
         }
-        if let Ok(mut frame) = self.output.frame.lock() {
-            *frame = None;
-        }
+        self.output.discard_presentation();
     }
 }
 
@@ -102,33 +120,18 @@ fn open(command: api::Command, output: Arc<Output>) -> Result<BrowserInstance, S
     else {
         return Err("first command must be Open".into());
     };
-    let document = Arc::new(Document {
-        header: command.header,
+    let document = Arc::new(Document::new(
+        command.header,
         source,
-        policy: crate::policy::DocumentPolicy::new(
+        crate::policy::DocumentPolicy::new(
             command.header.document,
             policy.network,
             policy.scripts,
         )?,
-        viewport: Mutex::new(viewport),
-        surface: Mutex::new(crate::surface::Surface::new(
-            viewport.revision,
-            viewport.width,
-            viewport.height,
-        )?),
+        viewport,
         output,
-        active: AtomicBool::new(true),
-        closed: AtomicBool::new(false),
-        finding: Mutex::new(crate::find::FindQueue::default()),
-        request_sequence: AtomicU64::new(1),
-        pending: Mutex::new(HashMap::new()),
-        selection: Mutex::new(crate::selection::Selection::default()),
-        layers: Mutex::new(crate::surface::Layers::default()),
-        mouse_buttons: AtomicU64::new(0),
-        host_shortcuts: crate::host_keys::enabled(
-            std::env::var(api::HOST_SHORTCUTS_ENV).ok().as_deref(),
-        ),
-    });
+        crate::host_keys::enabled(std::env::var(api::HOST_SHORTCUTS_ENV).ok().as_deref()),
+    )?);
     #[cfg(feature = "diagnostic-timing")]
     crate::trace::record(
         crate::trace::Event::ContextStart,
@@ -207,6 +210,81 @@ fn close(instance: BrowserInstance) -> Result<(), &'static str> {
     Ok(())
 }
 
+/// Live browser and the command identity accepted so far.
+#[derive(Default)]
+struct Session {
+    instance: Option<BrowserInstance>,
+    last_sequence: u64,
+    last_header: Option<api::Header>,
+}
+
+enum Flow {
+    Continue,
+    /// Stop accepting commands; the common exit path closes the live browser.
+    Stop,
+    /// Exit at once without shutting CEF down (a browser could not be closed).
+    Exit(i32),
+}
+
+fn dispatch(session: &mut Session, command: api::Command, output: &Arc<Output>) -> Flow {
+    let header = command.header;
+    #[cfg(feature = "diagnostic-timing")]
+    crate::trace::record(
+        crate::trace::Event::CommandDispatch,
+        header.document,
+        header.sequence,
+    );
+    if matches!(command.kind, api::CommandKind::Open { .. }) {
+        // Reject a stale or foreign Open before taking the live browser, so the common
+        // exit path still retires it and waits for OnBeforeClose before cef::shutdown.
+        if let Some(old) = session.instance.as_ref()
+            && (header.session != old.document.header.session
+                || header.document <= old.document.header.document)
+        {
+            return Flow::Stop;
+        }
+        if let Some(old) = session.instance.take()
+            && let Err(message) = close(old)
+        {
+            eprintln!("{message}");
+            // Do not initialize a replacement or call cef_shutdown with a live
+            // browser. Returning exits the broker; the host reaps its entire tree.
+            return Flow::Exit(70);
+        }
+        session.last_sequence = header.sequence;
+        session.last_header = Some(header);
+        match open(command, output.clone()) {
+            Ok(new) => session.instance = Some(new),
+            Err(message) => {
+                output.emit(
+                    header,
+                    api::EventKind::Error {
+                        code: api::ErrorCode::Runtime,
+                        message,
+                    },
+                );
+                return Flow::Stop;
+            }
+        }
+        Flow::Continue
+    } else if let Some(current) = session.instance.as_ref() {
+        if header.session != current.document.header.session
+            || header.document != current.document.header.document
+            || header.sequence <= session.last_sequence
+        {
+            return Flow::Stop;
+        }
+        session.last_sequence = header.sequence;
+        if matches!(command.kind, api::CommandKind::Close) {
+            return Flow::Stop;
+        }
+        input::command(current, command);
+        Flow::Continue
+    } else {
+        Flow::Stop
+    }
+}
+
 pub(crate) fn run(args: &MainArgs, sandbox: *mut u8) -> i32 {
     // Select the exact versioned C API before constructing any ref-counted CEF wrapper.
     let _ = api_hash(sys::CEF_API_VERSION_LAST, 0);
@@ -219,6 +297,14 @@ pub(crate) fn run(args: &MainArgs, sandbox: *mut u8) -> i32 {
         Ok(profile) if std::path::Path::new(&profile).is_absolute() => profile,
         _ => {
             eprintln!("HTML viewer requires a private MIDNIGHT_WEB_VIEWER_PROFILE directory");
+            return 70;
+        }
+    };
+    // Browser process only, before CEF can start children that inherit stdout.
+    let protocol = match crate::platform::protocol_output() {
+        Ok(protocol) => protocol,
+        Err(error) => {
+            eprintln!("HTML viewer cannot reserve its protocol output: {error}");
             return 70;
         }
     };
@@ -252,7 +338,7 @@ pub(crate) fn run(args: &MainArgs, sandbox: *mut u8) -> i32 {
     let (output, mut events) = crate::output::channel();
     let writer_output = output.clone();
     let writer = std::thread::spawn(move || {
-        let mut stdout = std::io::stdout().lock();
+        let mut stdout = protocol;
         let mut sequence = 0u64;
         while let Some(mut event) = events.next(&writer_output) {
             sequence += 1;
@@ -269,6 +355,7 @@ pub(crate) fn run(args: &MainArgs, sandbox: *mut u8) -> i32 {
             } else {
                 None
             };
+            // Events were validated when queued, so an error here is a broken transport.
             if api::write_message(&mut stdout, &api::Message::Event(event)).is_err() {
                 writer_output.failed.store(true, Ordering::Release);
                 break;
@@ -296,95 +383,60 @@ pub(crate) fn run(args: &MainArgs, sandbox: *mut u8) -> i32 {
             }
         }
     });
-    let mut instance: Option<BrowserInstance> = None;
-    let mut last_sequence = 0;
-    let mut last_header = None;
+    let mut session = Session::default();
     'run: loop {
         if output.failed.load(Ordering::Acquire) {
             break;
         }
+        let mut next = match rx.recv_timeout(PUMP_INTERVAL) {
+            Ok(command) => Some(command),
+            Err(mpsc::RecvTimeoutError::Timeout) => None,
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+        };
         #[cfg(feature = "diagnostic-timing")]
-        let mut command_turn = None;
-        match rx.try_recv() {
-            Ok(command) => {
-                let header = command.header;
-                #[cfg(feature = "diagnostic-timing")]
-                {
-                    command_turn = Some(header);
-                    crate::trace::record(
-                        crate::trace::Event::CommandDispatch,
-                        header.document,
-                        header.sequence,
-                    );
-                }
-                if matches!(command.kind, api::CommandKind::Open { .. }) {
-                    if let Some(old) = instance.take() {
-                        if header.session != old.document.header.session
-                            || header.document <= old.document.header.document
-                        {
-                            break;
-                        }
-                        if let Err(message) = close(old) {
-                            eprintln!("{message}");
-                            // Do not initialize a replacement or call cef_shutdown with a live
-                            // browser. Returning exits the broker; the host reaps its entire tree.
-                            return 70;
-                        }
-                    }
-                    last_sequence = header.sequence;
-                    last_header = Some(header);
-                    match open(command, output.clone()) {
-                        Ok(new) => instance = Some(new),
-                        Err(message) => {
-                            output.emit(
-                                header,
-                                api::EventKind::Error {
-                                    code: api::ErrorCode::Runtime,
-                                    message,
-                                },
-                            );
-                            break;
-                        }
-                    }
-                } else if let Some(current) = instance.as_ref() {
-                    if header.session != current.document.header.session
-                        || header.document != current.document.header.document
-                        || header.sequence <= last_sequence
-                    {
-                        break;
-                    }
-                    last_sequence = header.sequence;
-                    if matches!(command.kind, api::CommandKind::Close) {
-                        break 'run;
-                    }
-                    input::command(current, command);
-                } else {
-                    break;
-                }
+        let mut last_command = None;
+        let mut handled = 0;
+        while let Some(command) = next.take() {
+            #[cfg(feature = "diagnostic-timing")]
+            {
+                last_command = Some(command.header);
             }
-            Err(mpsc::TryRecvError::Disconnected) => break,
-            Err(mpsc::TryRecvError::Empty) => {}
+            match dispatch(&mut session, command, &output) {
+                Flow::Continue => {}
+                Flow::Stop => break 'run,
+                Flow::Exit(code) => return code,
+            }
+            handled += 1;
+            if handled < MAX_COMMANDS_PER_TURN {
+                next = match rx.try_recv() {
+                    Ok(command) => Some(command),
+                    Err(mpsc::TryRecvError::Empty) => None,
+                    Err(mpsc::TryRecvError::Disconnected) => break 'run,
+                };
+            }
         }
         do_message_loop_work();
         #[cfg(feature = "diagnostic-timing")]
-        if let Some(header) = command_turn {
+        if let Some(header) = last_command {
             crate::trace::record(
                 crate::trace::Event::CommandTurnComplete,
                 header.document,
                 header.sequence,
             );
         }
-        std::thread::sleep(Duration::from_millis(2));
     }
-    if let Some(current) = instance
+    if let Some(current) = session.instance.take()
         && let Err(message) = close(current)
     {
         eprintln!("{message}");
         return 70;
     }
-    if let Some(header) = last_header {
+    if let Some(header) = session.last_header {
         output.emit(header, api::EventKind::Closed);
     }
+    // The writer owns an Output (and therefore the senders), so it would otherwise
+    // wait forever when no Closed is queued: stdin ended, or a non-Open came first.
+    output.finish();
     if !output.failed.load(Ordering::Acquire) {
         let _ = writer.join();
     }

@@ -8,27 +8,43 @@ fn bounded_text(value: Option<&CefString>, limit: usize) -> String {
         .unwrap_or_default()
 }
 
+/// Publishes owned RGBA pixels for the surface's current revision.
+fn emit_frame(doc: &Document, surface: &crate::surface::Surface, rgba: Vec<u8>) {
+    #[cfg(feature = "diagnostic-timing")]
+    crate::trace::record(
+        crate::trace::Event::LayersCopied,
+        surface.width.into(),
+        surface.height.into(),
+    );
+    doc.emit(api::EventKind::Frame(api::Frame {
+        viewport_revision: surface.revision,
+        // CEF accepts inputs asynchronously; OnPaint does not supply their renderer
+        // acknowledgment. Zero avoids claiming unproven pixel/input causality.
+        acknowledged_input: 0,
+        width: surface.width,
+        height: surface.height,
+        rgba,
+    }));
+}
+
+/// Recomposes the retained base with the current popup layer, if a base exists.
 fn emit_layers(doc: &Document) {
     let Ok(surface) = doc.surface.lock() else {
         return;
     };
-    let rgba = doc.layers.lock().ok().and_then(|layers| layers.frame());
-    if let Some(rgba) = rgba {
-        #[cfg(feature = "diagnostic-timing")]
-        crate::trace::record(
-            crate::trace::Event::LayersCopied,
-            surface.width.into(),
-            surface.height.into(),
-        );
-        doc.emit(api::EventKind::Frame(api::Frame {
-            viewport_revision: surface.revision,
-            // CEF accepts inputs asynchronously; OnPaint does not supply their renderer
-            // acknowledgment. Zero avoids claiming unproven pixel/input causality.
-            acknowledged_input: 0,
-            width: surface.width,
-            height: surface.height,
-            rgba,
-        }));
+    if let Some(rgba) = doc.layers.lock().ok().and_then(|layers| layers.frame()) {
+        emit_frame(doc, &surface, rgba);
+    }
+}
+
+/// Popup rectangles are placed by Chromium inside this DIP screen; it equals the
+/// view, so select popups flip or shrink instead of extending past the frame.
+fn dip_rect(viewport: &api::Viewport) -> Rect {
+    Rect {
+        x: 0,
+        y: 0,
+        width: (f64::from(viewport.width) / viewport.scale).ceil() as i32,
+        height: (f64::from(viewport.height) / viewport.scale).ceil() as i32,
     }
 }
 
@@ -68,8 +84,7 @@ wrap_render_handler! {
     impl RenderHandler {
         fn view_rect(&self, _browser: Option<&mut Browser>, rect: Option<&mut Rect>) {
             if let (Ok(viewport), Some(rect)) = (self.doc.viewport.lock(), rect) {
-                *rect = Rect { x: 0, y: 0, width: (viewport.width as f64 / viewport.scale).ceil() as i32,
-                    height: (viewport.height as f64 / viewport.scale).ceil() as i32 };
+                *rect = dip_rect(&viewport);
             }
         }
         fn screen_info(&self, _browser: Option<&mut Browser>, screen_info: Option<&mut ScreenInfo>) -> i32 {
@@ -77,7 +92,8 @@ wrap_render_handler! {
                 info.device_scale_factor = viewport.scale as f32;
                 info.depth = 32;
                 info.depth_per_component = 8;
-                info.rect = Rect { x: 0, y: 0, width: viewport.width as i32, height: viewport.height as i32 };
+                // CEF interprets both rectangles in DIP, like view_rect.
+                info.rect = dip_rect(&viewport);
                 info.available_rect = info.rect.clone();
                 return 1;
             }
@@ -112,14 +128,20 @@ wrap_render_handler! {
             if let Some(rgba) = surface.paint_cropped(revision, width as u32, height as u32, bgra) {
                 #[cfg(feature = "diagnostic-timing")]
                 crate::trace::record(crate::trace::Event::PaintConverted, width as u64, height as u64);
-                if let Ok(mut layers) = self.doc.layers.lock() { layers.base(surface.width, surface.height, rgba); }
-                drop(surface);
-                emit_layers(&self.doc);
+                // Without a popup the converted pixels move into the frame (no second copy).
+                let frame = self.doc.layers.lock().ok().and_then(|mut layers| layers.view(surface.width, surface.height, rgba));
+                if let Some(rgba) = frame { emit_frame(&self.doc, &surface, rgba); }
             }
         }
-        fn on_popup_show(&self, _browser: Option<&mut Browser>, show: i32) {
-            if let Ok(mut layers) = self.doc.layers.lock() { layers.show(show != 0); }
-            emit_layers(&self.doc);
+        fn on_popup_show(&self, browser: Option<&mut Browser>, show: i32) {
+            let Ok(surface) = self.doc.surface.lock() else { return; };
+            let hidden = self.doc.layers.lock().ok().and_then(|mut layers| layers.show(show != 0));
+            if let Some(rgba) = hidden { emit_frame(&self.doc, &surface, rgba); }
+            drop(surface);
+            // No base is retained without a popup; repaint the view to compose onto.
+            if show != 0 && let Some(host) = browser.and_then(|browser| browser.host()) {
+                host.invalidate(PaintElementType::VIEW);
+            }
         }
         fn on_popup_size(&self, _browser: Option<&mut Browser>, rect: Option<&Rect>) {
             if let (Some(rect), Ok(viewport), Ok(mut layers)) = (rect, self.doc.viewport.lock(), self.doc.layers.lock()) {
@@ -167,9 +189,11 @@ wrap_find_handler! {
         fn on_find_result(&self, browser: Option<&mut Browser>, identifier: i32, count: i32, _selection_rect: Option<&Rect>, active_match_ordinal: i32, final_update: i32) {
             let sequence = self.doc.finding.lock().ok().and_then(|mut q| q.result(identifier, final_update != 0));
             let Some(sequence) = sequence else { return; };
+            let matches = count.max(0) as u32;
             self.doc.emit(api::EventKind::FindResult(api::FindResult {
                 request_sequence: sequence,
-                matches: count.max(0) as u32, active: active_match_ordinal.max(0) as u32,
+                // Intermediate updates can report an ordinal before the count catches up.
+                matches, active: (active_match_ordinal.max(0) as u32).min(matches),
                 complete: final_update != 0,
             }));
             if final_update != 0 && let Some(host) = browser.and_then(|b| b.host()) { input::dispatch_find(&self.doc, &host); }
@@ -182,7 +206,7 @@ wrap_load_handler! {
     impl LoadHandler {
         fn on_loading_state_change(&self, browser: Option<&mut Browser>, is_loading: i32, _can_go_back: i32, _can_go_forward: i32) {
             if let Ok(mut finding) = self.doc.finding.lock() { finding.loaded(is_loading == 0); }
-            let zoom = browser.as_ref().and_then(|b| b.host()).map(|h| 1.2f64.powf(h.zoom_level())).unwrap_or(1.0);
+            let zoom = browser.as_ref().and_then(|b| b.host()).map(|h| input::reported_zoom(h.zoom_level())).unwrap_or(1.0);
             self.doc.emit(api::EventKind::State(api::State { title: String::new(), url: self.doc.policy.main_url(), loading: is_loading != 0, editable: false, zoom }));
             if is_loading == 0 && let Some(host) = browser.and_then(|b| b.host()) { input::dispatch_find(&self.doc, &host); }
         }
@@ -195,7 +219,7 @@ wrap_display_handler! {
         fn on_title_change(&self, browser: Option<&mut Browser>, title: Option<&CefString>) {
             self.doc.emit(api::EventKind::State(api::State { title: bounded_text(title, 4096), url: self.doc.policy.main_url(),
                 loading: browser.as_ref().is_some_and(|b| b.is_loading() != 0), editable: false,
-                zoom: browser.and_then(|b| b.host()).map(|h| 1.2f64.powf(h.zoom_level())).unwrap_or(1.0) }));
+                zoom: browser.and_then(|b| b.host()).map(|h| input::reported_zoom(h.zoom_level())).unwrap_or(1.0) }));
         }
         fn on_console_message(&self, _browser: Option<&mut Browser>, _level: LogSeverity, _message: Option<&CefString>, _source: Option<&CefString>, _line: i32) -> i32 { 1 }
     }
@@ -239,3 +263,27 @@ wrap_jsdialog_handler! { struct NoDialogs; impl JsdialogHandler {
 wrap_context_menu_handler! { struct NoMenus; impl ContextMenuHandler {
     fn on_before_context_menu(&self, _browser: Option<&mut Browser>, _frame: Option<&mut Frame>, _params: Option<&mut ContextMenuParams>, model: Option<&mut MenuModel>) { if let Some(model) = model { model.clear(); } }
 } }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn screen_and_view_rectangles_are_the_same_dip_rectangle() {
+        // 150 %: 1000x700 physical is a 667x467 DIP view. The screen used to report the
+        // physical size, so Chromium placed select popups outside the visible frame.
+        let viewport = api::Viewport {
+            revision: 1,
+            width: 1000,
+            height: 700,
+            scale: 1.5,
+        };
+        let rect = dip_rect(&viewport);
+        assert_eq!((rect.x, rect.y, rect.width, rect.height), (0, 0, 667, 467));
+        let unit = dip_rect(&api::Viewport {
+            scale: 1.0,
+            ..viewport
+        });
+        assert_eq!((unit.width, unit.height), (1000, 700));
+    }
+}
