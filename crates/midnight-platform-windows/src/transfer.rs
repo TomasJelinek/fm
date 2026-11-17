@@ -1,6 +1,7 @@
 //! Native sources, staging handles and explicitly recoverable root capture.
 //! Ordinary Copy sources remain read-only. All blocking work belongs on backend workers.
 use crate::mutation::{native, validate_name, validate_path};
+use crate::reparse::Native;
 use midnight_core::{
     Cancellation, EntryKind, EntryMetadata, FsError, MutationItem, TransferDirectory,
     TransferEntry, TransferIdentity, TransferService, TransferSource,
@@ -42,10 +43,13 @@ impl TransferService for crate::WindowsFileSystem {
             .metadata()
             .map_err(|e| error(path, e))?
             .file_attributes();
-        let device = if attributes & FILE_ATTRIBUTE_REPARSE_POINT == 0 {
-            Some(identity(&file, path)?.device)
-        } else {
+        let link = Native::of(&file, attributes)
+            .map_err(|e| error(path, e))?
+            .link();
+        let device = if link {
             None
+        } else {
+            Some(identity(&file, path)?.device)
         };
         checked(cancel, path)?;
         Ok(device)
@@ -82,13 +86,7 @@ impl TransferService for crate::WindowsFileSystem {
                         FILE_DIRECTORY_FILE,
                     )
                     .map_err(|e| error(path, e))?;
-                    if child
-                        .metadata()
-                        .map_err(|e| error(path, e))?
-                        .file_attributes()
-                        & FILE_ATTRIBUTE_REPARSE_POINT
-                        != 0
-                    {
+                    if Native::query(&child).map_err(|e| error(path, e))?.link() {
                         return Err(unsupported(
                             path,
                             "checksum directory contains a link or junction",
@@ -159,29 +157,36 @@ fn identity(file: &File, path: &Path) -> Result<TransferIdentity, FsError> {
     })
 }
 fn entry(file: &File, path: &Path) -> Result<TransferEntry, FsError> {
+    classified(file, path).map(|(entry, _)| entry)
+}
+/// Only name-surrogate reparse points are links. Cloud placeholders, deduplicated and
+/// WOF-compressed entries are ordinary files/directories whose content is read through
+/// their filter (see `reparse::reopen_content`).
+fn classified(file: &File, path: &Path) -> Result<(TransferEntry, Native), FsError> {
+    classified_with_metadata(file, path).map(|(entry, native, _)| (entry, native))
+}
+fn classified_with_metadata(
+    file: &File,
+    path: &Path,
+) -> Result<(TransferEntry, Native, std::fs::Metadata), FsError> {
     let metadata = file.metadata().map_err(|e| error(path, e))?;
-    let attributes = metadata.file_attributes();
-    let directory = attributes & FILE_ATTRIBUTE_DIRECTORY != 0;
-    let link = attributes & FILE_ATTRIBUTE_REPARSE_POINT != 0;
-    Ok(TransferEntry {
+    let native = Native::of(file, metadata.file_attributes()).map_err(|e| error(path, e))?;
+    let directory = native.directory();
+    let entry = TransferEntry {
         identity: identity(file, path)?,
         item: MutationItem {
             path: path.to_owned(),
-            kind: match (directory, link) {
-                (true, true) => EntryKind::DirectoryLink,
-                (false, true) => EntryKind::Symlink,
-                (true, false) => EntryKind::Directory,
-                (false, false) => EntryKind::File,
-            },
+            kind: native.kind(),
             metadata: EntryMetadata {
                 size: (!directory).then_some(metadata.len()),
                 modified: metadata.modified().ok(),
                 localized_modified: metadata.modified().ok().and_then(crate::locale::modified),
-                native_attributes: Some(attributes),
+                native_attributes: Some(native.attributes),
                 ..EntryMetadata::default()
             },
         },
-    })
+    };
+    Ok((entry, native, metadata))
 }
 fn checked(cancel: &Cancellation, path: &Path) -> Result<(), FsError> {
     if cancel.is_cancelled() {

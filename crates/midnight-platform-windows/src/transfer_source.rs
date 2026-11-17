@@ -1,22 +1,19 @@
 use super::*;
+use crate::directory_records::Cursor;
 use std::{
     collections::VecDeque,
     ffi::{OsStr, OsString},
     io::{Read, Seek, SeekFrom},
-    mem::{offset_of, size_of},
-    os::windows::{
-        ffi::OsStringExt,
-        io::{AsRawHandle, FromRawHandle},
-    },
+    os::windows::ffi::OsStringExt,
     path::PathBuf,
 };
-use windows_sys::{
-    Wdk::Storage::FileSystem::{FILE_DIRECTORY_FILE, FILE_NON_DIRECTORY_FILE, FILE_OPEN},
-    Win32::Foundation::ERROR_NO_MORE_FILES,
+use windows_sys::Wdk::Storage::FileSystem::{
+    FILE_DIRECTORY_FILE, FILE_NON_DIRECTORY_FILE, FILE_OPEN,
 };
 
 pub(super) struct Source {
     entry: TransferEntry,
+    native: Native,
     parent: Arc<File>,
     parent_path: PathBuf,
     parent_identity: TransferIdentity,
@@ -24,11 +21,17 @@ pub(super) struct Source {
     file: Arc<File>,
     readable: Option<File>,
     stamp: (u64, u64, u64),
-    names: VecDeque<OsString>,
-    ended: bool,
+    names: VecDeque<(OsString, Native)>,
+    cursor: Cursor,
     move_enabled: bool,
     // Last: all native fields, including lazy readable upgrades, close before this signal.
     _namespace_owner: super::namespace::NativeOwner,
+}
+/// A source's directory and its already proven identity, for opening its children.
+struct Parent {
+    file: Arc<File>,
+    path: PathBuf,
+    identity: Option<TransferIdentity>,
 }
 impl Source {
     pub(super) fn open(
@@ -37,7 +40,17 @@ impl Source {
         name: &OsStr,
         cancel: &Cancellation,
     ) -> Result<Self, FsError> {
-        Self::open_with_access(parent, parent_path, name, false, cancel)
+        Self::open_with_access(
+            Parent {
+                file: parent,
+                path: parent_path,
+                identity: None,
+            },
+            name,
+            None,
+            false,
+            cancel,
+        )
     }
     pub(super) fn open_for_move(
         parent: Arc<File>,
@@ -45,32 +58,50 @@ impl Source {
         name: &OsStr,
         cancel: &Cancellation,
     ) -> Result<Self, FsError> {
-        Self::open_with_access(parent, parent_path, name, true, cancel)
+        Self::open_with_access(
+            Parent {
+                file: parent,
+                path: parent_path,
+                identity: None,
+            },
+            name,
+            None,
+            true,
+            cancel,
+        )
     }
     pub(super) fn native_file(&self) -> Arc<File> {
         self.file.clone()
     }
+    /// `listed` is the child's classification from its directory record. Without it, a
+    /// no-follow probe classifies the entry first.
     fn open_with_access(
-        parent: Arc<File>,
-        parent_path: PathBuf,
+        parent: Parent,
         name: &OsStr,
+        listed: Option<Native>,
         move_root: bool,
         cancel: &Cancellation,
     ) -> Result<Self, FsError> {
-        let path = parent_path.join(name);
+        let path = parent.path.join(name);
         checked(cancel, &path)?;
         validate_name(name).map_err(|e| error(&path, e))?;
-        let probe = native::open_relative(
-            &parent,
-            name,
-            FILE_READ_ATTRIBUTES | SYNCHRONIZE,
-            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-            FILE_OPEN,
-            0,
-        )
-        .map_err(|e| error(&path, e))?;
-        let snapshot = entry(&probe, &path)?;
-        let options = match snapshot.item.kind {
+        let (expected, probed) = match listed {
+            Some(native) => (native, None),
+            None => {
+                let probe = native::open_relative(
+                    &parent.file,
+                    name,
+                    FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+                    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                    FILE_OPEN,
+                    0,
+                )
+                .map_err(|e| error(&path, e))?;
+                let native = Native::query(&probe).map_err(|e| error(&path, e))?;
+                (native, Some(identity(&probe, &path)?))
+            }
+        };
+        let options = match expected.kind() {
             EntryKind::Directory => FILE_DIRECTORY_FILE,
             EntryKind::File => FILE_NON_DIRECTORY_FILE,
             _ => {
@@ -85,96 +116,97 @@ impl Source {
         let access = FILE_READ_ATTRIBUTES
             | SYNCHRONIZE
             | if move_root { DELETE } else { FILE_READ_DATA }
-            | if snapshot.item.kind == EntryKind::Directory {
+            | if expected.directory() {
                 FILE_TRAVERSE
             } else {
                 0
             };
-        let file =
-            native::open_relative(&parent, name, access, FILE_SHARE_READ, FILE_OPEN, options)
-                .map_err(|e| error(&path, e))?;
-        if identity(&file, &path)? != snapshot.identity {
+        let file = native::open_relative(
+            &parent.file,
+            name,
+            access,
+            FILE_SHARE_READ,
+            FILE_OPEN,
+            options,
+        )
+        .map_err(|e| error(&path, e))?;
+        let (entry, native, meta) = classified_with_metadata(&file, &path)?;
+        if probed.is_some_and(|probed| probed != entry.identity) || native.kind() != expected.kind()
+        {
             return Err(invalid(&path, "source changed while opening"));
         }
-        let meta = file.metadata().map_err(|e| error(&path, e))?;
         let stamp = (
             meta.file_size(),
             meta.last_write_time(),
             meta.creation_time(),
         );
-        let parent_identity = identity(&parent, &parent_path)?;
-        let entry = entry(&file, &path)?;
+        // A cloud placeholder or deduplicated/WOF file is read through its filter so its
+        // data hydrates instead of copying (and then verifying) the raw reparse stub.
+        let readable = if !move_root && native.filtered() && !native.directory() {
+            let content = crate::reparse::reopen_content(
+                &file,
+                native,
+                FILE_READ_DATA | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+                FILE_SHARE_READ,
+            )
+            .map_err(|e| error(&path, e))?;
+            if identity(&content, &path)? != entry.identity {
+                return Err(invalid(&path, "source changed while opening its content"));
+            }
+            Some(content)
+        } else {
+            None
+        };
+        let parent_identity = match parent.identity {
+            Some(identity) => identity,
+            None => identity(&parent.file, &parent.path)?,
+        };
         let namespace_owner = super::namespace::owner(&[parent_identity, entry.identity]);
         Ok(Self {
             entry,
-            parent,
-            parent_path,
+            native,
+            parent: parent.file,
+            parent_path: parent.path,
             parent_identity,
             name: name.to_owned(),
             file: Arc::new(file),
-            readable: None,
+            readable,
             stamp,
             names: VecDeque::new(),
-            ended: false,
+            cursor: Cursor::default(),
             move_enabled: move_root,
             _namespace_owner: namespace_owner,
         })
     }
     fn fill_names(&mut self) -> Result<(), FsError> {
         self.ensure_readable()?;
-        let path = &self.entry.item.path;
-        let mut buffer = vec![0u64; 8192];
-        // SAFETY: an aligned, writable 64 KiB buffer and a live directory handle.
-        if unsafe {
-            GetFileInformationByHandleEx(
-                self.read_file().as_raw_handle(),
-                FileIdBothDirectoryInfo,
-                buffer.as_mut_ptr().cast(),
-                (buffer.len() * 8) as u32,
-            )
-        } == 0
-        {
-            let failure = io::Error::last_os_error();
-            if failure.raw_os_error() == Some(ERROR_NO_MORE_FILES as i32) {
-                self.ended = true;
-                return Ok(());
-            }
-            return Err(error(path, failure));
-        }
-        let mut offset = 0usize;
-        loop {
-            let header = offset_of!(FILE_ID_BOTH_DIR_INFO, FileName);
-            if offset + size_of::<FILE_ID_BOTH_DIR_INFO>() > buffer.len() * 8 {
-                return Err(invalid(path, "invalid directory record"));
-            }
-            // SAFETY: offset bounds checked above; native records are eight-byte aligned.
-            let record = unsafe {
-                &*buffer
-                    .as_ptr()
-                    .cast::<u8>()
-                    .add(offset)
-                    .cast::<FILE_ID_BOTH_DIR_INFO>()
-            };
-            let bytes = record.FileNameLength as usize;
-            if !bytes.is_multiple_of(2) || offset + header + bytes > buffer.len() * 8 {
-                return Err(invalid(path, "invalid directory filename"));
-            }
-            // SAFETY: the checked byte range covers this UTF-16 filename.
-            let units = unsafe { std::slice::from_raw_parts(record.FileName.as_ptr(), bytes / 2) };
-            let name = OsString::from_wide(units);
-            if name != "." && name != ".." {
-                self.names.push_back(name);
-            }
-            if record.NextEntryOffset == 0 {
-                break;
-            }
-            let next = record.NextEntryOffset as usize;
-            if !next.is_multiple_of(8) || next < header + bytes {
-                return Err(invalid(path, "invalid directory offset"));
-            }
-            offset += next;
-        }
-        Ok(())
+        let names = &mut self.names;
+        let directory = self.readable.as_ref().unwrap_or(&self.file);
+        self.cursor
+            .next_batch(directory, &mut |record| {
+                names.push_back((OsString::from_wide(record.name), record.native));
+                Ok(())
+            })
+            .map_err(|e| error(&self.entry.item.path, e))
+    }
+    /// Opens a listed child relative to this directory, reusing its proven identity.
+    fn open_listed(
+        &self,
+        name: &OsStr,
+        native: Native,
+        cancel: &Cancellation,
+    ) -> Result<Self, FsError> {
+        Self::open_with_access(
+            Parent {
+                file: self.file.clone(),
+                path: self.entry.item.path.clone(),
+                identity: Some(self.entry.identity),
+            },
+            name,
+            Some(native),
+            false,
+            cancel,
+        )
     }
 }
 impl TransferSource for Source {
@@ -239,7 +271,7 @@ impl TransferSource for Source {
             ));
         }
         self.next_name(cancel)?
-            .map(|name| {
+            .map(|(name, _)| {
                 super::move_source::prepare_child(
                     self.file.clone(),
                     self.entry.item.path.clone(),
@@ -382,14 +414,9 @@ impl TransferSource for Source {
         cancel: &Cancellation,
     ) -> Result<Option<Box<dyn TransferSource>>, FsError> {
         self.next_name(cancel)?
-            .map(|name| {
-                Self::open(
-                    self.file.clone(),
-                    self.entry.item.path.clone(),
-                    &name,
-                    cancel,
-                )
-                .map(|source| Box::new(source) as Box<dyn TransferSource>)
+            .map(|(name, native)| {
+                self.open_listed(&name, native, cancel)
+                    .map(|source| Box::new(source) as Box<dyn TransferSource>)
             })
             .transpose()
     }
@@ -424,34 +451,38 @@ impl Source {
         }
         // Upgrade the retained object only when copying or enumerating a merge.
         // The original DELETE pin excludes writers/renamers; this read handle
-        // permits that existing DELETE access without requesting it again.
-        // SAFETY: retained live file; the OS performs new access/sharing checks.
-        let handle = unsafe {
-            ReOpenFile(
-                self.file.as_raw_handle(),
-                FILE_READ_DATA | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
-                FILE_SHARE_READ | FILE_SHARE_DELETE,
-                FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
-            )
-        };
-        if handle == windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE {
-            return Err(error(&self.entry.item.path, io::Error::last_os_error()));
+        // permits that existing DELETE access without requesting it again. A cloud
+        // placeholder or deduplicated file is read through its filter.
+        let readable = crate::reparse::reopen_content(
+            &self.file,
+            self.native,
+            FILE_READ_DATA | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+            FILE_SHARE_READ | FILE_SHARE_DELETE,
+        )
+        .map_err(|e| error(&self.entry.item.path, e))?;
+        if identity(&readable, &self.entry.item.path)? != self.entry.identity {
+            return Err(invalid(
+                &self.entry.item.path,
+                "source changed before read upgrade",
+            ));
         }
-        // SAFETY: successful ReOpenFile transfers one owned handle to the exact retained object.
-        self.readable = Some(unsafe { File::from_raw_handle(handle) });
+        self.readable = Some(readable);
         Ok(())
     }
 
-    fn next_name(&mut self, cancel: &Cancellation) -> Result<Option<OsString>, FsError> {
-        self.revalidate(cancel)?;
+    fn next_name(&mut self, cancel: &Cancellation) -> Result<Option<(OsString, Native)>, FsError> {
         if self.entry.item.kind != EntryKind::Directory {
             return Err(invalid(&self.entry.item.path, "source is not a directory"));
         }
         loop {
-            if let Some(name) = self.names.pop_front() {
-                return Ok(Some(name));
+            if let Some(next) = self.names.pop_front() {
+                return Ok(Some(next));
             }
-            if self.ended {
+            // The directory's path binding is revalidated once per native batch and once
+            // at its end. Each child is opened relative to the retained handle and the
+            // engine revalidates every child's own parent binding before using it.
+            self.revalidate(cancel)?;
+            if self.cursor.ended() {
                 return Ok(None);
             }
             self.fill_names()?;

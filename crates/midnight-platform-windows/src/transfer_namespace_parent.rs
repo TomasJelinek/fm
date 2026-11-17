@@ -117,7 +117,11 @@ fn metadata_directory(path: &Path) -> Result<File, FsError> {
         .open(path)
         .map_err(|e| error(path, e))?;
     let metadata = file.metadata().map_err(|e| error(path, e))?;
-    if !metadata.is_dir() || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+    // Cloud Files placeholders (a OneDrive root and every folder below it) carry a
+    // non-surrogate reparse tag and are ordinary directories; only links are refused.
+    let native = crate::reparse::Native::of(&file, metadata.file_attributes())
+        .map_err(|e| error(path, e))?;
+    if !native.directory() || native.link() {
         return Err(invalid(
             path,
             "native namespace ancestor is not an ordinary directory",

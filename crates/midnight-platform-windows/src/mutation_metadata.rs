@@ -133,17 +133,29 @@ fn snapshot_file(source: &File, path: &Path) -> Result<MetadataSnapshot, FsError
         .metadata()
         .map_err(|e| failure("inspect metadata", path, e))?;
     let attrs = meta.file_attributes();
-    let ordinary = attrs & FILE_ATTRIBUTE_REPARSE_POINT == 0;
+    // Cloud placeholders and other filter-backed entries are ordinary; links are not.
+    let ordinary = !crate::reparse::Native::of(source, attrs)
+        .map_err(|e| failure("inspect metadata", path, e))?
+        .link();
     let mut standard = FILE_STANDARD_INFO::default();
     // SAFETY: live owned handle, fixed-size writable output.
-    let links = unsafe {
+    if unsafe {
         GetFileInformationByHandleEx(
             source.as_raw_handle(),
             FileStandardInfo,
             (&mut standard as *mut FILE_STANDARD_INFO).cast(),
             size_of::<FILE_STANDARD_INFO>() as u32,
         )
-    };
+    } == 0
+    {
+        // An unknown link count must not be presented as "no other names": an edit
+        // would silently affect every hard-link alias.
+        return Err(failure(
+            "inspect hard links",
+            path,
+            io::Error::last_os_error(),
+        ));
+    }
     let mut flags = 0;
     // SAFETY: only the flags output is requested; all optional buffers are null/zero.
     let volume = unsafe {
@@ -182,11 +194,7 @@ fn snapshot_file(source: &File, path: &Path) -> Result<MetadataSnapshot, FsError
         created: meta.created().ok(),
         modified: meta.modified().ok(),
         accessed: meta.accessed().ok(),
-        hard_links: if links != 0 {
-            standard.NumberOfLinks as u64
-        } else {
-            1
-        },
+        hard_links: u64::from(standard.NumberOfLinks),
     })
 }
 
@@ -225,16 +233,10 @@ pub(super) fn children(
         let meta = child
             .metadata()
             .map_err(|e| failure("inspect child", &path, e))?;
-        let attrs = meta.file_attributes();
-        let kind = match (
-            attrs & FILE_ATTRIBUTE_DIRECTORY != 0,
-            attrs & FILE_ATTRIBUTE_REPARSE_POINT != 0,
-        ) {
-            (true, false) => EntryKind::Directory,
-            (true, true) => EntryKind::DirectoryLink,
-            (false, true) => EntryKind::Symlink,
-            (false, false) => EntryKind::File,
-        };
+        let native = crate::reparse::Native::of(&child, meta.file_attributes())
+            .map_err(|e| failure("inspect child", &path, e))?;
+        let attrs = native.attributes;
+        let kind = native.kind();
         children.push(Arc::new(WindowsMutation {
             item: MutationItem {
                 path,

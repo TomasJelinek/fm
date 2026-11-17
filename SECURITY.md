@@ -561,7 +561,13 @@ requires the compression support mask and avoids final-link/automount traversal.
 Unknown support does not mean uncompressed. Sparse allocation, archive suffixes
 and apparent compression ratios are not evidence; reported sizes remain logical.
 
-Directory links and junctions retain a separate entry kind. Native Windows link
+Directory links and junctions retain a separate entry kind. On Windows only
+name-surrogate reparse points (symbolic links, junctions, mount points) are links;
+Cloud Files/OneDrive placeholders, deduplicated, WOF-compressed and other
+filter-backed entries are ordinary files/directories in listing, Find, Copy/Move,
+deletion, creation and metadata editing. Their content is read only through a
+filter-mediated reopen of the identity-pinned object (it may hydrate), never from
+the raw reparse stub. Native Windows link
 icons use system overlays on cached generic types, without sending untrusted
 link paths to the Shell or opening targets. Linux does not infer a directory
 target by an implicit stat/network probe for icon presentation. Recursive sizing

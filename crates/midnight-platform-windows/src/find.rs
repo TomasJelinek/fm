@@ -1,12 +1,12 @@
 //! Read-only native Find handles and bounded native directory records.
-use crate::mutation::native;
+use crate::{directory_records::Cursor, mutation::native, reparse::Native};
 use midnight_core::*;
 use std::{
     collections::VecDeque,
     ffi::OsString,
     fs::{File, OpenOptions},
     io::{self, Read},
-    mem::{offset_of, size_of},
+    mem::size_of,
     os::windows::{
         ffi::{OsStrExt, OsStringExt},
         fs::{MetadataExt, OpenOptionsExt},
@@ -16,8 +16,16 @@ use std::{
 };
 use windows_sys::{
     Wdk::Storage::FileSystem::{FILE_DIRECTORY_FILE, FILE_OPEN},
-    Win32::{Foundation::ERROR_NO_MORE_FILES, Storage::FileSystem::*},
+    Win32::Storage::FileSystem::*,
 };
+
+/// Cloud-state attributes change when a placeholder hydrates, dehydrates or is pinned,
+/// without any change to its content. They are excluded from the content revision.
+const VOLATILE_ATTRIBUTES: u32 = FILE_ATTRIBUTE_OFFLINE
+    | FILE_ATTRIBUTE_PINNED
+    | FILE_ATTRIBUTE_UNPINNED
+    | FILE_ATTRIBUTE_RECALL_ON_OPEN
+    | FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS;
 
 impl FindService for crate::WindowsFileSystem {
     fn open_find_source(
@@ -28,48 +36,77 @@ impl FindService for crate::WindowsFileSystem {
         checked(cancel, path)?;
         native_path(path)?;
         let probe = open_path(path, FILE_READ_ATTRIBUTES)?;
-        let entry = snapshot(&probe, path)?;
+        let (entry, native) = snapshot(&probe, path)?;
         ordinary(&entry)?;
         let file = if entry.kind == EntryKind::Directory {
-            open_path(
+            let file = open_path(
                 path,
                 FILE_READ_ATTRIBUTES | FILE_LIST_DIRECTORY | FILE_TRAVERSE,
-            )?
+            )?;
+            if !snapshot(&file, path)?.0.matches_capture(&entry) {
+                return Err(changed(path));
+            }
+            file
         } else {
             probe
         };
-        if !snapshot(&file, path)?.matches_capture(&entry) {
-            return Err(changed(path));
-        }
-        Ok(Box::new(Source {
-            entry: localized(entry),
-            file,
-            names: VecDeque::new(),
-            ended: false,
-            reader: None,
-        }))
+        Ok(Box::new(Source::new(localized(entry), native, file)))
     }
+}
+struct Pending {
+    name: OsString,
+    native: Native,
 }
 struct Source {
     entry: FindEntry,
+    native: Native,
     file: File,
-    names: VecDeque<OsString>,
-    ended: bool,
+    pending: VecDeque<Pending>,
+    cursor: Cursor,
     reader: Option<File>,
 }
 impl Source {
-    fn child(&self, name: &std::ffi::OsStr) -> Result<FindChild, FsError> {
-        let path = self.entry.path.join(name);
-        let probe = native::open_relative(
-            &self.file,
-            name,
-            FILE_READ_ATTRIBUTES | SYNCHRONIZE,
-            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-            FILE_OPEN,
-            0,
-        )
-        .map_err(|error| FsError::from_io("find child", &path, error))?;
-        let entry = snapshot(&probe, &path)?;
+    fn new(entry: FindEntry, native: Native, file: File) -> Self {
+        Self {
+            entry,
+            native,
+            file,
+            pending: VecDeque::new(),
+            cursor: Cursor::default(),
+            reader: None,
+        }
+    }
+    fn child(&self, pending: Pending) -> Result<FindChild, FsError> {
+        let path = self.entry.path.join(&pending.name);
+        // The directory record already carries the reparse tag: a link is skipped
+        // without being opened. Cloud placeholders are ordinary files/directories.
+        if pending.native.link() {
+            return Ok(FindChild::Skipped {
+                path,
+                reason: FindSkipReason::Link,
+            });
+        }
+        // One no-follow open per child, with listing access only for a directory.
+        let listing = pending.native.directory();
+        let open = |access, options| {
+            native::open_relative(
+                &self.file,
+                &pending.name,
+                access,
+                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                FILE_OPEN,
+                options,
+            )
+            .map_err(|error| FsError::from_io("find child", &path, error))
+        };
+        let directory_access =
+            FILE_READ_ATTRIBUTES | FILE_LIST_DIRECTORY | FILE_TRAVERSE | SYNCHRONIZE;
+        let file = if listing {
+            open(directory_access, 0)?
+        } else {
+            open(FILE_READ_ATTRIBUTES | SYNCHRONIZE, 0)?
+        };
+        let (entry, native) = snapshot(&file, &path)?;
         if matches!(entry.kind, EntryKind::DirectoryLink | EntryKind::Symlink) {
             return Ok(FindChild::Skipped {
                 path,
@@ -82,86 +119,33 @@ impl Source {
                 reason: FindSkipReason::MountBoundary,
             });
         }
-        let file = if entry.kind == EntryKind::Directory {
-            native::open_relative(
-                &self.file,
-                name,
-                FILE_READ_ATTRIBUTES | FILE_LIST_DIRECTORY | FILE_TRAVERSE | SYNCHRONIZE,
-                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-                FILE_OPEN,
-                FILE_DIRECTORY_FILE,
-            )
-            .map_err(|error| FsError::from_io("find directory", &path, error))?
+        let file = if entry.kind == EntryKind::Directory && !listing {
+            // Replaced by a directory after enumeration: listing needs another open.
+            let directory = open(directory_access, FILE_DIRECTORY_FILE)?;
+            if !snapshot(&directory, &path)?.0.matches_capture(&entry) {
+                return Err(changed(&path));
+            }
+            directory
         } else {
-            probe
+            file
         };
-        if !snapshot(&file, &path)?.matches_capture(&entry) {
-            return Err(changed(&path));
-        }
-        Ok(FindChild::Entry(Box::new(Source {
-            entry: localized(entry),
+        Ok(FindChild::Entry(Box::new(Source::new(
+            localized(entry),
+            native,
             file,
-            names: VecDeque::new(),
-            ended: false,
-            reader: None,
-        })))
+        ))))
     }
     fn fill_names(&mut self) -> Result<(), FsError> {
-        let mut buffer = vec![0u64; 8192];
-        // SAFETY: the live directory handle and aligned writable 64 KiB buffer
-        // remain valid for the entire synchronous native query.
-        if unsafe {
-            GetFileInformationByHandleEx(
-                self.file.as_raw_handle(),
-                FileIdBothDirectoryInfo,
-                buffer.as_mut_ptr().cast(),
-                (buffer.len() * 8) as u32,
-            )
-        } == 0
-        {
-            let error = io::Error::last_os_error();
-            if error.raw_os_error() == Some(ERROR_NO_MORE_FILES as i32) {
-                self.ended = true;
-                return Ok(());
-            }
-            return Err(FsError::from_io("find directory", &self.entry.path, error));
-        }
-        let mut offset = 0usize;
-        loop {
-            let header = offset_of!(FILE_ID_BOTH_DIR_INFO, FileName);
-            if offset + size_of::<FILE_ID_BOTH_DIR_INFO>() > buffer.len() * 8 {
-                return Err(record_error(&self.entry.path));
-            }
-            // SAFETY: the record header is in bounds and each native offset is
-            // checked below before it becomes the next eight-byte aligned offset.
-            let record = unsafe {
-                &*buffer
-                    .as_ptr()
-                    .cast::<u8>()
-                    .add(offset)
-                    .cast::<FILE_ID_BOTH_DIR_INFO>()
-            };
-            let bytes = record.FileNameLength as usize;
-            if !bytes.is_multiple_of(2) || offset + header + bytes > buffer.len() * 8 {
-                return Err(record_error(&self.entry.path));
-            }
-            // SAFETY: the complete counted UTF-16 filename range was checked above.
-            let name = OsString::from_wide(unsafe {
-                std::slice::from_raw_parts(record.FileName.as_ptr(), bytes / 2)
-            });
-            if name != "." && name != ".." {
-                self.names.push_back(name);
-            }
-            if record.NextEntryOffset == 0 {
-                break;
-            }
-            let next = record.NextEntryOffset as usize;
-            if !next.is_multiple_of(8) || next < header + bytes {
-                return Err(record_error(&self.entry.path));
-            }
-            offset += next;
-        }
-        Ok(())
+        let pending = &mut self.pending;
+        self.cursor
+            .next_batch(&self.file, &mut |record| {
+                pending.push_back(Pending {
+                    name: OsString::from_wide(record.name),
+                    native: record.native,
+                });
+                Ok(())
+            })
+            .map_err(|error| FsError::from_io("find directory", &self.entry.path, error))
     }
 }
 impl FindSource for Source {
@@ -171,15 +155,18 @@ impl FindSource for Source {
     fn revalidate(&self, cancel: &Cancellation) -> Result<(), FsError> {
         checked(cancel, &self.entry.path)?;
         let visible = open_path(&self.entry.path, FILE_READ_ATTRIBUTES)?;
-        if !snapshot(&visible, &self.entry.path)?.matches_capture(&self.entry)
-            || !snapshot(&self.file, &self.entry.path)?.matches_capture(&self.entry)
+        if !snapshot(&visible, &self.entry.path)?
+            .0
+            .matches_capture(&self.entry)
+            || !snapshot(&self.file, &self.entry.path)?
+                .0
+                .matches_capture(&self.entry)
         {
             return Err(changed(&self.entry.path));
         }
         Ok(())
     }
     fn next_child(&mut self, cancel: &Cancellation) -> Result<Option<FindChild>, FsError> {
-        self.revalidate(cancel)?;
         if self.entry.kind != EntryKind::Directory {
             return Err(find_error(
                 &self.entry.path,
@@ -189,13 +176,18 @@ impl FindSource for Source {
         }
         loop {
             checked(cancel, &self.entry.path)?;
-            if let Some(name) = self.names.pop_front() {
-                return Ok(Some(match self.child(&name) {
+            if let Some(pending) = self.pending.pop_front() {
+                return Ok(Some(match self.child(pending) {
                     Ok(child) => child,
                     Err(error) => FindChild::Failed(error),
                 }));
             }
-            if self.ended {
+            // The directory's path binding and revision are revalidated once per native
+            // batch and once at its end, not once per child: every child of a batch is
+            // opened relative to the retained handle, and every result is revalidated
+            // by path again before publication.
+            self.revalidate(cancel)?;
+            if self.cursor.ended() {
                 return Ok(None);
             }
             self.fill_names()?;
@@ -213,14 +205,20 @@ impl FindSource for Source {
         if self.reader.is_none() {
             // Find is a live read-only scan: do not deny an application's log
             // writer. Identity and ChangeTime are checked before/after reading;
-            // concurrent edits produce an explicit incomplete result.
-            let reader = OpenOptions::new()
-                .access_mode(FILE_READ_DATA | FILE_READ_ATTRIBUTES)
-                .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
-                .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
-                .open(native_path(&self.entry.path)?)
-                .map_err(|error| FsError::from_io("find content", &self.entry.path, error))?;
-            if !snapshot(&reader, &self.entry.path)?.matches_capture(&self.entry) {
+            // concurrent edits produce an explicit incomplete result. The pinned object
+            // is reopened, never its path; a cloud placeholder or deduplicated file is
+            // read through its filter instead of returning the raw reparse stub.
+            let reader = crate::reparse::reopen_content(
+                &self.file,
+                self.native,
+                FILE_READ_DATA | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            )
+            .map_err(|error| FsError::from_io("find content", &self.entry.path, error))?;
+            if !snapshot(&reader, &self.entry.path)?
+                .0
+                .matches_capture(&self.entry)
+            {
                 return Err(changed(&self.entry.path));
             }
             self.reader = Some(reader);
@@ -260,7 +258,7 @@ fn localized(mut entry: FindEntry) -> FindEntry {
     entry.metadata.localized_modified = entry.metadata.modified.and_then(crate::locale::modified);
     entry
 }
-fn snapshot(file: &File, path: &Path) -> Result<FindEntry, FsError> {
+fn snapshot(file: &File, path: &Path) -> Result<(FindEntry, Native), FsError> {
     // SAFETY: the owned live handle is only queried for its native type.
     if unsafe { GetFileType(file.as_raw_handle()) } != FILE_TYPE_DISK {
         return Err(find_error(
@@ -291,20 +289,17 @@ fn snapshot(file: &File, path: &Path) -> Result<FindEntry, FsError> {
             io::Error::last_os_error(),
         ));
     }
-    let attributes = metadata.file_attributes();
-    let directory = attributes & FILE_ATTRIBUTE_DIRECTORY != 0;
-    let link = attributes & FILE_ATTRIBUTE_REPARSE_POINT != 0;
-    let kind = match (directory, link) {
-        (true, true) => EntryKind::DirectoryLink,
-        (false, true) => EntryKind::Symlink,
-        (true, false) => EntryKind::Directory,
-        (false, false) => EntryKind::File,
-    };
+    // Only name-surrogate reparse points are links; cloud placeholders, deduplicated and
+    // WOF-compressed entries are ordinary files and directories.
+    let native = Native::of(file, metadata.file_attributes())
+        .map_err(|error| FsError::from_io("find metadata", path, error))?;
+    let attributes = native.attributes;
+    let directory = native.directory();
     let identity =
         native::identity(file).map_err(|error| FsError::from_io("find identity", path, error))?;
-    Ok(FindEntry {
+    let entry = FindEntry {
         path: path.to_owned(),
-        kind,
+        kind: native.kind(),
         identity: TransferIdentity {
             device: identity.volume,
             object: identity.id,
@@ -313,7 +308,7 @@ fn snapshot(file: &File, path: &Path) -> Result<FindEntry, FsError> {
             metadata.file_size(),
             metadata.last_write_time(),
             metadata.creation_time(),
-            attributes as u64,
+            u64::from(attributes & !VOLATILE_ATTRIBUTES),
             basic.ChangeTime as u64,
             0,
         ]),
@@ -323,7 +318,8 @@ fn snapshot(file: &File, path: &Path) -> Result<FindEntry, FsError> {
             native_attributes: Some(attributes),
             ..Default::default()
         },
-    })
+    };
+    Ok((entry, native))
 }
 fn checked(cancel: &Cancellation, path: &Path) -> Result<(), FsError> {
     if cancel.is_cancelled() {
@@ -341,13 +337,6 @@ fn changed(path: &Path) -> FsError {
         path,
         io::ErrorKind::InvalidData,
         "Find object identity or revision changed.",
-    )
-}
-fn record_error(path: &Path) -> FsError {
-    find_error(
-        path,
-        io::ErrorKind::InvalidData,
-        "Invalid native Find directory record.",
     )
 }
 

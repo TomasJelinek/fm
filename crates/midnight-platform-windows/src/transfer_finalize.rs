@@ -49,10 +49,10 @@ pub(super) fn qualify(file: &File, path: &Path) -> Result<(), FsError> {
 
 pub(super) fn qualify_directory(file: &File, path: &Path) -> Result<(), FsError> {
     let metadata = file.metadata().map_err(|e| error(path, e))?;
-    if !metadata.is_dir()
-        || metadata.file_attributes() & (FILE_ATTRIBUTE_READONLY | FILE_ATTRIBUTE_REPARSE_POINT)
-            != 0
-    {
+    // A cloud placeholder or other non-surrogate reparse directory is an ordinary
+    // directory; a link (junction, symbolic link, mount point) never qualifies.
+    let native = Native::of(file, metadata.file_attributes()).map_err(|e| error(path, e))?;
+    if !native.directory() || native.link() || native.attributes & FILE_ATTRIBUTE_READONLY != 0 {
         return Err(unsupported(
             path,
             "Directory Move requires an ordinary directory without the readonly attribute.",

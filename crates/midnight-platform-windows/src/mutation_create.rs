@@ -5,18 +5,14 @@ use std::{
     ffi::{OsStr, OsString},
     fs::File,
     io,
-    os::windows::{
-        ffi::{OsStrExt, OsStringExt},
-        fs::MetadataExt,
-    },
+    os::windows::ffi::{OsStrExt, OsStringExt},
     path::{Component, Path, PathBuf, Prefix},
     sync::Arc,
 };
 use windows_sys::{
     Wdk::Storage::FileSystem::{FILE_DIRECTORY_FILE, FILE_OPEN},
     Win32::Storage::FileSystem::{
-        FILE_ATTRIBUTE_REPARSE_POINT, FILE_READ_ATTRIBUTES, FILE_SHARE_READ, FILE_SHARE_WRITE,
-        FILE_TRAVERSE, SYNCHRONIZE,
+        FILE_READ_ATTRIBUTES, FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_TRAVERSE, SYNCHRONIZE,
     },
 };
 
@@ -195,7 +191,9 @@ fn open_directory(parent: &File, name: &OsStr) -> io::Result<File> {
         FILE_OPEN,
         FILE_DIRECTORY_FILE,
     )?;
-    if directory.metadata()?.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+    // Cloud placeholder and other non-surrogate reparse directories are ordinary
+    // directories; only namespace-redirecting links are refused.
+    if crate::reparse::Native::query(&directory)?.link() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "creating through a junction or symbolic link is not allowed",

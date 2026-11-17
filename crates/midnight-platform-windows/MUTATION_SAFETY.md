@@ -33,10 +33,15 @@ File-content read and directory-list access are unnecessary for rename and leaf
 deletion. ACL fixtures explicitly deny those rights and verify both operations.
 
 Permanent deletion enumerates by directory handle and opens each child relative
-to that handle with `FILE_OPEN_REPARSE_POINT`. Reparse points, including directory
-junctions, are leaves. Ordinary directories acquire a separate enumeration handle
-relative to their pinned parent while retaining the original mutation guard. Its
-identity and reparse state are revalidated before enumeration. An iterative stack
+to that handle with `FILE_OPEN_REPARSE_POINT`. Name-surrogate reparse points
+(symbolic links, directory junctions, volume mount points) are leaves: the link
+itself is removed, never its target. Other reparse tags (Cloud Files/OneDrive
+placeholders, deduplicated or WOF-compressed entries) classify by their directory
+attribute, so such directories are recursed like ordinary ones. Ordinary directories
+acquire a separate enumeration handle relative to their pinned parent while
+retaining the original mutation guard. Its identity and link state are revalidated
+before enumeration. A child that another process removed after the directory
+snapshot is already in the requested end state and is skipped. An iterative stack
 retains two directory handles per active depth, plus the current child and the
 prepared handles; it does not open every
 descendant simultaneously or impose a depth/path-length ceiling. Memory includes
@@ -46,8 +51,15 @@ entry. Concurrent additions can cause an explicit nonempty-directory failure;
 contents are not a snapshot captured at confirmation time.
 
 `FileDispositionInfoEx` with delete and POSIX semantics removes the namespace
-entry while identity handles remain open. Filesystem/OS versions without the
-required identity or disposition support return their native error. Explicitly
+entry while identity handles remain open. Filesystems without POSIX disposition
+(FAT32, exFAT, some redirectors) fall back to the classic handle-bound
+`FileDispositionInfo` on the same pinned handle, which is closed immediately
+afterwards; the name disappears at that close, so another process's open handle can
+leave the entry delete-pending and its parent then fails as nonempty. The classic
+class cannot ignore the DOS Read-only attribute, so a confirmed deletion of a
+read-only entry there is reported instead of changing its attributes. Identity uses
+the 128-bit `FileIdInfo` and falls back to the volume serial number and 64-bit file
+index where that class is unavailable. Explicitly
 confirmed permanent deletion adds `FILE_DISPOSITION_FLAG_IGNORE_READONLY_ATTRIBUTE`
 so a DOS Read-only flag does not reject an otherwise authorized deletion. The
 flag does not bypass DELETE access checks, alter ACLs or clear the attribute on
@@ -64,7 +76,8 @@ ambiguous and requires an absolute path. Relative requests containing `..` pin
 the captured base's canonical ancestor chain and verify the base identity before
 creation. Each entered component is traversed before a later parent step, so a
 link followed by `..` cannot be silently elided. Existing intermediate directories are
-accepted, reparse intermediates are rejected, and the final component uses
+accepted (including cloud placeholder directories), link intermediates (name-surrogate
+reparse points) are rejected, and the final component uses
 `FILE_CREATE` so an existing entry is an error. Existing intermediate handles
 remain open along the descent. Native errors can leave already-created
 intermediates; there is no automatic rollback.

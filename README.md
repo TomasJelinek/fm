@@ -758,7 +758,9 @@ names are never truncated. See the [locale sorting design](docs/superpowers/spec
 The current [operation design](docs/superpowers/specs/2026-11-05-rename-delete-scroll-design.md)
 documents confirmations, cancellation and native limitations: Linux mutations need
 Linux5.6+ and same-device home Trash; Windows Shell Trash can refuse long paths
-that native rename/create/permanent operations support.
+that native rename/create/permanent operations support. Removable FAT32/exFAT media
+usually have no Recycle Bin; permanent deletion there uses the classic disposition and
+refuses read-only entries until their Read-only attribute is cleared.
 The [panel navigation and details extension](docs/superpowers/specs/2026-11-05-panel-navigation-details-design.md)
 defines current controls. A separate [Network filesystem plugin](docs/superpowers/specs/2026-11-05-network-filesystem-design.md)
 discovers devices/shares through separate Windows and Linux adapters; macOS support remains planned.

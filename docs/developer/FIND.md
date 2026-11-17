@@ -152,6 +152,14 @@ obsolete generations. UI generation/token checks and cancellation prevent a late
 capture from opening a different search result. Queue rejection leaves a visible
 retryable error. See the [action verification](../verification/2026-11-12-find-actions.md).
 
+On Windows only name-surrogate reparse points (symbolic links, junctions, mount
+points) are skipped as links. Cloud Files/OneDrive placeholders, deduplicated and
+WOF-compressed entries are searched as ordinary files and directories; their content
+is read through the filesystem filter, so a content or duplicate search downloads
+online-only placeholders it has to read. A directory's binding and revision are
+revalidated once per native enumeration batch and at its end; each result is still
+revalidated before publication.
+
 Current scope is native Windows/Linux. Archives and other providers, legacy
 content encodings, BOM-less UTF-16, hex/regex content queries and automatic file
 execution are not enabled. System file activation requires the explicit Open action. Unsupported content, access errors and reached budgets produce

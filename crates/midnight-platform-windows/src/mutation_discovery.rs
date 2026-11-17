@@ -1,22 +1,20 @@
-//! Read-only, handle-relative discovery. Only directory enumeration data is read.
+//! Read-only, handle-relative discovery. Children are classified, sized and timed from
+//! directory enumeration records; only directories are opened, once, to list them.
 use super::*;
-use std::{
-    collections::VecDeque,
-    mem::{offset_of, size_of},
-    os::windows::{ffi::OsStringExt, io::AsRawHandle},
-};
-use windows_sys::Win32::{
-    Foundation::ERROR_NO_MORE_FILES,
-    Storage::FileSystem::{
-        FILE_ID_BOTH_DIR_INFO, FileIdBothDirectoryInfo, GetFileInformationByHandleEx,
-    },
-};
+use crate::{directory_records::Cursor, reparse::Native};
+use std::{collections::VecDeque, os::windows::ffi::OsStringExt, time::SystemTime};
 
+struct Child {
+    name: OsString,
+    native: Native,
+    size: u64,
+    modified: Option<SystemTime>,
+}
 struct Frame {
     directory: File,
     path: PathBuf,
-    names: VecDeque<OsString>,
-    ended: bool,
+    children: VecDeque<Child>,
+    cursor: Cursor,
 }
 pub(crate) fn walk(
     parent: &File,
@@ -28,40 +26,62 @@ pub(crate) fn walk(
 ) -> Result<(), FsError> {
     checked(cancel, path)?;
     let mut stack = Vec::new();
-    if let Some(frame) = inspect(parent, source, name, path, cancel, visit)? {
+    if let Some(frame) = inspect_root(parent, source, name, path, cancel, visit)? {
         stack.push(frame);
     }
-    while let Some(frame) = stack.last_mut() {
+    loop {
+        let depth = stack.len();
+        let Some(frame) = stack.last_mut() else {
+            return Ok(());
+        };
         checked(cancel, &frame.path)?;
-        if frame.names.is_empty() && !frame.ended {
+        if frame.children.is_empty() && !frame.cursor.ended() {
             fill(frame)?;
         }
-        let Some(name) = frame.names.pop_front() else {
-            if frame.ended {
+        let Some(child) = frame.children.pop_front() else {
+            if frame.cursor.ended() {
                 stack.pop();
             }
             continue;
         };
-        let path = frame.path.join(&name);
-        let source = native::open_child(&frame.directory, &name, false)
-            .map_err(|error| failure("discover child", &path, error))?;
-        if let Some(child) = inspect(&frame.directory, &source, &name, &path, cancel, visit)? {
-            if stack.len() >= 128 {
-                return Err(failure(
-                    "discover",
-                    &path,
-                    io::Error::new(
-                        io::ErrorKind::Unsupported,
-                        "Discovery exceeds the 128-directory depth budget",
-                    ),
-                ));
-            }
-            stack.push(child);
+        let path = frame.path.join(&child.name);
+        let kind = child.native.kind();
+        visit(&MutationItem {
+            path: path.clone(),
+            kind,
+            metadata: EntryMetadata {
+                size: (kind == EntryKind::File).then_some(child.size),
+                modified: child.modified,
+                native_attributes: Some(child.native.attributes),
+                ..EntryMetadata::default()
+            },
+        });
+        if kind != EntryKind::Directory {
+            continue;
         }
+        if depth >= 128 {
+            return Err(failure(
+                "discover",
+                &path,
+                io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    "Discovery exceeds the 128-directory depth budget",
+                ),
+            ));
+        }
+        // The listing handle never follows a link; a child replaced by a link after
+        // enumeration is refused rather than traversed.
+        let directory = native::open_listing(&frame.directory, &child.name)
+            .map_err(|error| failure("discover directory", &path, error))?;
+        stack.push(Frame {
+            directory,
+            path,
+            children: VecDeque::new(),
+            cursor: Cursor::default(),
+        });
     }
-    Ok(())
 }
-fn inspect(
+fn inspect_root(
     parent: &File,
     source: &File,
     name: &OsStr,
@@ -73,23 +93,16 @@ fn inspect(
     let metadata = source
         .metadata()
         .map_err(|error| failure("discover metadata", path, error))?;
-    let attrs = metadata.file_attributes();
-    let kind = if attrs & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
-        EntryKind::Symlink
-    } else if metadata.is_dir() {
-        EntryKind::Directory
-    } else if metadata.is_file() {
-        EntryKind::File
-    } else {
-        EntryKind::Other
-    };
+    let native = Native::of(source, metadata.file_attributes())
+        .map_err(|error| failure("discover metadata", path, error))?;
+    let kind = native.kind();
     visit(&MutationItem {
         path: path.to_owned(),
         kind,
         metadata: EntryMetadata {
             size: (kind == EntryKind::File).then_some(metadata.file_size()),
             modified: metadata.modified().ok(),
-            native_attributes: Some(attrs),
+            native_attributes: Some(native.attributes),
             ..EntryMetadata::default()
         },
     });
@@ -101,68 +114,22 @@ fn inspect(
     Ok(Some(Frame {
         directory,
         path: path.to_owned(),
-        names: VecDeque::new(),
-        ended: false,
+        children: VecDeque::new(),
+        cursor: Cursor::default(),
     }))
 }
 fn fill(frame: &mut Frame) -> Result<(), FsError> {
-    let mut buffer = vec![0u64; 8192];
-    // SAFETY: one live directory handle and an aligned writable 64 KiB buffer.
-    if unsafe {
-        GetFileInformationByHandleEx(
-            frame.directory.as_raw_handle(),
-            FileIdBothDirectoryInfo,
-            buffer.as_mut_ptr().cast(),
-            (buffer.len() * 8) as u32,
-        )
-    } == 0
-    {
-        let error = io::Error::last_os_error();
-        if error.raw_os_error() == Some(ERROR_NO_MORE_FILES as i32) {
-            frame.ended = true;
-            return Ok(());
-        }
-        return Err(failure("discover directory", &frame.path, error));
-    }
-    let invalid = || {
-        failure(
-            "discover directory",
-            &frame.path,
-            io::ErrorKind::InvalidData.into(),
-        )
-    };
-    let mut offset = 0usize;
-    loop {
-        let header = offset_of!(FILE_ID_BOTH_DIR_INFO, FileName);
-        if offset + size_of::<FILE_ID_BOTH_DIR_INFO>() > buffer.len() * 8 {
-            return Err(invalid());
-        }
-        // SAFETY: the range is checked above and native records have eight-byte alignment.
-        let record = unsafe {
-            &*buffer
-                .as_ptr()
-                .cast::<u8>()
-                .add(offset)
-                .cast::<FILE_ID_BOTH_DIR_INFO>()
-        };
-        let bytes = record.FileNameLength as usize;
-        if !bytes.is_multiple_of(2) || offset + header + bytes > buffer.len() * 8 {
-            return Err(invalid());
-        }
-        // SAFETY: the filename range fits entirely inside the validated native record.
-        let units = unsafe { std::slice::from_raw_parts(record.FileName.as_ptr(), bytes / 2) };
-        let name = OsString::from_wide(units);
-        if name != "." && name != ".." {
-            frame.names.push_back(name);
-        }
-        if record.NextEntryOffset == 0 {
-            break;
-        }
-        let next = record.NextEntryOffset as usize;
-        if !next.is_multiple_of(8) || next < header + bytes {
-            return Err(invalid());
-        }
-        offset += next;
-    }
-    Ok(())
+    let children = &mut frame.children;
+    frame
+        .cursor
+        .next_batch(&frame.directory, &mut |record| {
+            children.push_back(Child {
+                name: OsString::from_wide(record.name),
+                native: record.native,
+                size: record.size,
+                modified: record.modified(),
+            });
+            Ok(())
+        })
+        .map_err(|error| failure("discover directory", &frame.path, error))
 }
