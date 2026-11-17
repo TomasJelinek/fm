@@ -46,10 +46,15 @@ impl TransferService for crate::WindowsFileSystem {
         let link = Native::of(&file, attributes)
             .map_err(|e| error(path, e))?
             .link();
+        // Advisory: the volume alone, also on filesystems that Copy/Move then refuse.
         let device = if link {
             None
         } else {
-            Some(identity(&file, path)?.device)
+            Some(
+                native::local_identity(&file)
+                    .map_err(|e| error(path, e))?
+                    .volume,
+            )
         };
         checked(cancel, path)?;
         Ok(device)

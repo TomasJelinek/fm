@@ -26,6 +26,7 @@ use windows_sys::{
     },
     Win32::{
         Foundation::{RtlNtStatusToDosError, UNICODE_STRING},
+        Security::{SECURITY_QUALITY_OF_SERVICE, SecurityIdentification},
         Storage::FileSystem::*,
         System::IO::IO_STATUS_BLOCK,
     },
@@ -37,7 +38,44 @@ pub(crate) struct Identity {
     pub(crate) id: [u8; 16],
 }
 
+/// The volume serial number and 128-bit `FileIdInfo` identifier. It survives renames
+/// and moves within its volume (NTFS, ReFS). Copy and Move compare identities across
+/// their own renames (stage publication, Move capture, namespace pins), so they use only
+/// this form and refuse a filesystem without it.
 pub(crate) fn identity(file: &File) -> io::Result<Identity> {
+    file_id(file).map_err(without_stable_identity)
+}
+
+fn without_stable_identity(error: io::Error) -> io::Error {
+    if !unsupported(&error) {
+        return error;
+    }
+    io::Error::new(
+        io::ErrorKind::Unsupported,
+        format!(
+            "Copy and Move are not supported on this filesystem: it has no stable file \
+             identities (FAT32 and exFAT media do not). Use an NTFS or ReFS volume, or \
+             transfer these files with another tool. ({error})"
+        ),
+    )
+}
+
+/// Identity for operations that never compare an identity across their own rename:
+/// permanent deletion, deletion discovery, Rename/F7/metadata preparation, Find and
+/// advisory queries. Filesystems without `FileIdInfo` (FAT32, exFAT, some redirectors)
+/// use the 32-bit volume serial number and the 64-bit file index instead. FAT derives
+/// that index from the position of the entry's directory record: it is unique among the
+/// existing entries, but renaming the entry to a longer name, moving it to another
+/// directory or third-party defragmentation changes it, and a new entry can then take
+/// over the old value. A volume consistently uses one of the two forms.
+pub(crate) fn local_identity(file: &File) -> io::Result<Identity> {
+    match file_id(file) {
+        Err(error) if unsupported(&error) => legacy_identity(file),
+        result => result,
+    }
+}
+
+fn file_id(file: &File) -> io::Result<Identity> {
     let mut information = FILE_ID_INFO::default();
     // SAFETY: file owns a live handle; information is writable for the duration of the call.
     if unsafe {
@@ -49,12 +87,7 @@ pub(crate) fn identity(file: &File) -> io::Result<Identity> {
         )
     } == 0
     {
-        let error = io::Error::last_os_error();
-        return if unsupported(&error) {
-            legacy_identity(file)
-        } else {
-            Err(error)
-        };
+        return Err(io::Error::last_os_error());
     }
     Ok(Identity {
         volume: information.VolumeSerialNumber,
@@ -69,7 +102,7 @@ pub(crate) fn unsupported(error: &io::Error) -> bool {
 }
 
 /// The 64-bit file index and 32-bit volume serial number, for filesystems without
-/// `FileIdInfo`. A volume consistently uses one of the two forms.
+/// `FileIdInfo` (see [`local_identity`]).
 fn legacy_identity(file: &File) -> io::Result<Identity> {
     let mut information = BY_HANDLE_FILE_INFORMATION::default();
     // SAFETY: file retains the live handle and information is an exact writable native
@@ -152,6 +185,37 @@ pub(crate) fn reopen(file: &File, access: u32, share: u32) -> io::Result<File> {
     open_relative(file, OsStr::new(""), access, share, FILE_OPEN, 0)
 }
 
+/// Reopens a filter-backed file's content (see `reparse::reopen_content`): like
+/// `ReOpenFile`, the empty name relative to `pinned` reopens the same object, here
+/// without `FILE_OPEN_REPARSE_POINT` so the owning filter supplies the data. Unlike
+/// `ReOpenFile`, which rejects the `SECURITY_IDENTIFICATION` flag value, the open
+/// carries an identification-level quality of service (see [`open_identifying`]).
+pub(crate) fn reopen_mediated(pinned: &File, access: u32, share: u32) -> io::Result<File> {
+    open_identifying(pinned, OsStr::new(""), access, share)
+}
+
+/// Opens a non-directory relative to `parent` and follows its reparse points, with an
+/// identification-level security quality of service: should the open reach a named pipe
+/// (a reparse point replaced by a symbolic link to one), its server can identify this
+/// process but never impersonate it.
+fn open_identifying(parent: &File, name: &OsStr, access: u32, share: u32) -> io::Result<File> {
+    let quality = SECURITY_QUALITY_OF_SERVICE {
+        Length: size_of::<SECURITY_QUALITY_OF_SERVICE>() as u32,
+        ImpersonationLevel: SecurityIdentification,
+        ContextTrackingMode: 0, // SECURITY_STATIC_TRACKING
+        EffectiveOnly: false,
+    };
+    create_relative(
+        parent,
+        name,
+        access,
+        share,
+        FILE_OPEN,
+        FILE_NON_DIRECTORY_FILE,
+        Some(&quality),
+    )
+}
+
 pub(crate) fn open_relative(
     parent: &File,
     name: &OsStr,
@@ -159,6 +223,26 @@ pub(crate) fn open_relative(
     share: u32,
     disposition: u32,
     options: u32,
+) -> io::Result<File> {
+    create_relative(
+        parent,
+        name,
+        access,
+        share,
+        disposition,
+        options | FILE_OPEN_REPARSE_POINT,
+        None,
+    )
+}
+
+fn create_relative(
+    parent: &File,
+    name: &OsStr,
+    access: u32,
+    share: u32,
+    disposition: u32,
+    options: u32,
+    quality: Option<&SECURITY_QUALITY_OF_SERVICE>,
 ) -> io::Result<File> {
     let mut wide: Vec<_> = name.encode_wide().collect();
     let bytes = u16::try_from(
@@ -181,24 +265,29 @@ pub(crate) fn open_relative(
         Length: size_of::<OBJECT_ATTRIBUTES>() as u32,
         RootDirectory: parent.as_raw_handle(),
         ObjectName: &mut unicode,
+        SecurityQualityOfService: quality.map_or(ptr::null(), ptr::from_ref),
         ..Default::default()
     };
     let mut result = ptr::null_mut();
     let mut status = IO_STATUS_BLOCK::default();
-    // SAFETY: parent is live; counted UTF-16 name, attributes, result and status outlive the
-    // synchronous NtCreateFile call. No caller uses a replace/truncate disposition; the final
-    // reparse point is opened directly. Only one validated basename is accepted by callers.
+    // SAFETY: parent is live; counted UTF-16 name, attributes (and the optional quality of
+    // service they point to), result and status outlive the synchronous NtCreateFile call.
+    // No caller uses a replace/truncate disposition. Every caller but `open_identifying`
+    // (the filter-mediated reopen of the empty name) opens the final reparse point
+    // directly; callers accept only one validated basename or the empty name of the parent
+    // object itself. Synchronous I/O requires SYNCHRONIZE, which CreateFileW and
+    // ReOpenFile add implicitly.
     let code = unsafe {
         NtCreateFile(
             &mut result,
-            access,
+            access | SYNCHRONIZE,
             &attributes,
             &mut status,
             ptr::null(),
             0,
             share,
             disposition,
-            options | FILE_OPEN_REPARSE_POINT | FILE_SYNCHRONOUS_IO_NONALERT,
+            options | FILE_SYNCHRONOUS_IO_NONALERT,
             ptr::null(),
             0,
         )
@@ -248,36 +337,20 @@ pub(crate) fn rename(source: &File, name: &OsStr) -> io::Result<()> {
     Ok(())
 }
 
+/// Copy/Move cleanup keeps POSIX disposition only and its stricter attribute policy.
+/// Their pinned anchors and pooled directory handles would leave a classic (delete-on-
+/// close) disposition pending, and Copy/Move already refuse the filesystems without
+/// stable identities, which are also those without POSIX disposition.
 pub(crate) fn remove(source: &File) -> io::Result<()> {
-    remove_with_flags(source, 0)
+    posix_dispose(source, 0)
 }
 
 fn remove_confirmed(source: &File) -> io::Result<()> {
     // The user explicitly confirmed permanent deletion. Ignore only the DOS
     // read-only attribute, without changing it on surviving hard links. DELETE
-    // access, identity pins and no-follow traversal are still required. Copy/
-    // move cleanup uses remove() and retains its stricter attribute policy.
-    remove_with_flags(source, FILE_DISPOSITION_FLAG_IGNORE_READONLY_ATTRIBUTE)
-}
-
-fn remove_with_flags(source: &File, flags: FILE_DISPOSITION_INFO_EX_FLAGS) -> io::Result<()> {
+    // access, identity pins and no-follow traversal are still required.
     dispose(
-        flags,
-        || {
-            let information = FILE_DISPOSITION_INFO_EX {
-                Flags: FILE_DISPOSITION_FLAG_DELETE | FILE_DISPOSITION_FLAG_POSIX_SEMANTICS | flags,
-            };
-            // SAFETY: source has DELETE access; the fixed-size structure is valid during
-            // this call.
-            native_result(unsafe {
-                SetFileInformationByHandle(
-                    source.as_raw_handle(),
-                    FileDispositionInfoEx,
-                    (&information as *const FILE_DISPOSITION_INFO_EX).cast(),
-                    size_of::<FILE_DISPOSITION_INFO_EX>() as u32,
-                )
-            })
-        },
+        || posix_dispose(source, FILE_DISPOSITION_FLAG_IGNORE_READONLY_ATTRIBUTE),
         || {
             let information = FILE_DISPOSITION_INFO { DeleteFile: true };
             // SAFETY: source has DELETE access; the fixed-size structure is valid during
@@ -291,8 +364,27 @@ fn remove_with_flags(source: &File, flags: FILE_DISPOSITION_INFO_EX_FLAGS) -> io
                 )
             })
         },
-        || Native::query(source).map(|native| native.attributes & FILE_ATTRIBUTE_READONLY != 0),
+        // The basic class exists on every filesystem, unlike the reparse-tag class.
+        || {
+            crate::reparse::attributes(source)
+                .map(|attributes| attributes & FILE_ATTRIBUTE_READONLY != 0)
+        },
     )
+}
+
+fn posix_dispose(source: &File, flags: FILE_DISPOSITION_INFO_EX_FLAGS) -> io::Result<()> {
+    let information = FILE_DISPOSITION_INFO_EX {
+        Flags: FILE_DISPOSITION_FLAG_DELETE | FILE_DISPOSITION_FLAG_POSIX_SEMANTICS | flags,
+    };
+    // SAFETY: source has DELETE access; the fixed-size structure is valid during this call.
+    native_result(unsafe {
+        SetFileInformationByHandle(
+            source.as_raw_handle(),
+            FileDispositionInfoEx,
+            (&information as *const FILE_DISPOSITION_INFO_EX).cast(),
+            size_of::<FILE_DISPOSITION_INFO_EX>() as u32,
+        )
+    })
 }
 
 fn native_result(succeeded: i32) -> io::Result<()> {
@@ -303,14 +395,14 @@ fn native_result(succeeded: i32) -> io::Result<()> {
     }
 }
 
-/// POSIX disposition removes the name immediately while identity handles stay open.
-/// Filesystems without it (FAT32, exFAT, some redirectors) reject the extended class;
-/// they fall back to the classic handle-bound disposition on the same pinned handle,
-/// which removes the name when the caller closes its last handle right afterwards.
-/// The classic class cannot ignore the DOS read-only attribute, so a confirmed
-/// deletion of a read-only entry there is reported instead of changing attributes.
+/// Confirmed permanent deletion. POSIX disposition removes the name immediately while
+/// identity handles stay open. Filesystems without it (FAT32, exFAT, some redirectors)
+/// reject the extended class; they fall back to the classic handle-bound disposition on
+/// the same pinned handle, which removes the name once every handle to the entry is
+/// closed (the caller closes its own right afterwards). The classic class cannot ignore
+/// the DOS read-only attribute, so a read-only entry there is reported instead of
+/// changing its attributes.
 fn dispose(
-    flags: FILE_DISPOSITION_INFO_EX_FLAGS,
     extended: impl FnOnce() -> io::Result<()>,
     classic: impl FnOnce() -> io::Result<()>,
     read_only: impl FnOnce() -> io::Result<bool>,
@@ -320,7 +412,7 @@ fn dispose(
         Err(error) if unsupported(&error) => error,
         Err(error) => return Err(error),
     };
-    if flags & FILE_DISPOSITION_FLAG_IGNORE_READONLY_ATTRIBUTE != 0 && read_only()? {
+    if read_only()? {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
             format!(
@@ -428,7 +520,7 @@ pub(super) fn open_enumeration(parent: &File, source: &File, name: &OsStr) -> io
     // here. Keep source's no-delete-sharing guard while opening relative to its pinned parent;
     // the extra handle allows sharing DELETE because source already holds that access.
     let enumeration = open_listing(parent, name)?;
-    if identity(source)? != identity(&enumeration)? {
+    if local_identity(source)? != local_identity(&enumeration)? {
         return Err(io::Error::other("the directory changed before enumeration"));
     }
     Ok(enumeration)

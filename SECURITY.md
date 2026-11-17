@@ -568,7 +568,13 @@ Cloud Files/OneDrive placeholders, deduplicated, WOF-compressed and other
 filter-backed entries are ordinary files/directories in listing, Find, Copy/Move,
 deletion, creation and metadata editing. Their content is read only through a
 filter-mediated reopen of the identity-pinned object (it may hydrate), never from
-the raw reparse stub. Native Windows link
+the raw reparse stub. That reopen evaluates the reparse point the object carries at
+that moment: should another process with write access replace a filtered file's
+reparse point with a symbolic link after classification, the open follows that link
+before the identity check rejects the result. It therefore requests
+identification-level impersonation only, so a named pipe reached that way cannot
+impersonate the application. A reparse point whose tag cannot be read is treated as a
+link. Native Windows link
 icons use system overlays on cached generic types, without sending untrusted
 link paths to the Shell or opening targets. Linux does not infer a directory
 target by an implicit stat/network probe for icon presentation. Recursive sizing

@@ -42,7 +42,7 @@ pub(super) fn prepare(
         ));
     }
     let identity =
-        native::identity(&directory).map_err(|e| failure("read base identity", path, e))?;
+        native::local_identity(&directory).map_err(|e| failure("read base identity", path, e))?;
     checked(cancel, path)?;
     Ok(Arc::new(WindowsDirectory {
         path: path.to_owned(),
@@ -55,7 +55,8 @@ impl WindowsDirectory {
     fn revalidate(&self) -> Result<(), FsError> {
         let visible = native::open_parent(&self.path)
             .map_err(|e| failure("revalidate base directory", &self.path, e))?;
-        if native::identity(&visible).map_err(|e| failure("read base identity", &self.path, e))?
+        if native::local_identity(&visible)
+            .map_err(|e| failure("read base identity", &self.path, e))?
             != self.identity
         {
             return Err(changed(&self.path));
@@ -133,7 +134,7 @@ impl WindowsDirectory {
                     cursor.directories.push(child);
                 }
             }
-            if native::identity(cursor.current())
+            if native::local_identity(cursor.current())
                 .map_err(|e| failure("read base identity", &self.path, e))?
                 != self.identity
             {

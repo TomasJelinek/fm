@@ -17,7 +17,8 @@ requires ordinary target spelling; an extended prefix creates an invalid junctio
 
 Preparing rename/delete retains two handles: the parent directory and the
 selected entry opened without following its final reparse point. The recorded
-identity combines the volume identifier and the full 128-bit file identifier.
+identity combines the volume identifier and the full 128-bit file identifier
+(filesystems without one: see [FAT32 and exFAT](#fat32-and-exfat)).
 Holding the original handle prevents identifier reuse while confirmation is
 pending. Before mutation, the provider reopens and compares the visible parent
 and selected entry. Native failure, replacement, cancellation and exhausted OS
@@ -53,21 +54,59 @@ entry. Concurrent additions can cause an explicit nonempty-directory failure;
 contents are not a snapshot captured at confirmation time.
 
 `FileDispositionInfoEx` with delete and POSIX semantics removes the namespace
-entry while identity handles remain open. Filesystems without POSIX disposition
-(FAT32, exFAT, some redirectors) fall back to the classic handle-bound
-`FileDispositionInfo` on the same pinned handle, which is closed immediately
-afterwards; the name disappears at that close, so another process's open handle can
-leave the entry delete-pending and its parent then fails as nonempty. The classic
-class cannot ignore the DOS Read-only attribute, so a confirmed deletion of a
-read-only entry there is reported instead of changing its attributes. Identity uses
-the 128-bit `FileIdInfo` and falls back to the volume serial number and 64-bit file
-index where that class is unavailable. Explicitly
+entry while identity handles remain open. Explicitly
 confirmed permanent deletion adds `FILE_DISPOSITION_FLAG_IGNORE_READONLY_ATTRIBUTE`
 so a DOS Read-only flag does not reject an otherwise authorized deletion. The
 flag does not bypass DELETE access checks, alter ACLs or clear the attribute on
 surviving hard links. Copy/Move cleanup retains the original disposition without
-this override. A failure or cancellation does not restore entries already removed.
+this override and never uses the classic fallback below. A failure or cancellation
+does not restore entries already removed.
 See the [read-only deletion verification](../../docs/verification/2026-11-09-readonly-delete.md).
+
+Only Find content reads and Copy/Move source reads open file data, and only for a
+filter-backed file (Cloud Files placeholder, deduplicated file) do they reopen the
+pinned object through the filter stack, so it may hydrate; mutations never do. That
+reopen evaluates the reparse point the object carries at that moment. Should another
+process with write access to that file replace its filter's reparse point with a
+symbolic link between classification and the reopen, the open follows the link before
+the caller's identity check rejects the result. The reopen therefore requests identification-level impersonation only: a
+named pipe reached that way can identify the process but never impersonate it.
+Copy/Move read with write sharing denied; Find, like any reader, shares write and
+delete access.
+
+### FAT32 and exFAT
+
+FAT32, exFAT and some redirectors implement neither POSIX disposition nor the
+`FileAttributeTagInformation` and `FileIdInformation` classes (the FAT driver answers
+them with `STATUS_INVALID_PARAMETER`). Classification then uses the basic
+attributes: these filesystems have no reparse points, and a reparse point whose tag
+cannot be read is treated as a link. Confirmed permanent deletion falls back to the
+classic handle-bound `FileDispositionInfo` on the same pinned no-follow handle. The
+name then disappears only when the last handle to the entry closes: a descendant's
+at once (its handles close right after its disposition), the selected entry's when
+the job releases its prepared handles at its end. Another process's open handle
+leaves an entry delete-pending, and its parent then fails as nonempty. The classic
+class cannot ignore the DOS Read-only attribute, so a confirmed deletion of a
+read-only entry there is reported instead of changing its attributes.
+
+Deletion, deletion discovery, Rename, F7, empty-file creation, metadata editing and
+Find then identify entries by the 32-bit volume serial number and the 64-bit file
+index. FAT derives that index from the position of the entry's directory record:
+renaming an entry to a longer name, moving it or defragmenting the volume changes it,
+and a new entry can reuse a freed value. On such volumes these operations compare
+identities only before they rename an entry. (Metadata editing compares again after
+its case-only rename solely to change compression, which these filesystems do not
+offer, so that edit is refused there first.) Copy and Move compare identities across
+their own stage publication, Move
+capture and namespace pins, so they require the 128-bit `FileIdInfo` and refuse such
+volumes as sources and destinations with an actionable `Unsupported` error.
+
+This FAT behaviour follows the driver's documented responses; it has not yet run on
+real FAT32/exFAT media (the test host has none and cannot create one without
+administrator rights). The opt-in
+`tests/mutations.rs::removable_media_creation_discovery_and_permanent_deletion`
+qualifies it: set `MIDNIGHT_TEST_FAT_DIRECTORY` to a writable directory on such media
+and run it with `--ignored`. On any other filesystem it checks the ordinary path.
 
 F7 retains one base-directory handle and revalidates its visible identity. It
 validates the entire explicit request before creation, then uses handle-relative

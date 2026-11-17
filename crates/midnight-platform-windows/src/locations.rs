@@ -111,7 +111,7 @@ fn append_onedrive_account(
     // junction spelling. Compare directory identities without rewriting paths.
     let identity = |path: &std::path::Path| {
         crate::mutation::native::open_parent(path)
-            .and_then(|file| crate::mutation::native::identity(&file))
+            .and_then(|file| crate::mutation::native::local_identity(&file))
             .ok()
     };
     let target = identity(&path);

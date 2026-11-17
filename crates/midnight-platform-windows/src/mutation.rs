@@ -62,7 +62,8 @@ impl MutationService for WindowsFileSystem {
             native::open_parent(parent_path).map_err(|e| failure("open parent", path, e))?;
         let source = native::open_child(&parent, &name, false)
             .map_err(|e| failure("prepare mutation", path, e))?;
-        let identity = native::identity(&source).map_err(|e| failure("read identity", path, e))?;
+        let identity =
+            native::local_identity(&source).map_err(|e| failure("read identity", path, e))?;
         let metadata = source
             .metadata()
             .map_err(|e| failure("read metadata", path, e))?;
@@ -112,16 +113,16 @@ impl WindowsMutation {
             .ok_or_else(|| invalid(path, "missing parent"))?;
         let visible_parent =
             native::open_parent(parent_path).map_err(|e| failure("revalidate parent", path, e))?;
-        if native::identity(&visible_parent)
+        if native::local_identity(&visible_parent)
             .map_err(|e| failure("read parent identity", path, e))?
-            != native::identity(&self.parent)
+            != native::local_identity(&self.parent)
                 .map_err(|e| failure("read parent identity", path, e))?
         {
             return Err(changed(path));
         }
         let source = native::open_child(&self.parent, &self.name, exclusive)
             .map_err(|e| failure("revalidate source", path, e))?;
-        if native::identity(&source).map_err(|e| failure("read identity", path, e))?
+        if native::local_identity(&source).map_err(|e| failure("read identity", path, e))?
             != self.identity
         {
             return Err(changed(path));

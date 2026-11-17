@@ -43,7 +43,7 @@ pub(super) fn name_available(
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
         Err(error) => return Err(failure("check name collision", path, error)),
     };
-    if native::identity(&existing).map_err(|e| failure("identify name collision", path, e))?
+    if native::local_identity(&existing).map_err(|e| failure("identify name collision", path, e))?
         != item.identity
         || !same_name_ignoring_case(name, &item.name)
             .map_err(|e| failure("compare case alias", path, e))?
@@ -81,8 +81,10 @@ pub(super) fn name_available(
                 .ok_or_else(|| invalid(path, "missing parent"))?,
         )
         .map_err(|e| failure("inspect case alias", path, e))?;
-    if native::identity(&directory).map_err(|e| failure("identify case-alias parent", path, e))?
-        != native::identity(&item.parent).map_err(|e| failure("identify pinned parent", path, e))?
+    if native::local_identity(&directory)
+        .map_err(|e| failure("identify case-alias parent", path, e))?
+        != native::local_identity(&item.parent)
+            .map_err(|e| failure("identify pinned parent", path, e))?
     {
         return Err(changed(path));
     }
@@ -226,7 +228,8 @@ pub(super) fn children(
         let path = item.item.path.join(&name);
         let child = native::open_child(&source, &name, false)
             .map_err(|e| failure("pin child", &path, e))?;
-        let identity = native::identity(&child).map_err(|e| failure("identify child", &path, e))?;
+        let identity =
+            native::local_identity(&child).map_err(|e| failure("identify child", &path, e))?;
         if identity.volume != item.identity.volume {
             return Err(invalid(&path, "mount crossings are not allowed"));
         }
@@ -309,7 +312,8 @@ fn apply(
         0,
     )
     .map_err(|e| failure("open metadata target", path, e))?;
-    if native::identity(&source).map_err(|e| failure("revalidate metadata identity", path, e))?
+    if native::local_identity(&source)
+        .map_err(|e| failure("revalidate metadata identity", path, e))?
         != item.identity
     {
         return Err(changed(path));
@@ -354,7 +358,7 @@ fn apply(
         }
         // SAFETY: ReOpenFile succeeded; transfer its unique ownership to File for all exit paths.
         let compression_source = unsafe { File::from_raw_handle(handle) };
-        if native::identity(&compression_source)
+        if native::local_identity(&compression_source)
             .map_err(|e| failure("revalidate compression identity", &result.current_path, e))?
             != item.identity
         {

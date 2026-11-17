@@ -296,8 +296,8 @@ fn snapshot(file: &File, path: &Path) -> Result<(FindEntry, Native), FsError> {
         .map_err(|error| FsError::from_io("find metadata", path, error))?;
     let attributes = native.attributes;
     let directory = native.directory();
-    let identity =
-        native::identity(file).map_err(|error| FsError::from_io("find identity", path, error))?;
+    let identity = native::local_identity(file)
+        .map_err(|error| FsError::from_io("find identity", path, error))?;
     let kind = native.kind();
     // A directory's size, times and attributes change with every entry created, removed
     // or renamed inside it. Enumeration uses the pinned handle and result navigation
