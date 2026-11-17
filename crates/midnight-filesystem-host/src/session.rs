@@ -24,8 +24,9 @@ const CANCEL_POLL: Duration = Duration::from_millis(10);
 mod close;
 
 /// The idle-progress watchdog of the one active exchange. A token is hard request
-/// cancellation that terminates the worker; bounded and cooperative exchanges carry
-/// none, so only the deadline (or mount teardown) can end them.
+/// cancellation that terminates the worker; only the startup exchange carries one.
+/// Listings and member reads carry none, so only the deadline, a failed exchange or
+/// mount teardown can end them.
 struct Watch {
     deadline: Instant,
     cancel: Option<Cancellation>,
@@ -363,23 +364,27 @@ impl Mount {
     }
 
     /// One serialized request. `cancel` is hard cancellation: cancelling it during the
-    /// exchange terminates the worker, so it is only used where this caller owns the
-    /// whole mount or the protocol has no cheaper bounded alternative. `cooperative`
-    /// requests protocol-3 member-read cancellation that preserves the mount.
+    /// exchange terminates the worker, so only startup, whose caller still owns the
+    /// whole mount, uses it. `cancelled` is a member read's own cancellation, which
+    /// preserves the mount: protocol 3 delivers it cooperatively at staging
+    /// checkpoints, earlier protocols finish the exchange first, and a cancelled read
+    /// never returns or caches newly staged content.
     fn exchange_read(
         &self,
         cancel: Option<&Cancellation>,
-        cooperative: Option<&dyn Fn() -> bool>,
+        cancelled: Option<&dyn Fn() -> bool>,
         message: impl FnOnce(u64) -> Message,
     ) -> Result<Message, FsError> {
         let fail = |error: io::Error| FsError::from_io("archive", &self.container, error);
         let interrupted = || fail(io::ErrorKind::Interrupted.into());
         let hard_cancelled = || cancel.is_some_and(Cancellation::is_cancelled);
-        if cooperative.is_some_and(|cancelled| cancelled()) {
+        let is_cancelled = || cancelled.is_some_and(|check| check());
+        let cooperative = cancelled.filter(|_| self.protocol == Protocol::V3);
+        if is_cancelled() {
             return Err(interrupted());
         }
         let mut channel = self.channel.lock().unwrap_or_else(|e| e.into_inner());
-        if cooperative.is_some_and(|cancelled| cancelled()) {
+        if is_cancelled() {
             return Err(interrupted());
         }
         let mut canceled_safely = false;
@@ -413,7 +418,7 @@ impl Mount {
                     let bytes = lease.read(offset, length).map_err(fail)?;
                     self.validate()?;
                     self.ensure_active(cancel).map_err(fail)?;
-                    if cooperative.is_some_and(|cancelled| cancelled()) {
+                    if is_cancelled() {
                         canceled_safely = true;
                         return Err(interrupted());
                     }
@@ -447,10 +452,10 @@ impl Mount {
                     canceled_safely = true;
                     return Err(interrupted());
                 }
-                if cooperative.is_some() {
+                if let Some(cooperative) = cooperative {
                     let checkpoint = self.staging.lock().unwrap_or_else(|e| e.into_inner()).as_ref()
                         .ok_or_else(interrupted)?.cancellation_checkpoint(&operation, &reply).map_err(fail)?;
-                    if checkpoint && cooperative.is_some_and(|cancelled| cancelled()) {
+                    if checkpoint && cooperative() {
                         self.validate()?;
                         self.ensure_active(cancel).map_err(fail)?;
                         api::write_message_with_protocol(&mut channel.input, self.protocol,
@@ -523,7 +528,7 @@ impl Mount {
                             }
                             self.validate()?;
                             self.ensure_active(cancel).map_err(fail)?;
-                            let lease = if cooperative.is_some() {
+                            let lease = if cancelled.is_some() {
                                 staging.terminal_with_cache(&operation, &other, false)
                             } else { staging.terminal(&operation, &other) }.map_err(fail)?;
                             if let (Some(lease), Message::Read { offset, length, .. }) =
@@ -532,12 +537,12 @@ impl Mount {
                                 let bytes = lease.read(*offset, *length).map_err(fail)?;
                                 self.validate()?;
                                 self.ensure_active(cancel).map_err(fail)?;
-                                if cooperative.is_some_and(|cancelled| cancelled()) {
+                                if is_cancelled() {
                                     staging.abandon_member(request).map_err(fail)?;
                                     canceled_safely = true;
                                     return Err(interrupted());
                                 }
-                                if cooperative.is_some() && let Message::Read { entry, .. } = operation {
+                                if cancelled.is_some() && let Message::Read { entry, .. } = operation {
                                     staging.cache_member(entry, lease);
                                 }
                                 return Ok(Message::Content {
@@ -584,9 +589,10 @@ impl Mount {
         self.supervision.progress_at(Instant::now(), cancel);
     }
     /// Protocol-3 member read with cooperative cancellation; earlier protocols drain an
-    /// admitted read under no hard token and then suppress its cancelled result.
+    /// admitted read under no hard token and then discard its cancelled result.
     fn read_preserving_mount(
         &self,
+        operation: &'static str,
         entry: u64,
         offset: u64,
         length: u32,
@@ -594,7 +600,7 @@ impl Mount {
     ) -> Result<Vec<u8>, FsError> {
         let interrupted = || {
             FsError::from_io(
-                "archive preview",
+                operation,
                 &self.container,
                 io::ErrorKind::Interrupted.into(),
             )
@@ -602,8 +608,7 @@ impl Mount {
         if cancelled() {
             return Err(interrupted());
         }
-        let cooperative = (self.protocol == Protocol::V3).then_some(cancelled);
-        match self.exchange_read(None, cooperative, |request| Message::Read {
+        match self.exchange_read(None, Some(cancelled), |request| Message::Read {
             request,
             entry,
             offset,
@@ -796,11 +801,12 @@ impl ArchiveMount for Mount {
         length: u32,
         cancelled: &dyn Fn() -> bool,
     ) -> Result<Vec<u8>, FsError> {
-        self.read_preserving_mount(entry, offset, length, cancelled)
+        self.read_preserving_mount("archive preview", entry, offset, length, cancelled)
     }
-    /// Protocol 3 cancels a member read cooperatively and keeps the shared mount.
-    /// Earlier protocols cannot interrupt a staged read, so cancelling one still ends
-    /// the worker; callers that must preserve a shared mount use `read_cooperative`.
+    /// Cancelling one read never ends the worker that other tabs, viewers and jobs
+    /// share: protocol 3 cancels the member cooperatively, and earlier protocols, which
+    /// cannot interrupt a member read, finish the exchange under the idle-progress
+    /// watchdog and discard its result.
     fn read(
         &self,
         entry: u64,
@@ -808,22 +814,9 @@ impl ArchiveMount for Mount {
         length: u32,
         cancel: &Cancellation,
     ) -> Result<Vec<u8>, FsError> {
-        if self.protocol == Protocol::V3 {
-            return self.read_preserving_mount(entry, offset, length, &|| cancel.is_cancelled());
-        }
-        match self.exchange_read(Some(cancel), None, |request| Message::Read {
-            request,
-            entry,
-            offset,
-            length,
-        })? {
-            Message::Content { bytes, .. } if bytes.len() <= length as usize => Ok(bytes),
-            _ => Err(FsError::from_io(
-                "archive read",
-                &self.container,
-                io::ErrorKind::InvalidData.into(),
-            )),
-        }
+        self.read_preserving_mount("archive read", entry, offset, length, &|| {
+            cancel.is_cancelled()
+        })
     }
 }
 impl Drop for Mount {
