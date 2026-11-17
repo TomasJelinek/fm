@@ -45,6 +45,60 @@ pub(super) enum End {
     Browser,
 }
 
+/// How the actor treats a browser event whose header is valid.
+#[derive(Debug, PartialEq)]
+enum Admit {
+    /// Output of the current document.
+    Current,
+    /// Output of a document the consumer replaced or is replacing.
+    Stale,
+    /// The protocol's Closed event, which ends the session.
+    End,
+}
+
+/// Validate an event's header against the actor's `current` header (its session and
+/// document) and the document's `last` event sequence, which an admitted event advances.
+/// `requested` is the newest document the consumer asked for. The browser's Closed event
+/// ends the session whatever document it names: a browser that stops before it reads the
+/// Open of a replacement closes the document it last opened.
+fn admit(
+    event: &api::Event,
+    current: api::Header,
+    last: &mut u64,
+    requested: u64,
+) -> Result<Admit, String> {
+    if event.header.session != current.session {
+        return Err("Browser session mismatch".into());
+    }
+    let end = matches!(event.kind, api::EventKind::Closed);
+    if event.header.document < current.document {
+        return Ok(if end { Admit::End } else { Admit::Stale });
+    }
+    if event.header.document != current.document || event.header.sequence <= *last {
+        return Err("Invalid browser generation/sequence".into());
+    }
+    *last = event.header.sequence;
+    Ok(if end {
+        Admit::End
+    } else if event.header.document < requested {
+        // UI permission changes revoke outstanding local-resource requests immediately,
+        // even before the actor reaches the queued Open replacement.
+        Admit::Stale
+    } else {
+        Admit::Current
+    })
+}
+
+/// Stops the supervisor when dropped, also while the session loop unwinds from a panic.
+/// The supervisor then closes the broker's entire process tree, which releases blocked
+/// pipe reads/writes, so the scope can join its threads.
+struct Stop<'a>(&'a AtomicBool);
+impl Drop for Stop<'_> {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Release);
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn run(
     provider: Provider,
@@ -75,6 +129,7 @@ pub(super) fn run(
     let ready = Arc::new(AtomicBool::new(false));
     let mut process = browser.process;
     std::thread::scope(|scope| {
+        let stop = Stop(&stopping);
         let stopping = &stopping;
         let busy = wire.busy.clone();
         let ready = &ready;
@@ -165,22 +220,11 @@ pub(super) fn run(
                 let api::Message::Event(event) = incoming else {
                     return Err("Unexpected browser command".into());
                 };
-                if event.header.session != wire.header.session {
-                    return Err("Browser session mismatch".into());
-                }
-                if event.header.document < wire.header.document {
-                    continue;
-                }
-                if event.header.document != wire.header.document
-                    || event.header.sequence <= event_sequence
-                {
-                    return Err("Invalid browser generation/sequence".into());
-                }
-                event_sequence = event.header.sequence;
-                // UI permission changes revoke outstanding local-resource requests immediately,
-                // even before the actor reaches the queued Open replacement.
-                if event.header.document < requested_document.load(Ordering::Acquire) {
-                    continue;
+                let requested = requested_document.load(Ordering::Acquire);
+                match admit(&event, wire.header, &mut event_sequence, requested)? {
+                    Admit::Current => {}
+                    Admit::Stale => continue,
+                    Admit::End => return Ok(End::Browser),
                 }
                 let reply = match &event.kind {
                     api::EventKind::ResourceResolve { request, base, url } => {
@@ -215,7 +259,6 @@ pub(super) fn run(
                         }
                     }
                     api::EventKind::Ready => ready.store(true, Ordering::Release),
-                    api::EventKind::Closed => return Ok(End::Browser),
                     _ => {}
                 }
                 output
@@ -226,13 +269,50 @@ pub(super) fn run(
             }
             Ok(End::Requested)
         })();
-        // Closing the broker's entire process tree releases blocked pipe reads/writes.
-        stopping.store(true, Ordering::Release);
+        drop(stop);
         drop(incoming);
         let _ = supervisor.join();
         let _ = reader.join();
         result
     })
+}
+
+#[test]
+fn a_browser_closed_event_ends_the_session_whatever_document_it_names() {
+    let current = api::Header {
+        session: 1,
+        document: 2,
+        sequence: 7,
+    };
+    let event = |document, sequence, kind| api::Event {
+        header: api::Header {
+            session: 1,
+            document,
+            sequence,
+        },
+        kind,
+    };
+    let mut last = 3;
+    // A replaced document's output is stale, but not its Closed event: a browser that stops
+    // before it reads the replacement's Open closes the document it last opened.
+    let stale = event(1, 9, api::EventKind::Ready);
+    assert_eq!(admit(&stale, current, &mut last, 2), Ok(Admit::Stale));
+    let replaced = event(1, 10, api::EventKind::Closed);
+    assert_eq!(admit(&replaced, current, &mut last, 2), Ok(Admit::End));
+    // The current document's output, its end included, follows its sequence.
+    let ready = event(2, 4, api::EventKind::Ready);
+    assert_eq!(admit(&ready, current, &mut last, 2), Ok(Admit::Current));
+    assert!(admit(&event(2, 4, api::EventKind::Closed), current, &mut last, 2).is_err());
+    // The output of a document the consumer is replacing is stale, but its end is not.
+    let revoked = event(2, 5, api::EventKind::Ready);
+    assert_eq!(admit(&revoked, current, &mut last, 3), Ok(Admit::Stale));
+    let replacing = event(2, 6, api::EventKind::Closed);
+    assert_eq!(admit(&replacing, current, &mut last, 3), Ok(Admit::End));
+    // Neither a document the host has not opened nor another session ends this one.
+    assert!(admit(&event(3, 7, api::EventKind::Closed), current, &mut last, 3).is_err());
+    let mut foreign = event(2, 8, api::EventKind::Closed);
+    foreign.header.session = 2;
+    assert!(admit(&foreign, current, &mut last, 3).is_err());
 }
 
 #[test]
