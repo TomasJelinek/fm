@@ -947,12 +947,12 @@ ZIP, 7z, GZIP and TAR/TAR.GZ browsing is implemented with installed archive work
 Enter/double-click opens an archive, directories and `..` navigate it, saved tabs
 retain typed provider addresses, and F3 reads member content through the broker.
 Members have opaque identities; duplicate names remain distinct (ZIP records that
-repeat one raw name are listed once, unreadable). Missing providers
+the reader indexes under one name are listed once, unreadable). Missing providers
 or changed sources retain unavailable saved tabs with a diagnostic. Mutations,
 external editing, passwords, nested archives and RAR are unavailable. F5 copies
 members out through the verified background copy queue.
-Decoded content has no artificial size ceiling; staging stops with a resource-limit
-error before the private spool volume would fall below its free-space reserve. Full
+Decoded content has no artificial size ceiling; the free space of the private spool
+volume bounds it (a free-space reserve that stops staging earlier is planned). Full
 limits and supported codecs are in the [archive API reference](docs/developer/FILESYSTEM_API.md).
 [Archive associations](docs/ARCHIVE_FORMATS.md) include Python wheels and other ZIP
 packages. Options → Archives keeps document/media/application containers unchecked

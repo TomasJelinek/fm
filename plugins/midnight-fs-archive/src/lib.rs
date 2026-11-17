@@ -145,8 +145,8 @@ impl Archive {
             | Format::TarBzip2
             | Format::Zstd
             | Format::TarZstd => {
-                // No artificial decoded-size ceiling: the host stops a scratch spool
-                // before it exhausts its volume's free-space reserve.
+                // No artificial decoded-size ceiling: the free space of the host's
+                // spool volume bounds the scratch stream.
                 let mut stage = Stage::new(
                     result.storage.clone(),
                     StagePurpose::Scratch,

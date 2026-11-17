@@ -734,12 +734,16 @@ fields and conservative physical-device classifications.
   execute HTML/scripts or load remote images, styles, fonts or links. Source syntax
   definitions are packaged code, never executable configuration from the opened folder.
 - Archive browsing is read-only. Names, links and declared sizes are untrusted.
-  Decompressed content has no artificial size ceiling; instead the host's private
-  spool stops staging with a resource-limit error before its volume would fall
-  below max(1 GiB, 2% of capacity) free, checking at least every 64 MiB written.
+  Decompressed content has no artificial size ceiling: it is bounded by the free
+  space of the host's private spool volume, and disk-full or short writes discard
+  the staging and fail the request. A free-space reserve that would stop staging
+  before that volume falls below max(1 GiB, 2% of capacity) is planned but not yet
+  enforced, so a decompression bomb can fill the spool volume until staging fails.
   Decoder dictionaries/windows, metadata indexes, buffered metadata records and
   retained verified 7z siblings have explicit bounds inside the 512 MiB worker
-  memory limit. Listing never extracts a member to its declared host pathname.
+  memory limit; 7z compressed-header decoding and ZIP central-directory parsing
+  (including the duplicate-record check) are bounded only by that limit. Listing
+  never extracts a member to its declared host pathname.
   Copying out uses the common destination readback/SHA-256/publish contract.
   Opaque provider IDs and raw member names are captured; names must be safe
   single destination components, never joined archive display paths. Links,

@@ -24,8 +24,11 @@ non-navigable "other" entries. Harmless `.` components (`./usr/bin/tool`, as in
 `tar -C dir -cf x.tar .` and Debian data archives) name the current directory.
 TAR PAX global headers (`git archive`) are archive metadata, not members.
 TAR and 7z duplicate member names have independent opaque IDs. The pinned ZIP
-reader merges central-directory records that repeat a raw name into one entry with
-the last record's data; that ambiguous entry is listed once but unreadable.
+reader indexes central-directory records by name, after applying any Info-ZIP
+Unicode Path field (the name 7-Zip and Info-ZIP display), and merges records that
+repeat such a name into one entry with the last record's data. The worker walks the
+records the same way, so that ambiguous entry is listed once but unreadable; an
+archive whose records it cannot reconcile with the reader's index is refused.
 GZIP's untrusted FNAME never controls its synthetic member name, which is `content`.
 
 The package advertises `stable_entry_ids = true`: reopening identical source bytes
@@ -43,36 +46,44 @@ requested compression block, serially, and checks all its member lengths and
 available member/block CRCs before publishing any bytes; unrelated blocks remain
 compressed. Solid-block siblings are drained for integrity, and only the requested
 member is staged. Readable siblings of that block are also kept in worker memory,
-later members first, up to 128 MiB (less when the block's dictionary is large);
-after the whole block verifies, reading one of them stages it from memory without
-another block decode, so copying out N members of a solid block costs about one
-decode instead of N. Decoding another block replaces them. Corrupt payloads can
-therefore be listed but fail when read, just as with ZIP, and nothing unverified
-is retained. TAR indexes checked u64 ranges without reading its file payloads.
-Selected members stream directly into private host-owned TEMP files through the
-protocol-2 staging format (protocol 3 in this release). Compressed TAR must decode
-and validate its complete outer stream into one private scratch file to discover
-headers; member leases reuse checked ranges of that verified file. Standalone
-compressed streams use the same verified scratch storage. No complete encoded
-archive is held in the production worker's RAM. Source and scratch reads go through
-a seek-preserving window of at most 256 KiB, so ZIP local-header probes, TAR header
-walks and Zstandard frame peeks reuse fetched bytes instead of refetching a window
-per entry.
+later members first and then earlier ones nearest first, up to 128 MiB. After the
+whole block verifies, reading one of them stages it from memory without another
+block decode; it leaves worker memory once staged, and the host's member cache
+serves repeated reads. Reading the members of a block therefore costs one block
+decode only while the members read after that decode fit the 128 MiB window: a
+larger block decodes again about once per 128 MiB copied in block order, and a read
+outside the window (a thumbnail or a sorted copy out of block order) decodes the
+whole block again. Decoding another block replaces the retained siblings. Corrupt
+payloads can therefore be listed but fail when read, just as with ZIP, and nothing
+unverified is retained. TAR indexes checked u64 ranges without reading its file
+payloads. Selected members stream directly into private host-owned spool files
+through the protocol-2 staging format (protocol 3 in this release). Compressed TAR
+must decode and validate its complete outer stream into one private scratch file to
+discover headers; member leases reuse checked ranges of that verified file.
+Standalone compressed streams use the same verified scratch storage. No complete
+encoded archive is held in the production worker's RAM. Source and scratch reads go
+through a seek-preserving window of at most 256 KiB, so ZIP local-header probes, TAR
+header walks and Zstandard frame peeks reuse fetched bytes instead of refetching a
+window per entry.
 
 There are no artificial source, member, aggregate disk or expansion-ratio byte
-ceilings. The host instead keeps a free-space reserve on its private spool volume:
-staging fails with a resource-limit error before that volume would fall below
-max(1 GiB, 2% of its capacity) free, checked at least every 64 MiB written. Native
-file-offset ranges also limit content length; disk-full, short writes and flush
-failures discard staging and fail the request. Metadata remains bounded to 100,000
-entries and 8 MiB of names; a TAR long-name, long-link or PAX record, which tar-rs
-buffers completely, is bounded to 16 MiB and otherwise fails as corrupt; 7z's raw
-next-header allocation is bounded to 64 MiB. The pinned 7z decoder has no public
-decoded-header allocation hook, so compressed-header allocation remains subject to
-process memory containment. Decoded member lengths and all available checksums must
-match before sealing/publication; a member that decodes past its indexed length is
-reported as corrupt. There is no archive writing, password support, RAR codec or
-nested mounting in this release.
+ceilings: decoded content is bounded by the free space of the host's private spool
+volume and by native file-offset ranges. Disk-full, short writes and flush failures
+discard staging and fail the request. A host free-space reserve (staging would stop
+before that volume falls below max(1 GiB, 2% of its capacity)) is planned but not
+yet enforced, so a highly compressed member can still fill the spool volume until
+staging fails. Metadata remains bounded to 100,000 entries and 8 MiB of names; a
+TAR long-name, long-link or PAX record, which tar-rs buffers completely, is bounded
+to 16 MiB and otherwise fails as corrupt; 7z's raw next-header allocation is bounded
+to 64 MiB. The pinned 7z decoder has no public decoded-header allocation hook, so
+compressed-header allocation remains subject to process memory containment. The
+pinned ZIP reader parses the whole central directory, names included, before the
+entry and name limits apply, and the duplicate-record walk keeps one more copy of
+the distinct names; both are bounded only by the 512 MiB worker memory limit.
+Decoded member lengths and all available checksums must match before
+sealing/publication; a member that decodes past its indexed length is reported as
+corrupt. There is no archive writing, password support, RAR codec or nested
+mounting in this release.
 XZ dictionaries and Zstandard windows are bounded to 64 MiB. 7z LZMA/LZMA2
 dictionaries are checked against 256 MiB from the public coder properties before a
 block is decoded; members of a block that needs more are unreadable. BZIP2 uses its
@@ -81,23 +92,32 @@ skippable frames are skipped without decoding. Zstandard frame checksums are
 verified explicitly when present. Checksums never replace the host's SHA-256
 destination readback when copying out.
 
-The host keeps a bounded count of sealed content leases, revalidates the captured
-source on every read, and releases files on backend cleanup. The decoder receives
-only session IDs and bounded byte messages, never TEMP paths or native handles.
-Cancellation ends the worker and rolls back unpublished storage. A 20-second idle
-watchdog is renewed by completed bounded I/O and actual decoded-byte progress;
-archive decoding opts out of an aggregate CPU deadline. A blocked OS I/O call can
-delay its owning backend's cleanup until that call returns.
+The host keeps up to 16 sealed member leases per mount. Beyond 512 MiB of their
+spool storage, least recently read members leave first, except members still in
+active use (one of the four most recently read members that was read within the
+mount's last 64 member reads). It revalidates the captured source on every read and
+releases files on backend cleanup. The decoder receives only session IDs and
+bounded byte messages, never spool paths or native handles. Cancelling a request
+never ends the shared worker: a cancelled listing finishes its bounded page and is
+discarded, protocol-3 member reads cancel cooperatively (below), and a protocol-1/2
+member read finishes its exchange while the host discards the result. A cancelled
+read publishes nothing and its unpublished storage is rolled back. Mount teardown,
+protocol violations, a cancelled startup and the idle watchdog end the worker. A
+20-second idle watchdog is renewed by completed bounded I/O and actual decoded-byte
+progress; archive decoding opts out of an aggregate CPU deadline. A blocked OS I/O
+call can delay its owning backend's cleanup until that call returns.
 
 Protocol3 supports cooperative thumbnail member cancellation at StageBegin,
 StageAppend, StageProgress and StageSeal exchanges. The host rejects a valid
 checkpoint with Failed(Cancelled); the worker unwinds and returns one matching
 terminal acknowledgement, preserving the immutable archive for another request.
 The host retires only that request's unpublished member spool. Source-reader
-Interrupted remains retryable and is not used for this handshake. Ordinary hard
-cancellation and legacy installed protocol1/2 workers retain session-ending
-semantics. Decoder timeout and viewport cancellation both reach the cooperative
-path; an already-running OS call or decoder interval can still delay it.
+Interrupted remains retryable and is not used for this handshake. The host uses
+this handshake for ordinary and preview member reads alike. Legacy installed
+protocol1/2 workers have no request-local cancellation, so the host lets their read
+finish and discards the result instead of ending the worker. Decoder timeout and
+viewport cancellation both reach the cooperative path; an already-running OS call or
+decoder interval can still delay it.
 
 Build and test using `scripts/build.ps1` or `scripts/build.sh`, with Cargo/Rust and
 Python 3 on PATH, providing an offline
@@ -106,8 +126,9 @@ Source directories are not output destinations. Exporting this directory does no
 require the host checkout. See THIRD-PARTY.md for pinned dependency decisions.
 
 Ordinary tests count the bytes a brokered source is asked for (`tests/streaming.rs`):
-indexing 1,000-member ZIP/TAR archives fetches less than twice their size, and the
-members of one solid 7z block cost one block pass together.
+indexing 1,000-member ZIP/TAR archives fetches less than twice their size, and
+preparing every member of a small solid 7z block costs one block pass (a second pass
+over the same members, after the retained siblings were staged, costs one more).
 
 For reproducible opening measurements, run the ignored
 `measure_tar_and_sevenzip_open` test in `tests/performance.rs` with

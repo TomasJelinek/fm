@@ -14,28 +14,31 @@ The fallback archive icon already includes a zipper and receives no duplicate ov
 
 Archive indexing and decoding run in the restricted background worker. ZIP and
 7z open by indexing their metadata, without decompressing file payloads. A 7z
-compressed header still needs decoding at Open. The first ZIP member read checks
-its entire decoded content; the first 7z read checks the entire containing solid
-block before returning any bytes. Only the requested member is staged, but the
-worker keeps that block's other readable members in memory (up to 128 MiB, later
-members first) once the whole block verifies, so later reads of them need no second
-block decode; decoding another block replaces them. The host caches up to 16 staged
-member leases per mount. Damage to an unrelated 7z block is reported when that
-block is read, not while browsing intact metadata. Listing is not a full integrity
-test of the archive.
+compressed header still needs decoding at Open. The first ZIP member read decodes
+and checks that complete member; the first 7z read decodes only the requested
+compression block and checks its member lengths and available CRCs before
+returning any bytes. Damage to an unrelated 7z block is reported when that block is
+read, not while browsing intact metadata. Listing is not a full integrity test of
+the archive.
 
-The worker reads the captured source through brokered range reads of at most
-256 KiB; ZIP, TAR and 7z indexes fetch only the ranges they parse. Each ZIP, plain
-TAR or 7z member read stages that member into its own private host spool file.
-Compressed TAR must still decode its complete outer stream into one private
-scratch spool before indexing, and its member leases reuse checked ranges of that
-verified file; standalone compressed streams use the same scratch storage. Source
-I/O and first worker startup remain part of opening time. These changes do not
-remove resource limits, source revision validation or sandbox isolation.
-Copy-out still independently verifies destination bytes with SHA-256; archive
-CRC checks do not replace that verification.
-See the [measured opening results](verification/2026-11-08-archive-opening-performance.md)
-for the fixture sizes, cold-start limitation and regression coverage.
+TAR indexes checked member ranges without reading file payloads. Compressed TAR and
+standalone compressed streams first decode and validate their complete outer stream
+into one private scratch file; members then reuse checked ranges of it. The worker
+reads source bytes on demand through the host's revision-checked source broker and
+streams selected members into private host-owned spool files, so the complete
+archive never stays in worker memory; source reads are bounded to 256 KiB, and
+indexes fetch only the ranges they parse. Verified siblings of the last decoded
+solid 7z block do stay there, up to 128 MiB with later members first: members read
+within that window need no further block decode, while a larger block or a read
+outside the window decodes the whole block again. Each mount keeps
+recently read members for repeated reads (at most 16 members within 512 MiB of
+spool storage). Worker startup and indexing remain part of opening time. These
+changes do not remove resource limits, source revision validation or sandbox
+isolation. Copy-out still independently verifies destination bytes with SHA-256;
+archive CRC checks do not replace that verification. The
+[measured opening results](verification/2026-11-08-archive-opening-performance.md)
+record the fixture sizes, cold-start limitation and regression coverage of that
+earlier in-memory design.
 
 ## Associations
 
@@ -162,11 +165,14 @@ and presenter tests cover this implementation; final integrated UI qualification
 is tracked in the [current extension](superpowers/specs/2026-11-07-panel-viewer-followups.md#archive-hot-paths).
 
 ZIP support is currently Stored/Deflate without passwords; other codecs, encrypted
-Office containers, DRM and corrupt archives may fail explicitly. There is no
-artificial source, member or decoded-total size limit; the host stops staging
-before its private spool volume would fall below its free-space reserve. Nested
-mounts and RAR are unavailable. See [filesystem API](developer/FILESYSTEM_API.md)
-for exact limits and the plugin contract.
+Office containers, DRM and corrupt archives may fail explicitly. The current worker
+has no artificial source, member or expansion-ratio byte ceiling: available spool
+storage limits decoded content, while archive metadata stays bounded to 100,000
+entries and 8 MiB of names (protocol-1 workers keep their legacy 64 MiB source
+limit). Nested mounts and RAR are unavailable. See the
+[filesystem API](developer/FILESYSTEM_API.md) and the
+[archive worker](../plugins/midnight-fs-archive/README.md) for exact limits and the
+plugin contract.
 
 The canonical host table is
 [`archive_format.rs`](../crates/midnight-core/src/archive_format.rs).
