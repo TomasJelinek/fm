@@ -23,7 +23,12 @@ destructor joins the cleanup thread. The application shutdown grace remains boun
 During a normal shutdown the Copy/Move and mutation actors are drained, for at most
 five seconds, before the remaining engine tasks are aborted: each job then releases
 its native and captured owners through its checked retirement instead of being
-dropped by an abort. The event consumer keeps draining until the run completes.
+dropped by an abort. The drain is prompt when the event consumer either keeps
+receiving or closes its receiver; the explorer closes it before sending `Shutdown`,
+so a blocked event send fails at once. A receiver that stays open without being
+drained delays the run by up to those five seconds, after which the remaining actors
+are aborted as before. The explorer's 2.5-second exit grace can expire first; the
+dropped run then transfers its owners to the cleanup thread as described above.
 
 ## One-time service configuration
 
@@ -142,14 +147,18 @@ waiting on a full result queue. Rejected clipboard requests retire through one
 serialized acknowledgement; cancelling that await never cancels resource cleanup.
 A worker that has stopped is reported as stopped, not as a busy queue.
 
-Idle actors do not poll. The operations actor rescans its polled cancel/pause
-flags every 50 ms only while jobs are registered; admission, cancellation and
-shutdown send it a message. The checksum actor and its backend wake from shutdown
-through a notification, and the backend queues for the serial checksum worker.
-The clipboard worker blocks on its inbox while no native session is open; an open
-X11/Windows owner session is still pumped every 10 ms between requests. A task of
-the operations actor that panics or is aborted fails its own job, so the registry
-entry cannot hold one of the 32 slots (and actor exit) indefinitely.
+The operations and checksum actors do not poll while idle. The operations actor
+rescans its polled cancel/pause flags every 50 ms only while jobs are registered;
+admission, cancellation and shutdown send it a message. The checksum actor and its
+backend wake from shutdown through a notification, and the backend queues for the
+serial checksum worker. The clipboard worker blocks on its inbox only until a
+clipboard command opens a native X11/Windows owner session; that session stays
+open and is pumped every 10 ms between requests until it fails or the engine stops
+(an event-driven pump needs a platform session API). Other engine timers still wake
+while idle: the drag/drop preparation worker (25 ms), the drag hover forwarder
+(25 ms) and the native drag actor (10 ms). A task of the operations actor that
+panics or is aborted fails its own job, so the registry entry cannot hold one of
+the 32 slots (and actor exit) indefinitely.
 
 ## Image viewer spare shutdown
 
@@ -194,13 +203,24 @@ actual destruction. Four visible jobs and two workers remain separate limits; wo
 admission spans native execution and reply delivery. Refused admission leaves the
 previous generation intact. Native destination pins and captured size reports stay
 inside the guarded job, including confirmation queued before native execution.
-Generated content uses an anonymous spool under a per-user private root: on Linux
-`$XDG_CACHE_HOME` (or `~/.cache`) `/midnight-explorer/file-list`, then
-`$XDG_RUNTIME_DIR/midnight-explorer-file-list`, never a fixed name in the shared
-`/tmp` that another account could occupy; on Windows the per-user `%TEMP%`. A root
-that is refused or lacks anonymous files yields to the next candidate. Saving to a
-file keeps one queued acquisition of the mutation gate (cancellable), so a refilled
-Copy queue cannot starve it.
+Generated content uses an anonymous spool under a private root of this user: on
+Linux `$XDG_CACHE_HOME` (or `~/.cache`) `/midnight-explorer/file-list`, then
+`$XDG_RUNTIME_DIR/midnight-explorer-file-list`, then, as the last resort,
+`midnight-explorer-<uid>-file-list` in the temporary directory; on Windows the
+per-user `%TEMP%`. A root that is refused or lacks anonymous files yields to the next
+candidate, and output fails with the last error when none is usable. The cache root
+fails on an NFS home without `O_TMPFILE` and below a symlinked home component (the
+no-link walk refuses it); sessions without `XDG_RUNTIME_DIR` (su, sudo, ssh,
+containers) then reach the temporary directory, whose predictable name another
+account can occupy. The private-root check refuses such a directory instead of
+using it, so that only denies output when both per-user roots are unusable as well.
+
+Saving to a file keeps one queued acquisition of the mutation gate, so a refilled
+Copy queue cannot starve it. While queued, the save holds neither a worker nor a
+blocking thread: it waits on its async task, cancellation wakes it without a timer,
+and runtime shutdown drops it instead of polling it. It takes a worker once the gate
+is granted; worker holders never wait for the gate, and the gate stays held until
+native publication returns.
 
 Network discovery runs once and reserves one startup lease before opening the native
 plugin. Its successful provider is adopted before leaving the native discovery call.
