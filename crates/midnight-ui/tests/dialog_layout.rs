@@ -85,11 +85,23 @@ fn dialogs_keep_actions_visible_in_all_themes_and_densities() {
         "F2".into(),
     ])));
     editor.set_scope("File list and filename search".into());
-    for scheme in midnight_core::PreferenceTheme::ALL.map(|theme| theme.index()) {
+    // Themes select colours only (ui/theme.slint: every length follows density and
+    // font size), so every theme is laid out and checked, but only the first one is
+    // software-rendered for each density, font and page.
+    let themes = midnight_core::PreferenceTheme::ALL.map(|theme| theme.index());
+    for scheme in themes {
+        let render = ui::render_case(scheme == themes[0]);
+        let frame = |test: &mut ui::TestUi| {
+            if render {
+                test.draw();
+            } else {
+                test.layout();
+            }
+        };
         for (density, font) in [(0, 11), (1, 15), (0, 32), (1, 32)] {
             test.window.invoke_apply_preferences(scheme, density);
             test.window.invoke_apply_fonts("".into(), font, font);
-            test.draw();
+            frame(&mut test);
             for label in ["F1 Help", "F2 Rename", "F12 Disconnect", "Options", "Jobs"] {
                 inside(
                     &test,
@@ -102,7 +114,7 @@ fn dialogs_keep_actions_visible_in_all_themes_and_densities() {
             test.window.invoke_show_options();
             for topic in [0, 1, 3, 4, 5, 6, 7, 8, 9] {
                 test.window.set_options_topic_index(topic);
-                test.draw();
+                frame(&mut test);
                 inside(&test, popup_button(&test, "Cancel"), "Options Done");
                 if topic == 3 {
                     inside(

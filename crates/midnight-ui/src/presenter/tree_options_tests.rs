@@ -3,7 +3,8 @@ use super::*;
 use std::cell::RefCell;
 
 fn fixture() -> Presenter {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../_build/tree-filter-fixture");
+    // A synthetic root: this pure presenter fixture performs no filesystem I/O.
+    let path = std::env::temp_dir().join("tree-filter-fixture");
     let mut p = Presenter::new(path.clone(), path.clone());
     p.preferences.loaded = true;
     let commands = RefCell::new(Vec::new());

@@ -70,13 +70,6 @@ fn receipt(
         }),
     }))
 }
-fn reclaim(p: &mut Presenter, drops: &AtomicUsize) {
-    assert_eq!(drops.load(Ordering::SeqCst), 0, "provider dropped on UI");
-    let retired = p.take_retired();
-    std::thread::spawn(move || drop(retired)).join().unwrap();
-    assert_eq!(drops.load(Ordering::SeqCst), 1);
-}
-
 #[test]
 fn tree_checksums_selected_folder_uses_origin_panel_and_recalculates_same_capture() {
     let mut p = loaded();

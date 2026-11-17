@@ -8,9 +8,9 @@ use i_slint_core::{
     items::AccessibleRole,
     window::{WindowInner, WindowKind},
 };
-use midnight_ui::{LocationRow, MainWindow, NavigationChoiceRow, Theme};
+use midnight_ui::{LocationRow, MainWindow, NavigationChoiceRow};
 use slint::{
-    ComponentHandle, ModelRc, SharedString, VecModel,
+    ComponentHandle, ModelRc, VecModel,
     platform::{
         Key, Platform, PlatformError, PointerEventButton, WindowAdapter, WindowEvent,
         software_renderer::{MinimalSoftwareWindow, RepaintBufferType},
@@ -27,28 +27,9 @@ impl Platform for TestPlatform {
         self.1.get()
     }
 }
-fn key(window: &MainWindow, text: impl Into<SharedString>) {
-    let text = text.into();
-    window
-        .window()
-        .dispatch_event(WindowEvent::KeyPressed { text: text.clone() });
-    window
-        .window()
-        .dispatch_event(WindowEvent::KeyReleased { text });
-}
-fn click(window: &MainWindow, x: f32, y: f32) {
-    let position = slint::LogicalPosition::new(x, y);
-    let button = PointerEventButton::Left;
-    window
-        .window()
-        .dispatch_event(WindowEvent::PointerMoved { position });
-    window
-        .window()
-        .dispatch_event(WindowEvent::PointerPressed { position, button });
-    window
-        .window()
-        .dispatch_event(WindowEvent::PointerReleased { position, button });
-}
+// The shared helpers send keys the way the platform does (on Windows, with the
+// Winit-shaped key metadata).
+use ui::{click, key};
 
 fn popup_position(window: &MainWindow, label: &str) -> slint::LogicalPosition {
     fn find(item: ItemRc, label: &str) -> Option<ItemRc> {
@@ -297,24 +278,39 @@ fn icon_shell_picker_commits_only_on_enter_and_restores_editor_focus() {
         "a fresh drive-row click still commits"
     );
     draw(&mut pixels);
+    let tooltips = || {
+        WindowInner::from_pub(window.window())
+            .active_popups()
+            .iter()
+            .filter(|popup| matches!(popup.window_kind, WindowKind::ToolTip))
+            .count()
+    };
+    // Finish the animations of the picker steps above before the hover baseline,
+    // so the frame difference below can only come from the tooltip.
+    time.set(time.get() + Duration::from_millis(1000));
+    slint::platform::update_timers_and_animations();
+    draw(&mut pixels);
     let position = ui::root_position(&window, "F2 Rename — unavailable", AccessibleRole::Button);
     window
         .window()
         .dispatch_event(WindowEvent::PointerMoved { position });
     draw(&mut pixels);
+    assert_eq!(tooltips(), 0, "the tooltip waits for its hover delay");
     let before_tip = pixels.clone();
-    time.set(Duration::from_millis(1000));
+    time.set(time.get() + Duration::from_millis(1000));
     slint::platform::update_timers_and_animations();
     draw(&mut pixels);
+    assert_eq!(
+        tooltips(),
+        1,
+        "a disabled F2 control must show a real hover tooltip"
+    );
     let changed = before_tip
         .iter()
         .zip(&pixels)
         .filter(|(a, b)| a != b)
         .count();
-    assert!(
-        changed > 100,
-        "a disabled F2 control must show a real hover tooltip"
-    );
+    assert!(changed > 100, "the hover tooltip must be painted");
     let with_tip = pixels.clone();
     click(&window, position.x, position.y);
     assert_eq!(
@@ -326,9 +322,14 @@ fn icon_shell_picker_commits_only_on_enter_and_restores_editor_focus() {
         position: slint::LogicalPosition::new(0.0, 0.0),
     });
     draw(&mut pixels);
+    assert_eq!(
+        tooltips(),
+        0,
+        "leaving the control must dismiss its tooltip"
+    );
     assert!(
         pixels != with_tip,
-        "leaving the control must dismiss its tooltip"
+        "the dismissed tooltip must no longer be painted"
     );
     // Many drives stay inside a flexible inline strip rather than pushing
     // essential tools outside a narrow pane, including in the Touch profile.
@@ -359,12 +360,19 @@ fn icon_shell_picker_commits_only_on_enter_and_restores_editor_focus() {
         window.invoke_apply_preferences(0, density);
         window.invoke_focus_files();
         draw(&mut pixels);
-        let theme = window.global::<Theme>();
-        assert_eq!(
-            theme.get_locations_height(),
-            0.0,
-            "no extra drive row remains"
+        // The 32 drives share the existing navigation rows: without any drive the
+        // file list starts at exactly the same place (no extra drive row).
+        let list_top = window.get_left_list_top();
+        let drives = window.get_left_locations();
+        window.set_left_locations(ModelRc::new(VecModel::<LocationRow>::default()));
+        draw(&mut pixels);
+        assert!(
+            (window.get_left_list_top() - list_top).abs() < 0.5,
+            "no extra drive row remains: list top {list_top} with drives, {} without",
+            window.get_left_list_top()
         );
+        window.set_left_locations(drives);
+        draw(&mut pixels);
         ui::click_root(
             &window,
             "Refresh (Ctrl+R / Ctrl+F9)",

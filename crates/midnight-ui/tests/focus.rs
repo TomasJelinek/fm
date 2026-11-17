@@ -188,18 +188,9 @@ fn toolbar_and_header_callbacks_transfer_actual_keyboard_focus() {
     window.invoke_sort(0, 0);
     assert_eq!(window.get_focused_pane(), 0);
     assert_eq!(window.get_active_pane(), 0);
-    window.window().dispatch_event(WindowEvent::KeyPressed {
-        text: Key::Control.into(),
-    });
-    window
-        .window()
-        .dispatch_event(WindowEvent::KeyPressed { text: "[".into() });
-    window
-        .window()
-        .dispatch_event(WindowEvent::KeyReleased { text: "[".into() });
-    window.window().dispatch_event(WindowEvent::KeyReleased {
-        text: Key::Control.into(),
-    });
+    hold(&window, Key::Control, true);
+    key(&window, "[");
+    hold(&window, Key::Control, false);
     assert_eq!(
         window.get_focused_pane(),
         -1,

@@ -5,6 +5,8 @@
 mod command_reclaim;
 #[path = "modeless.rs"]
 pub(super) mod modeless;
+#[path = "engine_teardown.rs"]
+mod teardown;
 use midnight_core::*;
 use midnight_engine::{Engine, reclaim};
 use midnight_ui::{
@@ -530,7 +532,7 @@ pub struct Harness {
     held_directory_hints: [Option<NavigationId>; 2],
     pub send: Rc<dyn Fn(Command) -> bool>,
     pub pane: PaneId,
-    runtime: Runtime,
+    runtime: Option<Runtime>,
     events: mpsc::Receiver<Event>,
     engine: Option<JoinHandle<()>>,
     commands: midnight_engine::CommandSender,
@@ -852,7 +854,7 @@ impl Harness {
             held_directory_hints: [None; 2],
             send,
             pane,
-            runtime,
+            runtime: Some(runtime),
             events,
             engine: Some(engine),
             commands,
@@ -1012,7 +1014,27 @@ impl Harness {
     /// Inspection-only escape hatch: the test caller owns the returned event.
     /// Delayed/inspected events do not qualify production final-owner retirement.
     pub fn receive(&mut self) -> Event {
-        let deadline = Instant::now() + Duration::from_secs(5);
+        self.receive_by(Instant::now() + teardown::UI_WAIT, "any Engine event")
+    }
+
+    /// Receive and apply Engine events until one matching `wanted` has been applied,
+    /// within one overall [`teardown::UI_WAIT`] (a steady stream of other events
+    /// cannot extend it).
+    #[track_caller]
+    pub fn apply_events_until(&mut self, what: &str, wanted: impl Fn(&Event) -> bool) {
+        let deadline = Instant::now() + teardown::UI_WAIT;
+        loop {
+            let event = self.receive_by(deadline, what);
+            let found = wanted(&event);
+            self.apply_event(event);
+            if found {
+                return;
+            }
+        }
+    }
+
+    #[track_caller]
+    fn receive_by(&mut self, deadline: Instant, what: &str) -> Event {
         loop {
             if let Some(scope) = (self.begin_owned)() {
                 let event = self.events.try_recv();
@@ -1020,14 +1042,15 @@ impl Harness {
                 match event {
                     Ok(event) => return event,
                     Err(mpsc::error::TryRecvError::Disconnected) => {
-                        panic!("Engine event channel closed");
+                        panic!("Engine event channel closed while waiting for {what}");
                     }
                     Err(mpsc::error::TryRecvError::Empty) => {}
                 }
             }
             assert!(
                 Instant::now() < deadline,
-                "no Engine event within five seconds"
+                "{what} did not arrive within {:?}",
+                teardown::UI_WAIT
             );
             self.wait_tick();
         }
@@ -1035,7 +1058,7 @@ impl Harness {
 
     pub fn apply_event(&mut self, event: Event) {
         let mut event = Some(event);
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline = Instant::now() + teardown::UI_WAIT;
         let presenter = self.presenter.clone();
         let begin = self.begin_owned.clone();
         loop {
@@ -1049,10 +1072,14 @@ impl Harness {
             if Instant::now() >= deadline {
                 // The explicit inspection caller handed ownership back; even a
                 // fixture timeout must not destroy that capture on this thread.
-                self.runtime.block_on(retire_final(
-                    &self.retire_queue,
-                    vec![Box::new(event.take().unwrap())],
-                ));
+                let _ = self
+                    .runtime
+                    .as_ref()
+                    .expect("runtime alive until drop")
+                    .block_on(teardown::retire_final(
+                        &self.retire_queue,
+                        vec![Box::new(event.take().unwrap())],
+                    ));
                 panic!("reclaimer did not accept the inspected event");
             }
             self.wait_tick();
@@ -1190,9 +1217,12 @@ impl Harness {
 
     fn wait_tick(&self) {
         // No event owner or callback claim crosses this wait.
-        self.runtime.block_on(async {
-            tokio::time::sleep(Duration::from_millis(1)).await;
-        });
+        self.runtime
+            .as_ref()
+            .expect("runtime alive until drop")
+            .block_on(async {
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            });
     }
 
     pub fn maintenance_hints_held(&self) -> bool {
@@ -1241,7 +1271,7 @@ impl Harness {
 
     #[track_caller]
     pub fn until(&mut self, condition: impl Fn(&Self) -> bool) {
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline = Instant::now() + teardown::UI_WAIT;
         let mut last_retry = Instant::now();
         while Instant::now() < deadline {
             if condition(self) {
@@ -1266,7 +1296,8 @@ impl Harness {
             }
         }
         panic!(
-            "condition did not settle within five seconds: copy={:?}, clipboard_publications={}, desktop_status={}, left_error={}, right_error={}, selected={:?}, loading={:?}, folder_disclosures={:?}, notice=({},{:?},{:?}), active_pane={}, modal={}, dialog_blocked={}, clipboard_trace={:?}",
+            "condition did not settle within {:?}: copy={:?}, clipboard_publications={}, desktop_status={}, left_error={}, right_error={}, selected={:?}, loading={:?}, folder_disclosures={:?}, notice=({},{:?},{:?}), active_pane={}, modal={}, dialog_blocked={}, clipboard_trace={:?}",
+            teardown::UI_WAIT,
             self.copy_progress.last(),
             self.clipboard_publications,
             self.ui.window.get_desktop_status(),
@@ -1319,33 +1350,26 @@ impl Drop for Harness {
         retired.push(Box::new(std::mem::take(&mut self.views)));
         retired.push(Box::new(self.selection.take()));
         retired.push(Box::new(self.sizes.take()));
+        let Some(runtime) = self.runtime.take() else {
+            return;
+        };
+        // Never panic before the runtime is shut down: this usually runs while a
+        // failed assertion unwinds, and dropping a runtime during a panic waits for
+        // its blocking pool without limit.
+        let mut failure = None;
         if let Some(mut engine) = self.engine.take() {
-            let result = self.runtime.block_on(async {
-                retire_final(&self.retire_queue, retired).await;
-                tokio::time::timeout(Duration::from_secs(5), async {
-                    let shutdown = self.commands.send(Command::Shutdown);
-                    tokio::pin!(shutdown);
-                    let mut sent = false;
-                    loop {
-                        // Final closed-window ownership goes to the same bounded
-                        // worker queue before another event may be taken.
-                        let permit = self.retire_queue.reserve().await.unwrap();
-                        tokio::select! {
-                            result = &mut shutdown, if !sent => {
-                                result.unwrap();
-                                sent = true;
-                            }
-                            result = &mut engine => return result,
-                            event = self.events.recv() => {
-                                if let Some(event) = event {
-                                    permit.send(vec![Box::new(event)]);
-                                } else {
-                                    return (&mut engine).await;
-                                }
-                            }
-                        }
-                    }
-                })
+            let mut errors = Vec::new();
+            let result = runtime.block_on(async {
+                if let Err(error) = teardown::retire_final(&self.retire_queue, retired).await {
+                    errors.push(error);
+                }
+                teardown::shutdown(
+                    &self.commands,
+                    &mut engine,
+                    &mut self.events,
+                    &self.retire_queue,
+                    |_| {},
+                )
                 .await
             });
             if result.is_err() {
@@ -1353,27 +1377,22 @@ impl Drop for Harness {
             }
             let (_, empty) = mpsc::channel(1);
             let receiver = std::mem::replace(&mut self.events, empty);
-            let mut retired = reclaim::Retired::new();
-            reclaim::retire_receiver(receiver, &mut retired);
-            self.runtime.block_on(async {
-                retire_final(&self.retire_queue, retired).await;
-                reclaim::barrier(&self.retire_queue).await.unwrap();
-            });
-            if !std::thread::panicking() {
-                assert!(
-                    matches!(result, Ok(Ok(()))),
-                    "Engine shutdown failed: {result:?}"
-                );
+            if let Err(error) =
+                runtime.block_on(teardown::retire_remaining(&self.retire_queue, receiver))
+            {
+                errors.push(error);
+            }
+            if result.is_err() || !errors.is_empty() {
+                failure = Some(format!("{result:?}, {errors:?}"));
             }
         }
-    }
-}
-
-async fn retire_final(queue: &mpsc::Sender<reclaim::Retired>, retired: reclaim::Retired) {
-    if let Err(error) = queue.send(retired).await {
-        let retired = error.0;
-        tokio::task::spawn_blocking(move || drop(retired))
-            .await
-            .unwrap();
+        // Bound blocking-pool work (a provider call stuck in teardown) instead of
+        // waiting for it without limit.
+        runtime.shutdown_timeout(teardown::RUNTIME_SHUTDOWN);
+        if let Some(failure) = failure
+            && !std::thread::panicking()
+        {
+            panic!("Engine shutdown failed: {failure}");
+        }
     }
 }

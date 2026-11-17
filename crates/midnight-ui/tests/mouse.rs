@@ -31,6 +31,7 @@ impl Platform for TestPlatform {
 
 struct Harness {
     native: Rc<MinimalSoftwareWindow>,
+    pixels: RefCell<Vec<slint::Rgb8Pixel>>,
     time: Rc<Cell<Duration>>,
     window: MainWindow,
     presenter: Rc<RefCell<Presenter>>,
@@ -39,9 +40,18 @@ struct Harness {
     accepted: Rc<Cell<bool>>,
 }
 impl Harness {
+    /// Refresh from the presenter and settle the frame's state (change handlers and
+    /// lazily instantiated rows) without painting it: input only needs geometry.
     fn draw(&self) {
         refresh(&self.window, &self.presenter.borrow());
-        let mut pixels = vec![slint::Rgb8Pixel::default(); 1340 * 820];
+        i_slint_core::window::WindowInner::from_pub(self.window.window())
+            .ensure_tree_instantiated();
+    }
+    /// [`Self::draw`] plus an actual software-rendered frame, where the scenario
+    /// requires that painting cannot act on the gesture.
+    fn render(&self) {
+        refresh(&self.window, &self.presenter.borrow());
+        let mut pixels = self.pixels.borrow_mut();
         self.native.draw_if_needed(|renderer| {
             renderer.render(&mut pixels, 1340);
         });
@@ -233,6 +243,7 @@ fn actual_mouse_selection_and_activation_preserve_entry_identity() {
     );
     let h = Harness {
         native,
+        pixels: RefCell::new(vec![slint::Rgb8Pixel::default(); 1340 * 820]),
         time,
         window,
         presenter,
@@ -311,7 +322,7 @@ fn actual_mouse_selection_and_activation_preserve_entry_identity() {
     h.window.window().dispatch_event(WindowEvent::PointerMoved {
         position: h.position(PaneId::Left, 1),
     });
-    h.draw();
+    h.render();
     assert!(h.commands.borrow().is_empty());
 
     for pane in [PaneId::Left, PaneId::Right] {
@@ -414,12 +425,22 @@ fn actual_mouse_selection_and_activation_preserve_entry_identity() {
 
     // Render both presses and deliver an earlier worker acknowledgement between
     // clicks. Native input keeps the same screen coordinates for both clicks.
+    // Painting runs no gesture code, so one painted pass per view mode keeps the
+    // rendering coverage; the other passes settle the same frames without pixels.
     for mode in 0..3 {
         for pane in [PaneId::Left, PaneId::Right] {
             h.window.invoke_view_mode(pane.index() as i32, mode);
             h.draw();
             h.clear();
             for hold in [20, 120] {
+                let painted = pane == PaneId::Left && hold == 20;
+                let frame = || {
+                    if painted {
+                        h.render();
+                    } else {
+                        h.draw();
+                    }
+                };
                 h.advance(800);
                 h.click(pane, 1, PointerEventButton::Left);
                 h.window.invoke_bulk_selection(pane.index() as i32, 1);
@@ -435,12 +456,12 @@ fn actual_mouse_selection_and_activation_preserve_entry_identity() {
                             position,
                             button: PointerEventButton::Left,
                         });
-                    h.draw();
+                    frame();
                     h.advance(hold);
                     h.window
                         .window()
                         .dispatch_event(WindowEvent::PointerMoved { position });
-                    h.draw();
+                    frame();
                     h.window
                         .window()
                         .dispatch_event(WindowEvent::PointerReleased {
@@ -455,7 +476,7 @@ fn actual_mouse_selection_and_activation_preserve_entry_identity() {
                         };
                         assert_eq!(cursor, 2, "first folder click must focus its actual row");
                         h.selection(pane, &[]);
-                        h.draw();
+                        frame();
                         assert!(h.commands.borrow().is_empty(), "first click only focuses");
                         h.advance(70);
                     }

@@ -25,6 +25,8 @@ use std::{
 
 struct Harness {
     ui: ui::TestUi,
+    /// The 16 ms repeating drag-bridge timer (src/drag_bridge.rs) follows this clock.
+    clock: Rc<Cell<Duration>>,
     windows: owned_windows::Windows,
     presenter: Rc<RefCell<Presenter>>,
     commands: Rc<RefCell<Vec<Command>>>,
@@ -42,7 +44,8 @@ impl Harness {
     }
 
     fn with_target_kind(count: usize, target_kind: EntryKind) -> Self {
-        let (mut ui, windows) = owned_windows::new();
+        let clock = Rc::new(Cell::new(Duration::ZERO));
+        let (mut ui, windows) = owned_windows::with_clock(clock.clone());
         let left = std::env::temp_dir().join("drag source 文档");
         let right = std::env::temp_dir().join("drag target & $(literal)");
         let presenter = Rc::new(RefCell::new(Presenter::new(left.clone(), right.clone())));
@@ -114,6 +117,7 @@ impl Harness {
         ui.draw();
         Self {
             ui,
+            clock,
             windows,
             presenter,
             commands,
@@ -122,10 +126,10 @@ impl Harness {
         }
     }
 
+    /// Three periods of the 16 ms drag-bridge timer, each followed by a frame.
     fn settle(&mut self) {
         for _ in 0..3 {
-            std::thread::sleep(Duration::from_millis(20));
-            slint::platform::update_timers_and_animations();
+            ui::advance(&self.clock, Duration::from_millis(20));
             self.ui.draw();
         }
     }

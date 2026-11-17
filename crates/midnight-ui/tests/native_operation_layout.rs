@@ -46,7 +46,12 @@ fn inside(test: &ui::TestUi, item: ItemRc, label: &str) {
 fn native_operation_layout_preserves_long_unicode_content_and_action_bounds() {
     let mut test = ui::TestUi::new();
     test.resize(1040, 720);
-    for scheme in midnight_core::PreferenceTheme::ALL.map(|theme| theme.index()) {
+    // Themes select colours only (ui/theme.slint), so every theme is laid out and
+    // checked, but only the first one is software-rendered per density, font and kind.
+    let themes = midnight_core::PreferenceTheme::ALL.map(|theme| theme.index());
+    for scheme in themes {
+        let render = scheme == themes[0]
+            || std::env::var_os("MIDNIGHT_UI_RENDER_DIR").is_some_and(|dir| !dir.is_empty());
         for (density, font) in [(0, 11), (1, 15), (0, 32), (1, 32)] {
             test.window
                 .invoke_apply_preferences(scheme, density, "".into(), font, font);
@@ -77,7 +82,11 @@ fn native_operation_layout_preserves_long_unicode_content_and_action_bounds() {
                 test.window.set_initial_name("文档 👩🏽‍💻.txt".into());
                 test.window.set_body(format!("Location: /very/long/文档/e\u{301}/👩🏽‍💻/folder\n\n{}\n123 456 789 bytes · 06.11.2026 10:20:30", "source-file-with-long-Unicode-name-文档.txt\n".repeat(20)).into());
                 test.window.invoke_begin();
-                test.draw();
+                if render {
+                    test.draw();
+                } else {
+                    test.layout();
+                }
                 let body = test.window.get_body();
                 let text = find_text(
                     ItemRc::new_root(WindowInner::from_pub(test.window.window()).component()),

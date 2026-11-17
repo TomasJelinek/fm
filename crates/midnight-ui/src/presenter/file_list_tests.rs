@@ -121,14 +121,16 @@ fn stale_previews_cannot_replace_new_draft_and_close_cancels_last_submitted_gene
         commands.borrow().last(),
         Some(Command::CancelFileList { generation: 1, .. })
     ));
-    p.apply_file_list(FileListEvent {
-        id,
-        generation: 2,
-        result: Ok(FileListUpdate::Preview {
-            text: "late".into(),
-            items: 1,
-            truncated: false,
-        }),
+    crate::presenter::tests::assert_late_event_is_only_retired(&mut p, |p| {
+        p.apply_file_list(FileListEvent {
+            id,
+            generation: 2,
+            result: Ok(FileListUpdate::Preview {
+                text: "late".into(),
+                items: 1,
+                truncated: false,
+            }),
+        })
     });
     assert!(p.file_list.session.is_none());
 }

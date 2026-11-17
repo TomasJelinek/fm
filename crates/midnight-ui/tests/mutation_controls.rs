@@ -152,18 +152,24 @@ fn rename_delete_create_dialogs_preserve_confirmation_and_editor_focus() {
             command,
             Command::ConfirmOperation { .. } | Command::CancelOperation(_)
         )));
+        let visible_children = || {
+            windows
+                .borrow()
+                .iter()
+                .skip(1)
+                .filter(|child| child.window().is_visible())
+                .count()
+        };
+        let progress_before = visible_children();
         key_current(&ui, &windows, Key::Return);
         assert!(commands.borrow().iter().any(|command| matches!(command,
         Command::ConfirmOperation { id, new_name: None } if *id == deletion.id)));
         assert!(!ui.window.get_embedded_modal_open(), "progress is modeless");
         assert!(!ui.window.get_dialog_input_blocked());
-        assert!(
-            windows
-                .borrow()
-                .iter()
-                .skip(1)
-                .any(|child| child.window().is_visible()),
-            "confirmed Delete has visible progress while panel actions remain enabled"
+        assert_eq!(
+            visible_children(),
+            progress_before + 1,
+            "confirmed Delete opens its own visible progress while panel actions remain enabled"
         );
         assert!(
             !commands

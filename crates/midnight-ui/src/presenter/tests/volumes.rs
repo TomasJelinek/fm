@@ -20,6 +20,7 @@ fn stale_volume_details_are_ignored_without_navigation_or_ui_errors() {
         label: "Disk".into(),
         root: root.clone(),
     }]));
+    drop(presenter.take_retired());
     presenter.apply(Event::VolumeDetailsUpdated {
         volume_id: "removed".into(),
         root: root.join("removed"),
@@ -27,7 +28,11 @@ fn stale_volume_details_are_ignored_without_navigation_or_ui_errors() {
     });
     assert_eq!(presenter.panes[0].path, root);
     assert!(!presenter.has_errors());
-    assert!(!presenter.take_retired().is_empty());
+    assert_eq!(
+        presenter.take_retired().len(),
+        1,
+        "the stale details are retired, not dropped on the UI thread"
+    );
 }
 
 #[test]
@@ -76,17 +81,44 @@ fn volume_discovery_preserves_only_unchanged_cache_and_retires_removed_values() 
     });
     presenter.apply(Event::VolumesUpdated(vec![volume.clone()]));
     assert_eq!(presenter.volume_details.len(), 1);
-    let mut replacement = volume;
+    let mut replacement = volume.clone();
     replacement.root = root.join("replacement");
+    // Identical presenters that differ only in the cached details retire exactly
+    // one more value for the same discovery: the removed details.
+    let retirements = |cached: bool| {
+        let mut presenter = Presenter::new(root.clone(), root.clone());
+        presenter.apply(Event::VolumesUpdated(vec![volume.clone()]));
+        if cached {
+            presenter.apply(Event::VolumeDetailsUpdated {
+                volume_id: "visible".into(),
+                root: root.clone(),
+                details: details(),
+            });
+        }
+        drop(presenter.take_retired());
+        presenter.apply(Event::VolumesUpdated(vec![replacement.clone()]));
+        assert!(presenter.volume_details.is_empty());
+        presenter.take_retired().len()
+    };
+    assert_eq!(
+        retirements(true),
+        retirements(false) + 1,
+        "the removed volume's details are retired, not dropped on the UI thread"
+    );
     presenter.apply(Event::VolumesUpdated(vec![replacement]));
     assert!(presenter.volume_details.is_empty());
+    drop(presenter.take_retired());
     presenter.apply(Event::VolumeDetailsUpdated {
         volume_id: "visible".into(),
         root,
         details: details(),
     });
     assert!(presenter.volume_details.is_empty());
-    assert!(!presenter.take_retired().is_empty());
+    assert_eq!(
+        presenter.take_retired().len(),
+        1,
+        "details for the replaced root are retired"
+    );
 }
 
 #[test]

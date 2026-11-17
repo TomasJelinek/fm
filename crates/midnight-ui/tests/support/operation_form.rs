@@ -57,6 +57,11 @@ impl TestUi {
             renderer.render(&mut self.pixels, self.width);
         });
     }
+    /// [`Self::draw`] without painting: geometry is current, pixels keep the last frame.
+    pub fn layout(&mut self) {
+        slint::platform::update_timers_and_animations();
+        WindowInner::from_pub(self.window.window()).ensure_tree_instantiated();
+    }
     pub fn preferred_height(&self) -> f32 {
         let component = WindowInner::from_pub(self.window.window()).component();
         let component = i_slint_core::item_tree::ItemTreeRc::borrow_pin(&component);

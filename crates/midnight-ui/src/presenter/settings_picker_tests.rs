@@ -1,6 +1,34 @@
 use super::*;
 use std::cell::RefCell;
 
+#[test]
+fn picker_pages_are_the_editors_and_custom_commands_options_topics() {
+    // settings_picker_context (and these tests) identify pickers by the Options
+    // topic identities 4 and 9; they must follow ui/options-navigation.slint.
+    let source = include_str!("../../ui/options-navigation.slint");
+    assert!(
+        source.contains("return index >= 2 ? index + 1 : index;"),
+        "OptionsTopics.topic mapping changed; update the picker pages"
+    );
+    let titles: Vec<&str> = source
+        .lines()
+        .find(|line| line.contains("property <[string]> titles:"))
+        .expect("OptionsTopics.titles")
+        .split('"')
+        .skip(1)
+        .step_by(2)
+        .collect();
+    let topic = |title: &str| {
+        let index = titles
+            .iter()
+            .position(|candidate| *candidate == title)
+            .unwrap_or_else(|| panic!("no Options topic {title}"));
+        if index >= 2 { index + 1 } else { index }
+    };
+    assert_eq!(topic("Editors"), 4);
+    assert_eq!(topic("Custom Commands"), 9);
+}
+
 fn loaded() -> Presenter {
     let root = std::env::current_dir().unwrap();
     let mut p = Presenter::new(root.clone(), root);

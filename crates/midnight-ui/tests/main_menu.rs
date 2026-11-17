@@ -140,6 +140,11 @@ fn parent_and_unsupported_archive_actions_are_disabled_without_dispatch() {
 #[test]
 fn category_makes_application_actions_reachable_and_close_never_runs_them() {
     let mut test = ui::TestUi::new();
+    // Every main-menu action is dispatched through function-action.
+    let ran = Rc::new(RefCell::new(Vec::<String>::new()));
+    let record = ran.clone();
+    test.window
+        .on_function_action(move |action, _| record.borrow_mut().push(action.to_string()));
     test.resize(320, 200);
     test.window.invoke_show_app_menu(2);
     test.draw();
@@ -151,6 +156,7 @@ fn category_makes_application_actions_reachable_and_close_never_runs_them() {
     ui::click_popup(&test.window, "Close menu", AccessibleRole::Button);
     test.draw();
     assert!(!ui::has_popup(&test.window));
+    assert!(ran.borrow().is_empty(), "Close menu ran {:?}", ran.borrow());
     test.window.invoke_show_app_menu(2);
     test.draw();
     // Opening again resets the category and scroll offset to expose Files first.
@@ -161,8 +167,11 @@ fn category_makes_application_actions_reachable_and_close_never_runs_them() {
 }
 
 fn shortcut_menu(bindings: &[(&str, &[&str])]) -> ui::TestUi {
+    shortcut_menu_on(ui::TestUi::new(), bindings)
+}
+
+fn shortcut_menu_on(mut test: ui::TestUi, bindings: &[(&str, &[&str])]) -> ui::TestUi {
     use midnight_core::{Event, ShortcutBinding, UserPreferences};
-    let mut test = ui::TestUi::new();
     let presenter = Rc::new(RefCell::new(midnight_ui::Presenter::new(
         std::env::temp_dir(),
         std::env::temp_dir(),
@@ -302,7 +311,8 @@ fn menu_shows_the_primary_alias_and_its_hover_hint_lists_every_alias() {
         window::{WindowInner, WindowKind},
     };
     use slint::{ComponentHandle, platform::WindowEvent};
-    let mut test = shortcut_menu(&[("files.rename", &["Ctrl+Alt+R", "F2"])]);
+    let (test, clock) = ui::TestUi::with_virtual_clock();
+    let mut test = shortcut_menu_on(test, &[("files.rename", &["Ctrl+Alt+R", "F2"])]);
     assert_eq!(
         menu_shortcut(&test, "Rename…"),
         ["F2"],
@@ -319,7 +329,8 @@ fn menu_shows_the_primary_alias_and_its_hover_hint_lists_every_alias() {
                 origin.y + rect.height() / 2.0,
             ),
         });
-    std::thread::sleep(std::time::Duration::from_millis(650));
+    // Slint shows a tooltip after 500 ms of hover.
+    ui::advance(&clock, std::time::Duration::from_millis(650));
     test.draw();
     let text = {
         let inner = WindowInner::from_pub(test.window.window());

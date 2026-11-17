@@ -632,9 +632,17 @@ fn completed_network_navigation_saves_typed_tab_and_does_not_watch_native_origin
     assert!(!p.refresh_if_changed(PaneId::Left, navigation, &|_| panic!(
         "virtual view cannot refresh native origin"
     )));
-    assert!(!p.add_bookmark(PaneId::Left, "".into(), None, &|_| panic!(
-        "must not bookmark origin"
-    )));
+    // A committed Network pane is bookmarked by its typed provider address.
+    assert!(p.add_bookmark(PaneId::Left, "Network share".into(), None, &|_| true));
+    let saved = p.bookmarks().last().unwrap().clone();
+    assert_eq!(
+        saved
+            .network
+            .as_ref()
+            .map(|network| network.opaque.as_ref()),
+        Some(&[2][..]),
+        "the bookmark keeps the provider identity, not only the native origin"
+    );
 }
 
 #[test]

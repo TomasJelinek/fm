@@ -274,8 +274,24 @@ fn find_accessible_rows_select_without_revealing_and_focus_keyboard_navigation()
     window.set_running(true);
     window.set_current_directory("Scanning: D:\\fixture\\文档".into());
     window.set_progress("2 results · 42 files examined".into());
-    modeless::draw(&native, 1400, 720, "find-populated-wide");
-    modeless::draw(&native, 320, 200, "find-populated-minimum");
+    for (width, height, name) in [
+        (1400, 720, "find-populated-wide"),
+        (320, 200, "find-populated-minimum"),
+    ] {
+        modeless::draw_or_layout(&native, width, height, name, false);
+        let list = modeless::accessible_item(&native, AccessibleRole::List, "Find results")
+            .expect("populated results stay accessible");
+        assert_eq!(
+            list.accessible_string_property(AccessibleStringProperty::ItemCount)
+                .as_deref(),
+            Some("2"),
+            "{width}x{height}"
+        );
+        assert!(
+            modeless::accessible_item(&native, AccessibleRole::Button, "Stop").is_some(),
+            "a running search keeps Stop at {width}x{height}"
+        );
+    }
     window.hide().unwrap();
 }
 
@@ -451,9 +467,9 @@ fn modeless_find_streams_results_and_closes_independently_at_320_by_200() {
     );
     accepting.set(true);
     draw(&first, 320, 200);
-    click_footer_action(&first, 320, 200, "Details");
+    click_footer_action(&first, 320, 200, "Details", "find-busy", true);
     draw(&first, 320, 200);
-    click_footer_action(&first, 320, 200, "Copy");
+    click_footer_action(&first, 320, 200, "Copy", "find-busy", true);
     assert!(commands.borrow().iter().any(
         |c| matches!(c, Command::CopyText { text, .. } if text.contains("Request queue is busy"))
     ));
@@ -506,25 +522,31 @@ fn find_actions_and_details_remain_accessible_in_every_theme_and_density() {
     window.set_attention(true);
     window.show().unwrap();
     let native = windows.borrow()[0].clone();
-    for scheme in midnight_core::PreferenceTheme::ALL.map(|theme| theme.index()) {
+    // Themes select colours only (ui/theme.slint), so every theme is laid out and
+    // clicked, but only the first one is software-rendered per density and size.
+    let themes = midnight_core::PreferenceTheme::ALL.map(|theme| theme.index());
+    for scheme in themes {
+        let render = scheme == themes[0];
         for density in 0..2 {
             window.invoke_apply_preferences(scheme, density, "".into(), 11, 15);
+            let case = format!("find-theme{scheme}-density{density}");
             for (width, height) in [(860, 620), (320, 200)] {
                 window.set_show_details(false);
-                draw(&native, width, height);
-                click_footer_action(&native, width, height, "Details");
+                modeless::draw_or_layout(&native, width, height, &case, render);
+                click_footer_action(&native, width, height, "Details", &case, render);
                 assert!(
                     window.get_show_details(),
                     "Details: theme={scheme}, density={density}, {width}x{height}"
                 );
-                draw(&native, width, height);
-                click_footer_action(&native, width, height, "Copy");
-                click_footer_action(&native, width, height, "Query");
+                let details = format!("{case}-details");
+                modeless::draw_or_layout(&native, width, height, &details, render);
+                click_footer_action(&native, width, height, "Copy", &details, render);
+                click_footer_action(&native, width, height, "Query", &details, render);
                 assert!(
                     !window.get_show_details(),
                     "Query: theme={scheme}, density={density}, {width}x{height}"
                 );
-                click_footer_action(&native, width, height, "Close");
+                click_footer_action(&native, width, height, "Close", &case, render);
             }
         }
     }
@@ -536,7 +558,14 @@ fn find_actions_and_details_remain_accessible_in_every_theme_and_density() {
 
 // Compact footers keep Close fixed and scroll the remaining real controls. A
 // button's center can be inside the window but underneath that fixed Close area.
-fn click_footer_action(native: &MinimalSoftwareWindow, width: u32, height: u32, label: &str) {
+fn click_footer_action(
+    native: &MinimalSoftwareWindow,
+    width: u32,
+    height: u32,
+    label: &str,
+    case: &str,
+    render: bool,
+) {
     use i_slint_core::{
         item_tree::{ItemRc, ParentItemTraversalMode},
         items::{AccessibleRole, Flickable},
@@ -546,8 +575,10 @@ fn click_footer_action(native: &MinimalSoftwareWindow, width: u32, height: u32, 
         let at = item.map_to_native_window(rect.origin);
         (at.x, at.y, at.x + rect.width(), at.y + rect.height())
     };
-    for _ in 0..4 {
-        draw(native, width, height);
+    for attempt in 0..4 {
+        // Wheel input scrolls immediately (no animation), so layout suffices here.
+        let name = format!("{case}-{label}-{attempt}");
+        modeless::draw_or_layout(native, width, height, &name, render);
         let item = modeless::accessible_item(native, AccessibleRole::Button, label)
             .unwrap_or_else(|| panic!("missing footer action {label} at {width}x{height}"));
         let area = bounds(&item);

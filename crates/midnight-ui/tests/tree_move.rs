@@ -188,7 +188,12 @@ fn root_transfer_updates_both_trees(intent: TransferIntent) {
                 .any(|row| row.entry.display_name == "retained")
         })
     });
-    h.until(|_| watch.observes(&fixture.root.join("destination/existing")));
+    let (source_root, destination_root) = (fixture.root.clone(), fixture.root.join("destination"));
+    h.until(|_| {
+        watch.live_covers(&source_root)
+            && watch.live_covers(&destination_root)
+            && watch.live_covers(&fixture.root.join("destination/existing"))
+    });
     let destination = h.views[1].as_ref().unwrap().clone();
     let retained =
         h.ui.window
@@ -218,7 +223,7 @@ fn root_transfer_updates_both_trees(intent: TransferIntent) {
             .is_some_and(|selection| selection.len() == 1)
     });
     h.ui.window.invoke_focus_files();
-    let callbacks = watch.callbacks();
+    let mark = watch.mark();
     ui::key(
         &h.ui.window,
         if intent == TransferIntent::Move {
@@ -249,26 +254,36 @@ fn root_transfer_updates_both_trees(intent: TransferIntent) {
         fixture.root.join("root.txt").exists(),
         intent == TransferIntent::Copy
     );
-    h.until(|h| {
-        let source = h.rows();
-        source.iter().any(|row| row.name == "root.txt") == (intent == TransferIntent::Copy)
-            && !source.iter().any(|row| row.selected)
-            && watch.callbacks() > callbacks
-            && h.ui
-                .window
-                .get_right_rows()
-                .iter()
-                .any(|row| row.name == "root.txt")
+    // The destination pane's own subscription reports the new file; a Move also
+    // empties the source root, which only the source pane's subscription covers.
+    watch.diagnosed(|| {
+        h.until(|h| {
+            let source = h.rows();
+            source.iter().any(|row| row.name == "root.txt") == (intent == TransferIntent::Copy)
+                && !source.iter().any(|row| row.selected)
+                && watch.native_evidence_for(mark, &destination_root)
+                && (intent == TransferIntent::Copy || watch.native_evidence_for(mark, &source_root))
+                && h.ui
+                    .window
+                    .get_right_rows()
+                    .iter()
+                    .any(|row| row.name == "root.txt")
+        })
     });
     // Terminal maintenance may acknowledge own-write events before debounce,
     // correctly suppressing a redundant hint. A later external change proves
     // observation still works after those callbacks and preserves both trees.
-    fs::create_dir(fixture.root.join("destination/after-transfer")).unwrap();
-    h.until(|h| {
-        h.ui.window
-            .get_right_rows()
-            .iter()
-            .any(|row| row.name == "after-transfer")
+    let mark = watch.mark();
+    fs::create_dir(destination_root.join("after-transfer")).unwrap();
+    watch.diagnosed(|| {
+        h.until(|h| {
+            watch.native_evidence_for(mark, &destination_root)
+                && h.ui
+                    .window
+                    .get_right_rows()
+                    .iter()
+                    .any(|row| row.name == "after-transfer")
+        })
     });
     assert_eq!(h.view.as_ref().unwrap().stamp.session, source_session);
     assert!(h.rows().iter().any(|row| row.name == "large"));

@@ -57,6 +57,12 @@ impl TestUi {
         Self::initialize(clock, true)
     }
 
+    /// A fixture whose Slint timers and animations only advance through [`advance`].
+    pub fn with_virtual_clock() -> (Self, Rc<Cell<Duration>>) {
+        let clock = Rc::new(Cell::new(Duration::ZERO));
+        (Self::with_clock(Some(clock.clone())), clock)
+    }
+
     /// Exercise the production initializer without preinstalling widget callbacks.
     pub fn bare() -> Self {
         Self::initialize(None, false)
@@ -93,6 +99,12 @@ impl TestUi {
     }
 
     pub fn resize(&mut self, width: usize, height: usize) {
+        self.set_size(width, height);
+        self.draw();
+    }
+
+    /// Resize the window and its frame buffer without rendering a frame.
+    pub fn set_size(&mut self, width: usize, height: usize) {
         self.width = width;
         self.height = height;
         self.native
@@ -102,7 +114,6 @@ impl TestUi {
         });
         self.pixels
             .resize(width * height, slint::Rgb8Pixel::default());
-        self.draw();
     }
 
     pub fn draw(&mut self) {
@@ -111,6 +122,14 @@ impl TestUi {
         self.native.draw_if_needed(|renderer| {
             renderer.render(&mut self.pixels, self.width);
         });
+    }
+
+    /// Settle timers, change handlers and lazily instantiated repeaters/conditionals as
+    /// a frame does, without software-rendering it. Item geometry is then current for
+    /// geometry-only assertions; [`Self::pixels`] keeps the last rendered frame, and the
+    /// next [`Self::draw`] still repaints everything that changed in between.
+    pub fn layout(&mut self) {
+        settle_layout(self.window.window());
     }
 
     pub fn options_topic(&mut self, topic: i32) {
@@ -129,9 +148,14 @@ impl TestUi {
         if let Some(button) = try_popup_item(&self.window, label, AccessibleRole::Button) {
             click_item(&self.window, button);
         } else {
-            let current = self.window.get_options_topic_index();
-            let current_index = if current >= 3 { current - 1 } else { current };
-            let target_index = if topic >= 3 { topic - 1 } else { topic };
+            // Mirror OptionsTopics.index: the removed topic 2 is shown as General.
+            let index = |topic: i32| match topic {
+                2 => 0,
+                3.. => topic - 1,
+                _ => topic,
+            };
+            let current_index = index(self.window.get_options_topic_index());
+            let target_index = index(topic);
             click_popup(&self.window, "Options topic", AccessibleRole::Combobox);
             for _ in 0..(target_index - current_index).abs() {
                 key(
@@ -152,6 +176,26 @@ impl TestUi {
     pub fn pixel(&self, x: f32, y: f32) -> slint::Rgb8Pixel {
         self.pixels[y as usize * self.width + x as usize]
     }
+}
+
+/// Advance a [`TestUi::with_virtual_clock`] clock and run the timers and animations
+/// that became due, instead of sleeping for Slint's real-time delays.
+pub fn advance(clock: &Cell<Duration>, by: Duration) {
+    clock.set(clock.get() + by);
+    slint::platform::update_timers_and_animations();
+}
+
+/// The layout-only part of a frame: timers, change handlers and lazy item-tree
+/// instantiation (which a software render or an input event would otherwise run).
+pub fn settle_layout(window: &slint::Window) {
+    slint::platform::update_timers_and_animations();
+    WindowInner::from_pub(window).ensure_tree_instantiated();
+}
+
+/// Whether a geometry sweep must render this combination: always for its first
+/// (reference) case, and for every case when render artifacts were requested.
+pub fn render_case(reference: bool) -> bool {
+    reference || std::env::var_os("MIDNIGHT_UI_RENDER_DIR").is_some_and(|dir| !dir.is_empty())
 }
 
 pub fn click_popup(window: &MainWindow, label: &str, role: AccessibleRole) {

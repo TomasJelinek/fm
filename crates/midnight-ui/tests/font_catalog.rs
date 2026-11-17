@@ -33,15 +33,9 @@ impl Model for Catalog {
         &()
     }
 }
-fn key(window: &MainWindow, text: impl Into<SharedString>) {
-    let text = text.into();
-    window
-        .window()
-        .dispatch_event(WindowEvent::KeyPressed { text: text.clone() });
-    window
-        .window()
-        .dispatch_event(WindowEvent::KeyReleased { text });
-}
+// The shared helper sends keys the way the platform does (on Windows, with the
+// Winit-shaped key metadata).
+use ui::key;
 #[test]
 fn installed_fonts_virtualize_and_keep_the_host_selection_authoritative() {
     let native = MinimalSoftwareWindow::new(RepaintBufferType::ReusedBuffer);

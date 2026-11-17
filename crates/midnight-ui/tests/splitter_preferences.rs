@@ -23,7 +23,8 @@ fn saved(commands: &[Command]) -> Vec<UserPreferences> {
 
 #[test]
 fn restored_split_stays_live_during_refresh_and_saves_only_finished_gestures() {
-    let mut test = ui::TestUi::new();
+    // The double click below follows Slint's 500 ms interval on this clock only.
+    let (mut test, clock) = ui::TestUi::with_virtual_clock();
     let p = Rc::new(RefCell::new(Presenter::new("left".into(), "right".into())));
     let sent = Rc::new(RefCell::new(Vec::new()));
     let captured = sent.clone();
@@ -106,6 +107,7 @@ fn restored_split_stays_live_during_refresh_and_saves_only_finished_gestures() {
     assert!((test.window.get_panel_ratio() - persisted).abs() < 0.0001);
 
     let center = ui::root_position(&test.window, "Panel splitter", AccessibleRole::Button);
+    ui::advance(&clock, std::time::Duration::from_millis(600));
     ui::click(&test.window, center.x, center.y);
     ui::click(&test.window, center.x, center.y);
     test.draw();

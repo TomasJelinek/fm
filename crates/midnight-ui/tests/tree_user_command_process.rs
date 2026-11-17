@@ -32,6 +32,13 @@ use std::{
     thread::ThreadId,
 };
 
+/// Compile the probe once per test process: it writes its report to its first
+/// argument, so both tests share one executable instead of two rustc+link runs.
+fn probe_executable(workspace: &Path) -> &'static Path {
+    static PROBE: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+    PROBE.get_or_init(|| probe::helper(workspace, "tree-command-probe.exe"))
+}
+
 #[derive(Debug)]
 struct Receipt {
     pid: u32,
@@ -118,14 +125,7 @@ fn exercise(pane: PaneId, selected: bool) {
     let cwd = fixture.root.join(cwd_name);
     fs::create_dir(&cwd).unwrap();
     let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let executable = probe::helper(
-        &workspace,
-        if selected {
-            "tree-per-item-probe.exe"
-        } else {
-            "tree-once-probe.exe"
-        },
-    );
+    let executable = probe_executable(&workspace).to_owned();
     let service = Arc::new(midnight_platform::LocalFileSystem::new(None));
     let receipts = Arc::new(Mutex::new(Vec::new()));
     let observed = Arc::new(ObserveNative {

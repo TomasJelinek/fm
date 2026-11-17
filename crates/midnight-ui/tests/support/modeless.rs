@@ -19,11 +19,36 @@ impl Platform for Windows {
         Ok(window)
     }
 }
-pub fn draw(window: &MinimalSoftwareWindow, width: u32, height: u32, name: &str) {
+
+/// Size the native window and run what a frame runs before painting (change handlers
+/// and lazy repeater/conditional instantiation) without rendering: enough for geometry
+/// assertions and pointer input.
+pub fn layout(window: &MinimalSoftwareWindow, width: u32, height: u32) {
+    resize(window, width, height);
+    WindowInner::from_pub(window.window()).ensure_tree_instantiated();
+}
+
+fn resize(window: &MinimalSoftwareWindow, width: u32, height: u32) {
     window.set_size(slint::PhysicalSize::new(width, height));
     window.window().dispatch_event(WindowEvent::Resized {
         size: slint::LogicalSize::new(width as f32, height as f32),
     });
+}
+
+/// Size the native window, software-render one full frame and keep it as an optional
+/// artifact.
+pub fn draw(window: &MinimalSoftwareWindow, width: u32, height: u32, name: &str) {
+    render(window, width, height, name);
+}
+
+/// [`draw`] that returns the rendered frame for pixel assertions.
+pub fn render(
+    window: &MinimalSoftwareWindow,
+    width: u32,
+    height: u32,
+    name: &str,
+) -> Vec<slint::Rgb8Pixel> {
+    resize(window, width, height);
     let mut pixels = vec![slint::Rgb8Pixel::default(); width as usize * height as usize];
     window.window().request_redraw();
     window.draw_if_needed(|renderer| {
@@ -35,6 +60,24 @@ pub fn draw(window: &MinimalSoftwareWindow, width: u32, height: u32, name: &str)
         height as usize,
         &format!("{name}-{width}x{height}"),
     );
+    pixels
+}
+
+/// Geometry sweeps render their reference case (and every case when artifacts were
+/// requested); the other cases only lay out.
+#[allow(dead_code)] // Used by the geometry sweeps only.
+pub fn draw_or_layout(
+    window: &MinimalSoftwareWindow,
+    width: u32,
+    height: u32,
+    name: &str,
+    reference: bool,
+) {
+    if reference || bitmap::enabled(&format!("{name}-{width}x{height}")) {
+        draw(window, width, height, name);
+    } else {
+        layout(window, width, height);
+    }
 }
 fn find(item: ItemRc, role: AccessibleRole, label: &str) -> Option<ItemRc> {
     if item.accessible_role() == role

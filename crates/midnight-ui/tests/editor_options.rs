@@ -258,8 +258,14 @@ fn plus_opens_custom_editor_fields_and_keeps_incomplete_rule_out_of_preferences(
         .is_visible()
     );
     assert!(ui::popup_item(&h.window, "Editor argument 1", AccessibleRole::ListItem).is_visible());
-    view.invoke_save();
+    // Options OK validates the unfinished editor draft and stays on its topic.
+    ui::click_popup(&h.window, "OK", AccessibleRole::Button);
+    h.draw();
     assert!(view.get_error().contains("Choose an editor executable"));
+    assert!(
+        h.window.get_options_open(),
+        "an invalid draft keeps Options open"
+    );
     assert!(
         commands
             .borrow()
@@ -274,10 +280,9 @@ fn plus_opens_custom_editor_fields_and_keeps_incomplete_rule_out_of_preferences(
         .as_ref()
         .into();
     view.invoke_edit(form);
-    view.invoke_save();
-    assert!(view.get_error().is_empty());
     ui::click_popup(&h.window, "OK", AccessibleRole::Button);
     h.draw();
+    assert!(view.get_error().is_empty());
     let saved = commands
         .borrow()
         .iter()

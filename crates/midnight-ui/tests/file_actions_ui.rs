@@ -557,25 +557,30 @@ fn copy_progress_can_take_focus_from_a_fallback_menu_without_reentrant_borrow() 
         .filter(|window| window.window().is_visible())
         .cloned()
         .collect();
-    assert_eq!(children.len(), 1, "Jobs must open its own visible window");
-    let jobs = &children[0];
-    assert!(!Rc::ptr_eq(jobs, &h.ui.native));
-    // Jobs uses a separate native window. MinimalSoftwareWindow does not emit
-    // the OS activation handoff, unlike the former owner popup. Keep the
+    assert_eq!(
+        children.len(),
+        1,
+        "the copy must open its own visible progress window"
+    );
+    let progress = &children[0];
+    assert!(!Rc::ptr_eq(progress, &h.ui.native));
+    // The progress window is a separate native window. MinimalSoftwareWindow does
+    // not emit the OS activation handoff, unlike the former owner popup. Keep the
     // presenter borrowed while focus leaves to verify dismissal stays deferred.
     {
         let _presenter = h.presenter.borrow();
         h.ui.window
             .window()
             .dispatch_event(WindowEvent::WindowActiveChanged(false));
-        jobs.window()
+        progress
+            .window()
             .dispatch_event(WindowEvent::WindowActiveChanged(true));
         assert!(!h.ui.window.get_file_menu_token().is_empty());
     }
     h.draw();
     assert!(!ui::has_popup(&h.ui.window));
     assert!(h.ui.window.get_file_menu_token().is_empty());
-    assert!(jobs.window().is_visible());
+    assert!(progress.window().is_visible());
     assert!(
         h.commands
             .borrow()

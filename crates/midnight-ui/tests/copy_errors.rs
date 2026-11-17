@@ -116,15 +116,24 @@ fn copy_error_retry_preserves_refused_token_and_jobs_resolve_restores_deferred_e
             .contains("\n\nDestination\ndestination/資料.txt")
     );
     h.ui.item("Error", AccessibleRole::Text);
+    // The job's progress window stays visible beside its error decision.
+    assert_eq!(h.ui.visible_count(), 2);
     h.ui.click_owner(5.0, 5.0);
-    assert!(
-        h.ui.visible_count() > 0,
+    assert_eq!(
+        h.ui.visible_count(),
+        2,
         "outside click cannot hide an error"
     );
+    h.ui.item("Error", AccessibleRole::Text);
     h.refuse_decision.set(true);
     h.ui.click("Retry");
     assert_eq!(h.ui.window.get_copy_token(), "copy-error:1:7");
-    assert!(h.ui.visible_count() > 0);
+    assert_eq!(
+        h.ui.visible_count(),
+        2,
+        "a refused decision keeps the error open"
+    );
+    h.ui.item("Error", AccessibleRole::Text);
     h.ui.click("Decide later");
     assert_eq!(
         h.ui.visible_count(),
@@ -228,20 +237,27 @@ fn successful_auto_job_waits_for_other_active_jobs_and_does_not_hide_a_waiting_e
     let mut h = Harness::new();
     h.start(1);
     h.start(2);
-    h.progress(1, TransferIntent::Copy, CopyOperationState::Completed);
-    assert_eq!(h.ui.visible_count(), 1);
-    assert!(!h.ui.window.get_operations_visible());
+    assert_eq!(h.ui.visible_count(), 2, "each automatic job has its window");
+    // Job 2 waits for an error decision while job 1 is still running.
     h.failure(2, 1, false, false);
     h.ui.item("Cancel job", AccessibleRole::Button);
-    h.ui.window
-        .invoke_decide_copy("copy-error:2:1".into(), 8, "".into());
+    let waiting = h.ui.visible_count();
+    h.progress(1, TransferIntent::Copy, CopyOperationState::Completed);
+    assert!(!h.ui.window.get_operations_visible());
+    assert_eq!(
+        h.ui.visible_count(),
+        waiting - 1,
+        "only the successful job's window closes"
+    );
+    h.ui.item("Cancel job", AccessibleRole::Button);
+    // Invalid choices are refused by the presenter (copy_errors_tests); the
+    // waiting decision dispatched nothing on its own.
     assert!(
         !h.commands
             .borrow()
             .iter()
             .any(|command| matches!(command, Command::DecideCopy(_)))
     );
-    assert!(h.ui.visible_count() > 0);
     h.progress(2, TransferIntent::Copy, CopyOperationState::Failed);
     assert!(!h.ui.window.get_operations_visible());
     assert_eq!(h.ui.visible_count(), 1);

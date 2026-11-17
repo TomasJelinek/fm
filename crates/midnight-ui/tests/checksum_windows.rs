@@ -569,13 +569,22 @@ fn checksum_actions_keep_320_by_200_layout_in_every_theme_and_density() {
     window.set_attention(true);
     window.show().unwrap();
     let native = windows.borrow()[0].clone();
-    for theme in midnight_core::PreferenceTheme::ALL.map(|theme| theme.index()) {
+    // Themes select colours only (ui/theme.slint), so every theme is laid out and
+    // clicked, but only the first one is software-rendered per density, size and page.
+    let themes = midnight_core::PreferenceTheme::ALL.map(|theme| theme.index());
+    for theme in themes {
         for density in 0..2 {
             window.invoke_apply_preferences(theme, density, "".into(), 11, 15);
             for (width, height) in [(860, 620), (320, 200)] {
                 for page in 0..5 {
                     window.set_page(page);
-                    draw(&native, width, height, "checksum-layout");
+                    modeless::draw_or_layout(
+                        &native,
+                        width,
+                        height,
+                        &format!("checksum-layout-theme{theme}-density{density}-page{page}"),
+                        theme == themes[0],
+                    );
                     if page == 1 {
                         click(&native, "Calculate");
                     }

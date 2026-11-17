@@ -69,6 +69,19 @@ fn latest_startup_notice_waits_for_visible_owner_and_does_not_reopen_after_close
     }
     assert_eq!(windows.borrow().len(), 1);
     assert!(!main.get_dialog_input_blocked());
+    // An explicit refresh while the owner is hidden must keep the notice pending.
+    main.invoke_refresh_information_windows();
+    slint::platform::update_timers_and_animations();
+    assert!(
+        main.global::<NoticePresentation>().get_token().is_empty(),
+        "a hidden owner cannot present the startup notice"
+    );
+    assert!(!main.get_embedded_modal_open());
+    assert!(
+        WindowInner::from_pub(main.window())
+            .active_popups()
+            .is_empty()
+    );
     main.show().unwrap();
     main.invoke_refresh_information_windows();
     assert_notice_open(&main);

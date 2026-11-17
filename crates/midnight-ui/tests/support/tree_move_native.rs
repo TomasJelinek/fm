@@ -69,14 +69,24 @@ impl Fixture {
 impl Drop for Fixture {
     fn drop(&mut self) {
         // Both exact boundaries were fixed before creating this unique directory.
-        assert_eq!(self.root.parent(), Some(self.parent.as_path()));
-        assert!(
-            self.root
+        let owned = self.root.parent() == Some(self.parent.as_path())
+            && self
+                .root
                 .file_name()
-                .unwrap()
-                .to_string_lossy()
-                .starts_with("tree-move-")
-        );
+                .is_some_and(|name| name.to_string_lossy().starts_with("tree-move-"));
+        if std::thread::panicking() {
+            // A failed test unwinds through this drop, often after a timed-out Engine
+            // shutdown that may still hold a handle. A second panic would abort the
+            // whole test binary, so removal is best effort.
+            if owned && let Err(error) = fs::remove_dir_all(&self.root) {
+                eprintln!(
+                    "could not remove native tree fixture {}: {error}",
+                    self.root.display()
+                );
+            }
+            return;
+        }
+        assert!(owned, "unexpected fixture root {}", self.root.display());
         fs::remove_dir_all(&self.root).unwrap();
     }
 }

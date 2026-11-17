@@ -121,9 +121,19 @@ fn unicode_path_editing_preserves_scripts_emoji_and_combining_sequences() {
     let child = "資料-קובץ-ملف-📁-e\u{301}";
     let expected_child = path.join(child);
     let mut p = Presenter::new(path.clone(), "right".into());
+    let accepted = RefCell::new(None);
     assert!(
         p.navigate_text(PaneId::Left, path.to_str().unwrap(), &|command| {
-            assert!(matches!(command, Command::Navigate { path: actual, .. } if actual == path));
+            let Command::Navigate {
+                path: actual,
+                navigation,
+                ..
+            } = command
+            else {
+                panic!("text navigation sends Navigate")
+            };
+            assert_eq!(actual, path);
+            *accepted.borrow_mut() = Some(navigation);
             true
         })
     );
@@ -133,7 +143,8 @@ fn unicode_path_editing_preserves_scripts_emoji_and_combining_sequences() {
         );
         false
     }));
-    finish(&mut p, PaneId::Left, NavigationId(1), vec![]);
+    finish(&mut p, PaneId::Left, accepted.into_inner().unwrap(), vec![]);
+    assert!(!p.panes[0].loading, "the accepted navigation committed");
     assert_eq!(p.panes[0].display_path(), path);
 }
 #[test]
@@ -279,8 +290,15 @@ fn typed_dot_components_and_parent_follow_a_consistent_logical_path() {
         }));
     }
     let mut p = Presenter::new(alice, "right".into());
-    assert!(p.navigate_text(PaneId::Left, "..", &|_| true));
-    finish(&mut p, PaneId::Left, NavigationId(1), vec![]);
+    let accepted = RefCell::new(None);
+    assert!(p.navigate_text(PaneId::Left, "..", &|c| {
+        if let Command::Navigate { navigation, .. } = c {
+            *accepted.borrow_mut() = Some(navigation);
+        }
+        true
+    }));
+    finish(&mut p, PaneId::Left, accepted.into_inner().unwrap(), vec![]);
+    assert!(!p.panes[0].loading, "the parent listing committed");
     assert_eq!(p.panes[0].path, users);
     assert!(!p.up(PaneId::Left, &|c| {
         assert!(matches!(c, Command::Navigate { path, .. } if path == root));

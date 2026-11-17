@@ -619,15 +619,43 @@ fn drive_menu_uses_available_height_and_scrolls_only_for_overflow() {
         let inner = WindowInner::from_pub(ui.window.window());
         let popups = inner.active_popups();
         let popup = popups.iter().last().expect("location menu opens");
-        let geometry = ItemRc::new_root(popup.component.clone()).geometry();
+        let root = ItemRc::new_root(popup.component.clone());
+        let geometry = root.geometry();
         assert!(
             geometry.size.height > 360.0,
-            "the menu is no longer capped at360pixels"
+            "the menu is no longer capped at 360 pixels"
         );
         assert!(
             geometry.size.height < ui.height as f32,
             "overflow stays within the window"
         );
+        fn first_flickable(item: ItemRc) -> Option<ItemRc> {
+            if item.downcast::<i_slint_core::items::Flickable>().is_some() {
+                return Some(item);
+            }
+            let mut child = item.first_child();
+            while let Some(item) = child {
+                child = item.next_sibling();
+                if let Some(found) = first_flickable(item) {
+                    return Some(found);
+                }
+            }
+            None
+        }
+        let viewport = first_flickable(root).expect("the location list scrolls in a Flickable");
+        let content = viewport
+            .downcast::<i_slint_core::items::Flickable>()
+            .unwrap()
+            .as_pin_ref()
+            .content_height()
+            .get();
+        let visible = viewport.geometry().height();
+        assert_eq!(
+            content > visible + 0.5,
+            count == 100,
+            "only an overflowing list scrolls: {count} locations, content {content}, viewport {visible}"
+        );
+        drop(viewport);
         drop(popups);
         let picked = Rc::new(RefCell::new(String::new()));
         let result = picked.clone();

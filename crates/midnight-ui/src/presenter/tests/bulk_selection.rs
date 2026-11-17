@@ -71,12 +71,16 @@ fn bulk_work_is_queued_without_changing_cursor_and_stale_snapshots_are_retired()
     assert!(p.bulk_selection(PaneId::Left, SelectionOperation::Clear, &send));
     let clear = sent_selection(&commands);
     p.apply(ack(&clear, p.panes[0].index.clone(), vec![0], false));
+    drop(p.take_retired());
     p.apply(ack(&all, p.panes[0].index.clone(), vec![7], false));
     assert!(
         p.panes[0].selected.is_empty(),
         "old completion cannot undo a clear"
     );
-    assert!(!p.take_retired().is_empty());
+    assert!(
+        !p.take_retired().is_empty(),
+        "the rejected stale snapshot is retired off the UI thread"
+    );
 }
 
 #[test]

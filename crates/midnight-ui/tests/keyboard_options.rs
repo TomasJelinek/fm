@@ -71,7 +71,8 @@ fn native_help(
 
 #[test]
 fn first_search_character_retires_hovered_command_tooltip_before_removing_rows() {
-    let mut h = Harness::new(&[]);
+    let (test, clock) = ui::TestUi::with_virtual_clock();
+    let mut h = Harness::with_ui(&[], Vec::new(), test);
     h.open_keyboard();
     let window = h.ui.window.clone_strong();
     let view = window.global::<KeyboardEditorView>();
@@ -94,8 +95,8 @@ fn first_search_character_retires_hovered_command_tooltip_before_removing_rows()
     window
         .window()
         .dispatch_event(slint::platform::WindowEvent::PointerMoved { position: hovered });
-    std::thread::sleep(std::time::Duration::from_millis(650));
-    slint::platform::update_timers_and_animations();
+    // Slint shows a tooltip after 500 ms of hover.
+    ui::advance(&clock, std::time::Duration::from_millis(650));
     h.draw();
     let tooltip_count = || {
         WindowInner::from_pub(window.window())
@@ -702,13 +703,16 @@ fn shortcut_capture_keeps_physical_digits_and_tab_escape_exit_without_dispatch()
 
 #[test]
 fn settings_navigation_and_footer_fit_both_densities_and_large_fonts() {
-    let mut h = Harness::new(&[]);
+    let (test, clock) = ui::TestUi::with_virtual_clock();
+    let mut h = Harness::with_ui(&[], Vec::new(), test);
     h.open_keyboard();
     h.ui.resize(1040, 720);
     for (theme, density, font) in [(1, 0, 12), (2, 0, 12), (1, 1, 14), (2, 1, 32)] {
         h.ui.window.invoke_apply_preferences(theme, density);
         h.ui.window.invoke_apply_fonts("".into(), font, font);
-        std::thread::sleep(std::time::Duration::from_millis(220));
+        // Let Fluent's 150-200 ms colour animations settle (and keep the topic
+        // clicks below single clicks).
+        ui::advance(&clock, std::time::Duration::from_millis(600));
         for _ in 0..2 {
             slint::platform::update_timers_and_animations();
             h.ui.draw();
@@ -1019,7 +1023,7 @@ fn popup_hot_paths_reject_replaced_choices_and_preserve_volume_binding_priority(
 }
 
 #[test]
-fn persisted_file_shortcut_replaces_old_alias_and_preserves_native_text_copy() {
+fn persisted_file_shortcut_replaces_old_alias_and_leaves_editor_clipboard_chords_to_the_editor() {
     let h = Harness::new(&[("files.copy", &["Ctrl+Alt+Y"])]);
     ui::chord(&h.ui.window, &[Key::Control], "c");
     assert!(
@@ -1195,6 +1199,11 @@ fn keyboard_options_validate_apply_disable_and_restore_effective_bindings() {
     let mut h = Harness::new(&[]);
     h.open_keyboard();
     h.select_action("files.copy");
+    let window = h.ui.window.clone_strong();
+    let view = window.global::<KeyboardEditorView>();
+    let aliases = || view.get_aliases().iter().collect::<Vec<_>>();
+    let defaults = aliases();
+    assert!(!defaults.is_empty(), "the command has default shortcuts");
     h.commands.borrow_mut().clear();
     h.edit("Ctrl+V");
     assert!(h.ui.window.global::<KeyboardEditorView>().get_can_assign());
@@ -1227,16 +1236,80 @@ fn keyboard_options_validate_apply_disable_and_restore_effective_bindings() {
             .iter()
             .all(|command| !matches!(command, Command::SavePreferences { .. }))
     );
-    for label in [
-        "Remove",
-        "Remove",
-        "Restore command",
-        "Restore all defaults",
-        "Reset all shortcuts",
-    ] {
+    let can_assign = || view.get_can_assign();
+    assert!(!can_assign(), "assigning consumes the captured shortcut");
+    let assigned = aliases().len();
+    assert_eq!(assigned, defaults.len() + 1);
+    let click = |h: &mut Harness, label: &str| {
         ui::click_popup(&h.ui.window, label, AccessibleRole::Button);
         h.draw();
-    }
+    };
+    let confirmation =
+        || ui::try_popup_item(&window, "Reset all shortcuts", AccessibleRole::Button);
+    click(&mut h, "Remove");
+    assert_eq!(aliases().len(), assigned - 1, "Remove drops one alias");
+    assert!(!can_assign(), "Remove leaves nothing to assign");
+    click(&mut h, "Remove");
+    assert_eq!(aliases().len(), assigned - 2, "Remove drops one alias");
+    assert!(!can_assign(), "Remove leaves nothing to assign");
+    click(&mut h, "Restore command");
+    assert_eq!(
+        aliases(),
+        defaults,
+        "Restore command brings back its defaults"
+    );
+    assert!(!can_assign(), "Restore command leaves nothing to assign");
+    // Customize two commands again, so that only a reset of every command can
+    // bring back both default maps.
+    click(&mut h, "Remove");
+    assert_eq!(
+        aliases(),
+        defaults[1..].to_vec(),
+        "Remove drops the selected (first) alias"
+    );
+    h.select_action("files.rename");
+    let rename_defaults = aliases();
+    assert!(!rename_defaults.is_empty(), "Rename has a default shortcut");
+    click(&mut h, "Remove");
+    let rename_custom = aliases();
+    assert_eq!(rename_custom.len(), rename_defaults.len() - 1);
+    click(&mut h, "Restore all defaults");
+    assert!(
+        confirmation().is_some(),
+        "restoring every default asks for confirmation first"
+    );
+    assert_eq!(
+        aliases(),
+        rename_custom,
+        "nothing changes before confirming"
+    );
+    assert!(
+        !can_assign(),
+        "asking for confirmation leaves nothing to assign"
+    );
+    click(&mut h, "Reset all shortcuts");
+    assert!(
+        confirmation().is_none(),
+        "the confirmation closes after the reset"
+    );
+    assert_eq!(aliases(), rename_defaults, "the reset restores Rename");
+    assert!(!can_assign(), "the reset leaves nothing to assign");
+    h.select_action("files.copy");
+    assert_eq!(aliases(), defaults, "the reset restores Copy as well");
+    // The editor accepts a new capture after the reset, and the custom chord is
+    // free again.
+    h.edit("Ctrl+Alt+Y");
+    assert!(
+        can_assign(),
+        "Ctrl+Alt+Y is unassigned again after the reset"
+    );
+    assert!(
+        h.commands
+            .borrow()
+            .iter()
+            .all(|command| !matches!(command, Command::SavePreferences { .. })),
+        "editing stays a draft until Options OK"
+    );
     ui::click_popup(&h.ui.window, "Cancel", AccessibleRole::Button);
     h.ui.window.invoke_focus_files();
     h.commands.borrow_mut().clear();

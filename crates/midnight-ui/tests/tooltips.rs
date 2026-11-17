@@ -619,8 +619,9 @@ fn folder_tab_tooltip_shows_only_the_complete_native_or_archive_path() {
         (r"C:\Temp", false),
         (r"D:\文档\bundle.zip\inner.7z\folder", false),
         (
+            // A synthetic long profile path of the same shape and length class.
             concat!(
-                r"C:\Users\tjelinek\OneDrive - NVIDIA Corporation\Documents\",
+                r"C:\Users\example.user\OneDrive - Example Organization Ltd\Documents\",
                 r"Midnight Explorer\Design specifications\Panel navigation and keyboard shortcuts"
             ),
             true,

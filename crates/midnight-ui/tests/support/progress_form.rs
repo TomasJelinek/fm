@@ -47,11 +47,17 @@ impl TestUi {
             &self.native,
             self.width as u32,
             self.height as u32,
-            "jobs-form",
+            "job-progress-form",
         );
     }
+    /// Keep this frame as an artifact; without a render directory only lay it out.
     pub fn snapshot(&self, name: &str) {
-        modeless::draw(&self.native, self.width as u32, self.height as u32, name);
+        let (width, height) = (self.width as u32, self.height as u32);
+        if modeless::bitmap::enabled(&format!("{name}-{width}x{height}")) {
+            modeless::draw(&self.native, width, height, name);
+        } else {
+            modeless::layout(&self.native, width, height);
+        }
     }
 }
 fn find(item: ItemRc, role: AccessibleRole, label: &str) -> Option<ItemRc> {

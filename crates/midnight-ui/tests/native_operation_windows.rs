@@ -7,7 +7,9 @@ mod owned_commands;
 mod ui;
 
 use i_slint_core::{
-    accessibility::AccessibleStringProperty, item_tree::ItemRc, items::AccessibleRole,
+    accessibility::AccessibleStringProperty,
+    item_tree::{ItemRc, ParentItemTraversalMode},
+    items::{AccessibleRole, Flickable},
     window::WindowInner,
 };
 use midnight_core::*;
@@ -36,11 +38,15 @@ struct Harness {
 
 impl Harness {
     fn new() -> Self {
+        Self::with_root(std::env::temp_dir().join("native-operation-targets 文档"))
+    }
+
+    /// Panes at `root/left` and `root/right`; no filesystem access happens.
+    fn with_root(root: PathBuf) -> Self {
         let windows = Rc::new(RefCell::new(Vec::new()));
         slint::platform::set_platform(Box::new(modeless::Windows(windows.clone()))).unwrap();
         let main = MainWindow::new().unwrap();
         midnight_ui::install_file_keys(&main);
-        let root = std::env::temp_dir().join("native-operation-targets 文档");
         let paths = [root.join("left"), root.join("right")];
         let state = Rc::new(RefCell::new(Presenter::new(
             paths[0].clone(),
@@ -523,6 +529,105 @@ fn native_operation_controls_remain_reachable_at_320_by_200_across_appearance_pr
     }
 }
 
+fn bounds(item: &ItemRc) -> (f32, f32, f32, f32) {
+    let rect = item.geometry();
+    let origin = item.map_to_native_window(rect.origin);
+    (
+        origin.x,
+        origin.y,
+        origin.x + rect.width(),
+        origin.y + rect.height(),
+    )
+}
+
+/// The scroll viewport that shows `item`: its nearest `Flickable` ancestor.
+fn viewport(item: &ItemRc) -> ItemRc {
+    let mut parent = item.parent_item(ParentItemTraversalMode::StopAtPopups);
+    while let Some(ancestor) = parent {
+        if ancestor.downcast::<Flickable>().is_some() {
+            return ancestor;
+        }
+        parent = ancestor.parent_item(ParentItemTraversalMode::StopAtPopups);
+    }
+    panic!("the item has no scroll viewport");
+}
+
+#[test]
+fn embedded_copy_draft_keeps_the_source_box_above_a_single_line_destination() {
+    let h = Harness::new();
+    let child = h.transfer(PaneId::Left, false);
+    let body = h.main.global::<OperationPresentation>().get_body();
+    assert!(
+        body.contains("source 文档.txt"),
+        "the draft describes its captured source: {body}"
+    );
+    for (density, font) in [(0, 13), (1, 15), (0, 22)] {
+        h.main.invoke_apply_fonts("".into(), font, font);
+        h.main.invoke_apply_preferences(3, density);
+        modeless::draw(
+            &child,
+            720,
+            520,
+            &format!("embedded-copy-source-{density}-{font}"),
+        );
+        let source = item(&child, &body, AccessibleRole::Text);
+        let label = item(&child, "Destination folder", AccessibleRole::Text);
+        let (_, box_top, _, box_bottom) = bounds(&viewport(&source));
+        let (_, label_top, ..) = bounds(&label);
+        assert!(source.is_visible() && label.is_visible());
+        assert!(
+            box_bottom > box_top && box_bottom <= label_top + 0.5,
+            "the source box must sit above the destination: box={box_top}..{box_bottom}, label={label_top}, font={font}, density={density}"
+        );
+        let editor = item(&child, "Destination folder", AccessibleRole::TextInput);
+        assert!(
+            editor.geometry().height() < font as f32 * 3.0,
+            "the destination stays single-line: font={font}, density={density}"
+        );
+    }
+    h.main.invoke_apply_fonts("".into(), 13, 15);
+    h.main.invoke_apply_preferences(3, 0);
+    modeless::draw(&child, 320, 200, "embedded-copy-source-compact");
+    for (label, role) in [
+        ("Destination folder", AccessibleRole::TextInput),
+        ("Cancel", AccessibleRole::Button),
+        ("Copy", AccessibleRole::Button),
+    ] {
+        assert_visible(&child, label, role);
+    }
+    modeless::click(&child, "Cancel");
+    h.assert_closed(&child);
+}
+
+/// Window widths below the dialog's desired 540 px narrow the dialog, so every wrap
+/// point of a multi-word source sweeps through any width mismatch between how the
+/// summary is measured and how it is drawn, independent of the font in use.
+#[test]
+#[ignore = "DEFERRED-CROSS F8: OperationDialog measures its summary 14 px wider than DialogText draws it, so a source that wraps inside that band loses its last line; enable with the fix"]
+fn embedded_copy_draft_shows_every_wrapped_source_completely() {
+    let h = Harness::with_root(
+        std::env::temp_dir().join("copy draft source with several short words that wrap 文档"),
+    );
+    let child = h.transfer(PaneId::Left, false);
+    let body = h.main.global::<OperationPresentation>().get_body();
+    h.main.invoke_apply_fonts("".into(), 13, 15);
+    h.main.invoke_apply_preferences(3, 0);
+    let mut clipped = Vec::new();
+    for width in (320..=600).step_by(2) {
+        modeless::layout(&child, width, 520);
+        let source = item(&child, &body, AccessibleRole::Text);
+        let (.., text_bottom) = bounds(&source);
+        let (.., box_bottom) = bounds(&viewport(&source));
+        if text_bottom > box_bottom + 0.5 {
+            clipped.push((width, text_bottom - box_bottom));
+        }
+    }
+    assert!(
+        clipped.is_empty(),
+        "the source summary hides its last line at these window widths (width, hidden px): {clipped:?}"
+    );
+}
+
 #[test]
 fn native_operation_rejected_close_retains_modal_child_and_never_turns_into_confirmation() {
     let h = Harness::new();
@@ -544,15 +649,15 @@ fn native_operation_rejected_close_retains_modal_child_and_never_turns_into_conf
     h.accepting.set(true);
     key(&child, Key::Return);
     assert!(
-        h.commands
-            .borrow()
-            .iter()
-            .all(|command| !matches!(command, Command::ConfirmOperation { .. }))
+        h.commands.borrow().is_empty(),
+        "Return neither confirms nor silently retries the refused cancellation"
     );
-    if h.main.global::<OperationPresentation>().get_active() {
-        // A second explicit close retries the same cancellation identity.
-        child.window().dispatch_event(WindowEvent::CloseRequested);
-    }
+    assert!(
+        h.main.global::<OperationPresentation>().get_active(),
+        "the refused close keeps the form until an explicit retry"
+    );
+    // A second explicit close retries the same cancellation identity.
+    child.window().dispatch_event(WindowEvent::CloseRequested);
     assert!(
         matches!(h.commands.borrow().as_slice(), [Command::CancelOperation(actual)] if *actual == id)
     );

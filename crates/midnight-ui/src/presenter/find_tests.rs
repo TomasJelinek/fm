@@ -1,5 +1,6 @@
 use super::*;
 use crate::presenter::find::FindForm;
+use crate::presenter::tests::assert_late_event_is_only_retired;
 
 fn presenter() -> Presenter {
     Presenter::new(std::env::temp_dir(), std::env::temp_dir())
@@ -16,9 +17,13 @@ fn admission_and_close_preserve_state_when_queue_is_full() {
     assert_eq!(p.finds.sessions[&id].generation, FindGeneration(1));
     assert!(!p.close_find(id, &|_| false));
     assert!(p.finds.sessions.contains_key(&id));
+    drop(p.take_retired());
     assert!(p.close_find(id, &|_| true));
     assert!(!p.finds.sessions.contains_key(&id));
-    assert!(!p.take_retired().is_empty());
+    assert!(
+        !p.take_retired().is_empty(),
+        "the admitted close retires the session off the UI thread"
+    );
     assert!(p.create_find(PaneId::Left).unwrap().0 > id.0);
 }
 
@@ -71,11 +76,13 @@ fn superseded_generations_and_closed_windows_cannot_receive_results() {
         "a stale tail must not force a full Find-window refresh"
     );
     p.close_find(id, &|_| true);
-    p.apply(Event::Find(Box::new(FindEvent {
-        session: id,
-        generation: FindGeneration(2),
-        update: FindUpdate::Started,
-    })));
+    assert_late_event_is_only_retired(&mut p, |p| {
+        p.apply(Event::Find(Box::new(FindEvent {
+            session: id,
+            generation: FindGeneration(2),
+            update: FindUpdate::Started,
+        })))
+    });
     assert!(p.finds.sessions.is_empty());
 }
 

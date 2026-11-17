@@ -45,7 +45,9 @@ fn footer_actions_aligned(test: &ui::TestUi, action: &str, dismissal: &str) {
 
 // Tab through the real native focus chain. At the minimum size some body
 // controls can be clipped; only send Space when its checkbox is in view.
-fn toggle_reachable_checkbox_by_keyboard(test: &mut ui::TestUi, label: &str) -> bool {
+// Returns `None` when Tab never focuses the checkbox, else whether Space toggled it.
+fn toggle_reachable_checkbox_by_keyboard(test: &mut ui::TestUi, label: &str) -> Option<bool> {
+    let mut reached = false;
     use i_slint_core::{item_tree::ParentItemTraversalMode, items::Flickable, window::WindowInner};
     for _ in 0..24 {
         ui::key(&test.window, Key::Tab);
@@ -64,6 +66,7 @@ fn toggle_reachable_checkbox_by_keyboard(test: &mut ui::TestUi, label: &str) -> 
         if !matches {
             continue;
         }
+        reached = true;
         let bounds = checkbox.geometry();
         let origin = checkbox.map_to_native_window(bounds.origin);
         let mut visible = checkbox.is_visible()
@@ -85,10 +88,10 @@ fn toggle_reachable_checkbox_by_keyboard(test: &mut ui::TestUi, label: &str) -> 
         if visible {
             ui::key(&test.window, Key::Space);
             settle(test);
-            return true;
+            return Some(true);
         }
     }
-    false
+    reached.then_some(false)
 }
 
 #[test]
@@ -122,7 +125,8 @@ fn comparison_opened_at_minimum_size_keeps_keyboard_draft_and_escape() {
         ..Default::default()
     });
     settle(&mut test);
-    let toggled = toggle_reachable_checkbox_by_keyboard(&mut test, "Compare file size");
+    let toggled = toggle_reachable_checkbox_by_keyboard(&mut test, "Compare file size")
+        .expect("Tab must reach the Compare file size checkbox at 320x200");
     assert!(
         submissions.borrow().is_empty(),
         "Tab and Space never submit a comparison"

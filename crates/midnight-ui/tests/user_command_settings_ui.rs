@@ -15,6 +15,8 @@ use std::{cell::RefCell, rc::Rc, sync::Arc, time::Duration};
 
 struct Harness {
     ui: ui::TestUi,
+    /// Validation, edge-scroll and wheel-scroll timers follow this clock only.
+    clock: Rc<std::cell::Cell<Duration>>,
     state: Rc<RefCell<Presenter>>,
     commands: Rc<RefCell<Vec<Command>>>,
 }
@@ -23,7 +25,7 @@ impl Harness {
         Self::with_count(2)
     }
     fn with_count(count: usize) -> Self {
-        let ui = ui::TestUi::new();
+        let (ui, clock) = ui::TestUi::with_virtual_clock();
         let root = std::env::temp_dir().join("command settings UI 文档");
         let state = Rc::new(RefCell::new(Presenter::new(root.clone(), root.clone())));
         let commands = Rc::new(RefCell::new(Vec::new()));
@@ -87,11 +89,17 @@ impl Harness {
         commands.borrow_mut().clear();
         let mut harness = Self {
             ui,
+            clock,
             state,
             commands,
         };
         harness.ui.draw();
         harness
+    }
+    /// Advance the virtual clock past due Slint timers and settle the frame.
+    fn advance(&mut self, millis: u64) {
+        ui::advance(&self.clock, Duration::from_millis(millis));
+        self.ui.draw();
     }
     fn open(&mut self) {
         self.ui.window.invoke_show_options();
@@ -109,11 +117,10 @@ impl Harness {
             .accessible_action(&AccessibilityAction::SetValue(value.into()));
         slint::platform::update_timers_and_animations();
     }
+    /// Let the 120 ms `validate` timer of ui/user-command-options.slint fire.
     fn settle(&mut self) {
         slint::platform::update_timers_and_animations();
-        std::thread::sleep(Duration::from_millis(140));
-        slint::platform::update_timers_and_animations();
-        self.ui.draw();
+        self.advance(140);
     }
     fn latest(&self) -> UserPreferences {
         self.commands
@@ -636,12 +643,20 @@ fn terminal_variable_preview_uses_unsaved_literal_script_and_does_not_save_or_ex
 fn editor_page_and_done_remain_accessible_in_narrow_layout_and_every_theme_density() {
     let mut h = Harness::new();
     h.open();
-    for theme in midnight_core::PreferenceTheme::ALL.map(|theme| theme.index()) {
+    // Themes select colours only (ui/theme.slint), so every theme is laid out and
+    // checked, but only the first one is software-rendered per density and size.
+    let themes = midnight_core::PreferenceTheme::ALL.map(|theme| theme.index());
+    for theme in themes {
+        let render = ui::render_case(theme == themes[0]);
         for density in 0..2 {
             h.ui.window.invoke_apply_preferences(theme, density);
             for (width, height) in [(1340, 820), (720, 500), (320, 200)] {
-                h.ui.resize(width, height);
-                h.ui.draw();
+                h.ui.set_size(width, height);
+                if render {
+                    h.ui.draw();
+                } else {
+                    h.ui.layout();
+                }
                 bitmap::snapshot(
                     &h.ui.pixels,
                     width,

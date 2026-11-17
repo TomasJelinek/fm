@@ -212,7 +212,9 @@ fn installed_navigation_shows_loading_with_parent_rows_refresh_rows_and_pending_
 
 #[test]
 fn denied_folder_open_restores_cursor_and_exact_viewport_after_layout_settles() {
-    let mut test = ui::TestUi::new();
+    // The double click below follows Slint's 500 ms interval on this clock only.
+    let clock = Rc::new(Cell::new(Duration::ZERO));
+    let mut test = ui::TestUi::with_clock(Some(clock.clone()));
     let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let presenter = Rc::new(RefCell::new(Presenter::new(root.clone(), root.clone())));
     presenter
@@ -285,6 +287,7 @@ fn denied_folder_open_restores_cursor_and_exact_viewport_after_layout_settles() 
                 "folder-080",
                 i_slint_core::items::AccessibleRole::ListItem,
             );
+            ui::advance(&clock, Duration::from_millis(600));
             ui::click(&test.window, point.x, point.y);
             ui::click(&test.window, point.x, point.y);
         } else {

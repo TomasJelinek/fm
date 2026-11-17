@@ -78,12 +78,6 @@ fn receipt(request: &TreeDeleteRequest, drops: Arc<AtomicUsize>) -> Event {
         }),
     }))
 }
-fn reclaim(p: &mut Presenter, drops: &AtomicUsize) {
-    assert_eq!(drops.load(Ordering::SeqCst), 0, "provider destroyed on UI");
-    let retired = p.take_retired();
-    std::thread::spawn(move || drop(retired)).join().unwrap();
-    assert_eq!(drops.load(Ordering::SeqCst), 1);
-}
 
 #[test]
 fn tree_delete_prepares_exact_occurrences_and_requires_confirmation_in_both_modes() {

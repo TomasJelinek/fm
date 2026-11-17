@@ -56,23 +56,32 @@ fn start(p: &mut Presenter) -> FolderSizeScanId {
     scan
 }
 
-fn sizes(p: &mut Presenter, mount: u64, version: u64, bytes: u64) {
+/// Deliver one size snapshot; the weak handle observes where it ends up.
+fn sizes(
+    p: &mut Presenter,
+    mount: u64,
+    version: u64,
+    bytes: u64,
+) -> std::sync::Weak<ArchiveSizeSnapshot> {
+    let sizes = Arc::new(ArchiveSizeSnapshot::new(
+        mount,
+        version,
+        HashMap::from([(
+            VirtualEntryId { mount, entry: 2 },
+            FolderSize {
+                bytes,
+                finished: true,
+                ..Default::default()
+            },
+        )]),
+    ));
+    let observed = Arc::downgrade(&sizes);
     p.apply(Event::ArchiveSizes(Box::new(ArchiveSizeEvent::Snapshot {
         pane: PaneId::Left,
         scan: None,
-        sizes: Arc::new(ArchiveSizeSnapshot::new(
-            mount,
-            version,
-            HashMap::from([(
-                VirtualEntryId { mount, entry: 2 },
-                FolderSize {
-                    bytes,
-                    finished: true,
-                    ..Default::default()
-                },
-            )]),
-        )),
+        sizes,
     })));
+    observed
 }
 
 fn select(p: &mut Presenter, ids: &[u64]) {
@@ -125,9 +134,9 @@ fn selected_archive_files_never_fall_back_to_scanning_all_folders() {
 #[test]
 fn archive_sizes_ignore_other_mounts_and_old_versions_without_native_path_aliasing() {
     let mut p = super::archives::archive_pane();
-    sizes(&mut p, 42, 2, 123);
-    sizes(&mut p, 99, 9, 999);
-    sizes(&mut p, 42, 1, 777);
+    let accepted = sizes(&mut p, 42, 2, 123);
+    let other_mount = sizes(&mut p, 99, 9, 999);
+    let old_version = sizes(&mut p, 42, 1, 777);
     let pane = &p.panes[0];
     let folder = pane.entry_by_id(EntryId(2)).unwrap();
     let file = pane.entry_by_id(EntryId(3)).unwrap();
@@ -137,9 +146,24 @@ fn archive_sizes_ignore_other_mounts_and_old_versions_without_native_path_aliasi
     );
     assert_eq!(pane.folder_size(folder).unwrap().bytes, 123);
     assert!(pane.folder_size(file).is_none());
+    let ignored = [other_mount, old_version];
     assert!(
-        p.take_retired().len() >= 3,
-        "retire large snapshots off the UI thread"
+        ignored.iter().all(|sizes| sizes.upgrade().is_some()),
+        "ignored large snapshots wait for retirement instead of dropping on the UI thread"
+    );
+    std::thread::spawn({
+        let retired = p.take_retired();
+        move || drop(retired)
+    })
+    .join()
+    .unwrap();
+    assert!(
+        ignored.iter().all(|sizes| sizes.upgrade().is_none()),
+        "the retired values were the only owners of ignored snapshots"
+    );
+    assert!(
+        accepted.upgrade().is_some(),
+        "the pane keeps the accepted snapshot"
     );
 }
 
@@ -424,7 +448,7 @@ fn opening_another_archive_keeps_observer_request_ids_monotonic() {
 }
 
 #[test]
-fn running_scan_does_not_mark_unrelated_folders_after_navigation() {
+fn running_scan_marks_only_folders_of_the_scanned_listing() {
     let mut p = super::archives::archive_pane();
     start(&mut p);
     let folder = p.panes[0].entry_by_id(EntryId(2)).unwrap().clone();

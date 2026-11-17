@@ -165,3 +165,39 @@ fn file_association_request_preserves_native_non_utf8_bytes() {
         true
     }));
 }
+
+#[test]
+fn opening_uses_raw_path_even_when_display_name_is_lossy() {
+    use super::{begin, finish};
+    use crate::Presenter;
+    use midnight_core::{Command, Entry, EntryId, EntryKind, PaneId};
+    use std::{ffi::OsString, os::unix::ffi::OsStringExt};
+    let mut presenter = Presenter::new("a".into(), "right".into());
+    let navigation = begin(&mut presenter, PaneId::Left, "a");
+    let path = PathBuf::from(OsString::from_vec(b"/tmp/raw-\xff".to_vec()));
+    finish(
+        &mut presenter,
+        PaneId::Left,
+        navigation,
+        vec![Entry::new(EntryId(1), path.clone(), EntryKind::Directory)],
+    );
+    assert!(presenter.open(PaneId::Left, 0, &|command| {
+        assert!(matches!(command, Command::Navigate { path: actual, .. } if actual == path));
+        true
+    }));
+}
+
+#[test]
+fn submitting_unchanged_lossy_path_text_reuses_the_original_raw_path() {
+    use crate::Presenter;
+    use midnight_core::{Command, PaneId};
+    use std::{ffi::OsString, os::unix::ffi::OsStringExt};
+    let path = PathBuf::from(OsString::from_vec(b"/tmp/raw-\xff".to_vec()));
+    let mut presenter = Presenter::new(path.clone(), "right".into());
+    assert!(
+        presenter.navigate_text(PaneId::Left, path.to_string_lossy().as_ref(), &|command| {
+            assert!(matches!(command, Command::Navigate { path: actual, .. } if actual == path));
+            true
+        })
+    );
+}

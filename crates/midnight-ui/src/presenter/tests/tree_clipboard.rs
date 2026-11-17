@@ -110,17 +110,6 @@ fn captured(
     }))
 }
 
-fn reclaim(p: &mut Presenter, drops: &AtomicUsize) {
-    assert_eq!(
-        drops.load(Ordering::SeqCst),
-        0,
-        "UI released provider ownership"
-    );
-    let retired = p.take_retired();
-    std::thread::spawn(move || drop(retired)).join().unwrap();
-    assert_eq!(drops.load(Ordering::SeqCst), 1);
-}
-
 #[test]
 fn clipboard_capture_preserves_intent_selection_and_retires_after_completion() {
     for intent in [FileClipboardIntent::Copy, FileClipboardIntent::Move] {

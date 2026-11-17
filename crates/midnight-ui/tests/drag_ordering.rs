@@ -114,6 +114,12 @@ fn clipboard_copy_cannot_overtake_an_admitted_drop_waiting_for_command_capacity(
             .any(|command| matches!(command, Command::EnqueueCopy(_))),
         "a later copy must not cross the older admitted-drop operation ID"
     );
+    refresh(&h.ui.window, &h.presenter.borrow());
+    assert_eq!(
+        h.ui.window.get_message_title(),
+        "Copy/Move queue busy",
+        "the refused paste tells the user to retry"
+    );
     // A clipboard result can bypass the presenter's general trailing flush. The paste
     // submission itself must drain older admitted drops once capacity returns.
     h.blocked.set(false);
@@ -140,7 +146,7 @@ fn cancelling_an_admitted_drop_rejects_its_token_before_the_copy_is_registered()
     let h = Harness::new();
     let job = h.ui.window.get_operations().row_data(0).unwrap();
     assert!(job.cancellable);
-    h.ui.window.invoke_cancel_operation(job.identity);
+    h.ui.window.invoke_cancel_job(job.identity);
     let cancelled = h.ui.window.get_operations().row_data(0).unwrap();
     assert!(
         !cancelled.cancellable,
@@ -194,7 +200,7 @@ fn locally_cancelled_admissions_keep_session_job_history() {
                 .iter()
                 .find(|job| job.cancellable)
                 .unwrap();
-        h.ui.window.invoke_cancel_operation(job.identity);
+        h.ui.window.invoke_cancel_job(job.identity);
     }
     assert_eq!(h.ui.window.get_operations().row_count(), 20);
     assert!(

@@ -4,6 +4,8 @@
 mod command_reclaim;
 #[path = "modeless.rs"]
 mod modeless;
+#[path = "engine_teardown.rs"]
+mod teardown;
 use midnight_core::*;
 use midnight_engine::{Engine, reclaim};
 use midnight_platform::LocalFileSystem;
@@ -317,30 +319,44 @@ impl Harness {
         let presenter = self.presenter.clone();
         let begin = self.begin_owned.clone();
         let consumed = with_owned_commands(&presenter, &begin, |presenter, send| {
-            let Ok(event) = self.events.try_recv() else {
-                return false;
+            let event = match self.events.try_recv() {
+                Ok(event) => event,
+                Err(mpsc::error::TryRecvError::Empty) => return false,
+                // A dead Engine is a failure, not "no events yet".
+                Err(mpsc::error::TryRecvError::Disconnected) => {
+                    panic!("Engine event channel closed before the UI settled");
+                }
             };
             self.apply(event, presenter, send);
             true
         }) == Some(true);
         self.command_reclaim.flush();
-        refresh(&self.ui.window, &self.presenter.borrow());
+        if consumed {
+            refresh(&self.ui.window, &self.presenter.borrow());
+        }
         consumed
     }
 
     pub fn settle(&mut self) {
         for _ in 0..4 {
+            let mut consumed = false;
             for _ in 0..128 {
                 if !self.drain_one() {
                     break;
                 }
+                consumed = true;
             }
             let _ = with_owned_commands(&self.presenter, &self.begin_owned, |presenter, send| {
                 presenter.flush_selection(send);
                 presenter.flush_search(send);
             });
             self.sync_visible();
+            refresh(&self.ui.window, &self.presenter.borrow());
             self.ui.draw();
+            if !consumed {
+                // Further rounds would repeat this idle one; `until` polls again.
+                break;
+            }
         }
     }
 
@@ -368,7 +384,7 @@ impl Harness {
 
     #[track_caller]
     pub fn until(&mut self, condition: impl Fn(&Self) -> bool) {
-        let deadline = Instant::now() + Duration::from_secs(15);
+        let deadline = Instant::now() + teardown::UI_WAIT;
         loop {
             self.settle();
             if condition(self) {
@@ -376,7 +392,8 @@ impl Harness {
             }
             assert!(
                 Instant::now() < deadline,
-                "UI timed out: left={} right={} notice={} copy={:?} operation={:?}",
+                "UI timed out after {:?}: left={} right={} notice={} copy={:?} operation={:?}",
+                teardown::UI_WAIT,
                 self.ui.window.get_left_error(),
                 self.ui.window.get_right_error(),
                 self.ui.window.get_message_title(),
@@ -416,60 +433,52 @@ impl Harness {
         if let Some(pending) = self.command_reclaim.take_ready() {
             retired.extend(pending);
         }
-        let mut engine = self.engine.take().unwrap();
-        let result = runtime.block_on(async {
-            retire_final(&self.retire_queue, retired).await;
-            tokio::time::timeout(Duration::from_secs(8), async {
-                let shutdown = self.commands.send(Command::Shutdown);
-                tokio::pin!(shutdown);
-                let mut sent = false;
-                loop {
-                    // Post-window drain reserves the existing worker batch before
-                    // taking an event; no callback claim spans this await.
-                    let permit = self.retire_queue.reserve().await.unwrap();
-                    tokio::select! {
-                        result = &mut shutdown, if !sent => {
-                            result.unwrap();
-                            sent = true;
-                        }
-                        result = &mut engine => return result,
-                        event = self.events.recv() => {
-                            if let Some(event) = event {
-                                match &event {
-                                    Event::Copy(CopyEvent::Progress(progress)) => {
-                                        self.copies.push(progress.clone());
-                                    }
-                                    Event::Operation(OperationEvent::Progress(progress)) => {
-                                        self.operations.push(progress.clone());
-                                    }
-                                    _ => {}
-                                }
-                                permit.send(vec![Box::new(event)]);
-                            } else {
-                                return (&mut engine).await;
-                            }
-                        }
+        // Never panic before the final assertion: this usually runs while a failed
+        // assertion unwinds, and a second panic would abort the test binary.
+        let mut errors = Vec::new();
+        let result = match self.engine.take() {
+            Some(mut engine) => {
+                let (copies, operations) = (&mut self.copies, &mut self.operations);
+                let result = runtime.block_on(async {
+                    if let Err(error) = teardown::retire_final(&self.retire_queue, retired).await {
+                        errors.push(error);
                     }
+                    teardown::shutdown(
+                        &self.commands,
+                        &mut engine,
+                        &mut self.events,
+                        &self.retire_queue,
+                        |event| match event {
+                            Event::Copy(CopyEvent::Progress(progress)) => {
+                                copies.push(progress.clone());
+                            }
+                            Event::Operation(OperationEvent::Progress(progress)) => {
+                                operations.push(progress.clone());
+                            }
+                            _ => {}
+                        },
+                    )
+                    .await
+                });
+                if result.is_err() {
+                    engine.abort();
                 }
-            })
-            .await
-        });
-        if result.is_err() {
-            engine.abort();
-        }
+                result
+            }
+            None => Err("the Engine task was already taken".to_owned()),
+        };
         let (_, empty) = mpsc::channel(1);
         let receiver = std::mem::replace(&mut self.events, empty);
-        let mut retired = reclaim::Retired::new();
-        reclaim::retire_receiver(receiver, &mut retired);
-        runtime.block_on(async {
-            retire_final(&self.retire_queue, retired).await;
-            reclaim::barrier(&self.retire_queue).await.unwrap();
-        });
-        runtime.shutdown_timeout(Duration::from_secs(3));
+        if let Err(error) =
+            runtime.block_on(teardown::retire_remaining(&self.retire_queue, receiver))
+        {
+            errors.push(error);
+        }
+        runtime.shutdown_timeout(teardown::RUNTIME_SHUTDOWN);
         if !std::thread::panicking() {
             assert!(
-                matches!(result, Ok(Ok(()))),
-                "Engine shutdown did not complete: {result:?}"
+                result.is_ok() && errors.is_empty(),
+                "Engine shutdown did not complete: {result:?}, {errors:?}"
             );
             self.assert_sentinel();
         }
@@ -479,15 +488,15 @@ impl Harness {
 impl Drop for Harness {
     fn drop(&mut self) {
         self.shutdown();
-        // Retain only this owned fixture as inspectable QA evidence.
-    }
-}
-
-async fn retire_final(queue: &mpsc::Sender<reclaim::Retired>, retired: reclaim::Retired) {
-    if let Err(error) = queue.send(retired).await {
-        let retired = error.0;
-        tokio::task::spawn_blocking(move || drop(retired))
-            .await
-            .unwrap();
+        // Tests may inspect the files after an explicit shutdown; the owned fixture
+        // is removed only when the harness goes away, and kept when a test failed.
+        if !std::thread::panicking()
+            && let Err(error) = fs::remove_dir_all(&self.root)
+        {
+            eprintln!(
+                "could not remove native UI fixture {}: {error}",
+                self.root.display()
+            );
+        }
     }
 }

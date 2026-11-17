@@ -24,7 +24,9 @@ fn exercise_external_changes(pane: PaneId) {
         watch.clone(),
     );
     let branch = fixture.root.join("folder");
-    h.until(|_| watch.observes(&branch));
+    // A live subscription must cover both directories (a historical batch that was
+    // since replaced is not enough).
+    h.until(|_| watch.live_covers(&fixture.root) && watch.live_covers(&branch));
     let session = h.view.as_ref().unwrap().stamp.session;
     let small = h.rows().iter().position(|row| row.name == "small").unwrap();
     h.ui.window
@@ -34,28 +36,33 @@ fn exercise_external_changes(pane: PaneId) {
             .as_ref()
             .is_some_and(|selection| selection.len() == 1)
     });
+    // Routed hints are informational: the debounced hint of the fence's own
+    // registration can arrive at any point, and hints legitimately coalesce. The
+    // per-directory native evidence plus the UI row is what each change must show.
     for (parent, name) in [
         (&fixture.root, "new-root-文档"),
         (&branch, "new-child-žluťoučký"),
     ] {
-        let before = watch.callbacks();
+        let mark = watch.mark();
         let hints = h.watch_hints[pane.index()];
         let directory = parent.join(name);
         fs::create_dir(&directory).unwrap();
         if let Err(panic) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            h.until(|h| watch.callbacks() > before && h.rows().iter().any(|row| row.name == name));
+            h.until(|h| {
+                watch.native_evidence_for(mark, parent)
+                    && h.rows().iter().any(|row| row.name == name)
+            });
         })) {
-            let callbacks = watch.callbacks();
             let current_hints = h.watch_hints[pane.index()];
             let ui_row = h.rows().iter().any(|row| row.name == name);
             let projection_row = h.views[pane.index()]
                 .as_ref()
                 .is_some_and(|view| view.rows.iter().any(|row| row.entry.display_name == name));
             eprintln!(
-                "tree watch creation predicates: pane={pane:?}, target={name:?}, callbacks={callbacks}>{before} (fresh_callback_required={}), hints={current_hints}>{hints} (fresh_hint_informational={}, coalescing_allowed), ui_row_required={ui_row}, observed_projection_row={projection_row}, historical_subscriptions(root,branch)={:?}",
-                callbacks > before,
-                current_hints > hints,
-                (watch.observes(&fixture.root), watch.observes(&branch)),
+                "tree watch creation predicates: pane={pane:?}, target={name:?}, parent={parent:?}, mark={mark:?}, native_evidence_for_parent_required={}, hints={current_hints}>{hints} (informational, coalescing allowed), ui_row_required={ui_row}, observed_projection_row={projection_row}, live(root,branch)={:?}, {}",
+                watch.native_evidence_for(mark, parent),
+                (watch.live_covers(&fixture.root), watch.live_covers(&branch)),
+                watch.describe(),
             );
             std::panic::resume_unwind(panic);
         }
@@ -74,10 +81,6 @@ fn exercise_external_changes(pane: PaneId) {
                 .any(|row| row.name == "small" && row.selected)
         );
     }
-    assert!(
-        h.watch_hints[pane.index()] > 0,
-        "the native tree watch session must receive a routing hint"
-    );
     assert!(h.ui.window.get_left_error().is_empty());
     assert!(h.ui.window.get_right_error().is_empty());
 }

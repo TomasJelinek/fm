@@ -247,7 +247,6 @@ fn all_themes_states_and_views_render_readable_filename_colors_with_preserved_cu
             );
             let search_color = presentation
                 .invoke_readable(test.window.global::<Theme>().get_search_match(), background);
-            render::snapshot(&test, &format!("filename-colors-theme-{theme}-mode-{mode}"));
             let search_pixels = (origin.y as usize..(origin.y + rect.size.height) as usize)
                 .flat_map(|y| {
                     (origin.x as usize..(origin.x + rect.size.width) as usize).map(move |x| (x, y))
