@@ -13,22 +13,38 @@ $env:CARGO_TARGET_DIR = "$PWD/_build/goal/native-plugin/native-windows"
 
 Tests include actual restricted DLL loading, callback origin, native selected
 bytes, raw unpaired-surrogate names, long paths, trailing-dot/space siblings,
-cancellation and stale content revisions. `plugin.toml` describes an optional
+cancellation and stale content revisions. Junction fixtures are created
+in-process; no shell is spawned. `plugin.toml` describes an optional
 `filesystem-native` package for a compatible trusted host. The package cannot
 add functionality before the host composition loads and routes through it.
 
-Listing/read/stat/volumes/storage-space and optional raw labels/rich volume
-information are provided. Physical storage classification requires positive
-single-device, nonremovable ATA/SATA/NVMe and seek-penalty evidence. Other devices
-remain conservative. Rich capacity keeps actual filesystem total/free distinct
-from caller quotas. Reads are live metadata-validated regular files, not snapshots.
-Cloud data placeholders are readable when their retained handle reports a member
-of the Windows Cloud reparse-tag family without the name-surrogate bit. The
-provider opens the reparse point itself and checks its handle type/tag; symlinks,
-junctions, devices, directories and unrelated reparse providers remain refused.
+Listing/read/stat/volumes/storage-space, optional raw labels/rich volume
+information and optional prepared same-parent Rename are provided. Listing rows
+come from the enumeration's cached data; a failing enumeration (lost share,
+removed volume) fails the listing instead of skipping rows. Volume information
+names roots as Win32 does (`C:\`, `\\server\share\`); volume GUID roots and roots
+Win32 would normalize keep their verbatim form. Physical storage classification
+requires positive single-device, nonremovable ATA/SATA/NVMe and seek-penalty
+evidence. Other devices remain conservative. Rich capacity keeps actual filesystem
+total/free distinct from caller quotas. Reads are live metadata-validated regular
+files, not snapshots: content is opened once, and each validation checks the
+current name through an attribute-only handle (no data access, sharing conflict
+or content scan). Cloud data placeholders are readable when their retained handle
+reports a member of the Windows Cloud reparse-tag family without the
+name-surrogate bit. The provider opens the reparse point itself and checks its
+handle type/tag; symlinks, junctions, devices, directories and unrelated reparse
+providers (for example Data Deduplication) remain refused. WOF/CompactOS files
+do not expose a reparse point to applications and read as ordinary files.
 Identity, length and write/change revision checks still apply before/after reads.
 The optional `cloud_content` resident acceptance test requires one explicitly
 selected, already resident PNG through `MIDNIGHT_CLOUD_TEST_FILE`; normal tests
 also cover stale name replacement and junction refusal without cloud access.
-See [protocol](../../filesystem-api/NATIVE_PLUGIN_PROTOCOL.md) for bounds and
-explicit unsupported namespaces. Mutations and watching are outside this ABI.
+
+Prepared Rename pins the selected entry and its parent before a name is chosen.
+No-replace renames the retained handle relative to the retained parent; a
+case-only change of the same entry is allowed. A recoverable replacement of an
+existing regular file is offered only on local fixed NTFS and keeps the displaced
+target in a protected `.midnight-recovery-*` directory beside it, reported as a
+recovery receipt. Results report `durability_confirmed: false`. See
+[protocol](../../filesystem-api/NATIVE_PLUGIN_PROTOCOL.md) for bounds and explicit
+unsupported namespaces. Watching and other mutations are outside this ABI.
