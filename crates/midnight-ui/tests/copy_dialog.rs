@@ -127,68 +127,8 @@ fn dismiss_native_notice(windows: &NativeWindows) {
         count - 1
     );
 }
-#[test]
-fn copy_confirmation_shows_the_complete_source_above_the_destination() {
-    use i_slint_core::items::AccessibleRole;
-    let windows = Rc::new(RefCell::new(Vec::new()));
-    slint::platform::set_platform(Box::new(modeless::Windows(windows.clone()))).unwrap();
-    let dialog = midnight_ui::OperationWindow::new().unwrap();
-    let body = "checksums.sha256\n\nFrom\nD:\\downloads\\119115";
-    dialog.set_title_text("Copy".into());
-    dialog.set_confirm_text("Copy".into());
-    dialog.set_body(body.into());
-    dialog.set_initial_name("D:\\temp".into());
-    dialog.set_has_name(true);
-    dialog.set_input_label("Destination folder".into());
-    dialog.set_option_visible(true);
-    dialog.set_option_enabled(true);
-    dialog.set_option_label("Preserve exact modified time".into());
-    dialog.show().unwrap();
-    let child = windows.borrow()[0].clone();
-    for (density, font) in [(0, 13), (1, 15), (0, 22)] {
-        dialog.invoke_apply_preferences(3, density, "".into(), font, font);
-        dialog.invoke_begin();
-        modeless::draw(&child, 720, 520, &format!("copy-source-{density}-{font}"));
-        let source = accessible_item(&child, AccessibleRole::Text, body).unwrap();
-        let label = accessible_item(&child, AccessibleRole::Text, "Destination folder").unwrap();
-        let source_rect = source.geometry();
-        let source_top = source.map_to_native_window(source_rect.origin).y;
-        let label_top = label.map_to_native_window(label.geometry().origin).y;
-        assert!(source.is_visible() && label.is_visible());
-        assert!(
-            source_top + source_rect.size.height <= label_top,
-            "Source path is clipped beneath destination: bottom={}, label={label_top}, font={font}, density={density}",
-            source_top + source_rect.size.height
-        );
-        let editor =
-            accessible_item(&child, AccessibleRole::TextInput, "Destination folder").unwrap();
-        assert!(
-            editor.geometry().size.height < font as f32 * 3.0,
-            "Destination must stay single-line"
-        );
-    }
-    dialog.invoke_apply_preferences(3, 0, "".into(), 13, 15);
-    modeless::draw(&child, 320, 200, "copy-source-compact");
-    for (label, role) in [
-        ("Destination folder", AccessibleRole::TextInput),
-        ("Cancel", AccessibleRole::Button),
-        ("Copy", AccessibleRole::Button),
-    ] {
-        let item = accessible_item(&child, role, label).unwrap();
-        let rect = item.geometry();
-        let origin = item.map_to_native_window(rect.origin);
-        assert!(
-            item.is_visible()
-                && origin.x >= 0.0
-                && origin.y >= 0.0
-                && origin.x + rect.size.width <= 320.5
-                && origin.y + rect.size.height <= 200.5,
-            "{label} must remain reachable in a small child: {origin:?} {:?}",
-            rect.size
-        );
-    }
-    dialog.hide().unwrap();
-}
+// The complete-source layout of the shipped draft is checked on the embedded host:
+// native_operation_windows::embedded_copy_draft_shows_the_complete_source_above_a_single_line_destination.
 
 #[test]
 fn f5_destination_editor_consumes_enter_and_escape_without_using_the_clipboard() {
