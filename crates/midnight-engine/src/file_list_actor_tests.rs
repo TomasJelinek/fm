@@ -153,6 +153,15 @@ async fn completed_sessions_are_released_and_do_not_exhaust_window_budget() {
         assert!(event.result.is_ok());
         controller.cancel(DesktopRequestId(id), 1);
         while tasks.join_next().await.is_some() {}
+        // The token returns on the cleanup worker after actual destruction; a leak
+        // would keep it (and eventually exhaust the six-token bound) forever.
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while controller.retained.available_permits() != MAX_RETAINED {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("a completed session must release its retention token");
     }
     assert!(controller.jobs.is_empty());
     assert_eq!(controller.budget.available_permits(), 2);
@@ -178,4 +187,210 @@ async fn stale_generation_and_confirmation_are_rejected() {
             .is_err()
     );
     while tasks.join_next().await.is_some() {}
+}
+
+async fn absorbed(gate: &Semaphore) {
+    // A queued acquisition absorbs the free permits while it waits for the rest;
+    // a nonqueuing try_acquire loop never would.
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while gate.available_permits() != 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("the save must queue at the gate");
+}
+
+fn file_controller(
+    gate: Arc<Semaphore>,
+) -> (
+    Controller,
+    mpsc::Receiver<Event>,
+    JoinSet<()>,
+    tempfile::TempDir,
+) {
+    let parent = std::env::temp_dir().join("file-list-lifetime/_build/tmp");
+    std::fs::create_dir_all(&parent).unwrap();
+    let root = tempfile::tempdir_in(parent.canonicalize().unwrap()).unwrap();
+    let (sender, events) = mpsc::channel(16);
+    let controller = Controller::testing(
+        Some(Arc::new(midnight_platform::LocalFileSystem::new(None))),
+        gate,
+        Outbox {
+            sender,
+            wakeup: Arc::new(|| {}),
+        },
+        crate::test_snapshots(Default::default()),
+    );
+    (controller, events, JoinSet::new(), root)
+}
+
+fn file_request(root: &tempfile::TempDir) -> FileListRequest {
+    let mut request = request(1, 1);
+    request.destination = FileListDestination::File {
+        path: root.path().join("list.txt"),
+        append: false,
+    };
+    request
+}
+
+#[tokio::test]
+async fn waiting_file_save_keeps_its_fifo_place_at_the_mutation_gate() {
+    use crate::transfer_leases::NAMESPACE_WEIGHT;
+    let gate = Arc::new(Semaphore::new(NAMESPACE_WEIGHT as usize));
+    let held = gate.clone().try_acquire_owned().unwrap();
+    let cancel = Cancellation::default();
+    let stopped = Arc::new(Notify::new());
+    let save = tokio::spawn({
+        let gate = gate.clone();
+        let (cancel, stopped) = (cancel.clone(), stopped.clone());
+        async move {
+            let acquire = gate.acquire_many_owned(NAMESPACE_WEIGHT);
+            wait_unless_stopped(&cancel, &stopped, acquire).await
+        }
+    });
+    absorbed(&gate).await;
+    let later = tokio::spawn(gate.clone().acquire_many_owned(NAMESPACE_WEIGHT));
+    tokio::task::yield_now().await; // The later waiter queues behind the save.
+    drop(held);
+    let permit = tokio::time::timeout(Duration::from_secs(5), save)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert_eq!(permit.num_permits(), NAMESPACE_WEIGHT as usize);
+    assert!(!later.is_finished(), "a later mutation overtook the save");
+    drop(permit);
+    drop(
+        tokio::time::timeout(Duration::from_secs(5), later)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap(),
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn stopped_file_save_leaves_the_gate_queue_without_a_polling_timer() {
+    let gate = Arc::new(Semaphore::new(0));
+    let cancel = Cancellation::default();
+    let stopped = Arc::new(Notify::new());
+    let save = tokio::spawn({
+        let gate = gate.clone();
+        let (cancel, stopped) = (cancel.clone(), stopped.clone());
+        async move { wait_unless_stopped(&cancel, &stopped, gate.acquire_owned()).await }
+    });
+    tokio::task::yield_now().await; // The save is queued and waiting.
+    let started = tokio::time::Instant::now();
+    // As `Job::stop`: cancel, then wake the registered wait.
+    cancel.cancel();
+    stopped.notify_waiters();
+    let error = tokio::time::timeout(Duration::from_secs(5), save)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap_err();
+    assert!(error.message.contains("cancelled"), "{error:?}");
+    // Paused time auto-advances only to a pending timer; none may be needed.
+    assert_eq!(
+        tokio::time::Instant::now(),
+        started,
+        "the wait polled a timer"
+    );
+    gate.add_permits(1);
+    assert!(
+        gate.try_acquire().is_ok(),
+        "no abandoned waiter keeps permits"
+    );
+}
+
+#[tokio::test]
+async fn queued_file_save_holds_no_worker_and_publishes_once_the_gate_opens() {
+    use crate::transfer_leases::NAMESPACE_WEIGHT;
+    let gate = Arc::new(Semaphore::new(NAMESPACE_WEIGHT as usize));
+    // A running Copy holds one namespace share; the save queues behind it.
+    let copy = gate.clone().try_acquire_owned().unwrap();
+    let (mut controller, mut events, mut tasks, root) = file_controller(gate.clone());
+    controller.start(file_request(&root), &mut tasks).unwrap();
+    absorbed(&gate).await;
+    assert_eq!(
+        controller.budget.available_permits(),
+        MAX_WORKERS,
+        "a save waiting for the gate must not occupy a File List worker"
+    );
+    assert!(events.try_recv().is_err());
+    assert!(!root.path().join("list.txt").exists());
+    drop(copy);
+    let Event::FileList(event) = tokio::time::timeout(Duration::from_secs(10), events.recv())
+        .await
+        .unwrap()
+        .unwrap()
+    else {
+        panic!("file-list result")
+    };
+    assert!(
+        matches!(event.result, Ok(FileListUpdate::Saved { .. })),
+        "{:?}",
+        event.result
+    );
+    assert_eq!(
+        std::fs::read(root.path().join("list.txt")).unwrap(),
+        "文档.txt\n".as_bytes()
+    );
+    while tasks.join_next().await.is_some() {}
+    assert_eq!(controller.budget.available_permits(), MAX_WORKERS);
+    assert_eq!(gate.available_permits(), NAMESPACE_WEIGHT as usize);
+}
+
+/// Counts panics on threads named `name`, then defers to the previous hook so
+/// every other test still reports its panics as usual.
+fn panics_on(name: &'static str) -> Arc<std::sync::atomic::AtomicUsize> {
+    let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let observed = count.clone();
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        if std::thread::current().name() == Some(name) {
+            observed.fetch_add(1, Ordering::SeqCst);
+        }
+        previous(info);
+    }));
+    count
+}
+
+#[test]
+fn runtime_teardown_drops_a_save_queued_at_the_gate_without_panicking() {
+    use crate::transfer_leases::NAMESPACE_WEIGHT;
+    const THREADS: &str = "file-list-teardown-test";
+    let panics = panics_on(THREADS);
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1)
+        .thread_name(THREADS)
+        .enable_all()
+        .build()
+        .unwrap();
+    let gate = Arc::new(Semaphore::new(NAMESPACE_WEIGHT as usize));
+    let copy = gate.clone().try_acquire_owned().unwrap();
+    let (mut controller, events, mut tasks, root) = file_controller(gate.clone());
+    runtime.block_on(async {
+        controller.start(file_request(&root), &mut tasks).unwrap();
+        absorbed(&gate).await;
+    });
+    // Neither cancelled nor aborted: an embedder drops the runtime while the save
+    // waits (or the engine's own shutdown races the cancellation). Tokio's timers
+    // are shut down then, so a wait that polls one would panic here.
+    let (dropped, teardown) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        drop(runtime);
+        let _ = dropped.send(());
+    });
+    teardown
+        .recv_timeout(Duration::from_secs(10))
+        .expect("runtime teardown must not wait for a queued save");
+    assert_eq!(
+        panics.load(Ordering::SeqCst),
+        0,
+        "a File List save panicked during runtime teardown"
+    );
+    assert!(!root.path().join("list.txt").exists());
+    drop((copy, tasks, events, controller));
 }

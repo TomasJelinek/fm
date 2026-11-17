@@ -56,6 +56,16 @@ impl ConflictState {
 fn error(path: &Path, kind: io::ErrorKind, text: &str) -> FsError {
     FsError::from_io("Rename", path, io::Error::new(kind, text))
 }
+/// Same rule as confirmation and Copy's alternate name: exactly one normal component.
+fn single_basename(name: &std::ffi::OsStr) -> bool {
+    let path = Path::new(name);
+    let mut components = path.components();
+    !name.is_empty()
+        && !name.as_encoded_bytes().contains(&0)
+        && path.file_name() == Some(name)
+        && matches!(components.next(), Some(std::path::Component::Normal(_)))
+        && components.next().is_none()
+}
 fn validate(
     prepared: &PreparedRenameReplacement,
     original: &MutationItem,
@@ -174,6 +184,20 @@ pub(super) fn execute(job: worker::Job, outbox: Outbox) -> OperationProgress {
                 break;
             }
             CopyChoice::Rename(alternate) => {
+                // The API can send this choice; native adapters must never be the
+                // only check that it names one entry in the same directory.
+                if !single_basename(&alternate) {
+                    failed(
+                        &mut progress,
+                        error(
+                            &target.item().path,
+                            io::ErrorKind::InvalidInput,
+                            "Enter one native basename without dot or path components.",
+                        ),
+                        &job.cancel,
+                    );
+                    break;
+                }
                 name = alternate;
                 continue;
             }

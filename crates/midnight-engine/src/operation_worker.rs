@@ -375,9 +375,7 @@ impl Job {
                     .expect("prepared base")
                     .create_file(self.name.as_deref().expect("validated name"), &self.cancel)
                     .map(Some),
-                MutationKind::Rename => self.targets[index]
-                    .rename(self.name.as_deref().expect("validated name"), &self.cancel)
-                    .map(Some),
+                MutationKind::Rename => unreachable!("rename jobs use their typed worker"),
                 MutationKind::CreateDirectory => self
                     .directory
                     .as_ref()

@@ -50,3 +50,31 @@ async fn cancelling_one_job_unblocks_full_batch_delivery_without_global_shutdown
         "Cancelling one job must not close other windows."
     );
 }
+
+struct NoReads;
+impl TransferService for NoReads {
+    fn prepare_transfer_source(
+        &self,
+        path: &Path,
+        _: &Cancellation,
+    ) -> Result<Box<dyn TransferSource>, FsError> {
+        Err(worker::failure(path, io::ErrorKind::Unsupported, "idle"))
+    }
+    fn prepare_transfer_destination(
+        &self,
+        path: &Path,
+        _: &Cancellation,
+    ) -> Result<Arc<dyn TransferDirectory>, FsError> {
+        Err(worker::failure(path, io::ErrorKind::Unsupported, "idle"))
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn idle_backend_wakes_for_shutdown_without_a_polling_timer() {
+    let controller = Controller::new(Retirement::testing(), Arc::new(NoReads));
+    tokio::task::yield_now().await; // The actor reaches its idle wait.
+    // Paused time advances only to fire a timer: an event-driven actor needs none.
+    let started = tokio::time::Instant::now();
+    controller.shutdown().await;
+    assert_eq!(tokio::time::Instant::now(), started);
+}

@@ -10,6 +10,10 @@ use std::{
     sync::{Arc, OnceLock},
 };
 
+// A save is a few short native namespace calls under the mutation gate; they keep
+// the conservative exclusive disk admission without classifying the destination.
+const SAVE: midnight_work_budget::Admission = midnight_work_budget::Admission::Exclusive;
+
 /// Save through exclusive native staging, sync and independent destination SHA-256 readback.
 /// Existing destinations fail explicitly (AlreadyExists); this first backend never overwrites.
 pub fn save_manifest(
@@ -67,7 +71,7 @@ pub fn save_manifest(
             "A checksum manifest cannot replace a captured source.",
         ));
     }
-    let directory = with_io(cancel, parent, || {
+    let directory = with_io(SAVE, cancel, parent, || {
         service.prepare_transfer_destination(parent, cancel)
     })?;
     let device = directory.identity().device;
@@ -84,7 +88,7 @@ pub fn save_manifest(
         ));
     }
     let source_identities: HashSet<_> = run.rows.iter().filter_map(|row| row.identity).collect();
-    if let Some(existing) = with_io(cancel, path, || directory.inspect(name, cancel))? {
+    if let Some(existing) = with_io(SAVE, cancel, path, || directory.inspect(name, cancel))? {
         if source_identities.contains(&existing.identity) {
             return Err(failure(
                 path,
@@ -117,7 +121,7 @@ pub fn save_manifest(
         bytes: bytes.into(),
         offset: 0,
     });
-    let stage = with_io(cancel, path, || directory.stage_file(cancel))?;
+    let stage = with_io(SAVE, cancel, path, || directory.stage_file(cancel))?;
     let mut copy = VerifiedFileCopy::new(source, stage)?;
     let mut saved = (|| {
         while copy.phase() != CopyPhase::ReadyToPublish {

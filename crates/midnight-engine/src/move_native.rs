@@ -62,7 +62,9 @@ impl Job {
         };
         // Every terminal native outcome consumes this attempt. Never run proof
         // finalization, automatic restoration or content-copy Retry after commit.
-        let mut move_work = self.move_work.take().expect("Move authority");
+        // Armed: an unwinding native call must not destroy the remaining captures,
+        // stages, proofs or finalizer; they are released only explicitly.
+        let mut move_work = ownership::Armed::new(self.move_work.take().expect("Move authority"));
         let completion = if moved {
             self.progress.native_entries_moved += 1;
             self.protected_roots.insert(work.entry().identity);
@@ -75,7 +77,7 @@ impl Job {
             }
             move_work.discard(work.entry().identity)
         };
-        self.move_work = Some(move_work);
+        self.move_work = Some(move_work.into_inner());
         for retained in recovery {
             if !moved && retained.identity == Some(work.entry().identity) {
                 self.progress.source_residual_count += 1;

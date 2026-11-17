@@ -241,14 +241,17 @@ fn all_five_exports_round_trip_through_compatible_manifest_records() {
 #[test]
 fn exports_preflight_the_same_budgets_and_name_ambiguity_as_verification() {
     let (mut run, request) = fixture("first");
-    // A successful calculation can occupy nearly its complete retained budget.
-    // The exported text also counts against parsing capacity; never publish a file
-    // that the verifier will refuse after the user has already saved it.
+    // Never publish a file that the verifier will refuse after the user saved it.
+    // A real calculation stops at the same per-entry charge (plus line headroom),
+    // so only a run assembled beyond it can exceed the verifier's entry budget.
+    let mut row = (*run.rows[0]).clone();
+    row.path.set_file_name("entry-00000");
     let count = ChecksumLimits::default().max_retained_bytes
-        / (run.rows[0].path.as_os_str().as_encoded_bytes().len() * 4 + 1024);
+        / (row.path.as_os_str().as_encoded_bytes().len() * 4 + 1024)
+        + 1;
     run.rows = (0..count)
         .map(|index| {
-            let mut row = (*run.rows[0]).clone();
+            let mut row = row.clone();
             row.id = ChecksumRowId(index as u64 + 1);
             row.path.set_file_name(format!("entry-{index:05}"));
             Arc::new(row)

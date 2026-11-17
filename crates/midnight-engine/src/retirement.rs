@@ -174,20 +174,21 @@ impl RetirementDomain {
         })
     }
 
-    pub(crate) fn try_reserve(&self) -> Result<RetirementLease, RetirementBusy> {
-        self.try_reserve_nowait()
-    }
-
     /// One bounded scan of the same actual payload slots. No metadata mutex,
     /// spin loop, waiter registration or cleanup queue participates in refusal.
     /// Sender rollback keeps its Admission/domain alive through unused lease
     /// return; this does not change the last Control owner's shutdown protocol.
-    pub(crate) fn try_reserve_nowait(&self) -> Result<RetirementLease, RetirementBusy> {
+    pub(crate) fn try_reserve(&self) -> Result<RetirementLease, RetirementBusy> {
         let slot = claim_slot(&self.control.shared).ok_or(RetirementBusy)?;
         Ok(RetirementLease {
             control: self.control.clone(),
             slot: Some(slot),
         })
+    }
+
+    /// Former name of [`Self::try_reserve`]; remove once copy admission migrates.
+    pub(crate) fn try_reserve_nowait(&self) -> Result<RetirementLease, RetirementBusy> {
+        self.try_reserve()
     }
 }
 

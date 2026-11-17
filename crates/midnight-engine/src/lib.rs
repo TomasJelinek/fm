@@ -134,6 +134,8 @@ use tokio::{
 };
 
 const BATCH_SIZE: usize = 128;
+/// Upper bound for copy/mutation actors to finish their own retirement at shutdown.
+const ACTOR_SHUTDOWN: std::time::Duration = std::time::Duration::from_secs(5);
 
 #[derive(Clone)]
 struct Outbox {
@@ -441,6 +443,8 @@ impl EngineServices {
         let denied_navigations = elevation::DeniedNavigations::default();
         let mut navigation_high_water: [Option<NavigationId>; 2] = [None, None];
         let mut tasks = JoinSet::new();
+        // Actors that retire native ownership themselves; drained before `tasks` abort.
+        let mut actors = JoinSet::new();
         let mut find = find::Controller::new(
             scope.clone(),
             resources.find,
@@ -570,6 +574,7 @@ impl EngineServices {
         let checksums = checksum_actor::Controller::new(
             resources.checksums,
             self.transfers.clone(),
+            Some(self.filesystem.clone()),
             self.outbox.clone(),
             mutation_gate.clone(),
         );
@@ -586,7 +591,7 @@ impl EngineServices {
             self.outbox.clone(),
             mutation_gate.clone(),
             transfer_leases::IoBudget::new(midnight_work_budget::shared_io()),
-            &mut tasks,
+            &mut actors,
         );
         let operations = operations::Controller::new(
             resources.operations,
@@ -598,7 +603,7 @@ impl EngineServices {
             self.outbox.clone(),
             mutation_gate,
             copies.admission().fence(),
-            &mut tasks,
+            &mut actors,
         );
         let mut drag_drop = drag_drop::Controller::new(
             resources.drag,
@@ -1016,20 +1021,21 @@ impl EngineServices {
                                     .or_else(|| state.committed.as_ref().filter(|snapshot| snapshot.navigation == navigation))
                                     .filter(|_| state.pending.is_none() && state.has_native_view()).cloned()
                             };
-                            if entries.is_none() || size_requests[pane.index()].as_ref().is_some_and(|request| request.navigation == navigation && scan <= request.scan) {
+                            let superseded = size_requests[pane.index()].as_ref().is_some_and(|request| request.navigation == navigation && scan <= request.scan);
+                            let Some(entries) = entries.filter(|_| !superseded) else {
                                 self.outbox.send(Event::FolderSizesFinished { pane, navigation, scan, cancelled: true }).await;
                                 continue;
-                            }
+                            };
                             if let Some(old) = size_requests[pane.index()].take() { old.cancel(); }
                             entry_sizes.cancel_all(pane);
-                            let entries = entries.map(|selected| {
-                                let old_sizes = selected.sizes.clone();
-                                let selected = scan_cache::prepare(selected, &snapshots, pane, selection.as_deref());
+                            let snapshot = {
+                                let old_sizes = entries.sizes.clone();
+                                let selected = scan_cache::prepare(entries, &snapshots, pane, selection.as_deref());
                                 if let Some(event) = selected_sizes.observer.replaced(pane, &old_sizes, &selected.sizes, &selected.entries) {
                                     selected_sizes.observer.publish(event);
                                 }
                                 selected
-                            });
+                            };
                             let cancel = Cancellation::default();
                             let worker_cancel = cancel.clone();
                             let filesystem = self.filesystem.clone();
@@ -1039,14 +1045,10 @@ impl EngineServices {
                             let io_budget = size_io_budget.clone();
                             let reports = resources.reports.clone();
                             let size_observer = selected_sizes.observer.clone();
-                            let scan_path = entries.as_ref().map(|snapshot| snapshot.path.clone());
-                            let scan_sizes = entries.as_ref().map(|snapshot| snapshot.sizes.clone());
+                            let path = snapshot.path.clone();
+                            let sizes = snapshot.sizes.clone();
                             let worker_scope = scope.clone();
                             let task = tasks.spawn(scope.future(async move {
-                                let Some(snapshot) = entries else {
-                                    outbox.send(Event::FolderSizesFinished { pane, navigation, scan, cancelled: true }).await;
-                                    return;
-                                };
                                 let Ok(permit) = budget.acquire_owned().await else { return; };
                                 if worker_cancel.is_cancelled() { return; }
                                 let permit = Arc::new(permit);
@@ -1080,9 +1082,7 @@ impl EngineServices {
                                     final_outbox.send(Event::FolderSizesFinished { pane, navigation, scan, cancelled: result.is_err() }).await;
                                 }
                             }));
-                            if let (Some(path), Some(sizes)) = (scan_path, scan_sizes) {
-                                size_requests[pane.index()] = Some(SizeRequest { scan, navigation, path, sizes, cancel, task });
-                            }
+                            size_requests[pane.index()] = Some(SizeRequest { scan, navigation, path, sizes, cancel, task });
                         }
                         Some(Command::ComputeEntrySize { pane, navigation, scan, entry }) => {
                             entry_sizes.compute(pane, navigation, scan, entry, &mut tasks).await;
@@ -1246,6 +1246,18 @@ impl EngineServices {
         }
         checksums.shutdown().await;
         user_commands.shutdown().await;
+        // Copy and mutation actors exit by themselves after `shutdown`, once each job
+        // has released its native and captured owners through its checked retirement.
+        // Aborting them would drop those jobs outside that path; wait (bounded, in case
+        // the event consumer stopped draining) before aborting what remains.
+        let drained = tokio::time::timeout(ACTOR_SHUTDOWN, async {
+            while actors.join_next().await.is_some() {}
+        })
+        .await;
+        if drained.is_err() {
+            actors.abort_all();
+            while actors.join_next().await.is_some() {}
+        }
         tasks.abort_all();
         while tasks.join_next().await.is_some() {}
         tree_roots::shutdown(snapshots).await;

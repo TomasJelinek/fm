@@ -83,6 +83,7 @@ async fn checksum_capture_provider_lives_through_blocked_read_and_queued_shutdow
     let controller = Controller::new(
         Retirement::testing(),
         Some(Arc::new(Reading(barrier.clone()))),
+        None,
         Outbox {
             sender,
             wakeup: Arc::new(|| {}),
@@ -140,6 +141,7 @@ async fn checksum_capture_rejected_admission_retires_provider_on_worker() {
     let (sender, _events) = mpsc::channel(1);
     let controller = Controller::new(
         Retirement::testing(),
+        None,
         None,
         Outbox {
             sender,

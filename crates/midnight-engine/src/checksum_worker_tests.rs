@@ -31,6 +31,9 @@ impl Drop for ReleaseOnDrop {
 struct Reads {
     bytes: AtomicU64,
     calls: AtomicUsize,
+    /// Reads made while holding exclusive disk admission.
+    exclusive: AtomicUsize,
+    revalidations: AtomicUsize,
     buffer: AtomicUsize,
     interrupted: AtomicBool,
     changed: AtomicBool,
@@ -40,6 +43,8 @@ impl Default for Reads {
         Self {
             bytes: AtomicU64::new(0),
             calls: AtomicUsize::new(0),
+            exclusive: AtomicUsize::new(0),
+            revalidations: AtomicUsize::new(0),
             buffer: AtomicUsize::new(0),
             interrupted: AtomicBool::new(false),
             changed: AtomicBool::new(false),
@@ -118,6 +123,10 @@ impl TransferSource for Source {
         &self.entry
     }
     fn revalidate(&self, cancel: &Cancellation) -> Result<(), FsError> {
+        self.provider
+            .reads
+            .revalidations
+            .fetch_add(1, Ordering::SeqCst);
         if cancel.is_cancelled() {
             return Err(failure(
                 &self.entry.item.path,
@@ -143,6 +152,9 @@ impl TransferSource for Source {
             }
         }
         self.provider.reads.calls.fetch_add(1, Ordering::SeqCst);
+        if holds_exclusive_io() {
+            self.provider.reads.exclusive.fetch_add(1, Ordering::SeqCst);
+        }
         self.provider
             .reads
             .buffer
@@ -217,6 +229,7 @@ fn run(request: ChecksumRequest, provider: &Provider, cancel: &Cancellation) -> 
     calculate(
         request,
         provider,
+        &UNCLASSIFIED,
         cancel,
         ChecksumRetention::new(()),
         |_| true,
@@ -292,6 +305,131 @@ fn changed_unreadable_cancelled_and_wrong_length_files_never_publish_partial_dig
         assert!(result.rows[0].bytes_read > 0);
         assert_ne!(result.summary.completion, ChecksumCompletion::Completed);
     }
+}
+
+#[test]
+fn source_revalidation_brackets_reads_and_repeats_only_at_a_bounded_cadence() {
+    let mut provider = Provider::new(&[7; 200]);
+    provider.chunk = 1;
+    let started = Instant::now();
+    let result = run(request(), &provider, &Cancellation::default());
+    let elapsed = started.elapsed();
+    assert_eq!(result.summary.completion, ChecksumCompletion::Completed);
+    assert_eq!(provider.reads.calls.load(Ordering::SeqCst), 201);
+    // Each check reopens the native parent and name: once before the first and
+    // once after the last read, plus at most one per elapsed interval, never per chunk.
+    let revalidations = provider.reads.revalidations.load(Ordering::SeqCst);
+    let periodic = (elapsed.as_nanos() / REVALIDATION_INTERVAL.as_nanos()) as usize;
+    assert!(
+        (2..=2 + periodic).contains(&revalidations),
+        "{revalidations} revalidations for 200 chunks in {elapsed:?}"
+    );
+}
+
+#[test]
+fn due_revalidation_stops_a_changed_source_before_its_end() {
+    let mut provider = Provider::new(&[1; 30]);
+    provider.change = true;
+    let settings = Settings {
+        revalidation: Duration::ZERO,
+        ..CALCULATION
+    };
+    let result = super::run(
+        request(),
+        &provider,
+        &UNCLASSIFIED,
+        &Cancellation::default(),
+        ChecksumRetention::new(()),
+        settings,
+        |_| true,
+    );
+    assert_eq!(result.rows[0].state, ChecksumRowState::SourceChanged);
+    assert!(result.rows[0].digests.is_empty());
+    assert_eq!(
+        result.rows[0].bytes_read, 3,
+        "stopped after the first chunk"
+    );
+}
+
+/// Name of exactly `length` bytes; the index keeps paths distinct.
+fn padded(index: usize, length: usize) -> String {
+    let prefix = format!("{index:05}-");
+    format!("{prefix}{}", "n".repeat(length - prefix.len()))
+}
+fn export(run: &ChecksumRun, directory: &Path) -> Result<Vec<u8>, FsError> {
+    let included = run
+        .rows
+        .iter()
+        .filter(|row| row.state == ChecksumRowState::Calculated)
+        .count() as u64;
+    let partial = ChecksumPartialAcknowledgement {
+        included,
+        excluded: run.rows.len() as u64 - included,
+        incomplete_discovery: run.summary.completion != ChecksumCompletion::Completed,
+    };
+    let request = ChecksumManifestRequest {
+        algorithm: ChecksumAlgorithm::Sha256,
+        destination: directory.join("out.sha256"),
+        acknowledge_partial: (partial.excluded > 0 || partial.incomplete_discovery)
+            .then_some(partial),
+    };
+    super::super::manifest::encode(run, &request, directory, &Cancellation::default())
+        .map(|(bytes, _)| bytes)
+}
+
+#[test]
+fn completed_and_budget_limited_calculations_always_fit_the_manifest_verifier() {
+    // Very long virtual names fill the budget with a dozen rows, keeping the
+    // shared I/O gate traffic of this unit test (also path-included) small.
+    let directory = std::env::current_dir()
+        .unwrap()
+        .join("_build/virtual-export-budget");
+    let limit = ChecksumLimits::default().max_retained_bytes;
+    let charge = |path: &Path| path.as_os_str().as_encoded_bytes().len() * 4 + 1024;
+    let name = 160_000;
+    let per_row = charge(&directory.join(padded(0, name)));
+    let count = limit / per_row - 1;
+    let uniform = (0..count).map(|index| directory.join(padded(index, name)));
+
+    // A completed run that leaves less than one row of its budget unused.
+    let provider = Provider::new(b"x");
+    let mut whole = request();
+    whole.targets = uniform.clone().map(Into::into).collect();
+    let completed = run(whole, &provider, &Cancellation::default());
+    assert_eq!(completed.summary.completion, ChecksumCompletion::Completed);
+    assert_eq!(completed.rows.len(), count);
+    let bytes = export(&completed, &directory).expect("a completed run must be exportable");
+    assert!(bytes.len() > 1024 * 1024);
+
+    // A final row whose plain charge lands within 4 bytes of the limit would make
+    // the verifier's per-line name check overflow; it must stop the calculation
+    // with an honest budget instead, and the acknowledged partial run must save.
+    let remaining = limit - count * per_row;
+    let base = directory.as_os_str().as_encoded_bytes().len() + 1;
+    let last = directory.join(padded(count, (remaining - 1024) / 4 - base));
+    assert!(remaining - charge(&last) < 4);
+    let mut limited = request();
+    limited.targets = uniform.chain([last]).map(Into::into).collect();
+    let request = limited;
+    let limited = run(request.clone(), &provider, &Cancellation::default());
+    assert_eq!(limited.summary.completion, ChecksumCompletion::Incomplete);
+    assert_eq!(
+        limited.summary.reached_budgets,
+        [ChecksumBudget::RetainedBytes]
+    );
+    assert_eq!(limited.rows.len(), count);
+    export(&limited, &directory).expect("an acknowledged partial run must be exportable");
+    // Verification rows are never exported and keep the plain per-entry charge.
+    let verified = calculate_for_verification(
+        request,
+        &provider,
+        &UNCLASSIFIED,
+        &Cancellation::default(),
+        ChecksumRetention::new(()),
+        |_| true,
+    );
+    assert_eq!(verified.summary.completion, ChecksumCompletion::Completed);
+    assert_eq!(verified.rows.len(), count + 1);
 }
 
 #[test]
@@ -443,4 +581,124 @@ async fn cancellation_and_shutdown_retain_an_inflight_read_and_its_io_permit() {
     .await
     .unwrap();
     assert!(permit.is_some(), "shutdown must release its I/O permit");
+}
+
+/// A directory root holding one file of the provider's data on the same volume.
+struct Mounted(Provider);
+struct Folder {
+    entry: TransferEntry,
+    child: Option<Box<dyn TransferSource>>,
+}
+impl TransferService for Mounted {
+    fn prepare_transfer_source(
+        &self,
+        path: &Path,
+        cancel: &Cancellation,
+    ) -> Result<Box<dyn TransferSource>, FsError> {
+        Ok(Box::new(Folder {
+            entry: TransferEntry {
+                item: MutationItem {
+                    path: path.to_owned(),
+                    kind: EntryKind::Directory,
+                    metadata: EntryMetadata::default(),
+                },
+                identity: TransferIdentity {
+                    device: 1,
+                    object: [2; 16],
+                },
+            },
+            child: Some(self.0.prepare_transfer_source(&path.join("file"), cancel)?),
+        }))
+    }
+    fn prepare_transfer_destination(
+        &self,
+        path: &Path,
+        cancel: &Cancellation,
+    ) -> Result<Arc<dyn TransferDirectory>, FsError> {
+        self.0.prepare_transfer_destination(path, cancel)
+    }
+}
+impl TransferSource for Folder {
+    fn entry(&self) -> &TransferEntry {
+        &self.entry
+    }
+    fn revalidate(&self, _: &Cancellation) -> Result<(), FsError> {
+        Ok(())
+    }
+    fn read_chunk(&mut self, _: &mut [u8], _: &Cancellation) -> Result<usize, FsError> {
+        Err(failure(
+            &self.entry.item.path,
+            io::ErrorKind::Unsupported,
+            "a directory",
+        ))
+    }
+    fn next_child(&mut self, _: &Cancellation) -> Result<Option<Box<dyn TransferSource>>, FsError> {
+        Ok(self.child.take())
+    }
+}
+
+#[test]
+fn only_confirmed_local_ssd_reads_share_the_disk_gate_and_a_directory_is_classified_once() {
+    for ssd in [true, false] {
+        let provider = Provider::new(b"abcdefgh");
+        let mut request = request();
+        let directory = request.targets[0].path.parent().unwrap().to_owned();
+        for name in ["second", "third"] {
+            let mut target = request.targets[0].clone();
+            target.path.set_file_name(name);
+            request.targets.push(target);
+        }
+        let volumes = Recorded::new(move |_| ssd);
+        let result = calculate(
+            request,
+            &provider,
+            &volumes,
+            &Cancellation::default(),
+            ChecksumRetention::new(()),
+            |_| true,
+        );
+        assert_eq!(result.summary.completion, ChecksumCompletion::Completed);
+        assert_eq!(result.rows.len(), 3);
+        assert_eq!(volumes.queries(), [directory], "one query per directory");
+        let reads = provider.reads.calls.load(Ordering::SeqCst);
+        let exclusive = provider.reads.exclusive.load(Ordering::SeqCst);
+        assert!(reads > 0);
+        // Unknown, rotational and network storage is never read beside other I/O.
+        assert_eq!(exclusive, if ssd { 0 } else { reads }, "ssd: {ssd}");
+    }
+}
+
+#[test]
+fn a_recursive_directory_root_is_read_as_its_own_volume_allows() {
+    // A selected directory can be a mount point of a volume unlike its parent's.
+    for root_ssd in [true, false] {
+        let provider = Provider::new(b"abc");
+        let mut request = request();
+        request.recursive = true;
+        let root = request.targets[0].path.clone();
+        let parent = root.parent().unwrap().to_owned();
+        let volumes = Recorded::new({
+            let root = root.clone();
+            move |path| (path == root) == root_ssd
+        });
+        let result = calculate(
+            request,
+            &Mounted(provider.clone()),
+            &volumes,
+            &Cancellation::default(),
+            ChecksumRetention::new(()),
+            |_| true,
+        );
+        assert_eq!(result.summary.completion, ChecksumCompletion::Completed);
+        assert_eq!(result.rows.len(), 1);
+        assert_eq!(volumes.queries(), [parent, root]);
+        let reads = provider.reads.calls.load(Ordering::SeqCst);
+        let exclusive = provider.reads.exclusive.load(Ordering::SeqCst);
+        assert!(reads > 0);
+        assert_eq!(
+            exclusive,
+            if root_ssd { 0 } else { reads },
+            "root ssd: {root_ssd}"
+        );
+    }
 }

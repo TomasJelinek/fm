@@ -12,7 +12,7 @@ use std::{
     time::Duration,
 };
 use tokio::{
-    sync::{Semaphore, mpsc},
+    sync::{Notify, Semaphore, mpsc},
     task::{JoinHandle, JoinSet},
 };
 
@@ -43,7 +43,7 @@ struct Start {
     capture: Option<Capture>,
     key: Key,
     cancel: Cancellation,
-    retention: Option<Arc<ChecksumRetention>>,
+    reservation: Option<checksum::Reservation>,
     service: Service,
 }
 struct Save {
@@ -64,6 +64,8 @@ pub(crate) struct Controller {
     input: mpsc::Sender<Input>,
     state: Arc<Mutex<State>>,
     lifetime: Cancellation,
+    // Wakes the idle actor after `lifetime` is cancelled (a polled flag).
+    wake: Arc<Notify>,
     available: bool,
     service: Service,
     retirement: crate::retirement::RetirementDomain,
@@ -71,29 +73,34 @@ pub(crate) struct Controller {
     task: Option<JoinHandle<()>>,
 }
 impl Controller {
+    /// `storage` classifies source volumes for disk admission (a confirmed local
+    /// SSD is read beside other I/O); without it every checksum read is exclusive.
     pub(crate) fn new(
         retirement: Retirement,
         service: Option<Arc<dyn TransferService>>,
+        storage: Option<Arc<dyn FileSystem>>,
         outbox: Outbox,
         mutation: Arc<Semaphore>,
     ) -> Self {
-        let service = Service::new(retirement.service, service);
+        let service = Service::new(retirement.service, service, storage);
         let available = service.available();
         let (input, receiver) = mpsc::channel(32);
         let state = Arc::new(Mutex::new(State::default()));
         let lifetime = Cancellation::default();
+        let wake = Arc::new(Notify::new());
         let task = tokio::spawn(run(
             service.clone(),
             outbox,
             mutation,
             receiver,
             state.clone(),
-            lifetime.clone(),
+            (lifetime.clone(), wake.clone()),
         ));
         Self {
             input,
             state,
             lifetime,
+            wake,
             available,
             service,
             retirement: retirement.domain,
@@ -104,8 +111,8 @@ impl Controller {
     pub(crate) fn start(&self, request: ChecksumRequest) -> Result<(), FsError> {
         let bytes = request.validate().map_err(invalid)?;
         let key = (request.job, request.generation);
-        let retention = checksum::reserve(bytes, request.limits.max_retained_bytes)?;
-        self.admit_plain(Capture::Paths(request), key, retention)
+        let reservation = checksum::reserve(bytes, request.limits.max_retained_bytes)?;
+        self.admit_plain(Capture::Paths(request), key, reservation)
     }
     pub(crate) fn start_selected(&self, request: SelectedChecksumRequest) -> Result<(), FsError> {
         request.limits.validate().map_err(invalid)?;
@@ -114,8 +121,8 @@ impl Controller {
         }
         let key = (request.job, request.generation);
         // Reserve the entire bounded expansion before retaining a queued selection.
-        let retention = checksum::reserve(8 * 1024 * 1024, request.limits.max_retained_bytes)?;
-        self.admit_plain(Capture::Selected(request), key, retention)
+        let reservation = checksum::reserve(8 * 1024 * 1024, request.limits.max_retained_bytes)?;
+        self.admit_plain(Capture::Selected(request), key, reservation)
     }
     pub(crate) async fn start_captured(
         &self,
@@ -130,7 +137,7 @@ impl Controller {
             capture: Some(Capture::Captured(request)),
             key,
             cancel: self.lifetime.child(),
-            retention: None,
+            reservation: None,
             service: self.service.clone(),
         });
         let validation = match start.capture.as_ref().expect("owned capture") {
@@ -145,7 +152,7 @@ impl Controller {
             _ => unreachable!("captured intake owns a captured request"),
         };
         match validation {
-            Ok(retention) => start.retention = Some(retention),
+            Ok(reservation) => start.reservation = Some(reservation),
             Err(error) => {
                 let _ = start.retire().await;
                 return Err(error);
@@ -161,14 +168,14 @@ impl Controller {
     }
     pub(crate) fn verify(&self, request: ChecksumVerifyRequest) -> Result<(), FsError> {
         let key = (request.job, request.generation);
-        let retention = checksum::reserve_verification(&request)?;
-        self.admit_plain(Capture::Verify(request), key, retention)
+        let reservation = checksum::reserve_verification(&request)?;
+        self.admit_plain(Capture::Verify(request), key, reservation)
     }
     fn admit_plain(
         &self,
         capture: Capture,
         key: Key,
-        retention: Arc<ChecksumRetention>,
+        reservation: checksum::Reservation,
     ) -> Result<(), FsError> {
         // Only path/selection/manifest data reaches this synchronous helper.
         // Provider-bearing captured requests use the reserved async intake above.
@@ -182,7 +189,7 @@ impl Controller {
             capture: Some(capture),
             key,
             cancel: self.lifetime.child(),
-            retention: Some(retention),
+            reservation: Some(reservation),
             service: self.service.clone(),
         });
         self.admit(start).map_err(|(error, start)| {
@@ -351,15 +358,21 @@ impl Controller {
         }
     }
     pub(crate) async fn shutdown(mut self) {
-        self.lifetime.cancel();
+        self.stop();
         if let Some(task) = self.task.take() {
             let _ = task.await;
         }
     }
+    fn stop(&self) {
+        self.lifetime.cancel();
+        // The single actor task either wakes now or consumes the stored permit at
+        // its next wait, after checking the flag.
+        self.wake.notify_one();
+    }
 }
 impl Drop for Controller {
     fn drop(&mut self) {
-        self.lifetime.cancel();
+        self.stop();
     }
 }
 fn is_current(state: &State, key: Key) -> bool {
@@ -454,7 +467,7 @@ async fn run(
     mutation: Arc<Semaphore>,
     mut input: mpsc::Receiver<Input>,
     state: Arc<Mutex<State>>,
-    stop: Cancellation,
+    (stop, wake): (Cancellation, Arc<Notify>),
 ) {
     if !service.available() {
         return;
@@ -510,7 +523,7 @@ async fn run(
                 None => { stop.cancel(); break; }
             },
             _ = saves.join_next(), if !saves.is_empty() => {},
-            _ = tokio::time::sleep(Duration::from_millis(25)) => {},
+            () = wake.notified() => {},
         }
     }
     stop.cancel();
@@ -549,7 +562,7 @@ fn prepare(owned: WorkerOwned<Start>) -> Result<WorkerOwned<checksum::Work>, FsE
         Capture::Verify(request) => checksum::Work::verify(
             request,
             start.cancel.clone(),
-            start.retention.take().expect("reserved quota"),
+            start.reservation.take().expect("reserved quota"),
             start.service.clone(),
         ),
         capture => {
@@ -557,7 +570,7 @@ fn prepare(owned: WorkerOwned<Start>) -> Result<WorkerOwned<checksum::Work>, FsE
             checksum::Work::calculate(
                 request,
                 start.cancel.clone(),
-                start.retention.take().expect("reserved quota"),
+                start.reservation.take().expect("reserved quota"),
                 source,
                 start.service.clone(),
             )
@@ -633,26 +646,24 @@ async fn export(
 ) {
     let id = save.id;
     let key = save.key;
+    // One queued acquisition keeps this save's FIFO place at the gate; dropping and
+    // re-requesting it would let every later Delete/Rename overtake the save.
+    let acquire = mutation
+        .clone()
+        .acquire_many_owned(crate::transfer_leases::NAMESPACE_WEIGHT);
+    tokio::pin!(acquire);
     let permit = loop {
         if save.cancel.is_cancelled() {
             break Err(cancelled());
         }
-        match tokio::time::timeout(
-            Duration::from_millis(25),
-            mutation
-                .clone()
-                .acquire_many_owned(crate::transfer_leases::NAMESPACE_WEIGHT),
-        )
-        .await
-        {
-            Ok(Ok(permit)) => break Ok(permit),
-            Ok(Err(_)) => {
-                break Err(failure(
-                    io::ErrorKind::BrokenPipe,
-                    "Mutation service is closing.",
-                ));
+        tokio::select! {
+            permit = &mut acquire => {
+                break permit.map_err(|_| {
+                    failure(io::ErrorKind::BrokenPipe, "Mutation service is closing.")
+                });
             }
-            Err(_) => {}
+            // Cancellation is a polled flag; check it while queued.
+            () = tokio::time::sleep(Duration::from_millis(25)) => {}
         }
     };
     let result = match permit {

@@ -26,6 +26,14 @@ pub(super) struct ConflictState {
 }
 
 impl ConflictState {
+    /// Whether the worker currently awaits a decision (it registers before sending).
+    #[cfg(test)]
+    pub(super) fn is_pending(&self) -> bool {
+        self.pending
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_some()
+    }
     pub(super) fn resolve(&self, token: u64, choice: MetadataConflictPolicy) {
         let pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
         if let Some((expected, sender)) = pending.as_ref()
@@ -85,6 +93,28 @@ impl Edit {
         targets: &[Arc<dyn PreparedMutation>],
         cancel: &Cancellation,
     ) -> Result<Self, FsError> {
+        Self::with_snapshots(id, 0, MetadataPatch::default(), targets, cancel)
+    }
+
+    /// Recursive execution: freshly enumerated and pinned children are read once
+    /// and the confirmed patch is applied directly, without a preview refresh.
+    pub(super) fn prepare_confirmed(
+        id: OperationId,
+        revision: u64,
+        patch: MetadataPatch,
+        targets: &[Arc<dyn PreparedMutation>],
+        cancel: &Cancellation,
+    ) -> Result<Self, FsError> {
+        Self::with_snapshots(id, revision, patch, targets, cancel)
+    }
+
+    fn with_snapshots(
+        id: OperationId,
+        revision: u64,
+        patch: MetadataPatch,
+        targets: &[Arc<dyn PreparedMutation>],
+        cancel: &Cancellation,
+    ) -> Result<Self, FsError> {
         let mut snapshots = Vec::with_capacity(targets.len());
         for target in targets {
             snapshots.push(target.metadata_snapshot(cancel)?);
@@ -111,7 +141,7 @@ impl Edit {
             conflict_state: Arc::default(),
             result: Arc::default(),
         };
-        edit.update(0, MetadataPatch::default(), targets, cancel);
+        edit.apply(revision, patch, targets, cancel, false);
         Ok(edit)
     }
 
@@ -160,9 +190,20 @@ impl Edit {
     pub(super) fn update(
         &mut self,
         revision: u64,
+        patch: MetadataPatch,
+        targets: &[Arc<dyn PreparedMutation>],
+        cancel: &Cancellation,
+    ) {
+        self.apply(revision, patch, targets, cancel, revision != 0);
+    }
+
+    fn apply(
+        &mut self,
+        revision: u64,
         mut patch: MetadataPatch,
         targets: &[Arc<dyn PreparedMutation>],
         cancel: &Cancellation,
+        refresh: bool,
     ) {
         patch.resolve_now(SystemTime::now());
         self.preview.revision = revision;
@@ -180,7 +221,7 @@ impl Edit {
             .iter()
             .zip(&mut self.snapshots)
             .map(|(target, snapshot)| {
-                if revision == 0 {
+                if !refresh {
                     return None;
                 }
                 match target.metadata_snapshot(cancel) {
@@ -387,21 +428,20 @@ pub(super) fn execute(mut job: worker::Job, outbox: Outbox) -> OperationProgress
                             && children.len() + stack.len() + root_count
                                 <= MAX_METADATA_TARGETS =>
                     {
-                        let mut child_edit =
-                            match Edit::prepare(progress.id, &children, &job.cancel) {
-                                Ok(edit) => edit,
-                                Err(error) => {
-                                    frame.issue = Some(error);
-                                    stack.push(frame);
-                                    continue;
-                                }
-                            };
-                        child_edit.update(
+                        let child_edit = match Edit::prepare_confirmed(
+                            progress.id,
                             edit.preview.revision,
                             patch.clone(),
                             &children,
                             &job.cancel,
-                        );
+                        ) {
+                            Ok(edit) => edit,
+                            Err(error) => {
+                                frame.issue = Some(error);
+                                stack.push(frame);
+                                continue;
+                            }
+                        };
                         frame.visited = true;
                         let depth = frame.depth + 1;
                         stack.push(frame);

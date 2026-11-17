@@ -14,6 +14,9 @@ struct Fixture {
     cancel_data: bool,
     data_opens: AtomicUsize,
     data_reads: AtomicUsize,
+    /// Manifest and data reads, and those made with exclusive disk admission.
+    reads: AtomicUsize,
+    exclusive_reads: AtomicUsize,
 }
 impl Fixture {
     fn new() -> Self {
@@ -28,6 +31,8 @@ impl Fixture {
             cancel_data: false,
             data_opens: AtomicUsize::new(0),
             data_reads: AtomicUsize::new(0),
+            reads: AtomicUsize::new(0),
+            exclusive_reads: AtomicUsize::new(0),
         }
     }
 }
@@ -147,6 +152,10 @@ impl TransferSource for Source {
         }
     }
     fn read_chunk(&mut self, buffer: &mut [u8], cancel: &Cancellation) -> Result<usize, FsError> {
+        self.fixture.reads.fetch_add(1, Ordering::Relaxed);
+        if worker::holds_exclusive_io() {
+            self.fixture.exclusive_reads.fetch_add(1, Ordering::Relaxed);
+        }
         if !self.manifest {
             self.fixture.data_reads.fetch_add(1, Ordering::Relaxed);
             if self.fixture.fail_data {
@@ -175,6 +184,9 @@ impl TransferSource for Source {
     }
 }
 fn run(fixture: Arc<Fixture>) -> Arc<ChecksumRun> {
+    run_on(fixture, &worker::UNCLASSIFIED)
+}
+fn run_on(fixture: Arc<Fixture>, storage: &dyn worker::Storage) -> Arc<ChecksumRun> {
     verify(
         ChecksumVerifyRequest {
             job: ChecksumJobId(41),
@@ -183,6 +195,7 @@ fn run(fixture: Arc<Fixture>) -> Arc<ChecksumRun> {
             limits: ChecksumLimits::default(),
         },
         &Provider(fixture),
+        storage,
         &Cancellation::default(),
         ChecksumRetention::new(()),
         |_| true,
@@ -255,4 +268,23 @@ fn actual_reads_are_bound_to_the_captured_manifest_and_generation() {
     assert_eq!(result.rows[0].state, ChecksumRowState::Verified);
     assert_eq!(result.summary.progress.verified, 1);
     assert_eq!(fixture.data_reads.load(Ordering::Relaxed), 2);
+}
+
+#[test]
+fn verification_reads_follow_one_classification_of_the_manifest_volume() {
+    for ssd in [true, false] {
+        let fixture = Arc::new(Fixture::new());
+        let volumes = worker::Recorded::new(move |_| ssd);
+        let result = run_on(fixture.clone(), &volumes);
+        assert_eq!(result.rows[0].state, ChecksumRowState::Verified);
+        // Every entry is confined to the manifest directory's volume.
+        assert_eq!(volumes.queries(), [fixture.path.as_path()]);
+        let reads = fixture.reads.load(Ordering::Relaxed);
+        assert!(reads > fixture.data_reads.load(Ordering::Relaxed));
+        assert_eq!(
+            fixture.exclusive_reads.load(Ordering::Relaxed),
+            if ssd { 0 } else { reads },
+            "ssd: {ssd}"
+        );
+    }
 }

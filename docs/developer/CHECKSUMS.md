@@ -50,6 +50,12 @@ legacy compatibility algorithms. A single ordered read stream updates all chosen
 algorithms. Failed, changed or cancelled rows contain no final digests. Copy's
 mandatory independent SHA-256 verification is unaffected by these choices.
 
+Bytes are read through the pinned native handle. The source's namespace binding,
+identity and revision are revalidated before the first and after the last read;
+in between at most every 250 ms, because each check reopens the parent and name
+(and every manifest ancestor). The intermediate checks only shorten how long a
+replaced or rewritten source keeps streaming; the final check decides the row.
+
 `ChecksumEvent` carries Queued, Started, Verifying, bounded Batch, Progress or Finished.
 Rows are immutable shared objects with stable IDs; Finished retains the complete
 bounded `ChecksumRun`. The UI keeps streamed row references until Finished, then
@@ -69,12 +75,35 @@ text, selection state and a default select action without starting file operatio
 ## Ownership and cancellation
 
 The backend retains at most 32 admitted/result jobs under a process quota; the
-UI initially permits four visible result windows. Generation tags reject late
+UI initially permits four visible result windows. Admission reserves worst-case
+memory from a shared 64 MiB budget: expanded targets plus rows (16 MiB for a
+selection) or, for verification, the request plus three row budgets (at least
+24 MiB). A finished run returns everything beyond its actual bounded rows, captured
+roots and diagnostics, so four retained result windows still leave room for a
+recalculation or a new window. Generation tags reject late
 events. Close submits `ReleaseChecksums`, which cancels active calculation and
 associated manifest saves and releases the actor's retained result. A full command
 queue keeps the window and ownership visible with an error. Stop sends a separate
 cancellation and retains completed rows. Backend tasks keep native resources until
 their actual calls return; UI cancellation never releases an I/O permit early.
+
+Each native checksum or verification call (open, enumeration, read chunk,
+revalidation) takes the process-wide disk gate for that call only, so other disk
+users interleave between a run's chunks. Admission follows the
+[storage policy](DISK_OPERATIONS.md#meaning-and-storage-policy): a source volume
+positively identified as a local SSD is read with Shared admission beside other
+disk I/O; unknown, rotational and network volumes (and every read when no storage
+classifier is installed) use Exclusive admission. Calculation classifies the
+directory of each selected entry once (consecutive entries of one directory share
+the query) and a recursively selected directory by its own path: a walk never
+leaves the root's volume, but the root itself can be a mount point. Verification
+classifies the manifest's directory once, because every entry is confined to its
+volume. An Exclusive call waits until no Shared holder remains (see the
+[transfer contract](TRANSFERS.md) for how long a running transfer keeps its slot)
+and, once queued, is served before later gate requests. A manifest save keeps
+Exclusive admission for its few namespace calls and waits for the mutation gate
+with one queued acquisition, so later Delete/Rename requests cannot overtake it.
+Idle checksum actors do not poll; shutdown wakes them.
 
 Main-window shutdown hides owned tool windows without borrowing Presenter through
 an already borrowed shutdown callback. A closing flag prevents late refresh from
@@ -147,9 +176,15 @@ only calculation rows are eligible for manifest export. Counts of verified,
 mismatched and missing files are shown independently; interrupted or partially
 failed verification cannot be reported as complete success.
 
-Input is bounded to 8 MiB, with aggregate decoded text/entry accounting under the
-existing retained-byte limit and at most 16,384 rows by default. These resource
-budgets do not truncate filenames or impose MAX_PATH. Native Open/Save pickers run
+Encoded input is bounded to 8 MiB and reserved separately. Decoded UTF-16 text
+and every entry share the 8 MiB retained-byte limit; an entry is charged like a
+calculated row, four bytes per absolute-path byte plus 1 KiB (about 5,900 entries
+of 100-byte paths), with at most 16,384 rows and 64 path components below the
+manifest's directory by default. A calculation also keeps the verifier's per-line
+headroom, so every completed or acknowledged partial run fits these limits when
+saved; a manifest saved far above deeply nested sources can still exceed the
+component limit and is refused before publication with that budget named. These
+resource budgets do not truncate filenames or impose MAX_PATH. Native Open/Save pickers run
 on their existing dedicated backend worker. Their replies are checked against the
 session/generation; closure cancels the picker, and a late reply cannot start work
 or overwrite another draft. Browse only fills a field; Verify/Save is explicit.

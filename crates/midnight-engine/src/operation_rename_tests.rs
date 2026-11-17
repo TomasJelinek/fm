@@ -162,6 +162,53 @@ async fn rename_conflict_skip_cancel_and_shutdown_keep_both_files() {
 }
 
 #[tokio::test]
+async fn rename_conflict_alternate_name_must_be_one_basename_before_any_native_call() {
+    for alternate in ["nested/renamed.txt", "..", "../outside.txt", ""] {
+        let temp = fixture();
+        let mut run = Run::start(temp.path(), "existing.txt");
+        let conflict = run.conflict().await;
+        run.decide(&conflict, CopyChoice::Rename(alternate.into()));
+        let done = run.finish().await;
+        assert_eq!(
+            done.state,
+            OperationState::Failed,
+            "{alternate:?}: {done:?}"
+        );
+        // The engine rejects the choice itself; native name validation is not the only guard.
+        assert_eq!(
+            done.errors[0].kind,
+            io::ErrorKind::InvalidInput,
+            "{alternate:?}"
+        );
+        assert!(
+            done.errors[0].message.contains("one native basename"),
+            "{alternate:?}: {done:?}"
+        );
+        preserved(temp.path(), b"consented original");
+    }
+}
+
+#[test]
+fn rename_alternate_basename_rule_matches_confirmation() {
+    for valid in ["renamed.txt", "č文 🦀.txt", ".hidden"] {
+        assert!(single_basename(std::ffi::OsStr::new(valid)), "{valid:?}");
+    }
+    for invalid in ["", ".", "..", "a/b", "/rooted", "name\0"] {
+        assert!(
+            !single_basename(std::ffi::OsStr::new(invalid)),
+            "{invalid:?}"
+        );
+    }
+    #[cfg(windows)]
+    for invalid in ["a\\b", "C:name", "\\\\server\\share"] {
+        assert!(
+            !single_basename(std::ffi::OsStr::new(invalid)),
+            "{invalid:?}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn rename_conflict_changed_destination_requires_fresh_consent() {
     let temp = fixture();
     let mut run = Run::start(temp.path(), "existing.txt");
