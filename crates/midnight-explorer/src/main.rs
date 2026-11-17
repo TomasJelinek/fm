@@ -197,11 +197,9 @@ fn run() -> Result<u8, String> {
             let executable = std::env::current_exe().map_err(|error| error.to_string())?;
             // The parent stays until the child exits so launchers and scripts observe the
             // whole session; the child reports its own errors, and its status is forwarded.
-            let status =
-                startup_recovery::software_command(&executable, &restart_arguments, &restart_cwd)
-                    .status()
-                    .map_err(|error| error.to_string())?;
-            software_status.set(startup_recovery::child_status(status.code()));
+            let mut command =
+                startup_recovery::software_command(&executable, &restart_arguments, &restart_cwd);
+            software_status.set(startup_recovery::run_child(&mut command)?);
             Ok(())
         },
     )

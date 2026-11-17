@@ -38,6 +38,17 @@ pub(crate) fn child_status(code: Option<i32>) -> u8 {
     code.and_then(|code| u8::try_from(code).ok()).unwrap_or(1)
 }
 
+/// Run the software-rendering child to completion and return the status to forward.
+/// Threads of the failed attempt that outlived its bounded runtime shutdown may still start
+/// workers, and the child inherits every inheritable handle, so it is spawned under the
+/// worker process-creation lock. The lock covers only the spawn, never the child's session.
+pub(crate) fn run_child(command: &mut Command) -> Result<u8, String> {
+    let mut child =
+        midnight_worker_platform::spawn_command(command).map_err(|error| error.to_string())?;
+    let status = child.wait().map_err(|error| error.to_string())?;
+    Ok(child_status(status.code()))
+}
+
 pub(crate) fn finish(
     result: Result<Attempt, String>,
     cleanup: impl FnOnce(),
@@ -150,6 +161,84 @@ mod tests {
         assert_eq!(child_status(Some(0xC000_0005_u32 as i32)), 1);
         assert_eq!(child_status(Some(256)), 1);
         assert_eq!(child_status(None), 1);
+    }
+
+    const CHILD_ENV: &str = "MIDNIGHT_SOFTWARE_CHILD_FIXTURE";
+    const CHILD_READY: &str = "midnight-software-child-ready";
+    const CHILD_STATUS: u8 = 7;
+
+    #[test]
+    fn software_child_runs_without_the_creation_lock_and_its_status_is_forwarded() {
+        use std::{
+            io::{BufRead, BufReader},
+            process::Stdio,
+            sync::mpsc,
+            time::Duration,
+        };
+        const DEADLINE: Duration = Duration::from_secs(30);
+        let (input, release) = std::io::pipe().unwrap();
+        let (output, written) = std::io::pipe().unwrap();
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        command
+            .args([
+                "--exact",
+                "startup_recovery::tests::software_child_fixture",
+                "--ignored",
+                "--nocapture",
+            ])
+            .env(CHILD_ENV, "1")
+            .stdin(input)
+            .stdout(written)
+            .stderr(Stdio::null());
+        let (finished, result) = mpsc::channel();
+        let runner = std::thread::spawn(move || {
+            let _ = finished.send(run_child(&mut command));
+        });
+        let (ready, started) = mpsc::channel();
+        std::thread::spawn(move || {
+            // Ends at end of output, when the runner has dropped the command after the child.
+            for line in BufReader::new(output).lines().map_while(Result::ok) {
+                if line.contains(CHILD_READY) {
+                    let _ = ready.send(());
+                }
+            }
+        });
+        started
+            .recv_timeout(DEADLINE)
+            .expect("the software child did not start");
+        // run_child now waits for the running child; worker creations must not wait with it.
+        // (That a `spawn_command` spawn waits for a locked creation is observed natively by the
+        // midnight-platform-windows launch tests; this crate forbids unsafe code.)
+        #[cfg(windows)]
+        {
+            let (acquired, lock) = mpsc::channel();
+            std::thread::spawn(move || {
+                drop(midnight_worker_platform::lock_process_creation());
+                let _ = acquired.send(());
+            });
+            lock.recv_timeout(DEADLINE)
+                .expect("the creation lock was held while the software child ran");
+        }
+        drop(release);
+        let status = result
+            .recv_timeout(DEADLINE)
+            .expect("the software child did not exit");
+        assert_eq!(status, Ok(CHILD_STATUS));
+        runner.join().unwrap();
+    }
+
+    #[test]
+    #[ignore = "Owned subprocess fixture; started only by the software child test."]
+    fn software_child_fixture() {
+        use std::io::{Read, Write};
+        if std::env::var_os(CHILD_ENV).is_none() {
+            return;
+        }
+        println!("{CHILD_READY}");
+        std::io::stdout().flush().unwrap();
+        // Runs until the parent test closes this input, then exits with a distinctive status.
+        std::io::stdin().read_to_end(&mut Vec::new()).unwrap();
+        std::process::exit(CHILD_STATUS.into());
     }
 
     #[test]
