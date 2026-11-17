@@ -10,6 +10,18 @@ fn temporary() -> tempfile::TempDir {
 }
 
 fn launch_shell(shell: &Path, source: &str, home: &Path, cwd: &Path, input: &[u8]) -> String {
+    // A fresh HOME must not add distribution first-use notices to terminal output.
+    fs::write(home.join(".hushlogin"), b"").unwrap();
+    if shell.file_name() == Some(OsStr::new("bash")) {
+        // Piped Readline can clip long prompts even with TERM=dumb and COLUMNS set.
+        // Keep normal rc loading and custom PS1 while disabling only fixture editing.
+        let mut bashrc = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(home.join(".bashrc"))
+            .unwrap();
+        bashrc.write_all(b"\nset +o emacs\nset +o vi\n").unwrap();
+    }
     let request = TerminalRequest {
         shell: ShellFlavor::Posix,
         mode: TerminalMode::Standard,

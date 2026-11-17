@@ -117,6 +117,8 @@ fn run_script_fixture(header: &[u8], shell: &Path, alias: bool) -> (Vec<u8>, Vec
     let after_false = temp.path().join("after-false");
     let home = temp.path().join("home");
     fs::create_dir(&home).unwrap();
+    // Suppress distribution admin hints without bypassing interactive startup.
+    fs::write(home.join(".hushlogin"), b"").unwrap();
     fs::write(home.join(".bashrc"), "PS1='SELECTED BASH HANDOFF> '\n").unwrap();
     let terminal =
         crate::desktop::executable_terminal_with(Path::new("/usr/bin/xterm"), &path, shell)
