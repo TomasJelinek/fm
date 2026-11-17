@@ -136,6 +136,46 @@ ones. The SDK therefore cuts a longer author diagnostic (failure or volume
 diagnostic) at a character boundary and ends it with `…` before encoding, so a
 deep path in a message cannot replace the typed error with a framing status.
 
+### Wire values and field order
+
+Request fields follow the table's order: IDs, ordinals and offsets are u64;
+`max_entries` and the ReadAt length are u32; an address uses the Address encoding
+below; ResolveText carries one text. Every response is the u16 tag and its fields:
+
+| Tag | Response | Fields after the tag |
+| --- | --- | --- |
+| 1 | Unit | none |
+| 2 | Resolved | mount u64, Node |
+| 3 | Node | Node |
+| 4 | Page | cursor u64, page ordinal u64, done bool, u32 count, that many Nodes |
+| 5 | Parent | present bool, then a Node when present |
+| 6 | Opened | reader u64, length u64, revision blob |
+| 7 | Content | bytes blob, eof bool |
+| 8 | Volumes | u32 count; each volume: ID text, display text, root Address |
+| 9 | StorageKind | storage kind u8 |
+| 10 | SpaceInfo | available u64, total u64 |
+| 11 | Failed | Failure |
+| 12–13 | VolumeLabel, VolumeInformation | see ABI minor 1 below |
+| 14 | Activated | see ABI minor 2 below |
+| 15–16 | RenamePrepared, RenameState | see ABI minor 3 below |
+
+- **Address:** encoding u8 (0 Opaque, 1 Windows UTF-16LE, 2 Unix bytes), byte blob.
+- **Node:** ID u64, Address, name encoding u8 (0 Opaque, 1 UTF-8, 2 Windows
+  UTF-16LE, 3 Unix bytes), raw-name blob, display text, kind u8 (1 Directory,
+  2 File, 3 DirectoryLink, 4 Symlink, 5 Other), Metadata.
+- **Metadata:** u16 presence bits (1 size, 2 modified, 4 native attributes, 8 Unix
+  mode); each present field in bit order (size u64; modified i64 Unix seconds then
+  u32 nanoseconds; attributes u32; mode u32); then compression u8 (0 Unknown,
+  1 Uncompressed, 2 Compressed).
+- **Failure:** code u16, OS-code present bool, i32 OS code when present, diagnostic
+  text. Codes 1–10 are Invalid, Unsupported, NotFound, PermissionDenied,
+  SourceChanged, Cancelled, ResourceLimit, Io, StaleReference and Busy; ABI minor 2
+  adds 11–15.
+- **Storage kind:** 0 Unknown, 1 LocalSsd, 2 Rotational, 3 Network.
+
+The C header declares every tag and value in this document as an `ME_FS_*`
+constant; a test checks them against the public encoder.
+
 ### Optional volume information (ABI minor 1)
 
 `CAP_VOLUME_DETAILS` is 64 and its manifest spelling is `volume-details`. The
@@ -162,7 +202,10 @@ filesystem and source; optional u64 physical total, filesystem free and caller
 available; storage-kind byte; optional read-only boolean; u32 property count and
 property bytes; u32 diagnostic count and UTF-8 diagnostic strings. Optional scalar
 fields use a present boolean followed by their value. Properties use the public
-`VolumeProperty` values 1–14, appear at most once, and number at most 14. At most
+`VolumeProperty` values 1–14 (1 CasePreservedNames, 2 CaseSensitiveLookup,
+3 UnicodeNames, 4 PersistentAcls, 5 FileCompression, 6 SparseFiles, 7 NamedStreams,
+8 HardLinks, 9 ReparsePoints, 10 Encryption, 11 Quotas, 12 NoExecute, 13 NoSetId,
+14 NoDeviceFiles), appear at most once, and number at most 14. At most
 16 diagnostics of at most 4096 bytes describe partial failures. Present free or
 available cannot exceed a present total. Unknown and absent values are preserved;
 availability is never substituted for filesystem free or physical total.
