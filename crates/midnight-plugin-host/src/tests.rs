@@ -313,6 +313,9 @@ fn native_broker_rejects_directories_and_preserves_large_offsets() {
     assert!(CapturedFile::capture(root.path()).is_err());
     let path = root.path().join("sparse.bin");
     let mut file = std::fs::File::create(&path).unwrap();
+    // Linux files are sparse by default; NTFS would otherwise zero-fill 4 GiB.
+    #[cfg(windows)]
+    super::tests_windows::sparse(&file);
     use std::io::{Seek, SeekFrom, Write};
     file.seek(SeekFrom::Start((1 << 32) + 11)).unwrap();
     file.write_all(b"bytes").unwrap();
