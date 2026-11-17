@@ -132,18 +132,22 @@ fn unchanged_watch_failure_diagnostic_retains_snapshot_identity_for_coalescing()
     branch(&mut fixture, "z-parent", BranchAction::Expand);
     let view = fixture.session.projection().clone();
     fixture.session.commit(&view);
+    // Provider failure text gets a spool report. The watch coalesces an
+    // unchanged failure by its details identity, so it must be reused.
+    *fixture.graph.target_error.lock().unwrap() =
+        Some(ProviderError::Failed("fixture target unavailable".into()));
     *fixture.graph.target_failure.lock().unwrap() = Some(4);
     let error = fixture
         .session
         .watch_scope()
         .err()
         .expect("scope resolution must fail");
+    assert!(matches!(error, ProviderError::Failed(_)), "{error:?}");
     let diagnostic = fixture.session.watch_failure_diagnostic(&error);
-    assert_eq!(error, ProviderError::ResourceLimited);
-    assert!(
-        diagnostic.details().is_none(),
-        "a fixed capacity message needs no spool report"
-    );
+    let details = diagnostic
+        .details()
+        .expect("provider failure text has a details report")
+        .clone();
     let calls = fixture.graph.target_calls.load(Ordering::SeqCst);
     for _ in 0..5 {
         fixture.session.commit(&view);
@@ -153,12 +157,38 @@ fn unchanged_watch_failure_diagnostic_retains_snapshot_identity_for_coalescing()
             .err()
             .expect("scope resolution must fail");
         let repeated = fixture.session.watch_failure_diagnostic(&error);
-        assert_eq!(
-            diagnostic, repeated,
+        assert!(
+            repeated
+                .details()
+                .is_some_and(|repeated| Arc::ptr_eq(repeated, &details)),
             "unchanged cached failure must not dirty the watch again"
         );
+        assert_eq!(diagnostic, repeated);
     }
     assert_eq!(fixture.graph.target_calls.load(Ordering::SeqCst), calls);
+}
+
+#[test]
+fn capacity_watch_failure_carries_only_its_fixed_message() {
+    let mut fixture = fixture();
+    branch(&mut fixture, "z-parent", BranchAction::Expand);
+    let view = fixture.session.projection().clone();
+    fixture.session.commit(&view);
+    *fixture.graph.target_failure.lock().unwrap() = Some(4);
+    let error = fixture
+        .session
+        .watch_scope()
+        .err()
+        .expect("scope resolution must fail");
+    assert_eq!(error, ProviderError::ResourceLimited);
+    assert!(
+        fixture
+            .session
+            .watch_failure_diagnostic(&error)
+            .details()
+            .is_none(),
+        "a fixed capacity message needs no spool report"
+    );
 }
 
 #[test]
@@ -838,6 +868,30 @@ fn unchanged_refresh_publishes_nothing_and_changed_branch_publishes_once() {
 }
 
 #[test]
+fn replacing_an_empty_size_lookup_keeps_an_unchanged_refresh_free() {
+    let mut fixture = fixture();
+    branch(&mut fixture, "z-parent", BranchAction::Expand);
+    let before = fixture.session.projection().clone();
+    // Each RefreshLoaded command installs a new, still empty, size lookup.
+    fixture.session.size_sort(Arc::default());
+    refresh(&mut fixture);
+    while let Some(job) = fixture.session.take_work().unwrap() {
+        assert!(
+            !fixture
+                .session
+                .apply(job.run(), &Cancellation::default())
+                .unwrap(),
+            "an empty lookup orders nothing; unchanged listings need no projection"
+        );
+    }
+    assert!(matches!(
+        fixture.session.finish_refresh(),
+        Some(TreeEvent::Refreshed { result: Ok(()), .. })
+    ));
+    assert!(Arc::ptr_eq(fixture.session.projection(), &before));
+}
+
+#[test]
 fn refresh_after_size_invalidation_rebuilds_even_when_listings_are_unchanged() {
     let mut fixture = fixture();
     let before = fixture.session.projection().clone();
@@ -864,30 +918,6 @@ fn refresh_after_size_invalidation_rebuilds_even_when_listings_are_unchanged() {
             .apply(job.run(), &Cancellation::default())
             .unwrap()
     );
-}
-
-#[test]
-fn replacing_an_empty_size_lookup_keeps_an_unchanged_refresh_free() {
-    let mut fixture = fixture();
-    branch(&mut fixture, "z-parent", BranchAction::Expand);
-    let before = fixture.session.projection().clone();
-    // Each RefreshLoaded command installs a new, still empty, size lookup.
-    fixture.session.size_sort(Arc::default());
-    refresh(&mut fixture);
-    while let Some(job) = fixture.session.take_work().unwrap() {
-        assert!(
-            !fixture
-                .session
-                .apply(job.run(), &Cancellation::default())
-                .unwrap(),
-            "an empty lookup orders nothing; unchanged listings need no projection"
-        );
-    }
-    assert!(matches!(
-        fixture.session.finish_refresh(),
-        Some(TreeEvent::Refreshed { result: Ok(()), .. })
-    ));
-    assert!(Arc::ptr_eq(fixture.session.projection(), &before));
 }
 
 #[test]

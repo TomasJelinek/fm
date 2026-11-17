@@ -27,6 +27,8 @@ struct Graph {
     failures: Mutex<std::collections::HashSet<u64>>,
     target_calls: AtomicUsize,
     target_failure: Mutex<Option<u64>>,
+    // Error of `target_failure`; a capacity failure unless set.
+    target_error: Mutex<Option<ProviderError>>,
     target_paths: Mutex<HashMap<u64, PathBuf>>,
     browse_identities:
         Mutex<HashMap<u64, Result<Option<midnight_core::SizeDirectoryIdentity>, ProviderError>>>,
@@ -104,7 +106,12 @@ impl MountedFilesystem for Graph {
         self.target_calls.fetch_add(1, Ordering::SeqCst);
         let value = u64::from_le_bytes(node.as_bytes().try_into().unwrap());
         if *self.target_failure.lock().unwrap() == Some(value) {
-            return Err(ProviderError::ResourceLimited);
+            return Err(self
+                .target_error
+                .lock()
+                .unwrap()
+                .clone()
+                .unwrap_or(ProviderError::ResourceLimited));
         }
         if let Some(path) = self.target_paths.lock().unwrap().get(&value) {
             return Ok(ProviderTarget::Native(path.clone()));
@@ -195,6 +202,7 @@ fn fixture_with_root_path(extra: usize, kind: EntryKind, root_path: Option<PathB
         failures: Mutex::default(),
         target_calls: AtomicUsize::new(0),
         target_failure: Mutex::default(),
+        target_error: Mutex::default(),
         target_paths: Mutex::default(),
         browse_identities: Mutex::default(),
     });
