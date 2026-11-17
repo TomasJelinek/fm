@@ -59,6 +59,10 @@ the formatting authority; strict Clippy checks run in CI.
 
 Checks: `cargo fmt --all -- --check`,
 `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`.
-Source size: `pwsh scripts/check-source-size.ps1` on Windows or
+In a deeply nested Windows checkout `cargo fmt --all` can exceed the command-line
+length limit ("The filename or extension is too long"); run
+`cargo fmt -p <package> -- --check` per workspace package there instead.
+Source size: `pwsh scripts/check-source-size.ps1` (Windows PowerShell 5.1 also
+works: `powershell -NoProfile -File scripts/check-source-size.ps1`) on Windows or
 `bash scripts/check-source-size.sh` on Linux, including the root build helpers;
 no extra interpreter is required.
