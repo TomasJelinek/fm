@@ -8,10 +8,7 @@ pub(super) fn run(request: &Request, mounts: &Mounts) -> Result<ArchiveListing, 
         .unwrap_or_else(|e| e.into_inner())
         .take()
         .ok_or_else(|| error("Archive navigation request was already consumed"))?;
-    // A session opened by this request is not shared yet, so its listing may stop
-    // the worker on cancellation. A re-adopted mount is shared with other tabs,
-    // trees, viewers and jobs (see archive_shared.rs).
-    let (mut location, mount, opened) = match action {
+    let (mut location, mount) = match action {
         ArchiveAction::Open { path, format } => {
             let reserved = mounts.reserve()?;
             let (package, format) = request
@@ -49,11 +46,9 @@ pub(super) fn run(request: &Request, mounts: &Mounts) -> Result<ArchiveListing, 
                     )],
                 },
                 mount,
-                true,
             )
         }
         ArchiveAction::List(mut location) => {
-            let opened = location.mount.is_none();
             let mount = if let Some(raw) = location.mount.take() {
                 mounts.adopt(raw)?
             } else {
@@ -70,7 +65,7 @@ pub(super) fn run(request: &Request, mounts: &Mounts) -> Result<ArchiveListing, 
                     .ok_or_else(|| error("Archive is unavailable"))?;
                 mounts.adopt_reserved(raw, reserved)
             };
-            (location, mount, opened)
+            (location, mount)
         }
     };
     let canonical: Arc<dyn ArchiveMount> = mount.clone();
@@ -87,16 +82,9 @@ pub(super) fn run(request: &Request, mounts: &Mounts) -> Result<ArchiveListing, 
                     mount.source(),
                 )
             });
-    let nodes = if opened {
-        mount.list(location.directory, &request.cancel)?
-    } else {
-        crate::archive_shared::list(
-            mount.as_ref(),
-            location.directory,
-            &request.cancel,
-            &request.teardown,
-        )?
-    };
+    // A superseded listing of a shared mount ends between pages without stopping
+    // the worker that other tabs, trees, viewers and jobs use (archive_shared.rs).
+    let nodes = mount.list(location.directory, &request.cancel)?;
     let mut entries: Vec<_> = nodes.into_iter().map(Entry::from_archive).collect();
     for entry in &mut entries {
         timestamps::localize(entry, request.locale.as_deref());

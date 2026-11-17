@@ -42,7 +42,7 @@ pub(super) fn resolve(
             "Archive copy requires between 1 and 4096 captured entries.",
         ));
     }
-    let actual = list(&*mount, request.location.directory, cancel);
+    let actual = mount.list(request.location.directory, cancel);
     crate::copy_nested_retirement::observe_archive(&*mount);
     let actual = actual?;
     let mut actual_map = std::collections::HashMap::new();
@@ -252,6 +252,7 @@ impl TransferSource for Source {
             return Ok(0);
         }
         let length = buffer.len().min(256 * 1024) as u32;
+        // Cancelling a copy must not terminate the shared archive worker.
         let bytes = crate::archive_shared::read(
             &*self.mount,
             self.node.id.entry,
@@ -295,7 +296,7 @@ impl TransferSource for Source {
             return Err(failure("Archive file has no children."));
         }
         if self.children.is_none() {
-            let children = list(&*self.mount, self.node.id.entry, cancel);
+            let children = self.mount.list(self.node.id.entry, cancel);
             crate::copy_nested_retirement::observe_archive(&*self.mount);
             let children = children?;
             {
@@ -329,16 +330,6 @@ impl TransferSource for Source {
         )
         .map(|source| Some(Box::new(source) as Box<dyn TransferSource>))
     }
-}
-
-/// The mount is the panel's shared session: cancelling a copy never reaches its
-/// exchange (archive_shared.rs). Copy has no separate owner-teardown token.
-fn list(
-    mount: &dyn ArchiveMount,
-    directory: u64,
-    cancel: &Cancellation,
-) -> Result<Vec<ArchiveNode>, FsError> {
-    crate::archive_shared::list(mount, directory, cancel, &Cancellation::default())
 }
 
 fn check(mount: &dyn ArchiveMount, cancel: &Cancellation) -> Result<(), FsError> {
@@ -380,7 +371,7 @@ pub(crate) fn captured_root(
         .as_ref()
         .or(target.member.as_ref())
         .ok_or_else(|| failure("Archive root has no original member record."))?;
-    let actual = list(&*mount, expected.parent, cancel);
+    let actual = mount.list(expected.parent, cancel);
     crate::copy_nested_retirement::observe_archive(&*mount);
     let actual = actual?;
     {

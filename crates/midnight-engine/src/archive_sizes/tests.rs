@@ -8,8 +8,8 @@ use std::{
     time::Duration,
 };
 
-/// Like the filesystem host, a token cancelled while a listing is held terminates
-/// the shared worker, after which every exchange fails (see archive_shared.rs).
+/// Like the filesystem host, a listing cancelled while its page is held is
+/// discarded (Interrupted) and the shared mount stays usable.
 #[derive(Debug, Default)]
 struct Mount {
     rows: HashMap<u64, Vec<ArchiveNode>>,
@@ -19,7 +19,6 @@ struct Mount {
     blocked: Mutex<bool>,
     unblocked: Condvar,
     entered: tokio::sync::Notify,
-    terminated: AtomicBool,
 }
 impl Mount {
     fn block(&self) {
@@ -48,7 +47,7 @@ impl ArchiveMount for Mount {
                 std::io::Error::new(std::io::ErrorKind::Interrupted, "cancelled"),
             )
         };
-        if self.terminated.load(Ordering::Acquire) || cancel.is_cancelled() {
+        if cancel.is_cancelled() {
             return Err(interrupted());
         }
         self.entered.notify_one();
@@ -60,7 +59,6 @@ impl ArchiveMount for Mount {
                 .unwrap(),
         );
         if cancel.is_cancelled() {
-            self.terminated.store(true, Ordering::Release);
             return Err(interrupted());
         }
         Ok(self.rows.get(&id).cloned().unwrap_or_default())
@@ -473,10 +471,8 @@ async fn bounded_queue_rejects_overflow_and_full_scan_supersedes_pending_request
             selection: Some(Arc::new(HashSet::new())),
         })
         .await;
-    // The superseded listing drains instead of terminating the shared mount.
     mount.release();
     let outcomes = finished(&controller, &mut events, 11).await;
-    assert!(!mount.terminated.load(Ordering::Acquire));
     for scan in 2..=9 {
         assert!(
             outcomes.iter().any(
@@ -740,16 +736,10 @@ async fn sorting_does_not_cancel_active_capture_but_explicit_cancel_does() {
             scan: FolderSizeScanId(1),
         })
         .await;
-    // Cancelling the scan must not terminate the archive other owners still use:
-    // the admitted listing drains and the traversal stops before the next one.
+    // The held page is discarded and the traversal stops before another listing.
     mount.release();
     let result = finished(&controller, &mut events, 1).await;
-    assert!(
-        !mount.terminated.load(Ordering::Acquire),
-        "size-scan cancellation reached the shared archive exchange"
-    );
     assert_eq!(mount.lists.load(Ordering::Relaxed), 1);
-    assert!(mount.list(2, &Cancellation::default()).is_ok());
     assert!(result.iter().any(|e| matches!(
         e,
         Event::Finished {

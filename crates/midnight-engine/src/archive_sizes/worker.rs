@@ -408,8 +408,7 @@ impl Worker {
             .map(|entry| entry.id.0)
             .collect();
         let reports = self.reports.clone();
-        let teardown = self.lane.stop.clone();
-        let scanned = scan::compute_until(
+        let scanned = scan::compute_checked(
             mount.as_ref(),
             scan::ScanScope {
                 address: &location.address,
@@ -418,7 +417,6 @@ impl Worker {
             },
             &roots,
             cancel,
-            &teardown,
             &mut |id, size| {
                 let cache = self.store.get(&mount, self.active_mount);
                 if cache.values.len() >= scan::MAX_NODES && !cache.values.contains_key(&id) {

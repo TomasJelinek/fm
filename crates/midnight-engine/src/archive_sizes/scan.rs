@@ -91,8 +91,6 @@ struct Scan<'a> {
     mount: &'a dyn ArchiveMount,
     address: &'a ArchiveAddress,
     cancel: &'a Cancellation,
-    /// The only token forwarded into the shared mount (see archive_shared.rs).
-    teardown: &'a Cancellation,
     log: ReportLog,
     seen: HashSet<u64>,
     names: usize,
@@ -199,15 +197,14 @@ impl Scan<'_> {
             );
             return (frame, true);
         }
-        let children =
-            match crate::archive_shared::list(self.mount, id.entry, self.cancel, self.teardown) {
-                Ok(rows) => rows,
-                Err(error) => {
-                    self.failure(&mut frame.size, &error);
-                    let keep_going = self.validate(&mut frame.size);
-                    return (frame, keep_going);
-                }
-            };
+        let children = match self.mount.list(id.entry, self.cancel) {
+            Ok(rows) => rows,
+            Err(error) => {
+                self.failure(&mut frame.size, &error);
+                let keep_going = self.validate(&mut frame.size);
+                return (frame, keep_going);
+            }
+        };
         if !self.validate(&mut frame.size) {
             return (frame, false);
         }
@@ -320,35 +317,11 @@ pub(crate) struct ScanScope<'a> {
     pub reserved: &'a [u64],
 }
 
-/// Scan a shared mount without an owner-teardown token: `cancel` stops the
-/// traversal between listings, while an admitted listing drains and is discarded.
 pub(crate) fn compute_checked(
     mount: &dyn ArchiveMount,
     scope: ScanScope<'_>,
     roots: &[ArchiveNode],
     cancel: &Cancellation,
-    emit: &mut dyn FnMut(VirtualEntryId, FolderSize) -> bool,
-    reports: &crate::ReportArena,
-) -> Result<bool, FsError> {
-    compute_until(
-        mount,
-        scope,
-        roots,
-        cancel,
-        &Cancellation::default(),
-        emit,
-        reports,
-    )
-}
-
-/// As `compute_checked`, additionally forwarding the owner's `teardown` token
-/// (shutdown) into in-flight listings. Request cancellation never reaches them.
-pub(super) fn compute_until(
-    mount: &dyn ArchiveMount,
-    scope: ScanScope<'_>,
-    roots: &[ArchiveNode],
-    cancel: &Cancellation,
-    teardown: &Cancellation,
     emit: &mut dyn FnMut(VirtualEntryId, FolderSize) -> bool,
     reports: &crate::ReportArena,
 ) -> Result<bool, FsError> {
@@ -395,7 +368,6 @@ pub(super) fn compute_until(
         mount,
         address,
         cancel,
-        teardown,
         log: ReportLog::for_scan(reports),
         seen,
         names: 0,

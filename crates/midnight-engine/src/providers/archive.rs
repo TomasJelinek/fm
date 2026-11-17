@@ -497,11 +497,9 @@ impl MountedFilesystem for CapturedArchive {
         if record.kind != EntryKind::Directory {
             return Err(ProviderError::Unsupported);
         }
-        // Probes, tree collapse and re-requests cancel routinely. The adapter has no
-        // owner-teardown token: the shared archive call drains and is discarded.
-        let rows =
-            crate::archive_shared::list(self.mount.as_ref(), id, cancel, &Cancellation::default())
-                .map_err(map_error)?;
+        // Probes, tree collapse and re-requests cancel routinely; the host ends a
+        // cancelled listing between pages and keeps the shared mount (archive_shared.rs).
+        let rows = self.mount.list(id, cancel).map_err(map_error)?;
         check(self.mount.as_ref(), cancel)?;
         self.validate_rows(id, &rows)?;
         self.cache(&rows, false)?;

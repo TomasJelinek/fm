@@ -195,14 +195,13 @@ impl ArchiveMount for LeasedArchive {
         self.source().id()
     }
 
-    // The source is the shared archive session. Revoking this target's registrations
-    // ends this handle, not the worker serving other owners, so their lifetimes are
-    // observed around calls and never forwarded into an exchange (archive_shared.rs).
-    // Only the caller's owner-teardown token reaches a listing.
+    // The source is the shared archive session. A revoked or cancelled listing ends
+    // between pages; member reads stay cooperative so that revoking this target's
+    // registrations never terminates the worker serving other owners (archive_shared.rs).
     fn list(&self, directory: u64, cancel: &Cancellation) -> Result<Vec<ArchiveNode>, FsError> {
         let request = self.context().request(cancel);
         self.check(&request)?;
-        let rows = self.source().list(directory, cancel);
+        let rows = self.source().list(directory, &request);
         self.check(&request)?;
         rows
     }

@@ -1,40 +1,17 @@
 //! Request-scoped calls on archive mounts shared by panes, trees, viewers and jobs.
 //!
-//! The filesystem host treats the token passed to `ArchiveMount::list`/`read` as the
-//! lifetime of that exchange: cancelling it while a reply is outstanding terminates
-//! the archive worker and invalidates the mount for every other owner. Routine
-//! request cancellation (presence probes while scrolling, tree collapse, quick
-//! re-navigation, a cancelled size scan or copy) is therefore never forwarded into a
-//! non-cooperative call. It is observed before and after the call; an admitted
-//! listing drains within the host's bounds and its late result is discarded. Only an
-//! owner-teardown token reaches the provider. Member reads use the cooperative
-//! contract, which the host cancels at safe checkpoints without terminating the
-//! worker.
-use midnight_core::{ArchiveMount, ArchiveNode, Cancellation, FsError};
-use std::{io, path::Path};
+//! The filesystem host ends a cancelled listing between its bounded page exchanges
+//! and keeps the worker. A member read is different: protocol-1/2 workers cannot
+//! interrupt a staged read, so cancelling the token of a plain `ArchiveMount::read`
+//! while it is outstanding terminates the worker and invalidates the mount for every
+//! other owner. Routine request cancellation (a cancelled copy, a revoked tree
+//! target) therefore reaches member reads only through `read_cooperative`, which
+//! protocol 3 cancels at safe checkpoints and older protocols drain and discard.
+//! Hard tokens remain for mount-owned lifetimes such as a session's own open.
+use midnight_core::{ArchiveMount, Cancellation, FsError};
 
-/// List one directory of a mount that other owners may share.
-///
-/// `request` is observed only around the provider call: a late successful listing
-/// is discarded, while an actual provider failure is returned unchanged so that
-/// cancellation cannot erase it. `teardown` is forwarded and must be cancelled only
-/// when terminating the whole archive worker is acceptable (owner shutdown); pass
-/// `Cancellation::default()` when no such owner exists.
-pub(crate) fn list(
-    mount: &dyn ArchiveMount,
-    directory: u64,
-    request: &Cancellation,
-    teardown: &Cancellation,
-) -> Result<Vec<ArchiveNode>, FsError> {
-    check(request)?;
-    let rows = mount.list(directory, teardown)?;
-    check(request)?;
-    Ok(rows)
-}
-
-/// Read one bounded member range through the cooperative contract. Request
-/// cancellation stops staging at the provider's next safe checkpoint; a late
-/// successful read is discarded and actual provider failures are kept.
+/// Read one bounded member range of a possibly shared mount. A late successful
+/// read is discarded once `request` is cancelled; actual provider failures are kept.
 pub(crate) fn read(
     mount: &dyn ArchiveMount,
     entry: u64,
@@ -45,21 +22,9 @@ pub(crate) fn read(
     mount.read_cooperative(entry, offset, length, &|| request.is_cancelled())
 }
 
-fn check(request: &Cancellation) -> Result<(), FsError> {
-    if request.is_cancelled() {
-        Err(FsError::from_io(
-            "archive request",
-            Path::new(""),
-            io::ErrorKind::Interrupted.into(),
-        ))
-    } else {
-        Ok(())
-    }
-}
-
 #[cfg(test)]
 pub(crate) mod testing {
-    //! Fake archive mount with the filesystem host's termination semantics.
+    //! Fake archive mount with the filesystem host's cancellation semantics.
     use midnight_core::{ArchiveMount, ArchiveNode, Cancellation, FsError};
     use std::{
         collections::HashMap,
@@ -73,9 +38,10 @@ pub(crate) mod testing {
         time::Duration,
     };
 
-    /// Like the filesystem host, a token cancelled while its exchange is outstanding
-    /// terminates the worker: that call and every later list/read fail. A token that
-    /// is already cancelled when a call starts is refused without harming the mount.
+    /// Like the filesystem host with a protocol-1/2 worker: a cancelled listing is
+    /// discarded and the mount stays usable, but a plain read whose token is cancelled
+    /// while the exchange is held terminates the worker, after which every list/read
+    /// fails. `read_cooperative` keeps the trait's drain-and-discard default.
     #[derive(Debug, Default)]
     pub(crate) struct SharedMount {
         id: u64,
@@ -110,6 +76,14 @@ pub(crate) mod testing {
         }
     }
 
+    fn interrupted() -> FsError {
+        FsError::from_io(
+            "shared archive",
+            Path::new(""),
+            io::ErrorKind::Interrupted.into(),
+        )
+    }
+
     impl SharedMount {
         pub(crate) fn new(id: u64) -> Self {
             Self {
@@ -140,19 +114,13 @@ pub(crate) mod testing {
             }
         }
 
-        /// Whether a request cancellation reached an exchange in flight.
+        /// Whether a plain read was cancelled while its exchange was outstanding.
         pub(crate) fn terminated(&self) -> bool {
             self.terminated.load(Ordering::Acquire)
         }
 
-        fn exchange(&self, cancel: &Cancellation) -> Result<(), FsError> {
-            let interrupted = || {
-                FsError::from_io(
-                    "shared archive",
-                    Path::new(""),
-                    io::ErrorKind::Interrupted.into(),
-                )
-            };
+        /// Run one exchange; true when `cancel` was cancelled while it was held.
+        fn exchange(&self, cancel: &Cancellation) -> Result<bool, FsError> {
             if self.terminated() || cancel.is_cancelled() {
                 return Err(interrupted());
             }
@@ -162,11 +130,7 @@ pub(crate) mod testing {
                 // A dropped test handle disconnects and releases immediately.
                 let _ = hold.release.recv_timeout(Duration::from_secs(30));
             }
-            if cancel.is_cancelled() {
-                self.terminated.store(true, Ordering::Release);
-                return Err(interrupted());
-            }
-            Ok(())
+            Ok(cancel.is_cancelled())
         }
     }
 
@@ -175,7 +139,9 @@ pub(crate) mod testing {
             self.id
         }
         fn list(&self, directory: u64, cancel: &Cancellation) -> Result<Vec<ArchiveNode>, FsError> {
-            self.exchange(cancel)?;
+            if self.exchange(cancel)? {
+                return Err(interrupted());
+            }
             Ok(self
                 .rows
                 .lock()
@@ -191,7 +157,10 @@ pub(crate) mod testing {
             length: u32,
             cancel: &Cancellation,
         ) -> Result<Vec<u8>, FsError> {
-            self.exchange(cancel)?;
+            if self.exchange(cancel)? {
+                self.terminated.store(true, Ordering::Release);
+                return Err(interrupted());
+            }
             let contents = self.contents.lock().unwrap();
             let bytes = contents.get(&entry).map_or(&[][..], Vec::as_slice);
             let start = usize::try_from(offset).unwrap().min(bytes.len());
@@ -208,44 +177,7 @@ pub(crate) mod testing {
 mod tests {
     use super::testing::SharedMount;
     use super::*;
-
-    #[test]
-    fn request_cancellation_drains_a_listing_without_terminating_the_mount() {
-        let mount = SharedMount::new(5);
-        let request = Cancellation::default();
-        let held = mount.hold_next();
-        let result = std::thread::scope(|scope| {
-            let worker =
-                scope.spawn(|| list(&mount, 1, &request, &Cancellation::default()).map(|_| ()));
-            held.wait_entered();
-            request.cancel();
-            held.release();
-            worker.join().unwrap()
-        });
-        assert!(matches!(result, Err(error) if error.kind == io::ErrorKind::Interrupted));
-        assert!(
-            !mount.terminated(),
-            "request cancellation reached the mount"
-        );
-        assert!(mount.list(1, &Cancellation::default()).is_ok());
-    }
-
-    #[test]
-    fn teardown_still_reaches_the_provider_exchange() {
-        let mount = SharedMount::new(5);
-        let teardown = Cancellation::default();
-        let held = mount.hold_next();
-        let result = std::thread::scope(|scope| {
-            let worker =
-                scope.spawn(|| list(&mount, 1, &Cancellation::default(), &teardown).map(|_| ()));
-            held.wait_entered();
-            teardown.cancel();
-            held.release();
-            worker.join().unwrap()
-        });
-        assert!(result.is_err());
-        assert!(mount.terminated(), "owner teardown must stop the worker");
-    }
+    use std::io;
 
     #[test]
     fn cancelled_read_is_discarded_without_terminating_the_mount() {
@@ -269,5 +201,22 @@ mod tests {
             read(&mount, 2, 0, 7, &Cancellation::default()).unwrap(),
             b"payload"
         );
+    }
+
+    #[test]
+    fn the_fake_terminates_on_a_cancelled_plain_read_like_a_protocol_two_worker() {
+        let mount = SharedMount::new(5);
+        let request = Cancellation::default();
+        let held = mount.hold_next();
+        let result = std::thread::scope(|scope| {
+            let worker = scope.spawn(|| mount.read(2, 0, 7, &request));
+            held.wait_entered();
+            request.cancel();
+            held.release();
+            worker.join().unwrap()
+        });
+        assert!(result.is_err());
+        assert!(mount.terminated());
+        assert!(mount.list(1, &Cancellation::default()).is_err());
     }
 }

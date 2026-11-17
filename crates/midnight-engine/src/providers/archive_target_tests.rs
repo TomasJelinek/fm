@@ -518,7 +518,7 @@ fn cloned_archive_target_mount_retains_registration_and_refuses_revoked_operatio
 }
 
 #[test]
-fn revoked_target_registration_is_not_forwarded_into_a_shared_archive_exchange() {
+fn revoked_target_registration_does_not_terminate_a_shared_archive_read() {
     use crate::providers::{FilesystemProvider, ProviderRegistry};
     use midnight_core::{ProviderId, StoredLocation};
 
@@ -562,13 +562,10 @@ fn revoked_target_registration_is_not_forwarded_into_a_shared_archive_exchange()
         ProviderTarget::Archive(target) => target.location.mount.as_ref().unwrap().clone(),
         ProviderTarget::Native(_) => panic!("archive target became native"),
     };
-    assert_eq!(
-        escaped.read(2, 0, 5, &Cancellation::default()).unwrap(),
-        b"hello"
-    );
+    assert_eq!(escaped.list(1, &Cancellation::default()).unwrap().len(), 1);
     let held = mount.hold_next();
     let result = std::thread::scope(|scope| {
-        let worker = scope.spawn(|| escaped.list(1, &Cancellation::default()));
+        let worker = scope.spawn(|| escaped.read(2, 0, 5, &Cancellation::default()));
         held.wait_entered();
         assert!(registry.unregister(address.provider(), instance).unwrap());
         held.release();
@@ -576,13 +573,16 @@ fn revoked_target_registration_is_not_forwarded_into_a_shared_archive_exchange()
     });
     assert!(
         result.is_err(),
-        "a revoked target must not publish its listing"
+        "a revoked target must not publish its read"
     );
     assert!(
         !mount.terminated(),
-        "registration revocation reached the shared archive exchange"
+        "registration revocation reached the shared archive read"
     );
-    assert!(mount.list(1, &Cancellation::default()).is_ok());
+    assert_eq!(
+        crate::archive_shared::read(mount.as_ref(), 2, 0, 5, &Cancellation::default()).unwrap(),
+        b"hello"
+    );
     drop((resolved, location, registry));
     std::thread::spawn(move || drop(escaped)).join().unwrap();
 }

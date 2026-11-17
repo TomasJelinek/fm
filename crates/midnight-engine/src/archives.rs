@@ -84,8 +84,6 @@ struct Request {
     navigation: NavigationId,
     sort: SortSpec,
     cancel: Cancellation,
-    /// Controller shutdown only; the sole token forwarded into a shared mount.
-    teardown: Cancellation,
     _scope: TaskLifetime,
     // Last: native input and original service owners finish cleanup first.
     permit: Mutex<Option<OwnedSemaphorePermit>>,
@@ -98,7 +96,6 @@ pub(crate) struct Controller {
     cancellations: [Cancellation; PANES],
     /// Wakes navigations waiting for a worker after a cancellation.
     superseded: Arc<Notify>,
-    stop: Cancellation,
     outbox: Outbox,
     snapshots: Snapshots,
     ready: Arc<Notify>,
@@ -125,7 +122,6 @@ impl Controller {
             budget: Arc::new(Semaphore::new(MAX_WORKERS)),
             cancellations: std::array::from_fn(|_| Cancellation::default()),
             superseded: Arc::new(Notify::new()),
-            stop: Cancellation::default(),
             outbox: outbox.clone(),
             snapshots,
             ready: ready.clone(),
@@ -202,7 +198,6 @@ impl Controller {
             navigation,
             sort,
             cancel,
-            teardown: self.stop.clone(),
             _scope: self.scope.clone(),
             permit: Mutex::new(None),
         });
@@ -275,7 +270,6 @@ impl Controller {
             budget,
             cancellations: std::array::from_fn(|_| Cancellation::default()),
             superseded: Arc::new(Notify::new()),
-            stop: Cancellation::default(),
             outbox,
             snapshots,
             ready: Arc::new(Notify::new()),
@@ -315,7 +309,6 @@ impl Drop for Controller {
         for cancel in &self.cancellations {
             cancel.cancel();
         }
-        self.stop.cancel();
         self.superseded.notify_waiters();
     }
 }
