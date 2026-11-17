@@ -14,6 +14,13 @@ use windows_sys::Win32::{
 /// Elapses only when the event that should end a wait does not.
 const FAILURE_WAIT: Duration = Duration::from_secs(30);
 
+/// Whether a wait or loop that began at `started` ended promptly: well within
+/// `FAILURE_WAIT`, because a Win32 wait can end up to a timer tick before its timeout and a
+/// wait that ran into it must still fail.
+fn prompt(started: Instant) -> bool {
+    started.elapsed() < FAILURE_WAIT / 2
+}
+
 fn session() -> Session {
     Session {
         text: arboard::Clipboard::new().unwrap(),
@@ -39,17 +46,14 @@ fn waker_ends_the_next_or_current_wait_and_outlives_its_session() {
     waker();
     let started = Instant::now();
     session.wait_pending(FAILURE_WAIT).unwrap();
-    assert!(
-        started.elapsed() < FAILURE_WAIT,
-        "an earlier wake must end the next wait"
-    );
+    assert!(prompt(started), "an earlier wake must end the next wait");
     // A wake from another thread ends the wait in progress, or the next one if it wins.
     let remote = waker.clone();
     let other = std::thread::spawn(move || remote());
     let started = Instant::now();
     session.wait_pending(FAILURE_WAIT).unwrap();
     assert!(
-        started.elapsed() < FAILURE_WAIT,
+        prompt(started),
         "a wake from another thread must end the wait"
     );
     other.join().unwrap();
@@ -69,13 +73,36 @@ fn queued_owner_thread_messages_end_a_wait_and_are_drained() {
         std::thread::spawn(move || unsafe { PostThreadMessageW(owner, WM_APP, 0, 0) } != 0);
     let started = Instant::now();
     session.wait_pending(FAILURE_WAIT).unwrap();
-    assert!(
-        started.elapsed() < FAILURE_WAIT,
-        "a queued message must end the wait"
-    );
+    assert!(prompt(started), "a queued message must end the wait");
     assert!(poster.join().unwrap(), "PostThreadMessageW failed");
     // Dispatched, not left queued to end every later MWMO_INPUTAVAILABLE wait at once.
     assert!(queue_is_empty());
+}
+
+#[test]
+fn messages_seen_but_left_queued_still_end_a_wait() {
+    let mut session = session();
+    assert!(queue_is_empty());
+    // SAFETY: GetCurrentThreadId has no preconditions.
+    let owner = unsafe { GetCurrentThreadId() };
+    // SAFETY: posts a payload-free application message to the calling thread, whose message
+    // queue `queue_is_empty` created.
+    let posted = unsafe { PostThreadMessageW(owner, WM_APP, 0, 0) } != 0;
+    assert!(posted, "PostThreadMessageW failed");
+    // A peek that leaves the message queued makes it old input, as a capped dispatch or
+    // another peek of the owner thread can. Only MWMO_INPUTAVAILABLE ends a wait for old
+    // input; without it, the wait would sleep until its timeout with a message queued.
+    assert!(!queue_is_empty(), "the posted message stays queued");
+    let started = Instant::now();
+    session.wait_pending(FAILURE_WAIT).unwrap();
+    assert!(
+        prompt(started),
+        "queued input that was already seen must end the wait"
+    );
+    assert!(
+        queue_is_empty(),
+        "the wait dispatches the message it returned for"
+    );
 }
 
 #[test]
@@ -96,14 +123,11 @@ fn wm_destroyclipboard_ends_the_wait_and_the_ownership() {
     });
     let started = Instant::now();
     while session.owns_clipboard() {
-        assert!(
-            started.elapsed() < FAILURE_WAIT,
-            "WM_DESTROYCLIPBOARD must end the wait"
-        );
+        assert!(prompt(started), "WM_DESTROYCLIPBOARD must end the wait");
         session.wait_pending(FAILURE_WAIT).unwrap();
     }
     assert!(sender.join().unwrap(), "SendNotifyMessageW failed");
-    assert!(started.elapsed() < FAILURE_WAIT);
+    assert!(prompt(started), "WM_DESTROYCLIPBOARD must end the wait");
 }
 
 #[test]
@@ -138,10 +162,7 @@ fn ownership_follows_the_real_clipboard_owner() {
     });
     let started = Instant::now();
     while session.owns_clipboard() {
-        assert!(
-            started.elapsed() < FAILURE_WAIT,
-            "losing ownership must end the wait"
-        );
+        assert!(prompt(started), "losing ownership must end the wait");
         session.wait_pending(FAILURE_WAIT).unwrap();
     }
     assert!(other.join().unwrap(), "the other owner could not publish");

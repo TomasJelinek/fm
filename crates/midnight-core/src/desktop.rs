@@ -641,16 +641,19 @@ mod tests {
 
     #[test]
     fn default_clipboard_wait_is_a_bounded_park_that_an_unpark_ends() {
+        // Elapses only when the unpark is lost. A timed wait can end up to a timer tick
+        // early, so the check below keeps a clear margin below it.
+        let failure_wait = Duration::from_secs(60);
         let mut session: Box<dyn ClipboardSession> = Box::new(TextOnly);
         assert!(session.wait_pending(Duration::ZERO).is_ok());
         // The default is `park_timeout`: an unpark before or during the wait ends it.
         let owner = std::thread::current();
         let unparker = std::thread::spawn(move || owner.unpark());
         let started = std::time::Instant::now();
-        assert!(session.wait_pending(Duration::from_secs(60)).is_ok());
+        assert!(session.wait_pending(failure_wait).is_ok());
         unparker.join().unwrap();
         assert!(
-            started.elapsed() < Duration::from_secs(60),
+            started.elapsed() < failure_wait / 2,
             "the default wait must return when its thread is unparked"
         );
     }
