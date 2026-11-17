@@ -11,11 +11,12 @@ const MAX_NEXT_HEADER: u64 = 64 * 1024 * 1024;
 /// Largest LZMA/LZMA2 dictionary memory one block may use in the 512 MiB worker.
 /// Members of a block that declares more are listed but unreadable.
 const MAX_DICTIONARY: u64 = 256 * 1024 * 1024;
-/// Verified solid-block siblings kept in worker memory, so reading the members of
-/// one block costs one block decode instead of one per member.
+/// Verified solid-block siblings kept in worker memory, so the members read after
+/// one block decode within this window need no further decode of that block.
 const RETAINED_SIBLINGS: u64 = 128 * 1024 * 1024;
-/// Dictionary plus retained siblings of the block being decoded.
-const DECODE_MEMORY: u64 = 384 * 1024 * 1024;
+// A decodable block's dictionary and the siblings retained beside it stay within
+// 384 MiB of the 512 MiB worker limit.
+const _: () = assert!(MAX_DICTIONARY + RETAINED_SIBLINGS <= 384 * 1024 * 1024);
 /// Allocation and map overhead charged per retained sibling.
 const RETAINED_ENTRY_COST: u64 = 64;
 
@@ -31,8 +32,6 @@ pub(crate) struct Content {
     nodes: Vec<Option<u64>>,
     /// Compact stream indices of each block.
     block_files: Vec<Range<usize>>,
-    /// Decoder dictionary bytes of each block.
-    dictionaries: Vec<u64>,
     empty: HashSet<u64>,
     retained: Retained,
 }
@@ -94,7 +93,6 @@ impl Archive {
                 return Err(corrupt_block());
             }
         }
-        let mut dictionaries = Vec::with_capacity(metadata.blocks.len());
         let mut undecodable = HashSet::new();
         for (index, (block, size)) in metadata.blocks.iter().zip(block_sizes).enumerate() {
             if size != block.get_unpack_size() {
@@ -106,11 +104,9 @@ impl Archive {
             // Payload decoding is deferred: a block with an encrypted or unsupported
             // coder, or with a dictionary beyond the worker budget, only makes its own
             // members unreadable, as ZIP does per member.
-            let dictionary = dictionary_bytes(block);
-            if !decodable(block, dictionary) {
+            if !decodable(block, dictionary_bytes(block)) {
                 undecodable.insert(index);
             }
-            dictionaries.push(dictionary);
         }
         let mut file_nodes = Vec::with_capacity(metadata.files.len());
         for (index, entry) in metadata.files.iter().enumerate() {
@@ -132,7 +128,7 @@ impl Archive {
                 file_nodes.push(None);
             }
         }
-        self.sevenzip_content = Some(Content::new(source, metadata, file_nodes, dictionaries)?);
+        self.sevenzip_content = Some(Content::new(source, metadata, file_nodes)?);
         Ok(())
     }
 }
@@ -224,7 +220,6 @@ impl Content {
         mut source: Reader,
         mut metadata: sevenz_rust2::Archive,
         original_nodes: Vec<Option<u64>>,
-        dictionaries: Vec<u64>,
     ) -> Result<Self, Error> {
         // BlockDecoder's span length counts substreams, while a 7z file table may
         // interleave directories/empty no-stream files. Keep their original pane IDs,
@@ -284,7 +279,6 @@ impl Content {
             members,
             nodes,
             block_files,
-            dictionaries,
             empty,
             retained: Retained::default(),
         })
@@ -381,10 +375,10 @@ impl Content {
 
     /// Readable siblings worth keeping from one decode of `block`: later members
     /// first (sequential copy-out and thumbnails), then earlier ones nearest first,
-    /// within the memory left beside the block's dictionary and those already kept.
+    /// within the retention budget beside those already kept. A member outside this
+    /// window that is read later costs another decode of the whole block.
     fn retention(&self, block: usize, requested: usize) -> HashMap<usize, u64> {
         let files = self.block_files[block].clone();
-        let budget = RETAINED_SIBLINGS.min(DECODE_MEMORY.saturating_sub(self.dictionaries[block]));
         let mut cost = self.retained.cost;
         let mut keep = HashMap::new();
         for index in (requested + 1..files.end).chain((files.start..requested).rev()) {
@@ -397,7 +391,7 @@ impl Content {
             let next = cost
                 .saturating_add(self.metadata.files[index].size)
                 .saturating_add(RETAINED_ENTRY_COST);
-            if next <= budget {
+            if next <= RETAINED_SIBLINGS {
                 cost = next;
                 keep.insert(index, node);
             }

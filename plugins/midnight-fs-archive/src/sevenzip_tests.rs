@@ -105,7 +105,7 @@ fn verified_solid_siblings_are_served_without_another_block_pass() {
 }
 
 #[test]
-fn retention_prefers_later_siblings_and_respects_the_dictionary_share() {
+fn retention_prefers_later_siblings_within_its_window() {
     let mut writer = ArchiveWriter::new(Cursor::new(Vec::new())).unwrap();
     writer.set_content_methods(vec![EncoderConfiguration::new(EncoderMethod::COPY)]);
     let names = ["0", "1", "2", "3", "4"];
@@ -128,15 +128,26 @@ fn retention_prefers_later_siblings_and_respects_the_dictionary_share() {
     )
     .unwrap();
     let mut content = archive.sevenzip_content.unwrap();
-    let mut planned: Vec<_> = content.retention(0, 2).into_keys().collect();
-    planned.sort();
-    assert_eq!(planned, [0, 1, 3, 4]);
-    // Room for exactly two siblings: the later ones win.
-    content.dictionaries[0] = DECODE_MEMORY - 2 * (10 + RETAINED_ENTRY_COST);
-    let mut planned: Vec<_> = content.retention(0, 2).into_keys().collect();
-    planned.sort();
-    assert_eq!(planned, [3, 4]);
-    content.dictionaries[0] = DECODE_MEMORY;
+    let planned = |content: &Content, requested| {
+        let mut planned: Vec<_> = content.retention(0, requested).into_keys().collect();
+        planned.sort();
+        planned
+    };
+    assert_eq!(planned(&content, 2), [0, 1, 3, 4]);
+    // Members of a large block: the window holds exactly two siblings, later ones first.
+    for file in &mut content.metadata.files {
+        file.size = RETAINED_SIBLINGS / 2 - RETAINED_ENTRY_COST;
+    }
+    assert_eq!(planned(&content, 2), [3, 4]);
+    // Copying out from the first member keeps the next two; the fourth decodes again.
+    assert_eq!(planned(&content, 0), [1, 2]);
+    // Siblings still retained from an earlier decode count against the window.
+    content.retained.cost = RETAINED_SIBLINGS / 2;
+    assert_eq!(planned(&content, 0), [1]);
+    content.retained.cost = 0;
+    for file in &mut content.metadata.files {
+        file.size = RETAINED_SIBLINGS;
+    }
     assert!(content.retention(0, 2).is_empty());
 }
 

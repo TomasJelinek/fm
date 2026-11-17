@@ -87,9 +87,10 @@ impl Seek for Brokered {
         self.inner.seek(from)
     }
 }
-fn open_brokered(format: Format, source: Vec<u8>) -> (Archive, Rc<Cell<u64>>) {
+fn open_brokered(format: Format, source: Vec<u8>) -> (Archive, Rc<Cell<u64>>, Rc<MemoryStorage>) {
     let length = source.len() as u64;
     let requested = Rc::new(Cell::new(0));
+    let storage = Rc::new(MemoryStorage::default());
     let archive = Archive::open_stream(
         format,
         Box::new(Brokered {
@@ -97,11 +98,11 @@ fn open_brokered(format: Format, source: Vec<u8>) -> (Archive, Rc<Cell<u64>>) {
             requested: requested.clone(),
         }),
         length,
-        Rc::new(MemoryStorage::default()),
+        storage.clone(),
         Limits::default(),
     )
     .unwrap();
-    (archive, requested)
+    (archive, requested, storage)
 }
 
 #[test]
@@ -131,7 +132,7 @@ fn many_member_zip_and_tar_indexes_fetch_about_their_own_size() {
         (Format::Tar, tar.into_inner().unwrap()),
     ] {
         let length = source.len() as u64;
-        let (archive, requested) = open_brokered(format, source);
+        let (archive, requested, _) = open_brokered(format, source);
         assert_eq!(archive.list(1, 0).unwrap().len(), 128);
         eprintln!(
             "{format:?}: index fetched {} of {length} bytes",
@@ -161,7 +162,7 @@ fn tar_index_of_large_members_fetches_only_headers() {
         )
         .unwrap();
     }
-    let (archive, requested) = open_brokered(Format::Tar, tar.into_inner().unwrap());
+    let (archive, requested, _) = open_brokered(Format::Tar, tar.into_inner().unwrap());
     assert_eq!(archive.list(1, 0).unwrap().len(), 16);
     eprintln!("large-member TAR: index fetched {} bytes", requested.get());
     assert!(
@@ -172,7 +173,7 @@ fn tar_index_of_large_members_fetches_only_headers() {
 }
 
 #[test]
-fn solid_sevenzip_members_cost_one_block_decode_together() {
+fn solid_sevenzip_members_share_block_decodes_in_production_reads() {
     use sevenz_rust2::{
         ArchiveEntry, ArchiveWriter, EncoderConfiguration, EncoderMethod, SourceReader,
     };
@@ -192,26 +193,41 @@ fn solid_sevenzip_members_cost_one_block_decode_together() {
         .unwrap();
     let source = writer.finish().unwrap().into_inner();
     let length = source.len() as u64;
-    let (mut archive, requested) = open_brokered(Format::SevenZip, source);
-    let opened = requested.get();
-    let nodes = archive.list(1, 0).unwrap();
-    // Copy-out order and a reversed browse: every member is still read exactly.
-    for node in nodes.iter().chain(nodes.iter().rev()).take(30) {
-        let index = node.display[7..].parse::<usize>().unwrap();
-        let (bytes, _) = archive.read(node.id, 0, 256 * 1024).unwrap();
-        assert_eq!(bytes, payloads[index]);
+    let (mut archive, requested, storage) = open_brokered(Format::SevenZip, source);
+    let members: Vec<(u64, usize)> = archive
+        .list(1, 0)
+        .unwrap()
+        .iter()
+        .map(|node| (node.id, node.display[7..].parse().unwrap()))
+        .collect();
+    // `prepare` is what the worker answers each host Read with; `Archive::read` would
+    // also consult the fixture-only content cache.
+    let mut fetched = |order: &[(u64, usize)]| {
+        let before = requested.get();
+        for (id, index) in order {
+            let content = archive.prepare(*id).unwrap();
+            let bytes = storage
+                .read(content.stage, content.offset, content.length as u32)
+                .unwrap();
+            assert_eq!(bytes, payloads[*index]);
+        }
+        requested.get() - before
+    };
+    // Copy-out order: one verified block decode serves all 20 members; reading each
+    // one separately used to decode the 1.3 MiB block 20 times.
+    let forward = fetched(&members);
+    // A sibling stays in the worker only until it is staged; repeated reads normally
+    // hit the host's lease cache. Reading them all again, in reverse, decodes the
+    // block exactly once more: that first read retains the others, nearest first.
+    let reversed: Vec<_> = members.iter().rev().copied().collect();
+    let again = fetched(&reversed);
+    eprintln!("solid 7z: members fetched {forward} then {again} bytes of a {length}-byte archive");
+    for pass in [forward, again] {
+        assert!(
+            pass > length / 2 && pass < length + 256 * 1024,
+            "a pass over all members fetched {pass} bytes of a {length}-byte archive"
+        );
     }
-    // One verified block pass serves all 20 members; reading each one separately
-    // used to decode the 1.3 MiB block 20 times.
-    eprintln!(
-        "solid 7z: member reads fetched {} of {length} bytes",
-        requested.get() - opened
-    );
-    assert!(
-        requested.get() - opened < length + 256 * 1024,
-        "member reads fetched {} bytes of a {length}-byte archive",
-        requested.get() - opened
-    );
 }
 
 struct DiskFull;
