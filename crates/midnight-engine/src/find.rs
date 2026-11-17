@@ -68,6 +68,8 @@ struct Services {
     native: Option<Arc<dyn FindService>>,
     captures: crate::retirement::RetirementDomain,
     capture_slots: Arc<Semaphore>,
+    /// At most two searches traverse at once; other sessions wait for a permit.
+    searches: Arc<Semaphore>,
     scope: TaskLifetime,
 }
 
@@ -84,10 +86,10 @@ impl Controller {
             native: service.clone(),
             captures: retirement.domain,
             capture_slots: Arc::new(Semaphore::new(RETIREMENT_CAPACITY)),
+            searches: Arc::new(Semaphore::new(2)),
             scope: scope.clone(),
         };
         let lifetime = Cancellation::default();
-        let budget = Arc::new(Semaphore::new(2));
         let slots = (0..MAX_FIND_SESSIONS)
             .map(|_| {
                 let (input, receiver) = watch::channel(Intent::default());
@@ -110,7 +112,6 @@ impl Controller {
                     outbox.clone(),
                     state.clone(),
                     receiver,
-                    budget.clone(),
                     lifetime.clone(),
                     sorts.clone(),
                     wake.clone(),
@@ -372,7 +373,6 @@ async fn run_slot(
     outbox: Outbox,
     state: Arc<Mutex<State>>,
     mut input: watch::Receiver<Intent>,
-    budget: Arc<Semaphore>,
     lifetime: Cancellation,
     sorts: watch::Sender<u64>,
     wake: Arc<Notify>,
@@ -393,7 +393,7 @@ async fn run_slot(
         let worker_state = state.clone();
         let worker_outbox = outbox.clone();
         let cancel = intent.cancel.clone();
-        let acquisition = budget.clone().acquire_owned();
+        let acquisition = services.searches.clone().acquire_owned();
         tokio::pin!(acquisition);
         // A waiting session sleeps until a worker frees or its generation is
         // stopped, restarted, closed or shut down (each of those wakes it).
