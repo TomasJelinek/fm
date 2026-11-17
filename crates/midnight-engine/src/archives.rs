@@ -319,6 +319,9 @@ async fn admit(
     cancel: &Cancellation,
     superseded: &Notify,
 ) -> Option<OwnedSemaphorePermit> {
+    // One acquisition keeps its FIFO place while other cancellations wake this waiter.
+    let acquire = budget.clone().acquire_owned();
+    tokio::pin!(acquire);
     loop {
         // Register before checking so a concurrent cancellation cannot be missed.
         let changed = superseded.notified();
@@ -328,7 +331,7 @@ async fn admit(
             return None;
         }
         tokio::select! {
-            permit = budget.clone().acquire_owned() => return permit.ok(),
+            permit = &mut acquire => return permit.ok(),
             () = &mut changed => {}
         }
     }

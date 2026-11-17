@@ -255,3 +255,94 @@ async fn newest_navigation_waits_for_a_worker_held_by_a_superseded_listing() {
     );
     while tasks.join_next().await.is_some() {}
 }
+
+#[tokio::test]
+async fn archive_listings_sort_names_with_backend_locale_keys() {
+    struct Locale;
+    impl LocaleService for Locale {
+        fn number_locale(&self) -> Result<NumberLocale, FsError> {
+            Ok(NumberLocale::default())
+        }
+        fn collation_key(&self, value: &std::ffi::OsStr) -> Result<Option<Vec<u8>>, FsError> {
+            Ok(Some(value.to_string_lossy().to_lowercase().into_bytes()))
+        }
+    }
+    let mount = crate::archive_shared::testing::SharedMount::new(45);
+    let file = |entry: u64, name: &str| ArchiveNode {
+        id: VirtualEntryId { mount: 45, entry },
+        parent: 1,
+        raw_name: Arc::from(name.as_bytes()),
+        display_name: name.into(),
+        kind: EntryKind::File,
+        size: Some(1),
+        readable: true,
+        modified: None,
+    };
+    // Raw byte order would place "Zeta" before "alpha".
+    mount.insert(1, vec![file(2, "Zeta"), file(3, "alpha")]);
+    let (mut controller, mut events) = shared_controller(2);
+    controller.locale = Some(Arc::new(Locale));
+    let mut tasks = JoinSet::new();
+    controller
+        .navigate(
+            PaneId::Left,
+            NavigationId(1),
+            shared_listing(Arc::new(mount)),
+            SortSpec::default(),
+            &mut tasks,
+        )
+        .await;
+    let event = tokio::time::timeout(std::time::Duration::from_secs(5), events.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    let Event::ArchiveListed {
+        result: Ok(listing),
+        ..
+    } = event
+    else {
+        panic!("archive listing failed")
+    };
+    let names: Vec<_> = listing
+        .entries
+        .iter()
+        .map(|entry| entry.display_name.as_str())
+        .collect();
+    assert_eq!(names, ["alpha", "Zeta"]);
+    while tasks.join_next().await.is_some() {}
+}
+
+#[tokio::test]
+async fn unavailable_plugin_errors_keep_bounded_discovery_diagnostics() {
+    let (mut controller, mut events) = shared_controller(2);
+    let catalog = OnceLock::new();
+    let mut diagnostics = vec!["Plugin package directory is writable by other users".to_owned()];
+    diagnostics.extend((0..5).map(|index| format!("ignored package {index}")));
+    catalog
+        .set(Catalog {
+            diagnostics,
+            ..Catalog::default()
+        })
+        .unwrap();
+    controller.catalog = Arc::new(catalog);
+    let mut tasks = JoinSet::new();
+    controller
+        .navigate(
+            PaneId::Left,
+            NavigationId(1),
+            ArchiveAction::Open {
+                path: std::env::temp_dir().join("unsupported.zip"),
+                format: ArchiveFormat::Zip,
+            },
+            SortSpec::default(),
+            &mut tasks,
+        )
+        .await;
+    let (_, result) = listed(&mut events).await;
+    let message = result.unwrap_err().message;
+    assert!(message.starts_with("Compatible archive filesystem plugin is unavailable"));
+    assert!(message.contains("Plugin discovery: Plugin package directory is writable"));
+    assert!(message.contains("2 more plugin discovery diagnostics"));
+    assert!(!message.contains("ignored package 4"));
+    while tasks.join_next().await.is_some() {}
+}
