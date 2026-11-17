@@ -1,8 +1,136 @@
-use midnight_viewer_render::{ColorSpan, TextRenderer, Viewport};
+use midnight_viewer_render::{
+    CellAlignment, ColorSpan, LayoutError, Raster, RasterMut, StyleSpan, TableCell, TableRow,
+    TextOptions, TextRenderer, Viewport,
+};
+use std::sync::Arc;
+
+#[test]
+fn rasterize_into_a_shared_buffer_matches_rasterize_and_rejects_mismatched_buffers() {
+    let mut renderer = TextRenderer::default();
+    let text = "alpha العربية e\u{301}\nstruck 👩\u{200d}💻 under\tx";
+    let options = TextOptions {
+        size: 22.0,
+        ..TextOptions::default()
+    };
+    let styled = renderer
+        .layout_with_styles(
+            text,
+            &options,
+            &[ColorSpan {
+                range: 0..5,
+                color: [250, 35, 20, 255],
+            }],
+            &[StyleSpan {
+                range: 26..text.len(),
+                weight: 700,
+                italic: true,
+                underline: true,
+                strikethrough: true,
+                monospace: false,
+                size: 22.0,
+            }],
+        )
+        .unwrap();
+    let table = renderer
+        .layout_with_tables(
+            text,
+            &options,
+            &[],
+            &[],
+            &[TableRow {
+                range: 0..text.len(),
+                header: true,
+                cells: vec![TableCell {
+                    range: 0..text.len(),
+                    alignment: CellAlignment::Center,
+                }],
+            }],
+        )
+        .unwrap();
+    let mut view = viewport(300, 90);
+    view.origin = [3.25, 1.5];
+    view.background = [50, 100, 200, 128];
+    let bytes = 300 * 90 * 4;
+    for (page, selection) in [
+        (&styled, Some(2..8)),
+        (&table, Some(0..12)),
+        (&styled, None),
+    ] {
+        let expected = renderer.rasterize(page, view, selection.clone()).unwrap();
+        // A frame buffer allocated once and painted while it is still unique.
+        let mut shared: Arc<[u8]> = std::iter::repeat_n(0xa5, bytes).collect();
+        renderer
+            .rasterize_into(page, view, selection, Arc::get_mut(&mut shared).unwrap())
+            .unwrap();
+        assert!(shared[..] == expected.rgba[..], "rasterize_into differs");
+    }
+    for length in [0, bytes - 4, bytes - 1, bytes + 4] {
+        let mut buffer = vec![0xa5; length];
+        assert_eq!(
+            renderer.rasterize_into(&styled, view, None, &mut buffer),
+            Err(LayoutError::InvalidGeometry)
+        );
+        assert!(
+            buffer.iter().all(|&byte| byte == 0xa5),
+            "a rejected buffer stays untouched"
+        );
+    }
+    // The viewport is validated exactly as by `rasterize`.
+    assert_eq!(
+        renderer.rasterize_into(&styled, viewport(0, 1), None, &mut []),
+        Err(LayoutError::LimitExceeded)
+    );
+    view.origin[0] = f32::NAN;
+    assert_eq!(
+        renderer.rasterize_into(&styled, view, None, &mut vec![0; bytes]),
+        Err(LayoutError::InvalidGeometry)
+    );
+}
+
+#[test]
+fn paint_over_into_matches_paint_over_and_rejects_inconsistent_surfaces() {
+    let mut renderer = TextRenderer::default();
+    let label = renderer.layout("1234", 18.0, 1.0).unwrap();
+    let background = [10, 20, 30, 255].repeat(64 * 32);
+    let mut owned = Raster {
+        width: 64,
+        height: 32,
+        rgba: background.clone(),
+    };
+    renderer
+        .paint_over(&label, &mut owned, [-4.5, -3.0])
+        .unwrap();
+    let mut borrowed = background.clone();
+    let mut target = RasterMut::new(64, 32, &mut borrowed).unwrap();
+    assert_eq!((target.width(), target.height()), (64, 32));
+    assert_eq!(target.rgba_mut().len(), 64 * 32 * 4);
+    renderer
+        .paint_over_into(&label, &mut target, [-4.5, -3.0])
+        .unwrap();
+    assert_eq!(owned.rgba, borrowed);
+    assert_ne!(borrowed, background, "the label is painted");
+    for length in [0, 64 * 32 * 4 - 1, 64 * 32 * 4 + 4] {
+        assert!(matches!(
+            RasterMut::new(64, 32, &mut vec![0; length]),
+            Err(LayoutError::InvalidGeometry)
+        ));
+    }
+    assert!(RasterMut::new(u32::MAX, u32::MAX, &mut []).is_err());
+    // Public fields can disagree; that is an error, not an out-of-bounds panic.
+    let mut short = Raster {
+        width: 64,
+        height: 32,
+        rgba: vec![0; 16],
+    };
+    assert_eq!(
+        renderer.paint_over(&label, &mut short, [-4.5, -3.0]),
+        Err(LayoutError::InvalidGeometry)
+    );
+    assert_eq!(short.rgba, [0; 16]);
+}
 
 #[test]
 fn cached_glyphs_never_leak_font_size_color_or_synthesis_between_pages() {
-    use midnight_viewer_render::TextOptions;
     let mut cached = TextRenderer::default();
     for (size, scale, weight, italic, foreground) in [
         (18.0, 1.0, 400, false, [230, 10, 30, 255]),

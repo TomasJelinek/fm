@@ -1,7 +1,10 @@
 //! Opt-in rasterizer timings for before/after comparisons. Run optimized:
 //! `cargo test --release -p midnight-viewer-render --test integration raster_timing -- --ignored --nocapture`
 use midnight_viewer_render::{ColorSpan, TextOptions, TextPage, TextRenderer, Viewport};
-use std::time::{Duration, Instant};
+use std::{
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 /// A retained viewer raster: a 1920x1080 viewport with 256-pixel guards.
 fn retained(origin: [f32; 2]) -> Viewport {
@@ -107,6 +110,34 @@ fn report(name: &str, renderer: &mut TextRenderer, page: &TextPage, origin: [f32
     );
 }
 
+/// One retained refill handed over as a shared `Arc<[u8]>` frame: rasterize and
+/// copy the `Vec` into an `Arc` (the engine's current path), or allocate the Arc
+/// once and paint it while it is still unique. Best of alternating runs.
+fn shared_delivery(name: &str, renderer: &mut TextRenderer, page: &TextPage, origin: [f32; 2]) {
+    let view = retained(origin);
+    let bytes = view.width as usize * view.height as usize * 4;
+    let mut copied = Duration::MAX;
+    let mut in_place = Duration::MAX;
+    for _ in 0..9 {
+        copied = copied.min(time(|| {
+            let raster = renderer.rasterize(page, view, None).unwrap();
+            std::hint::black_box(Arc::<[u8]>::from(raster.rgba));
+        }));
+        in_place = in_place.min(time(|| {
+            let mut pixels: Arc<[u8]> = std::iter::repeat_n(0, bytes).collect();
+            renderer
+                .rasterize_into(page, view, None, Arc::get_mut(&mut pixels).unwrap())
+                .unwrap();
+            std::hint::black_box(pixels);
+        }));
+    }
+    println!(
+        "raster_timing case={name} bytes={bytes} vec_then_arc_copy_ms={:.2} arc_in_place_ms={:.2}",
+        copied.as_secs_f64() * 1000.0,
+        in_place.as_secs_f64() * 1000.0,
+    );
+}
+
 #[test]
 #[ignore = "timing harness; run optimized with --ignored --nocapture"]
 fn raster_timing() {
@@ -127,6 +158,7 @@ fn raster_timing() {
         .unwrap();
     let middle = [0.0, (page.height() / 2.0).floor() + 0.375];
     report("prose_64k", &mut renderer, &page, middle);
+    shared_delivery("prose_64k_shared", &mut renderer, &page, middle);
 
     let (source, spans) = colored_source(64 * 1024);
     let page = renderer

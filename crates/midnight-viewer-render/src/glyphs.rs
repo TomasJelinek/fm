@@ -4,10 +4,10 @@ mod outlines;
 #[path = "glyph_timing.rs"]
 mod timing;
 use crate::{
-    LayoutError, Raster, TextPage, Viewport,
+    LayoutError, RasterMut, TextPage, Viewport,
     raster::{blend_pixel, premultiply, stable_pixel},
 };
-use parley::{Layout, PositionedLayoutItem};
+use parley::{GlyphRun, Layout, PositionedLayoutItem};
 use std::collections::HashMap;
 use swash::{
     CacheKey, FontRef,
@@ -18,9 +18,12 @@ use swash::{
     zeno::{Transform, Vector},
 };
 
-/// Ink of a real glyph, including bearings, accents and synthesis, stays within
-/// these multiples of its font size around the glyph origin. Glyphs and lines
-/// beyond them cannot reach a raster, so culling them is exact.
+/// Conservative ink reach of one glyph around its origin, in multiples of its
+/// font size: wide enough for the bearings, accents, stacked marks (whose own
+/// origins are tracked separately) and synthesis of real text fonts, but not a
+/// font guarantee. Glyphs and lines beyond it are not painted; a malformed or
+/// unusual font whose glyph ink reaches further can lose that ink at raster
+/// edges. Decorations are culled by their own extents (see `line_bounds`).
 const INK_EM_VERTICAL: f32 = 4.0;
 const INK_EM_HORIZONTAL: f32 = 8.0;
 const MAX_FONTS: usize = 256;
@@ -46,7 +49,9 @@ pub(crate) struct GlyphPainter {
 }
 
 /// Vertical reach of each line: glyph origins (including stacked-mark offsets)
-/// and baselines, widened by the ink margin. Computed once per layout.
+/// and baselines widened by the ink margin, plus the exact extent of every
+/// strikethrough and underline, whose font- or style-supplied offsets need not
+/// stay near the glyphs. Computed once per layout.
 pub(crate) fn line_bounds(layout: &Layout<[u8; 4]>) -> Vec<[f32; 2]> {
     layout
         .lines()
@@ -69,10 +74,58 @@ pub(crate) fn line_bounds(layout: &Layout<[u8; 4]>) -> Vec<[f32; 2]> {
                         bounds[1].max(glyph.y + reach),
                     ];
                 }
+                for (y, height, _) in decorations(&run) {
+                    bounds = [bounds[0].min(y), bounds[1].max(y + height)];
+                }
             }
             bounds
         })
         .collect()
+}
+
+impl TextPage {
+    /// Vertical layout range that this page's glyph ink and decorations can
+    /// reach: its own box widened by the reach of every line (see `line_bounds`).
+    pub(crate) fn vertical_reach(&self) -> [f32; 2] {
+        let union = |a: [f32; 2], b: [f32; 2]| [a[0].min(b[0]), a[1].max(b[1])];
+        let own = [0.0, self.height()];
+        match &self.composite {
+            Some(grid) => grid.parts.iter().fold(own, |bounds, part| {
+                let reach = part.page.vertical_reach();
+                union(bounds, reach.map(|edge| part.origin[1] + edge))
+            }),
+            None => self.line_bounds.iter().copied().fold(own, union),
+        }
+    }
+}
+
+/// Strikethrough, then underline of a run: top edge, thickness (at least one
+/// pixel) and brush, in layout coordinates.
+fn decorations(run: &GlyphRun<'_, [u8; 4]>) -> impl Iterator<Item = (f32, f32, [u8; 4])> {
+    let metrics = run.run().metrics();
+    let style = run.style();
+    let baseline = run.baseline();
+    [
+        (
+            &style.strikethrough,
+            metrics.strikethrough_offset,
+            metrics.strikethrough_size,
+        ),
+        (
+            &style.underline,
+            metrics.underline_offset,
+            metrics.underline_size,
+        ),
+    ]
+    .into_iter()
+    .filter_map(move |(decoration, offset, size)| {
+        let decoration = decoration.as_ref()?;
+        Some((
+            baseline - decoration.offset.unwrap_or(offset),
+            decoration.size.unwrap_or(size).max(1.0),
+            decoration.brush,
+        ))
+    })
 }
 
 impl GlyphPainter {
@@ -124,7 +177,7 @@ impl GlyphPainter {
         &mut self,
         page: &TextPage,
         view: Viewport,
-        raster: &mut Raster,
+        raster: &mut RasterMut<'_>,
     ) -> Result<(), LayoutError> {
         self.paint_traced(page, view, raster, &mut timing::Trace::new())
     }
@@ -133,16 +186,25 @@ impl GlyphPainter {
         &mut self,
         page: &TextPage,
         view: Viewport,
-        raster: &mut Raster,
+        raster: &mut RasterMut<'_>,
         trace: &mut timing::Trace,
     ) -> Result<(), LayoutError> {
+        #[cfg(test)]
+        let (outlines_enabled, culled) = (!self.uncached_outlines, !self.unculled);
+        #[cfg(not(test))]
+        let (outlines_enabled, culled) = (true, true);
+        // Layout coordinates covered by this raster. Large pages are painted
+        // once per guard refill; only parts, lines and glyphs that can reach it run.
+        let top = view.origin[1];
+        let bottom = top + view.height as f32;
         if let Some(grid) = &page.composite {
             for rect in &grid.borders {
                 raster.fill(*rect, view.origin, grid.border_color);
             }
             for part in &grid.parts {
-                if part.origin[1] + part.page.height() < view.origin[1]
-                    || part.origin[1] > view.origin[1] + view.height as f32
+                // Marks stacked above a cell's first line reach beyond its box.
+                let reach = part.page.vertical_reach();
+                if culled && (part.origin[1] + reach[1] < top || part.origin[1] + reach[0] > bottom)
                 {
                     continue;
                 }
@@ -150,14 +212,6 @@ impl GlyphPainter {
             }
             return Ok(());
         }
-        #[cfg(test)]
-        let (outlines_enabled, culled) = (!self.uncached_outlines, !self.unculled);
-        #[cfg(not(test))]
-        let (outlines_enabled, culled) = (true, true);
-        // Layout coordinates covered by this raster. Large pages are painted
-        // once per guard refill; only lines and glyphs that can reach it run.
-        let top = view.origin[1];
-        let bottom = top + view.height as f32;
         let left = view.origin[0];
         let right = left + view.width as f32;
         for (index, line) in page.layout.lines().enumerate() {
@@ -184,15 +238,7 @@ impl GlyphPainter {
                 {
                     continue;
                 }
-                if let Some(decoration) = &glyph_run.style().strikethrough {
-                    let y = glyph_run.baseline()
-                        - decoration
-                            .offset
-                            .unwrap_or(run.metrics().strikethrough_offset);
-                    let height = decoration
-                        .size
-                        .unwrap_or(run.metrics().strikethrough_size)
-                        .max(1.0);
+                for (y, height, brush) in decorations(&glyph_run) {
                     raster.fill(
                         crate::Rect {
                             x0: f64::from(glyph_run.offset()),
@@ -201,25 +247,7 @@ impl GlyphPainter {
                             y1: f64::from(y + height),
                         },
                         view.origin,
-                        decoration.brush,
-                    );
-                }
-                if let Some(decoration) = &glyph_run.style().underline {
-                    let y = glyph_run.baseline()
-                        - decoration.offset.unwrap_or(run.metrics().underline_offset);
-                    let height = decoration
-                        .size
-                        .unwrap_or(run.metrics().underline_size)
-                        .max(1.0);
-                    raster.fill(
-                        crate::Rect {
-                            x0: f64::from(glyph_run.offset()),
-                            y0: f64::from(y),
-                            x1: f64::from(glyph_run.offset() + glyph_run.advance()),
-                            y1: f64::from(y + height),
-                        },
-                        view.origin,
-                        decoration.brush,
+                        brush,
                     );
                 }
                 if run.normalized_coords().len() > 64 {
@@ -350,7 +378,7 @@ impl GlyphPainter {
 /// what is valid for that phase.
 fn present_outline(
     cache: &mut GlyphCache,
-    raster: &mut Raster,
+    raster: &mut RasterMut<'_>,
     trace: &mut timing::Trace,
     (key, [x, y]): (GlyphKey, [f64; 2]),
     outline: outlines::Outline,
@@ -369,7 +397,7 @@ fn present_outline(
     }
 }
 
-fn paint_image(raster: &mut Raster, image: &Image, x: f64, y: f64, brush: [u8; 4]) {
+fn paint_image(raster: &mut RasterMut<'_>, image: &Image, x: f64, y: f64, brush: [u8; 4]) {
     let left = x + f64::from(image.placement.left);
     let top = y - f64::from(image.placement.top);
     let width = f64::from(image.placement.width);
@@ -420,7 +448,7 @@ fn paint_image(raster: &mut Raster, image: &Image, x: f64, y: f64, brush: [u8; 4
 // Bounds are the same clipped image intersection used by the color path above.
 // Each row pairs contiguous coverage and RGBA pixels, avoiding per-pixel indexing.
 fn paint_mask(
-    raster: &mut Raster,
+    raster: &mut RasterMut<'_>,
     image: &Image,
     origin: [i64; 2],
     start: [usize; 2],

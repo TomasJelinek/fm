@@ -21,7 +21,7 @@ mod source_map;
 mod tables;
 
 pub use options::TextOptions;
-pub use raster::{Raster, Viewport};
+pub use raster::{Raster, RasterMut, Viewport};
 use source_map::SourceMap;
 pub use tables::{CellAlignment, TableCell, TableRow};
 

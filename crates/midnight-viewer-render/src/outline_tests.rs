@@ -1,4 +1,6 @@
-use crate::{ColorSpan, TextOptions, TextRenderer, Viewport};
+use crate::{
+    CellAlignment, ColorSpan, TableCell, TableRow, TextOptions, TextPage, TextRenderer, Viewport,
+};
 
 #[test]
 fn culling_far_lines_and_glyphs_never_changes_raster_pixels() {
@@ -36,6 +38,130 @@ fn culling_far_lines_and_glyphs_never_changes_raster_pixels() {
             );
         }
     }
+}
+
+/// A page whose decorations sit far from their lines, as a malformed font's
+/// underline/strikeout metrics or style-supplied offsets can place them.
+fn far_decorations(renderer: &mut TextRenderer, text: &str) -> TextPage {
+    use parley::StyleProperty;
+    let (shaped, source_map) = crate::source_map::SourceMap::prepare(text, 4).unwrap();
+    let mut builder = renderer
+        .layouts
+        .ranged_builder(&mut renderer.fonts, &shaped, 1.0, false);
+    builder.push_default(StyleProperty::FontSize(16.0));
+    builder.push_default(StyleProperty::Brush([200, 200, 200, 255]));
+    builder.push(StyleProperty::Underline(true), 0..5);
+    builder.push(StyleProperty::UnderlineOffset(Some(-300.0)), 0..5);
+    builder.push(StyleProperty::UnderlineSize(Some(4.0)), 0..5);
+    builder.push(
+        StyleProperty::UnderlineBrush(Some([250, 40, 40, 255])),
+        0..5,
+    );
+    builder.push(StyleProperty::Strikethrough(true), 6..12);
+    builder.push(StyleProperty::StrikethroughOffset(Some(260.0)), 6..12);
+    builder.push(
+        StyleProperty::StrikethroughBrush(Some([40, 250, 40, 255])),
+        6..12,
+    );
+    let mut layout = builder.build(&shaped);
+    layout.break_all_lines(None);
+    TextPage {
+        text: text.into(),
+        line_bounds: super::line_bounds(&layout),
+        layout,
+        source_map,
+        composite: None,
+    }
+}
+
+#[test]
+fn culling_keeps_decorations_that_lie_far_from_their_line() {
+    let text = "first\nsecond\nthird";
+    let mut culled = TextRenderer::default();
+    let mut reference = TextRenderer::default();
+    reference.glyphs.unculled = true;
+    let a = far_decorations(&mut culled, text);
+    let b = far_decorations(&mut reference, text);
+    let mut seen = [false; 2];
+    let mut y = -330.0;
+    while y < 420.0 {
+        let expected = reference.rasterize(&b, view(0.0, y), None).unwrap().rgba;
+        for (index, color) in [[250, 40, 40, 255], [40, 250, 40, 255]].iter().enumerate() {
+            seen[index] |= expected.as_chunks::<4>().0.contains(color);
+        }
+        let actual = culled.rasterize(&a, view(0.0, y), None).unwrap().rgba;
+        assert!(actual == expected, "culling changed pixels at origin y={y}");
+        y += 19.25;
+    }
+    assert_eq!(seen, [true; 2], "both far decorations must be painted");
+}
+
+#[test]
+fn culling_keeps_ink_that_leaves_its_table_cell_box() {
+    // A tight line height puts stacked capital accents above the cell's box.
+    // Part culling must use the same ink reach as line culling.
+    let cell = "\u{1ed6}\u{302}\u{303}\u{301} tall";
+    let text = format!("intro\n\n{cell}\tx\n\noutro");
+    let start = text.find('\u{1ed6}').unwrap();
+    let end = start + cell.len() + 2;
+    let rows = [TableRow {
+        range: start..end,
+        header: false,
+        cells: vec![
+            TableCell {
+                range: start..start + cell.len(),
+                alignment: CellAlignment::Left,
+            },
+            TableCell {
+                range: end - 1..end,
+                alignment: CellAlignment::Left,
+            },
+        ],
+    }];
+    let spans = [ColorSpan {
+        range: start..start + cell.len(),
+        color: [255, 0, 0, 255],
+    }];
+    let options = TextOptions {
+        family: "sans-serif",
+        size: 24.0,
+        line_height: Some(1.0),
+        ..TextOptions::default()
+    };
+    let mut culled = TextRenderer::default();
+    let mut reference = TextRenderer::default();
+    reference.glyphs.unculled = true;
+    let a = culled
+        .layout_with_tables(&text, &options, &spans, &[], &rows)
+        .unwrap();
+    let b = reference
+        .layout_with_tables(&text, &options, &spans, &[], &rows)
+        .unwrap();
+    let cell_top = a
+        .composite
+        .as_ref()
+        .unwrap()
+        .parts
+        .iter()
+        .find(|part| part.range.start == start)
+        .unwrap()
+        .origin[1];
+    let red = |rgba: &[u8]| {
+        rgba.as_chunks::<4>()
+            .0
+            .iter()
+            .any(|pixel| pixel[0] > 100 && pixel[1] < 40 && pixel[2] < 40)
+    };
+    let mut visible = false;
+    // Each raster ends just above the cell box, inside the accents' ink.
+    for gap in [0.5, 1.5, 2.5, 4.0] {
+        let origin = view(0.0, cell_top - gap - 130.0);
+        let expected = reference.rasterize(&b, origin, None).unwrap().rgba;
+        visible |= red(&expected);
+        let actual = culled.rasterize(&a, origin, None).unwrap().rgba;
+        assert!(actual == expected, "culling changed pixels at gap={gap}");
+    }
+    assert!(visible, "the fixture must put ink above the cell box");
 }
 
 #[test]

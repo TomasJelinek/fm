@@ -1,7 +1,7 @@
 //! Independent scalar framebuffer oracle for mask coverage, clipping and fallback content.
 use super::*;
 
-fn reference(raster: &mut Raster, image: &Image, x: f64, y: f64, brush: [u8; 4]) {
+fn reference(raster: &mut RasterMut<'_>, image: &Image, x: f64, y: f64, brush: [u8; 4]) {
     let left = (x + f64::from(image.placement.left)).floor() as i64;
     let top = (y - f64::from(image.placement.top)).floor() as i64;
     for row in 0..i64::from(raster.height) {
@@ -66,20 +66,24 @@ fn compare(image: &Image, brush: [u8; 4]) {
             (0.0, 1000.0),
             (0.0, -1000.0),
         ] {
-            let mut actual = Raster {
-                width: 23,
-                height: 21,
-                rgba: background.repeat(23 * 21),
-            };
-            let mut expected = Raster {
-                width: actual.width,
-                height: actual.height,
-                rgba: actual.rgba.clone(),
-            };
-            paint_image(&mut actual, image, x, y, brush);
-            reference(&mut expected, image, x, y, brush);
+            let mut actual = background.repeat(23 * 21);
+            let mut expected = actual.clone();
+            paint_image(
+                &mut RasterMut::new(23, 21, &mut actual).unwrap(),
+                image,
+                x,
+                y,
+                brush,
+            );
+            reference(
+                &mut RasterMut::new(23, 21, &mut expected).unwrap(),
+                image,
+                x,
+                y,
+                brush,
+            );
             assert_eq!(
-                actual.rgba, expected.rgba,
+                actual, expected,
                 "content={:?} brush={brush:?} background={background:?} x={x} y={y}",
                 image.content
             );
