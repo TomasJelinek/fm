@@ -147,3 +147,19 @@ impl midnight_core::StorageService for LocalServices {
         })
     }
 }
+
+#[cfg(all(test, unix))]
+mod capacity_tests {
+    use super::LocalServices;
+    use midnight_core::StorageService;
+
+    #[test]
+    fn capacity_is_reported_for_existing_paths_and_fails_for_missing_ones() {
+        let root = tempfile::tempdir().unwrap();
+        let space = LocalServices::default().space_info(root.path()).unwrap();
+        assert!(space.total > 0);
+        assert!(space.available <= space.total);
+        let missing = LocalServices::default().space_info(&root.path().join("missing"));
+        assert_eq!(missing.unwrap_err().kind, std::io::ErrorKind::NotFound);
+    }
+}
