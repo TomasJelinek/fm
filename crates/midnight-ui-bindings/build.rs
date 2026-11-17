@@ -20,7 +20,10 @@ fn main() {
     let output = std::path::PathBuf::from(std::env::var_os("OUT_DIR").unwrap()).join("main.rs");
     // The UI is compiled once: the tooltip adapter emits slint_build's dependency,
     // environment and include tracking itself instead of a second full compile.
-    for dependency in tooltip::compile(&input, &output).unwrap() {
+    // Slint diagnostics are already printed with their snippets; panic with the plain
+    // messages instead of a Debug-escaped single line.
+    let dependencies = tooltip::compile(&input, &output).unwrap_or_else(|error| panic!("{error}"));
+    for dependency in dependencies {
         println!("cargo:rerun-if-changed={}", dependency.display());
     }
     for variable in SLINT_ENVIRONMENT {

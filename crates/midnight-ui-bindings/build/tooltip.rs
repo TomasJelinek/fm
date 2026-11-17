@@ -20,11 +20,15 @@ use std::{
 /// exactly as `slint_build::compile_with_config` reports them for Cargo.
 pub fn compile(input: &Path, output: &Path) -> Result<Vec<PathBuf>, String> {
     let mut diagnostics = BuildDiagnostics::default();
-    let syntax = parser::parse_file(input, &mut diagnostics)
-        .ok_or_else(|| diagnostics.to_string_vec().join("\n"))?;
+    let syntax = parser::parse_file(input, &mut diagnostics);
+    // Like slint_build, stop on syntax errors before compiling a damaged tree.
+    let Some(syntax) = syntax.filter(|_| !diagnostics.has_errors()) else {
+        return Err(report(diagnostics));
+    };
     // This is the constructor/style/domain slint_build uses, including environment/target
     // settings and embedded resources for Rust. The unused slint-build build dependency
-    // keeps i-slint-compiler's features identical to a slint_build compile.
+    // keeps i-slint-compiler's features identical to a slint_build compile, including the
+    // `display-diagnostics` feature that `report` uses.
     let mut config = CompilerConfiguration::new(OutputFormat::Rust);
     config.style = Some("fluent".into());
     config.translation_domain = std::env::var("CARGO_PKG_NAME").ok();
@@ -36,7 +40,7 @@ pub fn compile(input: &Path, output: &Path) -> Result<Vec<PathBuf>, String> {
     if diagnostics.has_errors()
         || (!diagnostics.is_empty() && std::env::var_os("SLINT_COMPILER_DENY_WARNINGS").is_some())
     {
-        return Err(diagnostics.to_string_vec().join("\n"));
+        return Err(report(diagnostics));
     }
     let mut dependencies: Vec<PathBuf> = diagnostics
         .all_loaded_files
@@ -70,6 +74,14 @@ pub fn compile(input: &Path, output: &Path) -> Result<Vec<PathBuf>, String> {
     let syntax = syn::parse2::<syn::File>(generated).map_err(|error| error.to_string())?;
     std::fs::write(output, prettyplease::unparse(&syntax)).map_err(|error| error.to_string())?;
     Ok(dependencies)
+}
+
+/// Print the diagnostics with their source snippets to stderr, as slint_build does before
+/// it fails, and return their plain messages for the build script's error.
+fn report(diagnostics: BuildDiagnostics) -> String {
+    let messages = diagnostics.to_string_vec().join("\n");
+    diagnostics.print();
+    messages
 }
 
 fn binary(lhs: Expression, rhs: Expression, op: char) -> Expression {
