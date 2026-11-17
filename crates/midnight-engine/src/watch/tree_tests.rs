@@ -69,10 +69,13 @@ async fn same_navigation_success_then_exact_commit_quiets_watch() {
         .to_owned();
     files.put(&path, 7);
     let (_session, scope) = scope(&files, &path);
-    let (controller, mut tasks, mut events) =
-        controller(files.clone(), None, Duration::from_millis(70));
+    let (controller, mut tasks, mut events, native) =
+        batch_controller(files.clone(), Duration::from_millis(70));
     let handle = controller.handle();
     handle.set_tree_scope(scope.clone());
+    native.registered().await;
+    // A native notification dirties the unchanged accepted root.
+    native.fire();
     let stamp = tree_changed(&mut events).await;
     let ticket = handle.begin_refresh(stamp, TreeRequestId(1)).unwrap();
     handle.finish_refresh(ticket, true, stamp.revision);
@@ -88,7 +91,7 @@ async fn same_navigation_success_then_exact_commit_quiets_watch() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn persistently_unreadable_entry_metadata_quiets_after_acknowledgement() {
+async fn persistently_unreadable_entry_metadata_stays_quiet_from_the_first_probe() {
     let files = Arc::new(Files::default());
     let path = std::env::current_dir()
         .unwrap()
@@ -110,18 +113,14 @@ async fn persistently_unreadable_entry_metadata_quiets_after_acknowledgement() {
     let (_session, scope) = scope(&files, &path);
     let (controller, mut tasks, mut events) =
         controller(files.clone(), None, Duration::from_millis(30));
-    let handle = controller.handle();
-    handle.set_tree_scope(scope.clone());
-    let stamp = tree_changed(&mut events).await;
-    let ticket = handle.begin_refresh(stamp, TreeRequestId(1)).unwrap();
-    handle.finish_refresh(ticket, true, stamp.revision);
-    handle.set_tree_scope(scope);
-    while events.try_recv().is_ok() {}
     let probes = files.probes.load(Ordering::SeqCst);
+    controller.handle().set_tree_scope(scope);
     files.wait_probes(probes + 3).await;
     assert!(
-        events.try_recv().is_err(),
-        "an unreadable but unchanged entry must not request maintenance every poll"
+        tokio::time::timeout(Duration::from_millis(100), events.recv())
+            .await
+            .is_err(),
+        "an unreadable but unchanged entry must not request maintenance"
     );
     stop(&controller, &mut tasks).await;
 }
@@ -140,12 +139,15 @@ async fn file_only_poll_between_sweep_and_commit_survives() {
     let (controller, mut tasks, mut events) =
         controller(files.clone(), None, Duration::from_millis(70));
     let handle = controller.handle();
+    let probes = files.probes.load(Ordering::SeqCst);
     handle.set_tree_scope(scope.clone());
-    let stamp = tree_changed(&mut events).await;
+    // The unchanged root is observed without a hint, then a sweep succeeds.
+    files.wait_probes(probes + 1).await;
+    let stamp = scope.stamp;
     let ticket = handle.begin_refresh(stamp, TreeRequestId(1)).unwrap();
     handle.finish_refresh(ticket, true, stamp.revision);
     files.put(&path, 8);
-    files.wait_probes(2).await;
+    files.wait_probes(probes + 2).await;
     handle.set_tree_scope(scope);
     assert_eq!(tree_changed(&mut events).await.session, stamp.session);
     handle.clear_scope(PaneId::Left, NavigationId(5));
@@ -163,6 +165,8 @@ async fn late_flat_ack_cannot_replace_adopted_scope() {
         .to_owned();
     files.put(&path, 7);
     let (_session, scope) = scope(&files, &path);
+    // Changed after the accepted listing: only the adopted tree scope reports it.
+    files.put(&path, 8);
     let (controller, mut tasks, mut events) =
         controller(files.clone(), None, Duration::from_millis(60));
     controller.handle().set_tree_scope(scope);
@@ -226,19 +230,13 @@ impl Batches {
     }
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn callback_between_admission_and_commit_survives_ack_and_unchanged_commits() {
-    let files = Arc::new(Files::default());
-    let path = std::env::current_dir()
-        .unwrap()
-        .join("_build/watch-tree-callback")
-        .to_str()
-        .unwrap()
-        .to_owned();
-    files.put(&path, 7);
-    let (_session, scope) = scope(&files, &path);
+/// A watch controller whose native batches the test fires by hand.
+fn batch_controller(
+    files: Arc<Files>,
+    poll: Duration,
+) -> (Controller, JoinSet<()>, mpsc::Receiver<Event>, Arc<Batches>) {
     let native = Arc::new(Batches::default());
-    let (sender, mut events) = mpsc::channel(8);
+    let (sender, events) = mpsc::channel(8);
     let mut tasks = JoinSet::new();
     let controller = Controller::with_timing(
         Retirement::testing(),
@@ -250,12 +248,29 @@ async fn callback_between_admission_and_commit_survives_ack_and_unchanged_commit
             wakeup: Arc::new(|| {}),
         },
         &mut tasks,
-        timing(Duration::from_secs(3)),
+        timing(poll),
     );
+    (controller, tasks, events, native)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn callback_between_admission_and_commit_survives_ack_and_unchanged_commits() {
+    let files = Arc::new(Files::default());
+    let path = std::env::current_dir()
+        .unwrap()
+        .join("_build/watch-tree-callback")
+        .to_str()
+        .unwrap()
+        .to_owned();
+    files.put(&path, 7);
+    let (_session, scope) = scope(&files, &path);
+    let (controller, mut tasks, mut events, native) =
+        batch_controller(files, Duration::from_secs(3));
     let handle = controller.handle();
     handle.set_tree_scope(scope.clone());
     native.registered().await;
-    let stamp = tree_changed(&mut events).await;
+    // The accepted root is unchanged: the sweep starts from a quiet scope.
+    let stamp = scope.stamp;
     let ticket = handle.begin_refresh(stamp, TreeRequestId(1)).unwrap();
     native.fire();
     handle.finish_refresh(ticket, true, stamp.revision);
@@ -289,6 +304,8 @@ async fn failed_scope_preserves_commit_identity_without_acknowledging_ticket() {
         .to_owned();
     files.put(&path, 7);
     let (_session, scope) = scope(&files, &path);
+    // Changed after the accepted listing, so the first probe dirties the scope.
+    files.put(&path, 8);
     let (controller, mut tasks, mut events) = controller(files, None, Duration::from_millis(60));
     let handle = controller.handle();
     handle.set_tree_scope(scope.clone());
@@ -472,6 +489,8 @@ async fn failed_sweep_and_ignored_hint_retry_at_poll_cadence() {
         .to_owned();
     files.put(&path, 7);
     let (_session, scope) = scope(&files, &path);
+    // Changed after the accepted listing, so the first probe dirties the scope.
+    files.put(&path, 8);
     let (controller, mut tasks, mut events) = controller(files, None, Duration::from_millis(120));
     let handle = controller.handle();
     handle.set_tree_scope(scope);
@@ -505,24 +524,12 @@ async fn fatal_session_retirement_suppresses_callbacks_and_delayed_flat_ack() {
     files.put(&path, 7);
     let (session, scope) = scope(&files, &path);
     let retained = Arc::downgrade(&scope.targets[0]);
-    let native = Arc::new(Batches::default());
-    let (sender, mut events) = mpsc::channel(8);
-    let mut tasks = JoinSet::new();
-    let controller = Controller::with_timing(
-        Retirement::testing(),
-        TaskLifetime::testing((files.clone(), native.clone())),
-        files.clone(),
-        Some(native.clone()),
-        Outbox {
-            sender,
-            wakeup: Arc::new(|| {}),
-        },
-        &mut tasks,
-        timing(Duration::from_millis(60)),
-    );
+    let (controller, mut tasks, mut events, native) =
+        batch_controller(files.clone(), Duration::from_millis(60));
     let handle = controller.handle();
     handle.set_tree_scope(scope);
     native.registered().await;
+    native.fire();
     let queued_hint = tree_changed(&mut events).await;
     handle.retire_session(queued_hint);
     drop(session);
@@ -925,6 +932,37 @@ fn callback_before_refresh_admission_is_covered_without_a_fresh_hint() {
         probes,
         "polling cannot introduce or consume another observation in this window"
     );
+}
+
+#[test]
+fn an_unchanged_accepted_root_needs_no_initial_maintenance() {
+    let files = Arc::new(Files::default());
+    let path = std::env::current_dir()
+        .unwrap()
+        .join("_build/watch-tree-accepted-root")
+        .to_str()
+        .unwrap()
+        .to_owned();
+    files.put(&path, 7);
+    let (_session, scope) = scope(&files, &path);
+    let root = &scope.targets[0];
+    assert_eq!(
+        root.full,
+        Some(root.display),
+        "the root listing shows every entry"
+    );
+    let mut runtime = LinkWatchRuntime::new(&scope);
+    let probes = files.probes.load(Ordering::SeqCst);
+    runtime.tick(files.as_ref(), 2);
+    assert!(files.probes.load(Ordering::SeqCst) > probes);
+    assert!(
+        runtime.changed().is_none(),
+        "a first probe equal to the accepted listing requests no sweep"
+    );
+    // A real difference still requests maintenance.
+    files.put(&path, 8);
+    runtime.tick(files.as_ref(), 2);
+    assert_eq!(runtime.changed(), Some(scope.stamp));
 }
 
 #[test]

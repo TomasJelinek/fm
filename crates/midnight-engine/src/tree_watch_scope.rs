@@ -163,10 +163,14 @@ impl Session {
                             .map_err(|_| ProviderError::ResourceLimited)?;
                     }
                 }
+                let display = signature.digest(!root);
                 Arc::new(ScopeTarget {
                     branch,
                     path,
-                    display: signature.digest(!root),
+                    display,
+                    // The root shows every entry, so its accepted display signature
+                    // is its full observation. A folder-only listing has none.
+                    full: root.then_some(display),
                     folders_only: !root,
                     directory_identity,
                     path_bytes,
