@@ -722,7 +722,8 @@ editor scope and shortcuts reserved for later stages.
 - Click column headers: change sorting. Cursor and selection remain attached to
   the original raw filesystem paths when the listing order changes.
   Repeated clicks toggle ascending/descending order. Completed folder sizes are
-  retained and sorted on the backend; Refresh invalidates these live estimates.
+  retained and sorted on the backend; explicit Refresh invalidates these live
+  estimates.
 
 Application hotkeys can be changed, disabled, or restored in **Options → Keyboard**.
 An occupied shortcut offers **Replace** or **Cancel**, identifying the affected
@@ -792,8 +793,11 @@ Each pane remembers its last visited directory for each volume during this run.
 Visible directories are watched on the backend. Changes are batched after
 150 ms of quiet, with a 500 ms cap during continuous activity. A 15-second
 metadata check catches missing native/network notifications. Automatic refresh
-preserves the viewport, selection and command editing; it invalidates earlier
-recursive folder-size estimates.
+(change notifications and finished file operations) preserves the viewport,
+selection, command editing, an open Panel Filter window and the computed sizes of
+folders that are still listed; explicit Refresh recomputes sizes. It waits while
+a drag from that panel or a directory comparison is in progress. When the focused
+item disappears, the cursor moves to its nearest remaining neighbor.
 Folder sizing uses a bounded fair batch and a shared I/O budget: up to four reads
 only for proven local SSD, one stream for HDD/network/unknown storage. Detection
 errors remain conservative. Other navigation work has independent capacity.

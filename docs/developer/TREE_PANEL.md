@@ -356,6 +356,14 @@ captured launch. Switching the active pane cannot retarget it; source navigation
 projection replacement or application close cancels pending work. Queue pressure
 retains one pending editor intent with its original settings.
 
+Background changes do not cancel started work silently. When a newer publication
+of the same session (watch refresh, branch loading) or a selection change voids a
+pending capture for Delete, Rename, attributes, checksums, Custom Commands, F4 or
+the clipboard/menu actions, the panel reports that the tree changed and asks for
+a retry. Leaving the tree after an F4 launch or a clipboard copy was already
+handed to the desktop worker reports that it may not have completed. Navigation,
+shutdown and explicit Escape/dismissal stay silent.
+
 Resolution, native regular-file validation, spawning and final provider disposal
 run on backend workers, including shutdown before an async delivery task starts.
 Existing process/launch limits and literal executable/argv handling remain. Raw
@@ -490,8 +498,9 @@ newly owned capture data; native clipboard payload limits also apply. Rejected,
 canceled and stale captures are retired on backend workers, including queue
 refusal and pending engine-command destruction during shutdown. The presenter
 keeps one pending clipboard capture and retries outer command-channel pressure
-with the same source. Navigation cancels pending work; it does not erase an
-already published OS clipboard entry.
+with the same source. Navigation cancels pending work, and a copy that was
+already handed to the clipboard worker reports that it may not have completed; it
+does not erase an already published OS clipboard entry.
 
 Ctrl+V retains the native panel root as its destination even when a nested row
 has focus. Copy uses the ordinary verified queue; Move intent opens the existing
@@ -541,7 +550,11 @@ Failed listings retain known rows and report a diagnostic.
 Navigation or terminal session failure invalidates that generation immediately;
 the backend releases native/provider resources after any outstanding call returns.
 Late callbacks, sweep receipts and fatal errors cannot cancel a newer navigation.
-Watch diagnostics do not turn into Commit retries. The mutation gate remains held
+Watch diagnostics do not turn into Commit retries. When an adopted session fails
+(`Unavailable` for the displayed root), the presenter stops sending its
+observations, reports the failure and re-reads the folder flat, which retires the
+tree and starts a fresh selection context; a full command queue retains that
+re-read for retry. The mutation gate remains held
 through each maintenance list/apply step, while explicit expansion can proceed
 when maintenance is waiting for a transfer.
 
