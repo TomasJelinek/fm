@@ -1,8 +1,22 @@
-//! Process-wide fair I/O admission. Transfer jobs may retain one shared slot through teardown;
-//! other consumers retain their existing call-scoped admission policy.
+//! Process-wide fair I/O admission. Requests are admitted in strict FIFO order.
+//!
+//! Owners consume capacity only while they perform I/O. Call-scoped owners hold a permit
+//! for one bounded call. A retained owner, such as a transfer job, keeps one permit
+//! identity for its lifetime but holds capacity only while it executes native steps: it
+//! releases the permit before waiting for a user decision, a pause or another job, yields
+//! it at its next step boundary while a call-scoped request is queued, and readmits it
+//! through the same FIFO queue before its next step. Queued exclusive requests and later
+//! shared requests therefore wait for at most one step of each retained owner, never for
+//! a whole transfer.
 use std::{
     collections::VecDeque,
-    sync::{Arc, Condvar, Mutex, OnceLock},
+    future::Future,
+    pin::Pin,
+    sync::{
+        Arc, Condvar, Mutex, MutexGuard, OnceLock,
+        atomic::{AtomicBool, Ordering},
+    },
+    task::{Context, Poll, Waker},
     time::Duration,
 };
 
@@ -41,7 +55,67 @@ struct State {
     active_shared: u8,
     exclusive: bool,
     next: u64,
-    queue: VecDeque<(u64, Admission)>,
+    queue: VecDeque<Waiter>,
+}
+/// A queued request. Async waiters keep their waker here; blocking waiters use the condvar.
+struct Waiter {
+    ticket: u64,
+    admission: Admission,
+    /// Retained owners wait for whole jobs; they never ask other retained owners to yield.
+    retained: bool,
+    waker: Option<Waker>,
+}
+impl State {
+    fn eligible(&self, admission: Admission) -> bool {
+        !self.exclusive
+            && match admission {
+                Admission::Shared => self.active_shared < self.limit,
+                Admission::Exclusive => self.active_shared == 0,
+            }
+    }
+    fn charge(&mut self, admission: Admission) {
+        match admission {
+            Admission::Shared => self.active_shared += 1,
+            Admission::Exclusive => self.exclusive = true,
+        }
+    }
+    fn refund(&mut self, admission: Admission) {
+        match admission {
+            Admission::Shared => self.active_shared -= 1,
+            Admission::Exclusive => self.exclusive = false,
+        }
+    }
+    fn enqueue(&mut self, admission: Admission, retained: bool) -> u64 {
+        let ticket = self.next;
+        self.next = self.next.wrapping_add(1);
+        self.queue.push_back(Waiter {
+            ticket,
+            admission,
+            retained,
+            waker: None,
+        });
+        ticket
+    }
+    /// Only the queue head may be admitted, so FIFO order is never overtaken.
+    fn admit(&mut self, ticket: u64) -> bool {
+        let Some(head) = self.queue.front() else {
+            return false;
+        };
+        if head.ticket != ticket || !self.eligible(head.admission) {
+            return false;
+        }
+        let admission = head.admission;
+        self.queue.pop_front();
+        self.charge(admission);
+        true
+    }
+    fn withdraw(&mut self, ticket: u64) -> bool {
+        let Some(index) = self.queue.iter().position(|waiter| waiter.ticket == ticket) else {
+            return false;
+        };
+        self.queue.remove(index);
+        true
+    }
 }
 /// Observational counters for diagnostics and coordination tests; never used to admit work.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -55,7 +129,7 @@ pub struct Snapshot {
 }
 impl Gate {
     pub fn snapshot(&self) -> Snapshot {
-        let state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        let state = self.lock();
         Snapshot {
             available: if state.exclusive {
                 0
@@ -86,380 +160,297 @@ impl Gate {
         if !(1..=MAX_IO_LIMIT).contains(&limit) {
             return Err("Disk I/O concurrency must be between 1 and 32.");
         }
-        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        let mut state = self.lock();
         state.limit = limit;
-        self.changed.notify_all();
+        self.notify(state);
         Ok(())
     }
     pub fn effective_limit(&self) -> u8 {
-        self.state
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .limit
+        self.lock().limit
     }
-    /// Try immediate admission without queuing or overtaking an existing waiter.
-    /// This supports rolling back a lifetime transfer slot when its namespace
-    /// share is unavailable, without awaiting one resource while holding another.
+    /// Try immediate call-scoped admission without queuing or overtaking an existing waiter.
     pub fn try_acquire(self: &Arc<Self>, admission: Admission) -> Option<Permit> {
-        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
-        if !state.queue.is_empty() || state.exclusive {
-            return None;
-        }
-        let eligible = match admission {
-            Admission::Shared => state.active_shared < state.limit,
-            Admission::Exclusive => state.active_shared == 0,
-        };
-        if !eligible {
-            return None;
-        }
-        match admission {
-            Admission::Shared => state.active_shared += 1,
-            Admission::Exclusive => state.exclusive = true,
-        }
-        Some(Permit {
-            gate: self.clone(),
-            admission,
-        })
+        self.try_admit(admission, false)
     }
-    /// FIFO prevents an exclusive HDD request from being starved by a stream of SSD requests.
-    /// Cancellation removes a queued ticket within one short polling interval.
+    /// Try immediate admission of a retained permit (see the crate documentation).
+    pub fn try_acquire_retained(self: &Arc<Self>, admission: Admission) -> Option<Permit> {
+        self.try_admit(admission, true)
+    }
+    /// Blocking call-scoped FIFO admission: an exclusive HDD request is never starved by a
+    /// stream of SSD requests. `cancelled` runs without the gate lock; cancellation
+    /// withdraws the queued request within one short polling interval, also when
+    /// `cancelled` unwinds.
     pub fn acquire(
         self: &Arc<Self>,
         admission: Admission,
         cancelled: impl Fn() -> bool,
     ) -> Option<Permit> {
-        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
-        let ticket = state.next;
-        state.next = state.next.wrapping_add(1);
-        state.queue.push_back((ticket, admission));
+        if cancelled() {
+            return None;
+        }
+        let permit = Permit::new(self.clone(), admission, false, false);
+        let mut queued = Queued {
+            gate: self,
+            ticket: self.lock().enqueue(admission, false),
+            admitted: false,
+        };
         loop {
-            if cancelled() {
-                if let Some(index) = state.queue.iter().position(|(id, _)| *id == ticket) {
-                    state.queue.remove(index);
-                }
-                self.changed.notify_all();
-                return None;
+            let mut state = self.lock();
+            if state.admit(queued.ticket) {
+                queued.admitted = true;
+                permit.held.store(true, Ordering::Release);
+                self.notify(state);
+                return Some(permit);
             }
-            let eligible = !state.exclusive
-                && match admission {
-                    Admission::Shared => state.active_shared < state.limit,
-                    Admission::Exclusive => state.active_shared == 0,
-                };
-            if state.queue.front().is_some_and(|(id, _)| *id == ticket) && eligible {
-                state.queue.pop_front();
-                match admission {
-                    Admission::Shared => state.active_shared += 1,
-                    Admission::Exclusive => state.exclusive = true,
-                }
-                self.changed.notify_all();
-                return Some(Permit {
-                    gate: self.clone(),
-                    admission,
-                });
-            }
-            state = self
+            let (state, _) = self
                 .changed
                 .wait_timeout(state, POLL)
-                .unwrap_or_else(|error| error.into_inner())
-                .0;
+                .unwrap_or_else(|error| error.into_inner());
+            // Admission is re-checked under the lock before any further wait, so a
+            // change while `cancelled` runs unlocked is never missed.
+            drop(state);
+            if cancelled() {
+                return None;
+            }
+        }
+    }
+    /// Async FIFO admission of a retained permit. Dropping the future before it completes
+    /// withdraws the request; the gate lock is never held across an await. Callers observe
+    /// their own cancellation while awaiting it.
+    pub fn acquire_retained(self: &Arc<Self>, admission: Admission) -> Acquire {
+        Acquire {
+            permit: Some(Permit::new(self.clone(), admission, true, false)),
+            ticket: None,
+        }
+    }
+    fn try_admit(self: &Arc<Self>, admission: Admission, retained: bool) -> Option<Permit> {
+        let mut state = self.lock();
+        if !state.queue.is_empty() || !state.eligible(admission) {
+            return None;
+        }
+        state.charge(admission);
+        Some(Permit::new(self.clone(), admission, retained, true))
+    }
+    fn lock(&self) -> MutexGuard<'_, State> {
+        self.state.lock().unwrap_or_else(|error| error.into_inner())
+    }
+    fn withdraw(&self, ticket: u64) {
+        let mut state = self.lock();
+        if state.withdraw(ticket) {
+            self.notify(state);
+        }
+    }
+    /// Publish a state change: blocking waiters re-check, and the async queue head is woken.
+    /// Only the head can be admitted; each admission or withdrawal wakes the next head.
+    fn notify(&self, mut state: MutexGuard<'_, State>) {
+        let waker = state
+            .queue
+            .front_mut()
+            .and_then(|waiter| waiter.waker.take());
+        drop(state);
+        self.changed.notify_all();
+        if let Some(waker) = waker {
+            waker.wake();
         }
     }
 }
-/// Held until the admitted call actually returns, including after cancellation or a limit decrease.
+
+/// Withdraws a blocking request on every exit, including an unwinding `cancelled`.
+struct Queued<'a> {
+    gate: &'a Gate,
+    ticket: u64,
+    admitted: bool,
+}
+impl Drop for Queued<'_> {
+    fn drop(&mut self) {
+        if !self.admitted {
+            self.gate.withdraw(self.ticket);
+        }
+    }
+}
+
+/// Future returned by [`Gate::acquire_retained`].
+pub struct Acquire {
+    permit: Option<Permit>,
+    ticket: Option<u64>,
+}
+impl Future for Acquire {
+    type Output = Permit;
+    fn poll(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Permit> {
+        let this = &mut *self;
+        let permit = this
+            .permit
+            .as_ref()
+            .expect("I/O admission polled after completion");
+        match permit.poll_admit(&mut this.ticket, context) {
+            Poll::Ready(()) => Poll::Ready(
+                this.permit
+                    .take()
+                    .expect("I/O admission polled after completion"),
+            ),
+            Poll::Pending => Poll::Pending,
+        }
+    }
+}
+impl Drop for Acquire {
+    fn drop(&mut self) {
+        if let (Some(ticket), Some(permit)) = (self.ticket.take(), self.permit.as_ref()) {
+            permit.gate.withdraw(ticket);
+        }
+    }
+}
+
+/// Future returned by [`Permit::reacquire`].
+pub struct Reacquire<'a> {
+    permit: &'a Permit,
+    ticket: Option<u64>,
+}
+impl Future for Reacquire<'_> {
+    type Output = ();
+    fn poll(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<()> {
+        let this = &mut *self;
+        this.permit.poll_admit(&mut this.ticket, context)
+    }
+}
+impl Drop for Reacquire<'_> {
+    fn drop(&mut self) {
+        if let Some(ticket) = self.ticket.take() {
+            self.permit.gate.withdraw(ticket);
+        }
+    }
+}
+
+/// One admission to an exact gate. It consumes capacity while held: until it is dropped
+/// (after the admitted call actually returns, including after cancellation or a limit
+/// decrease) or explicitly released. A released permit keeps its identity and can be
+/// readmitted through the FIFO queue.
 pub struct Permit {
     gate: Arc<Gate>,
     admission: Admission,
+    retained: bool,
+    /// Changed only under the gate lock, so it always matches the gate's counters.
+    held: AtomicBool,
 }
 impl Permit {
-    /// Whether this live guard consumes capacity from the exact configured gate.
+    fn new(gate: Arc<Gate>, admission: Admission, retained: bool, held: bool) -> Self {
+        Self {
+            gate,
+            admission,
+            retained,
+            held: AtomicBool::new(held),
+        }
+    }
+    /// Whether this guard belongs to the exact configured gate, held or released.
     pub fn belongs_to(&self, gate: &Arc<Gate>) -> bool {
         Arc::ptr_eq(&self.gate, gate)
     }
     pub fn is_shared(&self) -> bool {
         self.admission == Admission::Shared
     }
+    /// Whether this guard currently consumes capacity. Only a held permit admits I/O.
+    pub fn is_held(&self) -> bool {
+        self.held.load(Ordering::Acquire)
+    }
+    /// Whether a call-scoped request is queued. A retained owner then releases this permit
+    /// at its next step boundary and readmits it, so that request waits for at most one
+    /// step instead of the owner's whole job. Queued retained owners never count.
+    pub fn is_contended(&self) -> bool {
+        self.gate.lock().queue.iter().any(|waiter| !waiter.retained)
+    }
+    /// Return the capacity now, e.g. before waiting for a user decision. Idempotent;
+    /// returns whether capacity was returned by this call. Clones of an `Arc<Permit>`
+    /// observe the release, so forgotten clones cannot retain capacity.
+    pub fn release(&self) -> bool {
+        let mut state = self.gate.lock();
+        if !self.held.swap(false, Ordering::AcqRel) {
+            return false;
+        }
+        state.refund(self.admission);
+        self.gate.notify(state);
+        true
+    }
+    /// Readmit a released permit at once when nothing is queued and capacity allows;
+    /// like `Gate::try_acquire`, this never overtakes a waiter. Returns whether held.
+    pub fn try_reacquire(&self) -> bool {
+        let mut state = self.gate.lock();
+        if self.held.load(Ordering::Acquire) {
+            return true;
+        }
+        if !state.queue.is_empty() || !state.eligible(self.admission) {
+            return false;
+        }
+        state.charge(self.admission);
+        self.held.store(true, Ordering::Release);
+        true
+    }
+    /// Readmit a released permit through the FIFO queue; completes at once while held.
+    /// Dropping the future before completion withdraws the request.
+    pub fn reacquire(&self) -> Reacquire<'_> {
+        Reacquire {
+            permit: self,
+            ticket: None,
+        }
+    }
+    /// Charge a released shared permit immediately, without queuing, for bounded
+    /// teardown that must not wait for capacity (cancellation cleanup). This may
+    /// briefly exceed the configured limit or overlap an exclusive owner. An exclusive
+    /// permit is reclaimed only when that is possible at once; returns whether held.
+    pub fn reclaim(&self) -> bool {
+        let mut state = self.gate.lock();
+        if self.held.load(Ordering::Acquire) {
+            return true;
+        }
+        match self.admission {
+            Admission::Shared => state.active_shared += 1,
+            Admission::Exclusive if !state.exclusive && state.active_shared == 0 => {
+                state.exclusive = true;
+            }
+            Admission::Exclusive => return false,
+        }
+        self.held.store(true, Ordering::Release);
+        true
+    }
+    fn poll_admit(&self, ticket: &mut Option<u64>, context: &mut Context<'_>) -> Poll<()> {
+        let mut state = self.gate.lock();
+        if self.held.load(Ordering::Acquire) {
+            // Held already (never released, or reclaimed): withdraw any queued request.
+            if let Some(queued) = ticket.take()
+                && state.withdraw(queued)
+            {
+                self.gate.notify(state);
+            }
+            return Poll::Ready(());
+        }
+        let queued = match *ticket {
+            Some(queued) if state.queue.iter().any(|waiter| waiter.ticket == queued) => queued,
+            _ => *ticket.insert(state.enqueue(self.admission, self.retained)),
+        };
+        if state.admit(queued) {
+            *ticket = None;
+            self.held.store(true, Ordering::Release);
+            self.gate.notify(state);
+            return Poll::Ready(());
+        }
+        if let Some(waiter) = state
+            .queue
+            .iter_mut()
+            .find(|waiter| waiter.ticket == queued)
+            && waiter
+                .waker
+                .as_ref()
+                .is_none_or(|waker| !waker.will_wake(context.waker()))
+        {
+            waiter.waker = Some(context.waker().clone());
+        }
+        Poll::Pending
+    }
 }
 impl Drop for Permit {
     fn drop(&mut self) {
-        let mut state = self
-            .gate
-            .state
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        match self.admission {
-            Admission::Shared => state.active_shared -= 1,
-            Admission::Exclusive => state.exclusive = false,
-        }
-        self.gate.changed.notify_all();
+        self.release();
     }
 }
+
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use std::{
-        sync::{
-            atomic::{AtomicBool, Ordering},
-            mpsc,
-        },
-        thread,
-        time::Instant,
-    };
-
-    // Authored before the semantic Gate implementation; execution is not authorized.
-    struct Waiting {
-        cancel: Arc<AtomicBool>,
-        release: Option<mpsc::Sender<()>>,
-        entered: mpsc::Receiver<()>,
-        worker: Option<thread::JoinHandle<()>>,
-    }
-    impl Waiting {
-        fn new(gate: Arc<Gate>, admission: Admission) -> Self {
-            let cancel = Arc::new(AtomicBool::new(false));
-            let worker_cancel = cancel.clone();
-            let (release, released) = mpsc::channel();
-            let (send, entered) = mpsc::channel();
-            let worker = thread::spawn(move || {
-                if let Some(_permit) =
-                    gate.acquire(admission, || worker_cancel.load(Ordering::Acquire))
-                {
-                    send.send(()).unwrap();
-                    // Test cleanup closes this channel even when an assertion unwinds.
-                    let _ = released.recv();
-                }
-            });
-            Self {
-                cancel,
-                release: Some(release),
-                entered,
-                worker: Some(worker),
-            }
-        }
-        fn assert_entered(&self) {
-            self.entered.recv_timeout(Duration::from_secs(3)).unwrap();
-        }
-        fn assert_waiting(&self) {
-            assert!(matches!(
-                self.entered.try_recv(),
-                Err(mpsc::TryRecvError::Empty)
-            ));
-        }
-    }
-    impl Drop for Waiting {
-        fn drop(&mut self) {
-            self.cancel.store(true, Ordering::Release);
-            self.release.take();
-            if let Some(worker) = self.worker.take() {
-                let result = worker.join();
-                if !thread::panicking() {
-                    result.unwrap();
-                }
-            }
-        }
-    }
-    fn queued(gate: &Gate, count: usize) {
-        let deadline = Instant::now() + Duration::from_secs(3);
-        while gate.snapshot().queued != count {
-            assert!(Instant::now() < deadline, "request did not enqueue");
-            thread::yield_now();
-        }
-    }
-
-    #[test]
-    fn exclusive_waiter_precedes_later_shared_work_even_after_growth() {
-        let gate = Arc::new(Gate::new(4));
-        let held = gate.acquire(Admission::Shared, || false).unwrap();
-        let first = Waiting::new(gate.clone(), Admission::Exclusive);
-        queued(&gate, 1);
-        let second = Waiting::new(gate.clone(), Admission::Shared);
-        queued(&gate, 2);
-        gate.set_limit(8).unwrap();
-        first.assert_waiting();
-        second.assert_waiting();
-        drop(held);
-        first.assert_entered();
-        second.assert_waiting();
-        assert!(gate.snapshot().exclusive);
-        drop(first);
-        second.assert_entered();
-    }
-
-    #[test]
-    fn cancelled_head_does_not_block_following_eligible_work() {
-        let gate = Arc::new(Gate::new(4));
-        let _held = gate.acquire(Admission::Shared, || false).unwrap();
-        let first = Waiting::new(gate.clone(), Admission::Exclusive);
-        queued(&gate, 1);
-        let second = Waiting::new(gate.clone(), Admission::Shared);
-        queued(&gate, 2);
-        drop(first);
-        second.assert_entered();
-        assert_eq!(gate.snapshot().active_shared, 2);
-    }
-
-    #[test]
-    fn global_budget_is_shared_and_unknown_is_exclusive() {
-        assert!(Arc::ptr_eq(&shared_io(), &shared_io()));
-        assert_eq!(storage_admission(false), Admission::Exclusive);
-        assert_eq!(storage_admission(true), Admission::Shared);
-        assert_eq!(Gate::new(DEFAULT_IO_LIMIT).effective_limit(), 4);
-    }
-
-    #[test]
-    fn shrinking_keeps_existing_shared_owners_charged_until_they_return() {
-        let gate = Arc::new(Gate::new(4));
-        let mut held: Vec<_> = (0..4)
-            .map(|_| gate.acquire(Admission::Shared, || false).unwrap())
-            .collect();
-        gate.set_limit(1).unwrap();
-        assert_eq!(gate.effective_limit(), 1);
-        assert_eq!(gate.snapshot().active_shared, 4);
-        assert_eq!(gate.snapshot().available, 0);
-        let next = Waiting::new(gate.clone(), Admission::Shared);
-        queued(&gate, 1);
-        for remaining in (1..4).rev() {
-            held.pop();
-            assert_eq!(gate.snapshot().active_shared, remaining);
-            next.assert_waiting();
-        }
-        held.pop();
-        next.assert_entered();
-        assert_eq!(gate.snapshot().active_shared, 1);
-    }
-
-    #[test]
-    fn growing_wakes_a_shared_waiter_without_waiting_for_the_old_owner() {
-        let gate = Arc::new(Gate::new(1));
-        let _held = gate.acquire(Admission::Shared, || false).unwrap();
-        let next = Waiting::new(gate.clone(), Admission::Shared);
-        queued(&gate, 1);
-        gate.set_limit(2).unwrap();
-        next.assert_entered();
-        assert_eq!(gate.snapshot().active_shared, 2);
-    }
-
-    #[test]
-    fn an_exclusive_owner_stays_exclusive_across_growth_and_shrink() {
-        let gate = Arc::new(Gate::new(4));
-        let held = gate.acquire(Admission::Exclusive, || false).unwrap();
-        let next = Waiting::new(gate.clone(), Admission::Shared);
-        queued(&gate, 1);
-        gate.set_limit(32).unwrap();
-        next.assert_waiting();
-        assert!(gate.snapshot().exclusive);
-        assert_eq!(gate.snapshot().available, 0);
-        gate.set_limit(1).unwrap();
-        next.assert_waiting();
-        drop(held);
-        next.assert_entered();
-        assert!(!gate.snapshot().exclusive);
-    }
-
-    #[test]
-    fn queued_exclusive_keeps_its_meaning_when_the_limit_shrinks() {
-        let gate = Arc::new(Gate::new(4));
-        let one = gate.acquire(Admission::Shared, || false).unwrap();
-        let two = gate.acquire(Admission::Shared, || false).unwrap();
-        let next = Waiting::new(gate.clone(), Admission::Exclusive);
-        queued(&gate, 1);
-        gate.set_limit(1).unwrap();
-        drop(one);
-        next.assert_waiting();
-        drop(two);
-        next.assert_entered();
-        assert!(gate.snapshot().exclusive);
-        assert_eq!(gate.snapshot().active_shared, 0);
-        drop(next);
-        assert_eq!(gate.snapshot().available, 1);
-    }
-
-    #[test]
-    fn invalid_limits_leave_live_policy_and_ownership_unchanged() {
-        let gate = Arc::new(Gate::new(4));
-        let _held = gate.acquire(Admission::Shared, || false).unwrap();
-        for invalid in [0, 33, u8::MAX] {
-            assert!(gate.set_limit(invalid).is_err());
-            assert_eq!(gate.effective_limit(), 4);
-            assert_eq!(gate.snapshot().active_shared, 1);
-            assert_eq!(gate.snapshot().available, 3);
-        }
-    }
-
-    #[test]
-    fn cancelling_an_active_operation_does_not_return_its_permit() {
-        let gate = Arc::new(Gate::new(2));
-        let active = Waiting::new(gate.clone(), Admission::Shared);
-        active.assert_entered();
-        gate.set_limit(1).unwrap();
-        active.cancel.store(true, Ordering::Release);
-        let next = Waiting::new(gate.clone(), Admission::Shared);
-        queued(&gate, 1);
-        next.assert_waiting();
-        assert_eq!(gate.snapshot().active_shared, 1);
-        drop(active);
-        next.assert_entered();
-    }
-
-    #[test]
-    fn already_cancelled_request_never_takes_admission() {
-        let gate = Arc::new(Gate::new(1));
-        assert!(gate.acquire(Admission::Exclusive, || true).is_none());
-        assert_eq!(gate.snapshot().queued, 0);
-        assert_eq!(gate.snapshot().available, 1);
-    }
-
-    #[test]
-    fn try_admission_respects_capacity_and_identifies_the_actual_guard() {
-        let gate = Arc::new(Gate::new(2));
-        let other = Arc::new(Gate::new(2));
-        let first = gate.try_acquire(Admission::Shared).unwrap();
-        let second = gate.try_acquire(Admission::Shared).unwrap();
-        assert!(first.belongs_to(&gate));
-        assert!(!first.belongs_to(&other));
-        assert!(first.is_shared());
-        assert!(gate.try_acquire(Admission::Shared).is_none());
-        assert!(gate.try_acquire(Admission::Exclusive).is_none());
-        drop(first);
-        assert!(gate.try_acquire(Admission::Shared).is_some());
-        drop(second);
-        let exclusive = gate.try_acquire(Admission::Exclusive).unwrap();
-        assert!(exclusive.belongs_to(&gate));
-        assert!(!exclusive.is_shared());
-        assert!(gate.try_acquire(Admission::Shared).is_none());
-        drop(exclusive);
-        assert_eq!(gate.snapshot().available, 2);
-    }
-
-    #[test]
-    fn try_admission_cannot_bypass_a_queued_exclusive_request() {
-        let gate = Arc::new(Gate::new(2));
-        let held = gate.try_acquire(Admission::Shared).unwrap();
-        let exclusive = Waiting::new(gate.clone(), Admission::Exclusive);
-        queued(&gate, 1);
-        assert_eq!(gate.snapshot().available, 1);
-        assert!(gate.try_acquire(Admission::Shared).is_none());
-        drop(held);
-        exclusive.assert_entered();
-        assert!(gate.try_acquire(Admission::Shared).is_none());
-        drop(exclusive);
-        assert!(gate.try_acquire(Admission::Shared).is_some());
-    }
-
-    #[test]
-    fn try_admission_waits_for_a_decreased_limit_to_drain() {
-        let gate = Arc::new(Gate::new(3));
-        let first = gate.try_acquire(Admission::Shared).unwrap();
-        let second = gate.try_acquire(Admission::Shared).unwrap();
-        let third = gate.try_acquire(Admission::Shared).unwrap();
-        gate.set_limit(1).unwrap();
-        assert!(gate.try_acquire(Admission::Shared).is_none());
-        drop(first);
-        assert!(gate.try_acquire(Admission::Shared).is_none());
-        drop(second);
-        assert!(gate.try_acquire(Admission::Shared).is_none());
-        drop(third);
-        let resumed = gate.try_acquire(Admission::Shared).unwrap();
-        assert_eq!(gate.snapshot().active_shared, 1);
-        drop(resumed);
-        assert_eq!(gate.snapshot().available, 1);
-    }
-}
+#[path = "tests.rs"]
+mod tests;
