@@ -101,12 +101,27 @@ const HELPER: &str = if cfg!(windows) {
 } else {
     "midnight-elevated-listing"
 };
+/// Where the helper must be installed, as the platform's refusal of an unprotected helper
+/// location also states. Per-user deployments do not include the helper, so a missing helper
+/// explains the same requirement. A test keeps this identical to the start of that refusal.
+const HELPER_REQUIREMENT: &str = if cfg!(windows) {
+    "Authorized listing requires midnight-elevated-listing.exe to be installed by an \
+     administrator in a protected folder that standard users cannot change, such as a folder \
+     under C:\\Program Files."
+} else {
+    "Authorized listing requires midnight-elevated-listing in a root-owned installation that \
+     only root can change, such as /opt/midnight-explorer installed with sudo."
+};
 
 /// Locate the helper beside the installed executable and accept it only from a protected
 /// location. It runs as Administrator/root, so the plugin policy (which also trusts the
 /// current user) is not sufficient: the unelevated user must not be able to replace it.
 fn trusted_helper() -> io::Result<PathBuf> {
     let executable = midnight_plugin_host::installed_executable().map_err(io::Error::other)?;
+    helper_beside(&executable)
+}
+/// Apply that policy to the helper beside `executable`.
+fn helper_beside(executable: &Path) -> io::Result<PathBuf> {
     let parent = executable
         .parent()
         .ok_or_else(|| protocol::invalid("Missing installation"))?;
@@ -119,7 +134,7 @@ fn trusted_helper() -> io::Result<PathBuf> {
                     io::ErrorKind::NotFound,
                     format!(
                         "The authorization helper {HELPER} is not installed beside Midnight \
-                         Explorer in {}",
+                         Explorer in {}. {HELPER_REQUIREMENT}",
                         parent.display()
                     ),
                 ));
@@ -154,4 +169,49 @@ pub(crate) fn cancelled() -> io::Error {
 #[doc(hidden)]
 pub fn serve(args: Vec<OsString>) -> io::Result<()> {
     native::serve(&args)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn missing_helper_is_refused_with_the_installation_requirement() {
+        // Per-user deployments omit the helper. The crate directory exists without one, so
+        // the lookup reaches the missing helper without creating or changing anything.
+        let directory = Path::new(env!("CARGO_MANIFEST_DIR"));
+        assert!(!directory.join(HELPER).exists());
+        let error = helper_beside(&directory.join("me")).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::NotFound);
+        let message = error.to_string();
+        let expected_directory = directory.display().to_string();
+        assert!(message.contains(HELPER), "{message}");
+        assert!(message.contains(&expected_directory), "{message}");
+        assert!(message.ends_with(HELPER_REQUIREMENT), "{message}");
+        // The same requirement that a refused, unprotected helper location explains.
+        let (installer, location) = if cfg!(windows) {
+            ("installed by an administrator", r"C:\Program Files")
+        } else {
+            ("root-owned installation", "/opt/midnight-explorer")
+        };
+        assert!(message.contains(installer), "{message}");
+        assert!(message.contains(location), "{message}");
+    }
+
+    #[test]
+    fn unprotected_helper_refusal_states_the_same_requirement() {
+        // Locations that each platform refuses without changing anything: Windows refuses a
+        // network path before opening it, and Linux refuses the root folder, which is no
+        // executable file.
+        let refused = Path::new(if cfg!(windows) {
+            r"\\server\share\midnight-elevated-listing.exe"
+        } else {
+            "/"
+        });
+        let error = native::protected_helper(refused).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied, "{error}");
+        // The missing-helper message repeats this sentence; it must not drift from it.
+        let message = error.to_string();
+        assert!(message.starts_with(HELPER_REQUIREMENT), "{message}");
+    }
 }
