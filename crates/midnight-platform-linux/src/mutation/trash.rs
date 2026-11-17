@@ -6,6 +6,8 @@
 //! See https://specifications.freedesktop.org/trash/1.0/ (sections 5 and 6).
 //! The two-directory update is not crash-atomic: interrupted operations can
 //! leave orphan metadata or private staging, never an intentional data purge.
+//! A completed move whose staging directory cannot be removed afterwards is
+//! reported as completed with that directory as its residue.
 use super::*;
 use std::{io::Write, os::unix::ffi::OsStringExt, path::Component};
 
@@ -21,7 +23,7 @@ pub(super) fn move_entry(
     prepared: &Prepared,
     cancel: &Cancellation,
     progress: &mut dyn FnMut(&Path),
-) -> Result<(), FsError> {
+) -> Result<DeleteCompletion, FsError> {
     let root = prepared.trash_root.as_ref().ok_or_else(|| {
         error(
             &prepared.item.path,
@@ -76,9 +78,9 @@ pub(super) fn move_entry(
     match result {
         Ok(()) => {
             progress(&prepared.item.path);
-            staged
-                .cleanup()
-                .map_err(|cleanup| completed_with_residue("The entry was moved to Trash", cleanup))
+            Ok(DeleteCompletion {
+                residue: staged.cleanup().err(),
+            })
         }
         Err(failure) => Err(reservation.remove(&trash, staged.restore(prepared, failure))),
     }

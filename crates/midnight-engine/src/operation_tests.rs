@@ -13,6 +13,8 @@ use tokio::sync::mpsc;
 
 #[path = "delete_pause_tests.rs"]
 mod pause;
+#[path = "operation_residue_tests.rs"]
+mod residue;
 #[path = "operation_retirement_tests.rs"]
 mod retirement;
 #[path = "operation_summary_tests.rs"]
@@ -38,6 +40,10 @@ struct Calls {
     cleanup_blocked: std::sync::atomic::AtomicBool,
     cleanup_entered: tokio::sync::Notify,
     entered: tokio::sync::Notify,
+    /// Staging that the next completed rename or delete reports as left behind.
+    residue: Mutex<Option<MutationResidue>>,
+    /// The error of the next rename, which then does not complete.
+    rename_failure: Mutex<Option<FsError>>,
 }
 struct FakeService(Arc<Calls>);
 struct FakeTarget {
@@ -107,20 +113,26 @@ impl PreparedMutation for FakeTarget {
     fn item(&self) -> &MutationItem {
         &self.item
     }
-    fn rename(&self, name: &OsStr, _: &Cancellation) -> Result<PathBuf, FsError> {
+    fn rename(&self, name: &OsStr, _: &Cancellation) -> Result<RenameCompletion, FsError> {
         self.calls
             .renamed
             .lock()
             .unwrap()
             .push((self.item.path.clone(), name.to_string_lossy().into_owned()));
-        Ok(self.item.path.with_file_name(name))
+        if let Some(failure) = self.calls.rename_failure.lock().unwrap().take() {
+            return Err(failure);
+        }
+        Ok(RenameCompletion {
+            destination: self.item.path.with_file_name(name),
+            residue: self.calls.residue.lock().unwrap().take(),
+        })
     }
     fn delete(
         &self,
         mode: DeleteMode,
         cancel: &Cancellation,
         progress: &mut dyn FnMut(&Path),
-    ) -> Result<(), FsError> {
+    ) -> Result<DeleteCompletion, FsError> {
         self.calls
             .deleted
             .lock()
@@ -150,7 +162,9 @@ impl PreparedMutation for FakeTarget {
                 std::io::ErrorKind::PermissionDenied.into(),
             ));
         }
-        Ok(())
+        Ok(DeleteCompletion {
+            residue: self.calls.residue.lock().unwrap().take(),
+        })
     }
 }
 

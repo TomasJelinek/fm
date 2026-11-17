@@ -63,6 +63,17 @@ fn error(path: &Path, message: &str) -> FsError {
         io::Error::new(io::ErrorKind::InvalidInput, message),
     )
 }
+/// The one issue of a target whose change completed (`done` states it) but left
+/// private staging behind. It is counted in `failed` without undoing completion.
+/// Its kind is always Other: the cleanup's native kind stays in the residue and
+/// never drives conflict, cancellation or retry handling.
+pub(super) fn residue_issue(done: &str, residue: &MutationResidue) -> FsError {
+    FsError::from_io(
+        "remove staging folder",
+        &residue.path,
+        io::Error::other(format!("{done}, but {residue}.")),
+    )
+}
 pub(super) fn failed_status(status: &Status, error: FsError) -> OperationProgress {
     let mut progress = status.lock().unwrap_or_else(|e| e.into_inner()).clone();
     progress.state = if error.kind == io::ErrorKind::Interrupted {
@@ -357,6 +368,8 @@ impl Job {
         let mut progress = self.progress();
         self.discover_deletion(&mut progress);
         let count = progress.total as usize;
+        // Completed targets that reported a residue; each is also one `failed` issue.
+        let mut residues = 0;
         for index in 0..count {
             if !self.cancel.wait_if_paused() {
                 break;
@@ -374,7 +387,7 @@ impl Job {
                     .as_ref()
                     .expect("prepared base")
                     .create_file(self.name.as_deref().expect("validated name"), &self.cancel)
-                    .map(Some),
+                    .map(|path| (Some(path), None)),
                 MutationKind::Rename => unreachable!("rename jobs use their typed worker"),
                 MutationKind::CreateDirectory => self
                     .directory
@@ -384,7 +397,7 @@ impl Job {
                         Path::new(self.name.as_deref().expect("validated path")),
                         &self.cancel,
                     )
-                    .map(Some),
+                    .map(|path| (Some(path), None)),
                 MutationKind::Delete(mode) => self.targets[index]
                     .delete(mode, &self.cancel, &mut |path| {
                         progress.processed_entries += 1;
@@ -400,15 +413,28 @@ impl Job {
                         status.discovery = progress.discovery.clone();
                         status.current_path = progress.current_path.clone();
                     })
-                    .map(|()| None),
+                    .map(|done| (None, done.residue)),
                 MutationKind::EditMetadata => unreachable!("metadata jobs use their typed worker"),
             };
             match result {
-                Ok(destination) => {
+                Ok((destination, residue)) => {
                     progress.completed += 1;
                     if destination.is_some() {
                         progress.processed_entries += 1;
                         progress.renamed_to = destination;
+                    }
+                    if let Some(residue) = residue {
+                        residues += 1;
+                        progress.failed += 1;
+                        if progress.errors.len() < 16 {
+                            let target = self.targets[index].item().path.display();
+                            let done = if progress.kind == MutationKind::Delete(DeleteMode::Trash) {
+                                format!("Moved {target} to Trash")
+                            } else {
+                                format!("Deleted {target}")
+                            };
+                            progress.errors.push(residue_issue(&done, &residue));
+                        }
                     }
                 }
                 Err(error) => {
@@ -421,7 +447,7 @@ impl Job {
             self.store_progress(&mut progress);
         }
         if progress.completed == progress.total
-            && progress.failed == 0
+            && progress.failed == residues
             && progress.discovery.state == DiscoveryState::Complete
             && progress.discovery.scope == DiscoveryScope::Recursive
             && progress.discovery.entries() != Some(progress.processed_entries)
@@ -431,7 +457,12 @@ impl Job {
             );
         }
         progress.state = if progress.completed == progress.total {
-            OperationState::Completed
+            // Every target completed; residues alone are its errors.
+            if progress.failed == 0 {
+                OperationState::Completed
+            } else {
+                OperationState::CompletedWithErrors
+            }
         } else if self.cancel.is_cancelled() {
             OperationState::Cancelled
         } else if progress.completed > 0 || progress.processed_entries > 0 {
@@ -447,7 +478,8 @@ impl Job {
             .map(ToString::to_string)
             .collect::<Vec<_>>()
             .join("\n");
-        if progress.failed > 0 && progress.processed_entries > 0 {
+        // A residue undoes nothing; only targets that did not complete leave partial work.
+        if progress.failed > residues && progress.processed_entries > 0 {
             progress
                 .message
                 .push_str("\nSome changes were already completed and have not been undone.");

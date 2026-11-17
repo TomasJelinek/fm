@@ -1,8 +1,8 @@
 //! Identity-pinned Windows mutations. Only worker threads call this module.
 use crate::WindowsFileSystem;
 use midnight_core::{
-    Cancellation, CompressionStatus, DeleteMode, EntryKind, EntryMetadata, FsError, MutationItem,
-    MutationService, PreparedDirectory, PreparedMutation,
+    Cancellation, CompressionStatus, DeleteCompletion, DeleteMode, EntryKind, EntryMetadata,
+    FsError, MutationItem, MutationService, PreparedDirectory, PreparedMutation, RenameCompletion,
 };
 use std::{
     ffi::{OsStr, OsString},
@@ -250,7 +250,9 @@ impl PreparedMutation for WindowsMutation {
             target,
         })
     }
-    fn rename(&self, new_name: &OsStr, cancel: &Cancellation) -> Result<PathBuf, FsError> {
+    // Windows mutates through retained handles without staging, so a completed
+    // change never leaves a residue.
+    fn rename(&self, new_name: &OsStr, cancel: &Cancellation) -> Result<RenameCompletion, FsError> {
         let path = &self.item.path;
         checked(cancel, path)?;
         validate_name(new_name).map_err(|e| failure("rename", path, e))?;
@@ -260,7 +262,10 @@ impl PreparedMutation for WindowsMutation {
         metadata::name_available(self, new_name, cancel)?;
         checked(cancel, path)?;
         native::rename(&source, new_name).map_err(|e| failure("rename", path, e))?;
-        Ok(path.with_file_name(new_name))
+        Ok(RenameCompletion {
+            destination: path.with_file_name(new_name),
+            residue: None,
+        })
     }
 
     fn delete(
@@ -268,10 +273,10 @@ impl PreparedMutation for WindowsMutation {
         mode: DeleteMode,
         cancel: &Cancellation,
         progress: &mut dyn FnMut(&Path),
-    ) -> Result<(), FsError> {
+    ) -> Result<DeleteCompletion, FsError> {
         checked(cancel, &self.item.path)?;
         if mode == DeleteMode::Trash {
-            return trash::recycle(self, cancel, progress);
+            return trash::recycle(self, cancel, progress).map(|()| DeleteCompletion::default());
         }
         let source = self.revalidate(true)?;
         native::delete_tree(
@@ -281,6 +286,7 @@ impl PreparedMutation for WindowsMutation {
             cancel,
             progress,
         )
+        .map(|()| DeleteCompletion::default())
     }
 }
 

@@ -226,7 +226,7 @@ fn permanent_deletion_skips_children_another_process_removed_first() {
     // After the first removal, another process deletes the remaining snapshotted
     // children: the deletion still reaches its requested end state.
     let mut reported = Vec::new();
-    prepared
+    let completion = prepared
         .delete(DeleteMode::Permanent, &cancel, &mut |path| {
             if reported.is_empty() {
                 for name in &names {
@@ -236,6 +236,7 @@ fn permanent_deletion_skips_children_another_process_removed_first() {
             reported.push(path.to_owned());
         })
         .unwrap();
+    assert!(completion.residue.is_none());
     assert!(!root.exists());
     assert_eq!(
         reported.len(),

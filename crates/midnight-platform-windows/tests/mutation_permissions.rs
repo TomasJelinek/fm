@@ -70,12 +70,11 @@ fn rename_file_with_delete_permission_does_not_require_content_read() {
     let prepared = WindowsFileSystem::new(None)
         .prepare(&source, &Cancellation::default())
         .unwrap();
-    assert_eq!(
-        prepared
-            .rename(OsStr::new("renamed.txt"), &Cancellation::default())
-            .unwrap(),
-        destination
-    );
+    let completion = prepared
+        .rename(OsStr::new("renamed.txt"), &Cancellation::default())
+        .unwrap();
+    assert!(completion.residue.is_none());
+    assert_eq!(completion.destination, destination);
     drop(acl);
     assert_eq!(fs::read(destination).unwrap(), b"preserved without reading");
 }
@@ -96,9 +95,10 @@ fn rename_directory_with_delete_permission_does_not_require_listing() {
     let prepared = WindowsFileSystem::new(None)
         .prepare(&source, &Cancellation::default())
         .unwrap();
-    prepared
+    let completion = prepared
         .rename(OsStr::new("renamed"), &Cancellation::default())
         .unwrap();
+    assert!(completion.residue.is_none());
     drop(acl);
     assert_eq!(
         fs::read(destination.join("sentinel")).unwrap(),
@@ -177,9 +177,10 @@ fn permanent_leaf_and_recursive_delete_do_not_require_file_content_read() {
         let prepared = WindowsFileSystem::new(None)
             .prepare(target, &Cancellation::default())
             .unwrap();
-        prepared
+        let completion = prepared
             .delete(DeleteMode::Permanent, &Cancellation::default(), &mut |_| {})
             .unwrap();
+        assert!(completion.residue.is_none());
         drop(acl);
         assert!(!target.exists());
     }

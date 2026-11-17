@@ -1,12 +1,28 @@
 use crate::LinuxFileSystem;
-use midnight_core::{Cancellation, DeleteMode, EntryKind, MutationService, PreparedMutation};
+use midnight_core::{
+    Cancellation, DeleteCompletion, DeleteMode, EntryKind, FsError, MutationService,
+    PreparedMutation, RenameCompletion,
+};
 use std::{
     ffi::{OsStr, OsString},
     fs,
     io::ErrorKind,
     os::unix::{ffi::OsStringExt, fs::symlink},
-    path::Path,
+    path::{Path, PathBuf},
 };
+
+/// The destination of a rename that completed without leaving staging behind.
+fn renamed_cleanly(result: Result<RenameCompletion, FsError>) -> PathBuf {
+    let completion = result.unwrap();
+    assert!(completion.residue.is_none(), "{:?}", completion.residue);
+    completion.destination
+}
+
+/// Asserts a deletion that completed without leaving staging behind.
+fn deleted_cleanly(result: Result<DeleteCompletion, FsError>) {
+    let completion = result.unwrap();
+    assert!(completion.residue.is_none(), "{:?}", completion.residue);
+}
 
 #[test]
 fn rename_keeps_raw_bytes_unicode_and_native_backslashes_without_overwriting() {
@@ -32,9 +48,7 @@ fn rename_keeps_raw_bytes_unicode_and_native_backslashes_without_overwriting() {
     );
     assert_eq!(fs::read(&original).unwrap(), b"source");
     assert_eq!(fs::read(&collision).unwrap(), b"destination");
-    let renamed = prepared
-        .rename(OsStr::new("文档 👩🏽‍💻\\literal.txt"), &cancel)
-        .unwrap();
+    let renamed = renamed_cleanly(prepared.rename(OsStr::new("文档 👩🏽‍💻\\literal.txt"), &cancel));
     assert_eq!(fs::read(&renamed).unwrap(), b"source");
     assert!(!original.exists());
     assert_eq!(fs::read_dir(fixture.path()).unwrap().count(), 2);
@@ -49,10 +63,10 @@ fn rename_case_only_and_same_name_use_native_semantics() {
     let service = LinuxFileSystem::new(None);
     let prepared = service.prepare(&original, &cancel).unwrap();
     assert_eq!(
-        prepared.rename(OsStr::new("Case.txt"), &cancel).unwrap(),
+        renamed_cleanly(prepared.rename(OsStr::new("Case.txt"), &cancel)),
         original
     );
-    let renamed = prepared.rename(OsStr::new("case.txt"), &cancel).unwrap();
+    let renamed = renamed_cleanly(prepared.rename(OsStr::new("case.txt"), &cancel));
     assert_eq!(fs::read(renamed).unwrap(), b"case");
     assert!(!original.exists());
 }
@@ -132,11 +146,11 @@ fn permanent_delete_recurses_and_never_follows_directory_or_dangling_links() {
     let cancel = Cancellation::default();
     let prepared = LinuxFileSystem::new(None).prepare(&tree, &cancel).unwrap();
     let mut progress = Vec::new();
-    prepared
-        .delete(DeleteMode::Permanent, &cancel, &mut |path| {
+    deleted_cleanly(
+        prepared.delete(DeleteMode::Permanent, &cancel, &mut |path| {
             progress.push(path.to_owned());
-        })
-        .unwrap();
+        }),
+    );
     assert!(!tree.exists());
     assert_eq!(fs::read(outside.join("keep")).unwrap(), b"keep");
     assert_eq!(progress.len(), 6);
@@ -159,9 +173,7 @@ fn deleting_top_directory_symlink_only_unlinks_that_symlink() {
         prepared.item().kind,
         EntryKind::Symlink | EntryKind::DirectoryLink
     ));
-    prepared
-        .delete(DeleteMode::Permanent, &cancel, &mut |_| {})
-        .unwrap();
+    deleted_cleanly(prepared.delete(DeleteMode::Permanent, &cancel, &mut |_| {}));
     assert!(!link.exists());
     assert_eq!(fs::read(target.join("keep")).unwrap(), b"keep");
 }
@@ -224,7 +236,7 @@ fn rename_supports_native_paths_longer_than_260_bytes() {
     let prepared = LinuxFileSystem::new(None)
         .prepare(&source, &cancel)
         .unwrap();
-    let destination = prepared.rename(OsStr::new("renamed"), &cancel).unwrap();
+    let destination = renamed_cleanly(prepared.rename(OsStr::new("renamed"), &cancel));
     assert_eq!(fs::read(destination).unwrap(), b"long path");
 }
 
@@ -241,11 +253,9 @@ fn trash_preserves_raw_paths_and_complete_directories_in_private_isolated_storag
     let cancel = Cancellation::default();
     let prepared = super::Prepared::new(&source, Some(trash.clone()), &cancel).unwrap();
     let mut progress = Vec::new();
-    prepared
-        .delete(DeleteMode::Trash, &cancel, &mut |path| {
-            progress.push(path.to_owned())
-        })
-        .unwrap();
+    deleted_cleanly(prepared.delete(DeleteMode::Trash, &cancel, &mut |path| {
+        progress.push(path.to_owned())
+    }));
     assert!(!source.exists());
     assert_eq!(progress.as_slice(), std::slice::from_ref(&source));
     for directory in [&trash, &trash.join("files"), &trash.join("info")] {
@@ -289,10 +299,11 @@ fn trash_labels_never_split_a_unicode_character() {
     fs::write(&raw, b"raw").unwrap();
     let cancel = Cancellation::default();
     for path in [&report, &raw] {
-        super::Prepared::new(path, Some(trash.clone()), &cancel)
-            .unwrap()
-            .delete(DeleteMode::Trash, &cancel, &mut |_| {})
-            .unwrap();
+        deleted_cleanly(
+            super::Prepared::new(path, Some(trash.clone()), &cancel)
+                .unwrap()
+                .delete(DeleteMode::Trash, &cancel, &mut |_| {}),
+        );
     }
     let labels: Vec<OsString> = fs::read_dir(trash.join("files"))
         .unwrap()
@@ -319,10 +330,11 @@ fn trash_never_overwrites_an_earlier_copy_of_the_same_name() {
     let cancel = Cancellation::default();
     for content in [b"first", b"other"] {
         fs::write(&source, content).unwrap();
-        super::Prepared::new(&source, Some(trash.clone()), &cancel)
-            .unwrap()
-            .delete(DeleteMode::Trash, &cancel, &mut |_| {})
-            .unwrap();
+        deleted_cleanly(
+            super::Prepared::new(&source, Some(trash.clone()), &cancel)
+                .unwrap()
+                .delete(DeleteMode::Trash, &cancel, &mut |_| {}),
+        );
     }
     let mut contents = fs::read_dir(trash.join("files"))
         .unwrap()
@@ -387,22 +399,25 @@ fn public_world_writable_trash_is_rejected_without_changing_its_permissions() {
 
 #[test]
 fn rollback_collision_preserves_both_replacement_and_recoverable_staged_entry() {
-    let fixture = tempfile::tempdir().unwrap();
-    let source = fixture.path().join("source");
-    fs::write(&source, b"selected").unwrap();
-    let cancel = Cancellation::default();
-    let prepared = super::Prepared::new(&source, None, &cancel).unwrap();
-    let staged = super::Staged::create(&prepared).unwrap();
-    staged.capture(&prepared, &cancel).unwrap();
-    fs::write(&source, b"replacement").unwrap();
-    let failure = staged.restore(
-        &prepared,
-        super::error(&source, ErrorKind::Interrupted, "cancelled"),
-    );
-    assert_eq!(fs::read(&source).unwrap(), b"replacement");
-    let recovery = staged.path.join(super::STAGED_NAME);
-    assert_eq!(fs::read(&recovery).unwrap(), b"selected");
-    assert!(failure.message.contains(recovery.to_str().unwrap()));
+    // A cancelled change, or a rename refused by an existing name, whose original
+    // name another program recreated before restoration.
+    for kind in [ErrorKind::Interrupted, ErrorKind::AlreadyExists] {
+        let fixture = tempfile::tempdir().unwrap();
+        let source = fixture.path().join("source");
+        fs::write(&source, b"selected").unwrap();
+        let cancel = Cancellation::default();
+        let prepared = super::Prepared::new(&source, None, &cancel).unwrap();
+        let staged = super::Staged::create(&prepared).unwrap();
+        staged.capture(&prepared, &cancel).unwrap();
+        fs::write(&source, b"replacement").unwrap();
+        let failure = staged.restore(&prepared, super::error(&source, kind, "refused"));
+        assert_eq!(fs::read(&source).unwrap(), b"replacement");
+        let recovery = staged.path.join(super::STAGED_NAME);
+        assert_eq!(fs::read(&recovery).unwrap(), b"selected");
+        assert!(failure.message.contains(recovery.to_str().unwrap()));
+        // Neither a conflict prompt nor a quiet cancellation may hide that location.
+        assert_eq!(failure.kind, ErrorKind::Other, "{kind:?}: {failure:?}");
+    }
 }
 
 #[test]
@@ -606,9 +621,7 @@ fn deep_tree_uses_native_limits_without_a_small_application_depth_limit() {
         .prepare(&source, &cancel)
         .unwrap();
     let mut count = 0;
-    prepared
-        .delete(DeleteMode::Permanent, &cancel, &mut |_| count += 1)
-        .unwrap();
+    deleted_cleanly(prepared.delete(DeleteMode::Permanent, &cancel, &mut |_| count += 1));
     assert_eq!(count, 258);
     assert!(!source.exists());
 }
@@ -621,9 +634,7 @@ fn special_files_are_pinned_without_opening_their_contents() {
     let cancel = Cancellation::default();
     let prepared = LinuxFileSystem::new(None).prepare(&fifo, &cancel).unwrap();
     assert_eq!(prepared.item().kind, EntryKind::Other);
-    prepared
-        .delete(DeleteMode::Permanent, &cancel, &mut |_| {})
-        .unwrap();
+    deleted_cleanly(prepared.delete(DeleteMode::Permanent, &cancel, &mut |_| {}));
     assert!(!fifo.exists());
 }
 
@@ -641,25 +652,6 @@ fn xdg_trash_location_uses_only_absolute_environment_paths() {
         );
     }
     assert_eq!(super::trash::home_trash(None, None), None);
-}
-
-#[test]
-fn a_failed_staging_cleanup_reports_the_completed_mutation_and_its_residue() {
-    let staging = Path::new("/data/.midnight-mutation-1-2-3");
-    let cleanup = midnight_core::FsError::from_io(
-        "mutate entry",
-        staging,
-        std::io::Error::new(ErrorKind::DirectoryNotEmpty, "Directory not empty"),
-    );
-    let reported = super::completed_with_residue("The entry was deleted", cleanup);
-    assert!(
-        reported
-            .message
-            .starts_with("The entry was deleted, but its empty staging directory")
-    );
-    assert!(reported.message.contains("/data/.midnight-mutation-1-2-3"));
-    assert_eq!(reported.path, staging);
-    assert_eq!(reported.kind, ErrorKind::DirectoryNotEmpty);
 }
 
 #[test]
@@ -705,20 +697,21 @@ fn rename_and_delete_in(directory: &Path) {
     let service = LinuxFileSystem::new(None);
     let original = directory.join("photo.jpg");
     fs::write(&original, b"pixels").unwrap();
-    let renamed = service
-        .prepare(&original, &cancel)
-        .unwrap()
-        .rename(OsStr::new("photo-2026.jpg"), &cancel)
-        .unwrap();
+    let renamed = renamed_cleanly(
+        service
+            .prepare(&original, &cancel)
+            .unwrap()
+            .rename(OsStr::new("photo-2026.jpg"), &cancel),
+    );
     assert_eq!(fs::read(&renamed).unwrap(), b"pixels");
     let tree = directory.join("album");
     fs::create_dir_all(tree.join("nested")).unwrap();
     fs::write(tree.join("nested/one.jpg"), b"one").unwrap();
-    service
-        .prepare(&tree, &cancel)
-        .unwrap()
-        .delete(DeleteMode::Permanent, &cancel, &mut |_| {})
-        .unwrap();
+    deleted_cleanly(service.prepare(&tree, &cancel).unwrap().delete(
+        DeleteMode::Permanent,
+        &cancel,
+        &mut |_| {},
+    ));
     assert!(!tree.exists());
     assert!(staging_residue(directory).is_empty());
 }
@@ -775,9 +768,7 @@ fn permanent_delete_timing() {
     let cancel = Cancellation::default();
     let prepared = LinuxFileSystem::new(None).prepare(&tree, &cancel).unwrap();
     let start = std::time::Instant::now();
-    prepared
-        .delete(DeleteMode::Permanent, &cancel, &mut |_| {})
-        .unwrap();
+    deleted_cleanly(prepared.delete(DeleteMode::Permanent, &cancel, &mut |_| {}));
     let elapsed = start.elapsed();
     assert!(!tree.exists());
     eprintln!(

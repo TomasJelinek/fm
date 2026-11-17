@@ -116,9 +116,10 @@ fn non_surrogate_reparse_entries_are_ordinary_files_and_directories() {
     // The directory, child.txt, sub, sub\leaf.txt, new and new\deeper.
     assert_eq!(discovered.len(), 6, "{discovered:?}");
     let mut removed = 0;
-    prepared
+    let completion = prepared
         .delete(DeleteMode::Permanent, &cancel, &mut |_| removed += 1)
         .unwrap();
+    assert!(completion.residue.is_none());
     assert_eq!(removed, 6);
     assert!(!directory.exists());
     clear_filter_tag(&file, FILTER_FILE).unwrap();
@@ -246,9 +247,10 @@ fn junctions_stay_unfollowed_links_for_every_operation() {
     assert!(base.create(&through, &cancel).is_err());
     assert!(!target.join("new").exists());
 
-    prepared
+    let completion = prepared
         .delete(DeleteMode::Permanent, &cancel, &mut |_| {})
         .unwrap();
+    assert!(completion.residue.is_none());
     assert!(!link.exists());
     assert_eq!(
         fs::read(target.join("inner.txt")).unwrap(),

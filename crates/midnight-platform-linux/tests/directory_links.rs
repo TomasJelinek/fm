@@ -57,9 +57,10 @@ fn actual_listing_classifies_directory_links_without_replacing_link_identity_or_
     // Browsing's directory hint never changes the no-follow mutation capture.
     let prepared = service.prepare(&directory.path, &cancel).unwrap();
     assert_eq!(prepared.item().kind, EntryKind::Symlink);
-    prepared
+    let completion = prepared
         .delete(DeleteMode::Permanent, &cancel, &mut |_| {})
         .unwrap();
+    assert!(completion.residue.is_none());
     assert!(fs::symlink_metadata(&link).is_err());
     assert_eq!(fs::read(target.join("keep")).unwrap(), b"target contents");
 }
