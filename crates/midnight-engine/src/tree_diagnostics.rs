@@ -3,23 +3,12 @@ use crate::{providers::ProviderError, size_warnings::ReportLog};
 use midnight_core::{Cancellation, GeneratedTextSource, TreeDiagnostic};
 use std::{fmt, io, sync::Arc};
 
-#[cfg(target_os = "linux")]
-#[path = "tree_diagnostics_root/linux.rs"]
-mod root;
-#[cfg(windows)]
-#[path = "tree_diagnostics_root/windows.rs"]
-mod root;
-
-/// Each user has a separate spool root. A fixed name in a shared temporary
-/// directory would let another local account pre-create it and so disable this
-/// user's report details. `PrivateSpoolDirectory::open` creates missing
-/// components owner-only and refuses a foreign, linked or permissive root.
+/// Listing and presence failures share the per-user private report root of size
+/// warnings (`size_warnings::private_spool_roots`): a root that another account
+/// created first, or one that is linked or permissive, is refused for the next
+/// candidate. Nothing touches storage until the first failure is recorded.
 pub(crate) fn log(arena: &crate::ReportArena) -> ReportLog {
-    ReportLog::with_title(
-        arena,
-        root::root("MidnightExplorer-tree-diagnostics"),
-        "Folder listing error",
-    )
+    ReportLog::private(arena, "Folder listing error")
 }
 
 /// Record one failure in `log`; each `DirectoryTree` keeps one log for its

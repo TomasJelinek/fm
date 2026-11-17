@@ -369,102 +369,110 @@ fn per_process(path: PathBuf) -> SpoolRoot {
     }
 }
 
+fn session(base: &Path, account: Option<&str>) -> Session {
+    Session {
+        application: "App",
+        cache: Some(base.join("cache")),
+        runtime: Some(base.join("runtime")),
+        account: account.map(str::to_owned),
+        temporary: base.join("temporary"),
+    }
+}
+
 #[test]
-fn spool_roots_prefer_the_runtime_directory_then_per_user_then_per_process_names() {
-    let temporary = std::env::temp_dir();
-    let runtime = temporary.join("runtime");
-    let roots = spool_roots(
-        Some(runtime.clone().into()),
-        Some("alice/../x".into()),
-        temporary.clone(),
-        42,
-        "size-warnings",
-    );
+fn spool_roots_share_one_order_with_a_per_process_temporary_root_last() {
+    let base = std::env::temp_dir();
+    let temporary = base.join("temporary");
+    let desktop = session(&base, Some("1000"));
     assert_eq!(
-        roots,
+        spool_roots(&desktop, 42, "file-list", SpoolContent::Large),
         [
-            shared(runtime.join("MidnightExplorer").join("size-warnings")),
-            shared(temporary.join("MidnightExplorer-616c6963652f2e2e2f78-size-warnings")),
-            per_process(temporary.join("MidnightExplorer-size-warnings-42")),
+            shared(base.join("cache").join("App").join("file-list")),
+            shared(base.join("runtime").join("App").join("file-list")),
+            shared(temporary.join("App-1000-file-list")),
+            per_process(temporary.join("App-file-list-42")),
         ]
     );
-    // A relative runtime directory and an empty account name are ignored.
-    let roots = spool_roots(
-        Some("relative".into()),
-        Some("".into()),
-        temporary.clone(),
-        7,
-        "size-warnings",
-    );
+    // Reports differ only in skipping the disk-backed cache.
     assert_eq!(
-        roots,
-        [per_process(
-            temporary.join("MidnightExplorer-size-warnings-7")
-        )]
+        spool_roots(&desktop, 42, "reports", SpoolContent::Reports),
+        [
+            shared(base.join("runtime").join("App").join("reports")),
+            shared(temporary.join("App-1000-reports")),
+            per_process(temporary.join("App-reports-42")),
+        ]
+    );
+    // Relative bases are ignored; without an account label only the
+    // per-process temporary root remains.
+    let relative = Session {
+        cache: Some("cache".into()),
+        runtime: Some("runtime".into()),
+        ..session(&base, None)
+    };
+    assert_eq!(
+        spool_roots(&relative, 7, "file-list", SpoolContent::Large),
+        [per_process(temporary.join("App-file-list-7"))]
+    );
+    let relative = Session {
+        temporary: "temporary".into(),
+        ..relative
+    };
+    assert!(spool_roots(&relative, 7, "reports", SpoolContent::Reports).is_empty());
+    // A label too long for one path component keeps only the per-process root.
+    let long = "6c".repeat(MAX_COMPONENT / 2);
+    assert_eq!(
+        spool_roots(
+            &session(&base, Some(&long)),
+            7,
+            "reports",
+            SpoolContent::Reports
+        ),
+        [
+            shared(base.join("runtime").join("App").join("reports")),
+            per_process(temporary.join("App-reports-7")),
+        ]
     );
 }
 
 #[test]
-fn per_user_spool_roots_keep_non_ascii_account_names_distinct() {
-    let temporary = std::env::temp_dir();
-    let per_user = |user: &str| {
-        let roots = spool_roots(
-            None,
-            Some(user.into()),
-            temporary.clone(),
-            7,
-            "size-warnings",
+fn the_current_session_ends_with_its_per_process_temporary_root() {
+    for content in [SpoolContent::Reports, SpoolContent::Large] {
+        let roots = private_spool_roots("reports", content);
+        assert!(roots.iter().all(|root| root.path.is_absolute()));
+        let (last, earlier) = roots.split_last().unwrap();
+        assert!(last.per_process);
+        assert_eq!(last.path.parent(), Some(std::env::temp_dir().as_path()));
+        assert!(
+            last.path
+                .to_string_lossy()
+                .ends_with(&format!("-reports-{}", std::process::id()))
         );
-        assert_eq!(roots.len(), 2, "{user} keeps a per-user root");
-        assert!(!roots[0].per_process && roots[1].per_process);
-        roots[0].path.clone()
+        assert!(earlier.iter().all(|root| !root.per_process));
+    }
+}
+
+#[test]
+fn without_a_usable_candidate_the_last_refusal_is_reported() {
+    let Err(error) = create_private_spool(&[], PrivateSpoolDirectory::create) else {
+        panic!("no candidate root");
     };
-    assert_eq!(
-        per_user("Пользователь"),
-        temporary.join(
-            "MidnightExplorer-d09fd0bed0bbd18cd0b7d0bed0b2d0b0d182d0b5d0bbd18c-size-warnings"
-        )
-    );
-    assert_eq!(
-        per_user("山田"),
-        temporary.join("MidnightExplorer-e5b1b1e794b0-size-warnings")
-    );
-    // Names an ASCII filter would have merged, or dropped entirely, stay apart.
-    let names = [
-        "Пользователь",
-        "Пользователи",
-        "山田",
-        "山本",
-        "jöe",
-        "je",
-        "Bob",
-        "bob",
-    ];
-    let roots = names
-        .iter()
-        .map(|name| per_user(name))
-        .collect::<std::collections::HashSet<_>>();
-    assert_eq!(roots.len(), names.len());
-    // A name too long for one path component keeps only the per-process root.
-    let roots = spool_roots(
-        None,
-        Some("山".repeat(40).into()),
-        temporary.clone(),
-        7,
-        "size-warnings",
-    );
-    assert_eq!(
-        roots,
-        [per_process(
-            temporary.join("MidnightExplorer-size-warnings-7")
-        )]
-    );
+    assert_eq!(error.kind(), io::ErrorKind::NotFound);
+    let temporary = tempfile::tempdir().unwrap();
+    let occupied = temporary.path().join("occupied 資料");
+    std::fs::write(&occupied, b"not a directory").unwrap();
+    let Err(error) =
+        create_private_spool(&[shared(occupied.clone())], PrivateSpoolDirectory::create)
+    else {
+        panic!("an occupied name is not a private spool root");
+    };
+    assert!(error.to_string().contains("occupied 資料"), "{error}");
+    assert!(occupied.is_file());
 }
 
 #[test]
 fn a_per_process_root_is_removed_after_its_last_spool_closes() {
     let temporary = tempfile::tempdir().unwrap();
-    let path = temporary.path().join("MidnightExplorer-size-warnings-7");
+    let path = temporary.path().join("MidnightExplorer-reports-7");
     let roots = [per_process(path.clone())];
     let first = create_private_spool(&roots, PrivateSpoolDirectory::create_append_only).unwrap();
     let mut second =
@@ -495,7 +503,7 @@ fn a_per_process_root_is_removed_after_its_last_spool_closes() {
 #[test]
 fn a_per_process_report_root_is_removed_after_its_last_log_and_snapshot() {
     let temporary = tempfile::tempdir().unwrap();
-    let path = temporary.path().join("MidnightExplorer-size-warnings-8");
+    let path = temporary.path().join("MidnightExplorer-reports-8");
     let arena = ReportArena::testing();
     let log = ReportLog::with_candidates(&arena, vec![per_process(path.clone())], DEFAULT_TITLE);
     let range = log.mark().report();

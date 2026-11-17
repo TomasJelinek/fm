@@ -241,3 +241,56 @@ fn generated_spool_cleanup_retains_admission_through_blocked_or_panicking_drop()
         }
     }
 }
+
+#[test]
+fn generated_content_keeps_its_per_process_spool_root_until_retirement() {
+    struct Probe {
+        root: std::path::PathBuf,
+        removed: std::sync::mpsc::Sender<bool>,
+    }
+    impl Drop for Probe {
+        fn drop(&mut self) {
+            // Content closes its spool and root guard before this probe.
+            let _ = self.removed.send(!self.root.exists());
+        }
+    }
+    let temporary = tempfile::tempdir().unwrap();
+    let root = temporary.path().join("midnight-explorer-file-list-7");
+    let candidates = [crate::size_warnings::SpoolRoot {
+        path: root.clone(),
+        per_process: true,
+    }];
+    let mut spool = create_private_spool(&candidates, PrivateSpoolDirectory::create).unwrap();
+    spool.append(0, "文档".as_bytes()).unwrap();
+    spool.finish().unwrap();
+    let domain = crate::retirement::RetirementDomain::try_start(1, 0).unwrap();
+    let quota = Arc::new(tokio::sync::Semaphore::new(1));
+    let mut text = Arc::new(Text(domain.try_reserve().unwrap().own(Content {
+        spool,
+        after_drop: None,
+        _retention: Arc::new(Retention {
+            _permit: quota.try_acquire_owned().unwrap(),
+        }),
+    })));
+    let (removed, observe) = std::sync::mpsc::channel();
+    Arc::get_mut(&mut text)
+        .unwrap()
+        .observe_drop(Box::new(Probe {
+            root: root.clone(),
+            removed,
+        }));
+    // A reader keeps the content, its spool and the root alive.
+    let reader = text.clone();
+    drop(text);
+    let mut bytes = [0; 6];
+    assert_eq!(reader.read_at(0, &mut bytes).unwrap(), 6);
+    assert_eq!(&bytes, "文档".as_bytes());
+    assert!(root.is_dir());
+    drop(reader);
+    assert!(
+        observe
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap(),
+        "the per-process root outlived its last generated spool"
+    );
+}
