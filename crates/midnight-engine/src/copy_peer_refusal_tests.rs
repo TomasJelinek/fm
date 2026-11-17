@@ -261,21 +261,19 @@ async fn quarantined_peer_refusal_fails_with_the_restart_error() {
     h.close().await;
 }
 
-/// Wraps the cross-device fixture's Move captures: the first source captures, source
-/// removals and empty directory removals are refused as the native adapters refuse them
-/// when a granted peer's namespace refuses the change (recorded refusal, nothing mutated).
+/// Wraps the cross-device fixture's Move captures: the first source removals and empty
+/// directory removals are refused as the native adapters refuse them when a granted
+/// peer's namespace refuses the change (recorded refusal, nothing mutated).
 struct RefusingMoveService {
     inner: moves::CrossDeviceService,
-    captures: Arc<AtomicUsize>,
     removals: Arc<AtomicUsize>,
     directories: Arc<AtomicUsize>,
     finalizers: Arc<AtomicUsize>,
 }
 impl RefusingMoveService {
-    fn new(captures: usize, removals: usize, directories: usize) -> Self {
+    fn new(removals: usize, directories: usize) -> Self {
         Self {
             inner: moves::CrossDeviceService(midnight_platform::LocalFileSystem::new(None)),
-            captures: Arc::new(AtomicUsize::new(captures)),
             removals: Arc::new(AtomicUsize::new(removals)),
             directories: Arc::new(AtomicUsize::new(directories)),
             finalizers: Arc::new(AtomicUsize::new(0)),
@@ -316,7 +314,6 @@ impl TransferService for RefusingMoveService {
             source: prepared.source,
             capture: Arc::new(RefusingCapture {
                 inner: prepared.capture,
-                captures: self.captures.clone(),
                 removals: self.removals.clone(),
                 directories: self.directories.clone(),
                 finalizers: self.finalizers.clone(),
@@ -344,7 +341,6 @@ fn refusal(path: &Path) -> FsError {
 }
 struct RefusingCapture {
     inner: Arc<dyn TransferMoveCapture>,
-    captures: Arc<AtomicUsize>,
     removals: Arc<AtomicUsize>,
     directories: Arc<AtomicUsize>,
     finalizers: Arc<AtomicUsize>,
@@ -393,9 +389,6 @@ impl TransferMoveCapture for RefusingCapture {
         self.inner.remove_empty_directory(cancel)
     }
     fn capture(&self, cancel: &Cancellation) -> Result<TransferMoveCaptureOutcome, FsError> {
-        if refused(&self.captures) {
-            return Err(refusal(&self.entry().item.path));
-        }
         let outcome = self.inner.capture(cancel)?;
         if let TransferMoveCaptureOutcome::Captured { source, recovery } = &outcome {
             *self.receipt.lock().unwrap() = Some((source.clone(), recovery.clone()));
@@ -434,47 +427,238 @@ impl TransferMoveFinalizer for RefusingFinalizer {
     }
 }
 
-/// A Move's source capture refused by a granted peer captured nothing: the job repeats
-/// the capture once the peer changes, without a prompt. The Before proof is kept, the
-/// After proof still rehashes both files, and the refused attempt staged nothing.
+/// Runs once, inside the first source capture, before the platform's own capture.
+type CaptureHook = Arc<Mutex<Option<Box<dyn FnOnce() + Send>>>>;
+/// A cross-device Move whose native source and destinations keep their exact namespace
+/// footprints, so its job is granted beside a disjoint peer (the cross-device fixture's
+/// wrapped source has none, which makes its job opaque). Captures run the platform's
+/// own capture and namespace turn; only the native eligibility answer is injected.
+struct PeerMoveService {
+    inner: midnight_platform::LocalFileSystem,
+    before_first_capture: CaptureHook,
+    captures: Arc<AtomicUsize>,
+    finalizers: Arc<AtomicUsize>,
+}
+impl PeerMoveService {
+    fn new() -> Self {
+        Self {
+            inner: midnight_platform::LocalFileSystem::new(None),
+            before_first_capture: Arc::new(Mutex::new(None)),
+            captures: Arc::new(AtomicUsize::new(0)),
+            finalizers: Arc::new(AtomicUsize::new(0)),
+        }
+    }
+}
+// The native-delegating fixture retains only synchronous authority and counters.
+impl midnight_core::AuditedSynchronousTransferService for PeerMoveService {}
+impl TransferService for PeerMoveService {
+    // The destinations' exact native footprints: without them both jobs would be opaque.
+    fn prepare_checksum_directory(
+        &self,
+        path: &Path,
+        cancel: &Cancellation,
+    ) -> Result<Arc<dyn TransferDirectory>, FsError> {
+        self.inner.prepare_checksum_directory(path, cancel)
+    }
+    fn prepare_transfer_source(
+        &self,
+        path: &Path,
+        cancel: &Cancellation,
+    ) -> Result<Box<dyn TransferSource>, FsError> {
+        self.inner.prepare_transfer_source(path, cancel)
+    }
+    fn prepare_transfer_destination(
+        &self,
+        path: &Path,
+        cancel: &Cancellation,
+    ) -> Result<Arc<dyn TransferDirectory>, FsError> {
+        self.inner.prepare_transfer_destination(path, cancel)
+    }
+    fn prepare_move_destination(
+        &self,
+        path: &Path,
+        cancel: &Cancellation,
+    ) -> Result<Arc<dyn TransferDirectory>, FsError> {
+        self.inner.prepare_move_destination(path, cancel)
+    }
+    fn prepare_move_source(
+        &self,
+        path: &Path,
+        cancel: &Cancellation,
+    ) -> Result<PreparedTransferMove, FsError> {
+        let prepared = self.inner.prepare_move_source(path, cancel)?;
+        Ok(PreparedTransferMove {
+            source: prepared.source,
+            capture: Arc::new(PeerCapture {
+                inner: prepared.capture,
+                before_first_capture: self.before_first_capture.clone(),
+                captures: self.captures.clone(),
+                finalizers: self.finalizers.clone(),
+            }),
+        })
+    }
+}
+struct PeerCapture {
+    inner: Arc<dyn TransferMoveCapture>,
+    before_first_capture: CaptureHook,
+    captures: Arc<AtomicUsize>,
+    finalizers: Arc<AtomicUsize>,
+}
+impl TransferMoveCapture for PeerCapture {
+    fn entry(&self) -> &TransferEntry {
+        self.inner.entry()
+    }
+    fn revalidate(&self, cancel: &Cancellation) -> Result<(), FsError> {
+        self.inner.revalidate(cancel)
+    }
+    fn try_native_move(
+        &self,
+        _: &dyn TransferDirectory,
+        _: &std::ffi::OsStr,
+        _: Option<(Arc<dyn TransferTarget>, TransferReplacementPolicy)>,
+        _: &Cancellation,
+    ) -> Result<TransferNativeMoveOutcome, FsError> {
+        Ok(TransferNativeMoveOutcome::CrossDevice)
+    }
+    fn preflight_finalization(&self, cancel: &Cancellation) -> Result<(), FsError> {
+        self.inner.preflight_finalization(cancel)
+    }
+    fn prepare_finalization(
+        &self,
+        cancel: &Cancellation,
+    ) -> Result<Box<dyn TransferMoveFinalizer>, FsError> {
+        self.finalizers.fetch_add(1, Ordering::SeqCst);
+        self.inner.prepare_finalization(cancel)
+    }
+    fn remove_empty_directory(
+        &self,
+        cancel: &Cancellation,
+    ) -> Result<TransferDirectoryRemoval, FsError> {
+        self.inner.remove_empty_directory(cancel)
+    }
+    fn capture(&self, cancel: &Cancellation) -> Result<TransferMoveCaptureOutcome, FsError> {
+        self.captures.fetch_add(1, Ordering::SeqCst);
+        let hook = self.before_first_capture.lock().unwrap().take();
+        if let Some(hook) = hook {
+            hook();
+        }
+        self.inner.capture(cancel)
+    }
+    fn restore(&self) -> Result<(), FsError> {
+        self.inner.restore()
+    }
+    fn restoration_completed(&self) -> bool {
+        self.inner.restoration_completed()
+    }
+    fn take_stage_cleanup(&self) -> Option<Box<dyn TransferMoveStageCleanup>> {
+        self.inner.take_stage_cleanup()
+    }
+}
+/// The temporary Move directories in `parent`.
+fn move_stages(parent: &Path) -> Vec<std::ffi::OsString> {
+    fs::read_dir(parent)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .filter(|name| name.to_string_lossy().starts_with(".midnight-move-"))
+        .collect()
+}
+
+/// A Move's source capture refused by a real granted peer (latched opaque, as by a failed
+/// refresh, just before the capture) fails inside the platform's capture before any
+/// mutation. The job waits for that peer without a prompt and, once the peer is removed,
+/// runs the platform capture again. The Before proof is kept, the After proof still
+/// rehashes both files, and the refused attempt neither moved nor staged anything.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn peer_refused_move_source_capture_retries_without_a_prompt() {
+    // The peer: a disjoint Copy, granted and held at its conflict decision.
+    let peer_temp = fixture();
+    let peer_source = peer_temp.path().join("peer");
+    let peer_destination = peer_temp.path().join("peer-destination");
+    fs::write(&peer_source, b"peer copy").unwrap();
+    fs::create_dir(&peer_destination).unwrap();
+    fs::write(peer_destination.join("peer"), b"existing target").unwrap();
     let (_temp, parent) = moves::protected_fixture();
     let source = parent.join("moved");
     let destination = parent.join("destination");
     let bytes: Vec<_> = (0..300_011).map(|index| (index % 251) as u8).collect();
     fs::write(&source, &bytes).unwrap();
     fs::create_dir(&destination).unwrap();
-    let service = RefusingMoveService::new(1, 0, 0);
+    let service = PeerMoveService::new();
+    let hook = service.before_first_capture.clone();
     let (captures, finalizers) = (service.captures.clone(), service.finalizers.clone());
-    let mut h = Harness::new(Some(Arc::new(service)));
+    let mut h = Harness::with_slots(Some(Arc::new(service)), 2);
     h.controller
-        .enqueue_move(request(1, std::slice::from_ref(&source), &destination))
+        .enqueue(request(
+            1,
+            std::slice::from_ref(&peer_source),
+            &peer_destination,
+        ))
         .await;
-    let done = terminal_without_prompt(&mut h, 1).await;
-    assert_eq!(done.state, CopyOperationState::Completed, "{done:?}");
-    assert!(done.errors.is_empty(), "{done:?}");
+    let conflict = h.conflict(1).await;
+    let granted = h.controller.namespace().granted_for_test();
+    assert_eq!(granted.len(), 1, "{granted:?}");
+    let (registry, peer) = (h.controller.namespace().clone(), granted[0]);
+    *hook.lock().unwrap() = Some(Box::new(move || registry.latch_opaque_for_test(peer)));
+    h.controller
+        .enqueue_move(request(2, std::slice::from_ref(&source), &destination))
+        .await;
+    eventually(
+        || captures.load(Ordering::SeqCst) > 0,
+        "the Move must reach its source capture beside the granted peer",
+    )
+    .await;
+    h.wait_status(2, |progress| {
+        progress.wait_reason == Some(TransferWaitReason::Resources)
+    })
+    .await;
+    assert_eq!(captures.load(Ordering::SeqCst), 1, "it waits for the peer");
+    assert_eq!(
+        fs::read(&source).unwrap(),
+        bytes,
+        "the refusal moved nothing"
+    );
+    assert!(
+        move_stages(&parent).is_empty(),
+        "the refusal staged nothing"
+    );
+    h.controller
+        .decide(CopyDecision {
+            id: conflict.id,
+            version: conflict.version,
+            choice: CopyChoice::Cancel,
+        })
+        .await;
+    let done = terminals_without_prompt(&mut h, &[1, 2]).await;
+    assert_eq!(
+        done[0].state,
+        CopyOperationState::Cancelled,
+        "{:?}",
+        done[0]
+    );
+    assert_eq!(
+        fs::read(peer_destination.join("peer")).unwrap(),
+        b"existing target"
+    );
+    let moved = &done[1];
+    assert_eq!(moved.state, CopyOperationState::Completed, "{moved:?}");
+    assert!(moved.errors.is_empty(), "{moved:?}");
     assert_eq!(
         captures.load(Ordering::SeqCst),
-        0,
-        "the injected refusal was consumed"
+        2,
+        "the platform capture ran again after the peer's removal"
     );
     assert_eq!(
         finalizers.load(Ordering::SeqCst),
         1,
         "only the repeated capture prepared a finalizer"
     );
-    assert_eq!(done.source_names_staged, 1, "{done:?}");
+    assert_eq!(moved.source_names_staged, 1, "{moved:?}");
     // Before and After proofs (source and destination); the capture retry repeats neither.
-    assert_eq!(done.validation_bytes, 4 * bytes.len() as u64, "{done:?}");
-    assert_eq!(done.source_files_removed, 1);
+    assert_eq!(moved.validation_bytes, 4 * bytes.len() as u64, "{moved:?}");
+    assert_eq!(moved.source_files_removed, 1);
     assert!(!source.exists());
     assert_eq!(fs::read(destination.join("moved")).unwrap(), bytes);
-    let staging: Vec<_> = fs::read_dir(&parent)
-        .unwrap()
-        .map(|entry| entry.unwrap().file_name())
-        .filter(|name| name.to_string_lossy().starts_with(".midnight-move-"))
-        .collect();
+    let staging = move_stages(&parent);
     assert!(
         staging.is_empty(),
         "temporary Move directories remain: {staging:?}"
@@ -493,7 +677,7 @@ async fn peer_refused_move_source_removal_rehashes_and_retries_without_a_prompt(
     let bytes: Vec<_> = (0..300_011).map(|index| (index % 253) as u8).collect();
     fs::write(&source, &bytes).unwrap();
     fs::create_dir(&destination).unwrap();
-    let service = RefusingMoveService::new(0, 1, 0);
+    let service = RefusingMoveService::new(1, 0);
     let (removals, finalizers) = (service.removals.clone(), service.finalizers.clone());
     let mut h = Harness::new(Some(Arc::new(service)));
     h.controller
@@ -526,7 +710,7 @@ async fn peer_refused_move_directory_removal_retries_without_a_prompt() {
     fs::create_dir(&root).unwrap();
     fs::write(root.join("child"), b"moved child").unwrap();
     fs::create_dir(&destination).unwrap();
-    let service = RefusingMoveService::new(0, 0, 1);
+    let service = RefusingMoveService::new(0, 1);
     let directories = service.directories.clone();
     let mut h = Harness::new(Some(Arc::new(service)));
     h.controller
