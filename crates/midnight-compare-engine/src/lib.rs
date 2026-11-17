@@ -1,6 +1,7 @@
 //! Bounded, read-only text and image comparison. Every expensive operation runs on a worker.
 #![forbid(unsafe_code)]
 
+mod discovery;
 mod file_choice;
 mod image_cache;
 mod images;
@@ -132,15 +133,13 @@ impl Mailbox {
     }
 }
 
-/// Installed image viewers, discovered once by the first comparison worker that needs them.
-type ImageProviders = Arc<Mutex<Option<Arc<[midnight_image_viewer_host::Provider]>>>>;
-
 #[derive(Clone)]
 pub struct Service {
     handle: tokio::runtime::Handle,
     capture: NativeCapture,
     storage: Option<StorageHint>,
-    providers: ImageProviders,
+    viewers: Arc<discovery::ImageViewers>,
+    fonts: Arc<discovery::FixedPitchFonts>,
     active: Arc<AtomicUsize>,
     picker: Option<Arc<dyn PathPickerService>>,
 }
@@ -196,10 +195,30 @@ impl Service {
             handle,
             capture,
             storage: None,
-            providers: Arc::new(Mutex::new(None)),
+            viewers: Arc::new(discovery::ImageViewers::installed()),
+            fonts: Arc::new(discovery::FixedPitchFonts::installed()),
             active: Arc::new(AtomicUsize::new(0)),
             picker: None,
         }
+    }
+    #[cfg(test)]
+    fn with_image_viewer_discovery(
+        mut self,
+        discover: impl Fn() -> Result<Vec<midnight_image_viewer_host::Provider>, String>
+        + Send
+        + Sync
+        + 'static,
+    ) -> Self {
+        self.viewers = Arc::new(discovery::ImageViewers::with_discovery(discover));
+        self
+    }
+    #[cfg(test)]
+    fn with_font_scan(
+        mut self,
+        scan: impl Fn(&AtomicBool) -> Option<Arc<[String]>> + Send + Sync + 'static,
+    ) -> Self {
+        self.fonts = Arc::new(discovery::FixedPitchFonts::with_scan(scan));
+        self
     }
     pub fn with_path_picker(mut self, picker: Arc<dyn PathPickerService>) -> Self {
         self.picker = Some(picker);
@@ -232,7 +251,8 @@ impl Service {
         let stop = cancelled.clone();
         let capture = self.capture.clone();
         let storage = self.storage.clone();
-        let providers = self.providers.clone();
+        let viewers = self.viewers.clone();
+        let fonts = self.fonts.clone();
         let picker_cancel = Cancellation::default();
         let picker = file_choice::Picker {
             service: self.picker.clone(),
@@ -250,7 +270,8 @@ impl Service {
                     worker::Capture {
                         factory: &capture,
                         storage: storage.as_ref(),
-                        providers: &providers,
+                        viewers: &viewers,
+                        fonts: &fonts,
                         cancel: &stop,
                     },
                     picker,

@@ -69,28 +69,33 @@ fn comparator_offers_fixed_pitch_fonts_persists_explicit_choice_and_fits_small_w
     window.invoke_change_font(-1);
     window.invoke_change_font(20_000);
     assert!(saved.borrow().is_empty());
-    if families.row_count() > 1 {
+    let choices = families.row_count() > 1;
+    if choices {
         // Rapid choices must retain the last explicit choice, even before the next frame.
         window.invoke_change_font(0);
         window.invoke_change_font(1);
         window.invoke_change_font(0);
-        wait_for(&window, "select the requested font", || {
-            window.get_font_index() == 0
-        });
-        assert_eq!(saved.borrow().last().unwrap(), "monospace");
-        // Frames still in flight for the earlier choices must not move the selection back.
-        for _ in 0..10 {
-            std::thread::sleep(std::time::Duration::from_millis(20));
-            slint::platform::update_timers_and_animations();
-        }
         assert_eq!(window.get_font_index(), 0);
+        assert_eq!(saved.borrow().last().unwrap(), "monospace");
     }
+    let geometry = window.get_geometry_revision();
     native.set_size(slint::PhysicalSize::new(320, 200));
     window
         .window()
         .dispatch_event(slint::platform::WindowEvent::Resized {
             size: slint::LogicalSize::new(320.0, 200.0),
         });
+    // The worker handles inputs in order and the resize follows the choices, so once
+    // its frame is presented every frame painted before the last choice took effect has
+    // been presented or replaced.
+    wait_for(&window, "present the resized frame", || {
+        window.get_geometry_revision() > geometry
+            && window.get_frame_revision() == window.get_geometry_revision()
+    });
+    if choices {
+        // Those frames must not have moved the selection back.
+        assert_eq!(window.get_font_index(), 0);
+    }
     window.set_compact(true);
     let mut pixels = vec![slint::Rgb8Pixel::default(); 320 * 200];
     native.draw_if_needed(|renderer| {

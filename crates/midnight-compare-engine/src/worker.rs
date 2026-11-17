@@ -1,15 +1,16 @@
+use crate::discovery::{FixedPitchFonts, FontCatalog, ImageViewers};
 use crate::file_choice::{self, Picker, resolve};
 use crate::{
-    FileChoice, ImageProviders, Input, Mailbox, NativeCapture, Output, StorageHint, check_cancel,
-    images::Images, text::TextComparison,
+    FileChoice, Input, Mailbox, NativeCapture, Output, StorageHint, check_cancel, images::Images,
+    text::TextComparison,
 };
 use midnight_core::{FileCompareLaunch, ViewerAppearance, ViewerGeometry};
 use midnight_plugin_host::CapturedFile;
 use std::{
     sync::{
         Arc,
-        atomic::{AtomicBool, Ordering},
-        mpsc::{self, Receiver, RecvTimeoutError, TryRecvError},
+        atomic::AtomicBool,
+        mpsc::{Receiver, RecvTimeoutError},
     },
     time::Duration,
 };
@@ -30,31 +31,9 @@ struct Viewport {
 pub(crate) struct Capture<'a> {
     pub factory: &'a NativeCapture,
     pub storage: Option<&'a StorageHint>,
-    pub providers: &'a ImageProviders,
+    pub viewers: &'a ImageViewers,
+    pub fonts: &'a Arc<FixedPitchFonts>,
     pub cancel: &'a Arc<AtomicBool>,
-}
-
-/// The installed fixed-pitch families are scanned on their own thread: the scan reads
-/// every installed family and can take seconds on a loaded machine, so the first frame
-/// is painted in the generic monospace family instead of waiting for it.
-struct FontCatalog(Receiver<Option<Arc<[String]>>>);
-impl FontCatalog {
-    fn start(cancel: Arc<AtomicBool>) -> Self {
-        let (sender, receiver) = mpsc::sync_channel(1);
-        let scan = sender.clone();
-        let spawned = std::thread::Builder::new()
-            .name("comparator-fonts".into())
-            .spawn(move || {
-                let _ = scan.send(midnight_viewer_render::monospace_families(|| {
-                    cancel.load(Ordering::Acquire)
-                }));
-            });
-        if spawned.is_err() {
-            // Without a thread the comparison keeps the generic family and no chooser list.
-            let _ = sender.send(Some(Arc::from([])));
-        }
-        Self(receiver)
-    }
 }
 
 impl Capture<'_> {
@@ -70,23 +49,24 @@ impl Capture<'_> {
         self.storage.is_some_and(|storage| storage(path))
     }
 
-    /// Image viewers are optional: a missing registered runtime cannot disable text diff.
-    /// Like the viewer service, discovery runs once; opening a session revalidates packages.
-    fn image_providers(&self, output: &Mailbox) -> Arc<[midnight_image_viewer_host::Provider]> {
-        let mut cached = self
-            .providers
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        cached
-            .get_or_insert_with(|| {
-                output.put(Output::Status("Checking installed image viewers…".into()));
-                midnight_plugin_host::installed_executable()
-                    .ok()
-                    .and_then(|executable| midnight_image_viewer_host::discover(&executable).ok())
-                    .unwrap_or_default()
-                    .into()
-            })
-            .clone()
+    /// Image viewers are optional: a missing registered runtime or a failed discovery
+    /// cannot disable text comparison. A failure is reported on the status line and
+    /// returned, so a comparison that then fails can explain it; the next comparison
+    /// discovers again. Opening an image session revalidates its package.
+    fn image_providers(
+        &self,
+        output: &Mailbox,
+    ) -> (Arc<[midnight_image_viewer_host::Provider]>, Option<String>) {
+        match self.viewers.get(|| {
+            output.put(Output::Status("Checking installed image viewers…".into()));
+        }) {
+            Ok(providers) => (providers, None),
+            Err(error) => {
+                let reason = format!("Installed image viewers could not be checked: {error}");
+                output.put(Output::Status(reason.clone()));
+                (Arc::from([]), Some(reason))
+            }
+        }
     }
 }
 
@@ -184,7 +164,7 @@ fn compare(
     let sources = [left, right];
     let ssd = paths.each_ref().map(|path| capture.confirmed_ssd(path));
     check_cancel(cancel)?;
-    let providers = capture.image_providers(output);
+    let (providers, viewers_unavailable) = capture.image_providers(output);
     check_cancel(cancel)?;
     let selected = paths.each_ref().map(|path| {
         path.extension()
@@ -206,47 +186,50 @@ fn compare(
                 .into(),
         );
     }
-    let mut content = match selected {
-        [Some(left), Some(right)] => {
-            output.put(Output::Status(
-                "Decoding images in restricted workers…".into(),
-            ));
-            Content::Images(Box::new(Images::open(
-                [left, right],
-                &sources,
-                ssd,
-                cancel,
-            )?))
-        }
-        [None, None] => {
-            output.put(Output::Status("Reading and comparing text…".into()));
-            let left = crate::text::read(&sources[0], ssd[0], cancel)?;
-            let right = crate::text::read(&sources[1], ssd[1], cancel)?;
-            let text = TextComparison::new(&left, &right, cancel)?;
-            Content::Text(Box::new(text))
-        }
-        _ => return Err("Select two supported images or two text files.".into()),
-    };
+    let mut fonts: Option<FontCatalog> = None;
+    let mut content = (|| -> Result<Content, String> {
+        Ok(match selected {
+            [Some(left), Some(right)] => {
+                output.put(Output::Status(
+                    "Decoding images in restricted workers…".into(),
+                ));
+                Content::Images(Box::new(Images::open(
+                    [left, right],
+                    &sources,
+                    ssd,
+                    cancel,
+                )?))
+            }
+            [None, None] => {
+                // The catalog scan overlaps the reads and the diff. A catalog the service
+                // already holds is ready at once, so the first frame uses the preferred family.
+                fonts = Some(capture.fonts.request(cancel));
+                output.put(Output::Status("Reading and comparing text…".into()));
+                let left = crate::text::read(&sources[0], ssd[0], cancel)?;
+                let right = crate::text::read(&sources[1], ssd[1], cancel)?;
+                let text = TextComparison::new(&left, &right, cancel)?;
+                Content::Text(Box::new(text))
+            }
+            _ => return Err("Select two supported images or two text files.".to_owned()),
+        })
+    })()
+    .map_err(|message| match &viewers_unavailable {
+        // Without the viewer list every file was compared as text; say why.
+        Some(reason) => format!("{message}\n{reason}"),
+        None => message,
+    })?;
     viewport.geometry = bounded(viewport.geometry);
-    let mut fonts =
-        matches!(content, Content::Text(_)).then(|| FontCatalog::start(Arc::clone(cancel)));
     let mut dirty = true;
     loop {
         check_cancel(cancel)?;
-        if let Some(catalog) = &fonts {
-            match catalog.0.try_recv() {
-                Ok(Some(families)) => {
-                    if let Content::Text(text) = &mut content {
-                        // Repaint in the resolved family and publish the chooser list.
-                        text.set_font_catalog(families, &appearance.family);
-                        dirty = true;
-                    }
-                    fonts = None;
-                }
-                // Cancelled scans end the comparison at the next check; a failed scan
-                // keeps the generic family without a chooser list.
-                Ok(None) | Err(TryRecvError::Disconnected) => fonts = None,
-                Err(TryRecvError::Empty) => {}
+        if let Some(reply) = fonts.as_ref().and_then(FontCatalog::reply) {
+            fonts = None;
+            // A cancelled scan ends the comparison at the next check; a failed scan keeps
+            // the generic family without a chooser list.
+            if let (Some(families), Content::Text(text)) = (reply, &mut content) {
+                // Paint in the resolved family and publish the chooser list.
+                text.set_font_catalog(families, &appearance.family);
+                dirty = true;
             }
         }
         if dirty {

@@ -90,10 +90,18 @@ fn unresolved() -> FileCompareLaunch {
 }
 
 fn open(service: &Service, launch: FileCompareLaunch) -> Result<Session, String> {
+    open_in_family(service, launch, "monospace")
+}
+
+fn open_in_family(
+    service: &Service,
+    launch: FileCompareLaunch,
+    family: &str,
+) -> Result<Session, String> {
     service.open(
         launch,
         ViewerAppearance {
-            family: "monospace".into(),
+            family: family.into(),
             font_size: 14.0,
             foreground: [255; 4],
             background: [30, 30, 30, 255],
@@ -164,6 +172,8 @@ fn storage_hints_are_queried_on_the_worker_and_viewers_are_discovered_once_per_s
     let queried = Arc::new(Mutex::new(Vec::new()));
     let record = queried.clone();
     let caller = std::thread::current().id();
+    let discoveries = Arc::new(AtomicUsize::new(0));
+    let discovered_by = discoveries.clone();
     let runtime = tokio::runtime::Runtime::new().unwrap();
     let service = Service::with_native_capture(runtime.handle().clone(), capture)
         .with_storage_hint(Arc::new(move |path| {
@@ -174,21 +184,26 @@ fn storage_hints_are_queried_on_the_worker_and_viewers_are_discovered_once_per_s
             );
             record.lock().unwrap().push(path.to_path_buf());
             true
-        }));
+        }))
+        .with_image_viewer_discovery(move || {
+            assert_ne!(
+                std::thread::current().id(),
+                caller,
+                "discovery is backend work"
+            );
+            discovered_by.fetch_add(1, Ordering::SeqCst);
+            Ok(Vec::new())
+        });
     let first = open(&service, launch(&paths)).unwrap();
     assert!(frame(&first).status.contains("1 difference group"));
     let discovered = service
-        .providers
-        .lock()
-        .unwrap()
-        .clone()
+        .viewers
+        .kept()
         .expect("the first comparison discovers installed image viewers");
     let second = open(&service, launch(&paths)).unwrap();
     frame(&second);
-    assert!(Arc::ptr_eq(
-        &discovered,
-        service.providers.lock().unwrap().as_ref().unwrap()
-    ));
+    assert!(Arc::ptr_eq(&discovered, &service.viewers.kept().unwrap()));
+    assert_eq!(discoveries.load(Ordering::SeqCst), 1);
     assert_eq!(
         *queried.lock().unwrap(),
         [
@@ -366,4 +381,136 @@ fn close_cancels_either_capture_retains_capacity_until_return_and_suppresses_lat
         other.close();
         next.close();
     }
+}
+
+#[test]
+fn a_failed_image_viewer_discovery_is_explained_and_retried_by_the_next_comparison() {
+    let root = fixture();
+    let text = paths(root.path());
+    let images = [
+        root.path().join("left").join("photo.png"),
+        root.path().join("right").join("photo.png"),
+    ];
+    let reads = Arc::new(AtomicUsize::new(0));
+    let binary = images.clone();
+    let capture: NativeCapture = Arc::new(move |path, _| {
+        if binary.iter().any(|image| image == path) {
+            memory(b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR", &reads)
+        } else {
+            memory(b"same\nline\n", &reads)
+        }
+    });
+    let discoveries = Arc::new(AtomicUsize::new(0));
+    let attempts = discoveries.clone();
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let service = Service::with_native_capture(runtime.handle().clone(), capture)
+        .with_font_scan(|_| Some(Arc::from([])))
+        .with_image_viewer_discovery(move || {
+            if attempts.fetch_add(1, Ordering::SeqCst) == 0 {
+                Err("viewer packages are being replaced".into())
+            } else {
+                Ok(Vec::new())
+            }
+        });
+    // Without the viewer list the images were compared as text; the failure says why.
+    let first = open(&service, launch(&images)).unwrap();
+    let failed = choice(&first);
+    assert!(failed.is_error);
+    assert!(
+        failed
+            .message
+            .contains("viewer packages are being replaced"),
+        "{}",
+        failed.message
+    );
+    assert_eq!(discoveries.load(Ordering::SeqCst), 1);
+    assert!(
+        service.viewers.kept().is_none(),
+        "a failed discovery must not disable image comparison for the session"
+    );
+    // The next comparison discovers again and keeps the successful result.
+    let second = open(&service, launch(&text)).unwrap();
+    frame(&second);
+    assert_eq!(discoveries.load(Ordering::SeqCst), 2);
+    assert!(service.viewers.kept().is_some());
+    first.close();
+    let third = wait_for(|_| open(&service, launch(&text)).ok());
+    frame(&third);
+    assert_eq!(discoveries.load(Ordering::SeqCst), 2);
+    second.close();
+    third.close();
+}
+
+fn text_service(runtime: &tokio::runtime::Runtime) -> Service {
+    let reads = Arc::new(AtomicUsize::new(0));
+    let capture: NativeCapture = Arc::new(move |_, _| memory(b"same\nline\n", &reads));
+    Service::with_native_capture(runtime.handle().clone(), capture)
+        .with_image_viewer_discovery(|| Ok(Vec::new()))
+}
+
+#[test]
+fn the_first_frame_is_painted_while_the_font_scan_runs_and_repainted_with_its_catalog() {
+    let root = fixture();
+    let paths = paths(root.path());
+    let (deliver, catalog) = mpsc::channel::<Arc<[String]>>();
+    let catalog = Mutex::new(catalog);
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let service =
+        text_service(&runtime).with_font_scan(move |_| catalog.lock().unwrap().recv().ok());
+    let session = open_in_family(&service, launch(&paths), "Wide Mono").unwrap();
+    let first = frame(&session);
+    assert!(
+        first.fonts.is_none(),
+        "the first frame must not wait for a running font scan"
+    );
+    deliver.send(Arc::from(["Wide Mono".to_owned()])).unwrap();
+    let repainted = frame(&session);
+    let fonts = repainted.fonts.expect("the completed catalog is painted");
+    assert_eq!(fonts.selected, "Wide Mono");
+    session.close();
+}
+
+#[test]
+fn a_kept_font_catalog_paints_the_first_frame_of_a_later_comparison_in_the_preferred_family() {
+    let root = fixture();
+    let paths = paths(root.path());
+    let scans = Arc::new(AtomicUsize::new(0));
+    let scanned = scans.clone();
+    let (release, held) = mpsc::channel::<()>();
+    let held = Mutex::new(held);
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let service = text_service(&runtime).with_font_scan(move |_| {
+        if scanned.fetch_add(1, Ordering::SeqCst) == 0 {
+            return Some(Arc::from([
+                "Narrow Mono".to_owned(),
+                "Wide Mono".to_owned(),
+            ]));
+        }
+        // Another scan would race the first frame; hold it until the test ends, so a
+        // comparison that does not use the kept catalog paints without one.
+        let _ = held.lock().unwrap().recv();
+        None
+    });
+    let first = open_in_family(&service, launch(&paths), "Wide Mono").unwrap();
+    // Whether or not it won the race with the first frame, the catalog is painted.
+    let catalog = loop {
+        if let Some(fonts) = frame(&first).fonts {
+            break fonts;
+        }
+    };
+    assert_eq!(catalog.selected, "Wide Mono");
+    let second = open_in_family(&service, launch(&paths), "Wide Mono").unwrap();
+    let fonts = frame(&second)
+        .fonts
+        .expect("the first frame of a later comparison carries the kept catalog");
+    assert_eq!(fonts.selected, "Wide Mono");
+    assert!(Arc::ptr_eq(&fonts.families, &catalog.families));
+    assert_eq!(
+        scans.load(Ordering::SeqCst),
+        1,
+        "the catalog is scanned once"
+    );
+    first.close();
+    second.close();
+    drop(release);
 }
