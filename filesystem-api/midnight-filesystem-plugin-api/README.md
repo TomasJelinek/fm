@@ -12,9 +12,11 @@ layouts, strings and allocations never cross the C boundary.
 
 `abi::Api::validate` checks a loaded descriptor: capacity, header, nonempty
 bounded ID/version, required callbacks and capabilities. Unknown capability bits
-are INCOMPATIBLE, as is an extension advertised below its defining minor (2 for
-Activate, Refresh and ResolveText; 3 for PreparedRename) in either the descriptor
-ABI minor or its minimum host minor.
+are INCOMPATIBLE, as is an extension advertised by a descriptor whose ABI minor is
+below the minor that defines it (1 for VolumeDetails; 2 for Activate, Refresh and
+ResolveText; 3 for PreparedRename). Those minor-2 and minor-3 extensions also need
+that minimum host minor; VolumeDetails may keep 0 because older hosts reject its
+manifest capability before loading.
 
 ## Optional prepared Rename
 

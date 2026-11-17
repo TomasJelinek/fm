@@ -157,14 +157,15 @@ fn descriptor(capabilities: u64, minor: u16) -> Api {
 #[test]
 fn extensions_require_their_defining_minor_and_unknown_capabilities_are_incompatible() {
     let size = size_of::<Api>() as u32;
-    let legacy = CAP_BROWSE
-        | CAP_READ
-        | CAP_STAT
-        | CAP_VOLUMES
-        | CAP_STORAGE
-        | CAP_NATIVE_ADDRESS
-        | CAP_VOLUME_DETAILS;
+    let legacy = CAP_BROWSE | CAP_READ | CAP_STAT | CAP_VOLUMES | CAP_STORAGE | CAP_NATIVE_ADDRESS;
     assert_eq!(descriptor(legacy, 0).validate(size), Ok(()));
+    // ABI minor 1 defines VolumeDetails. Older hosts reject its manifest capability
+    // before loading, so minimum host minor 0 stays valid, but a minor-0 layout does not.
+    let mut details = descriptor(legacy | CAP_VOLUME_DETAILS, 1);
+    details.header.minimum_host_minor = 0;
+    assert_eq!(details.validate(size), Ok(()));
+    details.header.abi_minor = 0;
+    assert_eq!(details.validate(size), Err(INCOMPATIBLE));
     for capability in [CAP_ACTIVATE, CAP_REFRESH, CAP_RESOLVE_TEXT] {
         assert_eq!(
             descriptor(CAP_BROWSE | capability, 2).validate(size),
@@ -183,7 +184,7 @@ fn extensions_require_their_defining_minor_and_unknown_capabilities_are_incompat
     );
     for unknown in [1 << 11, 1 << 20, 1 << 63] {
         assert_eq!(
-            descriptor(legacy | unknown, ABI_MINOR).validate(size),
+            descriptor(legacy | CAP_VOLUME_DETAILS | unknown, ABI_MINOR).validate(size),
             Err(INCOMPATIBLE),
             "{unknown:#x}"
         );

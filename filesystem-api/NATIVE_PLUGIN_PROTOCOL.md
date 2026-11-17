@@ -21,9 +21,10 @@ required null callbacks fail validation.
 The host must reject incompatible major/minimum-host-minor values, unsupported
 capability bits and invalid bounded ID/version metadata before creating instances.
 The public `abi::Api::validate` performs these descriptor checks. It also returns
-INCOMPATIBLE when an extension is advertised below the minor that defines it, as
-either the descriptor ABI minor or its minimum host minor: 2 for Activate, Refresh
-and ResolveText, 3 for PreparedRename.
+INCOMPATIBLE when the descriptor ABI minor is below the minor that defines an
+advertised extension: 1 for VolumeDetails, 2 for Activate, Refresh and ResolveText,
+3 for PreparedRename. The minimum host minor must reach 2 or 3 for those later
+extensions; VolumeDetails may keep 0 (see ABI minor 1 below).
 
 Callbacks are synchronous: create, call, release_buffer, destroy. All calls,
 encoding and resource destruction run on backend workers. The host retains the
@@ -185,7 +186,8 @@ host checks this capability before operations 15 or 16. ABI major, descriptor
 layout, operations 1–14 and response tags 1–11 are unchanged. Existing plugins
 remain accepted by new hosts; existing SDK adapters inherit Unsupported defaults.
 Packages using only this extension may retain minimum-host-minor 0 because old
-hosts reject the unknown manifest capability before loading. Other extensions
+hosts reject the unknown manifest capability before loading; their descriptor ABI
+minor must still be at least 1. Other extensions
 can require a higher minimum. Hosts that recognize the capability
 must implement these payloads. An older plugin is never sent an optional query
 without advertising support. Missing support is explicit, with no native fallback.

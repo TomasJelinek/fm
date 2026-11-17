@@ -26,6 +26,9 @@ pub const CAP_REFRESH: u64 = 256;
 pub const CAP_RESOLVE_TEXT: u64 = 512;
 /// Prepared same-parent Rename; requires host minor version 3.
 pub const CAP_PREPARED_RENAME: u64 = 1024;
+/// Capabilities that ABI minor 1 defines. Older hosts reject their manifest spelling
+/// before loading, so they do not raise the minimum host minor.
+const MINOR_ONE_CAPABILITIES: u64 = CAP_VOLUME_DETAILS;
 /// Capabilities that require host minor version 2.
 const MINOR_TWO_CAPABILITIES: u64 = CAP_ACTIVATE | CAP_REFRESH | CAP_RESOLVE_TEXT;
 /// Every capability this ABI minor defines; any other bit is unsupported.
@@ -35,7 +38,7 @@ const KNOWN_CAPABILITIES: u64 = CAP_BROWSE
     | CAP_VOLUMES
     | CAP_STORAGE
     | CAP_NATIVE_ADDRESS
-    | CAP_VOLUME_DETAILS
+    | MINOR_ONE_CAPABILITIES
     | MINOR_TWO_CAPABILITIES
     | CAP_PREPARED_RENAME;
 
@@ -178,20 +181,28 @@ pub struct Api {
 }
 pub type Entry = unsafe extern "C" fn(*mut Api, u32) -> Status;
 impl Api {
-    /// Rejects unsupported capability bits and an extension advertised below the
-    /// minor that defines it, as descriptor ABI minor or minimum host minor.
+    /// Rejects unsupported capability bits and an extension advertised by a
+    /// descriptor whose ABI minor is below the minor that defines it: 1 for
+    /// VolumeDetails, 2 for Activate, Refresh and ResolveText, 3 for PreparedRename.
+    /// The minor-2 and minor-3 extensions also require that minimum host minor;
+    /// VolumeDetails may keep 0.
     pub fn validate(&self, capacity: u32) -> Result<(), Status> {
         self.header.validate(capacity, size_of::<Self>() as u32)?;
-        let required_minor = if self.capabilities & CAP_PREPARED_RENAME != 0 {
+        let host_minor = if self.capabilities & CAP_PREPARED_RENAME != 0 {
             3
         } else if self.capabilities & MINOR_TWO_CAPABILITIES != 0 {
             2
         } else {
             0
         };
+        let defining_minor = if self.capabilities & MINOR_ONE_CAPABILITIES != 0 {
+            host_minor.max(1)
+        } else {
+            host_minor
+        };
         if self.capabilities & !KNOWN_CAPABILITIES != 0
-            || self.header.minimum_host_minor < required_minor
-            || self.header.abi_minor < required_minor
+            || self.header.minimum_host_minor < host_minor
+            || self.header.abi_minor < defining_minor
         {
             return Err(INCOMPATIBLE);
         }
