@@ -13,8 +13,10 @@ use std::{
 };
 
 const MAX_LIST_ENTRIES: usize = 50_000;
-const MAX_LIST_BYTES: usize = 32 * 1024 * 1024;
+pub(super) const MAX_LIST_BYTES: usize = 32 * 1024 * 1024;
 const MAX_ISSUED_NODES: usize = 100_000;
+/// Provider callbacks one listing or probe may inspect, rows or not.
+const MAX_INSPECTED_ENTRIES: usize = 1_000_000;
 
 #[path = "target.rs"]
 mod target;
@@ -140,7 +142,7 @@ impl MountedLocation {
 
     /// Presence-only disclosure probe: whether the directory contains a folder.
     /// Enumeration stops at the first folder; no reference, row or row budget is
-    /// issued. Tokens inspected before it are validated like a folder listing.
+    /// issued. Tokens inspected before it share a folder listing's token ledger.
     pub fn has_folders(
         &self,
         node: &NodeRef,
@@ -155,24 +157,17 @@ impl MountedLocation {
         let request = self.lease.lifetime.linked(cancel);
         check_cancel(&request)?;
         let mut present = false;
-        let mut seen = HashSet::new();
+        let mut ledger = TokenLedger::new(&self.lease, &node.token, &request);
         let mut failure = None;
         let result = self
             .lease
             .mount
             .list_folders(&node.token, &request, &mut |entry| {
-                let result = check_cancel(&request).and_then(|()| {
-                    if seen.len() >= 1_000_000 {
-                        return Err(ProviderError::ResourceLimited);
-                    }
-                    if entry.token == node.token || !seen.insert(entry.token.clone()) {
-                        return Err(ProviderError::InvalidResponse(
-                            "duplicate or self-referencing listing node",
-                        ));
-                    }
-                    self.lease.validate_kind(&entry.token, entry.kind)
-                });
-                if let Err(error) = result {
+                // A provider that keeps emitting after the stop cannot change the answer.
+                if present || failure.is_some() {
+                    return false;
+                }
+                if let Err(error) = ledger.admit(&entry) {
                     failure = Some(error);
                     return false;
                 }
@@ -217,35 +212,14 @@ impl MountedLocation {
         let request = self.lease.lifetime.linked(cancel);
         check_cancel(&request)?;
         let mut entries = Vec::new();
-        let mut seen = HashSet::new();
+        let mut ledger = TokenLedger::new(&self.lease, &node.token, &request);
         let mut bytes = 0_usize;
-        let mut token_bytes = 0_usize;
-        let mut inspected = 0_usize;
         let mut failure = None;
-        let mut accept = |entry: super::ProviderEntry| {
+        let mut accept = |entry: ProviderEntry| {
             if failure.is_some() {
                 return false;
             }
-            let result = check_cancel(&request).and_then(|()| {
-                inspected = inspected.saturating_add(1);
-                if inspected > 1_000_000 {
-                    return Err(ProviderError::ResourceLimited);
-                }
-                token_bytes = token_bytes
-                    .saturating_add(entry.token.as_bytes().len())
-                    .saturating_add(std::mem::size_of::<NodeToken>() + 64);
-                if token_bytes > MAX_LIST_BYTES {
-                    return Err(ProviderError::ResourceLimited);
-                }
-                if entry.token == node.token || !seen.insert(entry.token.clone()) {
-                    return Err(ProviderError::InvalidResponse(
-                        "duplicate or self-referencing listing node",
-                    ));
-                }
-                self.lease.validate_kind(&entry.token, entry.kind)?;
-                Ok(())
-            });
-            if let Err(error) = result {
+            if let Err(error) = ledger.admit(&entry) {
                 failure = Some(error);
                 return false;
             }
@@ -384,6 +358,54 @@ impl ContentConstruction {
             lease.release_on_worker()?;
         }
         Ok(())
+    }
+}
+
+/// Validation shared by complete, folder-only and presence listings: cancellation,
+/// the inspected-callback ceiling, the 32 MiB token ledger (charged before a token
+/// is kept for duplicate detection), duplicate or self-referencing tokens and kind
+/// changes of already issued nodes.
+struct TokenLedger<'a> {
+    lease: &'a MountLease,
+    directory: &'a NodeToken,
+    request: &'a Cancellation,
+    seen: HashSet<NodeToken>,
+    inspected: usize,
+    bytes: usize,
+}
+
+impl<'a> TokenLedger<'a> {
+    fn new(lease: &'a MountLease, directory: &'a NodeToken, request: &'a Cancellation) -> Self {
+        Self {
+            lease,
+            directory,
+            request,
+            seen: HashSet::new(),
+            inspected: 0,
+            bytes: 0,
+        }
+    }
+
+    fn admit(&mut self, entry: &ProviderEntry) -> Result<(), ProviderError> {
+        check_cancel(self.request)?;
+        self.inspected = self.inspected.saturating_add(1);
+        if self.inspected > MAX_INSPECTED_ENTRIES {
+            return Err(ProviderError::ResourceLimited);
+        }
+        // Token bytes plus the retained handle and its duplicate-set slot.
+        self.bytes = self
+            .bytes
+            .saturating_add(entry.token.as_bytes().len())
+            .saturating_add(std::mem::size_of::<NodeToken>() + 64);
+        if self.bytes > MAX_LIST_BYTES {
+            return Err(ProviderError::ResourceLimited);
+        }
+        if entry.token == *self.directory || !self.seen.insert(entry.token.clone()) {
+            return Err(ProviderError::InvalidResponse(
+                "duplicate or self-referencing listing node",
+            ));
+        }
+        self.lease.validate_kind(&entry.token, entry.kind)
     }
 }
 

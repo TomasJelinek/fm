@@ -74,7 +74,11 @@ projection. Folder-only listings (`list_folders`) use a separate bounded
 token-validation ledger, so irrelevant regular files do not consume the
 retained-folder quota; a generic provider's default `list_folders` still emits its
 complete listing, so every returned token is validated. `has_folders` answers a
-disclosure probe at the first folder without issuing references. See
+disclosure probe at the first folder without issuing references; the tokens it
+inspects before that folder are charged to the same 32 MiB token ledger and
+one-million-callback ceiling, so a generic provider's long file prefix fails as
+resource-limited instead of growing the probe's duplicate set. Entries a provider
+emits after the stop cannot change the answer. See
 [inline provider branches](INLINE_TREES.md) for the backend tree model, ownership,
 limits and pending production projection.
 
