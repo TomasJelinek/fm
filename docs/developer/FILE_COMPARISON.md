@@ -97,7 +97,9 @@ logical pixels per line and one viewport per page.
 An input that follows a quiet interval is sent to the worker at once. Inputs that
 arrive within 16 ms of a sent batch wait and go together, so continuous input reaches
 the worker as at most about one batch per display frame; inputs the full session queue
-(32 entries, `INPUT_QUEUE`) refuses are retried every 16 ms until it takes them. The UI
+(32 entries, `INPUT_QUEUE`) refuses (`Refused::Full`) are retried every 16 ms until it
+takes them. A worker that has stopped after an internal error refuses every input
+(`Refused::Stopped`): the window drops what waits for it and arms no timer. The UI
 keeps at most 64 waiting inputs. Repeated line, page and scroll steps accumulate. State
 inputs (geometry, image mode, font, Fit or Actual pixels, and a file-choice request)
 are never dropped: a newer one replaces the queued one of its kind and is queued after
@@ -124,19 +126,22 @@ never keeps a closed window alive, and a callback that runs after the window is 
 does nothing. Changes of the content width or height or of the window scale
 (`1px / 1phx`) raise `geometry-changed`, and the window sends one `Resize` when the
 physical geometry changed, also for a DPI change at the same logical size. Only the
-input batch timer remains, and it runs only while inputs arrive or wait. On a platform
-without a cross-thread event-loop proxy (the headless integration-test platforms) the
-window polls its mailbox every 16 ms instead. `midnight-compare-ui/examples/idle_wakeups.rs`
-opens a comparison in a real window and prints the event-loop wakeups while it is idle.
+input batch timer remains, and it runs only while inputs arrive or wait for a running
+worker. On a platform without a cross-thread event-loop proxy (the headless
+integration-test platforms) the window polls its mailbox every 16 ms instead.
+`midnight-compare-ui/examples/idle_wakeups.rs` opens a comparison in a real window and
+prints the event-loop wakeups while it is idle.
 
 `midnight-compare-ui/src/wake_tests.rs` runs the wake path on a platform with an
 event-loop proxy and a frozen clock: outputs are presented by wakes alone, idle windows
 arm no timer and cause no wakeup in a simulated second, inputs held behind a full
 session queue are retried until delivered, a resize and a DPI change each send one
-`Resize`, and closed windows are released while their worker still runs. Slint keeps
-that proxy process-wide, so it is the only test in that binary that installs a platform.
-`midnight-compare-engine/src/mailbox_tests.rs` covers the wake gate, including a race of
-`take` against a concurrent output.
+`Resize`, inputs for a worker that stopped after an internal error are dropped without
+a retry timer, and closed windows are released while their worker still runs. Slint
+keeps that proxy process-wide, so it is the only test in that binary that installs a
+platform. `midnight-compare-engine/src/mailbox_tests.rs` covers the wake gate, including
+a race of `take` against a concurrent output, and `capture_tests.rs` the two refusal
+reasons of `Session::send`.
 
 Tests cover existing automatic Unicode/raw-native pairing, partial physical order,
 empty/ambiguous/pending panel inputs, repeated invalid paths and retry, unchanged

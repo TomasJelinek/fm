@@ -5,7 +5,7 @@ mod fonts;
 mod images;
 #[cfg(test)]
 mod wake_tests;
-use midnight_compare_engine::{ImageMode, Input, Output, Service, Session};
+use midnight_compare_engine::{ImageMode, Input, Output, Refused, Service, Session};
 use midnight_core::{FileCompareLaunch, ShortcutChord, ViewerAppearance, ViewerGeometry};
 use slint::{
     ComponentHandle, EventLoopError, Timer, TimerMode,
@@ -36,7 +36,7 @@ pub struct ComparatorWindows {
 }
 /// One comparison window. Nothing runs while it is idle: the worker's outputs arrive
 /// through `output-ready`, geometry through `geometry-changed`, and the batch timer runs
-/// only while inputs arrive or wait for room in the session queue.
+/// only while inputs arrive or wait for room in the queue of a running worker.
 struct OpenWindow {
     window: ComparatorWindow,
     session: Session,
@@ -73,13 +73,23 @@ impl OpenWindow {
     }
     /// Send queued inputs while the session accepts them, then hold later inputs for one
     /// interval. The timer sends what arrived meanwhile or retries what the full queue
-    /// refused; once nothing waits it is not rearmed.
+    /// refused; once nothing waits it is not rearmed. A worker that has stopped takes no
+    /// more input, so what waits for it is dropped and nothing is armed.
     fn flush(&self) {
         let mut pending = self.pending.borrow_mut();
+        let mut refused = None;
         let sent = pending
             .iter()
-            .take_while(|input| self.session.send((*input).clone()))
+            .take_while(|input| {
+                let result = self.session.send((*input).clone());
+                refused = result.err();
+                result.is_ok()
+            })
             .count();
+        if refused == Some(Refused::Stopped) {
+            pending.clear();
+            return;
+        }
         pending.drain(..sent);
         drop(pending);
         let open = self.me.clone();

@@ -21,7 +21,7 @@ use std::path::PathBuf;
 use std::sync::{
     Arc, Mutex,
     atomic::{AtomicBool, AtomicUsize, Ordering},
-    mpsc::{self, SyncSender},
+    mpsc::{self, SyncSender, TrySendError},
 };
 
 /// Backend-only native source capture. Failure never invokes a fallback opener.
@@ -120,9 +120,19 @@ pub struct FileChoice {
     pub is_error: bool,
 }
 
-/// Inputs a session queues for its worker; `Session::send` refuses more until the worker
-/// takes some.
+/// Inputs a session queues for its worker; `Session::send` refuses more (`Refused::Full`)
+/// until the worker takes some.
 pub const INPUT_QUEUE: usize = 32;
+
+/// Why `Session::send` refused an input.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Refused {
+    /// `INPUT_QUEUE` inputs are waiting; the worker takes more as it catches up.
+    Full,
+    /// The worker has stopped, after `Session::close` or an internal error, and takes no
+    /// more input.
+    Stopped,
+}
 
 /// Called on the worker thread when an output is ready and no earlier call is outstanding.
 /// Returns whether the consumer will be woken; when it will not, the next output calls
@@ -191,8 +201,12 @@ pub struct Session {
 }
 
 impl Session {
-    pub fn send(&self, input: Input) -> bool {
-        self.sender.try_send(input).is_ok()
+    /// Queues an input for the worker without blocking.
+    pub fn send(&self, input: Input) -> Result<(), Refused> {
+        self.sender.try_send(input).map_err(|error| match error {
+            TrySendError::Full(_) => Refused::Full,
+            TrySendError::Disconnected(_) => Refused::Stopped,
+        })
     }
     pub fn close(&self) {
         self.picker_cancel.cancel();

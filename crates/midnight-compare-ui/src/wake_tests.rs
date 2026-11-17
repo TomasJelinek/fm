@@ -1,14 +1,17 @@
 //! The production wake path on a platform with a cross-thread event-loop proxy and a
 //! frozen clock: worker outputs are presented by wakes alone, an idle comparator arms no
-//! timer, inputs held behind a full session queue are retried until delivered, and a
-//! closed window is neither kept alive by its worker nor touched by a late wake.
+//! timer, inputs held behind a full session queue are retried until delivered, inputs for
+//! a worker that stopped are dropped without a retry, and a closed window is neither kept
+//! alive by its worker nor touched by a late wake.
 //!
 //! Slint keeps the event-loop proxy process-wide (`set_platform` refuses a second platform
 //! that offers one), so this is the only test in this binary that installs a platform.
 //! The integration tests use proxy-less platforms, on which windows poll instead.
 use super::*;
 use midnight_compare_engine::INPUT_QUEUE;
-use midnight_core::{Cancellation, FsError, PathPickerRequest, PathPickerService};
+use midnight_core::{
+    Cancellation, FileCompareSource, FsError, PathPickerRequest, PathPickerService,
+};
 use slint::platform::{
     EventLoopProxy, Platform, PlatformError, WindowAdapter, WindowEvent,
     software_renderer::{MinimalSoftwareWindow, RepaintBufferType},
@@ -366,6 +369,56 @@ fn worker_outputs_wake_the_window_and_an_idle_comparator_arms_no_timer() {
         (surface.width, surface.height),
         ((logical.0 * 2.0) as u32, (logical.1 * 2.0) as u32)
     );
+
+    // A worker that stopped after an internal error takes no more input: what waits is
+    // dropped and no timer retries it.
+    let stopping = ComparatorWindows::new(Service::with_native_capture(
+        runtime.handle().clone(),
+        Arc::new(|_, _| panic!("deliberate capture fault: the comparison worker stops")),
+    ));
+    let stopped = stopping
+        .open(
+            FileCompareLaunch {
+                sources: files
+                    .iter()
+                    .cloned()
+                    .map(FileCompareSource::Focused)
+                    .collect(),
+                disabled_plugins: Arc::from([]),
+            },
+            appearance(),
+            slint::LogicalSize::new(800.0, 600.0),
+            Rc::new(|_, _| None),
+        )
+        .unwrap()
+        .upgrade()
+        .unwrap();
+    let stopped_native = event_loop.native();
+    let broken = stopping.windows.borrow()[0].clone();
+    event_loop.wait_for(&stopped, "report the stopped worker", true, || {
+        stopped.get_status().contains("internal error")
+    });
+    event_loop.advance(BATCH_INTERVAL);
+    let before = stopped.get_geometry_revision();
+    stopped.invoke_difference(false);
+    stopped_native.set_size(slint::PhysicalSize::new(600, 400));
+    event_loop.run_once();
+    event_loop.run_once();
+    assert!(
+        stopped.get_geometry_revision() > before,
+        "a resize was sent"
+    );
+    assert!(
+        broken.pending.borrow().is_empty(),
+        "inputs for a stopped worker are dropped"
+    );
+    assert!(!broken.batch.running(), "a stopped worker is not retried");
+    event_loop.advance(BATCH_INTERVAL);
+    assert!(!broken.batch.running() && broken.pending.borrow().is_empty());
+    // The first window's font catalog may still arrive by a wake; no timer is armed.
+    assert_eq!(slint::platform::duration_until_next_timer_update(), None);
+    stopping.close_all();
+    drop((stopped, stopped_native, broken, stopping));
 
     // Closing: workers hold only weak handles, and a wake that arrives late touches
     // nothing. The second worker waits in its picker; the first posts a frame's wake.
