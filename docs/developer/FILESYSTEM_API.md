@@ -231,14 +231,20 @@ revisit captured ranges and are bounded to 256 KiB. Host listing validation
 also limits a directory to 100,000 nodes and 8 MiB aggregate raw/display names.
 
 The current parser imposes no artificial compressed-source, member, aggregate disk
-or expansion-ratio byte ceiling. It retains 100,000-node and 8 MiB name limits,
-bounded decoder windows and a 64 MiB raw 7z next-header guard. Compressed 7z header
-allocation remains inside the worker memory boundary. ZIP and plain TAR browse
-indexes without whole-source buffering; selected members stream directly to disk.
-Solid 7z verifies the full required block and stores only the selected member.
-Compressed TAR verifies one complete scratch stream and reuses checked ranges.
-Disk errors abort staging; final spool cleanup runs on backend workers after any
-outstanding native I/O returns. The host retains at most 16 cached member leases.
+or expansion-ratio byte ceiling; the host stops staging with a resource-limit error
+before its private spool volume would fall below max(1 GiB, 2% of capacity) free.
+The parser retains 100,000-node and 8 MiB name limits, a 16 MiB bound on each
+buffered TAR long-name/long-link/PAX record, 64 MiB XZ/Zstandard windows, a 256 MiB
+7z LZMA/LZMA2 dictionary check (larger blocks' members are unreadable) and a 64 MiB
+raw 7z next-header guard. Compressed 7z header allocation remains inside the worker
+memory boundary. Source reads use a seek-preserving 256 KiB window. ZIP and plain
+TAR browse indexes without whole-source buffering; selected members stream directly
+to disk. Solid 7z verifies the full required block and stores only the selected
+member; the block's other readable members stay in worker memory (up to 128 MiB)
+for later reads without another block decode. Compressed TAR verifies one complete
+scratch stream and reuses checked ranges. Disk errors abort staging; final spool
+cleanup runs on backend workers after any outstanding native I/O returns. The host
+retains at most 16 cached member leases.
 
 Protocol-2 nodes also carry optional typed UTC seconds/nanoseconds or timezone-free
 local civil timestamps. ZIP DOS times never acquire an invented UTC offset.
@@ -248,9 +254,14 @@ GZIP/XZ/BZIP2/Zstandard and their TAR wrappers, and 7z Copy/LZMA/LZMA2 with the
 enabled pure Rust BCJ filters. Raw compressed streams
 expose a synthetic `content` member, ignoring untrusted FNAME. Links, junctions,
 reparse entries, hard links, special files, absolute/traversal names, backslashes,
-drive/ADS colons and NUL names are unreadable; the worker has no disk extraction capability.
-Duplicate regular files remain distinct. Encryption, passwords, multi-volume
-archives, RAR, nested mounts and archive writing are unsupported.
+drive/ADS colons, NUL names and files named by a final `.` are unreadable; unsafe
+directory records are listed as non-navigable `Other` nodes, while harmless `.`
+components such as `./usr/bin` name the current directory. The worker has no disk
+extraction capability. TAR and 7z duplicate regular files remain distinct; the
+pinned ZIP reader merges central-directory records repeating one raw name into a
+single entry, which is listed but unreadable. Encrypted or unsupported ZIP members
+and 7z blocks are unreadable without hiding the rest of the archive. Passwords,
+multi-volume archives, RAR, nested mounts and archive writing are unsupported.
 
 ## Independent builds and verification
 

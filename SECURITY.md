@@ -733,9 +733,13 @@ fields and conservative physical-device classifications.
 - Markdown returns semantic text blocks and inert link metadata. The host does not
   execute HTML/scripts or load remote images, styles, fonts or links. Source syntax
   definitions are packaged code, never executable configuration from the opened folder.
-- Archive browsing is read-only. Names, links and declared sizes are untrusted;
-  actual decompression, dictionaries, indexes, nesting and cache use share
-  budgets. Listing never extracts a member to its declared host pathname.
+- Archive browsing is read-only. Names, links and declared sizes are untrusted.
+  Decompressed content has no artificial size ceiling; instead the host's private
+  spool stops staging with a resource-limit error before its volume would fall
+  below max(1 GiB, 2% of capacity) free, checking at least every 64 MiB written.
+  Decoder dictionaries/windows, metadata indexes, buffered metadata records and
+  retained verified 7z siblings have explicit bounds inside the 512 MiB worker
+  memory limit. Listing never extracts a member to its declared host pathname.
   Copying out uses the common destination readback/SHA-256/publish contract.
   Opaque provider IDs and raw member names are captured; names must be safe
   single destination components, never joined archive display paths. Links,
