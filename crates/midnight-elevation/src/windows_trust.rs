@@ -6,11 +6,7 @@
 use std::{
     fs::{File, OpenOptions},
     io,
-    os::windows::{
-        ffi::OsStrExt,
-        fs::{MetadataExt, OpenOptionsExt},
-        io::AsRawHandle,
-    },
+    os::windows::{ffi::OsStrExt, fs::OpenOptionsExt, io::AsRawHandle},
     path::{Component, Path, PathBuf, Prefix},
     ptr,
 };
@@ -23,11 +19,13 @@ use windows_sys::Win32::{
         OWNER_SECURITY_INFORMATION, PSID, WinBuiltinAdministratorsSid, WinLocalSystemSid,
     },
     Storage::FileSystem::{
-        BY_HANDLE_FILE_INFORMATION, DELETE, FILE_APPEND_DATA, FILE_ATTRIBUTE_REPARSE_POINT,
-        FILE_DELETE_CHILD, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
-        FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_TRAVERSE,
-        FILE_WRITE_ATTRIBUTES, FILE_WRITE_DATA, FILE_WRITE_EA, GetDriveTypeW,
-        GetFileInformationByHandle, READ_CONTROL, WRITE_DAC, WRITE_OWNER,
+        BY_HANDLE_FILE_INFORMATION, DELETE, FILE_APPEND_DATA, FILE_ATTRIBUTE_DIRECTORY,
+        FILE_ATTRIBUTE_REPARSE_POINT, FILE_ATTRIBUTE_TAG_INFO, FILE_DELETE_CHILD,
+        FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_READ_ATTRIBUTES,
+        FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_TRAVERSE, FILE_WRITE_ATTRIBUTES,
+        FILE_WRITE_DATA, FILE_WRITE_EA, FileAttributeTagInfo, GetDriveTypeW,
+        GetFileInformationByHandle, GetFileInformationByHandleEx, READ_CONTROL, WRITE_DAC,
+        WRITE_OWNER,
     },
 };
 
@@ -35,6 +33,14 @@ use windows_sys::Win32::{
 const ACCESS_ALLOWED_ACE_TYPE: u8 = 0;
 const ACCESS_DENIED_ACE_TYPE: u8 = 1;
 const DRIVE_FIXED: u32 = 3;
+const IO_REPARSE_TAG_DEDUP: u32 = 0x8000_0013;
+const IO_REPARSE_TAG_WOF: u32 = 0x8000_0017;
+
+/// Reparse tags of kernel storage filters that neither redirect the name nor take content from
+/// a user-mode provider: WOF compression (CompactOS, `compact /exe`) and Data Deduplication.
+/// The data stays under the object's own permissions, which the policy checks. Links, Cloud
+/// Files placeholders, app execution aliases and every other tag are refused.
+const STORAGE_TAGS: [u32; 2] = [IO_REPARSE_TAG_WOF, IO_REPARSE_TAG_DEDUP];
 
 /// Rights that delete, rename, re-permission or otherwise replace an existing object.
 const REPLACE_RIGHTS: u32 = DELETE
@@ -76,36 +82,21 @@ pub(super) fn unprotected(path: &Path, reason: &str) -> io::Error {
 }
 
 /// Pin the helper and every ancestor against rename and deletion, then validate the pinned
-/// objects: ordinary (non-reparse) objects on a local fixed drive, owned by SYSTEM,
-/// Administrators or TrustedInstaller, with no write, rename or permission rights for any other
-/// identity. The handles must stay open until the elevated process has started.
+/// objects: ordinary objects (no link or other reparse point except [`STORAGE_TAGS`]) on a
+/// local fixed drive, owned by SYSTEM, Administrators or TrustedInstaller, with no write,
+/// rename or permission rights for any other identity. The handles must stay open until the
+/// elevated process has started.
 pub(super) fn pin_helper(helper: &Path) -> io::Result<Vec<File>> {
     local_fixed_drive(helper)?;
     let mut pins = Vec::new();
     for (index, path) in helper.ancestors().enumerate() {
         let file = if index == 0 {
-            // Read sharing only: no writer, deleter or renamer while the helper is pinned.
-            OpenOptions::new()
-                .read(true)
-                .share_mode(FILE_SHARE_READ)
-                .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
-                .open(path)?
+            pin_file(path)?
         } else {
-            // Traverse access takes part in sharing, so omitting delete sharing still prevents
-            // rename or removal; write sharing lets other processes keep adding entries.
-            OpenOptions::new()
-                .access_mode(FILE_READ_ATTRIBUTES | READ_CONTROL | FILE_TRAVERSE)
-                .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
-                .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
-                .open(path)?
+            pin_folder(path)?
         };
-        let metadata = file.metadata()?;
-        if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
-            return Err(unprotected(path, "is a link or reparse point"));
-        }
-        if (index == 0 && !metadata.is_file()) || (index != 0 && !metadata.is_dir()) {
-            return Err(unprotected(path, "is not an ordinary file or folder"));
-        }
+        let (attributes, tag) = attribute_tag(&file)?;
+        object_policy(attributes, tag, index != 0).map_err(|reason| unprotected(path, reason))?;
         let rights = if index <= 1 {
             MODIFY_RIGHTS
         } else {
@@ -115,6 +106,62 @@ pub(super) fn pin_helper(helper: &Path) -> io::Result<Vec<File>> {
         pins.push(file);
     }
     Ok(pins)
+}
+
+/// Open the helper itself (never a link target) with read sharing only: no process can write,
+/// rename or delete it while it is pinned.
+fn pin_file(path: &Path) -> io::Result<File> {
+    OpenOptions::new()
+        .read(true)
+        .share_mode(FILE_SHARE_READ)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(path)
+}
+
+/// Open an ancestor folder (never a link target) so that it can be neither renamed nor
+/// removed, while other processes keep adding and changing its entries. Traverse access takes
+/// part in share checks, unlike attribute and permission reads alone, so withholding delete
+/// sharing refuses every open for delete; write sharing admits new entries.
+fn pin_folder(path: &Path) -> io::Result<File> {
+    OpenOptions::new()
+        .access_mode(FILE_READ_ATTRIBUTES | READ_CONTROL | FILE_TRAVERSE)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(path)
+}
+
+/// The attributes and reparse tag (zero without a reparse point) of a pinned object.
+fn attribute_tag(file: &File) -> io::Result<(u32, u32)> {
+    let mut information = FILE_ATTRIBUTE_TAG_INFO::default();
+    // SAFETY: a live handle and a writable output of exactly the queried class's size.
+    if unsafe {
+        GetFileInformationByHandleEx(
+            file.as_raw_handle(),
+            FileAttributeTagInfo,
+            (&mut information as *mut FILE_ATTRIBUTE_TAG_INFO).cast(),
+            size_of::<FILE_ATTRIBUTE_TAG_INFO>() as u32,
+        )
+    } == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    let tag = if information.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+        information.ReparseTag
+    } else {
+        0
+    };
+    Ok((information.FileAttributes, tag))
+}
+
+/// The object type and reparse policy for the helper (`folder == false`) or an ancestor.
+fn object_policy(attributes: u32, tag: u32, folder: bool) -> Result<(), &'static str> {
+    if attributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 && !STORAGE_TAGS.contains(&tag) {
+        return Err("is a link or reparse point");
+    }
+    if (attributes & FILE_ATTRIBUTE_DIRECTORY != 0) != folder {
+        return Err("is not an ordinary file or folder");
+    }
+    Ok(())
 }
 
 fn local_fixed_drive(helper: &Path) -> io::Result<()> {

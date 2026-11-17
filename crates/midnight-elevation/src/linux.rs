@@ -45,9 +45,6 @@ pub(crate) fn decode_path(bytes: &[u8]) -> io::Result<PathBuf> {
 pub(crate) fn metadata(value: &fs::Metadata) -> (Option<u32>, Option<u32>) {
     (None, Some(value.mode()))
 }
-pub(crate) fn is_redirected(_: &fs::Metadata) -> bool {
-    false
-}
 /// Unix links record no target type. stat follows the link but never opens the target.
 pub(crate) fn is_directory_link(entry: &DirEntry, _: &FileType) -> bool {
     fs::metadata(entry.path()).is_ok_and(|value| value.is_dir())

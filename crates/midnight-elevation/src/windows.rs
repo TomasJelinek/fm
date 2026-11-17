@@ -26,9 +26,8 @@ use windows_sys::Win32::{
         Authorization::ConvertStringSecurityDescriptorToSecurityDescriptorW, SECURITY_ATTRIBUTES,
     },
     Storage::FileSystem::{
-        CreateFileW, FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_FIRST_PIPE_INSTANCE,
-        FILE_FLAG_OVERLAPPED, OPEN_EXISTING, PIPE_ACCESS_DUPLEX, SECURITY_IDENTIFICATION,
-        SECURITY_SQOS_PRESENT,
+        CreateFileW, FILE_FLAG_FIRST_PIPE_INSTANCE, FILE_FLAG_OVERLAPPED, OPEN_EXISTING,
+        PIPE_ACCESS_DUPLEX, SECURITY_IDENTIFICATION, SECURITY_SQOS_PRESENT,
     },
     System::{
         Com::{COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE, CoInitializeEx, CoUninitialize},
@@ -87,9 +86,6 @@ pub(crate) fn decode_path(bytes: &[u8]) -> io::Result<PathBuf> {
 }
 pub(crate) fn metadata(value: &fs::Metadata) -> (Option<u32>, Option<u32>) {
     (Some(value.file_attributes()), None)
-}
-pub(crate) fn is_redirected(value: &fs::Metadata) -> bool {
-    value.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
 }
 /// Directory symbolic links and junctions are directory links by their own attributes. The
 /// elevated helper never opens a link target: a target could be another process's pipe server.

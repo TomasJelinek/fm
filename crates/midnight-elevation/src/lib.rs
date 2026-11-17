@@ -126,7 +126,9 @@ fn trusted_helper() -> io::Result<PathBuf> {
             }
             Err(error) => return Err(error),
         };
-        if metadata.file_type().is_symlink() || native::is_redirected(&metadata) {
+        // Canonicalization below must not resolve a link. Any other reparse point is judged
+        // by the platform check on pinned handles (Windows accepts only storage-only tags).
+        if metadata.file_type().is_symlink() {
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
                 "Authorization helper path contains a redirected component",

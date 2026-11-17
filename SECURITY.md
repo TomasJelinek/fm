@@ -334,12 +334,17 @@ therefore takes the helper only from beside its installed executable and only fr
 a location that the requesting user cannot change; the plugin trust policy, which
 also trusts the current user, does not decide this.
 
-- Windows: the helper and every ancestor are ordinary objects (no reparse point) on
-  a local fixed drive, owned by SYSTEM, Administrators or TrustedInstaller. No other
+- Windows: the helper and every ancestor are ordinary objects on a local fixed drive,
+  owned by SYSTEM, Administrators or TrustedInstaller. They carry no link or other
+  reparse point, except the storage-only tags of WOF compression (CompactOS,
+  `compact /exe`) and Data Deduplication, whose content stays under the object's own
+  permissions; Cloud Files placeholders, whose content comes from a user-mode
+  provider, app execution aliases and unknown tags are refused. No other
   identity holds delete, rename, write, attribute, permission or ownership rights on
   them, and none may add entries to the helper's own folder, which the elevated
   loader searches first. The checks run on handles that pin every component against
-  rename or deletion until the elevated process has started. The Shell receives the
+  rename or deletion until the elevated process has started; the folder pins still let
+  other processes add entries. The Shell receives the
   plain drive spelling of the path only when it opens the same pinned file.
 - Linux: the helper is an executable regular file; it and every ancestor are owned by
   root, are not symbolic links and are writable by neither group nor others, and its

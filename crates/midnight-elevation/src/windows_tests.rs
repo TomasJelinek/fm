@@ -14,7 +14,7 @@ use windows_sys::Win32::{
 };
 
 /// Create an NTFS junction natively, without a shell; the target need not exist.
-fn create_junction(link: &Path, target: &Path) -> io::Result<()> {
+pub(super) fn create_junction(link: &Path, target: &Path) -> io::Result<()> {
     const FSCTL_SET_REPARSE_POINT: u32 = 0x0009_00a4;
     const IO_REPARSE_TAG_MOUNT_POINT: u32 = 0xa000_0003;
     fs::create_dir(link)?;

@@ -1,8 +1,16 @@
 use super::*;
-use windows_sys::Win32::Security::{
-    Authorization::{ConvertStringSecurityDescriptorToSecurityDescriptorW, ConvertStringSidToSidW},
-    GetSecurityDescriptorDacl, GetSecurityDescriptorOwner,
+use windows_sys::Win32::{
+    Security::{
+        Authorization::{
+            ConvertStringSecurityDescriptorToSecurityDescriptorW, ConvertStringSidToSidW,
+        },
+        GetSecurityDescriptorDacl, GetSecurityDescriptorOwner,
+    },
+    System::IO::DeviceIoControl,
 };
+
+const ERROR_SHARING_VIOLATION: i32 = 32;
+const IO_REPARSE_TAG_MOUNT_POINT: u32 = 0xa000_0003;
 
 fn wide(text: &str) -> Vec<u16> {
     text.encode_utf16().chain([0]).collect()
@@ -203,4 +211,172 @@ fn plain_shell_spelling_is_used_only_when_it_cannot_name_another_object() {
     assert!(same_file(&first, &pinned));
     assert!(!same_file(&second, &pinned));
     assert!(!same_file(&root.path().join("missing.exe"), &pinned));
+}
+
+#[test]
+fn pins_refuse_replacement_but_let_folders_gain_entries() {
+    let root = tempfile::tempdir().unwrap();
+    let folder = root.path().join("installation");
+    std::fs::create_dir(&folder).unwrap();
+    let helper = folder.join("helper.exe");
+    std::fs::write(&helper, b"fixture").unwrap();
+    let outside = root.path().join("outside.txt");
+    std::fs::write(&outside, b"unrelated").unwrap();
+    let folder_pin = pin_folder(&folder).unwrap();
+    let helper_pin = pin_file(&helper).unwrap();
+    let refusal = |result: io::Result<()>| result.unwrap_err().raw_os_error();
+    // Write sharing: other processes can still move entries into a pinned ancestor.
+    std::fs::rename(&outside, folder.join("added.txt")).unwrap();
+    // No delete sharing, and traverse access subjects the pin to share checks: the folder can
+    // be neither renamed nor removed.
+    assert_eq!(
+        refusal(std::fs::rename(&folder, root.path().join("moved"))),
+        Some(ERROR_SHARING_VIOLATION)
+    );
+    // Read sharing only: the helper can be neither rewritten, renamed nor deleted.
+    assert_eq!(
+        refusal(OpenOptions::new().write(true).open(&helper).map(drop)),
+        Some(ERROR_SHARING_VIOLATION)
+    );
+    assert_eq!(
+        refusal(std::fs::rename(&helper, folder.join("renamed.exe"))),
+        Some(ERROR_SHARING_VIOLATION)
+    );
+    assert_eq!(
+        refusal(std::fs::remove_file(&helper)),
+        Some(ERROR_SHARING_VIOLATION)
+    );
+    drop(helper_pin);
+    drop(folder_pin);
+    // Released pins refuse nothing.
+    std::fs::rename(&folder, root.path().join("moved")).unwrap();
+}
+
+#[test]
+fn only_storage_reparse_tags_leave_an_ordinary_object() {
+    const ARCHIVE: u32 = 0x20;
+    let reparse = FILE_ATTRIBUTE_REPARSE_POINT;
+    let directory = FILE_ATTRIBUTE_DIRECTORY;
+    assert_eq!(object_policy(ARCHIVE, 0, false), Ok(()));
+    assert_eq!(object_policy(directory, 0, true), Ok(()));
+    // WOF compression (CompactOS, `compact /exe`) and Data Deduplication keep the content
+    // under the file's own permissions.
+    for tag in STORAGE_TAGS {
+        assert_eq!(object_policy(ARCHIVE | reparse, tag, false), Ok(()));
+    }
+    for tag in [
+        0xa000_000c,                // symbolic link
+        IO_REPARSE_TAG_MOUNT_POINT, // junction or mount point
+        0x9000_001a,                // Cloud Files placeholder
+        0x9000_f01a,                // Cloud Files placeholder with provider flags
+        0x9000_001c,                // projected file system
+        0x8000_001b,                // app execution alias
+        0x8000_0021,                // OneDrive
+        0x0000_1234,                // unknown third-party tag
+    ] {
+        assert_eq!(
+            object_policy(reparse, tag, false),
+            Err("is a link or reparse point"),
+            "{tag:#x}"
+        );
+        assert_eq!(
+            object_policy(directory | reparse, tag, true),
+            Err("is a link or reparse point"),
+            "{tag:#x}"
+        );
+    }
+    // The helper must be a file and every ancestor a folder.
+    assert_eq!(
+        object_policy(directory, 0, false),
+        Err("is not an ordinary file or folder")
+    );
+    assert_eq!(
+        object_policy(ARCHIVE, 0, true),
+        Err("is not an ordinary file or folder")
+    );
+}
+
+/// Issue one buffered file-system control to `file`; empty buffers are passed as null.
+fn control(file: &File, code: u32, input: &[u32], output: &mut [u32]) -> io::Result<()> {
+    let input_buffer = if input.is_empty() {
+        ptr::null()
+    } else {
+        input.as_ptr().cast()
+    };
+    let output_buffer = if output.is_empty() {
+        ptr::null_mut()
+    } else {
+        output.as_mut_ptr().cast()
+    };
+    let mut returned = 0;
+    // SAFETY: a live handle and input/output buffers valid for their stated sizes.
+    if unsafe {
+        DeviceIoControl(
+            file.as_raw_handle(),
+            code,
+            input_buffer,
+            size_of_val(input) as u32,
+            output_buffer,
+            size_of_val(output) as u32,
+            &mut returned,
+            ptr::null_mut(),
+        )
+    } == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+#[test]
+fn reparse_tags_are_read_from_the_pinned_handles() {
+    const FSCTL_SET_EXTERNAL_BACKING: u32 = 0x0009_030c;
+    const FSCTL_GET_EXTERNAL_BACKING: u32 = 0x0009_0310;
+    const WOF_PROVIDER_FILE: u32 = 2;
+    let root = tempfile::tempdir().unwrap();
+    // A junction is refused from its own attributes; its target is never opened.
+    let junction = root.path().join("junction");
+    super::super::tests::create_junction(&junction, &root.path().join("missing")).unwrap();
+    let (attributes, tag) = attribute_tag(&pin_folder(&junction).unwrap()).unwrap();
+    assert_eq!(tag, IO_REPARSE_TAG_MOUNT_POINT);
+    assert_eq!(
+        object_policy(attributes, tag, true),
+        Err("is a link or reparse point")
+    );
+    // Compress a helper as `compact /exe:xpress4k` does: WOF_EXTERNAL_INFO { version 1,
+    // WOF_PROVIDER_FILE } and FILE_PROVIDER_EXTERNAL_INFO_V1 { version 1, XPRESS4K, 0 }.
+    let helper = root.path().join("compressed.exe");
+    std::fs::write(&helper, vec![0; 64 * 1024]).unwrap();
+    let writable = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&helper)
+        .unwrap();
+    match control(
+        &writable,
+        FSCTL_SET_EXTERNAL_BACKING,
+        &[1, WOF_PROVIDER_FILE, 1, 0, 0],
+        &mut [],
+    ) {
+        // ERROR_INVALID_FUNCTION or ERROR_NOT_SUPPORTED: no WOF on this temporary volume.
+        Err(error) if matches!(error.raw_os_error(), Some(1 | 50)) => {
+            eprintln!("WOF unavailable for the temporary directory: {error}");
+            return;
+        }
+        result => result.unwrap(),
+    }
+    let mut backing = [0u32; 5];
+    control(&writable, FSCTL_GET_EXTERNAL_BACKING, &[], &mut backing).unwrap();
+    assert_eq!(backing[1], WOF_PROVIDER_FILE);
+    drop(writable);
+    // The filter presents such a file as compressed or exposes its WOF tag, depending on the
+    // Windows version. Either way it is an ordinary file: only its owner (the current user)
+    // refuses it here, not a reparse point.
+    let (attributes, tag) = attribute_tag(&pin_file(&helper).unwrap()).unwrap();
+    assert!(tag == 0 || tag == IO_REPARSE_TAG_WOF, "{tag:#x}");
+    assert_eq!(object_policy(attributes, tag, false), Ok(()));
+    let message = pin_helper(&helper.canonicalize().unwrap())
+        .unwrap_err()
+        .to_string();
+    assert!(message.contains("is not owned by SYSTEM"), "{message}");
 }
