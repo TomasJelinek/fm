@@ -103,6 +103,15 @@ impl Controller {
         snapshots: Snapshots,
         outbox: Outbox,
     ) -> Self {
+        Self::with_progress_interval(retirement, reports, snapshots, outbox, worker::INTERVAL)
+    }
+    fn with_progress_interval(
+        retirement: Retirement,
+        reports: crate::ReportArena,
+        snapshots: Snapshots,
+        outbox: Outbox,
+        interval: std::time::Duration,
+    ) -> Self {
         let lanes = retirement.panes.map(|lease| Arc::new(Lane::new(lease)));
         let workers = std::array::from_fn(|index| {
             let lane = lanes[index].clone();
@@ -110,7 +119,7 @@ impl Controller {
             let outbox = outbox.clone();
             let snapshots = snapshots.clone();
             Some(tokio::task::spawn_blocking(move || {
-                worker::Worker::new(lane, outbox, snapshots, reports).run()
+                worker::Worker::new(lane, outbox, snapshots, reports, interval).run()
             }))
         });
         Self {

@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 
 mod archive_selection;
+mod archive_shared;
 mod archive_sizes;
 mod archives;
 pub use archives::ArchiveCapture;

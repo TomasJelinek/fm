@@ -516,3 +516,73 @@ fn cloned_archive_target_mount_retains_registration_and_refuses_revoked_operatio
     assert!(weak.upgrade().is_none());
     assert_eq!(*events.lock().unwrap(), ["archive", "provider"]);
 }
+
+#[test]
+fn revoked_target_registration_is_not_forwarded_into_a_shared_archive_exchange() {
+    use crate::providers::{FilesystemProvider, ProviderRegistry};
+    use midnight_core::{ProviderId, StoredLocation};
+
+    struct Owner(Mutex<Option<ArchiveLocation>>);
+    impl FilesystemProvider for Owner {
+        fn resolve(
+            &self,
+            _: &StoredLocation,
+            cancel: &Cancellation,
+        ) -> Result<OpenedLocation, ProviderError> {
+            let location = self.0.lock().unwrap().take();
+            captured_archive(&location.ok_or(ProviderError::Unavailable)?, cancel)
+        }
+    }
+
+    let mount = Arc::new(crate::archive_shared::testing::SharedMount::new(52));
+    mount.insert(1, vec![node(52, 2, 1, EntryKind::File)]);
+    mount.insert_content(2, b"hello");
+    let registry = ProviderRegistry::default();
+    let address = StoredLocation::new(
+        ProviderId::new("archive.target.shared").unwrap(),
+        std::num::NonZeroU32::MIN,
+        Arc::from([]),
+    );
+    let instance = registry
+        .register(
+            address.provider().clone(),
+            Arc::new(Owner(Mutex::new(Some(shared_location(mount.clone()))))),
+        )
+        .unwrap();
+    let location = registry
+        .resolve(&address, &Cancellation::default())
+        .unwrap();
+    let rows = location
+        .list(location.root(), &Cancellation::default())
+        .unwrap();
+    let resolved = location
+        .resolve_target(&rows[0].node, &Cancellation::default())
+        .unwrap();
+    let escaped = match resolved.value().unwrap() {
+        ProviderTarget::Archive(target) => target.location.mount.as_ref().unwrap().clone(),
+        ProviderTarget::Native(_) => panic!("archive target became native"),
+    };
+    assert_eq!(
+        escaped.read(2, 0, 5, &Cancellation::default()).unwrap(),
+        b"hello"
+    );
+    let held = mount.hold_next();
+    let result = std::thread::scope(|scope| {
+        let worker = scope.spawn(|| escaped.list(1, &Cancellation::default()));
+        held.wait_entered();
+        assert!(registry.unregister(address.provider(), instance).unwrap());
+        held.release();
+        worker.join().unwrap()
+    });
+    assert!(
+        result.is_err(),
+        "a revoked target must not publish its listing"
+    );
+    assert!(
+        !mount.terminated(),
+        "registration revocation reached the shared archive exchange"
+    );
+    assert!(mount.list(1, &Cancellation::default()).is_ok());
+    drop((resolved, location, registry));
+    std::thread::spawn(move || drop(escaped)).join().unwrap();
+}

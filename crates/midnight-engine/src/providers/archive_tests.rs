@@ -538,3 +538,51 @@ fn interleaved_members_have_distinct_versions_and_enforce_direct_read_bounds() {
     }
     assert_eq!(state.reads.load(Ordering::Acquire), before);
 }
+
+fn shared_location(mount: Arc<crate::archive_shared::testing::SharedMount>) -> ArchiveLocation {
+    let (mut location, _) = fixture(mount.id(), 1);
+    location.mount = Some(mount);
+    location
+}
+
+/// Run `step` on a worker while its request is cancelled during the provider call.
+fn cancel_during<T: Send>(
+    mount: &crate::archive_shared::testing::SharedMount,
+    step: impl FnOnce(&Cancellation) -> T + Send,
+) -> T {
+    let cancel = Cancellation::default();
+    let held = mount.hold_next();
+    std::thread::scope(|scope| {
+        let worker = scope.spawn(|| step(&cancel));
+        held.wait_entered();
+        cancel.cancel();
+        held.release();
+        worker.join().unwrap()
+    })
+}
+
+#[test]
+fn cancelled_presence_probe_and_branch_listing_keep_the_shared_archive_alive() {
+    let mount = Arc::new(crate::archive_shared::testing::SharedMount::new(51));
+    mount.insert(1, vec![node(51, 4, 1, EntryKind::Directory)]);
+    let location = shared_location(mount.clone());
+    let opened = captured_archive(&location, &Cancellation::default()).unwrap();
+    // Scrolling cancels presence probes; collapse/re-request cancels branch listings.
+    let probe = cancel_during(&mount, |cancel| {
+        crate::providers::folder_probe::probe(&opened, cancel)
+    });
+    assert_eq!(probe, Err(ProviderError::Cancelled));
+    let branch = cancel_during(&mount, |cancel| {
+        opened.mount.list(&opened.root, cancel, &mut |_| true)
+    });
+    assert_eq!(branch, Err(ProviderError::Cancelled));
+    assert!(
+        !mount.terminated(),
+        "routine cancellation reached the shared archive exchange"
+    );
+    assert_eq!(
+        crate::providers::folder_probe::probe(&opened, &Cancellation::default()),
+        Ok(true)
+    );
+    assert_eq!(listing(opened.mount.as_ref(), &opened.root).len(), 1);
+}

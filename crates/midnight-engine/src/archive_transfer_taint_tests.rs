@@ -13,13 +13,16 @@ struct Mount {
     call: Call,
     taint_on_call: bool,
     fail: bool,
+    /// Cancels the copy's request while the provider call is in flight. The
+    /// provider itself never receives that request token (archive_shared.rs).
     cancel_on_call: bool,
+    request: Cancellation,
     tainted: AtomicBool,
     calls: AtomicUsize,
     releases: AtomicUsize,
 }
 impl Mount {
-    fn result(&self, call: Call, cancel: Option<&Cancellation>) -> Result<(), FsError> {
+    fn result(&self, call: Call) -> Result<(), FsError> {
         if call != self.call {
             return Ok(());
         }
@@ -27,10 +30,8 @@ impl Mount {
         if self.taint_on_call {
             self.tainted.store(true, Ordering::Release);
         }
-        if self.cancel_on_call
-            && let Some(cancel) = cancel
-        {
-            cancel.cancel();
+        if self.cancel_on_call {
+            self.request.cancel();
         }
         if self.fail {
             Err(error(
@@ -51,14 +52,14 @@ impl ArchiveMount for Mount {
         9
     }
     fn validate(&self) -> Result<(), FsError> {
-        self.result(Call::Validate, None)
+        self.result(Call::Validate)
     }
-    fn read(&self, _: u64, _: u64, _: u32, cancel: &Cancellation) -> Result<Vec<u8>, FsError> {
-        self.result(Call::Read, Some(cancel))?;
+    fn read(&self, _: u64, _: u64, _: u32, _: &Cancellation) -> Result<Vec<u8>, FsError> {
+        self.result(Call::Read)?;
         Ok(Vec::new())
     }
-    fn list(&self, _: u64, cancel: &Cancellation) -> Result<Vec<ArchiveNode>, FsError> {
-        self.result(Call::List, Some(cancel))?;
+    fn list(&self, _: u64, _: &Cancellation) -> Result<Vec<ArchiveNode>, FsError> {
+        self.result(Call::List)?;
         Ok(Vec::new())
     }
     fn release_on_worker(self: Arc<Self>) -> Result<(), FsError> {
@@ -77,6 +78,7 @@ fn mount(call: Call, taint: bool, fail: bool, cancel: bool) -> Arc<Mount> {
         taint_on_call: taint,
         fail,
         cancel_on_call: cancel,
+        request: Cancellation::default(),
         tainted: AtomicBool::new(false),
         calls: AtomicUsize::new(0),
         releases: AtomicUsize::new(0),
@@ -189,17 +191,14 @@ fn later_read_and_cancel_cannot_hide_previously_observed_archive_taint() {
 }
 
 #[test]
-fn cancellation_set_by_archive_call_does_not_hide_its_taint() {
+fn cancellation_during_archive_call_does_not_hide_its_taint() {
     let mount = mount(Call::Read, true, false, true);
+    let cancel = mount.request.clone();
     let mut source = source(mount, false);
-    let cancel = Cancellation::default();
     let context = nested::Context::default();
-    assert_eq!(
-        context
-            .with(|| source.read_chunk(&mut [0], &cancel))
-            .unwrap(),
-        0
-    );
+    let result = context.with(|| source.read_chunk(&mut [0], &cancel));
+    // The late successful read is discarded; its observed taint is not.
+    assert!(matches!(result, Err(error) if error.kind == io::ErrorKind::Interrupted));
     assert!(cancel.is_cancelled());
     assert!(context.is_quarantined());
     context.with(|| drop(source));
