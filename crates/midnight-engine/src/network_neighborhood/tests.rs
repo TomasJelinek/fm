@@ -308,7 +308,10 @@ async fn native_handoff_keeps_network_authority_until_native_commit() {
     assert!(!snapshots.lock().unwrap()[0].has_native_view());
 }
 
-#[tokio::test]
+// Paused time: the failing root is published only after its blocking call returns,
+// and virtual time then advances while the publisher waits for outbox capacity, so
+// the check below runs during that wait instead of after an arbitrary real sleep.
+#[tokio::test(start_paused = true)]
 async fn a_full_outbox_does_not_hold_the_snapshot_lock_or_publish_a_canceled_failure() {
     let (mut controller, mut events, snapshots) = controller(Fake {
         fail_root: true,
