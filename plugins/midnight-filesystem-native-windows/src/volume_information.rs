@@ -18,7 +18,10 @@ pub(crate) fn query(path: &Path, cancel: &CallContext<'_>) -> Result<VolumeInfor
     let mut information = VolumeInformation {
         root: Some(Address {
             encoding: AddressEncoding::WindowsUtf16Le,
-            bytes: volume_details::text(&root[..root.len() - 1]).bytes,
+            bytes: volume_details::text(&volume_details::conventional_root(
+                &root[..root.len() - 1],
+            ))
+            .bytes,
         }),
         ..Default::default()
     };
@@ -174,6 +177,32 @@ fn cancelled(cancel: &CallContext<'_>) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn verbatim_volume_roots_are_published_in_their_win32_form() {
+        let wide = |text: &str| text.encode_utf16().collect::<Vec<_>>();
+        for (verbatim, expected) in [
+            (r"\\?\C:\", r"C:\"),
+            (r"\\?\d:\Mounted\Volume\", r"d:\Mounted\Volume\"),
+            (r"\\?\UNC\server\share\", r"\\server\share\"),
+            (r"C:\", r"C:\"),
+            (r"\\server\share\", r"\\server\share\"),
+            // No conventional equivalent, or Win32 would normalize the name.
+            (
+                r"\\?\Volume{0a1b2c3d-0000-0000-0000-100000000000}\",
+                r"\\?\Volume{0a1b2c3d-0000-0000-0000-100000000000}\",
+            ),
+            (r"\\?\C:\mount.\", r"\\?\C:\mount.\"),
+            (r"\\?\C:\mount \", r"\\?\C:\mount \"),
+            (r"\\?\UNC\server\share.\", r"\\?\UNC\server\share.\"),
+        ] {
+            assert_eq!(
+                volume_details::conventional_root(&wide(verbatim)),
+                wide(expected),
+                "{verbatim}"
+            );
+        }
+    }
 
     #[test]
     fn volume_properties_are_only_the_reported_native_flags() {

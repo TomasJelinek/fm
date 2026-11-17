@@ -40,6 +40,40 @@ pub fn root(path: &Path, context: &CallContext<'_>) -> Result<Vec<u16>, Failure>
     root.push(0);
     Ok(root)
 }
+/// Name a volume root as Win32 does (`C:\`, `\\server\share\`), without the
+/// verbatim prefix that canonicalization adds. Volume GUID roots and roots whose
+/// components Win32 would normalize differently (dot components, trailing dots
+/// or spaces) keep the verbatim form, so the published root stays lossless.
+pub fn conventional_root(root: &[u16]) -> Vec<u16> {
+    const SEPARATOR: u16 = b'\\' as u16;
+    let Some(rest) = root.strip_prefix(&[SEPARATOR, SEPARATOR, b'?' as u16, SEPARATOR]) else {
+        return root.to_vec();
+    };
+    let (prefix, path): (&[u16], &[u16]) = if let Some(share) =
+        rest.strip_prefix(&[b'U' as u16, b'N' as u16, b'C' as u16, SEPARATOR])
+    {
+        (&[SEPARATOR, SEPARATOR], share)
+    } else if rest.len() >= 3
+        && u8::try_from(rest[0]).is_ok_and(|letter| letter.is_ascii_alphabetic())
+        && rest[1] == b':' as u16
+        && rest[2] == SEPARATOR
+    {
+        (&[], rest)
+    } else {
+        return root.to_vec();
+    };
+    let normalized = |part: &[u16]| {
+        part == [b'.' as u16]
+            || part == [b'.' as u16, b'.' as u16]
+            || part
+                .last()
+                .is_some_and(|last| *last == b'.' as u16 || *last == b' ' as u16)
+    };
+    if path.split(|unit| *unit == SEPARATOR).any(normalized) {
+        return root.to_vec();
+    }
+    prefix.iter().chain(path).copied().collect()
+}
 pub fn wide_buffer(
     context: &CallContext<'_>,
     query: impl FnMut(&mut [u16]) -> io::Result<()>,

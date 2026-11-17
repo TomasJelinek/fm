@@ -58,7 +58,23 @@ fn native_volume_details_preserve_capacity_label_and_failures() {
     let Response::VolumeInformation(info) = client.call(request(&directory)) else {
         panic!("Missing rich native information")
     };
-    assert!(info.root.is_some());
+    // The root is named as Win32 names it (for example C:\), not \\?\C:\.
+    let root = info.root.as_ref().unwrap();
+    let units: Vec<u16> = root
+        .bytes
+        .chunks_exact(2)
+        .map(|unit| u16::from_le_bytes([unit[0], unit[1]]))
+        .collect();
+    let root = String::from_utf16(&units).unwrap().to_lowercase();
+    let fixture_path = std::fs::canonicalize(&fixture.path)
+        .unwrap()
+        .to_string_lossy()
+        .to_lowercase();
+    assert!(!root.starts_with(r"\\?\"), "{root}");
+    assert!(
+        fixture_path.trim_start_matches(r"\\?\").starts_with(&root),
+        "{root} must contain {fixture_path}"
+    );
     assert!(
         info.filesystem
             .as_ref()

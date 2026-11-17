@@ -7,6 +7,7 @@ use midnight_filesystem_plugin_sdk::{
 use std::{
     ffi::{OsStr, OsString},
     fs::{self, ReadDir},
+    io,
     os::windows::{
         ffi::{OsStrExt, OsStringExt},
         fs::{FileTypeExt, MetadataExt},
@@ -60,11 +61,7 @@ impl NativeAdapter for Windows {
         if context.is_cancelled() {
             return Err(Failure::new(ErrorCode::Cancelled, "Listing canceled."));
         }
-        let Some(entry) = directory.next() else {
-            return Ok(None);
-        };
-        let entry = entry.map_err(Failure::from_io)?;
-        enumerated(entry).map(Some)
+        next_entry(directory)
     }
     fn open_reader(path: &Path, _context: &CallContext<'_>) -> Result<Reader, Failure> {
         Reader::open(path)
@@ -96,6 +93,27 @@ impl NativeAdapter for Windows {
     ) -> Result<VolumeInformation, Failure> {
         crate::volume_information::query(path, context)
     }
+}
+fn next_entry(
+    directory: &mut impl Iterator<Item = io::Result<fs::DirEntry>>,
+) -> Result<Option<NativeEntry>, Failure> {
+    let Some(entry) = directory.next() else {
+        return Ok(None);
+    };
+    let entry = entry.map_err(enumeration_failure)?;
+    enumerated(entry).map(Some)
+}
+/// Rows come from cached FindData, so an error here is FindNextFileW failing for
+/// the directory itself. Lost shares, removed volumes and drivers that end an
+/// enumeration with STATUS_NO_SUCH_FILE report NotFound codes; they must fail
+/// the listing rather than be skipped as one vanished row (which retries the
+/// failing call or publishes a truncated listing as complete).
+fn enumeration_failure(error: io::Error) -> Failure {
+    let mut failure = Failure::from_io(error);
+    if failure.code == ErrorCode::NotFound {
+        failure.code = ErrorCode::Io;
+    }
+    failure
 }
 fn enumerated(entry: fs::DirEntry) -> Result<NativeEntry, Failure> {
     let kind = entry.file_type().map_err(Failure::from_io)?;
@@ -199,5 +217,38 @@ mod tests {
         assert_eq!(entry.info.kind, Kind::File);
         assert_eq!(entry.info.metadata.size, Some(4));
         assert!(entry.info.metadata.native_attributes.is_some());
+    }
+
+    #[test]
+    fn enumeration_not_found_fails_the_listing_instead_of_skipping_a_row() {
+        use windows_sys::Win32::Foundation::{
+            ERROR_ACCESS_DENIED, ERROR_BAD_NET_NAME, ERROR_BAD_NETPATH, ERROR_FILE_NOT_FOUND,
+            ERROR_INVALID_DRIVE, ERROR_PATH_NOT_FOUND,
+        };
+        for code in [
+            ERROR_FILE_NOT_FOUND,
+            ERROR_PATH_NOT_FOUND,
+            ERROR_INVALID_DRIVE,
+            ERROR_BAD_NETPATH,
+            ERROR_BAD_NET_NAME,
+        ] {
+            let error = || io::Error::from_raw_os_error(code as i32);
+            // The SDK skips per-row NotFound as a vanished entry and keeps enumerating.
+            assert_eq!(Failure::from_io(error()).code, ErrorCode::NotFound);
+            let failure = next_entry(&mut std::iter::once(Err(error())))
+                .err()
+                .unwrap();
+            assert_eq!(failure.code, ErrorCode::Io, "Win32 error {code}");
+            assert_eq!(failure.os_code, Some(code as i32));
+        }
+        let denied = io::Error::from_raw_os_error(ERROR_ACCESS_DENIED as i32);
+        assert_eq!(
+            next_entry(&mut std::iter::once(Err(denied)))
+                .err()
+                .unwrap()
+                .code,
+            ErrorCode::PermissionDenied
+        );
+        assert!(next_entry(&mut std::iter::empty()).unwrap().is_none());
     }
 }

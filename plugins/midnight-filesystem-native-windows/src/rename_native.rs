@@ -427,13 +427,15 @@ impl RenameBuffer {
         let information = buffer.as_mut_ptr().cast::<FILE_RENAME_INFORMATION>();
         // SAFETY: zeroed u64 storage is aligned for FILE_RENAME_INFORMATION and
         // covers its full header, counted name and an extra zero UTF-16 terminator.
+        // The variable-length name pointer is derived from the buffer pointer, not
+        // from a reference to the declared one-element FileName array.
         unsafe {
             (*information).Anonymous.ReplaceIfExists = false;
             (*information).RootDirectory = ptr::null_mut();
             (*information).FileNameLength = name_bytes as u32;
             ptr::copy_nonoverlapping(
                 wide.as_ptr(),
-                (*information).FileName.as_mut_ptr(),
+                (&raw mut (*information).FileName).cast::<u16>(),
                 wide.len(),
             );
         }
