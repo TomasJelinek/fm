@@ -73,8 +73,9 @@ eviction drops only cache ownership, so deferred/in-flight GPU commands retain
 their bindings safely. This removes the measured per-render viewport buffer
 allocation without changing device polling or texture lifetimes.
 
-The source patch is in `src/renderer/wgpu.rs`, `wgpu/bindings.rs`, and
-wgpu/uploads.rs and wgpu/viewports.rs. The added code remains under the upstream
+The source patch is in `src/renderer/wgpu.rs`, `wgpu/bindings.rs`,
+`wgpu/uploads.rs` and `wgpu/viewports.rs`, with its tests in `wgpu/*_tests.rs` and
+their shared validated test device in `wgpu/test_gpu.rs`. The added code remains under the upstream
 MIT OR Apache-2.0
 license choice; application packaging continues to select MIT.
 Upstream tests remain alongside the source. The packaged book, GitHub workflows

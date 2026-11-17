@@ -111,7 +111,12 @@ At most one prepared batch waits for UI consumption. Until it is taken, the
 worker does not drain another batch, so the source mailbox retains its existing
 eight-output bound, latest-frame coalescing and reserved raster-control slot.
 There is no task or growing queue per frame. A failed event-loop wake is retried
-without requiring another source frame. The conversion cache reuses shared
+without requiring another source frame. Delivery is event driven; in addition,
+each open viewer runs one 16 ms UI timer for the work that has no completion
+event: it acknowledges layout geometry and detects canvas or DPI changes, takes
+a prepared batch whose wake was lost, retries position requests that a full input
+queue refused, advances image motion fallback and presents the late font catalog.
+An empty poll does not wake the preparation worker. The conversion cache reuses shared
 body/gutter buffers for the same generation, surface, pixel identity, dimensions
 and viewport; it does not retain the source pixel Arcs or their backend reservation.
 Frontend shared buffers remain separate from the backend raster storage budget.
@@ -132,7 +137,10 @@ without uploading all pixels for every input event. The visible camera and a
 pending requested camera are separate: a thumb can point at a target whose pixels
 are still loading. A visible camera advances only when its required tiles exist.
 Surface identity and sequence checks prevent a late reply from moving a new view.
-Decoder work and cache preparation remain on backend workers.
+Decoder work and tile caching remain on backend workers. The UI texture cache
+copies each newly arriving 256×256 tile into a Slint buffer on the event loop (at
+most 128 tiles, 32 MiB, per frame) and reuses it by tile identity, so panning
+copies only newly exposed tiles.
 
 ## Verification
 
@@ -160,6 +168,9 @@ each measured thumb position to the latest pointer target, records visible conte
 updates while dragging, and measures final content readiness separately. Image
 readiness uses the displayed camera, not the optimistic scrollbar target. Use
 `--count` separately for source-read counts and `--load` for synthetic CPU load.
+Wheel runs with `--extended-wheel` add generated Markdown and binary fixtures plus
+any read-only files listed in `MIDNIGHT_VIEWER_PROBE_REAL_FILES` (a platform path
+list); `--real-wheel` measures only those listed files and requires the variable.
 Do not compare debug measurements with release results or report thumb latency as
 document-render latency. Native measurements must not access user preferences.
 The native test fails if content changes fewer than twice during the gesture;
