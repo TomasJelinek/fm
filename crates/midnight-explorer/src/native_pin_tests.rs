@@ -36,6 +36,50 @@ async fn idle_parent_pins_are_released_on_a_backend_worker_without_another_captu
     assert!(pins.lock().is_empty());
 }
 
+#[test]
+fn the_reaper_waits_only_until_the_least_recently_used_pin_expires() {
+    // Ahead of the clock, so the last-use times below cannot precede its origin.
+    let now = Instant::now() + Duration::from_secs(60);
+    let idle = Duration::from_secs(30);
+    let mut entries = VecDeque::new();
+    assert_eq!(next_expiry::<()>(&entries, now, idle), None);
+    entries.push_back((PathBuf::from("b"), (), now - Duration::from_secs(5)));
+    entries.push_back((PathBuf::from("a"), (), now - Duration::from_secs(20)));
+    // Released 30 s after its last use, not one full idle period after the reaper woke.
+    assert_eq!(
+        next_expiry(&entries, now, idle),
+        Some(Duration::from_secs(10))
+    );
+    entries.push_back((PathBuf::from("c"), (), now - Duration::from_secs(45)));
+    assert_eq!(next_expiry(&entries, now, idle), Some(Duration::ZERO));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn the_last_owner_hands_remaining_pins_to_a_backend_worker() {
+    let (closed, released) = mpsc::channel();
+    let pins = DirectoryPins::<Arc<Probe>>::new(tokio::runtime::Handle::current());
+    for parent in ["first", "second"] {
+        drop(pins.pin(
+            Path::new(parent),
+            |_| true,
+            || Some(Arc::new(Probe(closed.clone()))),
+        ));
+    }
+    drop(closed);
+    let owner = std::thread::current().id();
+    // The application drops its viewer service, and with it this set, on the UI thread.
+    drop(pins);
+    let releasers = tokio::task::spawn_blocking(move || {
+        (0..2)
+            .map(|_| released.recv_timeout(Duration::from_secs(10)))
+            .collect::<Result<Vec<_>, _>>()
+    })
+    .await
+    .unwrap()
+    .expect("the remaining pins were not released");
+    assert!(releasers.iter().all(|releaser| *releaser != owner));
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn pins_are_bounded_and_invalid_pins_are_replaced() {
     let (closed, released) = mpsc::channel();

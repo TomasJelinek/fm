@@ -13,7 +13,8 @@ use std::{
 };
 
 const MAX_PINS: usize = 16;
-/// An unused parent pin is released after this delay, so a viewed volume can be ejected.
+/// An unused parent pin is released this long after its last use, so a viewed volume can
+/// be ejected.
 const PIN_IDLE: Duration = Duration::from_secs(30);
 
 // Thumbnails and comparison need only the borrowed main-content cancellation flag.
@@ -43,12 +44,30 @@ pub(crate) fn factory(filesystem: Arc<InstalledProvider>) -> Capture {
 }
 
 /// Parent-directory pins shared by sibling viewer files: at most `MAX_PINS`, each released
-/// after `PIN_IDLE` without use. Pins are dropped only on backend workers, never on the UI.
-pub(crate) struct DirectoryPins<T> {
+/// `PIN_IDLE` after its last use by a reaper armed for the earliest expiry. Pins are
+/// dropped only on backend workers, never on the UI: by `pin` (called on a worker), by
+/// the reaper on a blocking worker, and, when the last owner drops the set (the UI thread
+/// at exit), by a blocking worker it hands the remaining pins to.
+pub(crate) struct DirectoryPins<T: Send + 'static> {
     entries: Mutex<VecDeque<(PathBuf, T, Instant)>>,
     reaper: AtomicBool,
     runtime: tokio::runtime::Handle,
     idle: Duration,
+}
+
+impl<T: Send + 'static> Drop for DirectoryPins<T> {
+    fn drop(&mut self) {
+        let entries = std::mem::take(
+            self.entries
+                .get_mut()
+                .unwrap_or_else(|error| error.into_inner()),
+        );
+        if !entries.is_empty() {
+            // Closing a handle can block (an unreachable share); never on the owner's
+            // thread. A runtime that is already shutting down drops them here instead.
+            drop(self.runtime.spawn_blocking(move || drop(entries)));
+        }
+    }
 }
 
 impl<T: Clone + Send + Sync + 'static> DirectoryPins<T> {
@@ -116,33 +135,49 @@ impl<T: Clone + Send + Sync + 'static> DirectoryPins<T> {
             .unwrap_or_else(|error| error.into_inner())
     }
 
-    /// Release idle pins even when no further file is viewed. The task holds no pin.
+    /// Release idle pins even when no further file is viewed: one reaper at a time waits
+    /// for the earliest expiry, releases what expired and re-arms for the next one. The
+    /// flag is set and cleared under the entries lock, so a pin added while the reaper
+    /// finishes is always covered by it or by a new reaper. The task holds no pin.
     fn schedule_reaper(self: &Arc<Self>) {
-        if self.reaper.swap(true, Ordering::AcqRel) {
-            return;
-        }
+        let delay = {
+            let entries = self.lock();
+            let Some(delay) = next_expiry(&entries, Instant::now(), self.idle) else {
+                return;
+            };
+            if self.reaper.swap(true, Ordering::AcqRel) {
+                return;
+            }
+            delay
+        };
         let pins: Weak<Self> = Arc::downgrade(self);
-        let idle = self.idle;
         self.runtime.spawn(async move {
-            tokio::time::sleep(idle).await;
+            tokio::time::sleep(delay).await;
             let _ = tokio::task::spawn_blocking(move || {
                 let Some(pins) = pins.upgrade() else {
                     return;
                 };
-                pins.reaper.store(false, Ordering::Release);
-                let (expired, remaining) = {
+                let expired = {
                     let mut entries = pins.lock();
-                    let expired = take_expired(&mut entries, Instant::now(), pins.idle);
-                    (expired, !entries.is_empty())
+                    pins.reaper.store(false, Ordering::Release);
+                    take_expired(&mut entries, Instant::now(), pins.idle)
                 };
                 drop(expired);
-                if remaining {
-                    pins.schedule_reaper();
-                }
+                pins.schedule_reaper();
             })
             .await;
         });
     }
+}
+
+/// How long until the least recently used pin expires, or `None` without pins.
+fn next_expiry<T>(
+    entries: &VecDeque<(PathBuf, T, Instant)>,
+    now: Instant,
+    idle: Duration,
+) -> Option<Duration> {
+    let last_use = entries.iter().map(|(_, _, used)| *used).min()?;
+    Some(idle.saturating_sub(now.saturating_duration_since(last_use)))
 }
 
 fn take_expired<T>(
