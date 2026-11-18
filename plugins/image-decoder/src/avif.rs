@@ -82,6 +82,37 @@ mod tests {
     }
 
     #[test]
+    fn primary_item_without_a_displayable_frame_fails_instead_of_spinning() {
+        // Keep the temporal delimiter and sequence header OBUs (11 of 23 coded
+        // bytes) and drop the frame OBU. mp4parse does not inspect AV1 content.
+        let mut input = WHITE[..282 + 11].to_vec();
+        input[274..278].copy_from_slice(&(8 + 11_u32).to_be_bytes());
+        input[124..128].copy_from_slice(&11_u32.to_be_bytes());
+        let error = match with_budgets(Cursor::new(&input), 1024, 363) {
+            Ok(_) => panic!("an item without a frame was accepted"),
+            Err(error) => error.to_string(),
+        };
+        assert!(error.contains("no displayable frame"), "{error}");
+    }
+
+    #[test]
+    fn alpha_item_without_a_displayable_frame_fails_instead_of_spinning() {
+        // The alpha item is the first 22 bytes of `idat`: keep its temporal
+        // delimiter and sequence header (9 bytes) and drop its frame OBU.
+        let mut input = ALPHA.to_vec();
+        input.drain(434 + 9..434 + 22);
+        input[32..36].copy_from_slice(&(466_u32 - 13).to_be_bytes());
+        input[426..430].copy_from_slice(&(72_u32 - 13).to_be_bytes());
+        input[115..119].copy_from_slice(&9_u32.to_be_bytes());
+        input[135..139].copy_from_slice(&9_u32.to_be_bytes());
+        let error = match with_budgets(Cursor::new(&input), 1024, 363) {
+            Ok(_) => panic!("an item without a frame was accepted"),
+            Err(error) => error.to_string(),
+        };
+        assert!(error.contains("no displayable frame"), "{error}");
+    }
+
+    #[test]
     fn trailing_unknown_box_cannot_hide_excess_encoded_input() {
         let mut input = WHITE.to_vec();
         input.extend_from_slice(&100u32.to_be_bytes());

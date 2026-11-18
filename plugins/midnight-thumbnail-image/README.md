@@ -2,9 +2,9 @@
 
 The independent worker uses [the shared decoder](../image-decoder/README.md) for
 PNG, JPEG, GIF, WebP, BMP, ICO, TIFF, bounded static SVG and AVIF. The first still frame
-is reduced without upscaling, with alpha-weighted averaging so transparent edges keep
-their color, then oriented and converted to straight-alpha sRGB. A frame that already
-fits the cell is not resampled.
+is reduced without upscaling, with alpha-weighted averaging so pixels next to
+transparency are not darkened or tinted, then oriented and converted to straight-alpha
+sRGB. A frame that already fits the cell is not resampled.
 SVG rasterizes directly to the requested aspect ratio with embedded Noto fonts;
 it receives no path, network or system-font access. See the shared decoder's
 explicit SVG subset, resource limits and bundled font provenance.
@@ -15,3 +15,11 @@ thumbnail cache identities. AVIF shares the viewer's pinned static dav1d decoder
 not enabled. The root thumbnail build scripts prepare pinned native tools/static
 code and copy the full shared notice set, including the MPL parser source archive.
 Use `-NativeOffline` or `MIDNIGHT_IMAGE_NATIVE_OFFLINE=1` to forbid native downloads.
+
+`scripts/ci.ps1 -SdkConfig <released worker SDK .cargo/registry.toml> -BuildRoot
+<directory below _build> [-NativeOffline]` (Windows, PowerShell 7) and
+`bash scripts/ci.sh <config> <build root>` (Linux; `MIDNIGHT_IMAGE_NATIVE_OFFLINE=1`
+forbids native downloads) run the checks of the `thumbnail-image` CI job: the pinned
+native dav1d build, formatting, tests, strict Clippy and an optimized build. Cargo runs
+offline there, so fetch the dependencies first, as the job does:
+`cargo --config <config> fetch --manifest-path Cargo.toml --locked`.
