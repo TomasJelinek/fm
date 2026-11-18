@@ -82,6 +82,11 @@ directory. A refresh admitted after a callback can still coalesce its hint. Test
 before-admission coalescing separately from post-admission dirty-state survival,
 retaining existing post-admission and default-timing coverage.
 
+Engine watch tests assert hint pacing from worker-recorded send times
+(`#[cfg(test)]` `watch::Handle::tree_fence`) and use probe-count barriers, not
+wall-clock negative windows. `tree_clipboard` and the root transfers of `tree_move`
+hold scalar hints from fixture construction through the transfer terminal.
+
 To run two independent headless targets concurrently, select both in the build
 and in the runner (no second Cargo process is needed):
 

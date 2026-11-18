@@ -144,7 +144,13 @@ failure stays visible instead of being silently treated as a normal refusal.
 
 Each watch pane shares a guarded control state, including captured mounts retained
 by inline-tree scopes. Native subscriptions remain local to their watch worker;
-pre-start cancellation or a native panic cannot expose unguarded shared captures.
+pre-start cancellation or a native panic cannot expose unguarded shared captures. A
+panic inside a watch worker's loop unwinds its targets and subscriptions on that
+worker, which then restarts in place: at once the first time, afterwards no sooner
+than a minute after its previous restart; a stop while it waits drains the shared
+state on that worker. A panic outside that loop, and a panic on a platform
+notification thread (such as the process-wide Windows watch service thread), are
+outside this restart policy and still leave the captures to the guarded control.
 The clipboard similarly guards its private sixteen-entry inbox, including a native
 worker cancelled before first invocation. Open ClipboardSession objects stay on
 one native thread through create/pump/Drop. Controller Drop cancels even a pump
