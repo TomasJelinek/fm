@@ -320,6 +320,15 @@ mod tests {
     /// The worker must not stay blocked on a closed window whose user inputs filled every
     /// admission slot: the counter can exceed the queued inputs between a receive and
     /// `taken`, so only the reserved wake slot is sure to reach it.
+    ///
+    /// This is tested at the `Wakes` level only. No worker-level schedule reaches the
+    /// hazard: while the counter is at the cap, an admitted input is queued or being
+    /// sent, or the worker is running between its receive and `taken`, so a worker
+    /// blocked in `recv` always has a message coming; and a test hold that releases the
+    /// worker after `close` orders its `closed` check after `close` just as the reserved
+    /// wake does. The hazard is a missing happens-before edge, which this test (the wake
+    /// is queued although no input slot is free) and the litmus test below (run with
+    /// every input slot taken) cover.
     #[test]
     fn close_wakes_the_worker_while_every_input_slot_is_taken() {
         let (wakes, receiver) = Wakes::channel();
