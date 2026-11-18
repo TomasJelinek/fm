@@ -20,6 +20,7 @@ mod checksum_shortcuts;
 mod checksum_verification;
 mod comparison_contexts;
 mod file_clipboard;
+mod file_comparators;
 mod file_compare_shortcut;
 mod file_drag_drop;
 mod find;
