@@ -388,8 +388,8 @@ class DefaultThumbnailerWindowsTests(unittest.TestCase):
         for directory in ("api/tools/package", "worker-api", "thumbnail-api", "filesystem-api", "image-viewer-api"):
             (self.checkout / directory).mkdir(parents=True)
             (self.checkout / directory / "source").write_text("source fixture\n")
-        # The pinned FFmpeg helper escapes non-ASCII JSON, but Thumbnail notices decode
-        # Cargo metadata as text: Python children must write and read UTF-8 too.
+        # The pinned FFmpeg helper escapes non-ASCII JSON, but this one prints the paths as
+        # text, which a Python child before 3.15 writes in UTF-8 only in UTF-8 mode.
         (scripts / "prepare-thumbnail-ffmpeg.py").write_text(
             "import json, pathlib\n"
             "build = pathlib.Path(__file__).resolve().parents[1] / '_build'\n"
