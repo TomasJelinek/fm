@@ -8,35 +8,10 @@ use i_slint_core::{
     item_tree::ItemRc,
     items::{AccessibleRole, ComplexText, SimpleText},
 };
-use midnight_ui::{FileRow, MainWindow, Theme};
-use slint::{
-    ComponentHandle, ModelRc, VecModel,
-    platform::{
-        Platform, PlatformError, PointerEventButton, WindowAdapter, WindowEvent,
-        software_renderer::{MinimalSoftwareWindow, RepaintBufferType},
-    },
-};
+use midnight_ui::{FileRow, Theme};
+use slint::{ComponentHandle, ModelRc, VecModel};
 use std::{cell::Cell, rc::Rc};
 
-struct TestPlatform(Rc<MinimalSoftwareWindow>);
-impl Platform for TestPlatform {
-    fn create_window_adapter(&self) -> Result<Rc<dyn WindowAdapter>, PlatformError> {
-        Ok(self.0.clone())
-    }
-}
-fn click(window: &MainWindow, x: f32, y: f32) {
-    let position = slint::LogicalPosition::new(x, y);
-    let button = PointerEventButton::Left;
-    window
-        .window()
-        .dispatch_event(WindowEvent::PointerMoved { position });
-    window
-        .window()
-        .dispatch_event(WindowEvent::PointerPressed { position, button });
-    window
-        .window()
-        .dispatch_event(WindowEvent::PointerReleased { position, button });
-}
 fn pixel(color: slint::Color) -> slint::Rgb8Pixel {
     slint::Rgb8Pixel {
         r: color.red(),
@@ -80,10 +55,9 @@ fn luminance(color: slint::Color) -> f32 {
 
 #[test]
 fn compact_geometry_and_unfinished_sizes_render_in_every_theme() {
-    let native = MinimalSoftwareWindow::new(RepaintBufferType::ReusedBuffer);
-    slint::platform::set_platform(Box::new(TestPlatform(native.clone()))).unwrap();
-    let window = MainWindow::new().unwrap();
-    midnight_ui::install_file_keys(&window);
+    let test = ui::TestUi::new();
+    let window = test.window.clone_strong();
+    let native = test.native.clone();
     window.set_left_status("100 items · status is available in the path tooltip".into());
     window.set_desktop_status("Finished successfully".into());
     window.set_left_rows(ModelRc::new(VecModel::from(
@@ -111,12 +85,9 @@ fn compact_geometry_and_unfinished_sizes_render_in_every_theme() {
     let selected = Rc::new(Cell::new((-1, -1)));
     let captured = selected.clone();
     window.on_row_click(move |pane, row, _, _| captured.set((pane, row)));
-    window.show().unwrap();
-    native.set_size(slint::PhysicalSize::new(1340, 820));
-    window.window().dispatch_event(WindowEvent::Resized {
-        size: slint::LogicalSize::new(1340.0, 820.0),
-    });
-    let mut pixels = vec![slint::Rgb8Pixel::default(); 1340 * 820];
+    // The shared host is shown at 1340x820; partial repaints build on its last
+    // full frame.
+    let mut pixels = test.pixels.clone();
     for density in 0..2 {
         for scheme in 0..3 {
             window.invoke_apply_preferences(scheme, density);
@@ -187,7 +158,7 @@ fn compact_geometry_and_unfinished_sizes_render_in_every_theme() {
             }
             let pane_bottom = window.get_left_details_top();
             selected.set((-1, -1));
-            click(&window, 100.0, pane_bottom - 3.0);
+            ui::click(&window, 100.0, pane_bottom - 3.0);
             assert_eq!(
                 selected.get(),
                 (

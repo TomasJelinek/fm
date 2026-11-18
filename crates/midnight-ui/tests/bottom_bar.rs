@@ -1,31 +1,20 @@
 //! Rendered footer contents must share the vertical center at every supported density.
+#[path = "support/ui.rs"]
+mod ui;
+
 use i_slint_core::{
     item_tree::ItemRc,
     items::{ComplexText, SimpleText},
     window::WindowInner,
 };
 use midnight_ui::{ActionIcons, MainWindow, ShortcutHints, Theme};
-use slint::{
-    ComponentHandle, Image, Rgb8Pixel, SharedPixelBuffer,
-    platform::{
-        Platform, PlatformError, WindowAdapter, WindowEvent,
-        software_renderer::{MinimalSoftwareWindow, RepaintBufferType},
-    },
-};
-use std::rc::Rc;
+use slint::{ComponentHandle, Image, Rgb8Pixel, SharedPixelBuffer, platform::WindowEvent};
 
 // Large-font icons are intentionally omitted in 98px cells at the old 1340px width.
 // Give the icon-paint contract enough actual window space at every tested font.
 const WIDTH: usize = 3400;
 const HEIGHT: usize = 820;
 const NATIVE_RGB: [u8; 3] = [239, 31, 73];
-
-struct TestPlatform(Rc<MinimalSoftwareWindow>);
-impl Platform for TestPlatform {
-    fn create_window_adapter(&self) -> Result<Rc<dyn WindowAdapter>, PlatformError> {
-        Ok(self.0.clone())
-    }
-}
 
 #[derive(Debug)]
 struct Bounds {
@@ -142,10 +131,9 @@ fn solid_native(width: u32, height: u32) -> Image {
 
 #[test]
 fn footer_icons_and_labels_render_centered_without_resizing_or_tinting_native_images() {
-    let native = MinimalSoftwareWindow::new(RepaintBufferType::ReusedBuffer);
-    slint::platform::set_platform(Box::new(TestPlatform(native.clone()))).unwrap();
-    let window = MainWindow::new().unwrap();
-    midnight_ui::install_file_keys(&window);
+    let test = ui::TestUi::new();
+    let window = test.window.clone_strong();
+    let native = test.native.clone();
     assert_eq!(
         window
             .global::<ShortcutHints>()
@@ -154,7 +142,8 @@ fn footer_icons_and_labels_render_centered_without_resizing_or_tinting_native_im
         "app.help",
         "render the real enabled Help slot"
     );
-    window.show().unwrap();
+    // Resizing repaints the whole window (its root item changes size), so the new
+    // buffer can start empty, as the compact case below also relies on.
     native.set_size(slint::PhysicalSize::new(WIDTH as u32, HEIGHT as u32));
     window.window().dispatch_event(WindowEvent::Resized {
         size: slint::LogicalSize::new(WIDTH as f32, HEIGHT as f32),
