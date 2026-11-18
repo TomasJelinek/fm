@@ -438,8 +438,9 @@ that the tree changed only when the selection changed or, with no marks, that
 occurrence is gone. F6 shares this protocol. The refusal says whether it is
 retryable, so it does not matter whether it reaches the panel before or after that
 publication. When the tree command queue is full, the panel also sends the same
-capture again. It reports other refusals, a busy capture pool included, as Copy
-(or Move) unavailable.
+capture again. If the panel navigated or its tree session was replaced meanwhile,
+the panel drops the capture silently. It reports other refusals, a busy capture
+pool included, as Copy (or Move) unavailable.
 
 Four live captured batches share an engine-wide permit pool. Opening the draft
 does not reserve a job; confirmation uses the existing 32-job FIFO copy admission.

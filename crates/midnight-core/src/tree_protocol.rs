@@ -344,11 +344,13 @@ pub enum TreeEvent {
     Transfer {
         stamp: TreeViewStamp,
         request: TreeRequestId,
-        /// True only for refusals that a resend can overcome: a full tree command
-        /// queue, or a view that a newer publication or session replaced in flight.
-        /// The presenter then sends the capture again, on the newer publication once
-        /// it is shown. Failures on the current view, a busy capture pool included,
-        /// are reported.
+        /// True when the refusal is not a failure of the capture itself, so the
+        /// presenter must not report it: a full tree command queue, a view that a
+        /// newer publication, tree session or navigation replaced in flight, or a
+        /// view whose session ended while a new one is being prepared. The presenter
+        /// sends the capture again, on the same view or on a newer publication of the
+        /// same session once that is shown, and drops it silently after navigation or
+        /// a new session. Other refusals, a busy capture pool included, are reported.
         retryable: bool,
         result: Result<crate::TreeTransferCapture, TreeDiagnostic>,
     },

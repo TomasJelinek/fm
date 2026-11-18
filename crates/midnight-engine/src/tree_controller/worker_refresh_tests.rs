@@ -737,6 +737,60 @@ async fn transfer_refusal_is_retryable_only_when_a_newer_projection_replaced_its
     drop(busy);
 }
 
+/// The session ended before the worker took F5 for its last view. That refusal
+/// is final, unless the panel had already asked for a new session for a changed
+/// listing: the new session replaces the view, so the refusal is retryable and
+/// the presenter drops the capture silently once that session is shown.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn transfer_after_the_session_ended_is_retryable_only_while_a_new_one_is_prepared() {
+    for re_enabled in [false, true] {
+        let mut fixture = fixture();
+        fixture.gate.release();
+        fixture.receiver.try_recv().unwrap(); // Drain the fixture output barrier.
+        let last = fixture
+            .worker
+            .session
+            .as_mut()
+            .unwrap()
+            .publication()
+            .unwrap();
+        if re_enabled {
+            let root = &last.view.root;
+            let relisted: Arc<[Entry]> = root.entries.to_vec().into();
+            let enable = TreeCommand::Enable {
+                root: TreeRootSnapshot {
+                    index: Arc::new(DirectoryIndex::from_entries(&relisted)),
+                    entries: relisted,
+                    ..root.clone()
+                },
+                selection_revision: SelectionRevision(0),
+                selected: TreeRootSelection::Empty,
+            };
+            tokio::task::block_in_place(|| fixture.worker.command(enable));
+            assert!(
+                fixture.worker.pending.is_some(),
+                "a new session is prepared"
+            );
+        }
+        tokio::task::block_in_place(|| {
+            fixture
+                .worker
+                .fail_session(ProviderError::Failed("fixture failure".into()))
+        });
+        assert!(matches!(
+            tree_event(&mut fixture.receiver),
+            TreeEvent::Unavailable { .. }
+        ));
+        tokio::task::block_in_place(|| fixture.worker.command(transfer(&last, 2)));
+        let refusal = tree_event(&mut fixture.receiver);
+        assert!(
+            matches!(&refusal, TreeEvent::Transfer { stamp, retryable, result: Err(_), .. }
+                if *stamp == last.view.stamp && *retryable == re_enabled),
+            "re-enabled {re_enabled}: {refusal:?}"
+        );
+    }
+}
+
 /// Closes the lane even when an assertion fails, so a running worker returns
 /// and the test runtime can shut down.
 struct CloseOnDrop(Arc<Mailbox>);
