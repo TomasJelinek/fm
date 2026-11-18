@@ -189,7 +189,14 @@ impl Fixture {
     }
 
     fn hover(&self, pane: Option<PaneId>) {
-        let host_generation = self.presenter.borrow().drag_drop.host.as_ref().unwrap().generation;
+        let host_generation = self
+            .presenter
+            .borrow()
+            .drag_drop
+            .host
+            .as_ref()
+            .unwrap()
+            .generation;
         self.presenter.borrow_mut().apply_with_sender(
             Event::DragDrop(DragDropEvent::Hover {
                 host_generation,
@@ -247,7 +254,11 @@ fn an_idle_bridge_polls_slowly_and_a_row_drag_polls_quickly_until_it_ends() {
             .iter()
             .any(|command| matches!(command, Command::CancelDrag(_)))
     );
-    assert_eq!(fixture.interval(), IDLE_POLL, "an ended gesture polls slowly");
+    assert_eq!(
+        fixture.interval(),
+        IDLE_POLL,
+        "an ended gesture polls slowly"
+    );
 }
 
 #[test]
@@ -314,9 +325,17 @@ fn native_release_wheel_and_touch_republish_without_invalidating() {
         let (revision, _) = fixture.targets();
         fixture.window.set_scroll_interaction_active(true);
         observe_native(&fixture.window, &event);
-        assert_eq!(fixture.targets().0, revision, "{event:?} does not invalidate");
+        assert_eq!(
+            fixture.targets().0,
+            revision,
+            "{event:?} does not invalidate"
+        );
         slint::platform::update_timers_and_animations();
-        assert_eq!(fixture.targets().1, [], "{event:?} withdraws scrolled regions");
+        assert_eq!(
+            fixture.targets().1,
+            [],
+            "{event:?} withdraws scrolled regions"
+        );
         fixture.window.set_scroll_interaction_active(false);
         observe_native(&fixture.window, &event);
         slint::platform::update_timers_and_animations();

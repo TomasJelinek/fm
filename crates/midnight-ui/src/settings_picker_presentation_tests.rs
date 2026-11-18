@@ -73,7 +73,13 @@ fn an_invalidated_picker_preempts_the_slow_check_and_retries_every_25_ms() {
     // invalidating callback wakes the check, and the full queue refuses the cancellation.
     harness.refuse.set(true);
     harness.presenter.borrow_mut().discard_editor_draft();
-    assert!(harness.presenter.borrow().settings_picker.cancellation_pending());
+    assert!(
+        harness
+            .presenter
+            .borrow()
+            .settings_picker
+            .cancellation_pending()
+    );
     wake(&harness.window, &harness.presenter, send.clone());
     assert_eq!(timer.interval(), CANCEL_RETRY);
     for attempt in 1..=3 {

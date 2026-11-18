@@ -28,7 +28,9 @@ impl State {
     }
     /// The open picker was invalidated and its cancellation is not yet delivered.
     pub(crate) fn cancellation_pending(&self) -> bool {
-        self.pending.as_ref().is_some_and(|pending| pending.cancelled)
+        self.pending
+            .as_ref()
+            .is_some_and(|pending| pending.cancelled)
     }
     pub(crate) fn invalidate(&mut self) {
         if let Some(pending) = &mut self.pending {
