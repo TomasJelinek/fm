@@ -537,8 +537,11 @@ or a replacement publication only before its first namespace change; in that tur
 they never refuse a no-replace restoration or the removal of a directory the turn
 created. Only a binding whose parent's ancestry or lookup rules change during the
 turn needs a later unknown reservation. Outside the exclusive opaque lane the host
-rejects it as `Unsupported`, the turn makes no further change, and a native
-replacement or publication keeps the displaced original in recovery and reports it.
+rejects it as `Unsupported` and the turn makes no further change, so what it has
+already moved stays where it is: a Move capture keeps its stage, empty or holding the
+source it could not restore (see [bounded ordinary Move](#bounded-ordinary-move)), and
+a native replacement or publication keeps the displaced original in recovery and
+reports it.
 
 Windows Copy and Move require 128-bit `FileIdInfo` identities, because they compare
 identities across their own stage publications, Move captures and namespace pins.
