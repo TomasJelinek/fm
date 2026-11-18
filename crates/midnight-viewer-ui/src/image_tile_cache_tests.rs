@@ -174,6 +174,42 @@ fn transparent_metadata_is_bounded_and_eviction_removes_old_camera_coverage() {
 }
 
 #[test]
+fn scenes_within_the_shared_entry_bound_are_accepted_and_larger_ones_refused_untouched() {
+    // The engine plans scenes within `VIEWER_TILE_CACHE_ENTRIES`, the UI's entry bound.
+    let pixels = Arc::new(ViewerPixels::transparent(256 * 256 * 4, Arc::new(Charge)).unwrap());
+    let info = ViewerImageInfo {
+        width: 65536,
+        ..info([0.0; 2])
+    };
+    // Rows of 16 tiles keep every position within the tiles' camera-relative bound.
+    let scene = |count: usize| {
+        (0..count)
+            .map(|index| ViewerTile {
+                id: ViewerTileId(index as u64 + 1),
+                position: [(index % 16) as f32 * 256.0, (index / 16) as f32 * 256.0],
+                width: 256,
+                height: 256,
+                pixels: pixels.clone(),
+            })
+            .collect::<Vec<_>>()
+    };
+    let mut textures = Textures::default();
+    assert_eq!(
+        textures
+            .receive(&scene(MAX_ENTRIES + 1), &info, info.origin, true)
+            .err()
+            .as_deref(),
+        Some("Image scene exceeds its tile bound.")
+    );
+    assert!(textures.textures.is_empty() && textures.surface.is_none());
+    textures
+        .receive(&scene(MAX_ENTRIES), &info, info.origin, true)
+        .unwrap();
+    assert_eq!(textures.textures.len(), MAX_ENTRIES);
+    assert_eq!(textures.grid().len(), MAX_ENTRIES);
+}
+
+#[test]
 fn reused_tile_identity_cannot_change_transparency() {
     for transparent_first in [false, true] {
         let mut textures = Textures::default();

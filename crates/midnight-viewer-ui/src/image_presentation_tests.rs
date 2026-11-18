@@ -593,7 +593,9 @@ fn fit_toolbar_frame(
     for y in low[1]..high[1] {
         for x in low[0]..high[0] {
             tiles.push(ViewerTile {
-                id: ViewerTileId(100_000 + revision * 128 + tiles.len() as u64),
+                id: ViewerTileId(
+                    100_000 + revision * VIEWER_TILE_CACHE_ENTRIES as u64 + tiles.len() as u64,
+                ),
                 position: std::array::from_fn(|axis| {
                     (f64::from([x, y][axis]) * 256.0 - image.origin[axis] * image.raster_scale)
                         as f32
@@ -604,7 +606,8 @@ fn fit_toolbar_frame(
             });
         }
     }
-    assert!(tiles.len() <= 128);
+    // Within the scene bound the UI accepts, which also keeps revisions' ids apart.
+    assert!(tiles.len() <= VIEWER_TILE_CACHE_ENTRIES);
     let mut frame = frame();
     frame.generation = generation;
     frame.revision = revision;

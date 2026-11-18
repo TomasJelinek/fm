@@ -154,9 +154,9 @@ Surface identity and sequence checks prevent a late reply from moving a new view
 Decoder work and tile caching remain on backend workers. The UI texture cache
 copies each newly arriving 256×256 tile into a Slint buffer on the event loop (at
 most 128 tiles, 32 MiB, per frame) and reuses it by tile identity, so panning
-copies only newly exposed tiles. The backend tile cache uses the same bounds,
-defined once in `midnight-core` (`VIEWER_TILE_CACHE_BYTES`,
-`VIEWER_TILE_CACHE_ENTRIES`).
+copies only newly exposed tiles. The UI refuses a frame with more tiles. These
+bounds, which the backend tile cache uses too, are defined once in `midnight-core`
+(`VIEWER_TILE_CACHE_BYTES`, `VIEWER_TILE_CACHE_ENTRIES`).
 
 ## Verification
 

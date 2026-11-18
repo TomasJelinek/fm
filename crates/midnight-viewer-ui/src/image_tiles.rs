@@ -51,7 +51,8 @@ impl Textures {
         displayed: [f64; 2],
         replace_camera: bool,
     ) -> Result<ModelRc<ViewerRasterTile>, String> {
-        if tiles.len() > 128 {
+        // Engine scenes (visible tiles plus one frontier) fit the same entry bound.
+        if tiles.len() > MAX_ENTRIES {
             return Err("Image scene exceeds its tile bound.".into());
         }
         let same_surface = self.surface == Some(info.surface);
