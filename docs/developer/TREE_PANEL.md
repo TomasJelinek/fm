@@ -561,9 +561,13 @@ one, so directories in both stay covered (for a moment both batches exist, up to
 directory watches per pane); a directory that joins the batch is probed at once
 instead of requesting maintenance. A target's first probe is compared with its
 accepted listing: the root's complete listing is its own full observation, so
-opening a tree on an unchanged directory requests no maintenance. A folder-only
-branch carries no observation of the files it hides, so its first probe still
-requests maintenance. Polling checks identity before and after observation; a
+opening a tree on an unchanged directory requests no maintenance. Each expansion
+keeps the provider's full observation of its directory, files included, so an
+unchanged expanded branch requests none either; a branch listed before its tree
+was watched, re-listed by a refresh before its first probe, or listed without an
+observation (the native adapter stops observing after 4,096 metadata reads for
+skipped files whose enumeration lacks them) still does. Polling checks identity
+before and after observation; a
 mismatch requests maintenance rather than accepting the observation as unchanged.
 The two existing backend workers own subscriptions, metadata probes and cleanup.
 Events use a 150 ms quiet interval and a 500 ms batching ceiling; slow

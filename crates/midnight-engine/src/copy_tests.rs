@@ -934,13 +934,17 @@ async fn cancellation_cannot_start_the_next_copy_before_native_io_returns() {
         .enqueue(request(2, std::slice::from_ref(&next_source), &destination))
         .await;
     h.controller.cancel(OperationId(1));
-    tokio::time::sleep(Duration::from_millis(80)).await;
+    // The queued job holds its namespace share while it waits for the disk slot,
+    // queued behind the cancelled job, whose native I/O keeps that slot.
+    eventually(
+        || {
+            h.mutation.available_permits() == NAMESPACE_WEIGHT as usize - 2
+                && h.io.gate().snapshot().queued == 1
+        },
+        "the queued job takes its namespace share and waits for the disk slot",
+    )
+    .await;
     assert_eq!(h.io.available_permits(), 0);
-    // The queued job holds its namespace share while it waits for the disk slot.
-    assert_eq!(
-        h.mutation.available_permits(),
-        NAMESPACE_WEIGHT as usize - 2
-    );
     assert_eq!(prepared.load(Ordering::Acquire), 1);
     assert_eq!(
         h.controller

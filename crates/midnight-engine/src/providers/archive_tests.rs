@@ -69,7 +69,9 @@ impl ArchiveMount for FakeMount {
     fn list(&self, directory: u64, cancel: &Cancellation) -> Result<Vec<ArchiveNode>, FsError> {
         self.state.lists.fetch_add(1, Ordering::AcqRel);
         self.validate()?;
-        if cancel.is_cancelled() {
+        // Mode 4: a host whose worker stopped on its own reports an interruption (as
+        // hosts before the stop-cause reports did) although nobody cancelled.
+        if cancel.is_cancelled() || self.state.list_mode.load(Ordering::Acquire) == 4 {
             return Err(FsError::from_io(
                 "fake archive list",
                 Path::new(""),
@@ -443,6 +445,30 @@ fn malformed_or_cancelled_listing_does_not_cache_partial_members() {
             .mount
             .open_content(&forged(19, 2), &Cancellation::default())
             .is_err()
+    );
+}
+
+#[test]
+fn an_interruption_that_the_request_did_not_cancel_is_a_failure() {
+    let (location, state) = fixture(23, 1);
+    let opened = captured_archive(&location, &Cancellation::default()).unwrap();
+    state.list_mode.store(4, Ordering::Release);
+    let result = opened
+        .mount
+        .list(&opened.root, &Cancellation::default(), &mut |_| true);
+    assert!(
+        matches!(&result, Err(ProviderError::Failed(message)) if message.contains("interrupted")),
+        "{result:?}"
+    );
+    // The same report for a request that was cancelled stays a cancellation.
+    let cancel = Cancellation::default();
+    *state.cancel_validate.lock().unwrap() = Some((
+        state.validations.load(Ordering::Acquire) + 2,
+        cancel.clone(),
+    ));
+    assert_eq!(
+        opened.mount.list(&opened.root, &cancel, &mut |_| true),
+        Err(ProviderError::Cancelled)
     );
 }
 

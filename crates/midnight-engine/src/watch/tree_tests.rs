@@ -396,7 +396,8 @@ async fn stable_slots_cap_one_batch_and_poll_all_remaining() {
     handle.set_tree_scope(scope.clone());
     native.registered().await;
     files.wait_probes(before + 41).await;
-    let stamp = tree_changed(&mut events).await;
+    // Every accepted listing is unchanged, so the first probes requested nothing.
+    let stamp = scope.stamp;
     let ticket = handle.begin_refresh(stamp, TreeRequestId(41)).unwrap();
     handle.finish_refresh(ticket, true, stamp.revision);
     handle.set_tree_scope(scope);
@@ -963,6 +964,43 @@ fn an_unchanged_accepted_root_needs_no_initial_maintenance() {
     files.put(&path, 8);
     runtime.tick(files.as_ref(), 2);
     assert_eq!(runtime.changed(), Some(scope.stamp));
+}
+
+#[test]
+fn an_unchanged_expanded_branch_needs_no_initial_maintenance() {
+    let files = Arc::new(Files::default());
+    let root = std::env::current_dir()
+        .unwrap()
+        .join("_build/watch-tree-observed-branch");
+    let branch = root.join("branch");
+    files.directories.lock().unwrap().insert(
+        root.clone(),
+        vec![Entry::new(EntryId(1), branch.clone(), EntryKind::Directory)],
+    );
+    // The folder-only branch hides this file from its rows.
+    files.put(branch.to_str().unwrap(), 7);
+    let (mut session, _) = scope(&files, root.to_str().unwrap());
+    expand_link_watch_row(&mut session, "branch", 1, false);
+    let view = session.projection().clone();
+    assert!(session.commit(&view));
+    let scope = session.watch_scope().unwrap().unwrap();
+    assert!(
+        scope.targets[1].full.is_some(),
+        "the expansion observed every entry of its directory"
+    );
+    let mut runtime = LinkWatchRuntime::new(&scope);
+    runtime.tick(files.as_ref(), 3);
+    assert!(
+        runtime.changed().is_none(),
+        "an unchanged expansion requests no sweep of the loaded branches"
+    );
+    files.put(branch.to_str().unwrap(), 8);
+    runtime.tick(files.as_ref(), 3);
+    assert_eq!(
+        runtime.changed(),
+        Some(scope.stamp),
+        "a change to a hidden file still requests maintenance"
+    );
 }
 
 #[test]

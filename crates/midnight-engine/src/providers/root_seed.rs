@@ -159,6 +159,19 @@ impl MountedFilesystem for RootSeed {
         }
     }
 
+    fn list_folders_observed(
+        &self,
+        directory: &NodeToken,
+        cancel: &Cancellation,
+        emit: &mut dyn FnMut(ProviderEntry) -> bool,
+    ) -> Result<Option<[u8; 32]>, ProviderError> {
+        if directory == &self.root {
+            self.list(directory, cancel, emit).map(|()| None)
+        } else {
+            self.source.list_folders_observed(directory, cancel, emit)
+        }
+    }
+
     fn resolve_target(
         &self,
         node: &NodeToken,

@@ -23,12 +23,17 @@ destructor joins the cleanup thread. The application shutdown grace remains boun
 During a normal shutdown the Copy/Move and mutation actors are drained, for at most
 five seconds, before the remaining engine tasks are aborted: each job then releases
 its native and captured owners through its checked retirement instead of being
-dropped by an abort. The drain is prompt when the event consumer either keeps
-receiving or closes its receiver; the explorer closes it before sending `Shutdown`,
-so a blocked event send fails at once. A receiver that stays open without being
-drained delays the run by up to those five seconds, after which the remaining actors
-are aborted as before. The explorer's 2.5-second exit grace can expire first; the
-dropped run then transfers its owners to the cleanup thread as described above.
+dropped by an abort. The same drain waits for the clipboard worker, which runs on its
+own `midnight-clipboard` thread outside Tokio's blocking pool: stopped by the
+shutdown, it closes its native session on that thread (which can still finish an X11
+transfer or hand copied text over to a Linux clipboard manager), and the run returns
+only after that close or the five-second bound. The drain is prompt when the event
+consumer either keeps receiving or closes its receiver; the explorer closes it before
+sending `Shutdown`, so a blocked event send fails at once. A receiver that stays open
+without being drained delays the run by up to those five seconds, after which the
+remaining actors are aborted as before. The explorer's 2.5-second exit grace can
+expire first; the dropped run then transfers its owners to the cleanup thread as
+described above.
 
 ## One-time service configuration
 

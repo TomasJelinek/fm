@@ -41,7 +41,10 @@ impl CurrentDirectory {
 }
 
 /// Searches the native `service`. `locale` formats the modification time of each
-/// published result (and duplicate candidate), never of every examined node.
+/// published result: never of an examined node that does not match, nor of a
+/// duplicate candidate that joins no group or whose group the result limit omits.
+/// A group is formatted before its strings are charged, so the one group that the
+/// retained-bytes budget refuses (which ends the search) is formatted unpublished.
 pub(crate) fn search_with_location(
     service: &dyn FindService,
     locale: Option<&dyn LocaleService>,
@@ -276,10 +279,9 @@ pub(crate) fn search_with_progress_interval(
                 match source.revalidate(cancel) {
                     Ok(()) => {
                         if request.duplicates {
-                            // Duplicate groups publish copies of their candidates, so every
-                            // candidate is formatted, including one that joins no group.
-                            let entry = work.localized(source.entry());
-                            if !candidates.collect(&entry, &mut work) {
+                            // Candidates stay unformatted; a published group formats
+                            // the copies it publishes.
+                            if !candidates.collect(source.entry(), &mut work) {
                                 break 'roots;
                             }
                             work.progress_if_due();
@@ -357,13 +359,22 @@ pub(crate) fn validate_result(
     Ok(source.entry().clone())
 }
 
-/// Fills a missing localized modification time, as panel listings do. A time the
-/// provider formatted is kept; without a locale the UI shows its labelled UTC fallback.
+/// Fills a missing localized modification time of a Find entry, as panel
+/// listings do (`localize_metadata`).
 pub(crate) fn localize(entry: &mut FindEntry, locale: Option<&dyn LocaleService>) {
-    if entry.metadata.localized_modified.is_none()
-        && let (Some(locale), Some(modified)) = (locale, entry.metadata.modified)
+    localize_metadata(&mut entry.metadata, locale);
+}
+
+/// The engine's one fill-when-absent rule for localized modification times, used by
+/// listings, archive and transfer timestamps and Find results (lib.rs re-exports it
+/// as `crate::localize_metadata`). It lives here because tests compile this worker
+/// standalone. A time the provider formatted is kept; without a locale the UI shows
+/// its labelled UTC fallback.
+pub(crate) fn localize_metadata(metadata: &mut EntryMetadata, locale: Option<&dyn LocaleService>) {
+    if metadata.localized_modified.is_none()
+        && let (Some(locale), Some(modified)) = (locale, metadata.modified)
     {
-        entry.metadata.localized_modified = locale.format_datetime(modified);
+        metadata.localized_modified = locale.format_datetime(modified);
     }
 }
 
@@ -383,9 +394,9 @@ struct Work<'a> {
     progress_interval: Duration,
 }
 impl Work<'_> {
-    /// A retained copy of a result or duplicate candidate with its localized time.
-    /// Nodes that never match are not formatted: a name search over a million nodes
-    /// formats only its matches.
+    /// A published copy of a result or duplicate group member with its localized
+    /// time. Nodes that never match and candidates that join no group are not
+    /// formatted: a name search over a million nodes formats only its results.
     fn localized(&self, entry: &FindEntry) -> FindEntry {
         let mut entry = entry.clone();
         localize(&mut entry, self.locale);

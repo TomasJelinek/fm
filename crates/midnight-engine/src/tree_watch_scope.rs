@@ -47,13 +47,18 @@ impl Session {
 
     pub(crate) fn watch_scope(&mut self) -> Result<Option<TreeScope>, ProviderError> {
         self.check_view(&self.projection)?;
+        // From now on each expansion keeps the full observation of what it
+        // listed, so the branch's first watch probe needs no maintenance sweep.
+        self.tree.observe_listings();
         let eligible = self.watch_eligibility();
         let listings = eligible
             .iter()
             .map(|branch| {
                 (
                     *branch,
-                    self.tree.watch_listing(*branch).map(|(version, _)| version),
+                    self.tree
+                        .watch_listing(*branch)
+                        .map(|(version, _, _)| version),
                 )
             })
             .collect::<HashMap<_, _>>();
@@ -92,7 +97,7 @@ impl Session {
         let mut bytes = 0usize;
         for branch in branches {
             check_cancel(&self.lifetime)?;
-            let (version, children) = self
+            let (version, children, observation) = self
                 .tree
                 .watch_listing(branch)
                 .ok_or(ProviderError::StaleReference)?;
@@ -169,8 +174,9 @@ impl Session {
                     path,
                     display,
                     // The root shows every entry, so its accepted display signature
-                    // is its full observation. A folder-only listing has none.
-                    full: root.then_some(display),
+                    // is its full observation. A folder-only branch keeps the one
+                    // its provider observed while listing, if any.
+                    full: if root { Some(display) } else { observation },
                     folders_only: !root,
                     directory_identity,
                     path_bytes,

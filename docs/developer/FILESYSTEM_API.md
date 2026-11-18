@@ -240,8 +240,11 @@ host discards its result. Such a legacy read can therefore delay its caller's
 cancellation until the member is staged. Only the startup exchange, whose caller
 still owns the whole mount, is hard-cancellable. Mount teardown, protocol
 violations and the idle watchdog always terminate the worker. Deadlines apply to
-blocking pipe reads as well as decoding; timeout/cancellation can therefore surface
-as a closed-pipe or interrupted operation diagnostic.
+blocking pipe reads as well as decoding. A request in flight when the worker ends,
+and every later request of that mount, reports why it ended: the failed exchange
+with its failure, or idle-deadline expiry as a timeout. Only a request's own
+cancellation, including a cancelled startup, is reported as interrupted, and a
+`Failed(Cancelled)` that acknowledges no host cancellation is a protocol violation.
 
 Current application limits are at most two live archive mounts, 512 MiB process
 memory and a 20-second idle-progress watchdog. Protocol 2 adds no aggregate CPU

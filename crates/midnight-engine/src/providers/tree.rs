@@ -90,6 +90,9 @@ struct Node {
     // occurrence sequence, so an unchanged re-listing keeps traversal cursors.
     listing_version: u64,
     children_version: u64,
+    // The provider's full watch observation of the directory from the installed
+    // listing (every entry, files included), when it supplied one.
+    observation: Option<[u8; 32]>,
     browse_identity: Option<SizeDirectoryIdentity>,
     recursive_excluded: u64,
     error: Option<ProviderError>,
@@ -113,6 +116,8 @@ pub struct DirectoryTree {
     completions: u32,
     #[cfg(test)]
     eager_reclaim: bool,
+    // Expansions ask the provider for a full observation of what they list.
+    observe: bool,
 }
 
 /// Bounded rollback state for an atomic model/projection publication. It holds
@@ -174,6 +179,7 @@ pub struct BranchWork {
     ancestor_identities: Vec<SizeDirectoryIdentity>,
     directory_link: bool,
     root: bool,
+    observe: bool,
     limit: usize,
     cancel: Cancellation,
     permit: Permit,
@@ -196,11 +202,16 @@ impl BranchResult {
 
 /// What one branch request observed.
 enum Listing {
-    /// Listed children: an expansion or refresh, or a probe of the hidden root.
-    Rows(Vec<MountedEntry>),
+    /// Listed children: an expansion or refresh, or a probe of the hidden root,
+    /// with the provider's full watch observation of the directory if requested
+    /// (boxed: completions wait in a small fixed mailbox slot).
+    Rows(Vec<MountedEntry>, Option<Box<[u8; 32]>>),
     /// A disclosure probe's answer: whether the branch contains a folder.
     Presence(bool),
 }
+
+/// Version, children and full watch observation of an installed listing.
+pub(crate) type WatchListing<'a> = (u64, &'a [BranchId], Option<[u8; 32]>);
 
 impl BranchWork {
     fn browse_identity(&self) -> Result<Option<SizeDirectoryIdentity>, ProviderError> {
@@ -239,18 +250,24 @@ impl BranchWork {
                 // an ancestor reference is therefore reported by Expand instead.
                 Listing::Presence(self.location.has_folders(&self.node, &self.cancel)?)
             } else {
-                let rows = if self.root {
-                    self.location.list(&self.node, &self.cancel)
-                } else {
+                let (rows, observation) = if self.root {
+                    (self.location.list(&self.node, &self.cancel)?, None)
+                } else if self.observe {
+                    // The first watch probe of this branch compares with it.
                     self.location
-                        .list_folders(&self.node, &self.cancel, self.limit)
-                }?;
+                        .list_folders_observed(&self.node, &self.cancel, self.limit)?
+                } else {
+                    let rows = self
+                        .location
+                        .list_folders(&self.node, &self.cancel, self.limit)?;
+                    (rows, None)
+                };
                 if rows.iter().any(|row| self.ancestors.contains(&row.node)) {
                     return Err(ProviderError::InvalidResponse(
                         "ancestor cycle in directory branch",
                     ));
                 }
-                Listing::Rows(rows)
+                Listing::Rows(rows, observation.map(Box::new))
             };
             // Two live observations reject a stable A-to-B retarget around this
             // listing. They do not promise atomic namespace or snapshot identity.
@@ -273,10 +290,20 @@ impl BranchWork {
 }
 
 impl DirectoryTree {
-    pub(crate) fn watch_listing(&self, branch: BranchId) -> Option<(u64, &[BranchId])> {
+    pub(crate) fn watch_listing(&self, branch: BranchId) -> Option<WatchListing<'_>> {
         let node = self.nodes.get(&branch)?;
-        node.listed
-            .then_some((node.listing_version, node.children.as_slice()))
+        node.listed.then_some((
+            node.listing_version,
+            node.children.as_slice(),
+            node.observation,
+        ))
+    }
+
+    /// Watched trees: later expansions also ask the provider for the full
+    /// observation of each listed directory (files included), so a branch's
+    /// first watch probe can be compared with what its listing saw.
+    pub(crate) fn observe_listings(&mut self) {
+        self.observe = true;
     }
 
     /// Ordered children of a listed branch with the version of that exact sequence.
@@ -722,6 +749,7 @@ impl DirectoryTree {
             completions: 0,
             #[cfg(test)]
             eager_reclaim: false,
+            observe: false,
             nodes: HashMap::from([(
                 root,
                 Node {
@@ -737,6 +765,7 @@ impl DirectoryTree {
                     listed: false,
                     listing_version: 0,
                     children_version: 0,
+                    observation: None,
                     browse_identity: None,
                     recursive_excluded: 0,
                     error: None,
@@ -825,6 +854,9 @@ impl DirectoryTree {
             ancestor_identities,
             directory_link: node.entry.kind == EntryKind::DirectoryLink && node.target.is_none(),
             root: branch == self.root,
+            // Only an expansion starts a branch's watch; a refresh or a probe
+            // never needs a new first-probe baseline.
+            observe: self.observe && kind == TreeRequest::Expand && branch != self.root,
             limit: self.limits.nodes,
             cancel,
             permit,
@@ -848,13 +880,14 @@ impl DirectoryTree {
         let outcome = listing.and_then(|listing| {
             let known = match listing {
                 Listing::Presence(present) => present,
-                Listing::Rows(rows) if result.kind == TreeRequest::Probe => !rows.is_empty(),
-                Listing::Rows(rows) => {
+                Listing::Rows(rows, _) if result.kind == TreeRequest::Probe => !rows.is_empty(),
+                Listing::Rows(rows, observation) => {
                     return self.install(
                         result.branch,
                         rows,
                         result.kind == TreeRequest::Expand,
                         result.request,
+                        observation.map(|observation| *observation),
                     );
                 }
             };
@@ -910,6 +943,7 @@ impl DirectoryTree {
         rows: Vec<MountedEntry>,
         expand: bool,
         listing_version: u64,
+        observation: Option<[u8; 32]>,
     ) -> Result<(), ProviderError> {
         let parent = self
             .nodes
@@ -997,6 +1031,7 @@ impl DirectoryTree {
                         listed: false,
                         listing_version: 0,
                         children_version: 0,
+                        observation: None,
                         browse_identity: None,
                         recursive_excluded: 0,
                         error: None,
@@ -1016,6 +1051,7 @@ impl DirectoryTree {
         parent.known = Some(!children.is_empty());
         parent.listed = true;
         parent.listing_version = listing_version;
+        parent.observation = observation;
         if parent.children != children {
             parent.children_version = listing_version;
         }

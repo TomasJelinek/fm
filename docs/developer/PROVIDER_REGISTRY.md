@@ -66,8 +66,10 @@ registry, 50,000 entries/32 MiB charged payload per complete list, and 100,000
 issued nodes per mount. The native adapter separately accounts for 32 MiB of raw
 path storage and 100,000 cached tokens. Folder-only listings and presence probes
 let the native adapter skip regular files before metadata, name encoding and token
-binding, so those files never count. These are admission/cache budgets, not an OS
-path limit or an exact process RSS promise. A failure returns an explicit error.
+binding, so those files never count; only `list_folders_observed` (below) reads the
+metadata of a skipped file whose enumeration lacks it. These are admission/cache
+budgets, not an OS path limit or an exact process RSS promise. A failure returns an
+explicit error.
 Native stored addresses are admitted before codec allocation, using the cache
 budget and that codec's worst-case expansion; native encoding checks its raw
 charge first. The production cutover must also align caches across mounts with
@@ -81,9 +83,17 @@ disclosure probe at the first folder without issuing references; the tokens it
 inspects before that folder are charged to the same 32 MiB token ledger and
 one-million-callback ceiling, so a generic provider's long file prefix fails as
 resource-limited instead of growing the probe's duplicate set. Entries a provider
-emits after the stop cannot change the answer. See
-[inline provider branches](INLINE_TREES.md) for the backend tree model, ownership,
-limits and pending production projection.
+emits after the stop cannot change the answer. `list_folders_observed` returns the
+same rows plus the provider's full watch observation of the directory from that
+enumeration: the native adapter adds every entry, files included, with the
+metadata a watch probe reads, still without encoding or binding files; other
+providers return none. A skipped file costs one metadata read where enumeration
+lacks it (the Linux platform filesystem; the installed provider's plugins return
+every entry's metadata with the enumeration). After 4,096 such reads the adapter
+stops observing and returns the rows without an observation, so a branch with
+more such files keeps the previous behavior: its first watch probe requests one
+maintenance pass. See [inline provider branches](INLINE_TREES.md) for the backend
+tree model, ownership, limits and pending production projection.
 
 Without reclamation neither table evicts: every node a listing or `parent` issues,
 and every native record a listing or probe binds, counts until the mount closes.

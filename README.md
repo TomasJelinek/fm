@@ -938,8 +938,12 @@ a check found current does not check them again. In tree mode, a
 changed set of watched branches registers its native watches before the old ones
 are released, so directories watched before and after stay covered; a directory
 that becomes natively watched is checked at once, and a collapse alone requests
-no refresh. A newly expanded branch still requests one refresh of the loaded
-branches, because its accepted listing records only the folders it shows.
+no refresh. Neither does expanding an unchanged directory: the expansion's listing
+records an observation of the whole directory, files included, and the branch's
+first check compares with it. A branch listed before its tree was watched,
+re-listed by a refresh before its first check, or whose listing kept no
+observation (one with more than 4,096 files whose metadata the enumeration lacks)
+still requests one refresh of the loaded branches.
 Automatic refresh (change notifications and finished file operations) preserves the
 viewport, selection, command editing, an open Panel Filter dialog and the computed
 sizes of folders that are still listed; folders it adds show as not calculated.

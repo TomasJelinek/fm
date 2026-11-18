@@ -1,8 +1,9 @@
 use midnight_core::*;
 use midnight_engine::Engine;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 
 async fn completion(
     events: &mut mpsc::Receiver<Event>,
@@ -176,6 +177,98 @@ impl ClipboardService for ObservedClipboard {
     fn open(&self) -> Result<Box<dyn ClipboardSession>, FsError> {
         Ok(Box::new(ObservedSession(self.0.clone())))
     }
+}
+
+/// A session whose close (its drop on the worker thread) waits for the test, as a real
+/// close can: on Linux it hands copied text over to a clipboard manager, or finishes an
+/// X11 transfer, before the process may exit.
+struct ClosingClipboard(Arc<Closing>);
+struct ClosingSession(Arc<Closing>);
+struct Closing {
+    started: Mutex<Option<oneshot::Sender<()>>>,
+    release: Mutex<std::sync::mpsc::Receiver<()>>,
+    closed: AtomicBool,
+}
+impl ClipboardSession for ClosingSession {
+    fn copy_text(&mut self, _: &str) -> Result<(), FsError> {
+        Ok(())
+    }
+}
+impl Drop for ClosingSession {
+    fn drop(&mut self) {
+        if let Some(started) = self.0.started.lock().unwrap().take() {
+            let _ = started.send(());
+        }
+        // Bounded, so a failing test cannot strand the worker thread.
+        let _ = self
+            .0
+            .release
+            .lock()
+            .unwrap()
+            .recv_timeout(Duration::from_secs(10));
+        self.0.closed.store(true, Ordering::SeqCst);
+    }
+}
+impl ClipboardService for ClosingClipboard {
+    fn open(&self) -> Result<Box<dyn ClipboardSession>, FsError> {
+        Ok(Box::new(ClosingSession(self.0.clone())))
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn normal_shutdown_returns_only_after_the_clipboard_session_closed() {
+    let (started, closing) = oneshot::channel();
+    let (release, released) = std::sync::mpsc::channel();
+    let session = Arc::new(Closing {
+        started: Mutex::new(Some(started)),
+        release: Mutex::new(released),
+        closed: AtomicBool::new(false),
+    });
+    let (sender, mut events) = mpsc::channel(8);
+    let mut engine = Engine::new(
+        Engine::lifetime().expect("engine cleanup worker"),
+        Arc::new(midnight_platform::LocalFileSystem::new(None)),
+        sender,
+    );
+    let (commands, receiver) = engine.command_channel(8).unwrap();
+    engine
+        .configure_clipboard()
+        .unwrap()
+        .install(Arc::new(ClosingClipboard(session.clone())));
+    let mut engine = tokio::spawn(engine.run(receiver));
+    commands
+        .send(Command::CopyText {
+            request: DesktopRequestId(1),
+            text: "kept after exit".into(),
+        })
+        .await
+        .unwrap();
+    let (request, result) = completion(&mut events).await;
+    assert_eq!(request, DesktopRequestId(1));
+    assert!(matches!(result, Ok(DesktopActionResult::ClipboardCopied)));
+    // The application stops consuming events before it sends Shutdown.
+    drop(events);
+    commands.send(Command::Shutdown).await.unwrap();
+    tokio::time::timeout(Duration::from_secs(5), closing)
+        .await
+        .expect("shutdown did not close the clipboard session")
+        .unwrap();
+    // The worker thread is still closing its session. The run waits for it (at most
+    // the engine's five-second actor bound) instead of aborting only its waiter.
+    let early = tokio::time::timeout(Duration::from_millis(250), &mut engine).await;
+    release.send(()).unwrap();
+    assert!(
+        early.is_err(),
+        "Engine::run returned while the clipboard session was still closing"
+    );
+    tokio::time::timeout(Duration::from_secs(5), engine)
+        .await
+        .expect("the engine did not stop")
+        .unwrap();
+    assert!(
+        session.closed.load(Ordering::SeqCst),
+        "Engine::run returned before the clipboard session closed"
+    );
 }
 
 #[tokio::test]

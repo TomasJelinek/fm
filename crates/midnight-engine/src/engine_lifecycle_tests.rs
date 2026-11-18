@@ -326,9 +326,12 @@ fn interrupted_tree_shutdown_retires_queued_capture_without_tokio_blocking_capac
                 .is_pending()
         );
     }
-    // Close precedes tree shutdown. Both tree workers are queued behind the gated
-    // blocking task, so their joins cannot complete and normal command retirement
-    // has not been reached. Cancelling this exact await must still own the inbox.
+    // Close precedes tree shutdown, which awaits the tree workers' joins. The workers
+    // run on their own threads, but their join waiters are tasks of this current-thread
+    // runtime, which nothing drives while the test polls by hand: tree shutdown cannot
+    // complete and normal command retirement has not been reached. Cancelling this
+    // exact await must still own the inbox and retire its capture, without the only
+    // blocking-pool thread, which stays gated.
     assert!(commands.is_closed());
     assert!(retired.try_recv().is_err());
     drop(run);

@@ -212,8 +212,8 @@ impl Drop for Session {
 }
 
 /// A controller with the fake owner, driven from a plain test thread. Fields drop in
-/// order: the controller stops and wakes the worker before the runtime, last, waits for
-/// its blocking task (also when a failed assertion unwinds).
+/// order: the controller stops and wakes the worker first (also when a failed assertion
+/// unwinds), so the worker thread ends by itself; the runtime does not wait for it.
 struct Harness {
     controller: Option<Controller>,
     tasks: JoinSet<()>,

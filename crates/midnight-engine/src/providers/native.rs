@@ -306,7 +306,8 @@ impl MountedFilesystem for NativeMount {
         cancel: &Cancellation,
         emit: &mut dyn FnMut(ProviderEntry) -> bool,
     ) -> Result<(), ProviderError> {
-        self.enumerate(directory, cancel, false, emit)
+        self.enumerate(directory, cancel, false, None, emit)
+            .map(|_| ())
     }
 
     /// Regular files are skipped before stat, locale formatting, name encoding and
@@ -318,7 +319,24 @@ impl MountedFilesystem for NativeMount {
         cancel: &Cancellation,
         emit: &mut dyn FnMut(ProviderEntry) -> bool,
     ) -> Result<(), ProviderError> {
-        self.enumerate(directory, cancel, true, emit)
+        self.enumerate(directory, cancel, true, None, emit)
+            .map(|_| ())
+    }
+
+    /// Every enumerated entry also joins the watch observation, a skipped file
+    /// with the listing metadata a watch probe reads (one metadata read where
+    /// enumeration lacks it), still without locale formatting, encoding or a token.
+    /// A directory with more skipped files to read than `OBSERVED_METADATA_READS`
+    /// returns its rows without an observation.
+    fn list_folders_observed(
+        &self,
+        directory: &NodeToken,
+        cancel: &Cancellation,
+        emit: &mut dyn FnMut(ProviderEntry) -> bool,
+    ) -> Result<Option<[u8; 32]>, ProviderError> {
+        let mut observed = crate::watch::signature::Signature::default();
+        let complete = self.enumerate(directory, cancel, true, Some(&mut observed), emit)?;
+        Ok(complete.then(|| observed.digest(false)))
     }
 
     fn parent(
@@ -373,14 +391,26 @@ impl MountedFilesystem for NativeMount {
     }
 }
 
+/// Most metadata reads an observed folder listing makes for the files it skips. Only
+/// files whose enumeration lacks the watch metadata need one, as through the Linux
+/// platform filesystem; the installed native provider returns every entry's metadata
+/// with its enumeration. Past this budget the listing stops observing and reads no
+/// more, so one expansion costs at most this many extra reads; the branch's first
+/// watch probe then requests one maintenance pass, as without an observation.
+pub(super) const OBSERVED_METADATA_READS: usize = 4_096;
+
 impl NativeMount {
+    /// Returns whether every entry was enumerated (the consumer never stopped) and,
+    /// when `observed` was given, joined that watch signature: past
+    /// `OBSERVED_METADATA_READS` the listing continues without it.
     fn enumerate(
         &self,
         directory: &NodeToken,
         cancel: &Cancellation,
         folders_only: bool,
+        mut observed: Option<&mut crate::watch::signature::Signature>,
         emit: &mut dyn FnMut(ProviderEntry) -> bool,
-    ) -> Result<(), ProviderError> {
+    ) -> Result<bool, ProviderError> {
         check_cancel(cancel)?;
         let node = self
             .nodes
@@ -390,6 +420,8 @@ impl NativeMount {
         if !matches!(node.kind, EntryKind::Directory | EntryKind::DirectoryLink) {
             return Err(ProviderError::Unsupported);
         }
+        let observing = observed.is_some();
+        let mut reads = 0;
         let mut failure = None;
         let mut stopped = false;
         let result = self
@@ -414,6 +446,23 @@ impl NativeMount {
                     if folders_only
                         && !matches!(entry.kind, EntryKind::Directory | EntryKind::DirectoryLink)
                     {
+                        if observed.is_some() && !self.filesystem.listing_metadata_complete(&entry)
+                        {
+                            if reads == OBSERVED_METADATA_READS {
+                                observed = None;
+                            } else {
+                                reads += 1;
+                            }
+                        }
+                        if let Some(observed) = observed.as_deref_mut() {
+                            crate::watch::signature::listing_metadata(
+                                self.filesystem.as_ref(),
+                                &mut entry,
+                            );
+                            observed
+                                .add(&entry)
+                                .map_err(|()| ProviderError::ResourceLimited)?;
+                        }
                         return Ok(None);
                     }
                     let path = path.to_owned();
@@ -421,6 +470,11 @@ impl NativeMount {
                         && let Ok(metadata) = self.filesystem.entry_metadata(&path)
                     {
                         entry.metadata = metadata;
+                    }
+                    if let Some(observed) = observed.as_deref_mut() {
+                        observed
+                            .add(&entry)
+                            .map_err(|()| ProviderError::ResourceLimited)?;
                     }
                     check_cancel(cancel)?;
                     crate::localize_metadata(&mut entry.metadata, self.locale.as_deref());
@@ -461,7 +515,8 @@ impl NativeMount {
                 error.path, error.kind,
             ))
         })?;
-        check_cancel(cancel)
+        check_cancel(cancel)?;
+        Ok(!stopped && observed.is_some() == observing)
     }
 }
 

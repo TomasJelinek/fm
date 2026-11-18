@@ -104,12 +104,14 @@ searches from reviving after Stop, completion, restart or Close.
 
 Result modification times use the native date and time format of panel
 listings. The search worker fills a missing localized time through the engine
-locale once when it retains an ordinary result or collects a duplicate
-candidate, so a candidate that joins no group is formatted too; Go to file
-formats the validated entry it reports the same way. A time the provider
-already formatted is kept; the native Windows and Linux providers format none,
-so examined nodes that never match cost no locale call. Without an engine
-locale, an unformatted time shows the labelled UTC fallback.
+locale once when it retains an ordinary result or publishes a duplicate group,
+so a duplicate candidate that joins no group, or whose group the result limit
+omits, is not formatted. A group is formatted before its strings are charged, so
+the one group that the retained-bytes budget refuses, which ends the search, is
+formatted without being shown. Go to file formats the validated entry it reports
+the same way. A time the provider already formatted is kept; the native Windows
+and Linux providers format none, so examined nodes that never match cost no locale
+call. Without an engine locale, an unformatted time shows the labelled UTC fallback.
 
 Name, Extension, Path, Size and Modified headers toggle ascending/descending
 sorting. Text keys use the same captured engine locale as panels; numeric sizes
