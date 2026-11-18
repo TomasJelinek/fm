@@ -57,21 +57,72 @@ fn idle_worker_blocks_and_retries_only_work_without_a_wake_signal() {
     worker.web_backlog = true;
     assert_eq!(worker.retry_delay(), Some(Duration::ZERO));
     worker.web_backlog = false;
-    // An image actor finishing its teardown has no wake signal. A closing plugin session
-    // has one: plugin-host signals the end of its dispatcher.
+    // An image actor finishing its teardown wakes the worker when it ends, as a closing
+    // plugin session does when its dispatcher ends.
     let (release, teardown) = std::sync::mpsc::channel::<()>();
     let (_, events) = std::sync::mpsc::sync_channel(1);
-    let thread = std::thread::spawn(move || {
-        let _ = teardown.recv();
-    });
     worker.closing_image = Some(crate::image_worker::ImageWorker::for_test(
         events,
-        Some(thread),
+        Some(Box::new(move || {
+            let _ = teardown.recv();
+        })),
     ));
-    assert_eq!(worker.retry_delay(), Some(RETRY));
+    assert_eq!(worker.retry_delay(), None, "a closing actor is not polled");
     release.send(()).unwrap();
     worker.closing_image = None;
     assert_eq!(worker.retry_delay(), None);
+}
+
+#[test]
+fn a_pending_open_resumes_on_the_exit_wake_of_a_closing_image_actor() {
+    let (mut worker, output) = worker();
+    captured_order(&mut worker, &["first.png", "second.md"]);
+    let (sender, receiver) = std::sync::mpsc::sync_channel(4);
+    let wakes = Arc::new(crate::input_queue::Wakes::new(sender));
+    let wake: Arc<dyn Fn() -> bool + Send + Sync> = {
+        let wakes = wakes.clone();
+        Arc::new(move || wakes.wake())
+    };
+    // Declared after the worker, so a failed assertion releases the thread before the
+    // worker joins it.
+    let (release, teardown) = std::sync::mpsc::channel::<()>();
+    let (_, events) = std::sync::mpsc::sync_channel(1);
+    worker.image = Some(crate::image_view::ImageView::new(
+        crate::image_worker::ImageWorker::waking_for_test(
+            events,
+            wake,
+            Some(Box::new(move || {
+                let _ = teardown.recv();
+            })),
+        ),
+        worker.image_ids.clone(),
+    ));
+    worker.input(ViewerInput::NextFile, &output);
+    worker
+        .prefetch
+        .as_ref()
+        .unwrap()
+        .serve(Err("captured identity: second.md".into()));
+    worker.resume_open(&output);
+    assert!(worker.pending_open && worker.capture_ready());
+    assert_eq!(worker.status, "Closing previous image…");
+    // The loop paints the opening's reset context in the same pass.
+    worker.dirty = false;
+    assert_eq!(worker.retry_delay(), None, "the worker blocks until a wake");
+    assert!(receiver.try_recv().is_err(), "nothing woke it yet");
+    release.send(()).unwrap();
+    let Ok(Message::Ready) = receiver.recv_timeout(Duration::from_secs(10)) else {
+        panic!("the closing actor's exit wakes the worker");
+    };
+    wakes.received();
+    assert!(
+        worker.closings_finished(),
+        "the exit is published before its wake"
+    );
+    worker.resume_open(&output);
+    assert!(!worker.pending_open, "the opening resumes on that wake");
+    assert_eq!(worker.status, "captured identity: second.md");
+    assert!(receiver.try_recv().is_err(), "exactly one wake");
 }
 
 #[test]

@@ -70,24 +70,72 @@ enum Render {
     },
 }
 
+/// Publishes the actor thread's exit, then wakes the viewer worker. Created first on that
+/// thread, it is dropped last, also when the thread unwinds, so `finished` is true when
+/// the worker handles this wake.
+struct Exit {
+    exited: Arc<AtomicBool>,
+    wake: Arc<dyn Fn() -> bool + Send + Sync>,
+}
+impl Drop for Exit {
+    fn drop(&mut self) {
+        self.exited.store(true, Ordering::Release);
+        (self.wake)();
+    }
+}
+
+/// Run `body` on the actor thread behind the exit guard. `body` owns every other capture,
+/// so all of them are dropped when it returns, before the exit is published.
+fn spawn(
+    exited: Arc<AtomicBool>,
+    wake: Arc<dyn Fn() -> bool + Send + Sync>,
+    body: impl FnOnce() + Send + 'static,
+) -> std::io::Result<JoinHandle<()>> {
+    std::thread::Builder::new()
+        .name("viewer-image".into())
+        .spawn(move || {
+            let _exit = Exit { exited, wake };
+            body();
+        })
+}
+
 pub(crate) struct ImageWorker {
     /// Dropped on cancellation, which also ends the idle actor's blocking receive.
     sender: Option<SyncSender<Render>>,
     pub events: Receiver<Event>,
     cancel: Arc<AtomicBool>,
+    /// The actor thread published its exit (see `Exit`).
+    exited: Arc<AtomicBool>,
     thread: Option<JoinHandle<()>>,
 }
 
 impl ImageWorker {
-    /// An actor stand-in that delivers `events`. A `thread` stands for the actor's thread,
-    /// for example one still closing its session after cancellation.
+    /// An actor stand-in that delivers `events`. A `body` stands for the actor's thread,
+    /// for example one still closing its session after cancellation; it runs behind the
+    /// exit guard, which then calls no wake.
     #[cfg(test)]
-    pub(crate) fn for_test(events: Receiver<Event>, thread: Option<JoinHandle<()>>) -> Self {
+    pub(crate) fn for_test(
+        events: Receiver<Event>,
+        body: Option<Box<dyn FnOnce() + Send>>,
+    ) -> Self {
+        Self::waking_for_test(events, Arc::new(|| true), body)
+    }
+
+    /// As `for_test`, with the wake the exit guard calls.
+    #[cfg(test)]
+    pub(crate) fn waking_for_test(
+        events: Receiver<Event>,
+        wake: Arc<dyn Fn() -> bool + Send + Sync>,
+        body: Option<Box<dyn FnOnce() + Send>>,
+    ) -> Self {
         let (sender, _) = mpsc::sync_channel(1);
+        let exited = Arc::new(AtomicBool::new(false));
+        let thread = body.map(|body| spawn(exited.clone(), wake, body).unwrap());
         Self {
             sender: Some(sender),
             events,
             cancel: Arc::new(AtomicBool::new(false)),
+            exited,
             thread,
         }
     }
@@ -109,167 +157,44 @@ impl ImageWorker {
         let (output, events) = mpsc::sync_channel(1);
         let cancel = Arc::new(AtomicBool::new(false));
         let stopped = cancel.clone();
-        let thread = std::thread::Builder::new()
-            .name("viewer-image".into())
-            .spawn(move || {
-                let result = run_actor(
-                    |permit| {
-                        let acquired = startup
-                            .as_ref()
-                            .map(|startup| startup.acquire(&provider, &stopped))
-                            .transpose()
-                            .map_err(|error| error.to_string())?;
-                        let (acquired_permit, prepared) = match acquired {
-                            Some(crate::image_startup::Acquired { permit, prepared }) => {
-                                (Some(permit), prepared)
-                            }
-                            None => (None, None),
-                        };
-                        *permit = acquired_permit;
-                        let opened = if let Some(prepared) = prepared {
-                            // The manager already rejected stale unused spares. The host performs
-                            // the final identity/source guard immediately before the consuming Open.
-                            ImageSession::open_prepared(
-                                &provider,
-                                prepared,
-                                source,
-                                &stopped,
-                                Duration::from_secs(30),
-                            )
-                        } else {
-                            ImageSession::open_owned(
-                                &provider,
-                                source,
-                                &stopped,
-                                Duration::from_secs(30),
-                                Box::new(permit.as_ref().cloned()),
-                            )
-                        };
-                        let mut session = match opened {
-                            Ok(session) => session,
-                            Err(error) => {
-                                let status = midnight_image_viewer_host::cleanup_status(&error)
-                                    .unwrap_or(
-                                    midnight_image_viewer_host::CleanupStatus::ProcessUnconfirmed,
-                                );
-                                if let Some(startup) = &startup {
-                                    startup.cleanup_failed(status);
-                                }
-                                if status
-                                    == midnight_image_viewer_host::CleanupStatus::ProcessUnconfirmed
-                                {
-                                    std::mem::forget(permit.take());
-                                }
-                                return Err(error.to_string());
-                            }
-                        };
-                        let result = (|| {
-                            if let Some(startup) = &startup {
-                                startup.opened(&provider);
-                            }
-                            let pages = (0..session.page_count())
-                                .filter_map(|page| session.page_metadata(page))
-                                .collect();
-                            if output
-                                .try_send(Event::Opened {
-                                    pages,
-                                    document: session.is_document(),
-                                })
-                                .is_err()
-                            {
-                                return Ok(());
-                            }
-                            wake();
-                            // Cancellation drops the only sender, so an idle actor blocks
-                            // here without polling and still observes cancellation.
-                            while !stopped.load(Ordering::Acquire) {
-                                match requests.recv() {
-                                    Ok(_) if stopped.load(Ordering::Acquire) => break,
-                                    Ok(request) => {
-                                        let event = match request {
-                                            Render::Tile {
-                                                revision,
-                                                key,
-                                                charge,
-                                            } => {
-                                                let scale = f64::from_bits(key.scale);
-                                                let mut frame = session
-                                                    .render_page(
-                                                        key.page,
-                                                        Viewport {
-                                                            width: EDGE,
-                                                            height: EDGE,
-                                                            scale,
-                                                            origin_x: f64::from(key.x)
-                                                                * f64::from(EDGE)
-                                                                / scale,
-                                                            origin_y: f64::from(key.y)
-                                                                * f64::from(EDGE)
-                                                                / scale,
-                                                        },
-                                                        &stopped,
-                                                        Duration::from_secs(15),
-                                                    )
-                                                    .map_err(|error| error.to_string())?;
-                                                crate::image_pixels::premultiply(&mut frame.rgba);
-                                                let pixels = Arc::new(ViewerPixels::new(
-                                                    frame.rgba, charge,
-                                                )?);
-                                                Event::Frame {
-                                                    revision,
-                                                    key,
-                                                    pixels,
-                                                }
-                                            }
-                                            Render::Validate(revision) => {
-                                                session
-                                                    .validate(&stopped)
-                                                    .map_err(|error| error.to_string())?;
-                                                Event::Validated(revision)
-                                            }
-                                            Render::Document {
-                                                revision,
-                                                page,
-                                                viewport,
-                                            } => {
-                                                if !session.is_document() {
-                                                    return Err(
-                                                        "Unexpected document render request."
-                                                            .into(),
-                                                    );
-                                                }
-                                                let mut frame = session
-                                                    .render_page(
-                                                        page,
-                                                        viewport,
-                                                        &stopped,
-                                                        Duration::from_secs(15),
-                                                    )
-                                                    .map_err(|error| error.to_string())?;
-                                                crate::image_pixels::premultiply(&mut frame.rgba);
-                                                Event::DocumentFrame {
-                                                    revision,
-                                                    raster: DocumentRaster {
-                                                        width: frame.width,
-                                                        height: frame.height,
-                                                        rgba: Arc::from(frame.rgba),
-                                                    },
-                                                }
-                                            }
-                                        };
-                                        if stopped.load(Ordering::Acquire)
-                                            || output.try_send(event).is_err()
-                                        {
-                                            break;
-                                        }
-                                        wake();
-                                    }
-                                    Err(mpsc::RecvError) => break,
-                                }
-                            }
-                            Ok::<_, String>(())
-                        })();
-                        if let Err(error) = session.close_checked() {
+        let exited = Arc::new(AtomicBool::new(false));
+        let thread = spawn(exited.clone(), wake.clone(), move || {
+            let result = run_actor(
+                |permit| {
+                    let acquired = startup
+                        .as_ref()
+                        .map(|startup| startup.acquire(&provider, &stopped))
+                        .transpose()
+                        .map_err(|error| error.to_string())?;
+                    let (acquired_permit, prepared) = match acquired {
+                        Some(crate::image_startup::Acquired { permit, prepared }) => {
+                            (Some(permit), prepared)
+                        }
+                        None => (None, None),
+                    };
+                    *permit = acquired_permit;
+                    let opened = if let Some(prepared) = prepared {
+                        // The manager already rejected stale unused spares. The host performs
+                        // the final identity/source guard immediately before the consuming Open.
+                        ImageSession::open_prepared(
+                            &provider,
+                            prepared,
+                            source,
+                            &stopped,
+                            Duration::from_secs(30),
+                        )
+                    } else {
+                        ImageSession::open_owned(
+                            &provider,
+                            source,
+                            &stopped,
+                            Duration::from_secs(30),
+                            Box::new(permit.as_ref().cloned()),
+                        )
+                    };
+                    let mut session = match opened {
+                        Ok(session) => session,
+                        Err(error) => {
                             let status = midnight_image_viewer_host::cleanup_status(&error)
                                 .unwrap_or(
                                     midnight_image_viewer_host::CleanupStatus::ProcessUnconfirmed,
@@ -282,32 +207,150 @@ impl ImageWorker {
                             {
                                 std::mem::forget(permit.take());
                             }
-                            return Err(match result {
-                                Ok(()) => error.to_string(),
-                                Err(original) => format!("{original}; {error}"),
-                            });
+                            return Err(error.to_string());
                         }
-                        result
-                    },
-                    || {
+                    };
+                    let result = (|| {
                         if let Some(startup) = &startup {
-                            startup.cleanup_failed(
-                                midnight_image_viewer_host::CleanupStatus::ProcessUnconfirmed,
-                            );
+                            startup.opened(&provider);
                         }
-                    },
-                );
-                if let Err(error) = result
-                    && output.try_send(Event::Failed(error)).is_ok()
-                {
-                    wake();
-                }
-            })
-            .map_err(|error| error.to_string())?;
+                        let pages = (0..session.page_count())
+                            .filter_map(|page| session.page_metadata(page))
+                            .collect();
+                        if output
+                            .try_send(Event::Opened {
+                                pages,
+                                document: session.is_document(),
+                            })
+                            .is_err()
+                        {
+                            return Ok(());
+                        }
+                        wake();
+                        // Cancellation drops the only sender, so an idle actor blocks
+                        // here without polling and still observes cancellation.
+                        while !stopped.load(Ordering::Acquire) {
+                            match requests.recv() {
+                                Ok(_) if stopped.load(Ordering::Acquire) => break,
+                                Ok(request) => {
+                                    let event = match request {
+                                        Render::Tile {
+                                            revision,
+                                            key,
+                                            charge,
+                                        } => {
+                                            let scale = f64::from_bits(key.scale);
+                                            let mut frame = session
+                                                .render_page(
+                                                    key.page,
+                                                    Viewport {
+                                                        width: EDGE,
+                                                        height: EDGE,
+                                                        scale,
+                                                        origin_x: f64::from(key.x)
+                                                            * f64::from(EDGE)
+                                                            / scale,
+                                                        origin_y: f64::from(key.y)
+                                                            * f64::from(EDGE)
+                                                            / scale,
+                                                    },
+                                                    &stopped,
+                                                    Duration::from_secs(15),
+                                                )
+                                                .map_err(|error| error.to_string())?;
+                                            crate::image_pixels::premultiply(&mut frame.rgba);
+                                            let pixels =
+                                                Arc::new(ViewerPixels::new(frame.rgba, charge)?);
+                                            Event::Frame {
+                                                revision,
+                                                key,
+                                                pixels,
+                                            }
+                                        }
+                                        Render::Validate(revision) => {
+                                            session
+                                                .validate(&stopped)
+                                                .map_err(|error| error.to_string())?;
+                                            Event::Validated(revision)
+                                        }
+                                        Render::Document {
+                                            revision,
+                                            page,
+                                            viewport,
+                                        } => {
+                                            if !session.is_document() {
+                                                return Err(
+                                                    "Unexpected document render request.".into()
+                                                );
+                                            }
+                                            let mut frame = session
+                                                .render_page(
+                                                    page,
+                                                    viewport,
+                                                    &stopped,
+                                                    Duration::from_secs(15),
+                                                )
+                                                .map_err(|error| error.to_string())?;
+                                            crate::image_pixels::premultiply(&mut frame.rgba);
+                                            Event::DocumentFrame {
+                                                revision,
+                                                raster: DocumentRaster {
+                                                    width: frame.width,
+                                                    height: frame.height,
+                                                    rgba: Arc::from(frame.rgba),
+                                                },
+                                            }
+                                        }
+                                    };
+                                    if stopped.load(Ordering::Acquire)
+                                        || output.try_send(event).is_err()
+                                    {
+                                        break;
+                                    }
+                                    wake();
+                                }
+                                Err(mpsc::RecvError) => break,
+                            }
+                        }
+                        Ok::<_, String>(())
+                    })();
+                    if let Err(error) = session.close_checked() {
+                        let status = midnight_image_viewer_host::cleanup_status(&error).unwrap_or(
+                            midnight_image_viewer_host::CleanupStatus::ProcessUnconfirmed,
+                        );
+                        if let Some(startup) = &startup {
+                            startup.cleanup_failed(status);
+                        }
+                        if status == midnight_image_viewer_host::CleanupStatus::ProcessUnconfirmed {
+                            std::mem::forget(permit.take());
+                        }
+                        return Err(match result {
+                            Ok(()) => error.to_string(),
+                            Err(original) => format!("{original}; {error}"),
+                        });
+                    }
+                    result
+                },
+                || {
+                    if let Some(startup) = &startup {
+                        startup.cleanup_failed(
+                            midnight_image_viewer_host::CleanupStatus::ProcessUnconfirmed,
+                        );
+                    }
+                },
+            );
+            if let Err(error) = result
+                && output.try_send(Event::Failed(error)).is_ok()
+            {
+                wake();
+            }
+        })
+        .map_err(|error| error.to_string())?;
         Ok(Self {
             sender: Some(sender),
             events,
             cancel,
+            exited,
             thread: Some(thread),
         })
     }
@@ -342,8 +385,10 @@ impl ImageWorker {
         self.sender = None;
     }
 
+    /// The actor thread ended its work; dropping the worker then only joins the thread's
+    /// return. The thread wakes the viewer worker once this is true.
     pub fn finished(&self) -> bool {
-        self.thread.as_ref().is_none_or(JoinHandle::is_finished)
+        self.thread.is_none() || self.exited.load(Ordering::Acquire)
     }
 }
 
@@ -373,6 +418,7 @@ mod tests {
             sender: Some(sender),
             events,
             cancel: Arc::new(AtomicBool::new(false)),
+            exited: Arc::new(AtomicBool::new(false)),
             thread: None,
         };
         let mut view = ImageView::new(worker, Arc::new(AtomicU64::new(0)));
@@ -410,6 +456,7 @@ mod tests {
             sender: Some(sender),
             events,
             cancel: Arc::new(AtomicBool::new(false)),
+            exited: Arc::new(AtomicBool::new(false)),
             thread: None,
         };
         let mut view = ImageView::new(worker, Arc::new(AtomicU64::new(0)));
@@ -443,6 +490,7 @@ mod tests {
             sender: Some(sender),
             events,
             cancel: Arc::new(AtomicBool::new(false)),
+            exited: Arc::new(AtomicBool::new(false)),
             thread: None,
         };
         let mut view = ImageView::new(worker, Arc::new(AtomicU64::new(0)));
