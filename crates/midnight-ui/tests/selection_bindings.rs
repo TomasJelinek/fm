@@ -3,21 +3,13 @@ use midnight_core::*;
 use midnight_ui::{MainWindow, Presenter, install, refresh};
 use slint::{
     ComponentHandle, Model,
-    platform::{
-        Key, Platform, PlatformError, WindowAdapter, WindowEvent,
-        software_renderer::{MinimalSoftwareWindow, RepaintBufferType},
-    },
+    platform::{Key, WindowEvent},
 };
 use std::{cell::RefCell, path::Path, rc::Rc, sync::Arc};
 #[path = "support/selection.rs"]
 mod selection;
-
-struct TestPlatform(Rc<MinimalSoftwareWindow>);
-impl Platform for TestPlatform {
-    fn create_window_adapter(&self) -> Result<Rc<dyn WindowAdapter>, PlatformError> {
-        Ok(self.0.clone())
-    }
-}
+#[path = "support/ui.rs"]
+mod ui;
 
 fn control(window: &MainWindow, text: &str) {
     chord(window, text, false);
@@ -50,17 +42,8 @@ fn chord(window: &MainWindow, text: &str, shift: bool) {
 
 #[test]
 fn selection_shortcuts_use_the_backend_and_preserve_other_pane_parent_and_editor() {
-    let native = MinimalSoftwareWindow::new(RepaintBufferType::ReusedBuffer);
-    slint::platform::set_platform(Box::new(TestPlatform(native.clone()))).unwrap();
-    let window = MainWindow::new().unwrap();
-    window.show().unwrap();
-    native.set_size(slint::PhysicalSize::new(1340, 820));
-    window.window().dispatch_event(WindowEvent::Resized {
-        size: slint::LogicalSize::new(1340.0, 820.0),
-    });
-    window
-        .window()
-        .dispatch_event(WindowEvent::WindowActiveChanged(true));
+    let ui = ui::TestUi::bare();
+    let window = ui.window.clone_strong();
     let left = std::env::temp_dir().join("left 文档");
     let right = std::env::temp_dir().join("right 👩🏽‍💻");
     let presenter = Rc::new(RefCell::new(Presenter::new(left.clone(), right.clone())));

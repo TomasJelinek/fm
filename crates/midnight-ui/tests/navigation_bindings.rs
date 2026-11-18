@@ -1,31 +1,16 @@
 //! Exercise native identities through the installed tab/bookmark UI bridge.
-use midnight_core::*;
-use midnight_ui::{MainWindow, Presenter, install};
-use slint::{
-    ComponentHandle, Model,
-    platform::{
-        Platform, PlatformError, WindowAdapter, WindowEvent,
-        software_renderer::{MinimalSoftwareWindow, RepaintBufferType},
-    },
-};
-use std::{cell::RefCell, rc::Rc};
+#[path = "support/ui.rs"]
+mod ui;
 
-struct TestPlatform(Rc<MinimalSoftwareWindow>);
-impl Platform for TestPlatform {
-    fn create_window_adapter(&self) -> Result<Rc<dyn WindowAdapter>, PlatformError> {
-        Ok(self.0.clone())
-    }
-}
+use midnight_core::*;
+use midnight_ui::{Presenter, install};
+use slint::{ComponentHandle, Model};
+use std::{cell::RefCell, rc::Rc};
 
 #[test]
 fn installed_navigation_bridge_uses_ids_and_focuses_requested_panel() {
-    let native = MinimalSoftwareWindow::new(RepaintBufferType::ReusedBuffer);
-    slint::platform::set_platform(Box::new(TestPlatform(native))).unwrap();
-    let window = MainWindow::new().unwrap();
-    window.show().unwrap();
-    window
-        .window()
-        .dispatch_event(WindowEvent::WindowActiveChanged(true));
+    let ui = ui::TestUi::bare();
+    let window = ui.window.clone_strong();
     let left = std::env::temp_dir().join("left 文档");
     let right = std::env::temp_dir().join("right 👩🏽‍💻");
     let presenter = Rc::new(RefCell::new(Presenter::new(left.clone(), right.clone())));
