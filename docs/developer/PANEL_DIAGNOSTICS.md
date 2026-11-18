@@ -31,7 +31,7 @@ saved records. Cancellation alone is not an issue, but cannot erase an actual
 concurrent failure.
 
 `Command::OpenSizeWarnings` carries the retained report, request ID and cancellation.
-Two dedicated `midnight-report-reader` threads (normally outside Tokio's blocking
+Two report readers on the engine's resident worker threads (outside Tokio's blocking
 pool) and eight pending slots bound report snapshot and preview requests. The
 matching `Event::SizeWarningsReady` returns an immutable `GeneratedTextSource`.
 Stale results, queue rejection and shutdown retire ownership on backend workers. No
