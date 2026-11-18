@@ -32,7 +32,8 @@ impl ContentSource for CompletionSource {
             if let Some(cancel) = &self.cancel {
                 cancel.cancel();
             } else {
-                self.supervision.stop.store(true, Ordering::Release);
+                // The supervisor's idle deadline ends the worker meanwhile.
+                self.supervision.request_stop(Stop::Expired);
             }
         }
         Ok(())
@@ -153,7 +154,14 @@ fn verify_completion(
         mount.read(2, 0, 4, &cancel).map(|bytes| bytes.len())
     };
     assert!(source.validations.load(Ordering::SeqCst) >= stop_on);
-    assert_eq!(result.unwrap_err().kind, io::ErrorKind::Interrupted);
+    let error = result.unwrap_err();
+    if cancelled {
+        assert_eq!(error.kind, io::ErrorKind::Interrupted);
+    } else {
+        // A stopped worker is reported by its cause, not as a cancellation.
+        assert_eq!(error.kind, io::ErrorKind::TimedOut, "{error}");
+        assert!(error.message.contains("no progress"), "{error}");
+    }
     if protocol == Protocol::V2 && !cached && !listing && stop_on == 2 {
         assert!(
             mount
