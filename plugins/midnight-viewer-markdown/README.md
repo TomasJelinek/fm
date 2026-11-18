@@ -92,7 +92,10 @@ block from its start. Any other single top-level block longer than a 64 KiB
 read (a long list or block quote, an HTML block of types 1-5, or a table
 interrupted that way) ends checkpoint discovery: pages more than 32 KiB past
 the last checkpoint before that block show source text with literal markers
-for the rest of the session.
+for the rest of the session. A block directly followed by a line longer than
+the rest of its read, such as a 40 KiB paragraph followed by a 30 KiB
+single-line list item, can end checkpoint discovery the same way, because a
+read that ends inside that line does not prove the boundary between the two.
 If invalid/control text expands beyond the decoded context budget, viewport
 and search reuse a nearby fragment of the same bounded read and discard the
 unproven parser context rather than skipping the requested content.

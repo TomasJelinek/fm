@@ -415,6 +415,37 @@ fn an_indented_table_or_html_dump_cut_inside_its_indentation_keeps_its_rows() {
     }
 }
 
+/// Pins a documented limit: a parse proves the boundary after a block only with the
+/// complete line after it. A 40 KiB paragraph followed directly by a 30 KiB single-line
+/// list item never fits into one read with that line, so no read from the checkpoint
+/// before the paragraph proves its end, and the sections after the item stay literal.
+#[test]
+fn a_block_followed_by_a_line_longer_than_the_rest_of_its_read_ends_checkpoint_discovery() {
+    let mut input = String::from("# Intro\n\n");
+    while input.len() < 40 * 1024 {
+        input.push_str("paragraph text that continues on the next line\n");
+    }
+    input.push_str("- ");
+    while input.len() < 70 * 1024 {
+        input.push_str("item ");
+    }
+    input.push('\n');
+    let item_end = input.len() as u64;
+    push_sections(&mut input);
+    let mut host = open(&input);
+    let literal = scroll_through(&mut host, &input)
+        .iter()
+        .flat_map(|page| &page.blocks)
+        .filter(|block| {
+            block.text.source.offset >= item_end && block.text.text.contains("## After")
+        })
+        .count();
+    assert!(
+        literal > 0,
+        "the sections after the item show literal markers"
+    );
+}
+
 #[test]
 fn ordinary_styled_prose_keeps_styles_links_and_tables_at_production_budget() {
     let input = styled_article();
