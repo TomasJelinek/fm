@@ -120,12 +120,22 @@ pub(crate) fn unconfirmed() -> FsError {
 /// sticky seal without initiating a panic from a destructor.
 pub(crate) fn release_archive(mount: Arc<dyn ArchiveMount>) -> Result<(), FsError> {
     let context = current().unwrap_or_default();
-    if context.is_quarantined() {
-        std::mem::forget(mount);
+    let mut mount = Some(mount);
+    let mut result = Ok(());
+    let returned = !context.is_quarantined()
+        && context.with(|| {
+            checked_step(|| {
+                if let Some(mount) = mount.take() {
+                    result = mount.release_on_worker();
+                }
+            })
+        });
+    // A quarantined context cannot run the release, also when another holder
+    // quarantined it between this check and the step: give up only this reference.
+    if let Some(mount) = mount {
+        release_quarantined(mount, &context);
         return Err(unconfirmed());
     }
-    let mut result = Ok(());
-    let returned = context.with(|| checked_step(|| result = mount.release_on_worker()));
     if !returned && result.is_ok() {
         result = Err(unconfirmed());
     }
@@ -133,6 +143,29 @@ pub(crate) fn release_archive(mount: Arc<dyn ArchiveMount>) -> Result<(), FsErro
         context.record(error.clone());
     }
     result
+}
+
+/// Gives up only this reference: its last owner, if tainted, still asks the host to
+/// end the worker (`ArchiveMount::release_quarantined`). Everything else stays
+/// retained, also when that call unwinds.
+fn release_quarantined(mount: Arc<dyn ArchiveMount>, context: &Context) {
+    contain(context, || mount.release_quarantined());
+}
+
+/// Gives up only this reference, as `release_archive` does inside a quarantined Copy,
+/// for an owner whose own release step could not run because the context is already
+/// quarantined.
+pub(crate) fn give_up_archive(mount: Arc<dyn ArchiveMount>) {
+    release_quarantined(mount, &current().unwrap_or_default());
+}
+
+/// An unwind keeps its payload and whatever the operation still owned, and is
+/// recorded as unconfirmed cleanup.
+fn contain(context: &Context, operation: impl FnOnce()) {
+    if let Err(payload) = catch_unwind(AssertUnwindSafe(operation)) {
+        std::mem::forget(payload);
+        context.record(unconfirmed());
+    }
 }
 
 pub(crate) fn provider_error() -> crate::providers::ProviderError {
@@ -173,6 +206,37 @@ pub(crate) fn content_step(
     }
     if let Err(error) = &result {
         context.record(fs_error(error));
+    }
+    result
+}
+
+/// [`provider_step`] that `release` runs with `owner`. A step skipped because the
+/// context is already quarantined would forget `owner` with it; `quarantined`
+/// receives it instead. That may only give up references whose release destroys
+/// nothing ([`give_up_archive`]) and must forget, or keep armed, everything else.
+/// Its unwind is contained like the step's.
+pub(crate) fn provider_release<T>(
+    owner: T,
+    release: impl FnOnce(T) -> Result<(), crate::providers::ProviderError>,
+    quarantined: impl FnOnce(T),
+) -> Result<(), crate::providers::ProviderError> {
+    let mut owner = Some(owner);
+    let result = provider_step(|| owner.take().map_or(Ok(()), release));
+    if let Some(owner) = owner {
+        contain(&current().unwrap_or_default(), || quarantined(owner));
+    }
+    result
+}
+/// [`content_step`] with the quarantined path of [`provider_release`].
+pub(crate) fn content_release<T>(
+    owner: T,
+    release: impl FnOnce(T) -> Result<(), midnight_plugin_host::Error>,
+    quarantined: impl FnOnce(T),
+) -> Result<(), midnight_plugin_host::Error> {
+    let mut owner = Some(owner);
+    let result = content_step(|| owner.take().map_or(Ok(()), release));
+    if let Some(owner) = owner {
+        contain(&current().unwrap_or_default(), || quarantined(owner));
     }
     result
 }

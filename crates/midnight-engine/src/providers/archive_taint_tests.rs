@@ -1,6 +1,8 @@
 use super::*;
 use crate::copy_nested_retirement as nested;
-use midnight_core::{ArchiveMount, ArchiveNode, FsError, ProviderId};
+use midnight_core::{
+    ArchiveAddress, ArchiveLocation, ArchiveMount, ArchiveNode, FsError, ProviderId,
+};
 use midnight_plugin_host::{CapturedFile, ContentSource};
 use std::{
     num::NonZeroU32,
@@ -77,9 +79,199 @@ fn each_shared_archive_wrapper_rejects_prior_taint_without_releasing_its_child()
         assert!(other_tab.cleanup_unconfirmed());
         assert_eq!(calls.releases.load(Ordering::SeqCst), 0);
         assert_eq!(calls.drops.load(Ordering::SeqCst), 0);
-        drop(other_tab);
+        // The shared release gave up its count, so the other tab is now the last owner.
+        // Released in the same quarantined Copy, only the guard (kind 0) hands its
+        // reference to the leaf's failing release; a wrapper gives its leaf reference to
+        // the leaf's default quarantined release, which retains it. Nothing is
+        // destroyed, and no destruction is queued on a cleanup worker.
+        assert!(context.with(|| nested::release_archive(other_tab)).is_err());
+        assert_eq!(
+            calls.releases.load(Ordering::SeqCst),
+            usize::from(kind == 0)
+        );
         drop(domain);
         assert_eq!(calls.drops.load(Ordering::SeqCst), 0);
+    }
+}
+
+/// How one owner of a shared archive session gives up its reference.
+#[derive(Clone, Copy, Debug)]
+enum Release {
+    /// A direct consuming release outside Copy, like a tab, tree or navigation owner's.
+    Worker,
+    /// Inside a Copy whose retirement is already quarantined.
+    Quarantined,
+}
+impl Release {
+    const ALL: [Self; 2] = [Self::Worker, Self::Quarantined];
+    fn context(self) -> nested::Context {
+        let context = nested::Context::default();
+        if matches!(self, Self::Quarantined) {
+            context.quarantine();
+        }
+        context
+    }
+    /// True when the release failed, as every release of a tainted session does.
+    fn archive(self, mount: Arc<dyn ArchiveMount>) -> bool {
+        self.context()
+            .with(|| nested::release_archive(mount))
+            .is_err()
+    }
+    fn mounted(self, mount: Arc<dyn MountedFilesystem>) -> bool {
+        self.context().with(|| mount.release_on_worker()).is_err()
+    }
+    fn content(self, content: Arc<dyn ContentSource>) -> bool {
+        self.context().with(|| content.release_on_worker()).is_err()
+    }
+}
+
+/// A tab's tainted guarded session over the filesystem host fake, which holds one of
+/// `active`'s archive process permits until its worker stops. The probe reports the
+/// host releases reached and whether the worker stopped or the session was destroyed.
+fn tainted_tab(
+    active: &Arc<tokio::sync::Semaphore>,
+) -> (Arc<dyn ArchiveMount>, impl Fn() -> (usize, bool, bool)) {
+    let (host, probe) = crate::archives::Retirement::tainted_host_for_test(active);
+    let (tab, _, _) = crate::archives::Retirement::copy_mount_for_test(host);
+    probe.taint();
+    (tab, move || {
+        (probe.releases(), probe.stopped(), probe.dropped())
+    })
+}
+
+/// The second owner's release must hand the session's last reference to the host's
+/// failing release exactly once: it stops the worker and returns its permit without
+/// destroying the tainted source.
+fn release_shared_tainted_session(
+    first: impl FnOnce() -> bool,
+    last: impl FnOnce() -> bool,
+    host: impl Fn() -> (usize, bool, bool),
+    active: &tokio::sync::Semaphore,
+    case: &str,
+) {
+    assert!(first(), "{case}: a tainted release succeeded");
+    assert_eq!(
+        host(),
+        (0, false, false),
+        "{case}: a shared release ended it"
+    );
+    assert_eq!(active.available_permits(), 1, "{case}");
+    assert!(last(), "{case}: a tainted release succeeded");
+    assert_eq!(
+        host(),
+        (1, true, false),
+        "{case}: the last owner missed the host"
+    );
+    assert_eq!(active.available_permits(), 2, "{case}: process permit kept");
+}
+
+#[test]
+fn tainted_target_and_navigation_wrappers_hand_their_guard_reference_down() {
+    let active = Arc::new(tokio::sync::Semaphore::new(2));
+    for kind in 0..3 {
+        for release in Release::ALL {
+            for wrapper_first in [true, false] {
+                let (tab, host) = tainted_tab(&active);
+                let wrapper = match kind {
+                    0 => leased(tab.clone()),
+                    1 => navigation(tab.clone()),
+                    _ => navigation(leased(tab.clone())),
+                };
+                // Another holder of the same wrapper, e.g. a Copy source, gives up only
+                // its count.
+                let holder = wrapper.clone();
+                let case = format!("kind {kind}, {release:?}, wrapper first: {wrapper_first}");
+                assert!(release.archive(holder), "{case}");
+                let (first, last) = if wrapper_first {
+                    (wrapper, tab)
+                } else {
+                    (tab, wrapper)
+                };
+                release_shared_tainted_session(
+                    || release.archive(first),
+                    || release.archive(last),
+                    &host,
+                    &active,
+                    &case,
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn tree_capture_gives_up_its_tainted_guard_reference_so_the_last_owner_stops_the_worker() {
+    let active = Arc::new(tokio::sync::Semaphore::new(2));
+    for release in Release::ALL {
+        for tree_first in [true, false] {
+            let (tab, host) = tainted_tab(&active);
+            let location = ArchiveLocation {
+                mount: Some(tab.clone()),
+                address: ArchiveAddress {
+                    provider: "taint-fixture".into(),
+                    format: None,
+                    container: std::env::temp_dir().join("tainted.zip"),
+                    source_version: vec![1],
+                    components: Vec::new(),
+                },
+                directory: 1,
+                trail: vec![(1, "tainted.zip".into())],
+            };
+            let tree = captured_archive(&location, &Cancellation::default())
+                .unwrap()
+                .mount;
+            drop(location);
+            let case = format!("{release:?}, tree first: {tree_first}");
+            if tree_first {
+                release_shared_tainted_session(
+                    || release.mounted(tree),
+                    || release.archive(tab),
+                    &host,
+                    &active,
+                    &case,
+                );
+            } else {
+                release_shared_tainted_session(
+                    || release.archive(tab),
+                    || release.mounted(tree),
+                    &host,
+                    &active,
+                    &case,
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn tainted_member_content_hands_its_guard_reference_down() {
+    let active = Arc::new(tokio::sync::Semaphore::new(2));
+    for release in Release::ALL {
+        for member_first in [true, false] {
+            let (tab, host) = tainted_tab(&active);
+            let member = archive::member_for_taint_test(tab.clone());
+            let case = format!("{release:?}, member first: {member_first}");
+            // A second holder of the member, e.g. its captured file, only gives up its
+            // count.
+            assert!(release.content(member.clone()), "{case}");
+            if member_first {
+                release_shared_tainted_session(
+                    || release.content(member),
+                    || release.archive(tab),
+                    &host,
+                    &active,
+                    &case,
+                );
+            } else {
+                release_shared_tainted_session(
+                    || release.archive(tab),
+                    || release.content(member),
+                    &host,
+                    &active,
+                    &case,
+                );
+            }
+        }
     }
 }
 

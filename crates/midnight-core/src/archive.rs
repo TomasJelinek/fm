@@ -131,8 +131,13 @@ pub trait ArchiveMount: Send + Sync + std::fmt::Debug {
     ///
     /// Opaque implementations retain the incoming Arc and fail closed. Ordinary Drop
     /// return alone is not a release receipt for an arbitrary deferred native owner.
-    /// Known implementations retain the reference and fail if cleanup_unconfirmed is
-    /// already true, before the atomic shared-reference success shortcut.
+    /// Known implementations fail if cleanup_unconfirmed is already true, before the
+    /// atomic shared-reference success shortcut, and never destroy that tainted owner.
+    /// A host session retains the incoming reference (the filesystem host ends its
+    /// worker once every reference was retained that way). A wrapper only gives up its
+    /// count when shared; its last owner passes its source reference to the source's
+    /// own failing release and keeps its other resources retained, so the session's
+    /// last reference still reaches the host.
     fn release_on_worker(self: Arc<Self>) -> Result<(), FsError> {
         std::mem::forget(self);
         Err(FsError::from_io(
@@ -143,6 +148,27 @@ pub trait ArchiveMount: Send + Sync + std::fmt::Debug {
                 "Archive provider cannot confirm worker-owned native teardown",
             ),
         ))
+    }
+    /// Give up this reference on the current backend worker inside a retirement whose
+    /// cleanup is already unconfirmed (quarantined). The caller keeps its other owners
+    /// retained and has already recorded the failure, so this returns nothing.
+    ///
+    /// Never blocks: it must not wait for native teardown, a supervisor, an I/O slot or
+    /// the worker/domain that may be waiting for the caller. Giving up a shared
+    /// reference is a decrement and destroys nothing. Only the call that consumes the
+    /// last owner (atomic Arc::into_inner, so exactly one of any concurrent callers) may
+    /// act on what that owner holds, and only as far as quarantine allows. A wrapper
+    /// gives up its source reference the same way and keeps its other resources
+    /// retained. A session owner whose cleanup_unconfirmed is true hands its host
+    /// reference to the host's failing release_on_worker, so the session may end its
+    /// worker and return its process permit while the tainted source and the owner's
+    /// other resources stay retained. An untainted last session owner stays retained,
+    /// since the quarantined caller cannot certify its native teardown.
+    ///
+    /// The default retains the incoming Arc, which keeps a last owner's host session
+    /// and worker until process exit.
+    fn release_quarantined(self: Arc<Self>) {
+        std::mem::forget(self);
     }
     fn id(&self) -> u64;
     fn list(&self, directory: u64, cancel: &Cancellation) -> Result<Vec<ArchiveNode>, FsError>;
@@ -400,6 +426,19 @@ mod release_tests {
         let error = mount.release_on_worker().unwrap_err();
         assert_eq!(error.kind, std::io::ErrorKind::Unsupported);
         assert_eq!(dropped.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn opaque_default_quarantined_release_retains_even_the_last_owner() {
+        let dropped = Arc::new(AtomicUsize::new(0));
+        let mount: Arc<dyn ArchiveMount> = Arc::new(Opaque(dropped.clone()));
+        let other = Arc::downgrade(&mount);
+        mount.release_quarantined();
+        assert_eq!(dropped.load(Ordering::SeqCst), 0);
+        assert!(
+            other.upgrade().is_some(),
+            "the default keeps the forgotten reference counted"
+        );
     }
 
     #[derive(Debug)]
