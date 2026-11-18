@@ -344,6 +344,12 @@ pub enum TreeEvent {
     Transfer {
         stamp: TreeViewStamp,
         request: TreeRequestId,
+        /// True only for refusals that a resend can overcome: a full tree command
+        /// queue, or a view that a newer publication or session replaced in flight.
+        /// The presenter then sends the capture again, on the newer publication once
+        /// it is shown. Failures on the current view, a busy capture pool included,
+        /// are reported.
+        retryable: bool,
         result: Result<crate::TreeTransferCapture, TreeDiagnostic>,
     },
     Sizes(crate::TreeSizeEvent),

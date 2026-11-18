@@ -435,9 +435,11 @@ If the backend refuses the capture because a newer publication of the same sessi
 capture again on that publication: the same selection revision and, with no marks,
 the occurrence F5 named, not the one the caret reached meanwhile. The panel reports
 that the tree changed only when the selection changed or, with no marks, that
-occurrence is gone. F6 shares this protocol. Until `TreeEvent::Transfer` says
-whether a refusal is retryable, a refusal that reaches the panel before that
-publication is still reported as Copy (or Move) unavailable.
+occurrence is gone. F6 shares this protocol. The refusal says whether it is
+retryable, so it does not matter whether it reaches the panel before or after that
+publication. When the tree command queue is full, the panel also sends the same
+capture again. It reports other refusals, a busy capture pool included, as Copy
+(or Move) unavailable.
 
 Four live captured batches share an engine-wide permit pool. Opening the draft
 does not reserve a job; confirmation uses the existing 32-job FIFO copy admission.

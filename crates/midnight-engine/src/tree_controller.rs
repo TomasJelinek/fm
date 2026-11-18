@@ -344,6 +344,7 @@ fn diagnostic_rejection(command: TreeCommand, error: TreeDiagnostic, retryable: 
         TreeCommand::Transfer(request) => TreeEvent::Transfer {
             stamp: request.view.stamp,
             request: request.request,
+            retryable,
             result: Err(error),
         },
         TreeCommand::Metadata(request) => TreeEvent::MetadataCaptured {
@@ -411,5 +412,7 @@ fn size_command_stamp(command: &midnight_core::TreeSizeCommand) -> midnight_core
     }
 }
 
+#[cfg(test)]
+mod dispatch_tests;
 #[cfg(test)]
 mod lifetime_tests;

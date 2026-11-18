@@ -436,13 +436,23 @@ impl Worker {
                     .capture_delete(request, &self.copy_capacity, cancel)
                     .map_err(|error| crate::tree_diagnostics::diagnostic(&self.reports, &error)),
             })),
-            TreeCommand::Transfer(request) => Ok(Some(TreeEvent::Transfer {
-                stamp: request.view.stamp,
-                request: request.request,
-                result: session
-                    .capture_transfer(request, &self.copy_capacity, cancel)
-                    .map_err(|error| crate::tree_diagnostics::diagnostic(&self.reports, &error)),
-            })),
+            TreeCommand::Transfer(request) => {
+                let result = session.capture_transfer(request, &self.copy_capacity, cancel);
+                // A newer projection replaced the admitted view: the presenter
+                // captures again once that publication is shown. Other refusals
+                // are reported, because ResourceLimited stands for a busy permit
+                // pool and for a selection over the capture budget alike.
+                let retryable =
+                    result.is_err() && !Arc::ptr_eq(session.projection(), &request.view);
+                Ok(Some(TreeEvent::Transfer {
+                    stamp: request.view.stamp,
+                    request: request.request,
+                    retryable,
+                    result: result.map_err(|error| {
+                        crate::tree_diagnostics::diagnostic(&self.reports, &error)
+                    }),
+                }))
+            }
             TreeCommand::Commit(view) => {
                 if session.commit(view) || (emitted_commit && session.acknowledge_emitted(view)) {
                     if emitted_commit {
