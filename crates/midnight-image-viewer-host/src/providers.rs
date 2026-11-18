@@ -112,7 +112,7 @@ pub fn discover(application_executable: &Path) -> io::Result<Vec<Provider>> {
 /// Read bounded manifests from `<application directory>/viewers/<package>/image-viewer.json`.
 /// Package trees and every ancestor are permission checked before any installed code is started.
 pub fn discover_with_diagnostics(application_executable: &Path) -> io::Result<Discovery> {
-    let executable = crate::paths::installation_path(application_executable)?;
+    let executable = midnight_plugin_host::installation_path(application_executable)?;
     let root = executable
         .parent()
         .ok_or_else(|| io::Error::other("Application has no parent"))?

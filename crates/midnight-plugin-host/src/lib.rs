@@ -17,6 +17,13 @@ pub use content::{CapturedFile, ContentResources, ContentSource};
 #[cfg(windows)]
 #[path = "installation_windows.rs"]
 mod installation;
+#[cfg(windows)]
+pub use installation::installation_path;
+#[cfg(target_os = "linux")]
+#[path = "installation_path_linux.rs"]
+mod installation_path;
+#[cfg(target_os = "linux")]
+pub use installation_path::installation_path;
 #[cfg(not(windows))]
 mod installation {
     /// Executable-relative discovery. Linux reports the kernel-resolved path

@@ -25,7 +25,7 @@ pub(super) struct LaunchFile {
 }
 
 pub(super) fn open(path: &Path) -> Result<LaunchFile, Error> {
-    let entered = super::installation_path(path)?;
+    let entered = super::runtime_path(path)?;
     super::plain_path(&entered)?;
     let file = OpenOptions::new()
         .access_mode(FILE_READ_ATTRIBUTES)

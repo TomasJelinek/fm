@@ -10,13 +10,6 @@ pub use session::{ImageSession, Source};
 mod startup;
 pub use startup::{CleanupStatus, PreparedImageWorker, cleanup_status};
 
-#[cfg(windows)]
-#[path = "paths_windows.rs"]
-mod paths;
-#[cfg(target_os = "linux")]
-#[path = "paths_linux.rs"]
-mod paths;
-
 /// Discovery validates a plugin installation and every ancestor of it. A fixture root
 /// below a checkout whose ancestors other accounts may change (for example a secondary
 /// drive with the default ACL) can never pass, so say how to provide a private root

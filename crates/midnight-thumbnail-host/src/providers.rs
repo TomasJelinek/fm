@@ -23,7 +23,7 @@ pub(crate) struct Provider {
 }
 
 pub(crate) fn discover(executable: &Path) -> io::Result<Vec<Provider>> {
-    let executable = crate::paths::installation_path(executable)?;
+    let executable = midnight_plugin_host::installation_path(executable)?;
     let directory = executable
         .parent()
         .ok_or_else(|| io::Error::other("Executable has no parent"))?

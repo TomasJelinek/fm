@@ -1,8 +1,5 @@
 use std::{ffi::OsString, io, path::PathBuf};
 
-pub(super) fn installation_path(path: &std::path::Path) -> io::Result<PathBuf> {
-    std::path::absolute(path)
-}
 pub(crate) fn cache_root() -> io::Result<PathBuf> {
     cache_root_from(std::env::var_os("XDG_CACHE_HOME"), std::env::var_os("HOME"))
 }
