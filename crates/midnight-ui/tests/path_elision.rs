@@ -14,10 +14,9 @@ use std::{cell::RefCell, rc::Rc};
 slint::slint! {
     import { PathNavigation } from "../ui/path-navigation.slint";
     import { PathPartRow } from "../ui/navigation-models.slint";
-    import { ComparatorWindow } from "../../midnight-compare-ui/ui/comparator.slint";
     import { PathText } from "../ui/path-text.slint";
     import { CompactPicker } from "../ui/controls.slint";
-    export { PathPartRow, ComparatorWindow }
+    export { PathPartRow }
     export component PathFixture inherits Window {
         preferred-width: 320px; preferred-height: 80px;
         in property <string> path;
@@ -217,29 +216,6 @@ fn find_progress_and_result_paths_mark_omissions_without_changing_their_values()
     ui::draw(&native, 860, 620, "find-path-unshortened");
     let progress = ui::accessible_item(&native, AccessibleRole::Text, "C:\\short").unwrap();
     assert!(visible_text(progress, "...").is_none());
-}
-
-#[test]
-fn comparator_marks_both_shortened_paths_and_keeps_the_full_names() {
-    let windows = Rc::new(RefCell::new(Vec::new()));
-    slint::platform::set_platform(Box::new(ui::Windows(windows.clone()))).unwrap();
-    let window = ComparatorWindow::new().unwrap();
-    let paths = [
-        format!("C:\\{}\\left.txt", "a-long-directory\\".repeat(20)),
-        format!("C:\\{}\\right.txt", "文档-directory\\".repeat(20)),
-    ];
-    window.set_left_name(paths[0].as_str().into());
-    window.set_right_name(paths[1].as_str().into());
-    window.show().unwrap();
-    let native = windows.borrow()[0].clone();
-    ui::draw(&native, 500, 300, "comparator-path-elision");
-    for path in &paths {
-        let label = ui::accessible_item(&native, AccessibleRole::Text, path)
-            .expect("comparison paths stay complete for accessibility");
-        assert!(visible_text(label, "...").is_some());
-    }
-    assert_eq!(window.get_left_name(), paths[0]);
-    assert_eq!(window.get_right_name(), paths[1]);
 }
 
 #[test]

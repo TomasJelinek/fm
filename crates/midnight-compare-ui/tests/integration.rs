@@ -14,6 +14,7 @@ mod file_choice;
 mod fonts;
 mod image_composition;
 mod keyboard;
+mod path_elision;
 mod ui_polish;
 
 #[test]
