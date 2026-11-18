@@ -277,8 +277,9 @@ This worker-proof contract is independent of own-EXE default-OFF selection.
 ## Source ranges and archive memory
 
 Archive streaming and private disk spooling (ARCH-01) are implemented for the
-protocol-2/3 archive worker; qualification of the integrated application with the
-matching package is still pending (see the
+protocol-2/3 archive worker, except the small-content RAM budget described at the
+end of this section; qualification of the integrated application with the matching
+package is still pending (see the
 [implementation backlog](../IMPLEMENTATION_BACKLOG.md)). The experimental JPEG-only
 adapter remains reverted; all raster formats use the shared image-rs decoder path.
 
@@ -312,11 +313,20 @@ mount. Thumbnail disk caching is separate. See the
 the spool directories.
 
 Replacing the JPEG decoder's own full-input buffer requires separately verified
-streaming decoder behavior; disk spooling cannot remove that allocation. Every
-staged member is written to the spool, small images included; there is no
-aggregate small-file RAM budget. Application qualification must measure peak
-memory across both workers, not just broker chunk sizes, and cover preview-only
-reads, source changes, cancellation, CRC failure and exhausted spool storage.
+streaming decoder behavior; disk spooling cannot remove that allocation.
+
+The accepted
+[ARCH-01 design](../superpowers/specs/2026-11-09-archive-streaming-design.md) keeps
+small content under an aggregate RAM budget and spills only larger content to
+private disk. That part is not implemented and no recorded decision retires it, so
+it is an open ARCH-01 deviation: the worker stages every member it reads into a
+host spool file, small images included. The design's other requirements remain: no
+fixed archive or member byte-size ceiling, bounded working memory, cancellation,
+integrity verification and explicit out-of-space errors (the host's free-space
+reserve for the spool volume is still planned). Application qualification must
+cover that budget unless a recorded decision retires it, measure peak memory across
+both workers, not just broker chunk sizes, and cover preview-only reads, source
+changes, cancellation, CRC failure and exhausted spool storage.
 
 ## Wire format and resource limits
 
