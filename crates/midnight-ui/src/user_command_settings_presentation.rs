@@ -284,8 +284,11 @@ pub(crate) fn install(
     window
         .global::<UserCommandSettingsView>()
         .on_picker_context(move |page| {
+            let mut closed = false;
             if let Ok(mut state) = context_state.try_borrow_mut() {
+                let was_busy = state.settings_picker.busy();
                 state.settings_picker_context(page, context_send.as_ref());
+                closed = was_busy && !state.settings_picker.busy();
             } else {
                 let state = context_state.clone();
                 let send = context_send.clone();
@@ -303,8 +306,13 @@ pub(crate) fn install(
                     }
                 });
             }
-            // A cancellation the queue refused retries at the cancellation cadence.
+            // A cancellation delivered here closed the picker: publish its idle state
+            // now, as the other callbacks that invalidate a picker do, instead of at the
+            // next slow check. One the queue refused retries at the cancellation cadence.
             if let Some(window) = weak.upgrade() {
+                if closed {
+                    crate::refresh(&window, &context_state.borrow());
+                }
                 crate::settings_picker_presentation::wake(
                     &window,
                     &context_state,
