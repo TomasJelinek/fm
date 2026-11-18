@@ -158,15 +158,17 @@ async fn confirmed(
 
 #[tokio::test]
 async fn recursive_edit_changes_every_entry_of_a_folder_with_1000_entries() {
-    // Only the files change case. Windows refuses to rename a folder while any file below
-    // it is open, and a virus scanner may still be reading the files just created.
-    let mut h = Harness::new(&[("parent", true)]);
+    // Folders change case too. On Windows a virus scanner may still be reading the files
+    // just created, and Windows refuses to rename a folder while a file below it is open;
+    // the native adapter waits that refusal out.
+    let mut h = Harness::new(&[("PARENT", true)]);
+    let original = h.directory.path().join("PARENT");
+    files(&original, "FILE", 1000);
+    fs::create_dir(original.join("SUB")).unwrap();
+    files(&original.join("SUB"), "NESTED", 300);
+    fs::create_dir_all(original.join("D1/D2/D3")).unwrap();
+    fs::write(original.join("D1/D2/D3/DEEP.TXT"), b"deep").unwrap();
     let parent = h.directory.path().join("parent");
-    files(&parent, "FILE", 1000);
-    fs::create_dir(parent.join("sub")).unwrap();
-    files(&parent.join("sub"), "NESTED", 300);
-    fs::create_dir_all(parent.join("d1/d2/d3")).unwrap();
-    fs::write(parent.join("d1/d2/d3/DEEP.TXT"), b"deep").unwrap();
     let patch = MetadataPatch {
         case: Some(CaseChange::default()),
         ..modified(true)

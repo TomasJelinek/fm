@@ -1,5 +1,8 @@
 use super::*;
-use crate::{WindowsFileSystem, test_fixtures::build_temp};
+use crate::{
+    WindowsFileSystem,
+    test_fixtures::{build_temp, deny_to_everyone},
+};
 use midnight_core::{DeleteMode, MutationService};
 use std::{
     cell::Cell,
@@ -15,12 +18,8 @@ use std::{
 use windows_sys::Win32::{
     Foundation::{ERROR_ALREADY_EXISTS, ERROR_SHARING_VIOLATION, HANDLE, INVALID_HANDLE_VALUE},
     Security::{
-        ACCESS_ALLOWED_ACE, ACL, ACL_REVISION, AddAccessAllowedAce, AddAccessDeniedAce,
-        CreateWellKnownSid, DACL_SECURITY_INFORMATION, GetLengthSid, GetTokenInformation,
-        InitializeAcl, InitializeSecurityDescriptor, RevertToSelf, SE_DACL_PROTECTED,
-        SECURITY_DESCRIPTOR, SECURITY_IMPERSONATION_LEVEL, SECURITY_MAX_SID_SIZE,
-        SecurityImpersonation, SetKernelObjectSecurity, SetSecurityDescriptorControl,
-        SetSecurityDescriptorDacl, TOKEN_QUERY, TokenImpersonationLevel, WinWorldSid,
+        GetTokenInformation, RevertToSelf, SECURITY_IMPERSONATION_LEVEL, SecurityImpersonation,
+        TOKEN_QUERY, TokenImpersonationLevel,
     },
     System::Threading::{GetCurrentThread, OpenThreadToken},
 };
@@ -434,50 +433,13 @@ fn a_cancellation_ends_a_running_rename_wait_after_its_current_step() {
     assert_eq!(steps, [RENAME_RETRY_STEP; 2]);
 }
 
-/// Gives the fixture directory `path` a protected DACL that denies `denied` to Everyone
-/// and allows Everyone all other access, so the fixture stays removable.
-fn deny_everyone(path: &Path, denied: u32) {
-    let file = OpenOptions::new()
-        .access_mode(READ_CONTROL | WRITE_DAC)
-        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
-        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
-        .open(path)
-        .unwrap();
-    let mut everyone = [0u64; (SECURITY_MAX_SID_SIZE as usize).div_ceil(8)];
-    let mut sid_size = SECURITY_MAX_SID_SIZE;
-    let sid = everyone.as_mut_ptr().cast();
-    // SAFETY: an aligned writable buffer of SECURITY_MAX_SID_SIZE bytes.
-    let created = unsafe { CreateWellKnownSid(WinWorldSid, ptr::null_mut(), sid, &mut sid_size) };
-    assert_ne!(created, 0, "{}", io::Error::last_os_error());
-    // SAFETY: the valid SID created above. Allowed and denied ACEs share one layout.
-    let ace =
-        size_of::<ACCESS_ALLOWED_ACE>() - size_of::<u32>() + unsafe { GetLengthSid(sid) } as usize;
-    let length = size_of::<ACL>() + 2 * ace;
-    let mut acl = vec![0u64; length.div_ceil(8)];
-    let acl = acl.as_mut_ptr().cast::<ACL>();
-    let mut descriptor = SECURITY_DESCRIPTOR::default();
-    let descriptor = (&mut descriptor as *mut SECURITY_DESCRIPTOR).cast();
-    // SAFETY: `acl` covers `length` writable bytes; it, the SID and the descriptor
-    // (initialized in place, SECURITY_DESCRIPTOR_REVISION = 1) outlive these calls.
-    let set = unsafe {
-        InitializeAcl(acl, length as u32, ACL_REVISION) != 0
-            && AddAccessDeniedAce(acl, ACL_REVISION, denied, sid) != 0
-            && AddAccessAllowedAce(acl, ACL_REVISION, FILE_ALL_ACCESS, sid) != 0
-            && InitializeSecurityDescriptor(descriptor, 1) != 0
-            && SetSecurityDescriptorDacl(descriptor, 1, acl, 0) != 0
-            && SetSecurityDescriptorControl(descriptor, SE_DACL_PROTECTED, SE_DACL_PROTECTED) != 0
-            && SetKernelObjectSecurity(file.as_raw_handle(), DACL_SECURITY_INFORMATION, descriptor)
-                != 0
-    };
-    assert!(set, "{}", io::Error::last_os_error());
-}
-
 #[test]
 fn a_rename_the_parent_directory_denies_is_reported_without_waiting() {
     let temp = build_temp("rename-denied-parent-");
     // Besides DELETE, NTFS checks the right to add a subdirectory (for a folder) or a file
     // (for a file) to the parent. Each case denies only its own right, so a folder probe
-    // would pass for the file and a file probe for the folder.
+    // would pass for the file and a file probe for the folder. An add right is not needed
+    // to remove the fixture, so its DACL is not restored.
     for (name, denied) in [("folder", FILE_ADD_SUBDIRECTORY), ("file", FILE_ADD_FILE)] {
         let parent_path = temp.path().join(format!("{name}-parent"));
         fs::create_dir(&parent_path).unwrap();
@@ -487,7 +449,7 @@ fn a_rename_the_parent_directory_denies_is_reported_without_waiting() {
             // Empty, so no virus scanner holds it while it is opened for DELETE below.
             File::create(parent_path.join(name)).unwrap();
         }
-        deny_everyone(&parent_path, denied);
+        deny_to_everyone(&parent_path, denied).unwrap();
         let parent = open_parent(&parent_path).unwrap();
         let source = open_child(&parent, OsStr::new(name), true).unwrap();
         let mut waited = false;

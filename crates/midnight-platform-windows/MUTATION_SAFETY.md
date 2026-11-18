@@ -31,6 +31,26 @@ access. Case-only rename and destination collision are tested on the host's NTFS
 volume. Destination entries are never removed first, and replacement is never
 enabled.
 
+Windows refuses to rename a directory with `ERROR_ACCESS_DENIED` while any entry
+below it is open, whatever that handle's sharing, and antivirus, indexing and sync
+programs open files for a moment after they are written (Microsoft Defender: about
+10-50 ms per new file on the test host). Rename and the metadata editor's case change
+therefore repeat a refused directory rename through the same handle after 10 ms, then
+after twice as long each time, for about one second in all, and then report the
+refusal. They retry only a directory, and only while reopening the parent for
+`FILE_ADD_SUBDIRECTORY` succeeds: NTFS refuses a caller without that right with the
+same error, and opening the source already checked `DELETE`, so a refusal by the
+parent directory's DACL is reported at once. Any other refusal of a directory rename
+(a program, including this application's watch of a subfolder, keeps an entry below
+open, or a filter driver refuses the rename) is repeated and reported after about one
+second, once per refused folder. Another handle never blocks renaming a file this
+handle may delete. During the wait the source handle still denies delete sharing, so
+neither the directory nor its ancestors can be renamed, and the rename stays
+no-replace. Cancellation ends the wait, and a paused job waits paused. Copy and Move
+do not wait (see [transfers](../../docs/developer/TRANSFERS.md)): Copy publishes only
+staged files, and a refused Move stops with its Retry/Skip/Cancel decision. Recycling
+does not wait either (see [Recycle Bin](#recycle-bin)).
+
 Mutation handles request `DELETE`, read-attributes and synchronization access.
 File-content read and directory-list access are unnecessary for rename and leaf
 deletion. ACL fixtures explicitly deny those rights and verify both operations.
@@ -139,6 +159,12 @@ Trash uses the dedicated `ITransferSource::RecycleItem` operation. It never call
 The Shell returns the item at its recycle location. Errors such as unavailable
 recycling, forced permanent-delete configuration, excessive item size, or an
 unsupported recycle path length are surfaced to the user.
+
+Windows also refuses to recycle a folder while an entry below it is open: the Shell
+then fails with `COPYENGINE_E_ACCESS_DENIED_SRC` (0x80270021), which is reported with
+that code only. Unlike Rename, recycling does not wait such a refusal out, so moving a
+folder to the Recycle Bin right after its files were written, while a virus scanner
+may still be reading them, can fail; the folder then stays in place.
 
 The tested Windows Shell rejects a source path longer than its recycle limit
 with `COPYENGINE_E_RECYCLE_PATH_TOO_LONG`. The provider returns `Unsupported` and

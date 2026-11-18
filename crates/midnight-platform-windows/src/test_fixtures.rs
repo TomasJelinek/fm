@@ -1,6 +1,6 @@
 //! Native test fixtures without spawning a shell: directory junctions and
 //! non-surrogate (filter-style) reparse points, set with `FSCTL_SET_REPARSE_POINT`, and
-//! read-denying DACLs set through the object's own handle.
+//! DACLs that deny Everyone chosen rights, set through the object's own handle.
 //! Standalone (std and windows-sys only) so integration tests can include it by path.
 #![allow(dead_code, reason = "each test binary uses a subset of the fixtures")]
 use std::{
@@ -157,7 +157,7 @@ pub fn build_tmp_root() -> PathBuf {
     root
 }
 
-/// The original DACL of a fixture, saved by [`deny_read_data`] for [`restore_dacl`].
+/// The original DACL of a fixture, saved by [`deny_to_everyone`] for [`restore_dacl`].
 pub struct SavedDacl(Vec<u64>);
 
 fn check(succeeded: i32) -> io::Result<()> {
@@ -222,10 +222,16 @@ fn dacl_descriptor(file: &File) -> io::Result<Vec<u64>> {
     Ok(descriptor)
 }
 
-/// Denies `FILE_READ_DATA` (file content, directory listing) to Everyone by prepending
-/// one explicit deny ACE to the fixture's DACL, keeping its other ACEs and inheritance
-/// flags. Returns the original DACL for [`restore_dacl`]. No shell is involved.
+/// Denies `FILE_READ_DATA` (file content, directory listing) to Everyone; see
+/// [`deny_to_everyone`].
 pub fn deny_read_data(path: &Path) -> io::Result<SavedDacl> {
+    deny_to_everyone(path, FILE_READ_DATA)
+}
+
+/// Denies the access `rights` to Everyone by prepending one explicit deny ACE to the
+/// fixture's DACL, keeping its other ACEs and inheritance flags. Returns the original
+/// DACL for [`restore_dacl`]. No shell is involved.
+pub fn deny_to_everyone(path: &Path, rights: u32) -> io::Result<SavedDacl> {
     let file = open_for_security(path)?;
     let mut original = dacl_descriptor(&file)?;
     let descriptor = original.as_mut_ptr().cast();
@@ -272,7 +278,7 @@ pub fn deny_read_data(path: &Path) -> io::Result<SavedDacl> {
     unsafe {
         let revision = u32::from((*dacl).AclRevision);
         check(InitializeAcl(acl, length as u32, revision))?;
-        check(AddAccessDeniedAce(acl, revision, FILE_READ_DATA, sid))?;
+        check(AddAccessDeniedAce(acl, revision, rights, sid))?;
         for index in 0..size.AceCount {
             let mut ace = ptr::null_mut();
             check(GetAce(dacl, index, &mut ace))?;
@@ -309,7 +315,7 @@ pub fn deny_read_data(path: &Path) -> io::Result<SavedDacl> {
     Ok(SavedDacl(original))
 }
 
-/// Writes the DACL saved by [`deny_read_data`] back to the fixture at `path`.
+/// Writes the DACL saved by [`deny_to_everyone`] back to the fixture at `path`.
 pub fn restore_dacl(path: &Path, saved: &SavedDacl) -> io::Result<()> {
     let file = open_for_security(path)?;
     // SAFETY: a live handle and the self-relative descriptor the OS returned earlier.
