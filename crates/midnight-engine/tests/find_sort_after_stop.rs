@@ -1,7 +1,7 @@
 use midnight_core::*;
 use midnight_engine::Engine;
 use midnight_platform::LocalFileSystem;
-use std::{path::Path, sync::Arc, time::Duration};
+use std::{collections::VecDeque, path::Path, sync::Arc, time::Duration};
 use tokio::sync::{Notify, mpsc};
 
 /// Enumerates real children, then blocks before the child after `pause_after`
@@ -61,6 +61,8 @@ impl FindSource for Source {
 struct Search {
     send: midnight_engine::CommandSender,
     receive: mpsc::Receiver<Event>,
+    /// Find updates read while the test waited for something else, oldest first.
+    read: VecDeque<FindUpdate>,
     engine: tokio::task::JoinHandle<()>,
 }
 
@@ -94,12 +96,16 @@ async fn start(directory: &Path, service: PausedEnumeration) -> Search {
     Search {
         send,
         receive,
+        read: VecDeque::new(),
         engine,
     }
 }
 
 impl Search {
     async fn next_find(&mut self) -> FindUpdate {
+        if let Some(update) = self.read.pop_front() {
+            return update;
+        }
         loop {
             let event = tokio::time::timeout(Duration::from_secs(5), self.receive.recv())
                 .await
@@ -109,6 +115,32 @@ impl Search {
                 return event.update;
             }
         }
+    }
+
+    /// Waits until the enumeration reaches its pause, keeping the Find updates
+    /// sent meanwhile for `next_find`.
+    ///
+    /// The worker publishes its start, and progress with any partial batch every
+    /// 250 ms, before it reaches the pause, waiting for room in the bounded event
+    /// channel; the Engine's own startup events share that channel. Without
+    /// reading it here, a slow enumeration could fill it and never pause.
+    async fn until_paused(&mut self, paused: &Notify) {
+        let paused = paused.notified();
+        tokio::pin!(paused);
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                tokio::select! {
+                    () = &mut paused => return,
+                    event = self.receive.recv() => {
+                        if let Event::Find(event) = event.expect("engine output") {
+                            self.read.push_back(event.update);
+                        }
+                    }
+                }
+            }
+        })
+        .await
+        .expect("enumeration reaches the pause");
     }
 
     async fn stop(&self) {
@@ -199,9 +231,7 @@ async fn stop_publishes_matches_below_one_batch_and_orders_them_automatically() 
     )
     .await;
     // Every match is found, revalidated and counted before Stop.
-    tokio::time::timeout(Duration::from_secs(5), paused.notified())
-        .await
-        .expect("enumeration reaches the pause");
+    search.until_paused(&paused).await;
     search.stop().await;
     let mut retained = Vec::new();
     let mut finished = false;
