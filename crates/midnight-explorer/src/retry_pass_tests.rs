@@ -1,7 +1,11 @@
-//! The retry pass reports work while a send is refused, an owned scope is unavailable
-//! or the main window is hidden, and nothing once everything was delivered.
+//! The retry pass reports work while an exit waits for live jobs, a send is refused, an
+//! owned scope is unavailable or the main window is hidden, and nothing once everything
+//! was delivered.
 use super::*;
-use midnight_core::{DirectoryIndex, Entry, EntryId, EntryKind, Event, VisibleDirectory};
+use midnight_core::{
+    DirectoryIndex, Entry, EntryId, EntryKind, Event, MutationKind, OperationEvent, OperationId,
+    OperationProgress, OperationState, VisibleDirectory,
+};
 use midnight_ui::{DeferredDrop, OwnedCommandScope};
 use slint::platform::{
     Platform, PlatformError, WindowAdapter,
@@ -24,7 +28,11 @@ struct Scope {
 #[derive(Default)]
 struct Queue {
     refuse: Cell<bool>,
+    /// Every claim fails and is reported, as the explorer's reclaimer reports it.
     unavailable: Cell<bool>,
+    /// Only this claim of a pass fails, and nothing reports it.
+    silent_failure: Cell<Option<usize>>,
+    attempts: Cell<usize>,
     claimed: Cell<bool>,
     sent: RefCell<Vec<Command>>,
     retired: RefCell<Vec<DeferredDrop>>,
@@ -58,6 +66,9 @@ struct Fixture {
     pass: RetryPass,
     queue: Rc<Queue>,
     closed: Rc<Cell<usize>>,
+    /// Operations the window's callbacks asked the backend to prepare.
+    prepared: Rc<RefCell<Vec<OperationId>>>,
+    root: std::path::PathBuf,
 }
 
 fn fixture() -> Fixture {
@@ -69,16 +80,18 @@ fn fixture() -> Fixture {
         .borrow_mut()
         .apply(Event::PreferencesLoaded(Ok(Box::default())));
     let navigations = Rc::new(RefCell::new(Vec::new()));
-    let recorded = navigations.clone();
+    let prepared = Rc::new(RefCell::new(Vec::new()));
+    let (recorded, operations) = (navigations.clone(), prepared.clone());
     midnight_ui::install(
         &window,
         presenter.clone(),
         Rc::new(move |command| {
-            if let Command::Navigate {
-                pane, navigation, ..
-            } = command
-            {
-                recorded.borrow_mut().push((pane, navigation));
+            match command {
+                Command::Navigate {
+                    pane, navigation, ..
+                } => recorded.borrow_mut().push((pane, navigation)),
+                Command::PrepareOperation(request) => operations.borrow_mut().push(request.id),
+                _ => {}
             }
             true
         }),
@@ -101,6 +114,10 @@ fn fixture() -> Fixture {
     let queue = Rc::new(Queue::default());
     let claims = queue.clone();
     let begin: BeginOwned = Rc::new(move || {
+        let attempt = claims.attempts.replace(claims.attempts.get() + 1);
+        if claims.silent_failure.get() == Some(attempt) {
+            return None;
+        }
         if claims.unavailable.get() || claims.claimed.replace(true) {
             if claims.unavailable.get() {
                 claims.refusals.refused();
@@ -128,6 +145,8 @@ fn fixture() -> Fixture {
         pass,
         queue,
         closed,
+        prepared,
+        root,
     }
 }
 
@@ -145,6 +164,19 @@ fn acknowledged(queue: &Queue) -> usize {
 fn settle(pass: &RetryPass) -> usize {
     let passes = (1..=5).find(|_| !pass.run());
     passes.expect("the retry pass never went quiet")
+}
+
+/// Start a folder creation from the left panel: a job that stays live until the
+/// backend reports it finished.
+fn start_job(fixture: &Fixture) -> OperationId {
+    fixture.window.invoke_mutation(0, 3);
+    let id = *fixture
+        .prepared
+        .borrow()
+        .last()
+        .expect("an operation was started");
+    assert!(fixture.pass.presenter.borrow().has_live_operations());
+    id
 }
 
 #[test]
@@ -184,6 +216,26 @@ fn an_unavailable_owned_scope_keeps_the_pass_running() {
 }
 
 #[test]
+fn an_unreported_unavailable_scope_for_the_flushes_or_the_acknowledgements_keeps_the_pass_running()
+{
+    let fixture = fixture();
+    settle(&fixture.pass);
+    // A pass claims once for its flushes, then once per pane for the acknowledgements.
+    // No refusal is reported and nothing was sent: only the failed claim leaves work.
+    for (failed, work) in [(0, "flushes"), (1, "acknowledgements")] {
+        fixture.queue.attempts.set(0);
+        fixture.queue.silent_failure.set(Some(failed));
+        assert!(
+            fixture.pass.run(),
+            "an unavailable scope for the {work} leaves work"
+        );
+        fixture.queue.silent_failure.set(None);
+        settle(&fixture.pass);
+    }
+    assert_eq!(acknowledged(&fixture.queue), 2);
+}
+
+#[test]
 fn a_hidden_main_window_closes_viewers_and_keeps_the_pass_running() {
     let fixture = fixture();
     settle(&fixture.pass);
@@ -192,4 +244,61 @@ fn a_hidden_main_window_closes_viewers_and_keeps_the_pass_running() {
     assert!(fixture.pass.run());
     assert!(fixture.pass.run());
     assert_eq!(fixture.closed.get(), 2);
+}
+
+#[test]
+fn a_live_job_without_an_exit_request_leaves_no_work() {
+    let fixture = fixture();
+    start_job(&fixture);
+    settle(&fixture.pass);
+    assert!(
+        !fixture.pass.run(),
+        "a running or paused job is presented through its own events"
+    );
+    assert!(fixture.pass.presenter.borrow().has_live_operations());
+    assert!(fixture.window.window().is_visible());
+}
+
+#[test]
+fn an_exit_request_keeps_the_pass_running_until_live_jobs_end_then_hides_the_window() {
+    let fixture = fixture();
+    let id = start_job(&fixture);
+    settle(&fixture.pass);
+    fixture.window.invoke_exit();
+    for _ in 0..5 {
+        assert!(fixture.pass.run(), "the exit waits for the live job");
+        assert!(fixture.window.window().is_visible());
+    }
+    assert_eq!(fixture.closed.get(), 0);
+    fixture
+        .pass
+        .presenter
+        .borrow_mut()
+        .apply(Event::Operation(OperationEvent::Progress(Arc::new(
+            OperationProgress {
+                id,
+                kind: MutationKind::CreateDirectory,
+                state: OperationState::Cancelled,
+                pause_requested: false,
+                paused: false,
+                total: 0,
+                completed: 0,
+                discovery: Default::default(),
+                failed: 0,
+                processed_entries: 0,
+                throughput: Arc::default(),
+                current_path: None,
+                message: String::new(),
+                errors: Vec::new(),
+                source_directory: fixture.root.clone(),
+                renamed_to: None,
+            },
+        ))));
+    assert!(!fixture.pass.presenter.borrow().has_live_operations());
+    assert!(fixture.pass.run(), "the hidden window still closes viewers");
+    assert!(
+        !fixture.window.window().is_visible(),
+        "the finished exit hides the window"
+    );
+    assert!(fixture.closed.get() >= 1);
 }

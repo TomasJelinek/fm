@@ -26,20 +26,26 @@ pub(crate) struct RetryPass {
 }
 
 impl RetryPass {
-    /// Returns whether work remains: live jobs (including a requested exit that waits
-    /// for them), a hidden main window, a refused send, an unavailable owned scope, or a
-    /// flush that sent something and may continue.
+    /// Returns whether work remains: an exit that waits for live jobs, a hidden main
+    /// window, a refused send, an unavailable owned scope, or a flush that sent something
+    /// and may continue. Live jobs without an exit request are not work here: their
+    /// events refresh the presentation, which wakes the pass.
     pub(crate) fn run(&self) -> bool {
         // This pass retries everything refused so far.
         self.refusals.take();
-        let live = {
+        let exiting = {
             let mut state = self.presenter.borrow_mut();
             if let Some(preparation) = self.preparation.upgrade() {
                 preparation.exit_requested(&state);
             }
-            if state.continue_operation_shutdown(&*self.controls)
-                && let Some(window) = self.window.upgrade()
-            {
+            // The continuation sends only after an exit request: it re-sends every live
+            // job's cancellation and reports true once no job is live.
+            let resent = Cell::new(false);
+            let finished = state.continue_operation_shutdown(&|command| {
+                resent.set(true);
+                (self.controls)(command)
+            });
+            if finished && let Some(window) = self.window.upgrade() {
                 state.shutdown_drag_drop(&*self.controls);
                 (self.close_viewers)();
                 // Every tool window family (Jobs, job progress, decisions and
@@ -47,7 +53,7 @@ impl RetryPass {
                 midnight_ui::close_tool_windows(&window);
                 let _ = window.hide();
             }
-            state.has_live_operations()
+            resent.get() && !finished
         };
         let hidden = self
             .window
@@ -72,7 +78,7 @@ impl RetryPass {
             })
             .is_some();
         let synced = sync_visible(&self.presenter, &self.begin_owned, &self.visible);
-        live || hidden || sent.get() || self.refusals.take() || !flushed || !synced
+        exiting || hidden || sent.get() || self.refusals.take() || !flushed || !synced
     }
 }
 
