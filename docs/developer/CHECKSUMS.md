@@ -146,7 +146,9 @@ remains unavailable; verification is described below. The native Save picker off
 the chosen format's filter/default extension. Picking a name does not publish it.
 
 Successful export receipts report actual path, included/excluded counts and verified
-bytes. Matching visible native panels refresh without retargeting a later location.
+bytes. Visible flat native panels showing the output folder re-read it; adopted
+native trees reconcile their loaded branches through tree maintenance instead.
+Neither retargets a later location.
 An error or cancellation never invents a successful export. A post-publication
 durability failure may leave a published file and is reported by the backend.
 
