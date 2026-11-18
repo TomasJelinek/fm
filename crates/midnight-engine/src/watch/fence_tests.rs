@@ -603,10 +603,12 @@ async fn a_check_interrupted_by_a_resort_runs_when_the_resort_is_shown() {
     native.registrations(2).await;
     native.fire(1);
     hint_for(&mut events, 2).await;
-    assert_eq!(
-        probes(&files),
-        2,
-        "the resorted rows are no newer than the interrupted check, which runs at once"
+    // A slow test thread can also see the next periodic check (200 ms later);
+    // without the check at once only the interrupted one precedes the hint.
+    let probes = probes(&files);
+    assert!(
+        probes >= 2,
+        "the resorted rows are no newer than the interrupted check, which runs at once: {probes} probes"
     );
     stop(&controller, &mut tasks).await;
 }

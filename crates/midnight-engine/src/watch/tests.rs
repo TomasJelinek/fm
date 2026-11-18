@@ -928,11 +928,14 @@ async fn a_registration_that_keeps_panicking_is_only_polled() {
         panics: AtomicUsize::new(usize::MAX),
         ..Native::default()
     });
+    // The second panic must come before the second restart is due, or that
+    // restart is immediate and reports nothing; it follows the first restart
+    // at once, so only an implausibly slow worker could miss 300 ms.
     let (controller, mut tasks, mut events) = controller_with(
         files.clone(),
         Some(native.clone()),
         Timing {
-            restart: Duration::from_millis(50),
+            restart: Duration::from_millis(300),
             ..timing(Duration::from_millis(40))
         },
         8,

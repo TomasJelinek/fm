@@ -6,8 +6,8 @@ use crate::{
     task_lifetime::TaskLifetime,
 };
 use midnight_core::{
-    Cancellation, Entry, Event, FileSystem, FsError, NavigationId, PaneId, VisibleDirectory,
-    WatchService, WatchStatus, WatchSubscription, WatchedView,
+    Cancellation, Entry, Event, FileSystem, FsError, NavigationId, PaneId, TreeViewStamp,
+    VisibleDirectory, WatchService, WatchStatus, WatchSubscription, WatchedView,
 };
 use std::{
     path::{Component, Path, PathBuf},
@@ -932,12 +932,34 @@ fn relisting(shared: &Shared, listings: &Mutex<Listings>) -> Relisting {
     }
 }
 
-/// The view whose rows the pane shows: its current tree scope, else its
-/// accepted flat rows while they are current, or while `relisting` keeps them
-/// on screen (a flat listing of this or another folder is pending or failed)
-/// and no tree replaced them.
-fn shown_view(worker: &Worker) -> Option<WatchedView> {
-    let navigation = {
+/// What a pane shows.
+enum Shown {
+    /// Its current tree scope.
+    Tree(TreeViewStamp),
+    Flat(ShownRows),
+}
+
+/// Accepted flat rows the pane shows, and the revision and token of the target
+/// that watches them.
+struct ShownRows {
+    visible: Visible,
+    revision: u64,
+    cancel: Cancellation,
+    /// The rows are the control's current view. Otherwise a newer flat
+    /// listing was dispatched (before this worker saw their acceptance, or
+    /// before it restarted) and `relisting` keeps them on screen, so their
+    /// target gets a stale revision: `relisting` parks it, or re-arms it once
+    /// that listing fails.
+    current: bool,
+}
+
+/// What the pane shows: its current tree scope, else its accepted flat rows
+/// while they are current, or while `relisting` keeps them on screen (a flat
+/// listing of this or another folder is pending or failed) and no tree
+/// replaced them. Watch statuses (`shown_view`) and flat targets
+/// (`flat_update`) both follow it.
+fn shown(worker: &Worker) -> Option<Shown> {
+    let rows = {
         let state = worker
             .shared
             .state
@@ -947,65 +969,62 @@ fn shown_view(worker: &Worker) -> Option<WatchedView> {
             return None;
         }
         if let Some(scope) = tree::current(&state) {
-            return Some(WatchedView::Tree(scope.stamp));
+            return Some(Shown::Tree(scope.stamp));
         }
-        let navigation = state.visible.as_ref()?.directory.navigation;
-        if navigation == state.navigation && !state.cancel.is_cancelled() {
-            return Some(WatchedView::Flat {
-                pane: worker.pane,
-                navigation,
-            });
-        }
+        let visible = state.visible.as_ref()?;
+        let current =
+            visible.directory.navigation == state.navigation && !state.cancel.is_cancelled();
         // A tree adopted since these rows were accepted replaced them.
-        if state.tree_navigation.is_some() {
+        if !current && state.tree_navigation.is_some() {
             return None;
         }
-        navigation
+        ShownRows {
+            visible: visible.clone(),
+            // Revisions only grow, so the previous one is never current again.
+            revision: if current {
+                state.revision
+            } else {
+                state.revision.wrapping_sub(1)
+            },
+            cancel: state.cancel.clone(),
+            current,
+        }
     };
+    if rows.current {
+        return Some(Shown::Flat(rows));
+    }
     match relisting(&worker.shared, &worker.listings) {
         Relisting::Released => None,
-        Relisting::Pending | Relisting::Failed(_) => Some(WatchedView::Flat {
-            pane: worker.pane,
-            navigation,
-        }),
+        Relisting::Pending | Relisting::Failed(_) => Some(Shown::Flat(rows)),
     }
 }
 
-/// The accepted flat rows that the target must watch and does not yet: rows
-/// that are current, or rows the pane still shows (`shown_view`) because a
-/// newer flat listing was dispatched before this worker saw their acceptance,
-/// or before it restarted. Shown rows get a stale revision, so `relisting`
-/// parks their target or re-arms it once that listing fails.
+/// The view whose rows the pane shows (`shown`).
+fn shown_view(worker: &Worker) -> Option<WatchedView> {
+    Some(match shown(worker)? {
+        Shown::Tree(stamp) => WatchedView::Tree(stamp),
+        Shown::Flat(rows) => WatchedView::Flat {
+            pane: worker.pane,
+            navigation: rows.visible.directory.navigation,
+        },
+    })
+}
+
+/// The flat rows the pane shows (`shown`) when the target does not watch them
+/// yet: current rows the target has no current revision for, or shown rows of
+/// another navigation than the target's.
 fn flat_update(worker: &Worker, target: Option<&Target>) -> Option<(Visible, u64, Cancellation)> {
-    let (visible, revision, cancel) = {
-        let state = worker
-            .shared
-            .state
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        let visible = state.visible.as_ref().filter(|_| !state.stopped)?;
-        if visible.directory.navigation == state.navigation && !state.cancel.is_cancelled() {
-            return target
-                .is_none_or(|target| target.revision != state.revision)
-                .then(|| (visible.clone(), state.revision, state.cancel.clone()));
-        }
-        // A tree adopted since these rows were accepted replaced them.
-        if state.tree_navigation.is_some()
-            || target.is_some_and(|target| target.navigation == visible.directory.navigation)
-        {
-            return None;
-        }
-        // Revisions only grow, so the previous one is never current again.
-        (
-            visible.clone(),
-            state.revision.wrapping_sub(1),
-            state.cancel.clone(),
-        )
+    let Shown::Flat(rows) = shown(worker)? else {
+        return None;
     };
-    match relisting(&worker.shared, &worker.listings) {
-        Relisting::Released => None,
-        Relisting::Pending | Relisting::Failed(_) => Some((visible, revision, cancel)),
-    }
+    let watched = target.is_some_and(|target| {
+        if rows.current {
+            target.revision == rows.revision
+        } else {
+            target.navigation == rows.visible.directory.navigation
+        }
+    });
+    (!watched).then_some((rows.visible, rows.revision, rows.cancel))
 }
 
 /// One pane's worker loop and its final drain. A panic unwinds its targets,
