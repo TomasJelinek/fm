@@ -528,6 +528,156 @@ fn busy_fallback_menu_action_releases_the_captured_menu() {
     );
 }
 
+/// An opaque captured source: the UI hands it on and never resolves its targets.
+#[derive(Debug)]
+struct OpaqueSource(FileClipboardIntent);
+impl CapturedClipboardFiles for OpaqueSource {
+    fn intent(&self) -> FileClipboardIntent {
+        self.0
+    }
+    fn resolve(&self, _: &Cancellation) -> Result<FileClipboard, FsError> {
+        panic!("the UI must not resolve captured tree targets")
+    }
+}
+
+/// The tree-mode counterpart of `busy_fallback_menu_action_releases_the_captured_menu`:
+/// a busy action cancels the captured tree menu, whose owner then waits in its slot
+/// for the next owned action to retire it, so that action can open a new menu.
+#[test]
+fn busy_tree_fallback_menu_action_releases_the_captured_menu() {
+    let mut h = Harness::new();
+    let disclosure = ui::root_position(
+        &h.ui.window,
+        "Discover folders in 文件夹",
+        AccessibleRole::Button,
+    );
+    ui::click(&h.ui.window, disclosure.x, disclosure.y);
+    let root = h
+        .commands
+        .borrow()
+        .iter()
+        .find_map(|command| match command {
+            Command::Tree(command) => match command.as_ref() {
+                TreeCommand::Enable { root, .. } => Some(root.clone()),
+                _ => None,
+            },
+            _ => None,
+        })
+        .expect("the disclosure must request a backend tree session");
+    let folder = root
+        .entries
+        .iter()
+        .find(|entry| entry.kind == EntryKind::Directory)
+        .expect("the listing has a folder")
+        .clone();
+    let mut display = folder.clone();
+    display.id = EntryId(7);
+    let stamp = TreeViewStamp {
+        pane: PaneId::Left,
+        navigation: root.navigation,
+        session: TreeSessionId(19),
+        revision: TreeRevision(1),
+    };
+    let row = TreeDisplayRow {
+        id: TreeRowId(7),
+        entry: display,
+        parent: None,
+        depth: 0,
+        disclosure: TreeDisclosure::Unknown,
+        expanded: false,
+        selectable: true,
+        navigable: true,
+        context_only: false,
+        error: None,
+        error_details: None,
+        original_root_entry: Some(folder.id),
+        prefix_end: 0,
+        search_match: false,
+    };
+    let view =
+        Arc::new(TreeProjection::new(root, stamp, TreeLayoutRevision(1), vec![row]).unwrap());
+    let selection = Arc::new(TreeSelectionSnapshot::from_bits(view.clone(), vec![0]).unwrap());
+    h.apply(Event::Tree(Box::new(TreeEvent::Published(
+        TreePublication::new(view, SelectionRevision(0), selection).unwrap(),
+    ))));
+    let position =
+        h.ui.window
+            .get_left_rows()
+            .iter()
+            .position(|row| row.name == "文件夹")
+            .expect("the adopted tree shows the folder");
+    let point = h.row(position);
+    let menu_capture = |h: &Harness| {
+        h.commands
+            .borrow()
+            .iter()
+            .rev()
+            .find_map(|command| match command {
+                Command::Tree(command) => match command.as_ref() {
+                    TreeCommand::Clipboard(request) => Some(request.clone()),
+                    _ => None,
+                },
+                _ => None,
+            })
+    };
+    h.commands.borrow_mut().clear();
+    h.right(point, true);
+    h.right(point, false);
+    let capture = menu_capture(&h).expect("a tree right-click captures its occurrence");
+    assert_eq!(capture.scope, TreeClipboardScope::Dragged(TreeRowId(7)));
+    h.apply(Event::Tree(Box::new(TreeEvent::Clipboard {
+        stamp: capture.view.stamp,
+        request: capture.request,
+        result: Ok(Arc::new(OpaqueSource(capture.intent))),
+    })));
+    let request = h
+        .commands
+        .borrow()
+        .iter()
+        .find_map(|command| match command {
+            Command::ShowCapturedShellMenu { request, .. } => Some(*request),
+            _ => None,
+        })
+        .expect("the captured occurrence opens the system menu");
+    h.apply(Event::ShellMenuFinished {
+        request,
+        result: Ok(ShellMenuOutcome::Unavailable),
+    });
+    assert!(ui::has_popup(&h.ui.window));
+    assert!(!h.ui.window.get_file_menu_token().is_empty());
+    h.commands.borrow_mut().clear();
+    // Hold the fixture's only owned-command scope, as a full reclamation batch
+    // does, so the chosen action cannot run.
+    let held = (h.begin)().expect("no owned action is running");
+    ui::click_popup(&h.ui.window, "Copy", AccessibleRole::Button);
+    drop(held);
+    h.draw();
+    assert!(
+        h.commands.borrow().is_empty(),
+        "the refused action must not run"
+    );
+    assert_eq!(h.ui.window.get_message_title().as_str(), "File action busy");
+    assert!(
+        h.ui.window.get_file_menu_token().is_empty(),
+        "the refused action must still release the captured tree menu"
+    );
+    assert!(
+        capture.cancel.is_cancelled(),
+        "the released tree menu cancels its capture"
+    );
+    ui::key(&h.ui.window, Key::Escape);
+    h.draw();
+    assert!(
+        !ui::has_popup(&h.ui.window),
+        "Escape closes the busy notice"
+    );
+    h.right(point, true);
+    h.right(point, false);
+    let next = menu_capture(&h).expect("the next right-click must open a new tree menu");
+    assert_eq!(next.scope, TreeClipboardScope::Dragged(TreeRowId(7)));
+    assert!(!next.cancel.is_cancelled());
+}
+
 #[test]
 fn fallback_menu_dismissal_blocks_batched_keyboard_and_accessibility_actions() {
     let mut h = Harness::new();
