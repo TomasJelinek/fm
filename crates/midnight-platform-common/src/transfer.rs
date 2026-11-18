@@ -99,14 +99,7 @@ impl VerifiedFileCopy {
             failure_stage: midnight_core::CopyErrorStage::Reading,
         })
     }
-    /// Use a source metadata pin captured before any source data read.
-    pub fn new_with_modified_time(
-        source: Box<dyn TransferSource>,
-        stage: Box<dyn StagedTransferFile>,
-        pin: Box<dyn TransferModifiedTimePin>,
-    ) -> Result<Self, FsError> {
-        Self::new_with_options(source, stage, Some(pin), TransferVerification::default())
-    }
+    /// `pin`: a source metadata pin captured before any source data read.
     pub fn new_with_options(
         source: Box<dyn TransferSource>,
         stage: Box<dyn StagedTransferFile>,
@@ -116,9 +109,6 @@ impl VerifiedFileCopy {
         let mut copy = Self::new_with_verification(source, stage, verification)?;
         copy.modified_time = pin;
         Ok(copy)
-    }
-    pub fn source_entry(&self) -> &TransferEntry {
-        self.source.entry()
     }
     pub fn phase(&self) -> CopyPhase {
         self.phase

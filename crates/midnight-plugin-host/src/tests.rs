@@ -262,8 +262,9 @@ fn discovery_rejects_escape_abi_target_and_required_service() {
     }
 }
 
+/// Routing among the discovered viewers belongs to the viewer engine (its `routing_tests`).
 #[test]
-fn manifest_removal_removes_capability_and_routing_respects_modes() {
+fn manifest_removal_removes_capability() {
     let root = fixture_root();
     package(
         root.path(),
@@ -277,46 +278,22 @@ fn manifest_removal_removes_capability_and_routing_respects_modes() {
         "viewer.markdown",
         "modes=[\"document\"]\nextensions=[\"md\"]",
     );
-    let runtime = Runtime::discover(root.path()).unwrap();
+    let ids = |runtime: Runtime| {
+        runtime
+            .catalog()
+            .iter()
+            .map(|info| info.id.clone())
+            .collect::<Vec<_>>()
+    };
     assert_eq!(
-        runtime
-            .choose(std::path::Path::new("doc.md"), false)
-            .unwrap()
-            .0
-            .id,
-        "viewer.markdown"
-    );
-    assert_eq!(
-        runtime
-            .choose(std::path::Path::new("doc.md"), true)
-            .unwrap()
-            .0
-            .id,
-        "viewer.basic"
-    );
-    assert_eq!(
-        runtime
-            .choose_enabled(
-                std::path::Path::new("doc.md"),
-                false,
-                &["viewer.markdown".into()]
-            )
-            .unwrap()
-            .0
-            .id,
-        "viewer.basic"
-    );
-    assert!(
-        runtime
-            .choose_enabled(
-                std::path::Path::new("doc.md"),
-                true,
-                &["viewer.basic".into()]
-            )
-            .is_none()
+        ids(Runtime::discover(root.path()).unwrap()),
+        ["viewer.basic", "viewer.markdown"]
     );
     std::fs::remove_file(markdown.join("plugin.toml")).unwrap();
-    assert_eq!(Runtime::discover(root.path()).unwrap().catalog().len(), 1);
+    assert_eq!(
+        ids(Runtime::discover(root.path()).unwrap()),
+        ["viewer.basic"]
+    );
 }
 
 #[test]

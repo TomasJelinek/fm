@@ -304,38 +304,3 @@ fn package(path: &Path) -> Result<PluginInfo, Error> {
         entry_library: library,
     })
 }
-
-pub(crate) fn choose<'a>(
-    catalog: &'a [PluginInfo],
-    path: &Path,
-    basic: bool,
-    disabled: &[String],
-) -> Option<(&'a PluginInfo, u16)> {
-    let extension = path.extension().and_then(|s| s.to_str()).unwrap_or("");
-    catalog
-        .iter()
-        .filter(|info| !disabled.contains(&info.id))
-        .filter_map(|info| {
-            let matched = !basic
-                && info
-                    .extensions
-                    .iter()
-                    .any(|s| s.eq_ignore_ascii_case(extension));
-            let fallback = info.extensions.is_empty() && info.modes.contains(&viewer::MODE_TEXT);
-            if !matched && !fallback {
-                return None;
-            }
-            let mode = if matched && info.modes.contains(&viewer::MODE_DOCUMENT) {
-                viewer::MODE_DOCUMENT
-            } else if matched && info.modes.contains(&viewer::MODE_SOURCE) {
-                viewer::MODE_SOURCE
-            } else if info.modes.contains(&viewer::MODE_TEXT) {
-                viewer::MODE_TEXT
-            } else {
-                return None;
-            };
-            Some((info, mode, (matched, mode, info.priority)))
-        })
-        .max_by_key(|(_, _, rank)| *rank)
-        .map(|(info, mode, _)| (info, mode))
-}

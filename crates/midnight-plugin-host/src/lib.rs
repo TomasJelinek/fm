@@ -148,17 +148,6 @@ impl Runtime {
             .find(|info| info.id == plugin_id)
             .is_some_and(loaded::Loaded::is_loaded)
     }
-    pub fn choose(&self, path: &Path, basic: bool) -> Option<(&PluginInfo, u16)> {
-        self.choose_enabled(path, basic, &[])
-    }
-    pub fn choose_enabled(
-        &self,
-        path: &Path,
-        basic: bool,
-        disabled: &[String],
-    ) -> Option<(&PluginInfo, u16)> {
-        discovery::choose(&self.catalog, path, basic, disabled)
-    }
     pub fn open(
         &self,
         plugin_id: &str,
