@@ -394,14 +394,21 @@ installed beside the executable (per-user deployments omit it), and the copied
 details of that message include it for a helper in a refused location.
 
 Builds before this check accepted a helper beside their executable through the plugin
-trust policy alone, and earlier versions of the deployment scripts and Linux per-user
-instructions copied the helper into per-user installations. In such an installation
-(a Windows private runtime that contains `midnight-elevated-listing.exe`, or
-`$HOME/.local/bin/midnight-elevated-listing` beside an older `me`), any process
-running as that user can replace the helper that the older build then runs as
-Administrator or root. Current builds refuse such a copy. Build deployments made
-before deployment retirement existed are never removed automatically, so remove
-those installations or helper copies after redeploying.
+trust policy alone, and earlier versions left the helper in folders that their user
+can change: the deployment scripts copied it into Windows private runtimes, the Linux
+per-user instructions installed `$HOME/.local/bin/midnight-elevated-listing`, release
+packages contain it beside `me` (so an earlier Windows ZIP extracted into the user
+profile, as its README suggested, or an earlier Linux archive extracted into a
+user-owned folder and run as `./me` has it there), and build output holds it beside
+`me`. In each such installation any process running as that user can replace the
+helper that the older `me` then runs as Administrator or root. Current builds refuse
+such a copy, so deleting it loses nothing: replace each such installation with a
+current build, deployment or package, or at least delete its
+`midnight-elevated-listing` helper. No script does this for them: `build.bat`
+retires only build deployments that it marked itself, so installations made directly
+with `scripts/deploy-private.ps1` (without `-ReplaceBuildDeployment`) and build
+deployments made before that retirement existed are never removed, and nothing
+touches extracted packages or per-user copies.
 
 The channel is bound by process identity. On Windows the parent checks the pipe
 client PID against the launched process; the helper checks the pipe server PID and

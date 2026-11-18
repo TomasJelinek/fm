@@ -293,7 +293,8 @@ private installation path printed by that command. Restart after deployment.
 Private installations omit `midnight-elevated-listing.exe`. **Retry with
 authorization** is still offered for a denied folder, but there it is refused with a
 message that names the requirement: an installation that only administrators can
-change (see the authorization helper above). The deployment output says so too.
+change (see the authorization helper above). The deployment output also names this
+requirement.
 `-IncludeFilesystems` includes the filesystem packages. Keep `-IncludeThumbnailers`
 to deploy the image/video workers; normal build deployment includes both flags
 and rejects incomplete module installations. To point the desktop shortcut at an
@@ -302,15 +303,21 @@ existing persistent installation without redeploying, run
 it refuses `build.bat` deployments because later builds remove them.
 The helper does not launch the app or change saved settings.
 
-Private runtimes created by earlier versions of these scripts still contain
-`midnight-elevated-listing.exe`, and the older `me.exe` beside it accepts that copy
-without the protected-location check. A program running under your account could
-replace that helper, which would then run as Administrator once you approve the UAC
-prompt; current builds refuse such a copy. Redeploy (repeat `-CreateDesktopShortcut`
-if you use the shortcut), then delete every older runtime that contains
+Earlier versions left `midnight-elevated-listing.exe` in folders that you can change,
+and their `me.exe` accepted it there without the protected-location check: private
+runtimes created by earlier versions of these scripts, earlier release ZIPs
+extracted into such a folder (for example in your user profile, as their README
+suggested), and earlier build output. A program running under your account could
+replace that helper, which the older `me.exe` would then run as Administrator once
+you approve the UAC prompt. Current builds refuse such a copy, so deleting it loses
+nothing. Rebuild and redeploy (repeat `-CreateDesktopShortcut` if you use the
+shortcut), then delete every older runtime that contains
 `midnight-elevated-listing.exe`, by default a `%USERPROFILE%\MidnightExplorer-*`
-folder. Runtimes deployed before `build.bat` began retiring its own deployments are
-never removed automatically.
+folder. Replace an earlier extracted release with a current one, or at least delete
+its `midnight-elevated-listing.exe`. Runtimes deployed directly with
+`scripts/deploy-private.ps1` (without `-ReplaceBuildDeployment`) and those that
+`build.bat` deployed before it began retiring its own deployments are never removed
+automatically.
 
 Direct launches:
 
@@ -546,12 +553,18 @@ python3 -B scripts/install-linux-desktop.py --executable "$HOME/.local/bin/me"
 
 In a per-user installation, **Retry with authorization** is still offered but is
 refused with an explanation: the root helper would come from a directory its user
-can change. Earlier versions of these instructions also installed
-`$HOME/.local/bin/midnight-elevated-listing`. Delete it: an older `me` beside it
-would run it as root through polkit although any program running as you could
-replace it, and current builds refuse it. For authorized listings, install
-system-wide into a directory that only root can change (root-owned, not group- or
-world-writable, on a filesystem not mounted `nosuid`):
+can change. Earlier versions left `midnight-elevated-listing` in directories that
+you can change, and their `me` accepted it there: these instructions installed
+`$HOME/.local/bin/midnight-elevated-listing`, release archives contain it beside `me`
+(so an archive extracted into a folder you own and run as `./me` has it there), and
+build output holds it beside `me`. Any program running as you could replace that
+helper, which the older `me` would then run as root through polkit. Current builds
+refuse such a copy, so deleting it loses nothing: delete
+`$HOME/.local/bin/midnight-elevated-listing`, rebuild, and replace an earlier
+extracted release with a current one or at least delete its
+`midnight-elevated-listing`. For authorized listings, install system-wide into a
+directory that only root can change (root-owned, not group- or world-writable, on a
+filesystem not mounted `nosuid`):
 
 ```sh
 sudo install -d -m 755 /opt/midnight-explorer
