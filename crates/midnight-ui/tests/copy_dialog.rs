@@ -1055,6 +1055,6 @@ fn compact_transfer_controls(shortcut: Key, moving: bool) {
     test.window.hide().unwrap();
 }
 
-// The legacy main-window confirm-copy-draft path had no Slint caller; its refusal,
-// wait and nested-leaf policy coverage lives on the shipped embedded draft in
+// Refusal, wait and nested-leaf policy coverage of the Copy/Move confirmation lives
+// on the shipped embedded draft in
 // exact_modified_time_move_requires_explicit_option_and_survives_queue_refusal.

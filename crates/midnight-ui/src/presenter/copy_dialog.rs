@@ -437,6 +437,8 @@ impl Presenter {
         });
     }
 
+    /// Test shorthand: confirm content only, starting at once.
+    #[cfg(test)]
     pub(crate) fn confirm_copy_dialog(
         &mut self,
         token: &str,
@@ -451,6 +453,9 @@ impl Presenter {
         );
     }
 
+    /// Test shorthand: confirm with `metadata`, starting at once. The Copy/Move form
+    /// confirms through [`Self::confirm_copy_dialog_options`].
+    #[cfg(test)]
     pub(crate) fn confirm_copy_dialog_metadata(
         &mut self,
         token: &str,

@@ -966,7 +966,6 @@ pub fn install_with_owned(
     tooltip::install(window).expect("install tooltip event observer after Slint initialization");
     scroll_input::install(window);
     shell_bridge::install(window, presenter.clone(), send.clone(), begin_owned.clone());
-    copy_presentation::install(window, presenter.clone(), send.clone(), begin_owned.clone());
     operation_windows::install(window, presenter.clone(), send.clone(), begin_owned.clone());
     jobs_windows::install(window, presenter.clone(), send.clone());
     decision_windows::install(window, presenter.clone(), send.clone());

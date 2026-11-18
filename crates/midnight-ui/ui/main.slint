@@ -225,13 +225,10 @@ export component MainWindow inherits Window {
     in property <bool> copy-draft-move;
     in property <string> copy-draft-body;
     in property <string> copy-draft-policy;
-    in-out property <bool> copy-draft-wait;
     in property <string> copy-draft-destination;
     in property <int> copy-draft-selection-end;
     in property <string> copy-draft-error;
     in property <bool> copy-draft-metadata-enabled;
-    in-out property <bool> copy-draft-preserve-time;
-    callback confirm-copy-draft(string, string);
     in property <string> metadata-conflict-token;
     in property <string> metadata-conflict-body;
     public function show-metadata-conflict() { root.open-decision-window(true, false); }
