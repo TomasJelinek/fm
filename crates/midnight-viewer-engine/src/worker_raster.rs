@@ -5,7 +5,7 @@ use super::*;
 mod rebase;
 
 const GUARD: u32 = 256;
-const MAX_PIXELS: u64 = 6 * 1024 * 1024;
+const MAX_PIXELS: u64 = VIEWER_RETAINED_RASTER_PIXELS as u64;
 
 /// A zeroed frame buffer in a single allocation. It is painted while still
 /// unique ([`unique`]) and then moved into the frame, so delivering the pixels

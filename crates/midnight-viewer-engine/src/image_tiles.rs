@@ -1,5 +1,8 @@
 //! Lazy source-raster tiles. Camera motion never changes a tile's identity or pixels.
-use midnight_core::{ViewerPixelOwner, ViewerPixels, ViewerTileId};
+use midnight_core::{
+    VIEWER_TILE_CACHE_BYTES, VIEWER_TILE_CACHE_ENTRIES, ViewerPixelOwner, ViewerPixels,
+    ViewerTileId,
+};
 use std::{
     collections::HashMap,
     sync::{
@@ -10,9 +13,9 @@ use std::{
 
 pub(crate) const EDGE: u32 = 256;
 const TILE_BYTES: usize = EDGE as usize * EDGE as usize * 4;
-const CACHE_BYTES: usize = 32 * 1024 * 1024;
+const CACHE_BYTES: usize = VIEWER_TILE_CACHE_BYTES;
 const TOTAL_BYTES: usize = 64 * 1024 * 1024;
-const CACHE_ENTRIES: usize = 128;
+const CACHE_ENTRIES: usize = VIEWER_TILE_CACHE_ENTRIES;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub(crate) struct Key {

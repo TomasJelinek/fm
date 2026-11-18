@@ -82,9 +82,11 @@ The frontend moves covered pixels without waiting for a new backend raster and
 keeps the gutter horizontally fixed. Each guard targets 256 logical pixels per
 side, converted using the effective raster scale, including the initial parent
 DPI. The combined body and gutter still fit the 24 MiB snapshot cap, so guards
-shrink when necessary. Guard refills retain the existing request ceilings: 12 KiB
-for text and source, 64 KiB for Markdown and 4 KiB for binary, at most 512 lines;
-a higher DPI does not enlarge those source budgets. An uncovered
+shrink when necessary. The engine and the UI's frame check take that cap from one
+`midnight-core` constant (`VIEWER_RETAINED_RASTER_PIXELS`). Guard refills retain
+the existing request ceilings: 12 KiB for text and source, 64 KiB for Markdown
+and 4 KiB for binary, at most 512 lines; a higher DPI does not enlarge those
+source budgets. An uncovered
 frontier pauses displayed motion until usable pixels arrive; it is not an inferred
 end of file. Settling can request exact fractional glyph phase.
 The [retained-raster contract](../superpowers/plans/2026-11-11-retained-viewer-raster.md)
@@ -152,7 +154,9 @@ Surface identity and sequence checks prevent a late reply from moving a new view
 Decoder work and tile caching remain on backend workers. The UI texture cache
 copies each newly arriving 256×256 tile into a Slint buffer on the event loop (at
 most 128 tiles, 32 MiB, per frame) and reuses it by tile identity, so panning
-copies only newly exposed tiles.
+copies only newly exposed tiles. The backend tile cache uses the same bounds,
+defined once in `midnight-core` (`VIEWER_TILE_CACHE_BYTES`,
+`VIEWER_TILE_CACHE_ENTRIES`).
 
 ## Verification
 

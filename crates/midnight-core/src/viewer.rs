@@ -148,6 +148,18 @@ pub struct ViewerGeometry {
 pub const VIEWER_MODE_IMAGE: u16 = 5;
 /// Interactive browser surface; independent of semantic plugin ABI modes.
 pub const VIEWER_MODE_HTML: u16 = 6;
+
+// Memory bounds shared by the viewer backend, which produces within them, and the
+// viewer UI, which refuses anything larger; one definition keeps them equal.
+/// Pixels of one retained text raster, body and source gutter together
+/// (24 MiB of premultiplied RGBA).
+pub const VIEWER_RETAINED_RASTER_PIXELS: usize = 6 * 1024 * 1024;
+/// Bytes of image and PDF tiles that the backend tile cache and the UI texture
+/// cache each keep for reuse.
+pub const VIEWER_TILE_CACHE_BYTES: usize = 32 * 1024 * 1024;
+/// Tiles that the backend tile cache and the UI texture cache each keep.
+pub const VIEWER_TILE_CACHE_ENTRIES: usize = 128;
+
 /// Platform-neutral interactive surface contract shared by backend and presentation.
 pub use midnight_web_viewer_api as viewer_web;
 

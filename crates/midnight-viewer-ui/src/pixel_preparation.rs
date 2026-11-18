@@ -193,9 +193,9 @@ mod opening_trace {
     }
 }
 
-/// Retained body plus gutter bytes. Must match the engine's retained raster
-/// budget (`worker_raster.rs`, `raster_budget.rs`); larger frames are refused.
-pub(super) const RETAINED_BYTES: u64 = 6 * 1024 * 1024 * 4;
+/// Retained body plus gutter bytes, from the budget the engine produces within;
+/// larger frames are refused.
+pub(super) const RETAINED_BYTES: u64 = midnight_core::VIEWER_RETAINED_RASTER_PIXELS as u64 * 4;
 const LEGACY_BYTES: u64 = 16 * 1024 * 1024 * 4;
 const WAKE_RETRY: Duration = Duration::from_millis(50);
 type Notify = Arc<dyn Fn() -> bool + Send + Sync>;
