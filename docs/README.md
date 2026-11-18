@@ -10,6 +10,7 @@ plans and old verification reports do not establish current functionality.
 | --- | --- |
 | Build, install, run, platforms and output locations | [Project README](../README.md) |
 | Implemented features and remaining work | [Feature status](FEATURE_STATUS.md) |
+| Current checkpoint, open requirements and recorded deferrals | [Active work](ACTIVE_WORK.md), [implementation backlog](IMPLEMENTATION_BACKLOG.md) |
 | Current default shortcuts and configurable actions | [Keyboard reference](KEYBOARD_SHORTCUTS.md) |
 | Security, Unicode, identity, cancellation and integrity | [Security requirements](../SECURITY.md) |
 | Rust style, platform separation and source-size limits | [Code style](../CODE_STYLE.md) |
@@ -38,6 +39,8 @@ the later viewer/plugin branch during the 12 November integration.
 
 The [12 November panel interaction qualification](verification/2026-11-12-panel-interaction-polish.md)
 records the tree-admission, captured actions, error-dialog and visual checks for
-that batch, including its explicit limitations. Other files under `verification/`
+that batch, including its explicit limitations. The
+[18 November deep code review checkpoint](ACTIVE_WORK.md#deep-code-review--18-november-2026)
+lists that review's dated records. Other files under `verification/`
 remain evidence for the exact commits and environments stated in each report.
 Neither CI configuration nor a checked plan is proof of a successful test run.

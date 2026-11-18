@@ -868,7 +868,9 @@ exists. Internal panel dragging remains available. X11 incremental transfers are
 bounded and timed out. Move proposals may negotiate Copy only when the source
 explicitly offers Copy; a Move-only offer is rejected.
 
-## Dynamic viewers and planned filesystem plugins
+<a id="dynamic-viewers-and-planned-filesystem-plugins"></a>
+
+## Dynamic viewers and filesystem plugins
 
 The [plugin interface design](docs/superpowers/specs/2026-11-05-dynamic-viewer-filesystem-plugins-design.md)
 defines the implementation boundary. Basic text/binary, source and Markdown viewers
@@ -893,10 +895,12 @@ fields and conservative physical-device classifications.
   DACL/owner checks; Linux uses native uid/mode and sticky-directory rules. A private
   child inside a replaceable parent is insufficient. This does not turn trusted
   native code into a sandbox or authenticate a publisher's identity.
-- Plugin projects share one Git repository but only depend on the public API/SDK.
-  Their independent Cargo workspaces contain their tests and have no write access to
-  the host application's sources. CI checks the basic, source, Markdown, image and
-  PDF viewers, the image thumbnailer, the viewer conformance fixture and the
+- Plugin projects share one Git repository but depend only on the public API/SDK,
+  except the in-repository path dependencies that the
+  [developer guide](docs/developer/README.md) lists (PLUGIN-01 in the
+  [backlog](docs/IMPLEMENTATION_BACKLOG.md)). Their independent Cargo workspaces
+  contain their tests and have no write access to the host application's sources.
+  CI checks the basic, source, Markdown, image and PDF viewers, the image thumbnailer, the viewer conformance fixture and the
   Windows/Linux native, network and archive filesystems from exported directories,
   without host sources: viewers and workers against the released public SDK
   bundles, filesystem libraries against the checked-in public filesystem API/SDK.

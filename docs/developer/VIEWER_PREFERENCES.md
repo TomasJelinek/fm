@@ -111,7 +111,9 @@ own edits. When the read arrives, the explorer restores the loaded choices, merg
 with those edits, into every open viewer window, so conflicting edits made in
 different windows before the read converge to the last one. Raster images adopt the
 restored zoom; PDF geometry stays as it is. Restoration saves nothing and reports
-no edit.
+no edit. Comparison windows are not restored: the comparator reads its font only
+when a window opens, so one opened before the read keeps the default comparison font
+until it is reopened.
 
 The strict application codec writes schema 21 when viewer settings differ from
 defaults, or schema 22 when the comparator font is customized. A customized panel

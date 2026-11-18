@@ -1,8 +1,9 @@
-# Active work and requirements evidence — 17 November 2026
+# Active work and requirements evidence — 18 November 2026
 
 <a id="active-work-and-requirements-evidence--13-november-2026"></a>
 <a id="active-work-and-requirements-evidence--15-november-2026"></a>
 <a id="active-work-and-requirements-evidence--16-november-2026"></a>
+<a id="active-work-and-requirements-evidence--17-november-2026"></a>
 
 This is the current implementation/acceptance ledger alongside
 [Feature status](FEATURE_STATUS.md) and the preserved
@@ -17,6 +18,184 @@ code or a green subset into complete qualification.
 **ACTIVE — explicitly resumed by the user on 15 November 2026:** implement all
 designed app features, test each deeply and polish all UI. Copy/Move convergence
 comes first; role work still requires scoped acceptance and exclusive ownership.
+
+### Deep code review — 18 November 2026
+
+A deep code review of the whole repository, started from main `3a27eeb2` on
+17 November, is integrated on `claude/main-branch-code-review-97667c` at
+**`2050f745`** (576 non-merge commits). Reviewers covered the engine, core,
+platforms, hosts, public APIs, plugins, UI, viewers, build scripts and CI; the
+Orchestrator, acting as Architect, decided the open design questions. What the
+review deferred, and the residuals it accepted, are rows of the
+[backlog](IMPLEMENTATION_BACKLOG.md#deferrals-and-residuals-of-the-18-november-review),
+each with its trigger. One UI package, which neutralizes explicit bidirectional
+controls in file names shown in panels, tabs and viewer captions, was still in
+follow-up and is not part of `2050f745`: until it merges, such names display raw
+there, while document text in the viewers and the comparator is already neutralized.
+
+Changes by area (the linked contracts describe the current behavior):
+
+- **Engine.** A transfer holds its disk-I/O gate slot only while it executes native
+  steps, not while paused or waiting for a decision or admission, and a quarantined
+  job returns its slot; a namespace change that a running peer refuses is repeated
+  without a prompt once that peer changes; each Copy and mutation job reports its
+  terminal progress once ([transfers](developer/TRANSFERS.md),
+  [operation progress](developer/OPERATION_PROGRESS.md)). Recursive Attributes/Times/Case
+  pin each child only while processing it, from a name snapshot of its folder
+  (META-03). An archive session whose cleanup is unconfirmed is ended by its last
+  owner, and provider-level owners give their references up instead of forgetting
+  them; cancelling one request never ends a shared archive worker, and a busy
+  archive navigation waits for a worker
+  ([engine lifetime](developer/ENGINE_LIFETIME.md#archive-navigation-and-queued-size-work)).
+  Flat watches keep the shown rows watched across pending and failed native
+  listings and prepare a navigated folder once its listing has read its first
+  entries; a polling-only or paused watch status is shown, and a panicked watch
+  worker restarts at once, then at most once a minute
+  ([watch status](developer/PANEL_DIAGNOSTICS.md#watch-status)). Tree watch batches
+  swap without a gap, tree branches are probed for presence instead of listed, and
+  provider references the tree model no longer holds are reclaimed
+  ([tree watches](developer/TREE_PANEL.md#native-watches-and-reconciliation)).
+  File Lists, size warnings and tree diagnostics use per-user private spool roots
+  with a per-process fallback, and Linux spool bases are resolved through links by a
+  resolver shared with the filesystem host. Idle clipboard sessions and open
+  drag/drop sessions wait for operating-system events instead of 10 ms pumps. Find
+  formats only the results it publishes, checksum reads are admitted by source
+  storage kind, and shutdown drains the Copy and mutation actors before aborting
+  tasks.
+- **Platforms.** Windows treats only name-surrogate reparse points as links
+  (OneDrive/Cloud Files placeholders, deduplicated and WOF files are ordinary
+  entries), watches folders through its own `ReadDirectoryChangesW` service instead
+  of `notify`, pins Move destinations and recovery parents reached through
+  junctions, falls back to the classic delete disposition for permanent deletion on
+  FAT32/exFAT (not verified on real media) while Copy and Move refuse such volumes,
+  and waits out a folder Rename refused while a file below it is open
+  ([record](verification/2026-11-18-windows-directory-rename-refusals.md)). Linux
+  stages Rename and permanent Delete on mounts without POSIX modes under one
+  admission rule in the platform crate and the native plugin, with ACL-aware
+  private-group parents and overlayfs-aware mount checks; a completed Rename or
+  Delete with a leftover staging folder ends Completed with errors; X11 drops that
+  showed Copy report their refusals; the X11 clipboard waits in `poll()`; terminals
+  start through `x-terminal-emulator`. On both systems the directory authorization
+  helper runs only from an installation that standard users cannot change.
+- **Hosts.** The filesystem host ends an archive worker on protocol violations and
+  wrong reply types and reports the cause, stops staging before the spool volume
+  would fall below max(1 GiB, 2% of its capacity) free, prefers a spool root whose
+  volume has room and falls back to a per-process root, and keeps actively read
+  members cached beyond its 512 MiB budget ([filesystem API](developer/FILESYSTEM_API.md)).
+  The plugin host loads libraries outside its registry lock, refuses a full registry
+  before loading another library and reports fatal viewer failures at once. The web
+  viewer host session is event-driven and publishes a browser-initiated close
+  ([record](verification/2026-11-18-html-idle-wakeups.md)). Editors, Custom Commands
+  and the software-rendering restart are spawned under the process-creation lock,
+  closed thumbnail worker streams report the worker's exit code or signal, and
+  thumbnail captures are admitted by storage kind.
+- **APIs and plugins.** The filesystem plugin SDK bounds consecutive removed entries
+  in one list page and truncates over-long diagnostics, descriptors are validated
+  more strictly, and the thumbnail SDK 0.2.1 release is held back (SDK-01). The
+  archive worker decodes a solid 7z block once and keeps its siblings within a
+  128 MiB window, keeps reads across seeks and keys ZIP duplicate records like its
+  reader. The Linux native plugin lists each row with one no-follow `fstatat`,
+  mounts no automount point and classifies links alike in Stat and listings; the
+  Windows plugin fails listings on enumeration errors; the macOS plugin keeps
+  unrepresentable rows. The Basic, Source and Markdown viewers fixed paging, budget,
+  checkpoint and search defects, Markdown resynchronizes after long tables and HTML
+  blocks, AVIF items without a displayable frame fail instead of spinning, the HTML
+  provider builds from the verified CEF SDK in place, and the video thumbnailer
+  reads large packets and samples partial videos.
+- **UI.** Escape, X and the header close of a decision window defer it like Decide
+  later; drop refusals reach the status line without an empty path suffix; a
+  refused authorized retry states the helper requirement; the status line says when
+  startup shows defaults because settings are still loading; the About window keeps
+  the Slint attribution visible but inert; the pane shows its watch status. Idle
+  timers stop when they have no work (about 80 to about 10 idle wakeups per second
+  in [indicative measurements](verification/2026-11-18-ui-idle-wakeups.md)), viewer
+  preferences are restored into viewers opened before the settings read, and unused
+  UI surface and its tests were removed.
+- **Viewers.** Text frames are painted into the buffers they share, PDF pixels move
+  into their shared buffer on the image actor instead of the viewer worker, rasters
+  snap to whole physical pixels, glyph painting is culled by ink reach, viewer
+  workers wake by events with a reserved wake slot, page text is shared as
+  `Arc<str>`, explicit bidirectional controls are
+  neutralized in the Basic and Source viewers and the comparator, and the
+  comparator paints its first frame in the preferred font and presents output on
+  worker wakes ([file comparison](developer/FILE_COMPARISON.md)).
+- **Tests.** Each crate's integration tests link into one test binary; many real
+  sleeps were replaced by virtual clocks, events and bounded waits; Windows
+  namespace tests run in both lookup modes; native DACL fixtures replaced PowerShell
+  ACL fixtures; the user-command probe compiles once per compiler and source; Copy/Move
+  planning tests name the qualified NTFS volume they need. Beyond the clipboard
+  transfers named in the 17 November entry below, the root F5/F6 transfers of
+  `tree_move` now also hold scalar watch hints through the transfer terminal
+  ([test execution](developer/TEST_EXECUTION.md)).
+- **CI and build.** New `viewer-conformance` and `thumbnail-image` jobs; the `check`
+  job runs the isolated X11 drag/drop and clipboard tests (Xvfb `-noreset`), the
+  installed archive worker tests and the image decoder's native helper tests. Build
+  deployments are replaced instead of accumulating and are serialized per output,
+  private deployments no longer copy the authorization helper, the pinned toolchain
+  is installed explicitly, and the Windows build wrappers decode native output as
+  UTF-8.
+- **Documentation.** Contracts, plugin READMEs, README and SECURITY.md follow each
+  change; the dependency inventory was confirmed by a complete 46-pair capture and
+  `--check` ([third-party record](THIRD_PARTY.md)); this pass adds the backlog
+  deferrals, updated feature-status rows and this checkpoint.
+
+Evidence. The review's dated records are
+[recursive metadata traversal](verification/2026-11-18-recursive-metadata-traversal.md),
+[Windows directory rename refusals](verification/2026-11-18-windows-directory-rename-refusals.md),
+[HTML idle wakeups](verification/2026-11-18-html-idle-wakeups.md),
+[explorer idle wakeups](verification/2026-11-18-ui-idle-wakeups.md) and
+[separate workspaces and opt-in qualification](verification/2026-11-18-workspaces-and-opt-in-qualification.md).
+They build on [HTML frame pacing](verification/2026-11-12-html-frame-pacing.md) (the
+wheel-latency viewport), the [Linux HTML qualification](verification/2026-11-10-html-linux.md),
+[archive streaming](verification/2026-11-09-archive-streaming.md) (the installed
+worker baseline), the isolated X11 commands of [file drag and drop](verification/file-drag-drop.md)
+and the [Linux file clipboard](verification/linux-file-clipboard.md) (updated in this
+review to `-noreset` and the CI command) and the
+[directory authorization record](verification/2026-11-11-directory-authorization.md).
+Full workspace runs at intermediate integration tips are orchestrator logs in its
+integration worktree's `_build/qa/`, not dated records: at `93d36411` workspace Clippy
+reported no warnings on Windows and on WSL Ubuntu 24.04, and the workspace tests
+gave 5,944 passed / 0 failed / 122 ignored in 88 test-result groups on Windows and
+5,802 / 0 / 118 in 85 groups on Linux; at `05acd6a9`, 5,957 / 0 / 122 and
+5,818 / 0 / 119, again with Clippy reporting no warnings. The batches merged after
+`05acd6a9` were checked by the targeted runs in their package reports. A full Windows
+and Linux validation of `2050f745` was running when this checkpoint was written; its
+result is not recorded here.
+
+Not established by this checkpoint:
+
+- No GitHub-hosted CI run of this history (CI-02 in the backlog); the 17 November
+  hosted failures below remain unattributed.
+- No deployment or launcher registration of `2050f745` is recorded; the 18 November
+  measurements used private probe installations of their own builds. The c97 EXE
+  (`2d906dea…`) and the other runtimes named below predate this review's source, so
+  the 17 November statement that Windows production is unchanged from the c97 EXE
+  no longer holds. Private runtimes deployed by the pre-review scripts, including
+  the `MidnightExplorer-20261117-*` deployments below, contain a
+  `midnight-elevated-listing.exe` that their own older `me.exe` accepts from a folder
+  the user can change; the [README](../README.md#windows-x64) says to redeploy and
+  then delete them.
+- Not run on Linux: the event-driven HTML host session and the explorer idle
+  measurements (Windows only), the comparator's first-frame font check (COMPARE-01),
+  builds and tests of the image, AVIF and video plugins (formatting only), and the
+  engine stress runs. Not run at all: PowerShell 7 script paths, a real CEF/MSVC
+  HTML build, the interactive Windows desktop tests, physical IME and native Wayland
+  input, real FAT32/exFAT media, live mounts without POSIX modes and accepted
+  UAC/polkit prompts (PLAT-02).
+- `same_navigation_success_then_exact_commit_quiets_watch` once failed under load;
+  no cause was found, and it now prints the unexpected event, fence and hint log on
+  failure.
+
+Open work is in the backlog: CI-01 and CI-02; PLAT-02 and PLAT-03; VIEW-04 and
+UI-PERF-01 (idle wakeups); ARCH-01 (small-content budget); ARCH-05, ARCH-06 and
+LIFE-02 (captures retained after a taint or quarantine); ARCH-07, REL-01 and
+SDK-01 to SDK-03 (next API/SDK releases); META-04, WATCH-01, SPOOL-01, LINK-01,
+IO-02, TREE-PERF-01, TREE-02, INPUT-01, PROC-01, PLUGIN-01, COMPARE-01, BUILD-01,
+TRASH-01, TEST-01, VIEW-03 and OPTIONS-02. The role table under
+[current role boundaries](#current-role-boundaries-and-exclusive-ownership)
+describes assignments made before this review; the review assigned no further role
+work beyond these rows. The [corrections table](#corrections-to-stale-staged-references)
+now names the 329 retirement slots of the current lifetime contract.
 
 ### Clipboard and tree fixture ordering — 17 November 2026
 
@@ -766,7 +945,7 @@ their evidence or authorize edits to another role's files.
 | [Implementation backlog](IMPLEMENTATION_BACKLOG.md), tree introduction/consumer text | Native Delete/Rename/metadata, clipboard, focused F4, checksums, Properties/context menus, Make File List and native comparisons have captured paths. In particular the later sentence calling directory comparison guarded is stale; root-level native comparison is implemented. Generic provider writes, archive watches/attachment/nesting and complete native qualification remain open. |
 | [11 November gap audit](verification/2026-11-11-open-requirements-audit.md), tree/dialog/media/network rows | This is the named older baseline. Later reports/source add captured consumers, protocol-3 cooperative archive staging cancellation and discovery Hot Paths. Blanket native-modal migration is superseded; interactive Linux auth remains a gap. Preserve the audit as history. |
 | [Feature status](FEATURE_STATUS.md), Dialogs row, and [dialog ergonomics](developer/DIALOG_ERGONOMICS.md), native-modal examples | These descriptions predate the embedded modal migration in `2e0e554`. Current operation/copy/filter/Hot Paths/file-list/notice forms use the embedded presentation and focus/input gates above; independent modeless tools keep native hosts. Those unowned documents need a separately assigned correction; the positive-input gate now passes the retained-focus assertion and selected boundaries; private startup and shared engine retry pass their recorded scopes; the initial shared hashing anomaly is preserved/unattributed and broader native qualification remains open. |
-| [Initial retirement plan](superpowers/plans/2026-11-12-runtime-independent-retirement.md) and LIFE-01 backlog ledger | Later service/checksum/command/mailbox/report/configuration work exists. The backlog retains both 324 and an older 308 slot figure; [current lifetime contract](developer/ENGINE_LIFETIME.md) states 324. Architect/Backend must reconcile the current ownership ledger before closure, rather than declaring all retirement work missing or complete from checkboxes. |
+| [Initial retirement plan](superpowers/plans/2026-11-12-runtime-independent-retirement.md) and LIFE-01 backlog ledger | Later service/checksum/command/mailbox/report/configuration work exists. The backlog states the current 329 slots and keeps the older 308 figure as history; the [current lifetime contract](developer/ENGINE_LIFETIME.md) states 329 payload slots and eight reusable waiter tokens, which an engine test checks against the code. Architect/Backend must reconcile the current ownership ledger before closure, rather than declaring all retirement work missing or complete from checkboxes. |
 | [Tree Move contract](developer/TREE_PANEL.md#move-and-transfer-reconciliation) | Corrected in this scope, including Copy/Paste wording: copied files use the frozen Full SHA-256 or explicit quick size plus first/middle/last 64 KiB policy; same-volume native rename reads/hashes no contents. Source identity, conflict consent, per-file removal and tree reconciliation guarantees remain intact. |
 | [Transfer service](developer/TRANSFERS.md), ordinary Move/metadata descriptions | Corrected in this batch after source inspection: native same-volume rename precedes content proof; copied-file removal follows the immutable full/quick mode, with metadata/identity guards retained. Full SHA-256 remains the default, not an unconditional requirement for every Move. |
 | [Worker SDK](developer/WORKER_SDK.md), startup/version descriptions | Corrected against package/source: worker SDK 0.2.0 accepts legacy MWS1/MWR1 and explicit MWS2/MWR2 resource policies. Thumbnail API remains 0.1.0 while its SDK is 0.2.0; released viewer API/SDK 0.1.0 is a separate package family. No dependency or released package bytes were changed. |

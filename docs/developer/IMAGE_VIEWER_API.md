@@ -325,8 +325,9 @@ private disk. That part is not implemented and no recorded decision retires it, 
 it is an open ARCH-01 deviation: the worker stages every member it reads into a
 host spool file, small images included. The design's other requirements remain: no
 fixed archive or member byte-size ceiling, bounded working memory, cancellation,
-integrity verification and explicit out-of-space errors (the host's free-space
-reserve for the spool volume is still planned). Application qualification must
+integrity verification and explicit out-of-space errors (the host stops staging
+before the spool volume would fall below its free-space reserve of max(1 GiB, 2% of
+its capacity); see the [filesystem API](FILESYSTEM_API.md)). Application qualification must
 cover that budget unless a recorded decision retires it, measure peak memory across
 both workers, not just broker chunk sizes, and cover preview-only reads, source
 changes, cancellation, CRC failure and exhausted spool storage.
