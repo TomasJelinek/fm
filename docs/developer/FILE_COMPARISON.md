@@ -76,8 +76,10 @@ comparison discovers again.
 
 Text must be UTF-8, or UTF-16 with a byte order mark. Tab, line breaks, vertical tab,
 form feed (page breaks in sources) and escape (coloured logs) are text; the last three
-are shown as the control pictures ␋, ␌ and ␛. NUL and other control characters
-mark the file as binary.
+are shown as the control pictures ␋, ␌ and ␛. The explicit bidirectional embedding,
+override and isolate controls (U+202A-U+202E, U+2066-U+2069) are shown as escapes such
+as `\u202E`, so neither file can reorder its displayed lines; the diff still compares
+the raw lines. NUL and other control characters mark the file as binary.
 
 The installed fixed-pitch families are scanned on a `comparator-fonts` thread, started
 when a text comparison begins reading; the scan reads every installed family and can

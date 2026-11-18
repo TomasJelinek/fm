@@ -57,6 +57,64 @@ fn invalid_bytes_and_terminal_controls_are_visible() {
 }
 
 #[test]
+fn explicit_bidi_controls_are_escaped_and_implicit_marks_kept() {
+    // RLO and LRI would reorder the displayed text; RLM is an ordinary RTL mark.
+    let p = page(
+        "a\u{202e}b\u{2066}c\u{200f}d".as_bytes(),
+        Encoding::Utf8,
+        0,
+        true,
+    );
+    assert_eq!(p.text, "a\\u202Eb\\u2066c\u{200f}d");
+    assert!(
+        !p.text
+            .chars()
+            .any(|c| matches!(c, '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')),
+        "no explicit bidi control reaches the displayed text"
+    );
+    let invalid = |start, end| Span {
+        start,
+        end,
+        role: STYLE_INVALID,
+        flags: 0,
+    };
+    assert_eq!(p.spans, vec![invalid(1, 7), invalid(8, 14)]);
+    assert_eq!(
+        p.anchors
+            .iter()
+            .map(|a| (a.text_offset, a.source_offset))
+            .collect::<Vec<_>>(),
+        vec![
+            (0, 0),
+            (1, 1),
+            (7, 4),
+            (8, 5),
+            (14, 8),
+            (15, 9),
+            (18, 12),
+            (19, 13)
+        ]
+    );
+    for (bytes, encoding) in [
+        ([0x2e, 0x20], Encoding::Utf16Le),
+        ([0x20, 0x2e], Encoding::Utf16Be),
+    ] {
+        let p = page(&bytes, encoding, 2, true);
+        assert_eq!(p.text, "\\u202E", "{encoding:?}");
+        assert_eq!(p.spans, vec![invalid(0, 6)], "{encoding:?}");
+        assert_eq!(
+            p.anchors
+                .iter()
+                .map(|a| (a.text_offset, a.source_offset))
+                .collect::<Vec<_>>(),
+            vec![(0, 2), (6, 4)],
+            "{encoding:?}"
+        );
+    }
+    assert!(codec::encode(&p).is_ok());
+}
+
+#[test]
 fn split_utf8_and_cr_wait_for_more_input() {
     let p = page(b"a\xe2\x82", Encoding::Utf8, 20, false);
     assert_eq!(

@@ -167,6 +167,51 @@ fn utf16_search_and_visible_escape_match_exact_source_bytes() {
 }
 
 #[test]
+fn search_matches_a_displayed_bidi_escape_and_never_the_raw_control() {
+    let text = "a\u{202e}b".as_bytes();
+    assert_eq!(
+        first_and_last(&mut Matcher::new("\\u202e", false), text, Encoding::Utf8, 0),
+        (Some(range(1, 3)), Some(range(1, 3)))
+    );
+    for sensitive in [false, true] {
+        assert_eq!(
+            first_and_last(
+                &mut Matcher::new("\u{202e}", sensitive),
+                text,
+                Encoding::Utf8,
+                0
+            ),
+            (None, None),
+            "the raw control is never displayed, so it is never matched"
+        );
+    }
+    // A read boundary splits the three UTF-8 bytes of U+202E; the decoder defers them.
+    let mut m = Matcher::new("\\u202e", false);
+    let scan = m
+        .scan(
+            b"a\xe2\x80",
+            Encoding::Utf8,
+            0,
+            false,
+            Want::FirstFrom(0),
+            || false,
+        )
+        .unwrap();
+    assert_eq!((scan.found, scan.consumed), (None, 1));
+    let scan = m
+        .scan(
+            b"\xe2\x80\xaeb",
+            Encoding::Utf8,
+            1,
+            true,
+            Want::FirstFrom(0),
+            || false,
+        )
+        .unwrap();
+    assert_eq!(scan.found, Some(range(1, 3)));
+}
+
+#[test]
 fn cancellation_is_polled_at_bounded_intervals() {
     let bytes = vec![b'x'; 20_000];
     let mut polls = 0;

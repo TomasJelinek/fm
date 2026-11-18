@@ -34,14 +34,15 @@ const _: () = assert!(MAX_INVALID_SPANS <= MAX_SPANS);
 // A unit displays at most six bytes, so a page never needs a text byte budget.
 const _: () = assert!(6 * MAX_UNITS <= MAX_PAGE_BYTES);
 
-/// One decoded source unit. Escapes display the original byte or UTF-16 word.
+/// One decoded source unit. Escapes display the original byte, UTF-16 word or code point.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Unit {
     /// A scalar displayed as itself; CR, LF and CRLF decode to one '\n'.
     Char(char),
     /// An invalid byte or a C0/C1/DEL control, displayed as `\xNN`.
     Byte(u8),
-    /// A malformed UTF-16 code unit, displayed as `\uNNNN`.
+    /// A malformed UTF-16 code unit or an explicit bidirectional control, displayed as
+    /// `\uNNNN`.
     Word(u16),
 }
 
@@ -233,9 +234,15 @@ fn unit(bytes: &[u8], encoding: Encoding, eof: bool) -> Option<(Unit, usize)> {
 }
 
 fn visible(c: char) -> Unit {
-    // Unicode Cc controls (a stable set) are exactly C0, DEL and C1, all below U+0100.
-    match u8::try_from(u32::from(c)) {
-        Ok(byte) if c.is_control() && !matches!(c, '\r' | '\n' | '\t') => Unit::Byte(byte),
+    let code = u32::from(c);
+    match code {
+        // Unicode Cc controls (a stable set) are exactly C0, DEL and C1, all below U+0100.
+        // They keep the `\xNN` form.
+        0..=0x1f | 0x7f..=0x9f if !matches!(c, '\r' | '\n' | '\t') => Unit::Byte(code as u8),
+        // The explicit bidirectional embedding, override and isolate controls would let file
+        // content reorder the displayed text ("Trojan Source"). They are named losslessly as
+        // `\uNNNN`. Implicit direction marks (LRM, RLM, ALM) stay ordinary text for RTL prose.
+        0x202a..=0x202e | 0x2066..=0x2069 => Unit::Word(code as u16),
         _ => Unit::Char(c),
     }
 }

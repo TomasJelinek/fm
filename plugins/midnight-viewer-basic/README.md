@@ -38,13 +38,16 @@ The distribution's host tests own native DLL/SO loading and routing checks.
 
 - Text mode supports UTF-8 (with or without BOM) and BOM-marked UTF-16 LE/BE.
   It does not guess ANSI/code-page encodings. CR, LF and CRLF display as LF.
-  Invalid bytes display as `\xFF`, malformed UTF-16 units as `\uD800`, and
-  control characters except tab/newline as visible escapes. Escape sequences
-  are never interpreted as terminal commands. Escapes carry the protocol's
-  invalid-source style (adjacent escapes share one span, at most 2048 spans per
-  page), so they stay distinguishable from literal backslash text; copied text
-  is the displayed text. Valid Unicode and combining/RTL content remain intact
-  for the host renderer.
+  Invalid bytes display as `\xFF`, malformed UTF-16 units as `\uD800`, control
+  characters except tab/newline as visible escapes, and the explicit
+  bidirectional embedding, override and isolate controls (U+202A-U+202E,
+  U+2066-U+2069) as escapes such as `\u202E`, so file content cannot reorder
+  the displayed text ("Trojan Source"). Implicit direction marks (LRM, RLM,
+  ALM) remain for RTL text. Escape sequences are never interpreted as terminal
+  commands. Escapes carry the protocol's invalid-source style (adjacent escapes
+  share one span, at most 2048 spans per page), so they stay distinguishable
+  from literal backslash text; copied and searched text is the displayed text.
+  Valid Unicode and combining/RTL content remain intact for the host renderer.
 - Binary mode sends exact bounded raw bytes and u64 source offsets to the host's
   hexadecimal/printable-column renderer, with at most 16 bytes per requested row.
   The caller selects Text or Binary explicitly. Alt+F3 remains Text; ordinary F3
