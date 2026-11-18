@@ -262,7 +262,8 @@ impl PreparedMutation for WindowsMutation {
         // Check the entry name while this handle denies concurrent delete/rename.
         metadata::name_available(self, new_name, cancel)?;
         checked(cancel, path)?;
-        native::rename(&source, new_name).map_err(|e| failure("rename", path, e))?;
+        native::rename(&source, &self.parent, new_name, cancel)
+            .map_err(|e| failure("rename", path, e))?;
         Ok(RenameCompletion {
             destination: path.with_file_name(new_name),
             residue: None,
@@ -383,17 +384,16 @@ pub(crate) fn validate_name(name: &OsStr) -> io::Result<()> {
 
 fn checked(cancel: &Cancellation, path: &Path) -> Result<(), FsError> {
     if !cancel.wait_if_paused() {
-        Err(failure(
-            "mutate",
-            path,
-            io::Error::new(
-                io::ErrorKind::Interrupted,
-                "operation cancelled; already processed entries are not restored",
-            ),
-        ))
+        Err(failure("mutate", path, cancelled()))
     } else {
         Ok(())
     }
+}
+fn cancelled() -> io::Error {
+    io::Error::new(
+        io::ErrorKind::Interrupted,
+        "operation cancelled; already processed entries are not restored",
+    )
 }
 fn failure(operation: &'static str, path: &Path, error: io::Error) -> FsError {
     FsError::from_io(operation, path, error)

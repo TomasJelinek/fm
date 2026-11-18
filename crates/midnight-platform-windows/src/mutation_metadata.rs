@@ -363,7 +363,8 @@ fn apply(
     }
     checked(cancel, path)?;
     if let Some(name) = rename {
-        native::rename(&source, name).map_err(|e| failure("change filename case", path, e))?;
+        native::rename(&source, &item.parent, name, cancel)
+            .map_err(|e| failure("change filename case", path, e))?;
         result.current_path = path.with_file_name(name);
         result.changes.renamed = true;
     }

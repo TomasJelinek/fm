@@ -10,10 +10,14 @@ use std::{
     sync::atomic::{AtomicUsize, Ordering},
 };
 use windows_sys::Win32::{
-    Foundation::{HANDLE, INVALID_HANDLE_VALUE},
+    Foundation::{ERROR_ALREADY_EXISTS, ERROR_SHARING_VIOLATION, HANDLE, INVALID_HANDLE_VALUE},
     Security::{
-        GetTokenInformation, RevertToSelf, SECURITY_IMPERSONATION_LEVEL, SecurityImpersonation,
-        TOKEN_QUERY, TokenImpersonationLevel,
+        ACCESS_ALLOWED_ACE, ACL, ACL_REVISION, AddAccessAllowedAce, AddAccessDeniedAce,
+        CreateWellKnownSid, DACL_SECURITY_INFORMATION, GetLengthSid, GetTokenInformation,
+        InitializeAcl, InitializeSecurityDescriptor, RevertToSelf, SE_DACL_PROTECTED,
+        SECURITY_DESCRIPTOR, SECURITY_IMPERSONATION_LEVEL, SECURITY_MAX_SID_SIZE,
+        SecurityImpersonation, SetKernelObjectSecurity, SetSecurityDescriptorControl,
+        SetSecurityDescriptorDacl, TOKEN_QUERY, TokenImpersonationLevel, WinWorldSid,
     },
     System::Threading::{GetCurrentThread, OpenThreadToken},
 };
@@ -244,6 +248,217 @@ fn permanent_deletion_skips_children_another_process_removed_first() {
         "one child and the directory: {reported:?}"
     );
     assert_eq!(reported.last(), Some(&root));
+}
+
+fn millis(waits: &[Duration]) -> Vec<u128> {
+    waits.iter().map(Duration::as_millis).collect()
+}
+
+#[test]
+fn only_a_transient_access_refusal_is_retried_within_its_one_second_budget() {
+    let denied = || os(ERROR_ACCESS_DENIED as i32);
+    // A refusal that persists: 10 ms, then twice as long each time, one second in all.
+    let (mut attempts, mut waits) = (0, Vec::new());
+    let error = retry_refusal(
+        || {
+            attempts += 1;
+            Err(denied())
+        },
+        || true,
+        &mut |delay| {
+            waits.push(delay);
+            Ok(())
+        },
+    )
+    .unwrap_err();
+    assert_eq!(error.raw_os_error(), Some(ERROR_ACCESS_DENIED as i32));
+    assert_eq!(millis(&waits), [10, 20, 40, 80, 160, 320, 370]);
+    assert_eq!(waits.iter().sum::<Duration>(), RENAME_RETRY_BUDGET);
+    assert_eq!(attempts, 8);
+    // A refusal that passes: the same rename then succeeds.
+    let (mut refusals, mut waits) = (2, Vec::new());
+    retry_refusal(
+        || match refusals {
+            0 => Ok(()),
+            _ => {
+                refusals -= 1;
+                Err(denied())
+            }
+        },
+        || true,
+        &mut |delay| {
+            waits.push(delay);
+            Ok(())
+        },
+    )
+    .unwrap();
+    assert_eq!(millis(&waits), [10, 20]);
+    // A genuine permission refusal, and any other failure, is returned at once.
+    for (error, transient) in [
+        (denied(), false),
+        (os(ERROR_SHARING_VIOLATION as i32), true),
+        (os(ERROR_ALREADY_EXISTS as i32), true),
+        (io::ErrorKind::PermissionDenied.into(), true),
+    ] {
+        let (mut attempts, mut waited) = (0, false);
+        let code = error.raw_os_error();
+        let mut error = Some(error);
+        let returned = retry_refusal(
+            || {
+                attempts += 1;
+                Err(error.take().unwrap())
+            },
+            || transient,
+            &mut |_| {
+                waited = true;
+                Ok(())
+            },
+        )
+        .unwrap_err();
+        assert_eq!(returned.raw_os_error(), code);
+        assert_eq!((attempts, waited), (1, false), "{returned}");
+    }
+    // Cancellation during a wait ends the retries with its own error.
+    let mut attempts = 0;
+    let error = retry_refusal(
+        || {
+            attempts += 1;
+            Err(denied())
+        },
+        || true,
+        &mut |_| Err(io::ErrorKind::Interrupted.into()),
+    )
+    .unwrap_err();
+    assert_eq!((error.kind(), attempts), (io::ErrorKind::Interrupted, 1));
+}
+
+/// Holds an entry below `directory` open with full sharing, as a virus scanner holds a
+/// file it scans. The entry is a subdirectory: no scanner opens it on its own, so the
+/// test alone decides when it closes.
+fn open_below(directory: &Path) -> File {
+    let entry = directory.join("open");
+    fs::create_dir(&entry).unwrap();
+    OpenOptions::new()
+        .access_mode(FILE_LIST_DIRECTORY)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+        .open(entry)
+        .unwrap()
+}
+
+#[test]
+fn a_directory_rename_waits_until_no_entry_below_it_is_open() {
+    let temp = build_temp("rename-open-entry-");
+    let folder = temp.path().join("folder");
+    fs::create_dir(&folder).unwrap();
+    let mut scanner = Some(open_below(&folder));
+    let parent = open_parent(temp.path()).unwrap();
+    let source = open_child(&parent, OsStr::new("folder"), true).unwrap();
+    // Windows refuses to rename a directory while an entry below it is open, whatever
+    // that handle's sharing.
+    let refusal = rename_once(&source, OsStr::new("renamed")).unwrap_err();
+    assert_eq!(refusal.raw_os_error(), Some(ERROR_ACCESS_DENIED as i32));
+    let mut waits = Vec::new();
+    rename_with(&source, &parent, OsStr::new("renamed"), &mut |delay| {
+        waits.push(delay);
+        // The scanner finishes during the first wait.
+        scanner.take();
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(waits, [RENAME_RETRY_FIRST]);
+    drop(source);
+    assert!(!folder.exists());
+    assert!(temp.path().join("renamed/open").is_dir());
+}
+
+#[test]
+fn a_cancelled_directory_rename_stops_waiting_for_an_open_entry() {
+    let temp = build_temp("rename-open-cancel-");
+    let folder = temp.path().join("folder");
+    fs::create_dir(&folder).unwrap();
+    let _scanner = open_below(&folder);
+    let parent = open_parent(temp.path()).unwrap();
+    let source = open_child(&parent, OsStr::new("folder"), true).unwrap();
+    let cancel = Cancellation::default();
+    cancel.cancel();
+    let error = rename(&source, &parent, OsStr::new("renamed"), &cancel).unwrap_err();
+    assert_eq!(error.kind(), io::ErrorKind::Interrupted);
+    drop(source);
+    assert!(folder.join("open").is_dir());
+    // A live job waits the whole delay.
+    let started = Instant::now();
+    pause(RENAME_RETRY_FIRST, &Cancellation::default()).unwrap();
+    assert!(started.elapsed() >= RENAME_RETRY_FIRST);
+}
+
+/// Gives the fixture directory `path` a protected DACL that denies `denied` to Everyone
+/// and allows Everyone all other access, so the fixture stays removable.
+fn deny_everyone(path: &Path, denied: u32) {
+    let file = OpenOptions::new()
+        .access_mode(READ_CONTROL | WRITE_DAC)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(path)
+        .unwrap();
+    let mut everyone = [0u64; (SECURITY_MAX_SID_SIZE as usize).div_ceil(8)];
+    let mut sid_size = SECURITY_MAX_SID_SIZE;
+    let sid = everyone.as_mut_ptr().cast();
+    // SAFETY: an aligned writable buffer of SECURITY_MAX_SID_SIZE bytes.
+    let created = unsafe { CreateWellKnownSid(WinWorldSid, ptr::null_mut(), sid, &mut sid_size) };
+    assert_ne!(created, 0, "{}", io::Error::last_os_error());
+    // SAFETY: the valid SID created above. Allowed and denied ACEs share one layout.
+    let ace =
+        size_of::<ACCESS_ALLOWED_ACE>() - size_of::<u32>() + unsafe { GetLengthSid(sid) } as usize;
+    let length = size_of::<ACL>() + 2 * ace;
+    let mut acl = vec![0u64; length.div_ceil(8)];
+    let acl = acl.as_mut_ptr().cast::<ACL>();
+    let mut descriptor = SECURITY_DESCRIPTOR::default();
+    let descriptor = (&mut descriptor as *mut SECURITY_DESCRIPTOR).cast();
+    // SAFETY: `acl` covers `length` writable bytes; it, the SID and the descriptor
+    // (initialized in place, SECURITY_DESCRIPTOR_REVISION = 1) outlive these calls.
+    let set = unsafe {
+        InitializeAcl(acl, length as u32, ACL_REVISION) != 0
+            && AddAccessDeniedAce(acl, ACL_REVISION, denied, sid) != 0
+            && AddAccessAllowedAce(acl, ACL_REVISION, FILE_ALL_ACCESS, sid) != 0
+            && InitializeSecurityDescriptor(descriptor, 1) != 0
+            && SetSecurityDescriptorDacl(descriptor, 1, acl, 0) != 0
+            && SetSecurityDescriptorControl(descriptor, SE_DACL_PROTECTED, SE_DACL_PROTECTED) != 0
+            && SetKernelObjectSecurity(file.as_raw_handle(), DACL_SECURITY_INFORMATION, descriptor)
+                != 0
+    };
+    assert!(set, "{}", io::Error::last_os_error());
+}
+
+#[test]
+fn a_rename_the_parent_directory_denies_is_reported_without_waiting() {
+    let temp = build_temp("rename-denied-parent-");
+    // Besides DELETE, NTFS checks the right to add a subdirectory (for a folder) or a file
+    // (for a file) to the parent. Each case denies only its own right, so a folder probe
+    // would pass for the file and a file probe for the folder.
+    for (name, denied) in [("folder", FILE_ADD_SUBDIRECTORY), ("file", FILE_ADD_FILE)] {
+        let parent_path = temp.path().join(format!("{name}-parent"));
+        fs::create_dir(&parent_path).unwrap();
+        if name == "folder" {
+            fs::create_dir(parent_path.join(name)).unwrap();
+        } else {
+            // Empty, so no virus scanner holds it while it is opened for DELETE below.
+            File::create(parent_path.join(name)).unwrap();
+        }
+        deny_everyone(&parent_path, denied);
+        let parent = open_parent(&parent_path).unwrap();
+        let source = open_child(&parent, OsStr::new(name), true).unwrap();
+        let mut waited = false;
+        let error = rename_with(&source, &parent, OsStr::new("renamed"), &mut |_| {
+            waited = true;
+            Ok(())
+        })
+        .unwrap_err();
+        assert_eq!(error.raw_os_error(), Some(ERROR_ACCESS_DENIED as i32));
+        assert!(!waited, "{name}");
+        drop(source);
+        assert!(parent_path.join(name).exists());
+    }
 }
 
 #[test]
