@@ -64,10 +64,23 @@ fixtures must account for independent startup maintenance without weakening
 production projection/occurrence guards. If an opt-in fixture defers hints, hold
 only pure scalar `Changed` / `DirectoryChanged` through transfer terminal, then
 replay the originals before reconciliation/external-write assertions; retain
-native watchers and pre-ACK coverage. Watch checks still require a real callback
-plus the UI row, but a refresh admitted after a callback can coalesce its hint.
-Test before-admission coalescing separately from post-admission dirty-state
-survival, retaining existing post-admission and default-timing coverage.
+native watchers and pre-ACK coverage. Tree watch checks (`tree_watch`,
+`tree_clipboard`, `tree_move`) require the UI row plus native evidence for each
+changed directory after the change. Evidence is either a fresh callback from a live
+subscription that contains the directory and whose mask names it (an error or
+overflow names every directory of its batch), or the registration of a batch that
+contains the directory. A registration counts because a directory that joins a
+batch is probed at once instead of waiting for a callback; a directory already in
+the old batch stays covered by the old subscription until the swap ends, and the
+new registration counts for it as well. The subscription may belong to either pane:
+these fixtures root the other pane at `destination`, so its subscription can supply
+that directory's evidence. A subscription that does not contain the directory and
+the engine's periodic poll are no evidence, so the poll alone never satisfies a
+wait; a batch registered after the change does, even when the old subscription
+missed the change. Fences wait until a live subscription covers every changed
+directory. A refresh admitted after a callback can still coalesce its hint. Test
+before-admission coalescing separately from post-admission dirty-state survival,
+retaining existing post-admission and default-timing coverage.
 
 To run two independent headless targets concurrently, select both in the build
 and in the runner (no second Cargo process is needed):
@@ -105,7 +118,9 @@ Multiple filters for the same artifact share one listing process and one test pr
 
 The default process limit is the smaller of four and the available CPU count. `--jobs 1` runs headless targets serially; `--jobs 2` through `--jobs 4` request bounded parallel execution. The limit is also clamped to CPU count, target count and `--thread-budget`. The total libtest thread budget defaults to available CPUs and is divided between child processes; an inherited smaller `RUST_TEST_THREADS` limit is preserved. Tests may create their own threads, so this is a libtest worker budget, not a system-wide thread guarantee. Prefer `--jobs 1` for targets that intentionally share a caller-provided fixture.
 
-Each artifact runs from its package manifest directory, with private `TEMP`, `TMP`, `TMPDIR` and `MIDNIGHT_UI_RENDER_DIR` directories. Caller-provided installed-provider variables and `MIDNIGHT_NATIVE_TEST_ROOT` remain intact. Do not parallelize targets that mutate the same external fixture simply because their temporary directories differ.
+Each artifact runs from its package manifest directory, with private `TEMP`, `TMP` and `TMPDIR` directories. Caller-provided installed-provider variables and `MIDNIGHT_NATIVE_TEST_ROOT` remain intact. Do not parallelize targets that mutate the same external fixture simply because their temporary directories differ.
+
+UI software-render snapshots are off by default, as in CI: the runner does not pass `MIDNIGHT_UI_RENDER_DIR` to its children, even when the caller sets it. `--render-snapshots` gives each artifact a private `render` directory beside its logs instead. `midnight-ui` tests then write every snapshot there as `<test>--<snapshot>.bmp`, where `<test>` is the libtest test name with `::` replaced by `.`, and geometry sweeps render every theme and combination instead of only their reference case, so such a run takes much longer. `MIDNIGHT_UI_RENDER_FILTER`, when set, still limits the written snapshots to names that contain it.
 
 ### Private plugin installation root
 
@@ -125,7 +140,7 @@ On Linux, use a `chmod 700` directory on a native filesystem whose ancestors are
 
 Listing and execution each have a 300-second deadline, configurable with `--timeout SECONDS`. On a failure the runner stops admitting new processes and lets already admitted children finish within their deadlines. On interruption or an exceptional wait, it terminates only its retained child process handles and waits for them; it does not kill by process name or manage arbitrary descendants. Tests requiring independent long-lived descendants need their own cleanup and should use a dedicated harness.
 
-Every admitted run retains separate listing/test logs, output directories and `summary.json` under a unique `_build/qa/targeted-tests` directory. `--log-dir` selects a new directory under `_build`; existing directories are refused. The summary records selected workspace, executable SHA-256, package cwd, filters, counts, process limit, thread budget, deadlines, errors and cases not run. Exit codes are 0 for success, 1 for test/execution failure, 2 for invalid inputs before execution, and 130 for interruption. Invalid receipts/selectors are rejected before any test child starts. Logs and artifacts remain available after failure.
+Every admitted run retains separate listing/test logs, output directories and `summary.json` under a unique `_build/qa/targeted-tests` directory. `--log-dir` selects a new directory under `_build`; existing directories are refused. The summary records selected workspace, executable SHA-256, package cwd, filters, counts, process limit, thread budget, whether render snapshots were requested, deadlines, errors and cases not run. Exit codes are 0 for success, 1 for test/execution failure, 2 for invalid inputs before execution, and 130 for interruption. Invalid receipts/selectors are rejected before any test child starts. Logs and artifacts remain available after failure.
 
 The focused regression command is:
 

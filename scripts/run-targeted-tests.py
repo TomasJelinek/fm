@@ -234,14 +234,19 @@ class Children:
         return errors
 
 
-def child_environment(base, directory, executable, runtime_paths, threads):
+def child_environment(base, directory, executable, runtime_paths, threads, render=False):
     environment = dict(base)
-    temporary, render = directory / 'tmp', directory / 'render'
+    temporary = directory / 'tmp'
     temporary.mkdir(mode=0o700)
-    render.mkdir(mode=0o700)
     for key in ('TEMP', 'TMP', 'TMPDIR'):
         environment[key] = str(temporary)
-    environment['MIDNIGHT_UI_RENDER_DIR'] = str(render)
+    # With a render directory, UI tests render every geometry case and write a BMP
+    # per snapshot. Only an explicit request enables that, privately per artifact.
+    environment.pop('MIDNIGHT_UI_RENDER_DIR', None)
+    if render:
+        snapshots = directory / 'render'
+        snapshots.mkdir(mode=0o700)
+        environment['MIDNIGHT_UI_RENDER_DIR'] = str(snapshots)
     environment['RUST_TEST_THREADS'] = str(threads)
     key = 'PATH' if os.name == 'nt' else ('DYLD_FALLBACK_LIBRARY_PATH' if sys.platform == 'darwin'
                                         else 'LD_LIBRARY_PATH')
@@ -255,7 +260,7 @@ def child_environment(base, directory, executable, runtime_paths, threads):
 
 def execute(root, metadata, receipts, selections, log_dir, *, jobs=None, thread_budget=None,
             environment=None, spawn=subprocess.Popen, runtime_paths=(), exact=False, timeout=300,
-            workspace=None):
+            workspace=None, render=False):
     root = Path(root).resolve(strict=True)
     workspace = selected_workspace(root, workspace)
     plans, target = prepare(root, metadata, receipts, selections, workspace)
@@ -305,7 +310,8 @@ def execute(root, metadata, receipts, selections, log_dir, *, jobs=None, thread_
         plan, result = plans[index], results[index]
         started = time.monotonic()
         try:
-            env = child_environment(environment, plan['directory'], plan['executable'], runtime_paths, threads)
+            env = child_environment(environment, plan['directory'], plan['executable'], runtime_paths,
+                                    threads, render)
             if signature(plan['executable']) != plan['signature']:
                 raise ValueError('Selected executable changed after receipt validation')
             command = [str(plan['executable']), '--list', '--test', '--color', 'never']
@@ -373,7 +379,7 @@ def execute(root, metadata, receipts, selections, log_dir, *, jobs=None, thread_
         cleanup_errors.extend(children.terminate_owned())
     code = 130 if interrupted else (0 if not cleanup_errors and all(item['status'] == 'passed' for item in results) else 1)
     summary = {'workspace': str(workspace), 'exit_code': code, 'jobs': jobs,
-               'thread_budget': thread_budget,
+               'thread_budget': thread_budget, 'render_snapshots': render,
                'threads_per_process': threads, 'peak_processes': children.peak,
                'interrupted': interrupted, 'timeout_seconds': timeout,
                'cleanup_errors': cleanup_errors, 'cases': results}
@@ -398,6 +404,10 @@ def main():
     parser.add_argument('--thread-budget', type=int)
     parser.add_argument('--log-dir', type=Path)
     parser.add_argument('--timeout', type=float, default=300, help='Per child deadline in seconds (default: 300)')
+    parser.add_argument('--render-snapshots', action='store_true',
+                        help='Give each artifact a private MIDNIGHT_UI_RENDER_DIR beside its logs, so UI '
+                             'tests render every geometry case and write BMP snapshots (off by default, '
+                             'as in CI; an inherited value is not passed on)')
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[1]
     workspace = selected_workspace(root, args.workspace)
@@ -416,7 +426,7 @@ def main():
     log_dir = args.log_dir or root / '_build/qa/targeted-tests' / (time.strftime('%Y%m%d-%H%M%S-') + uuid.uuid4().hex[:8])
     return execute(root, metadata, receipts, selections, log_dir, jobs=args.jobs,
                    thread_budget=args.thread_budget, runtime_paths=[runtime], exact=args.exact,
-                   timeout=args.timeout, workspace=workspace)
+                   timeout=args.timeout, workspace=workspace, render=args.render_snapshots)
 
 
 if __name__ == '__main__':

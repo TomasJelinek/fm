@@ -16,8 +16,12 @@ Arc before branch, navigation, selection, or viewport requests.
 
 Each emitted projection waits for the UI to acknowledge its exact Arc before a
 new unsolicited publication replaces it. At most one newer publication is retained
-and coalesced on the model worker. A completed provider task releases its mutation
-permit even while publication delivery waits. The mailbox retains a weak receipt
+and coalesced on the model worker. Each pane's model worker normally runs on its
+own `midnight-tree-worker` thread, outside Tokio's bounded blocking pool (the pool
+runs it only when the OS refuses that thread); branch listings still run as
+separate blocking jobs, so collapse and navigation proceed while an enumeration is
+blocked. A completed provider task releases its mutation permit even while
+publication delivery waits. The mailbox retains a weak receipt
 for the acknowledged view: Branch and Navigate gestures may still name that view
 while a newer publication is travelling to the UI. The actor revalidates that the
 same occurrence remains visible and unchanged; removed, replaced, hidden or
@@ -82,9 +86,13 @@ Those hints are scheduled in batches within the eight-request branch queue.
 Showing more than eight folders is not a resource error. Completed publications
 request the visible range again, so deferred folders are checked progressively;
 an explicit expansion takes priority over queued background probes. A probe
-publishes only its result, without a separate Loading publication. A probe whose
-row was meanwhile expanded, refreshed or listed by a recursive walk is dropped.
-Branch work that cannot start, for example at the 64-level depth limit, never
+publishes only its result, without a separate Loading publication. It only asks
+whether the folder has a subfolder: enumeration stops at the first one, keeps no
+rows and issues no child references, so a folder with more subfolders than a
+listing may hold still shows its disclosure; that limit and a child that repeats
+an ancestor are reported when the folder is listed (expanded or refreshed). A
+probe whose row was meanwhile expanded, refreshed or listed by a recursive walk is
+dropped. Branch work that cannot start, for example at the 64-level depth limit, never
 ends the session: a probe is skipped silently and an explicit expansion or
 refresh reports a row diagnostic. An explicit expansion whose display projection
 would exceed the 16 MiB budget restores that branch with an error and keeps the
@@ -142,10 +150,12 @@ filter/sort evidence below.
 
 Flat-panel subfolder hints are independent of tree adoption. At most 256 viewport
 directory IDs are probed against the exact completed listing, with one coalescing
-worker per pane, the existing listing capacity and shared I/O budget. Native
-enumeration stops at the first immediate directory or directory-link child; it
-does not descend into that child or recursively walk link targets. Archive probes
-retain the captured member and mount identity.
+worker per pane and the existing listing capacity. A probe shares the I/O budget
+with running scans only when its row is proven to be on a confirmed local SSD (each
+lane classifies a listing and each other device once); other rows are probed
+exclusively. Native enumeration stops at the first immediate directory or
+directory-link child; it does not descend into that child or recursively walk link
+targets. Archive probes retain the captured member and mount identity.
 Empty/has-folder hints are held in a bounded display cache. Selection, flat action
 authority and navigation stay unchanged until the user's ordinary disclosure
 click requests exact tree adoption. Navigation, refresh and viewport replacement
@@ -546,8 +556,15 @@ branch slots. Known physical browse identities deduplicate notification slots;
 logical aliases remain separate display rows, polling targets and action
 occurrences. A serial fair poll covers all eligible logical branches, including
 aliases and those beyond the native slots. Accepted browse-identity changes rebind
-subscriptions. Polling checks identity before and after observation; a mismatch
-requests maintenance rather than accepting the observation as unchanged.
+subscriptions. A changed slot set registers its new batch before releasing the old
+one, so directories in both stay covered (for a moment both batches exist, up to 64
+directory watches per pane); a directory that joins the batch is probed at once
+instead of requesting maintenance. A target's first probe is compared with its
+accepted listing: the root's complete listing is its own full observation, so
+opening a tree on an unchanged directory requests no maintenance. A folder-only
+branch carries no observation of the files it hides, so its first probe still
+requests maintenance. Polling checks identity before and after observation; a
+mismatch requests maintenance rather than accepting the observation as unchanged.
 The two existing backend workers own subscriptions, metadata probes and cleanup.
 Events use a 150 ms quiet interval and a 500 ms batching ceiling; slow
 probes or output backpressure can add delay. Polling/failure retries use 15 seconds.

@@ -3,15 +3,40 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
 import tempfile
+import tomllib
 import unittest
 from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[2]
+PLUGIN = ROOT / "plugins/midnight-fs-archive"
+
+
+def plugin_version():
+    with (PLUGIN / "Cargo.toml").open("rb") as stream:
+        return tomllib.load(stream)["package"]["version"]
+
+
+class ArchiveManifestVersionTests(unittest.TestCase):
+    """The installed manifest names the package version that assigned the member IDs."""
+
+    def test_both_build_scripts_install_the_plugin_package_version(self):
+        # The host keys persistent archive thumbnails by provider ID and manifest
+        # version, so a release whose member IDs changed must not install the
+        # previous version (an old cache entry could then show another member).
+        expected = plugin_version()
+        for script in ("build.ps1", "build.sh"):
+            with self.subTest(script=script):
+                text = (PLUGIN / "scripts" / script).read_text(encoding="utf-8")
+                manifest = text[text.index("schema_version = 1"):]
+                self.assertIn('id = "midnight.fs.archive"', manifest)
+                self.assertEqual(re.findall(r'^version = "([^"]*)"$', manifest, re.MULTILINE)[:1],
+                                 [expected])
 
 
 @unittest.skipUnless(sys.platform.startswith("linux"), "Linux archive build helpers")
@@ -104,7 +129,9 @@ if sys.argv[1] == 'build':
         self.assertNotIn("--release", commands[1])
         package = self.application / "filesystems/midnight.fs.archive"
         self.assertEqual((package / "midnight-fs-archive").read_bytes(), b"debug")
-        self.assertIn('protocol = 3', (package / "plugin.toml").read_text())
+        manifest = (package / "plugin.toml").read_text()
+        self.assertIn('protocol = 3', manifest)
+        self.assertIn(f'version = "{plugin_version()}"', manifest)
         self.assertEqual((package / "licenses/LICENSE").read_text(), "Exact archive dependency license\n")
         self.assertEqual((package / "THIRD-PARTY.md").read_text(), "Pinned archive dependencies\n")
 

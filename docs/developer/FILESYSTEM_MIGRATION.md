@@ -111,10 +111,11 @@ listing limits (100,000 nodes and 8 MiB of raw and display names) are not protoc
 violations: a legitimate large directory can reach them, so they fail only that
 listing.
 Cancelling a listing or member read never ends the shared worker: a listing
-stops between pages and discards an in-flight page, protocol-3 member reads cancel
-cooperatively, and protocol-1/2 reads finish their exchange while the host discards
-the result. The wire reference is frozen in the released 0.4.0 package, so its
-statement that cancellation terminates the worker predates this host. The engine
+stops between pages and discards a conforming in-flight page, protocol-3 member
+reads cancel cooperatively, and protocol-1/2 reads finish their exchange while the
+host discards the result. The wire reference is frozen in the released 0.4.0
+package, so its statement that cancellation terminates the worker predates this
+host. The engine
 issues request-cancellable member reads of shared mounts through `read_cooperative`.
 
 Archive navigation, saved/unavailable archive tabs, selection, F3 member content,

@@ -74,10 +74,19 @@ trust, not publisher authentication or protection against the trusted account.
 
 The image viewer and image thumbnail workers share the independent
 `plugins/image-decoder` library. PNG, JPEG, GIF, WebP, BMP, ICO and TIFF retain
-image-rs/moxcms decoding and color management. Static SVG uses pinned resvg 0.48.1
-inside the same restricted worker boundary. Thumbnails rasterize directly at the
-requested size; the viewer retains a bounded original-size raster, so magnifying
-SVG uses image sampling rather than rerendering vectors.
+image-rs/moxcms decoding and color management: embedded RGB profiles, and gray
+profiles of gray images, are converted to sRGB. image-rs converts CMYK samples to
+RGB without a profile, so an embedded CMYK profile is not applied. An image whose
+embedded profile has another color model, or a gray profile on a color image,
+fails to decode with an `Unsupported` error instead of being shown as sRGB.
+CICP-only color signalling (AVIF nclx, PNG cICP) is not converted; those pixels are
+used as sRGB. Raster thumbnails reduce the frame first, averaging colors with alpha
+weights so pixels next to transparency are not darkened or tinted, and orient the
+small result afterwards; a frame that already fits the requested bound is not
+resampled. Static SVG uses pinned resvg 0.48.1 inside the same restricted worker
+boundary. SVG thumbnails rasterize directly at the requested size; the viewer
+retains a bounded original-size raster, so magnifying SVG uses image sampling
+rather than rerendering vectors.
 
 SVG supports paths/shapes, gradients, bounded local reuse and text from embedded
 Noto Sans fonts. It does not load system/document-selected fonts, local or remote
@@ -90,10 +99,12 @@ exact system-font matching or complete Unicode coverage. See the
 [decoder contract](../../plugins/image-decoder/README.md) and its font notices.
 
 AVIF uses the same independent decoder through the narrowly patched image-rs
-constructor, with pinned static dav1d 1.5.4. It stages at most 32 MiB of encoded
-container data and rejects excess input before the tolerant parser. Both primary
-and alpha receive one-thread native settings and a 16,777,216-pixel frame limit
-before allocation; common output/edge limits still apply. This cap is specific to
+constructor, with pinned static dav1d 1.5.4. The patch also ends construction with
+an error when an AV1 item yields no displayable frame, instead of waiting for one
+forever. The decoder stages at most 32 MiB of encoded container data and rejects
+excess input before the tolerant parser. Both primary and alpha receive one-thread
+native settings and a 16,777,216-pixel frame limit before allocation; common
+output/edge limits still apply. This cap is specific to
 AVIF and does not change host source capture or existing streamed raster formats.
 The exact MPL-2.0 mp4parse source accompanies both packages. No public API or host
 protocol change is needed. HEIC/HEIF remains unsupported pending a qualified
@@ -265,52 +276,57 @@ This worker-proof contract is independent of own-EXE default-OFF selection.
 
 ## Source ranges and archive memory
 
-The user resumed generic archive streaming and private disk spooling on
-9 November 2026. ARCH-01 is implementation work in progress; the paragraphs
-below describe the installed runtime until its replacement is qualified.
-The experimental JPEG-only adapter remains reverted; all raster formats use
-the shared image-rs decoder path. The replacement must address the common
-source/cache lifecycle for all viewers, with no fixed archive/member byte-size
-ceiling. Bounded working memory, cancellation, integrity verification and explicit
-out-of-space errors remain required.
+Archive streaming and private disk spooling (ARCH-01) are implemented for the
+protocol-2/3 archive worker, except the small-content RAM budget described at the
+end of this section; qualification of the integrated application with the matching
+package is still pending (see the
+[implementation backlog](../IMPLEMENTATION_BACKLOG.md)). The experimental JPEG-only
+adapter remains reverted; all raster formats use the shared image-rs decoder path.
 
 Broker `Read { offset, length }` requests allow a decoder to request only part of
 the encoded file; they do not guarantee that the decoder itself streams. In the
 pinned `image 0.25.10`, `JpegDecoder::new` calls `read_to_end` into its own `Vec<u8>`.
-This happens for both native and archive JPEGs. For an archive JPEG, the archive
-cache and image worker can therefore retain separate encoded copies during
-decoding, in addition to decoded pixels and the archive source. The JPEG decoder's
-input is dropped after decode; the archive cache has a separate lifetime.
-A future format-specific decoder could read only an embedded preview. PSD is
-not a currently supported codec. The current raster plugin retains the complete
-decoded still image, within its pixel budget.
+This happens for both native and archive JPEGs, so the image worker holds the
+complete encoded JPEG during decoding, in addition to decoded pixels; that input is
+dropped after decode. A future format-specific decoder could read only an embedded
+preview. PSD is not a currently supported codec. The current raster plugin retains
+the complete decoded still image, within its pixel budget.
 Broker source reads are currently available during Open, not arbitrary later
 render calls; deferred layer/content loading would need a separately qualified
 protocol extension.
 
-An archive source is not automatically a streaming source. The current archive
-worker retains its bounded source in RAM; first ZIP member access decompresses
-and verifies that complete member into RAM, and solid 7z access stages and
-verifies the required block. A small viewer read can therefore cause much more
-decompression and retained memory than the requested range. No extracted image
-TEMP file or disk spool is currently created for internal viewing. Viewer pixels
-are released with the decoder; archive content can outlive the viewer while a
-panel or another reader retains the mount. Thumbnail disk caching is separate.
+An archive member reaches a viewer as a content lease over the host's member
+staging, not as a streaming source. The worker streams the selected member into a
+private host-owned spool file, which the host publishes only after complete
+integrity verification: the first read of a ZIP member decodes and checks that
+whole member, a 7z read decodes and verifies its whole compression block, and
+compressed TAR first verifies its complete outer stream into one scratch file. A
+small viewer read can therefore cause much more decompression and disk I/O than the
+requested range, even when only a preview is displayed. The worker holds no complete
+encoded archive in RAM; decoded content goes to the spool, except the readable
+siblings of a decoded 7z block, which the worker keeps in memory (up to 128 MiB)
+until they are read. `read_at` then reads checked ranges of the sealed spool, which
+each mount keeps for up to 16 members. Viewer pixels are released with the decoder;
+member spools can outlive the viewer while a panel or another reader retains the
+mount. Thumbnail disk caching is separate. See the
+[filesystem API](FILESYSTEM_API.md) for the staging protocol, the spool budget and
+the spool directories.
 
-ARCH-01 tracks replacing these full-memory archive buffers with bounded source
-reads and, when seek/decompression needs it, a private disk spool owned by a
-content lease. This must preserve source identity, aggregate RAM budgets,
-cancellation, cleanup and low-disk errors. It must not expose an unverified member
-as verified: full CRC validation can still require reading the whole member or
-solid block even when only a preview is displayed. The whole decoded payload
-need not occupy RAM. Spooling is a planned backend capability, not an implemented
-property of the current `read_at` interface.
 Replacing the JPEG decoder's own full-input buffer requires separately verified
-streaming decoder behavior; disk spooling alone cannot remove that allocation.
-Use an aggregate small-file RAM budget and spill larger content to disk rather
-than writing every small image unconditionally. Future qualification must measure
-peak memory across both workers, not just broker chunk sizes, and cover preview-only
-reads, source changes, cancellation, CRC failure and exhausted spool storage.
+streaming decoder behavior; disk spooling cannot remove that allocation.
+
+The accepted
+[ARCH-01 design](../superpowers/specs/2026-11-09-archive-streaming-design.md) keeps
+small content under an aggregate RAM budget and spills only larger content to
+private disk. That part is not implemented and no recorded decision retires it, so
+it is an open ARCH-01 deviation: the worker stages every member it reads into a
+host spool file, small images included. The design's other requirements remain: no
+fixed archive or member byte-size ceiling, bounded working memory, cancellation,
+integrity verification and explicit out-of-space errors (the host's free-space
+reserve for the spool volume is still planned). Application qualification must
+cover that budget unless a recorded decision retires it, measure peak memory across
+both workers, not just broker chunk sizes, and cover preview-only reads, source
+changes, cancellation, CRC failure and exhausted spool storage.
 
 ## Wire format and resource limits
 
