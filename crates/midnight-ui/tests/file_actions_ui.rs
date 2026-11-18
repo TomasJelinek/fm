@@ -364,6 +364,42 @@ fn row_refresh_invalidates_a_held_right_click_and_drive_picker_targets_its_root(
 }
 
 #[test]
+fn drive_menu_delivered_while_the_presenter_is_borrowed_opens_on_the_next_tick() {
+    let mut h = Harness::new();
+    let drive = h.base.ancestors().last().unwrap().to_owned();
+    h.apply(Event::VolumesUpdated(vec![Volume {
+        id: "test-drive".into(),
+        label: "Test drive".into(),
+        root: drive.clone(),
+    }]));
+    let token =
+        h.ui.window
+            .get_left_locations()
+            .iter()
+            .find(|row| row.is_drive)
+            .expect("the drive button")
+            .identity;
+    h.commands.borrow_mut().clear();
+    {
+        // A refresh holds this shared borrow while Slint can still deliver input.
+        let _refreshing = h.presenter.borrow();
+        h.ui.window
+            .invoke_drive_context_menu(0, token, 10.0, 10.0, false, false);
+        assert!(
+            h.commands.borrow().is_empty(),
+            "nothing runs inside the borrow"
+        );
+    }
+    slint::platform::update_timers_and_animations();
+    let captured = h.commands.borrow();
+    let Some(Command::ShowShellMenu { files, target, .. }) = captured.last() else {
+        panic!("the deferred drive menu opens on the next tick: {captured:?}")
+    };
+    assert_eq!(*target, ShellMenuTarget::Drive);
+    assert_eq!(files.fallback.as_ref(), Some(&drive));
+}
+
+#[test]
 fn copy_conflict_native_choices_cancel_and_later_keep_exact_job_identity() {
     let mut h = conflicts::Harness::new();
     for (index, label) in ["Skip", "Skip all", "Copy as"].into_iter().enumerate() {
@@ -565,9 +601,16 @@ impl CapturedClipboardFiles for OpaqueSource {
 /// The tree-mode counterpart of `busy_fallback_menu_action_releases_the_captured_menu`:
 /// a busy action cancels the captured tree menu, whose owner then waits in its slot
 /// for the next owned action to retire it, so that action can open a new menu.
+/// Meanwhile the released menu blocks no other context menu.
 #[test]
 fn busy_tree_fallback_menu_action_releases_the_captured_menu() {
     let mut h = Harness::new();
+    let drive = h.base.ancestors().last().unwrap().to_owned();
+    h.apply(Event::VolumesUpdated(vec![Volume {
+        id: "test-drive".into(),
+        label: "Test drive".into(),
+        root: drive.clone(),
+    }]));
     let disclosure = ui::root_position(
         &h.ui.window,
         "Discover folders in 文件夹",
@@ -672,7 +715,8 @@ fn busy_tree_fallback_menu_action_releases_the_captured_menu() {
     // does, so the chosen action cannot run.
     let held = (h.begin)().expect("no owned action is running");
     ui::click_popup(&h.ui.window, "Copy", AccessibleRole::Button);
-    drop(held);
+    // The batch stays full while the deferred dismissal runs, so no owned action
+    // can retire the released owner yet.
     h.draw();
     assert!(
         h.commands.borrow().is_empty(),
@@ -687,6 +731,35 @@ fn busy_tree_fallback_menu_action_releases_the_captured_menu() {
         capture.cancel.is_cancelled(),
         "the released tree menu cancels its capture"
     );
+    // The released owner waits in its slot. A drive menu is not an owned action
+    // and must not be refused because of it (the busy notice blocks pointer input,
+    // so the picker's callback is invoked directly).
+    let token =
+        h.ui.window
+            .get_left_locations()
+            .iter()
+            .find(|row| row.is_drive)
+            .expect("the drive button")
+            .identity;
+    h.ui.window
+        .invoke_drive_context_menu(0, token, 10.0, 10.0, false, false);
+    let drive_menu = match h.commands.borrow().last() {
+        Some(Command::ShowShellMenu {
+            request,
+            target: ShellMenuTarget::Drive,
+            files,
+            ..
+        }) => {
+            assert_eq!(files.fallback.as_ref(), Some(&drive));
+            *request
+        }
+        other => panic!("the drive picker must open its root menu: {other:?}"),
+    };
+    drop(held);
+    h.apply(Event::ShellMenuFinished {
+        request: drive_menu,
+        result: Ok(ShellMenuOutcome::Dismissed),
+    });
     ui::key(&h.ui.window, Key::Escape);
     h.draw();
     assert!(

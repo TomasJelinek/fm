@@ -78,7 +78,10 @@ impl Presenter {
     }
 
     pub(super) fn tree_menu_pending(&self) -> bool {
-        self.tree_menu().is_some()
+        // A released menu has cancelled its capture and waits in its slot only for
+        // an owned action to retire it; it blocks no other context menu.
+        self.tree_menu()
+            .is_some_and(|(pending, _)| !pending.capture.cancel.is_cancelled())
     }
 
     pub(super) fn tree_menu_token(&self) -> Option<String> {
