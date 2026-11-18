@@ -1,7 +1,7 @@
 //! Linux spool bases: the XDG base directories, then the temporary directory
 //! (usually the shared `/tmp`) under this account's effective user ID.
 use super::{Session, SpoolContent};
-use midnight_worker_platform::spool::resolve_base;
+use midnight_worker_platform::spool::{effective_uid, resolve_base};
 use std::{
     ffi::OsString,
     path::{Path, PathBuf},
@@ -23,19 +23,20 @@ pub(super) fn current(content: SpoolContent) -> Session {
 
 /// A relative or empty XDG variable is ignored, as the XDG base directory
 /// specification requires; the cache then defaults to `~/.cache`. Links in the
-/// cache and runtime bases are resolved (`resolve_base`, shared with the
-/// filesystem host's staging bases), so a linked home such as `/home` ->
-/// `/var/home` keeps its disk-backed cache root, while the
-/// `midnight-explorer/<name>` directories below a base are never resolved. Only
-/// content that uses the cache looks it up: resolving a base on a network home
-/// can block, and reports must not wait for a cache they skip. The cache root
-/// still fails on an NFS home without `O_TMPFILE`, and sessions without
+/// cache, runtime and temporary bases are resolved (`resolve_base`, shared with
+/// the filesystem host's staging bases), so a linked home such as `/home` ->
+/// `/var/home` keeps its disk-backed cache root and a `$TMPDIR` below it, while
+/// the `midnight-explorer` names below a base are never resolved. Only content
+/// that uses the cache looks it up: resolving a base on a network home can
+/// block, and reports must not wait for a cache they skip. The runtime and
+/// temporary bases serve every content, so they are always resolved. The cache
+/// root still fails on an NFS home without `O_TMPFILE`, and sessions without
 /// `XDG_RUNTIME_DIR` (su, sudo, ssh or containers) have no runtime root, so
 /// those reach the temporary directory.
 fn from_environment(
     variable: impl Fn(&str) -> Option<OsString>,
     canonical: impl Fn(&Path) -> Option<PathBuf>,
-    uid: Option<u32>,
+    uid: u32,
     temporary: PathBuf,
     content: SpoolContent,
 ) -> Session {
@@ -54,20 +55,12 @@ fn from_environment(
         runtime: absolute("XDG_RUNTIME_DIR").map(|base| resolve_base(&base, &canonical)),
         // The private-root check compares the owner with the effective user ID,
         // which `USER` need not name (`su` keeps it), so that ID is the label.
-        account: uid.map(|uid| uid.to_string()),
-        temporary,
+        account: Some(uid.to_string()),
+        // A relative temporary directory stays as entered: `spool_roots` ignores it.
+        temporary: if temporary.is_absolute() {
+            resolve_base(&temporary, &canonical)
+        } else {
+            temporary
+        },
     }
-}
-
-/// The effective user ID: `Uid:` lists the real, effective, saved and
-/// filesystem user IDs. None only omits the per-user temporary name.
-fn effective_uid() -> Option<u32> {
-    let status = std::fs::read_to_string("/proc/self/status").ok()?;
-    status
-        .lines()
-        .find_map(|line| line.strip_prefix("Uid:"))?
-        .split_whitespace()
-        .nth(1)?
-        .parse()
-        .ok()
 }
