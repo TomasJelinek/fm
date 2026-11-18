@@ -485,7 +485,16 @@ fn run_window(
     let ui_reclaim = command_reclaim.clone();
     let final_retire_queue = retire_queue.clone();
     let final_command_reclaim = command_reclaim.clone();
-    let size_updates = Rc::new(RefCell::new(size_refresh::SizeRefresh::default()));
+    // Both panes share one size pulse, armed by the first size-only event after a
+    // presentation. Interactive/backend events still repaint immediately and include
+    // the latest cached totals.
+    let size_window = window.as_weak();
+    let size_state = presenter.clone();
+    let size_updates = size_refresh::SizeRefresh::new(move || {
+        if let Some(window) = size_window.upgrade() {
+            midnight_ui::refresh(&window, &size_state.borrow());
+        }
+    });
     let pending_sizes = size_updates.clone();
     let window_state = Rc::new(window_state::WindowState::install(
         &window,
@@ -542,7 +551,7 @@ fn run_window(
                             p.apply_with_sender(event, send);
                         }
                         if size_only {
-                            pending_sizes.borrow_mut().changed();
+                            pending_sizes.changed();
                         } else {
                             changed = true;
                         }
@@ -559,7 +568,7 @@ fn run_window(
         }
         if changed {
             midnight_ui::refresh(&window, &state.borrow());
-            pending_sizes.borrow_mut().painted();
+            pending_sizes.painted();
             sync_visible(&state, &ui_begin_owned, &ui_visible_sync);
         }
         if preferences_applied {
@@ -672,21 +681,6 @@ fn run_window(
         local,
         filesystem,
     );
-    // Both panes share a four-Hz size pulse. Interactive/backend events still
-    // repaint immediately and include the latest cached totals.
-    let size_timer = slint::Timer::default();
-    let size_state = presenter.clone();
-    let size_window = window.as_weak();
-    size_timer.start(
-        slint::TimerMode::Repeated,
-        size_refresh::INTERVAL,
-        move || {
-            let changed = size_updates.borrow_mut().take_pending();
-            if changed && let Some(window) = size_window.upgrade() {
-                midnight_ui::refresh(&window, &size_state.borrow());
-            }
-        },
-    );
     // Bounded queue saturation cannot permanently lose the accepted-listing ack.
     // Directory rows are shared; this timer only reads identities and tries sends.
     let visible_timer = slint::Timer::default();
@@ -773,7 +767,7 @@ fn run_window(
     window.invoke_close_checksum_windows();
     window.invoke_close_file_list_window();
     visible_timer.stop();
-    size_timer.stop();
+    size_updates.stop();
     thumbnail_timer.stop();
     drop(thumbnail_timer);
     // Detach the receiver from dormant UI callbacks without holding a RefCell
