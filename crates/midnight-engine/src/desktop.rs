@@ -29,7 +29,7 @@ mod editor;
 #[path = "desktop_find.rs"]
 mod find;
 
-const ICON_CAPACITY: usize = 256;
+const ICON_CAPACITY: usize = DESKTOP_ICON_CAPACITY;
 const MAX_TERMINALS: usize = crate::user_command_runtime::MAX_PROCESSES;
 const MAX_OPEN_HELPERS: usize = crate::user_command_runtime::MAX_OPEN_PROCESSES;
 const MAX_OPEN_LAUNCHES: usize = 4;
