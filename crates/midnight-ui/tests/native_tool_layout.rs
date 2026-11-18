@@ -70,30 +70,47 @@ fn render(
     modeless::bitmap::snapshot(&pixels, width as usize, height as usize, name);
     pixels
 }
-fn visible_control(item: ItemRc, label: &str) -> Option<ItemRc> {
+fn visible_controls(item: ItemRc, label: &str, found: &mut Vec<ItemRc>) {
     // Native titlebars suppress the embedded header, whose close button can
-    // share the client footer's label. Validate the actual visible control.
+    // share the client footer's label. Validate the actual visible controls.
     if item.accessible_role() == AccessibleRole::Button
         && item.is_visible()
         && item
             .accessible_string_property(AccessibleStringProperty::Label)
             .is_some_and(|value| value == label)
     {
-        return Some(item);
+        found.push(item.clone());
     }
     let mut child = item.first_child();
     while let Some(item) = child {
         child = item.next_sibling();
-        if let Some(found) = visible_control(item, label) {
-            return Some(found);
-        }
+        visible_controls(item, label, found);
     }
-    None
+}
+fn visible(window: &MinimalSoftwareWindow, label: &str) -> Vec<ItemRc> {
+    let root = ItemRc::new_root(WindowInner::from_pub(window.window()).component());
+    let mut found = Vec::new();
+    visible_controls(root, label, &mut found);
+    found
 }
 fn inside(window: &MinimalSoftwareWindow, label: &str) -> ItemRc {
-    let root = ItemRc::new_root(WindowInner::from_pub(window.window()).component());
-    let item = visible_control(root, label)
+    let item = visible(window, label)
+        .into_iter()
+        .next()
         .unwrap_or_else(|| panic!("Missing visible native control: {label}"));
+    check_inside(window, &item, label);
+    item
+}
+/// Each of the `count` visible controls that share `label`, such as a header close
+/// and a footer button, checked as [`inside`] checks one.
+fn inside_each(window: &MinimalSoftwareWindow, label: &str, count: usize) {
+    let controls = visible(window, label);
+    assert_eq!(controls.len(), count, "visible {label} controls");
+    for item in &controls {
+        check_inside(window, item, label);
+    }
+}
+fn check_inside(window: &MinimalSoftwareWindow, item: &ItemRc, label: &str) {
     let rect = item.geometry();
     let at = item.map_to_native_window(rect.origin);
     let size = window.window().size();
@@ -122,7 +139,6 @@ fn inside(window: &MinimalSoftwareWindow, label: &str) -> ItemRc {
         }
         parent = ancestor.parent_item(ParentItemTraversalMode::StopAtPopups);
     }
-    item
 }
 fn painted_icon(pixels: &[slint::Rgb8Pixel], name: &str) {
     let count = pixels
@@ -235,15 +251,17 @@ fn native_decision_keeps_recovery_details_artwork_and_reachable_footer() {
             720,
             &format!("native-decision-{scheme}-{density}-{font}"),
         );
-        for label in ["Skip", "Skip all", "Copy as", "Cancel job", "Decide later"] {
+        for label in ["Skip", "Skip all", "Copy as", "Cancel job"] {
             inside(&native, label);
         }
+        // The header close defers like the footer button and shares its label.
+        inside_each(&native, "Decide later", 2);
         painted_icon(&pixels, "Decision body");
         window.set_source_details(source.into());
         window.set_can_replace(true);
         for (width, height) in [(1040, 720), (660, 500), (320, 200)] {
             render(&native, width, height, "native-decision-recovery");
-            inside(&native, "Decide later");
+            inside_each(&native, "Decide later", 2);
             let root = ItemRc::new_root(WindowInner::from_pub(window.window()).component());
             for text in [source, target] {
                 assert!(
@@ -257,7 +275,7 @@ fn native_decision_keeps_recovery_details_artwork_and_reachable_footer() {
     assert_eq!(
         dismissed.get(),
         1,
-        "Escape must use native Cancel, not Later"
+        "Escape uses the window's own dismissal, which defers like its X"
     );
     assert!(!window.window().is_visible());
 }

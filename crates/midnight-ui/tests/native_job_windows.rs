@@ -192,6 +192,47 @@ impl Harness {
     }
 }
 
+/// A decision window's two Decide later controls: the themed header close, then the
+/// footer button.
+fn later_controls(decision: &MinimalSoftwareWindow) -> [i_slint_core::item_tree::ItemRc; 2] {
+    modeless::accessible_items(
+        decision,
+        i_slint_core::items::AccessibleRole::Button,
+        "Decide later",
+    )
+    .try_into()
+    .unwrap_or_else(|found: Vec<_>| {
+        panic!(
+            "expected the header close and the footer button, found {}",
+            found.len()
+        )
+    })
+}
+
+/// The Jobs row whose accessible value is this job identity.
+fn job_row(jobs: &MinimalSoftwareWindow, identity: &str) -> i_slint_core::item_tree::ItemRc {
+    use i_slint_core::{accessibility::AccessibleStringProperty, item_tree::ItemRc};
+    fn find(item: ItemRc, identity: &str) -> Option<ItemRc> {
+        if item
+            .accessible_string_property(AccessibleStringProperty::Value)
+            .is_some_and(|v| v == identity)
+        {
+            return Some(item);
+        }
+        let mut child = item.first_child();
+        while let Some(item) = child {
+            child = item.next_sibling();
+            if let Some(found) = find(item, identity) {
+                return Some(found);
+            }
+        }
+        None
+    }
+    let root =
+        ItemRc::new_root(i_slint_core::window::WindowInner::from_pub(jobs.window()).component());
+    find(root, identity).unwrap_or_else(|| panic!("Jobs shows no row {identity}"))
+}
+
 #[test]
 fn native_jobs_close_never_cancels_and_manual_completion_stays_visible() {
     let h = Harness::new();
@@ -245,7 +286,8 @@ fn native_decision_later_keeps_jobs_and_retry_uses_the_exact_revision() {
     let children = h.children(2);
     assert!(Rc::ptr_eq(&jobs, &children[0]));
     let decision = children[1].clone();
-    modeless::click(&decision, "Decide later");
+    let [_, footer] = later_controls(&decision);
+    modeless::click_item(&decision, &footer, "Decide later");
     assert!(h.choices().is_empty(), "Later must not send Cancel or Skip");
     assert!(Rc::ptr_eq(&jobs, &h.children(1)[0]));
     refresh(&h.main, &h.state.borrow());
@@ -269,33 +311,55 @@ fn native_decision_later_keeps_jobs_and_retry_uses_the_exact_revision() {
 }
 
 #[test]
-fn native_decision_escape_and_x_cancel_exact_jobs_without_closing_jobs() {
+fn native_decision_escape_and_x_defer_exact_jobs_without_cancelling() {
     let h = Harness::new();
-    for (id, native_close) in [(1, false), (2, true)] {
+    // Escape, the window's X and the themed header close only close the window.
+    for (id, dismissal) in [(1, "Escape"), (2, "X"), (3, "header close")] {
         h.start(id);
         h.failure(id, id + 100);
-        let decision = h.children(2).pop().unwrap();
+        // Each started job keeps its progress window, plus this decision.
+        let decision = h.children(id as usize + 1).pop().unwrap();
         modeless::draw(&decision, 320, 200, "jobs-decision-compact");
-        if native_close {
-            decision
+        match dismissal {
+            "Escape" => input::key(&decision, Key::Escape),
+            "X" => decision
                 .window()
-                .dispatch_event(WindowEvent::CloseRequested);
-        } else {
-            input::key(&decision, Key::Escape);
+                .dispatch_event(WindowEvent::CloseRequested),
+            _ => {
+                let [header, _] = later_controls(&decision);
+                modeless::click_item(&decision, &header, "Decide later");
+            }
         }
-        let progress = h.children(1).remove(0);
-        progress
-            .window()
-            .dispatch_event(WindowEvent::CloseRequested);
-        h.children(0);
+        assert!(
+            h.choices().is_empty(),
+            "{dismissal} must not cancel job {id}"
+        );
+        assert!(!decision.window().is_visible(), "{dismissal} closes it");
+        h.children(id as usize);
+    }
+    h.main.invoke_show_operations();
+    let jobs = h.children(4).pop().unwrap();
+    for id in 1..=3_u64 {
+        input::click(&jobs, &job_row(&jobs, &format!("copy-job:{id}")));
+        modeless::click(&jobs, "Resolve");
+        let decision = h.children(5).pop().unwrap();
+        assert_eq!(
+            h.main.get_copy_token(),
+            format!("copy-error:{id}:{}", id + 100),
+            "Resolve reopens the exact deferred decision"
+        );
+        modeless::click(&decision, "Cancel job");
+        assert_eq!(h.choices().len(), id as usize);
         assert!(
             matches!(h.choices().last(), Some((target, version, CopyChoice::Cancel)) if *target == OperationId(id) && *version == id + 100)
         );
+        h.children(4);
     }
 }
 
 #[test]
-fn native_decision_stale_window_cannot_cancel_a_newer_revision() {
+fn native_decision_new_revision_replaces_the_window_and_decides_exactly() {
+    // decision_windows::tests proves that the retired window has no authority.
     let h = Harness::new();
     h.start(1);
     h.failure(1, 4);
@@ -306,11 +370,7 @@ fn native_decision_stale_window_cannot_cancel_a_newer_revision() {
         !Rc::ptr_eq(&old, &current),
         "new revision owns a new decision occurrence"
     );
-    old.window().dispatch_event(WindowEvent::CloseRequested);
-    assert!(
-        h.choices().is_empty(),
-        "retired child callback has no authority"
-    );
+    assert!(!old.window().is_visible());
     modeless::click(&current, "Skip");
     assert!(matches!(
         h.choices().as_slice(),
@@ -352,15 +412,17 @@ fn native_metadata_decision_later_and_cancel_keep_exact_tokens() {
             },
         )))
     };
-    h.apply(conflict(8));
-    let decision = h.children(2).pop().unwrap();
-    modeless::click(&decision, "Decide later");
-    assert!(
-        !h.commands
+    let resolved = || {
+        h.commands
             .borrow()
             .iter()
             .any(|c| matches!(c, Command::ResolveMetadataConflict { .. }))
-    );
+    };
+    h.apply(conflict(8));
+    let decision = h.children(2).pop().unwrap();
+    let [_, footer] = later_controls(&decision);
+    modeless::click_item(&decision, &footer, "Decide later");
+    assert!(!resolved());
     let jobs = h.children(1).remove(0);
     refresh(&h.main, &h.state.borrow());
     h.children(1);
@@ -368,14 +430,15 @@ fn native_metadata_decision_later_and_cancel_keep_exact_tokens() {
     let old = h.children(2).pop().unwrap();
     h.apply(conflict(9));
     let current = h.children(2).pop().unwrap();
-    old.window().dispatch_event(WindowEvent::CloseRequested);
-    assert!(
-        !h.commands
-            .borrow()
-            .iter()
-            .any(|c| matches!(c, Command::ResolveMetadataConflict { .. }))
-    );
+    assert!(!Rc::ptr_eq(&old, &current) && !old.window().is_visible());
+    // The window's X defers like Decide later; Jobs can resolve the same token.
     current.window().dispatch_event(WindowEvent::CloseRequested);
+    assert!(!resolved(), "X must not cancel the metadata job");
+    h.children(1);
+    modeless::click(&jobs, "Resolve");
+    assert_eq!(h.main.get_metadata_conflict_token(), "metadata:91:9");
+    let reopened = h.children(2).pop().unwrap();
+    modeless::click(&reopened, "Cancel job");
     assert!(h.commands.borrow().iter().any(|c| matches!(
         c,
         Command::ResolveMetadataConflict {
@@ -424,28 +487,7 @@ fn native_jobs_resolve_selects_the_requested_metadata_job_across_refresh() {
     let children = h.children(2);
     let jobs = children[0].clone();
     let old = children[1].clone();
-    fn find(item: i_slint_core::item_tree::ItemRc) -> Option<i_slint_core::item_tree::ItemRc> {
-        use i_slint_core::accessibility::AccessibleStringProperty;
-        if item
-            .accessible_string_property(AccessibleStringProperty::Value)
-            .is_some_and(|v| v == "metadata-job:92")
-        {
-            return Some(item);
-        }
-        let mut child = item.first_child();
-        while let Some(item) = child {
-            child = item.next_sibling();
-            if let Some(found) = find(item) {
-                return Some(found);
-            }
-        }
-        None
-    }
-    let root = i_slint_core::item_tree::ItemRc::new_root(
-        i_slint_core::window::WindowInner::from_pub(jobs.window()).component(),
-    );
-    let row = find(root).expect("actual row for the second metadata job");
-    input::click(&jobs, &row);
+    input::click(&jobs, &job_row(&jobs, "metadata-job:92"));
     modeless::click(&jobs, "Resolve");
     assert_eq!(h.main.get_metadata_conflict_token(), "metadata:92:102");
     refresh(&h.main, &h.state.borrow());
@@ -454,7 +496,10 @@ fn native_jobs_resolve_selects_the_requested_metadata_job_across_refresh() {
         "metadata:92:102",
         "progress must not retarget the chosen job"
     );
-    old.window().dispatch_event(WindowEvent::CloseRequested);
+    assert!(
+        !old.window().is_visible(),
+        "the chosen job replaces the first job's decision"
+    );
     assert!(
         !h.commands
             .borrow()

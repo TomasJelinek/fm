@@ -215,6 +215,10 @@ and font at the intended width. Cancelled operations retain existing lifetime an
 job admission rules. Header close, Escape and Cancel use the same form dismissal.
 Active Copy/Move/Delete progress instead asks for cancellation confirmation;
 Continue is the default and dismissing that question keeps work running.
+Operation decision windows (name conflicts, Copy/Move errors and metadata conflicts)
+never cancel on dismissal either: their header close, the window's X and Escape
+close only the window, like Decide later, and the footer Cancel job is their explicit
+cancellation.
 Small list controls share compact padding and centered glyphs; remove/clear actions
 use the same red cross in history, cache and custom archive extensions.
 

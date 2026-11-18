@@ -356,8 +356,9 @@ default. Explicit quick mode checks size and 64 KiB first/middle/last samples
 (all bytes up to 192 KiB); it can miss corruption between samples.
 Existing names offer Skip, Skip all, a different name, recoverable Replace/Replace
 all or explicit directory Merge/Merge all, Cancel job and Decide later. In such a
-decision window, Escape and X cancel the job like Cancel job; Decide later keeps the
-decision pending. Jobs can reopen deferred conflicts while browsing continues.
+decision window, Escape and X close it like Decide later and keep the decision
+pending in Jobs; only Cancel job cancels the job. Jobs can reopen deferred conflicts
+while browsing continues.
 Copy retains its sources;
 replacement retains displaced originals. See [transfer limits](developer/TRANSFERS.md).
 Other unlisted Salamander/Total Commander

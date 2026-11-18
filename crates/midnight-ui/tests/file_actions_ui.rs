@@ -415,18 +415,40 @@ fn copy_conflict_native_choices_cancel_and_later_keep_exact_job_identity() {
         h.ui.window.get_copy_token(),
         format!("copy:{}:{version}", id.0)
     );
+    // Escape and the native X close only the window, like Decide later; the
+    // footer Cancel job of the reopened decision cancels this exact job.
     h.ui.key(Key::Escape);
-    assert!(matches!(h.decision(id, version), CopyChoice::Cancel));
     assert!(!reopened.window().is_visible());
+    assert!(
+        h.commands.borrow().is_empty(),
+        "Escape must not send a decision"
+    );
+    h.ui.window
+        .invoke_resolve_copy(format!("copy-job:{}", id.0).into());
+    h.ui.draw();
+    h.ui.click("Cancel job");
+    assert!(matches!(h.decision(id, version), CopyChoice::Cancel));
 
     let (id, version) = h.open(21, false, false);
     let child = h.ui.child();
     child.window().dispatch_event(WindowEvent::CloseRequested);
-    assert!(matches!(h.decision(id, version), CopyChoice::Cancel));
     assert!(
         !child.window().is_visible(),
-        "native X cancels this exact job"
+        "native X closes only the decision window"
     );
+    assert!(
+        h.commands.borrow().is_empty(),
+        "native X must not send a decision"
+    );
+    h.ui.window
+        .invoke_resolve_copy(format!("copy-job:{}", id.0).into());
+    h.ui.draw();
+    assert_eq!(
+        h.ui.window.get_copy_token(),
+        format!("copy:{}:{version}", id.0)
+    );
+    h.ui.click("Cancel job");
+    assert!(matches!(h.decision(id, version), CopyChoice::Cancel));
 }
 
 #[test]

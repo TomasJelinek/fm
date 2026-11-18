@@ -52,7 +52,8 @@ export component CopyConflictDialog inherits Rectangle {
                 title: root.failure-mode ? "Copy/Move needs attention" : "Item already exists";
                 error: root.failure-mode; native-icon: root.native-icon; fallback-icon: FallbackIcons.copy;
                 compact: root.compact; text-size: Theme.font-size * 1.2;
-                close-label: "Cancel job"; close => { root.decide(3, ""); }
+                // Like the window's X and Escape, the header close only defers.
+                close-label: "Decide later"; close => { root.later(); }
             }
             content := ScrollView {
                 min-height: 0px; min-width: 0px; vertical-stretch: 1;

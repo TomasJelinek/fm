@@ -156,20 +156,23 @@ fn native_jobs_close_preserves_work_and_background_decision_preserves_foreground
                 }
                 5 => {
                     if modeless_child(owner, "Operation error")?.is_some() { return Ok(false) }
-                    let commands = sent.borrow();
-                    let decisions: Vec<_> = commands.iter().filter_map(|command| match command {
-                        Command::DecideCopy(decision) => Some(decision), _ => None,
-                    }).collect();
-                    if decisions.len() != 1 || decisions[0].id != OperationId(1)
-                        || decisions[0].version != 9 || !matches!(decisions[0].choice, CopyChoice::Cancel) {
-                        return Err("Native decision close did not cancel its one exact request".into());
+                    if sent.borrow().iter().any(|command| {
+                        matches!(command, Command::DecideCopy(_) | Command::CancelCopy(_))
+                    }) {
+                        return Err("WM_CLOSE on a decision sent a decision or cancellation".into());
                     }
+                    let p = state.borrow();
+                    if p.active_copy_decision().is_some()
+                        || !p.copies.failures.iter().any(|f| f.id == OperationId(1) && f.version == 9) {
+                        return Err("WM_CLOSE did not defer exact decision 1:9".into());
+                    }
+                    drop(p);
                     // SAFETY: read-only scalar queries on this test's windows.
                     if unsafe { GetForegroundWindow() } != other_hwnd
                         || unsafe { IsWindowEnabled(owner) } == 0 {
                         return Err("Decision closure changed unrelated focus or owner modality".into());
                     }
-                    println!("native Jobs/Decision: owned without taskbar entry; owner stays enabled; Jobs close preserves work; background show/close preserves independent foreground; WM_CLOSE sends exact Cancel 1:9");
+                    println!("native Jobs/Decision: owned without taskbar entry; owner stays enabled; Jobs close preserves work; background show/close preserves independent foreground; WM_CLOSE defers exact decision 1:9 without cancelling");
                     return Ok(true);
                 }
                 _ => unreachable!(),
