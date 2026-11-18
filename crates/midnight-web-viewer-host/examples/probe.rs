@@ -70,7 +70,9 @@ fn main() -> Result<(), String> {
     if args.len() != 3 {
         return Err("Usage: probe <installed me.exe> <fixture.html> <report directory>".into());
     }
-    let discovered = discover_with_diagnostics(&args[0]).map_err(|e| e.to_string())?;
+    // Discovery compares the path with its canonical form, as html_wheel_latency passes it.
+    let app = args[0].canonicalize().map_err(|e| e.to_string())?;
+    let discovered = discover_with_diagnostics(&app).map_err(|e| e.to_string())?;
     if !discovered.diagnostics.is_empty() {
         return Err(format!(
             "Discovery diagnostics: {:?}",
