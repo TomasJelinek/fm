@@ -29,6 +29,16 @@ fails when a unit test is added) and the `midnight-elevated-listing` and
 `midnight-worker-probe` binaries, which integration tests still receive as
 `CARGO_BIN_EXE_<name>`.
 
+On Windows with Microsoft Defender real-time protection, the first start of a newly
+linked test executable is slow: on the machine of the
+[test speed follow-up](../verification/2026-11-18-test-speed-follow-up.md) about 1 s
+for a 1 MB executable and up to 13 s for a 35 MB UI test executable, while a later
+start of the same file took at most 0.15 s. The cost follows the file (a
+byte-identical copy pays it again), which points to on-access scanning. A test run
+right after a build pays it once per new executable, so fewer and smaller executables
+also save start time. When comparing test times, compare runs in the same state
+(every executable freshly linked, or every one already started once) and say which.
+
 The `midnight-engine` library test executable re-runs itself for ten Copy seal
 tests (`copy_seal_tests.rs`, `copy_finish_seal_tests.rs` and
 `copy_nested_retirement_tests.rs`), whose deliberately panicking cleanups and
