@@ -21,7 +21,14 @@ pub(super) fn refresh(window: &MainWindow, presenter: &Presenter) {
         close_tool_windows(window);
         let _ = window.hide();
     }
-    let rows = job_presentation::rows(presenter);
+    let mut rows = job_presentation::rows(presenter);
+    // Copy details reads the presenter's rows again, so it keeps the raw paths.
+    for row in &mut rows {
+        make_shown(&mut row.title);
+        make_shown(&mut row.detail);
+        make_shown(&mut row.current_path);
+        make_shown(&mut row.file_progress_title);
+    }
     // Copy/Move/Run often have no native icon; an absent image never equals
     // itself, so plain equality would replace this model on every refresh.
     update_model_by(
@@ -104,7 +111,8 @@ pub(super) fn refresh(window: &MainWindow, presenter: &Presenter) {
     window.set_operation_icon(presenter.desktop.image(&IconKey::action(role)));
     window.set_operation_kind(kind_id);
     window.set_operation_warning(warning.into());
-    window.set_operation_body(body.into());
+    window.set_operation_body(shown_text(&body));
+    // The name field edits the raw name: what it holds is what the operation receives.
     window.set_operation_name(name.into());
     window.set_operation_selection_end(select as i32);
     window.set_operation_has_name(has_name);

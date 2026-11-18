@@ -406,7 +406,7 @@ impl Bridge {
             _ => (
                 row.map_or(-1, |row| row as i32),
                 displayed.map_or_else(Default::default, |entry| {
-                    entry.name.to_string_lossy().as_ref().into()
+                    crate::shown_text(&entry.name.to_string_lossy())
                 }),
             ),
         };

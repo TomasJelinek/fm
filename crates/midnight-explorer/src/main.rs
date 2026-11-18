@@ -544,6 +544,10 @@ fn run_window(
     // Bound after the viewers are installed; the event loop has not run before then.
     let settings_loaded: Rc<OnceCell<viewers::SettingsLoaded>> = Rc::default();
     let loaded_settings = settings_loaded.clone();
+    // Bound after the comparators are installed, likewise.
+    let comparators_loaded: Rc<OnceCell<std::rc::Weak<midnight_compare_ui::ComparatorWindows>>> =
+        Rc::default();
+    let loaded_comparators = comparators_loaded.clone();
     window.on_backend_ready(move || {
         let Some(window) = weak.upgrade() else {
             return;
@@ -608,6 +612,9 @@ fn run_window(
         if preferences_applied {
             if let Some(loaded) = loaded_settings.get() {
                 loaded.applied(&state);
+            }
+            if let Some(comparators) = loaded_comparators.get().and_then(std::rc::Weak::upgrade) {
+                comparator::settings_applied(&comparators, &state);
             }
             // Both successful and failed reads must complete startup, after
             // their appearance/error presentation has reached the hidden UI.
@@ -719,6 +726,7 @@ fn run_window(
         local,
         filesystem,
     );
+    let _ = comparators_loaded.set(Rc::downgrade(&comparators));
     let close_viewers = viewers.clone();
     let close_comparators = comparators.clone();
     let retry = retry_pass::RetryPass {

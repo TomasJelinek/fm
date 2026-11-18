@@ -58,6 +58,8 @@ mod owned_commands;
 #[cfg(test)]
 mod refresh_churn_tests;
 #[cfg(test)]
+mod shown_name_tests;
+#[cfg(test)]
 mod test_harness;
 #[cfg(test)]
 mod tool_window_shutdown_tests;
@@ -258,7 +260,7 @@ impl Model for Rows {
             // Include intent and committed generations: a pending refresh may keep
             // the old rows visible, and a provider may recycle IDs at its commit.
             identity: pane.row_identity(entry).into(),
-            name: entry.display_name.clone().into(),
+            name: shown_text(&entry.display_name),
             parent_entry: false,
             tree_depth: pane.tree_row(index).map_or(0, |row| row.depth as i32),
             tree_disclosure: pane.tree_row(index).map_or_else(
@@ -273,15 +275,18 @@ impl Model for Rows {
                     TreeDisclosure::Failed => 6,
                 },
             ),
-            tree_error: pane
-                .tree_row(index)
-                .map_or_else(
-                    || pane.root_presence_error(entry.id),
-                    |row| row.error.as_deref().unwrap_or_default(),
-                )
-                .into(),
+            tree_error: shown_text(pane.tree_row(index).map_or_else(
+                || pane.root_presence_error(entry.id),
+                |row| row.error.as_deref().unwrap_or_default(),
+            )),
             tree_expanded: pane.tree_row(index).is_some_and(|row| row.expanded),
-            prefix_end: i32::try_from(pane.search_prefix_end(index)).unwrap_or(0),
+            // The search highlight ends at a byte of the raw name; the shown name escapes
+            // explicit bidirectional controls before it.
+            prefix_end: i32::try_from(visible_name_offset(
+                &entry.display_name,
+                pane.search_prefix_end(index),
+            ))
+            .unwrap_or(0),
             compressed: metadata.compression == CompressionStatus::Compressed,
             browsable_archive: state.can_browse_archive(entry),
             dim_icon: detail_attributes::dim_icon(metadata),
@@ -326,6 +331,22 @@ impl Model for Rows {
     fn as_any(&self) -> &dyn std::any::Any {
         self
     }
+}
+
+/// A file or folder name, a path, or text that embeds them, as a window shows it: explicit
+/// bidirectional controls become visible escapes (`midnight_core::visible_name`). Raw names
+/// and paths stay the identities that operations, search and the clipboard use.
+pub(crate) fn shown_text(text: &str) -> SharedString {
+    visible_name(text).as_ref().into()
+}
+
+/// [`shown_text`] in place; text without such controls keeps its allocation.
+pub(crate) fn make_shown(text: &mut SharedString) {
+    let shown = match visible_name(text) {
+        std::borrow::Cow::Owned(shown) => shown,
+        std::borrow::Cow::Borrowed(_) => return,
+    };
+    *text = shown.into();
 }
 
 fn format_size(bytes: u64, locale: &NumberLocale) -> String {
@@ -481,8 +502,8 @@ fn refresh_properties(window: &MainWindow, presenter: &Presenter, reset_rows: bo
             .into_iter()
             .map(|tab| TabRow {
                 identity: tab.id.0.to_string().into(),
-                label: tab.title.into(),
-                path: tab.display_path.into(),
+                label: shown_text(&tab.title),
+                path: shown_text(&tab.display_path),
                 active: tab.active,
             })
             .collect::<Vec<_>>()
@@ -500,8 +521,8 @@ fn refresh_properties(window: &MainWindow, presenter: &Presenter, reset_rows: bo
             .iter()
             .map(|bookmark| BookmarkRow {
                 identity: bookmark.id.0.to_string().into(),
-                label: bookmark.name.as_str().into(),
-                path: bookmark.display_text().into(),
+                label: shown_text(&bookmark.name),
+                path: shown_text(&bookmark.display_text()),
                 slot: i32::from(bookmark.slot.unwrap_or(0)),
             })
             .collect(),
@@ -560,7 +581,7 @@ fn refresh_properties(window: &MainWindow, presenter: &Presenter, reset_rows: bo
     window.set_preferences_unsaved(presenter.preferences.unsaved);
     window.set_preferences_saving(presenter.preferences.saving);
     window.set_preferences_ready(presenter.window_geometry_ready());
-    window.set_preferences_save_status(presenter.preferences_save_status().into());
+    window.set_preferences_save_status(shown_text(&presenter.preferences_save_status()));
     window.set_preferences_save_failed(!presenter.preferences.save_error.is_empty());
     let options = &presenter.preferences.options;
     window.set_options_busy(options.accepting || options.saving);
@@ -635,13 +656,14 @@ fn refresh_properties(window: &MainWindow, presenter: &Presenter, reset_rows: bo
             };
             rows.refresh(p, first.max(0) as usize, end.max(0) as usize, reset_rows);
         }
-        let location = p.display_location_text();
+        // The path editor starts from this text; `Presenter::navigate_text` maps it back.
+        let location = shown_text(&p.display_location_text());
         let cursor = p.cursor_index().map_or(-1, |i| i as i32);
         reveal[index] = !p.preserve_viewport
             && if index == 0 {
-                window.get_left_path().as_str() != location || window.get_left_cursor() != cursor
+                window.get_left_path() != location || window.get_left_cursor() != cursor
             } else {
-                window.get_right_path().as_str() != location || window.get_right_cursor() != cursor
+                window.get_right_path() != location || window.get_right_cursor() != cursor
             };
         let volume = presenter
             .volumes
@@ -675,18 +697,19 @@ fn refresh_properties(window: &MainWindow, presenter: &Presenter, reset_rows: bo
         } else {
             PaneId::Right
         };
-        let error = presenter.panel_error_text(pane_id);
+        // Copying or inspecting the shown error maps it back (`Presenter::copy_panel_error`).
+        let error = shown_text(presenter.panel_error_text(pane_id));
         let watch = presenter.watch_notice(pane_id);
         let (watch, watch_details) =
             watch.map_or(("", String::new()), |notice| (notice.text, notice.details));
         if index == 0 {
             window.set_left_watch_status(watch.into());
-            window.set_left_watch_details(watch_details.into());
-            window.set_left_path(location.into());
+            window.set_left_watch_details(shown_text(&watch_details));
+            window.set_left_path(location);
             window.set_left_volume(volume);
             window.set_left_status(status.into());
             window.set_left_can_elevate(presenter.can_retry_directory_elevated(PaneId::Left));
-            window.set_left_error(error.into());
+            window.set_left_error(error);
             window.set_left_error_revision(p.error_revision().into());
             window.set_left_loading(p.loading);
             window.set_left_cursor(p.cursor_index().map_or(-1, |i| i as i32));
@@ -694,12 +717,12 @@ fn refresh_properties(window: &MainWindow, presenter: &Presenter, reset_rows: bo
             window.set_left_descending(p.sort.descending);
         } else {
             window.set_right_watch_status(watch.into());
-            window.set_right_watch_details(watch_details.into());
-            window.set_right_path(location.into());
+            window.set_right_watch_details(shown_text(&watch_details));
+            window.set_right_path(location);
             window.set_right_volume(volume);
             window.set_right_status(status.into());
             window.set_right_can_elevate(presenter.can_retry_directory_elevated(PaneId::Right));
-            window.set_right_error(error.into());
+            window.set_right_error(error);
             window.set_right_error_revision(p.error_revision().into());
             window.set_right_loading(p.loading);
             window.set_right_cursor(p.cursor_index().map_or(-1, |i| i as i32));
@@ -761,21 +784,21 @@ fn refresh_properties(window: &MainWindow, presenter: &Presenter, reset_rows: bo
     }
     window.set_terminal_index(presenter.terminal_index());
     window.set_command_hint(presenter.terminal_hint().into());
-    window.set_desktop_status(
+    window.set_desktop_status(shown_text(
         if let Some(guidance) = presenter.desktop.terminal_guidance {
-            guidance.into()
+            guidance
         } else if presenter.desktop.error.is_empty() {
-            presenter.desktop.status.clone()
+            &presenter.desktop.status
         } else {
-            presenter.desktop.error.clone()
-        }
-        .into(),
-    );
+            &presenter.desktop.error
+        },
+    ));
+    // Notice windows copy these; Copy details reads the presenter's own text.
     if let Some((title, body)) = &presenter.desktop.notice {
-        window.set_message_title(title.clone().into());
-        window.set_message_body(body.clone().into());
-        window.set_message_path(presenter.desktop.notice_path.clone().into());
-        window.set_message_details(presenter.desktop.notice_details.clone().into());
+        window.set_message_title(shown_text(title));
+        window.set_message_body(shown_text(body));
+        window.set_message_path(shown_text(&presenter.desktop.notice_path));
+        window.set_message_details(shown_text(&presenter.desktop.notice_details));
         window.set_message_can_authorize(presenter.notice_can_authorize());
         window.set_message_error(presenter.desktop.notice_error);
         window.set_message_generation(presenter.desktop.notice_generation);
@@ -787,12 +810,11 @@ fn refresh_properties(window: &MainWindow, presenter: &Presenter, reset_rows: bo
         .volumes
         .iter()
         .map(|v| {
-            volume_presentation::menu_label(
+            shown_text(&volume_presentation::menu_label(
                 v,
                 volume_presentation::details(presenter, v),
                 &presenter.number_locale,
-            )
-            .into()
+            ))
         })
         .collect();
     update_strings(window.get_volumes(), labels, |model| {
@@ -803,7 +825,7 @@ fn refresh_properties(window: &MainWindow, presenter: &Presenter, reset_rows: bo
         presenter
             .volumes
             .iter()
-            .map(|v| SharedString::from(v.label.as_str()))
+            .map(|v| shown_text(&v.label))
             .collect(),
         |model| window.set_volume_short_labels(model),
     );
@@ -813,7 +835,7 @@ fn refresh_properties(window: &MainWindow, presenter: &Presenter, reset_rows: bo
             .volumes
             .iter()
             .map(|v| {
-                SharedString::from(volume_presentation::volume_tooltip(
+                shown_text(&volume_presentation::volume_tooltip(
                     v,
                     volume_presentation::details(presenter, v),
                     &presenter.number_locale,

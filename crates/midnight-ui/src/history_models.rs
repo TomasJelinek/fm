@@ -116,10 +116,11 @@ impl Model for HistoryRows {
                 let choice = presenter.history_entry(pane, forward, row)?;
                 (
                     choice.identity.into(),
-                    choice
-                        .display
-                        .unwrap_or_else(|| choice.path.to_string_lossy().into_owned())
-                        .into(),
+                    shown_text(
+                        &choice
+                            .display
+                            .unwrap_or_else(|| choice.path.to_string_lossy().into_owned()),
+                    ),
                 )
             }
             Source::Commands => {
@@ -131,7 +132,7 @@ impl Model for HistoryRows {
                 };
                 (
                     entry.command.as_str().into(),
-                    format!("{shell} · {}", entry.command).into(),
+                    shown_text(&format!("{shell} · {}", entry.command)),
                 )
             }
         };

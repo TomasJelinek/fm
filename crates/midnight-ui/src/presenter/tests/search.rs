@@ -485,3 +485,32 @@ fn filter_checkbox_keeps_a_current_match_and_replaces_only_a_hidden_cursor() {
         "a newly hidden cursor falls back to the first match"
     );
 }
+
+#[test]
+fn rows_show_bidi_controls_as_escapes_and_keep_the_highlight_on_the_matched_prefix() {
+    use slint::Model;
+    let mut p = Presenter::new(test_root(), test_root());
+    // Shown raw, the override control makes the name read "photoexe.jpg".
+    let source = snapshot(&mut p, &["photo\u{202e}gpj.exe", "plain.txt"]);
+    let request = query(&mut p, "photo\u{202e}g");
+    accept(
+        &mut p,
+        &request,
+        result(&request, &[0], "photo\u{202e}g".len()),
+    );
+    let offset = p.panes[0].parent_offset();
+    let rows = crate::Rows::new(std::rc::Rc::new(RefCell::new(p)), PaneId::Left);
+    let row = rows.row_data(offset).unwrap();
+    assert_eq!(row.name, "photo\\u202Egpj.exe");
+    assert_eq!(
+        row.prefix_end as usize,
+        "photo\\u202Eg".len(),
+        "the highlight still ends after the matched g"
+    );
+    assert_eq!(rows.row_data(offset + 1).unwrap().name, "plain.txt");
+    assert_eq!(
+        source[0].name.as_os_str(),
+        std::ffi::OsStr::new("photo\u{202e}gpj.exe"),
+        "the listing keeps the raw name"
+    );
+}

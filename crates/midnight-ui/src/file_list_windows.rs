@@ -171,9 +171,10 @@ fn refresh(
 
 fn sync(window: &FileListPresentation<'_>, s: &FileListSession, locale: &NumberLocale) {
     window.set_busy(s.busy());
-    window.set_preview_text(s.preview.clone().into());
-    window.set_summary(s.summary.clone().into());
-    window.set_error_text(s.error.clone().into());
+    // Only the shown preview escapes bidirectional controls; the written list keeps raw names.
+    window.set_preview_text(crate::shown_text(&s.preview));
+    window.set_summary(crate::shown_text(&s.summary));
+    window.set_error_text(crate::shown_text(&s.error));
     window.set_conflict_pending(s.can_confirm());
     if let Some(entry) = &s.conflict {
         let item = &entry.item;
@@ -185,13 +186,10 @@ fn sync(window: &FileListPresentation<'_>, s: &FileListSession, locale: &NumberL
             || "Unavailable".into(),
             |v| format!("{} {}", v.date, v.time),
         );
-        window.set_conflict_text(
-            format!(
-                "{}\n\nSize: {bytes}\nModified: {modified}",
-                item.path.display()
-            )
-            .into(),
-        );
+        window.set_conflict_text(crate::shown_text(&format!(
+            "{}\n\nSize: {bytes}\nModified: {modified}",
+            item.path.display()
+        )));
         window.set_append_output(s.append);
     }
 }
@@ -403,8 +401,20 @@ fn create(
     callback!(on_confirm, |p, send, _window| {
         p.confirm_file_list(id, send);
     });
+    // The notice shows the error with escaped bidirectional controls (`sync`). Copy copies
+    // the session's error itself, and only while it is the error shown.
     callback!(on_copy_error, |p, send, _window, text| {
-        p.copy_viewer_text(text.to_string(), send);
+        let error = p
+            .file_list
+            .session
+            .as_ref()
+            .filter(|s| s.id == id && !s.error.is_empty())
+            .map(|s| s.error.as_str())
+            .filter(|error| *error == text.as_str() || visible_name(error) == text.as_str())
+            .map(str::to_owned);
+        if let Some(error) = error {
+            p.copy_viewer_text(error, send);
+        }
     });
     Ok(Record {
         host,

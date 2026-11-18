@@ -88,9 +88,15 @@ impl Presenter {
         } else {
             &p.error
         };
-        if self.operations.closing || text.is_empty() || visible != text {
+        // The panel shows the error with escaped bidirectional controls; the error itself is
+        // copied.
+        if self.operations.closing
+            || text.is_empty()
+            || (visible != text && visible_name(visible) != text)
+        {
             return;
         }
+        let text = visible.clone();
         let content = p
             .error_details
             .as_ref()
@@ -99,7 +105,7 @@ impl Presenter {
             })
             .map(|details| details.content.clone());
         let Some(content) = content else {
-            self.queue_clipboard_text(text.to_owned(), send);
+            self.queue_clipboard_text(text, send);
             return;
         };
         let request = self.desktop.request();
@@ -127,19 +133,24 @@ impl Presenter {
         } else {
             &p.error
         };
-        if self.operations.closing || text.is_empty() || text != visible {
+        // The panel shows the error with escaped bidirectional controls (`copy_panel_error`).
+        if self.operations.closing
+            || text.is_empty()
+            || (visible != text && visible_name(visible) != text)
+        {
             return;
         }
+        let text = visible.clone();
         if let Some(details) = &p.error_details
             && details.generation == p.generation
             && details.text == text
             && p.error == text
         {
             let content = details.content.clone();
-            self.show_diagnostic_notice("Panel error", text.to_owned(), content, send);
+            self.show_diagnostic_notice("Panel error", text, content, send);
         } else {
             self.retire_warning_viewer();
-            self.desktop.report("Panel error", text.to_owned());
+            self.desktop.report("Panel error", text);
         }
     }
 

@@ -190,6 +190,34 @@ fn full_terminal_details_are_correlated_with_current_panel_error_and_generation(
 }
 
 #[test]
+fn the_shown_error_with_escaped_bidi_controls_opens_the_full_details() {
+    let (mut p, _, _) = fixture();
+    let content: Arc<dyn GeneratedTextSource> = Arc::new(Text);
+    // Shown raw, the override control makes the name read "photoexe.jpg".
+    let diagnostic = TreeDiagnostic::with_details("photo\u{202e}gpj.exe", content.clone());
+    p.panes[0].set_tree_error(&diagnostic, "Cannot list: ", &mut p.retired);
+    // The panel shows this text (`crate::shown_text`).
+    let shown = "Cannot list: photo\\u202Egpj.exe";
+    assert_eq!(visible_name(&p.panes[0].error), shown);
+    let sent = RefCell::new(None);
+    p.inspect_panel_error(PaneId::Left, shown, &|command| {
+        *sent.borrow_mut() = Some(command);
+        true
+    });
+    let Some(Command::ReadDiagnosticText {
+        content: captured, ..
+    }) = sent.into_inner()
+    else {
+        panic!("the shown error opens its full details");
+    };
+    assert!(Arc::ptr_eq(&captured, &content));
+    assert_eq!(
+        p.desktop.notice.as_ref().unwrap().1,
+        "Cannot list: photo\u{202e}gpj.exe"
+    );
+}
+
+#[test]
 fn generic_error_replacement_with_identical_text_retires_old_full_details() {
     let (mut p, _, _) = fixture();
     let diagnostic = TreeDiagnostic::with_details("Same reason", Arc::new(Text));

@@ -136,7 +136,8 @@ pub(super) fn refresh(window: &MainWindow, presenter: &Presenter) {
     );
     window.set_metadata_start_case(state.start_case);
     window.set_metadata_revision(state.revision.to_string().into());
-    window.set_metadata_error(state.error.as_str().into());
+    // Preview errors name the paths they concern.
+    window.set_metadata_error(shown_text(&state.error));
     window.set_metadata_busy(state.busy);
     window.set_metadata_ready(state.can_apply());
     window.set_metadata_preview_current(state.preview_current());
@@ -223,9 +224,9 @@ pub(super) fn show_conflict(window: &MainWindow, conflict: &MetadataConflict, fo
     if !force && window.get_metadata_conflict_token() == token {
         return;
     }
-    window.set_metadata_conflict_body(format!(
+    window.set_metadata_conflict_body(shown_text(&format!(
         "Source: {}\nRequested name: {}\n\nThe destination already exists. No existing entry will be overwritten. Skipping leaves this item's remaining changes unapplied; completed changes elsewhere are retained.",
-        path_text(&conflict.source), path_text(&conflict.destination)).into());
+        path_text(&conflict.source), path_text(&conflict.destination))));
     window.set_metadata_conflict_token(token.into());
     window.invoke_show_metadata_conflict();
 }

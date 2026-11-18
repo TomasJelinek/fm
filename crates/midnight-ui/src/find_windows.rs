@@ -3,6 +3,7 @@ use crate::dialog_host::{CloseDisposition, DialogHost, DialogOwner, DialogSessio
 use crate::tool_window_failure::Failures;
 use crate::{
     FindDraft, FindRow, FindWindow, MainWindow, Presenter, Theme, presenter::find::FindForm,
+    shown_text,
 };
 use midnight_core::*;
 use slint::{ComponentHandle, Model, ModelNotify, ModelTracker, SharedString, VecModel};
@@ -44,26 +45,20 @@ impl Model for Rows {
         let entry = &result.entry;
         Some(FindRow {
             token: format!("{}:{}", session.generation.0, result.id.0).into(),
-            name: entry
-                .path
-                .file_name()
-                .unwrap_or(entry.path.as_os_str())
-                .to_string_lossy()
-                .as_ref()
-                .into(),
+            name: shown_text(
+                &entry
+                    .path
+                    .file_name()
+                    .unwrap_or(entry.path.as_os_str())
+                    .to_string_lossy(),
+            ),
             extension: entry
                 .path
                 .extension()
                 .map_or_else(SharedString::default, |value| {
-                    value.to_string_lossy().as_ref().into()
+                    shown_text(&value.to_string_lossy())
                 }),
-            path: entry
-                .path
-                .parent()
-                .unwrap_or(&entry.path)
-                .to_string_lossy()
-                .as_ref()
-                .into(),
+            path: shown_text(&entry.path.parent().unwrap_or(&entry.path).to_string_lossy()),
             size: if entry.kind == EntryKind::Directory {
                 "<DIR>".into()
             } else {
@@ -293,7 +288,8 @@ fn refresh(
         w.set_running(s.running);
         w.set_stopping(s.stopping);
         w.set_duplicate_results(s.duplicates);
-        w.set_error(s.error.clone().into());
+        // Copy details formats the session again, with raw paths.
+        w.set_error(shown_text(&s.error));
         w.set_attention(
             !s.error.is_empty()
                 || s.summary.as_ref().is_some_and(|summary| {
@@ -314,19 +310,19 @@ fn refresh(
                 }
                 .to_owned();
                 crate::error_presentation::append_path(&mut text, path);
-                text.into()
+                shown_text(&text)
             },
         ));
         w.set_sort_column(sort_index(s.sort.column));
         w.set_sort_descending(s.sort.descending);
-        w.set_details(details(s, &p.number_locale).into());
+        w.set_details(shown_text(&details(s, &p.number_locale)));
         if record.roots != s.roots {
             record.roots = s.roots.clone();
             w.set_roots(
                 Rc::new(VecModel::from(
                     s.roots
                         .iter()
-                        .map(|p| SharedString::from(p.to_string_lossy().as_ref()))
+                        .map(|p| shown_text(&p.to_string_lossy()))
                         .collect::<Vec<_>>(),
                 ))
                 .into(),

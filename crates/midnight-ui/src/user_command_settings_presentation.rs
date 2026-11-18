@@ -11,7 +11,7 @@ pub(crate) fn refresh(window: &MainWindow, p: &Presenter) {
     let view = window.global::<UserCommandSettingsView>();
     let state = &p.user_command_settings;
     view.set_busy(p.settings_picker.busy());
-    view.set_error(state.error.as_str().into());
+    view.set_error(crate::shown_text(&state.error));
     refresh_preview(&view, p, window.get_options_open());
     let commands = &p.preferences.values.user_commands;
     let revision = format!(
@@ -51,9 +51,9 @@ pub(crate) fn refresh(window: &MainWindow, p: &Presenter) {
     view.set_can_apply(state.can_apply && p.user_command_settings_current());
     view.set_can_preview(state.can_preview && p.user_command_settings_current());
     view.set_token(state.token().into());
-    view.set_error(state.error.as_str().into());
-    view.set_validation(state.validation.as_str().into());
-    view.set_status(state.status.as_str().into());
+    view.set_error(crate::shown_text(&state.error));
+    view.set_validation(crate::shown_text(&state.validation));
+    view.set_status(crate::shown_text(&state.status));
     let position = state
         .selected
         .as_ref()
@@ -108,7 +108,10 @@ pub(crate) fn refresh(window: &MainWindow, p: &Presenter) {
                 UserCommandSettingsRow {
                     id: command.id.as_str().into(),
                     name: command.name.as_str().into(),
-                    summary: if matches!(command.invocation, UserCommandInvocation::Separator) {
+                    summary: crate::shown_text(&if matches!(
+                        command.invocation,
+                        UserCommandInvocation::Separator
+                    ) {
                         kind
                     } else {
                         format!(
@@ -119,8 +122,7 @@ pub(crate) fn refresh(window: &MainWindow, p: &Presenter) {
                                 "Per item"
                             }
                         )
-                    }
-                    .into(),
+                    }),
                     separator: matches!(command.invocation, UserCommandInvocation::Separator),
                     enabled: command.enabled,
                     selected: state.selected.as_ref() == Some(&command.id),
@@ -173,7 +175,7 @@ fn refresh_preview(view: &UserCommandSettingsView<'_>, p: &Presenter, visible: b
             text = format!("{}...", job.state);
         }
     }
-    view.set_preview_text(text.trim_start().into());
+    view.set_preview_text(crate::shown_text(text.trim_start()));
     view.set_preview_failed(job.is_some_and(|job| job.error.is_some()));
     view.set_preview_revision(revision.into());
 }
