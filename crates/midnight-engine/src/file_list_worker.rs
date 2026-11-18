@@ -111,12 +111,18 @@ pub(super) fn generate_with_sizes(
         }
         Ok::<_, FsError>(row)
     };
+    // Only `:max` fields need a first pass over every row. Without one, `render`
+    // accepts empty widths and validates each row it renders: saved and copied
+    // output still validates every row before its spool is finished, while a
+    // preview builds only the rows it shows.
     let mut widths = Vec::new();
-    for entry in &entries {
-        check(cancel)?;
-        format
-            .measure(&sized_record(entry)?, &mut widths)
-            .map_err(error)?;
+    if format.needs_measurement() {
+        for entry in &entries {
+            check(cancel)?;
+            format
+                .measure(&sized_record(entry)?, &mut widths)
+                .map_err(error)?;
+        }
     }
     let preview = request.destination == FileListDestination::Preview;
     let mut spool = if preview {

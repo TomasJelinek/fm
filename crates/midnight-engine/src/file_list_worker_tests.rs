@@ -57,6 +57,53 @@ fn preview_is_bounded_and_max_width_measures_rows_outside_preview() {
 }
 
 #[test]
+fn without_max_widths_preview_validates_shown_rows_and_output_validates_every_row() {
+    // The row after the 12-row preview window cannot be written: its name holds NUL.
+    let names = (0..20)
+        .map(|index| match index {
+            15 => "bad\0name.txt".to_owned(),
+            _ => format!("file-{index}.txt"),
+        })
+        .collect::<Vec<_>>();
+    let names = names.iter().map(String::as_str).collect::<Vec<_>>();
+    let Generated::Preview {
+        text,
+        items,
+        truncated,
+    } = generate(
+        &request(&names, "$(FileName)$(LF)"),
+        &Cancellation::default(),
+    )
+    .unwrap()
+    else {
+        panic!("preview")
+    };
+    assert_eq!((items, truncated, text.lines().count()), (20, true, 12));
+    for destination in [
+        FileListDestination::Clipboard,
+        FileListDestination::File {
+            path: "list.txt".into(),
+            append: false,
+        },
+    ] {
+        let mut request = request(&names, "$(FileName)$(LF)");
+        request.destination = destination;
+        let error = generate(&request, &Cancellation::default())
+            .err()
+            .expect("saved and copied output validate every row");
+        assert!(error.message.contains("NUL"), "{error:?}");
+    }
+    // `:max` measures every row first, so even its preview reports the row.
+    assert!(
+        generate(
+            &request(&names, "$(FileName:max)$(LF)"),
+            &Cancellation::default()
+        )
+        .is_err()
+    );
+}
+
+#[test]
 fn preview_truncation_preserves_unicode_boundaries_and_total_count() {
     let name = "文".repeat(10_000);
     let result = generate(&request(&[&name], "$(FileName)"), &Cancellation::default()).unwrap();
