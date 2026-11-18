@@ -153,15 +153,22 @@ impl WatchService for Native {
                 callback();
             }
         }
-        self.callbacks.lock().unwrap().push((path.into(), changed));
-        self.registered.notify_one();
-        if self
+        let panics = self
             .panics
             .try_update(Ordering::SeqCst, Ordering::SeqCst, |left| {
                 left.checked_sub(1)
             })
-            .is_ok()
-        {
+            .is_ok();
+        // Recorded before `registrations` can observe this registration.
+        if !panics && !self.fail {
+            self.history
+                .lock()
+                .unwrap()
+                .push(Watched::Registered(path.into()));
+        }
+        self.callbacks.lock().unwrap().push((path.into(), changed));
+        self.registered.notify_one();
+        if panics {
             panic!("watch test registration panic");
         }
         if self.fail {
@@ -171,10 +178,6 @@ impl WatchService for Native {
                 io::ErrorKind::Unsupported.into(),
             ));
         }
-        self.history
-            .lock()
-            .unwrap()
-            .push(Watched::Registered(path.into()));
         Ok(Box::new(Guard {
             path: path.into(),
             drops: self.drops.clone(),
