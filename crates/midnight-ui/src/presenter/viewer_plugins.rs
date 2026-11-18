@@ -205,6 +205,7 @@ impl Presenter {
 
     pub(super) fn viewer_plugins_listed(&mut self, result: Result<Vec<ViewerPluginInfo>, String>) {
         self.viewer_plugins.pending = false;
+        let selected = self.selected_viewer_plugin_key();
         match result {
             Ok(catalog) => {
                 self.retired.push(Box::new(mem::replace(
@@ -219,6 +220,7 @@ impl Presenter {
                 self.viewer_plugins.error = error;
             }
         }
+        self.viewer_catalog_replaced(selected);
         self.viewer_plugins.revision = self.viewer_plugins.revision.wrapping_add(1);
     }
 

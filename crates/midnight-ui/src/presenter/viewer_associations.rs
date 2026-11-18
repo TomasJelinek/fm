@@ -56,6 +56,24 @@ impl Presenter {
             .or_else(|| (!catalog.is_empty()).then_some(0))
     }
 
+    /// The key of the row the Plugins page shows as selected.
+    pub(super) fn selected_viewer_plugin_key(&self) -> Option<String> {
+        let catalog = self.viewer_plugins_ordered();
+        self.viewer_plugin_selected(&catalog)
+            .map(|index| key(&catalog[index], index))
+    }
+
+    /// An extension refusal or association error describes the selected viewer.
+    /// When a catalog reply changed the selected row (that viewer left the
+    /// catalog), clear both: they do not apply to the newly selected viewer, and
+    /// a refusal would keep blocking OK and viewer changes.
+    pub(super) fn viewer_catalog_replaced(&mut self, selected: Option<String>) {
+        if self.selected_viewer_plugin_key() != selected {
+            self.viewer_plugins.extension_input_rejected = false;
+            self.viewer_plugins.association_error.clear();
+        }
+    }
+
     pub(crate) fn discard_viewer_association_draft(&mut self) {
         if let Some(draft) = self.viewer_plugins.extension_draft.take() {
             self.retired.push(Box::new(draft));
@@ -452,5 +470,45 @@ mod tests {
                 .text,
             "md; custom"
         );
+    }
+
+    #[test]
+    fn catalog_reply_without_the_selected_viewer_drops_its_refusal_and_error() {
+        // An explicit selection, and the first row selected without a click.
+        for (clicked, id) in [
+            (Some(1), "midnight.viewer.image"),
+            (None, "midnight.viewer.markdown"),
+        ] {
+            let mut presenter = loaded();
+            presenter.begin_options();
+            if let Some(index) = clicked {
+                presenter.select_viewer_plugin(index, &|_| true);
+            }
+            presenter.request_viewer_plugins(&|_| true);
+            presenter.edit_viewer_extensions(&"r".repeat(32_769));
+            assert!(presenter.viewer_plugins.extension_input_rejected);
+            let mut catalog = presenter.viewer_plugins.catalog.clone();
+            catalog.retain(|plugin| plugin.id != "midnight.viewer.basic");
+            presenter.viewer_plugins_listed(Ok(catalog.clone()));
+            assert!(
+                presenter.viewer_plugins.extension_input_rejected
+                    && !presenter.viewer_plugins.association_error.is_empty(),
+                "a reply that keeps {id} selected keeps its refusal"
+            );
+            catalog.retain(|plugin| plugin.id != id);
+            presenter.viewer_plugins_listed(Ok(catalog));
+            let ordered = presenter.viewer_plugins_ordered();
+            let selected = presenter.viewer_plugin_selected(&ordered).unwrap();
+            assert_ne!(ordered[selected].id, id);
+            assert!(
+                !presenter.viewer_plugins.extension_input_rejected
+                    && presenter.viewer_plugins.association_error.is_empty(),
+                "the refusal and its error belonged to the removed {id}"
+            );
+            assert!(
+                presenter.save_viewer_extension_draft(&|_| panic!("no draft to save")),
+                "OK is no longer blocked by the removed {id}"
+            );
+        }
     }
 }
