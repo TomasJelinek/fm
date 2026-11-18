@@ -4,12 +4,9 @@
 //! `create_private_spool`. The platform modules supply only this session's
 //! bases; the candidate order is shared. Opening roots and spools is native I/O
 //! for backend workers.
-use midnight_worker_platform::spool::PrivateSpoolDirectory;
-use std::{
-    io,
-    path::{Path, PathBuf},
-    sync::{Arc, Mutex, PoisonError, Weak},
-};
+pub(crate) use midnight_worker_platform::spool::SpoolRoot;
+use midnight_worker_platform::spool::{PrivateSpoolDirectory, ProcessRootGuard};
+use std::{io, path::PathBuf, sync::Arc};
 
 #[cfg(target_os = "linux")]
 #[path = "private_spool_linux.rs"]
@@ -24,15 +21,6 @@ mod tests;
 
 /// The common path component limit (ext4 bytes, NTFS UTF-16 units).
 const MAX_COMPONENT: usize = 255;
-
-/// One candidate private spool root (see `private_spool_roots`).
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct SpoolRoot {
-    pub(crate) path: PathBuf,
-    /// Only this process uses the root, so it is removed after its last spool
-    /// closes instead of accumulating one directory per run.
-    pub(crate) per_process: bool,
-}
 
 /// What a spool holds. Only whether a disk-backed root comes first depends on it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -117,7 +105,7 @@ fn spool_roots(
 /// Read-only prefixes of the spool must not outlive it.
 pub(crate) struct PrivateSpool<T> {
     spool: T,
-    _root: Option<Arc<ProcessRoot>>,
+    _root: Option<Arc<ProcessRootGuard>>,
 }
 impl<T> std::ops::Deref for PrivateSpool<T> {
     type Target = T;
@@ -146,7 +134,7 @@ pub(crate) fn create_private_spool<T>(
     for root in roots {
         // The guard exists before the open, so the root cannot be removed
         // between its open and the spool creation in it.
-        let guard = root.per_process.then(|| ProcessRoot::acquire(&root.path));
+        let guard = root.guard();
         match PrivateSpoolDirectory::open(&root.path).and_then(|directory| create(&directory)) {
             Ok(spool) => {
                 return Ok(PrivateSpool {
@@ -160,44 +148,4 @@ pub(crate) fn create_private_spool<T>(
         }
     }
     Err(failure)
-}
-
-/// Guards of live per-process roots. A guard is created, and an unused root is
-/// removed, only under this lock, so no opener can see its root disappear.
-static PROCESS_ROOTS: Mutex<Vec<(PathBuf, Weak<ProcessRoot>)>> = Mutex::new(Vec::new());
-
-/// Keeps a per-process root while a spool of this process may use it.
-struct ProcessRoot(PathBuf);
-impl ProcessRoot {
-    fn acquire(path: &Path) -> Arc<Self> {
-        let mut roots = PROCESS_ROOTS.lock().unwrap_or_else(PoisonError::into_inner);
-        if let Some(live) = roots
-            .iter()
-            .filter(|(root, _)| root == path)
-            .find_map(|(_, guard)| guard.upgrade())
-        {
-            return live;
-        }
-        roots.retain(|(root, _)| root != path);
-        let guard = Arc::new(Self(path.to_owned()));
-        roots.push((path.to_owned(), Arc::downgrade(&guard)));
-        guard
-    }
-}
-impl Drop for ProcessRoot {
-    fn drop(&mut self) {
-        let mut roots = PROCESS_ROOTS.lock().unwrap_or_else(PoisonError::into_inner);
-        if roots
-            .iter()
-            .any(|(root, guard)| *root == self.0 && guard.strong_count() != 0)
-        {
-            // A newer guard keeps the root for its own spool.
-            return;
-        }
-        roots.retain(|(root, _)| *root != self.0);
-        // Spools are anonymous (Linux) or deleted on close (Windows), so the root
-        // is empty after its last spool closed. `remove_dir` removes only an empty
-        // directory, never a link target; a root it cannot remove is kept.
-        let _ = std::fs::remove_dir(&self.0);
-    }
 }

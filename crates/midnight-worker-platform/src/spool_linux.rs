@@ -1,3 +1,4 @@
+use super::SpoolSpace;
 use crate::store::native::Root;
 use rustix::fs::{self, Mode, OFlags};
 use std::{fs::File, io, os::unix::fs::FileExt};
@@ -26,4 +27,13 @@ pub(super) fn create(root: &Root) -> io::Result<File> {
 
 pub(super) fn read_at(file: &File, offset: u64, output: &mut [u8]) -> io::Result<usize> {
     file.read_at(output, offset)
+}
+
+/// Handle-relative: the verified root descriptor names the volume, never a path.
+pub(super) fn space(root: &Root) -> io::Result<SpoolSpace> {
+    let volume = fs::fstatvfs(root.directory())?;
+    Ok(SpoolSpace {
+        available: volume.f_bavail.saturating_mul(volume.f_frsize),
+        total: volume.f_blocks.saturating_mul(volume.f_frsize),
+    })
 }

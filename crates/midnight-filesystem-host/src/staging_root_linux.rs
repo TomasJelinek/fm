@@ -1,31 +1,36 @@
 //! Per-user spool roots. A fixed name in the shared `/tmp` could be pre-created by
 //! another account; the private-root check then correctly refuses it, which would
-//! deny every staged archive read. Every candidate is scoped to this user, so a
-//! directory another account pre-creates only disables that one candidate.
+//! deny every staged archive read. Every candidate is scoped to this user or this
+//! process, so a directory another account pre-creates only disables that candidate.
+use midnight_worker_platform::spool::SpoolRoot;
 use std::{
     ffi::OsString,
     path::{Path, PathBuf},
 };
 
-pub(super) fn candidates() -> Vec<PathBuf> {
+pub(super) fn candidates() -> Vec<SpoolRoot> {
     candidates_from(
         |name| std::env::var_os(name),
         |path| std::fs::canonicalize(path).ok(),
         std::env::temp_dir(),
         effective_user(),
+        std::process::id(),
     )
 }
 
 /// In order: the disk-backed XDG cache (or `~/.cache`); a user-scoped name in the
 /// temporary directory, which also serves sessions without a usable home, such as an
-/// NFS home without anonymous files; `$XDG_RUNTIME_DIR`, usually a small tmpfs meant
-/// for small runtime files, as the last resort for possibly large decoded members.
+/// NFS home without anonymous files; a name for this process alone in the temporary
+/// directory, for sessions whose cache is unusable when another account took the
+/// user-scoped name; and `$XDG_RUNTIME_DIR`, usually a small tmpfs meant for small
+/// runtime files, as the last resort for possibly large decoded members.
 fn candidates_from(
     variable: impl Fn(&str) -> Option<OsString>,
     canonical: impl Fn(&Path) -> Option<PathBuf>,
     temporary: PathBuf,
     user: Option<u32>,
-) -> Vec<PathBuf> {
+    process: u32,
+) -> Vec<SpoolRoot> {
     let absolute = |name: &str| {
         variable(name)
             .map(PathBuf::from)
@@ -33,17 +38,36 @@ fn candidates_from(
     };
     let cache =
         absolute("XDG_CACHE_HOME").or_else(|| absolute("HOME").map(|home| home.join(".cache")));
-    let temporary = user
-        .filter(|_| temporary.is_absolute())
-        .map(|user| (temporary, format!("midnight-explorer-{user}-archive-spool")));
-    let runtime = absolute("XDG_RUNTIME_DIR");
-    cache
-        .map(|cache| (cache, "midnight-explorer/archive-spool".to_owned()))
-        .into_iter()
-        .chain(temporary)
-        .chain(runtime.map(|runtime| (runtime, "midnight-explorer-archive-spool".to_owned())))
-        .map(|(base, spool)| resolve(&base, &canonical).join(spool))
-        .collect()
+    let temporary = Some(temporary).filter(|temporary| temporary.is_absolute());
+    let root = |base: &Option<PathBuf>, name: String, per_process| {
+        base.as_ref().map(|base| SpoolRoot {
+            path: resolve(base, &canonical).join(name),
+            per_process,
+        })
+    };
+    [
+        root(&cache, "midnight-explorer/archive-spool".into(), false),
+        user.and_then(|user| {
+            root(
+                &temporary,
+                format!("midnight-explorer-{user}-archive-spool"),
+                false,
+            )
+        }),
+        root(
+            &temporary,
+            format!("midnight-explorer-archive-spool-{process}"),
+            true,
+        ),
+        root(
+            &absolute("XDG_RUNTIME_DIR"),
+            "midnight-explorer-archive-spool".into(),
+            false,
+        ),
+    ]
+    .into_iter()
+    .flatten()
+    .collect()
 }
 
 /// Resolve links in a base directory chosen by the user or the system, such as `/home`
@@ -91,9 +115,10 @@ fn effective_user_from(status: &str) -> Option<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::staging::{Staging, ample_volume};
     use std::os::unix::fs::MetadataExt;
 
-    fn roots(variables: &[(&str, &str)], user: Option<u32>) -> Vec<PathBuf> {
+    fn roots(variables: &[(&str, &str)], user: Option<u32>) -> Vec<SpoolRoot> {
         candidates_from(
             |name| {
                 variables
@@ -113,11 +138,25 @@ mod tests {
             },
             PathBuf::from("/tmp"),
             user,
+            42,
         )
+    }
+    fn kept(path: impl Into<PathBuf>) -> SpoolRoot {
+        SpoolRoot {
+            path: path.into(),
+            per_process: false,
+        }
+    }
+    fn per_process(path: impl Into<PathBuf>) -> SpoolRoot {
+        SpoolRoot {
+            path: path.into(),
+            per_process: true,
+        }
     }
 
     #[test]
-    fn spool_roots_are_per_user_and_never_a_shared_temporary_name() {
+    fn spool_roots_are_never_a_shared_name_and_the_runtime_directory_comes_last() {
+        let process = || per_process("/tmp/midnight-explorer-archive-spool-42");
         assert_eq!(
             roots(
                 &[
@@ -128,25 +167,39 @@ mod tests {
                 Some(1000)
             ),
             [
-                PathBuf::from("/mnt/disk/cache/midnight-explorer/archive-spool"),
-                PathBuf::from("/tmp/midnight-explorer-1000-archive-spool"),
+                kept("/mnt/disk/cache/midnight-explorer/archive-spool"),
+                kept("/tmp/midnight-explorer-1000-archive-spool"),
+                process(),
                 // A base that cannot be resolved is used as entered.
-                PathBuf::from("/run/user/1000/midnight-explorer-archive-spool"),
+                kept("/run/user/1000/midnight-explorer-archive-spool"),
             ]
         );
         // A linked home resolves before its missing `.cache` is appended.
         assert_eq!(
             roots(&[("XDG_CACHE_HOME", "relative"), ("HOME", "/home/u")], None),
-            [PathBuf::from(
-                "/var/home/u/.cache/midnight-explorer/archive-spool"
-            )]
+            [
+                kept("/var/home/u/.cache/midnight-explorer/archive-spool"),
+                process(),
+            ]
         );
-        // Without any usable variable only the user-scoped temporary name remains.
+        // Without any usable variable only the temporary directory's names remain.
         assert_eq!(
             roots(&[("HOME", "relative"), ("XDG_RUNTIME_DIR", "run")], Some(0)),
-            [PathBuf::from("/tmp/midnight-explorer-0-archive-spool")]
+            [kept("/tmp/midnight-explorer-0-archive-spool"), process()]
         );
-        assert!(roots(&[], None).is_empty());
+        assert_eq!(roots(&[], None), [process()]);
+    }
+
+    #[test]
+    fn a_foreign_owned_root_falls_through_to_the_per_process_root() {
+        let temporary = tempfile::tempdir().unwrap();
+        let own = temporary.path().join("midnight-explorer-archive-spool-7");
+        // `/` stands in for a user-scoped name that another account created first:
+        // root owns it (and refuses its mode 0755 when the test itself runs as root).
+        let staging = Staging::open_first([kept("/"), per_process(&own)], ample_volume).unwrap();
+        assert!(own.is_dir());
+        drop(staging);
+        assert!(!own.exists(), "the last spool removes the per-process root");
     }
 
     #[test]
@@ -172,16 +225,17 @@ mod tests {
         std::os::unix::fs::symlink(&real, &link).unwrap();
         let spool = Path::new("midnight-explorer/archive-spool");
         // The private-root walk follows no link, so the entered spelling is unusable.
-        assert!(super::super::Staging::open(&link.join(spool)).is_err());
+        assert!(Staging::open(&link.join(spool)).is_err());
         let roots = candidates_from(
             |name| (name == "XDG_CACHE_HOME").then(|| link.clone().into_os_string()),
             |path| std::fs::canonicalize(path).ok(),
             PathBuf::from("relative"),
             None,
+            7,
         );
         let real = real.canonicalize().unwrap();
-        assert_eq!(roots, [real.join(spool)]);
-        super::super::Staging::open_first(roots).unwrap();
+        assert_eq!(roots, [kept(real.join(spool))]);
+        Staging::open_first(roots, ample_volume).unwrap();
         assert!(real.join(spool).is_dir());
     }
 }

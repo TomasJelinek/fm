@@ -29,6 +29,21 @@ pub struct Worker {
     pub process: Process,
 }
 
+/// How a worker process ended, as the OS reports it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ExitStatus {
+    /// The exit code: all 32 bits on Windows (`0xC0000005` after an access violation,
+    /// 1 after [`Process::kill`]), 0 to 255 on Linux.
+    Code(u32),
+    /// Linux: the signal that terminated the process (9 after [`Process::kill`]).
+    Signal(i32),
+}
+impl ExitStatus {
+    pub fn success(self) -> bool {
+        self == Self::Code(0)
+    }
+}
+
 /// Launch only a trusted, absolute installed executable. No media path, shell, environment secrets,
 /// or inherited source handle is supplied. The caller must verify `read_ready` with a deadline.
 pub fn spawn(executable: &Path, limits: Limits) -> io::Result<Worker> {

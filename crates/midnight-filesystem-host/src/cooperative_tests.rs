@@ -493,6 +493,67 @@ fn cooperative_cancellation_cannot_hide_changed_source() {
     assert!(fixture.mount.supervision.stop.load(Ordering::Acquire));
 }
 
+/// A scripted worker has no process for its supervisor to end.
+struct ScriptedWorker;
+impl close::SupervisorProcess for ScriptedWorker {
+    fn kill(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+    fn wait_terminated(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+/// A 100 GiB spool volume with exactly its 2 GiB reserve free.
+fn volume_at_reserve(
+    _: &midnight_worker_platform::spool::PrivateSpoolDirectory,
+) -> io::Result<midnight_worker_platform::spool::SpoolSpace> {
+    Ok(midnight_worker_platform::spool::SpoolSpace {
+        available: 2 << 30,
+        total: 100 << 30,
+    })
+}
+
+#[test]
+fn a_member_refused_at_the_spool_reserve_ends_the_worker_and_teardown_frees_its_stage() {
+    let fixture = Fixture::new(Protocol::V3, vec![begin(1), append(1, 1)]);
+    fixture
+        .mount
+        .staging
+        .lock()
+        .unwrap()
+        .as_mut()
+        .unwrap()
+        .set_space(volume_at_reserve);
+    let error = fixture
+        .mount
+        .read(2, 0, 4, &Cancellation::default())
+        .unwrap_err();
+    assert_eq!(error.kind, io::ErrorKind::StorageFull);
+    assert!(error.message.contains("free-space reserve"), "{error}");
+    // Like any other staging failure, the refusal ends the shared worker, whose
+    // supervisor then releases the staging.
+    assert!(fixture.mount.supervision.stopped());
+    // Windows lists an open spool as a delete-on-close file; Linux spools are anonymous.
+    let spool = fixture._temp.path().join("spool");
+    let spools = || std::fs::read_dir(&spool).unwrap().count();
+    assert_eq!(spools(), usize::from(cfg!(windows)));
+    let accounting = Arc::new(AtomicUsize::new(0));
+    close::supervise(
+        close::Supervisor::new(
+            ScriptedWorker,
+            fixture.mount.staging.clone(),
+            close::Accounting::for_test(accounting.clone()),
+        ),
+        fixture.mount.supervision.clone(),
+        fixture.mount.close.clone(),
+    );
+    // The supervisor's teardown dropped the staging with its partial stage.
+    assert!(fixture.mount.supervisor_closed_within(Duration::ZERO));
+    assert!(!fixture.mount.staging_present());
+    assert_eq!(spools(), 0);
+    assert_eq!(accounting.load(Ordering::SeqCst), 0);
+}
+
 #[test]
 fn cooperative_legacy_read_drains_without_cancelling_shared_mount() {
     let fixture = Fixture::new(

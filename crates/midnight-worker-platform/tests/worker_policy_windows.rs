@@ -1,5 +1,5 @@
 #![cfg(windows)]
-use midnight_worker_platform::{CpuBudget, ResourcePolicy};
+use midnight_worker_platform::{CpuBudget, ExitStatus, ResourcePolicy};
 use std::{
     io::{Read, Write},
     os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle},
@@ -22,6 +22,8 @@ fn no_additional_cpu_limit_keeps_inherited_job_policy() {
         .unwrap();
         midnight_worker_sdk::read_policy_ready(&mut worker.output).unwrap();
         worker.process.kill().unwrap();
+        // The running worker was killed: its job's termination code is its exit code.
+        assert_eq!(worker.process.wait_status().unwrap(), ExitStatus::Code(1));
         // A killed worker reports its nonzero exit as Ok(false), exactly as on Linux.
         assert!(!worker.process.wait().unwrap());
         return;

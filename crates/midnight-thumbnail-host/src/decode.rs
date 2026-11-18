@@ -1,6 +1,7 @@
 //! Killable helper supervision and bounded read-only content brokering. Backend threads only.
 use midnight_plugin_host::CapturedFile;
 use midnight_thumbnail_api::{self as api, Frame, Message, Request};
+use midnight_worker_platform::ExitStatus;
 use std::{
     io::{self, BufReader},
     path::Path,
@@ -189,7 +190,7 @@ pub fn decode_cooperative(
         };
         broker_stop.store(true, Ordering::Release);
         let _ = process.kill();
-        let exited = process.wait();
+        let exited = process.wait_status();
         broker
             .join()
             .map_err(|_| io::Error::other("Thumbnail broker panicked"))?;
@@ -206,16 +207,21 @@ fn cancellation_error() -> io::Error {
     io::Error::new(io::ErrorKind::Interrupted, "Thumbnail request cancelled")
 }
 
-/// A protocol stream that ended early is reported with the worker's exit, as `Process::wait`
-/// reports it on every platform: `Ok(false)` is a nonzero exit status (also after the kill
-/// above), `Err` a wait that could not confirm the exit. A clean exit keeps the stream error.
-fn explain_closed_stream<T>(result: io::Result<T>, exited: io::Result<bool>) -> io::Result<T> {
+/// A protocol stream that ended early is reported with the worker's exit: its exit code
+/// or terminating signal (also after the kill above), or a wait that could not confirm
+/// the exit. A clean exit keeps the stream error.
+fn explain_closed_stream<T>(
+    result: io::Result<T>,
+    exited: io::Result<ExitStatus>,
+) -> io::Result<T> {
     match (result, exited) {
         (Err(error), exited)
-            if error.kind() == io::ErrorKind::UnexpectedEof && !matches!(exited, Ok(true)) =>
+            if error.kind() == io::ErrorKind::UnexpectedEof
+                && !matches!(exited, Ok(status) if status.success()) =>
         {
             let exit = match exited {
-                Ok(_) => "it exited with a nonzero status".to_owned(),
+                Ok(ExitStatus::Code(code)) => format!("it exited with code 0x{code:08X}"),
+                Ok(ExitStatus::Signal(signal)) => format!("it was terminated by signal {signal}"),
                 Err(wait) => format!("its exit could not be confirmed: {wait}"),
             };
             Err(io::Error::other(format!(
@@ -271,12 +277,25 @@ mod tests {
     }
 
     #[test]
-    fn a_closed_stream_is_explained_by_a_nonzero_exit_or_an_unconfirmed_wait() {
-        // Process::wait reports a nonzero exit as Ok(false) on Windows and Linux alike.
-        let error = explain_closed_stream(closed_stream(), Ok(false)).unwrap_err();
+    fn a_closed_stream_is_explained_by_the_exit_code_signal_or_an_unconfirmed_wait() {
+        let explained = |exited| {
+            explain_closed_stream(closed_stream(), Ok(exited))
+                .unwrap_err()
+                .to_string()
+        };
+        // Windows reports all 32 bits, such as an access violation's NTSTATUS.
         assert_eq!(
-            error.to_string(),
-            "Thumbnail worker closed its protocol stream; it exited with a nonzero status"
+            explained(ExitStatus::Code(0xC000_0005)),
+            "Thumbnail worker closed its protocol stream; it exited with code 0xC0000005"
+        );
+        assert_eq!(
+            explained(ExitStatus::Code(101)),
+            "Thumbnail worker closed its protocol stream; it exited with code 0x00000065"
+        );
+        // Linux reports the terminating signal instead, such as SIGSEGV.
+        assert_eq!(
+            explained(ExitStatus::Signal(11)),
+            "Thumbnail worker closed its protocol stream; it was terminated by signal 11"
         );
         let wait = io::Error::other("wait failed");
         let error = explain_closed_stream(closed_stream(), Err(wait)).unwrap_err();
@@ -290,11 +309,15 @@ mod tests {
     #[test]
     fn other_outcomes_are_not_rewritten_by_the_exit() {
         // A clean exit leaves the stream error itself.
-        let error = explain_closed_stream(closed_stream(), Ok(true)).unwrap_err();
+        let error = explain_closed_stream(closed_stream(), Ok(ExitStatus::Code(0))).unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::UnexpectedEof);
         // Cancellation keeps its kind: the service uses it to skip the failure backoff.
-        let cancelled = explain_closed_stream::<()>(Err(cancellation_error()), Ok(false));
+        let killed = Ok(ExitStatus::Code(1));
+        let cancelled = explain_closed_stream::<()>(Err(cancellation_error()), killed);
         assert_eq!(cancelled.unwrap_err().kind(), io::ErrorKind::Interrupted);
-        assert_eq!(explain_closed_stream(Ok(7), Ok(false)).unwrap(), 7);
+        assert_eq!(
+            explain_closed_stream(Ok(7), Ok(ExitStatus::Signal(9))).unwrap(),
+            7
+        );
     }
 }

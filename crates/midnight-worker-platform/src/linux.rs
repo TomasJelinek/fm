@@ -1,8 +1,8 @@
-use crate::{ResourcePolicy, Worker};
+use crate::{ExitStatus, ResourcePolicy, Worker};
 use std::{
     fs::File,
     io,
-    os::fd::OwnedFd,
+    os::{fd::OwnedFd, unix::process::ExitStatusExt},
     path::Path,
     process::{Child, Command, Stdio},
 };
@@ -18,7 +18,19 @@ impl Process {
         self.0.kill()
     }
     pub fn wait(&mut self) -> io::Result<bool> {
-        self.0.wait().map(|status| status.success())
+        self.wait_status().map(ExitStatus::success)
+    }
+    /// Wait for the worker to exit and return its exit code or terminating signal.
+    pub fn wait_status(&mut self) -> io::Result<ExitStatus> {
+        let status = self.0.wait()?;
+        match (status.code(), status.signal()) {
+            (Some(code), _) => Ok(ExitStatus::Code(code.cast_unsigned())),
+            (None, Some(signal)) => Ok(ExitStatus::Signal(signal)),
+            // A reaped child either exited or was signalled; wait() never reports a stop.
+            (None, None) => Err(io::Error::other(format!(
+                "Worker wait returned an unexpected status: {status}"
+            ))),
+        }
     }
 }
 impl Drop for Process {

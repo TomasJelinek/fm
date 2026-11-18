@@ -192,7 +192,7 @@ impl Accounting {
         })
     }
     #[cfg(test)]
-    fn for_test(local: Arc<AtomicUsize>) -> Self {
+    pub(super) fn for_test(local: Arc<AtomicUsize>) -> Self {
         local.fetch_add(1, Ordering::AcqRel);
         Self { local: Some(local) }
     }

@@ -58,6 +58,18 @@ fn seal(staging: &mut Staging, request: u64, entry: u64) -> u64 {
         .unwrap();
     stage
 }
+fn kept(path: &Path) -> SpoolRoot {
+    SpoolRoot {
+        path: path.to_owned(),
+        per_process: false,
+    }
+}
+fn per_process(path: &Path) -> SpoolRoot {
+    SpoolRoot {
+        path: path.to_owned(),
+        per_process: true,
+    }
+}
 #[test]
 fn an_unusable_spool_root_yields_to_the_next_private_candidate() {
     let temp = tempfile::tempdir().unwrap();
@@ -65,13 +77,224 @@ fn an_unusable_spool_root_yields_to_the_next_private_candidate() {
     let occupied = temp.path().join("occupied");
     std::fs::write(&occupied, b"not a directory").unwrap();
     let private = temp.path().join("private");
-    let mut staging = Staging::open_first([occupied.clone(), private.clone()]).unwrap();
+    let mut staging = Staging::open_first([kept(&occupied), kept(&private)], ample_volume).unwrap();
     assert!(private.is_dir());
     let op = read(1, 2);
     staging.nested(&op, &begin(1, 2)).unwrap();
-    let error = Staging::open_first([occupied.clone()]).err().unwrap();
+    let error = Staging::open_first([kept(&occupied)], ample_volume)
+        .err()
+        .unwrap();
     assert!(error.to_string().contains("occupied"), "{error}");
-    assert!(Staging::open_first(Vec::new()).is_err());
+    assert!(Staging::open_first(Vec::new(), ample_volume).is_err());
+    drop(staging);
+    assert!(private.is_dir(), "a per-user root is kept for later runs");
+}
+
+#[test]
+fn one_spool_root_candidate_belongs_to_this_process_alone() {
+    let roots = root::candidates();
+    let suffix = format!("-archive-spool-{}", std::process::id());
+    let mut processes = roots
+        .iter()
+        .enumerate()
+        .filter(|(_, root)| root.per_process);
+    let (Some((position, own)), None) = (processes.next(), processes.next()) else {
+        panic!("not exactly one per-process root: {roots:?}")
+    };
+    let name = own.path.file_name().unwrap().to_string_lossy();
+    assert!(name.ends_with(&suffix), "{roots:?}");
+    // It only replaces a per-user root that this session cannot use.
+    assert!(position > 0, "{roots:?}");
+}
+
+thread_local! {
+    /// Free space above the reserve that `volumes_in_turn` reports, one entry per
+    /// query; `None` fails that query.
+    static VOLUMES: std::cell::RefCell<VecDeque<Option<u64>>> =
+        const { std::cell::RefCell::new(VecDeque::new()) };
+}
+/// 100 GiB volumes, whose reserve is 2 GiB, answering from `VOLUMES` in turn.
+fn volumes_in_turn(_: &PrivateSpoolDirectory) -> io::Result<SpoolSpace> {
+    let above_reserve = VOLUMES
+        .with_borrow_mut(VecDeque::pop_front)
+        .flatten()
+        .ok_or_else(|| io::Error::other("the fake volume query failed"))?;
+    Ok(SpoolSpace {
+        available: 2 * GIB + above_reserve,
+        total: 100 * GIB,
+    })
+}
+
+#[test]
+fn a_spool_root_with_room_above_its_reserve_is_preferred_to_an_earlier_full_one() {
+    let temp = tempfile::tempdir().unwrap();
+    let full = temp.path().join("full");
+    let unknown = temp.path().join("unknown");
+    let roomy = temp.path().join("roomy-7");
+    // The first volume lacks one byte of a whole check interval above its reserve and
+    // the second cannot be queried: the third, with a whole interval, is used.
+    VOLUMES.set(VecDeque::from([
+        Some(SPACE_CHECK_INTERVAL - 1),
+        None,
+        Some(SPACE_CHECK_INTERVAL),
+    ]));
+    let candidates = [kept(&full), kept(&unknown), per_process(&roomy)];
+    let staging = Staging::open_first(candidates, volumes_in_turn).unwrap();
+    assert!(
+        VOLUMES.with_borrow(VecDeque::is_empty),
+        "one query per root"
+    );
+    assert!(full.is_dir() && unknown.is_dir());
+    // The chosen per-process root lives as long as its staging.
+    assert!(roomy.is_dir());
+    drop(staging);
+    assert!(!roomy.exists());
+    // Without room on any volume the first usable root serves anyway: the reserve then
+    // refuses only members that do not fit.
+    VOLUMES.set(VecDeque::from([Some(0), Some(0), Some(4)]));
+    let mut staging =
+        Staging::open_first([kept(&full), per_process(&roomy)], volumes_in_turn).unwrap();
+    assert!(!roomy.exists(), "the unused per-process root was removed");
+    let lease = stage_member(&mut staging, 1, 2, b"test");
+    assert_eq!(lease.read(0, 4).unwrap(), b"test");
+}
+
+#[test]
+fn mounts_share_a_per_process_root_until_its_last_spool_closes() {
+    let temp = tempfile::tempdir().unwrap();
+    let occupied = temp.path().join("occupied");
+    std::fs::write(&occupied, b"not a directory").unwrap();
+    let path = temp.path().join("archive-spool-7");
+    let roots = || [kept(&occupied), per_process(&path)];
+    let mut first = Staging::open_first(roots(), ample_volume).unwrap();
+    let mut second = Staging::open_first(roots(), ample_volume).unwrap();
+    let lease = stage_member(&mut first, 1, 2, b"read");
+    drop(first);
+    // The other mount still stages members in the root.
+    assert!(path.is_dir());
+    stage_member(&mut second, 1, 2, b"next");
+    drop(second);
+    // A read that outlives its mount keeps the root until the read ends.
+    assert!(path.is_dir());
+    assert_eq!(lease.read(0, 4).unwrap(), b"read");
+    drop(lease);
+    assert!(
+        !path.exists(),
+        "the last spool removes the per-process root"
+    );
+    // A later mount of this process creates it again.
+    drop(Staging::open_first(roots(), ample_volume).unwrap());
+    assert!(!path.exists());
+}
+
+const GIB: u64 = 1 << 30;
+thread_local! {
+    /// Free space above the reserve that `fake_volume` reports, and its query count.
+    static ABOVE_RESERVE: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    static QUERIES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+/// A 100 GiB volume, whose reserve is 2 GiB, with `ABOVE_RESERVE` more bytes free.
+fn fake_volume(_: &PrivateSpoolDirectory) -> io::Result<SpoolSpace> {
+    QUERIES.set(QUERIES.get() + 1);
+    Ok(SpoolSpace {
+        available: 2 * GIB + ABOVE_RESERVE.get(),
+        total: 100 * GIB,
+    })
+}
+fn staging_on_fake_volume(above_reserve: u64) -> (tempfile::TempDir, Staging) {
+    let (temp, mut staging) = staging();
+    staging.space = fake_volume;
+    ABOVE_RESERVE.set(above_reserve);
+    QUERIES.set(0);
+    (temp, staging)
+}
+fn pending_length(staging: &Staging) -> u64 {
+    staging.pending.as_ref().unwrap().1.spool.length()
+}
+
+#[test]
+fn staging_stops_before_the_spool_volume_reserve_and_writes_nothing() {
+    // Three bytes above the reserve cannot take a four-byte chunk.
+    let (_temp, mut staging) = staging_on_fake_volume(3);
+    let op = read(1, 2);
+    staging.nested(&op, &begin(1, 2)).unwrap();
+    let error = staging.nested(&op, &append(1, 1)).unwrap_err();
+    assert_eq!(error.kind(), io::ErrorKind::StorageFull);
+    assert!(error.to_string().contains("free-space reserve"), "{error}");
+    assert_eq!(pending_length(&staging), 0);
+    assert_eq!(QUERIES.get(), 1);
+    // The volume may fill exactly up to its reserve.
+    let (_temp, mut staging) = staging_on_fake_volume(4);
+    staging.nested(&op, &begin(1, 2)).unwrap();
+    staging.nested(&op, &append(1, 1)).unwrap();
+    assert_eq!(pending_length(&staging), 4);
+}
+
+#[test]
+fn the_spool_volume_is_queried_on_each_stage_and_once_per_budget_not_per_append() {
+    // Twelve bytes above the reserve: one query admits three four-byte appends.
+    let (_temp, mut staging) = staging_on_fake_volume(12);
+    let op = read(1, 2);
+    let Some(Message::StageCreated { stage, .. }) = staging
+        .nested(
+            &op,
+            &Message::StageBegin {
+                request: 1,
+                purpose: StagePurpose::Member { entry: 2 },
+                expected_length: None,
+                max_length: 20,
+            },
+        )
+        .unwrap()
+    else {
+        panic!("member stage was not created")
+    };
+    let mut queries = Vec::new();
+    for offset in (0..20).step_by(4) {
+        let chunk = Message::StageAppend {
+            request: 1,
+            stage,
+            offset,
+            bytes: b"data".to_vec(),
+        };
+        staging.nested(&op, &chunk).unwrap();
+        queries.push(QUERIES.get());
+    }
+    assert_eq!(queries, [1, 1, 1, 2, 2]);
+    // The next stage queries on its first append again.
+    let seal = Message::StageSeal {
+        request: 1,
+        stage,
+        length: 20,
+    };
+    staging.nested(&op, &seal).unwrap();
+    let reply = Message::ContentReady {
+        request: 1,
+        entry: 2,
+        stage,
+        offset: 0,
+        length: 20,
+    };
+    staging.terminal(&op, &reply).unwrap();
+    stage_member(&mut staging, 2, 3, b"next");
+    assert_eq!(QUERIES.get(), 3);
+}
+
+#[test]
+fn ample_space_is_queried_once_per_check_interval_and_a_full_volume_admits_nothing() {
+    let space = |available| SpoolSpace {
+        available,
+        total: 100 * GIB,
+    };
+    assert_eq!(space_budget(space(50 * GIB)), SPACE_CHECK_INTERVAL);
+    assert_eq!(space_budget(space(2 * GIB + 5)), 5);
+    assert_eq!(space_budget(space(GIB)), 0);
+    // A small volume keeps at least 1 GiB.
+    let small = SpoolSpace {
+        available: GIB + 1,
+        total: 10 * GIB,
+    };
+    assert_eq!(space_budget(small), 1);
 }
 
 #[test]
