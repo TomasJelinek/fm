@@ -307,26 +307,24 @@ fn refresh(
         w.set_partial(
             counts.is_some_and(|counts| counts.excluded > 0 || counts.incomplete_discovery),
         );
-        w.set_export_summary(
-            counts
-                .map_or_else(
-                    || "Wait for calculation to finish.".into(),
-                    |counts| {
-                        format!(
-                            "{} included · {} known excluded\n{}\n{}",
-                            p.number_locale.format_u64(counts.included),
-                            p.number_locale.format_u64(counts.excluded),
-                            if counts.incomplete_discovery {
-                                "Incomplete discovery: additional files may not have been examined."
-                            } else {
-                                "Discovery completed."
-                            },
-                            s.save_message
-                        )
+        let summary = counts.map_or_else(
+            || "Wait for calculation to finish.".into(),
+            |counts| {
+                format!(
+                    "{} included · {} known excluded\n{}\n{}",
+                    p.number_locale.format_u64(counts.included),
+                    p.number_locale.format_u64(counts.excluded),
+                    if counts.incomplete_discovery {
+                        "Incomplete discovery: additional files may not have been examined."
+                    } else {
+                        "Discovery completed."
                     },
+                    s.save_message
                 )
-                .into(),
+            },
         );
+        // The save message names the saved manifest.
+        w.set_export_summary(crate::shown_text(&summary));
         record.rows.update(s.generation.0, s.rows().len());
         let shown = if record.shown {
             Ok(())

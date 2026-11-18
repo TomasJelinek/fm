@@ -77,7 +77,8 @@ pub(super) fn refresh(window: &MainWindow, presenter: &Presenter) {
     window.set_comparison_view(ComparisonView {
         open: state.open,
         busy: state.busy,
-        error: state.error.as_str().into(),
+        // A failed comparison names the path it could not read.
+        error: shown_text(&state.error),
         summary: state.summary.as_str().into(),
         left_path: shown_text(&presenter.panes[0].display_path().to_string_lossy()),
         right_path: shown_text(&presenter.panes[1].display_path().to_string_lossy()),
@@ -99,7 +100,7 @@ pub(super) fn refresh(window: &MainWindow, presenter: &Presenter) {
         expression: state.draft.expression.as_str().into(),
         case_sensitive: state.draft.case_sensitive,
         busy: state.busy,
-        error: state.error.as_str().into(),
+        error: shown_text(&state.error),
     });
     let label = |slot: usize| -> SharedString {
         let filter = &presenter.preferences.values.panel_filters[slot];

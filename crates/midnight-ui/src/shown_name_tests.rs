@@ -1,7 +1,9 @@
 //! Shown names and paths escape explicit bidirectional controls, so a name cannot reorder
 //! its displayed extension. Operations, the path editor's Enter and the clipboard keep the
 //! raw names.
-use crate::{FileListPresentation, OperationPresentation, test_harness::Harness};
+use crate::{
+    FileListPresentation, OperationPresentation, ViewerPluginsView, test_harness::Harness,
+};
 use midnight_core::*;
 use slint::{ComponentHandle, Model};
 use std::{cell::RefCell, io, path::PathBuf, sync::Arc};
@@ -164,6 +166,48 @@ fn jobs_rows_show_escapes_and_copy_details_keeps_the_raw_paths() {
         matches!(copied(&h).as_slice(), [text] if text.contains(&raw)),
         "Copy details copies the raw destination"
     );
+}
+
+#[test]
+fn dialog_and_plugin_errors_show_escapes() {
+    let mut h = Harness::new(UserPreferences::default());
+    let raw = crate::error_presentation::describe(&spoof_error("compare_directories"));
+    assert!(raw.contains(SPOOF), "{raw}");
+    {
+        let mut p = h.presenter.borrow_mut();
+        p.comparison.error = raw.clone();
+        p.filter_dialog.error = raw.clone();
+        p.metadata.error = raw.clone();
+        let plugins = &mut p.viewer_plugins;
+        plugins.error = raw.clone();
+        plugins.thumbnailers.push(ThumbnailerPluginInfo {
+            id: "thumbnails".into(),
+            name: "Thumbnails".into(),
+            version: "1.0.0".into(),
+            extensions: vec!["png".into()],
+            video: false,
+            location: folder().join("thumbnailer"),
+            status: raw.clone(),
+        });
+        plugins.revision += 1;
+    }
+    h.refresh();
+    let plugins = h.window.global::<ViewerPluginsView>();
+    let raw_texts: Vec<_> = [
+        ("Compare folders", h.window.get_comparison_view().error),
+        ("Panel filter", h.window.get_panel_filter_view().error),
+        ("Attributes", h.window.get_metadata_error()),
+        ("Viewer plugins", plugins.get_error()),
+        (
+            "Thumbnailer status",
+            plugins.get_thumbnailer_rows().row_data(0).unwrap().status,
+        ),
+    ]
+    .into_iter()
+    .filter(|(_, shown)| !escaped(shown))
+    .map(|(dialog, shown)| format!("{dialog}: {shown:?}"))
+    .collect();
+    assert!(raw_texts.is_empty(), "{raw_texts:#?}");
 }
 
 #[test]

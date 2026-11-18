@@ -136,7 +136,8 @@ pub(super) fn refresh(window: &MainWindow, presenter: &Presenter) {
     );
     window.set_metadata_start_case(state.start_case);
     window.set_metadata_revision(state.revision.to_string().into());
-    window.set_metadata_error(state.error.as_str().into());
+    // Preview errors name the paths they concern.
+    window.set_metadata_error(shown_text(&state.error));
     window.set_metadata_busy(state.busy);
     window.set_metadata_ready(state.can_apply());
     window.set_metadata_preview_current(state.preview_current());

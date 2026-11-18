@@ -88,10 +88,12 @@ separately; this document is not a claim that every item is already released.
 - File-valued settings have Browse actions. Choosing a file does not execute it;
   cancellation does not overwrite the draft. Native paths stay lossless through
   the backend and late results cannot overwrite a newer form or another item.
-- Rows, tabs, the path bar, captions, dialog bodies and status text show file and
-  folder names and paths through `shown_text` (`midnight_core::visible_name`), which
-  displays the explicit bidirectional controls as `\u202E`-style escapes, while name
-  and destination fields, copied paths and operations keep the raw text.
+- Rows, tabs, the path bar, dialog bodies and errors, status text and viewer and
+  comparator captions show file and folder names and paths through `shown_text`
+  (`midnight_core::visible_name`), which displays the explicit bidirectional
+  controls as `\u202E`-style escapes; viewer and comparator status lines still show
+  them raw. Name and destination fields, operations and copy actions (Copy details,
+  error copies) keep the raw text.
 - Editors and Custom Commands share an ordered argument list. Compact +, minus,
   up and down actions sit beside its heading; selecting a row shows its value in
   one editor below. Insert file/value appends a new argument. Users do not edit
