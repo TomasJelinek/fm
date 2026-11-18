@@ -747,19 +747,22 @@ async fn failed_native_registration_reports_polling_only_once_and_keeps_polling(
         .handle()
         .clear_scope(PaneId::Left, NavigationId(2));
     controller.set_visible(files.visible(PaneId::Left, 2, "left"));
-    let mut statuses = Vec::new();
-    while statuses.is_empty() {
-        match next_event(&mut events).await {
-            Event::WatchStatus { view, status } => statuses.push((view, kind(&status))),
-            // A hint for the replaced rows may still be queued.
-            Event::DirectoryChanged {
-                navigation: NavigationId(1),
-                ..
-            } => {}
-            other => panic!("Unexpected watch event: {other:?}"),
+    let reported = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            match next_event(&mut events).await {
+                Event::WatchStatus { view, status } => break (view, kind(&status)),
+                // A hint for the replaced rows may still be queued.
+                Event::DirectoryChanged {
+                    navigation: NavigationId(1),
+                    ..
+                } => {}
+                other => panic!("Unexpected watch event: {other:?}"),
+            }
         }
-    }
-    assert_eq!(statuses, [(flat(PaneId::Left, 2), "PollingOnly")]);
+    })
+    .await
+    .expect("the refreshed view's status must be reported");
+    assert_eq!(reported, (flat(PaneId::Left, 2), "PollingOnly"));
     stop(&controller, &mut tasks).await;
     assert!(
         events.try_recv().is_err(),
@@ -841,6 +844,7 @@ async fn statuses_until(
         let (reported_view, status) = status(events).await;
         assert_eq!(reported_view, view);
         reported.push(kind(&status));
+        assert!(reported.len() <= 8, "statuses flip: {reported:?}");
     }
     reported
 }

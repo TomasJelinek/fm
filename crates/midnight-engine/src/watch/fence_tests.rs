@@ -486,10 +486,17 @@ async fn a_dispatch_whose_listing_reads_nothing_registers_only_when_accepted() {
     let (controller, mut tasks, mut events, native) = watcher(&files);
     controller.set_visible(files.visible(PaneId::Left, 1, "left"));
     native.registrations(1).await;
-    // An empty, unreadable or blocked folder never reports entries read.
-    list(&controller, 2, "right");
-    // Wakes the parked worker while that dispatch is the newest.
+    // The backend records a dispatch before it clears the pane's scope. An
+    // empty, unreadable or blocked folder never reports entries read.
+    controller.listing_started(PaneId::Left, NavigationId(2), Path::new("right"));
+    // The still current rows hint a notification. The worker looked at that
+    // dispatch before it sent the hint, so nothing was subscribed for it.
     native.fire(0);
+    assert_eq!(changed(&mut events).await, (PaneId::Left, NavigationId(1)));
+    assert_eq!(native.callbacks.lock().unwrap().len(), 1);
+    controller
+        .handle()
+        .clear_scope(PaneId::Left, NavigationId(2));
     native.mark("accepted");
     controller.set_visible(files.visible(PaneId::Left, 2, "right"));
     native.registrations(2).await;

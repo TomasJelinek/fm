@@ -137,14 +137,18 @@ async fn a_failed_batch_reports_polling_only_until_a_batch_registers() {
     // periodic check that found the change took.
     native.fail.store(false, Ordering::SeqCst);
     handle.set_tree_scope(scope.clone());
-    let native_status = loop {
-        match next_event(&mut events).await {
-            Event::WatchStatus { view, status } => break (view, kind(&status)),
-            // The hint may be retried before the acknowledgement.
-            Event::Tree(event) if matches!(*event, TreeEvent::Changed { .. }) => {}
-            other => panic!("unexpected watch event {other:?}"),
+    let native_status = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            match next_event(&mut events).await {
+                Event::WatchStatus { view, status } => break (view, kind(&status)),
+                // Hints continue: the committed scope still shows the old rows.
+                Event::Tree(event) if matches!(*event, TreeEvent::Changed { .. }) => {}
+                other => panic!("unexpected watch event {other:?}"),
+            }
         }
-    };
+    })
+    .await
+    .expect("the batch must be registered again");
     assert_eq!(native_status, (WatchedView::Tree(scope.stamp), "Native"));
     assert_eq!(native.callbacks.lock().unwrap().len(), 1);
     native.fire();
@@ -575,19 +579,23 @@ async fn failed_sweep_and_ignored_hint_retry_at_poll_cadence() {
     handle.finish_refresh(ticket, false, stamp.revision);
     // The worker records when it sent each hint, so load can only make these
     // times later, never earlier.
-    let retries = loop {
-        assert_eq!(tree_changed(&mut events).await.session, stamp.session);
-        let retries = handle
-            .tree_fence(PaneId::Left)
-            .unwrap()
-            .hints
-            .into_iter()
-            .filter(|sent| *sent >= failed_at)
-            .collect::<Vec<_>>();
-        if retries.len() >= 2 {
-            break retries;
+    let retries = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            assert_eq!(tree_changed(&mut events).await.session, stamp.session);
+            let retries = handle
+                .tree_fence(PaneId::Left)
+                .unwrap()
+                .hints
+                .into_iter()
+                .filter(|sent| *sent >= failed_at)
+                .collect::<Vec<_>>();
+            if retries.len() >= 2 {
+                break retries;
+            }
         }
-    };
+    })
+    .await
+    .expect("the ignored hint must be retried twice");
     assert!(retries[0] >= failed_at + poll, "{failed_at:?}: {retries:?}");
     for pair in retries.windows(2) {
         assert!(pair[1] - pair[0] >= poll, "{retries:?}");

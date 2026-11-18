@@ -885,15 +885,16 @@ async fn a_failed_registration_reports_polling_only_until_a_refresh_registers() 
     commit(&commands, &mut events, NavigationId(1), &left).await;
     // Every registration of the folder fails (its preparation, then the one
     // when it is shown); the status is reported once.
-    let status = loop {
-        let event = tokio::time::timeout(Duration::from_secs(8), events.recv())
-            .await
-            .expect("the polling-only status must be reported")
-            .expect("engine output");
-        if let Event::WatchStatus { view, status } = event {
-            break (view, status);
+    let status = tokio::time::timeout(Duration::from_secs(8), async {
+        loop {
+            if let Event::WatchStatus { view, status } = events.recv().await.expect("engine output")
+            {
+                break (view, status);
+            }
         }
-    };
+    })
+    .await
+    .expect("the polling-only status must be reported");
     assert_eq!(
         status.0,
         WatchedView::Flat {
