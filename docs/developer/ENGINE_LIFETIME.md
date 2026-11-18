@@ -175,8 +175,12 @@ text's `SelectionClear`: it counts the text as owned until its own file publicat
 replaces it, so after a text copy the session stays open, idle in that wait.
 Measured on Linux (Xvfb) over two idle seconds after a read, a file copy and a text
 copy alike: 196 worker wakeups before, none after. Other engine timers still wake
-while idle: the drag/drop preparation worker (25 ms), the drag hover forwarder
-(25 ms) and the native drag actor (10 ms). A task of the operations actor that
+while idle: the drag/drop preparation worker (25 ms) and the drag hover forwarder
+(25 ms). The native drag actor services an open native session's non-blocking pump
+every 10 ms; without a session (a native Wayland window, or no platform drag
+service) it sleeps until a host attach or detach, a drag start or shutdown signals
+it. Measured over five idle seconds without a session: 63 (Windows) and 98 (Linux)
+actor wakeups per second before, none after. A task of the operations actor that
 panics or is aborted fails its own job, so the registry entry cannot hold one of
 the 32 slots (and actor exit) indefinitely.
 
@@ -235,9 +239,11 @@ a per-user name, `midnight-explorer-<uid>-file-list` (Windows
 ending in `-file-list-<pid>`, which is removed once the last spool in it closes (a
 crash leaves it behind). Each root must open as an owner-only directory of this user
 reached without links. A root that is refused or lacks anonymous files yields to the
-next candidate, and output fails with the last error when none is usable. The cache
-root fails on an NFS home without `O_TMPFILE` and below a symlinked home component
-(the no-link walk refuses it); sessions without `XDG_RUNTIME_DIR` (su, sudo, ssh,
+next candidate, and output fails with the last error when none is usable. Links in
+the cache and runtime bases (a linked `~/.cache`, or `/home` linked to `/var/home`)
+are resolved first, as the filesystem host does for its staging bases, while links
+at and below `midnight-explorer/<name>` stay refused. The cache root fails on an NFS
+home without `O_TMPFILE`; sessions without `XDG_RUNTIME_DIR` (su, sudo, ssh,
 containers) then reach the temporary directory, whose predictable names another
 account can occupy. The private-root check refuses such a directory instead of using
 it, so output fails only when the per-process candidate is unusable as well.
@@ -265,9 +271,9 @@ spools use a separate shared arena rather than relying on original service ancho
 
 Startup reserves one additional retirement slot and starts one fallible plain report
 cleanup worker before any report file can be created. Folder-size, presence and tree
-diagnostics share that arena explicitly. Standalone `DirectoryTree` callers clone
-`EngineLifetime::report_arena()` before handing the lifetime to an engine and pass it
-to `DirectoryTree::new`. No global or thread-local fallback creates hidden workers.
+diagnostics share that arena explicitly; the engine passes it to each
+`DirectoryTree` it creates. No global or thread-local fallback creates hidden
+workers.
 
 Each report keeps its own append file and failure state. Creation reserves a reusable
 registry node before opening native storage. Writers and immutable text prefixes

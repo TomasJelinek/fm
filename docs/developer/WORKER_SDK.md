@@ -35,7 +35,10 @@ wall deadline, cancellation and wire
 bounds separately. Guards kill and reap unfinished children. CPU limits apply
 to a process lifetime; bounded scheduling controls concurrent processes.
 `Process::wait` returns `Ok(false)` for a nonzero exit status on every platform
-(including a killed worker); `wait_terminated` confirms reaping regardless of status.
+(including a killed worker); `Process::wait_status` returns the `ExitStatus` itself:
+the full 32-bit exit code on Windows (1 after `kill`), the exit code or terminating
+signal on Linux (SIGKILL after `kill`). `wait_terminated` confirms reaping
+regardless of status.
 
 Windows uses the fixed `MidnightExplorer.RestrictedWorker.v1` AppContainer,
 without capabilities, and an explicit inherited-handle list. A suspended process
@@ -53,9 +56,13 @@ that single call. `midnight_worker_platform::spawn_command` spawns such a comman
 under the lock, which it holds for the creation call only, never while the child
 runs or while its output or exit status is awaited. The application starts external
 editors, Custom Command programs and the software-rendering restart through it, so
-worker and browser creation waits while such a program is being created, which can
-take a while for a program on a network share or one that antivirus software scans
-on its first start. Tests in `midnight-platform-windows` observe the editor and
+worker and browser creation waits while such a program is being created: about 4 ms
+per launch (median 3.5-4.7 ms, 90th percentile 4-6 ms) and about 20-32 ms for a
+program's first start in the process, measured on Windows 11 with Microsoft
+Defender, and longer for a program on a network share or one that antivirus software
+scans. This short wait is accepted instead of starting these programs with a
+separate `CreateProcessW` call and an explicit handle list. Tests in
+`midnight-platform-windows` observe the editor and
 Custom Command launches waiting for the lock; no test observes this for the restart.
 Terminal launches call `CreateProcessW` without handle inheritance, and Shell
 launches (`ShellExecuteEx`) pass no handles. Third-party code that starts processes

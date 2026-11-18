@@ -13,8 +13,11 @@ The backend resolves the captured order and excludes `.` and `..` defensively.
 
 `FileListTemplate` is a pure parser/formatter over `FileListRecord`. Environment
 values and metadata are supplied explicitly by a backend worker. It never reads
-the filesystem or process environment itself. The worker measures `:max` widths
-before streaming rows. Templates are bounded to 64 KiB and expanded individual
+the filesystem or process environment itself. When a template uses `:max`, the
+worker measures every captured row before streaming rows; without `:max` it skips
+that pass, so a preview validates only the rows it shows while clipboard, viewer and
+file output still validate every row. Templates are bounded to 64 KiB and expanded
+individual
 rows to 8 MiB; there is no fixed total file-list length limit.
 
 `FileListRequest` has a session ID and monotonically increasing generation.

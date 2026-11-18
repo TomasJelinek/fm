@@ -112,7 +112,8 @@ packaged decoder and distribution terms; suffix-only registration is prohibited.
 
 ## Host source and session contract
 
-All host calls, including `close` and destruction, run on backend workers. The
+All host calls, including `close_checked` and destruction, run on backend workers.
+The
 UI submits requests and cancellation; it does not decode, read files or reap
 processes. `Source: Send + Sync` supplies `length`, `version`, `validate`, bounded
 `read_at(offset, length)` and an optional positive `confirmed_local_ssd` hint.
@@ -131,7 +132,7 @@ session.page_metadata(page: usize) -> Option<Metadata>
 session.render(viewport, &cancel, timeout) -> io::Result<Frame>
 session.render_page(page: usize, viewport, &cancel, timeout) -> io::Result<Frame>
 session.validate(&cancel) -> io::Result<()>
-session.close()
+session.close_checked() -> io::Result<()>
 ```
 
 The source parameter is `Arc<dyn Source>`, cancellation is `AtomicBool`, and
@@ -203,14 +204,14 @@ discarding obsolete results belong to the viewer engine.
 
 ### Worker preparation
 
-The host exposes `PreparedImageWorker::prepare` and
+The host exposes `PreparedImageWorker::prepare_owned` and
 `ImageSession::open_prepared`. Preparation pins and validates installed code,
 starts the restricted worker and waits for the existing Ready handshake. It owns
 no selected source or content authority, sends no Open and performs no source
 validation, reads or decoding. The prepared transport is consumed once:
 
 ```rust
-let prepared = PreparedImageWorker::prepare(&provider, &cancel, timeout)?;
+let prepared = PreparedImageWorker::prepare_owned(&provider, &cancel, timeout, Box::new(reservation))?;
 let session = ImageSession::open_prepared(&provider, prepared, source, &cancel, timeout)?;
 ```
 

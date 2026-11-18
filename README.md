@@ -1118,7 +1118,8 @@ or changed sources retain unavailable saved tabs with a diagnostic. Mutations,
 external editing, passwords, nested archives and RAR are unavailable. F5 copies
 members out through the verified background copy queue.
 Decoded content has no artificial size ceiling; the free space of the private spool
-volume bounds it (a free-space reserve that stops staging earlier is planned). Full
+volume bounds it, and staging stops before that volume falls below a free-space
+reserve of max(1 GiB, 2% of its capacity). Full
 limits and supported codecs are in the [archive API reference](docs/developer/FILESYSTEM_API.md).
 [Archive associations](docs/ARCHIVE_FORMATS.md) include Python wheels and other ZIP
 packages. Options → Archives keeps document/media/application containers unchecked

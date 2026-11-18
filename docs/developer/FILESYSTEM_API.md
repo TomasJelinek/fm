@@ -266,8 +266,10 @@ a single one.
 
 The current parser imposes no artificial compressed-source, member, aggregate disk
 or expansion-ratio byte ceiling; free space on the host's private spool volume
-bounds decoded content. A host reserve that would stop staging before that volume
-falls below max(1 GiB, 2% of capacity) free is planned but not yet enforced. The
+bounds decoded content. The host stops staging with a disk-full (`StorageFull`)
+error before that volume's free space falls below max(1 GiB, 2% of capacity); it
+queries the volume on each stage's first append and at least every 64 MiB, and
+writes by other programs between two queries are not counted. The
 parser retains 100,000-node and 8 MiB name limits, a 16 MiB bound on each buffered
 TAR long-name/long-link/PAX record, 64 MiB XZ/Zstandard windows, a 256 MiB 7z
 LZMA/LZMA2 dictionary check (larger blocks' members are unreadable) and a 64 MiB raw
@@ -289,16 +291,20 @@ beyond the budget. A sequential reader whose chunks interleave with reads of up 
 three other members (a copy beside the two thumbnail renders, a viewer or another
 copy) therefore never decodes its member again between two chunks. A member whose
 reader moved on leaves once later reads pass it; an idle mount trims nothing until
-its next member read. Spools are anonymous files in a per-user private directory:
-below the user's temporary directory on Windows. On Linux the first usable
-candidate is `$XDG_CACHE_HOME` (or `~/.cache`) `/midnight-explorer/archive-spool`,
-then `midnight-explorer-<uid>-archive-spool` in the temporary directory, then
+its next member read. Spools are anonymous files in a per-user private directory: on
+Windows `MidnightExplorer-archive-spool` in the user's temporary directory, then
+`MidnightExplorer-archive-spool-<pid>` there. On Linux the candidates are
+`$XDG_CACHE_HOME` (or `~/.cache`) `/midnight-explorer/archive-spool`, then
+`midnight-explorer-<uid>-archive-spool` in the temporary directory, then
+`midnight-explorer-archive-spool-<pid>` there, and last
 `$XDG_RUNTIME_DIR/midnight-explorer-archive-spool`, which is usually a small tmpfs.
-Links in these base directories are resolved first; each spool root itself must be
-a directory owned by the user with mode 0700. A candidate that cannot be opened
-that way or cannot hold anonymous files yields to the next, so a directory that
-another account pre-creates only disables that candidate. A fixed shared name is
-never used.
+Links in these base directories are resolved first; each spool root itself must be a
+directory owned by the user with mode 0700. A candidate that cannot be opened that
+way or cannot hold anonymous files yields to the next, so a directory that another
+account pre-creates only disables that candidate. A mount uses the first usable
+candidate whose volume has at least 64 MiB free above its reserve, or else the first
+usable one. A `<pid>` root serves only this process and is removed after its last
+spool closes. A fixed shared name is never used.
 
 Protocol-2 nodes also carry optional typed UTC seconds/nanoseconds or timezone-free
 local civil timestamps. ZIP DOS times never acquire an invented UTC offset.
