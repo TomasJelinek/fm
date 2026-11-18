@@ -90,12 +90,16 @@ generic monospace): against the kept catalog when the service has one, otherwise
 checking only those one or two families with the catalog's own name filters and
 fixed-pitch test (`midnight_viewer_render::fixed_pitch_family`, one face load per
 installed candidate), so even the first comparison of a session paints in the resolved
-family at once. The scan delivers its catalog to the comparison worker as an internal
-message, which wakes the worker to publish the chooser list; the chooser stays disabled
-(*Loading fonts…*) until then, and the worker does not poll while it waits. A completed
-catalog is kept for the service. Closing a comparison cancels the scan once no other
-comparison waits for it; a cancelled scan keeps no partial catalog. A scan that fails,
-or panics, answers every waiting comparison with no catalog: it keeps its family
+family at once. The scan leaves its catalog in each waiting session's inbox and queues
+a wake, which wakes the worker to publish the chooser list; the chooser stays disabled
+(*Loading fonts…*) until then, and the worker does not poll while it waits. The reply
+never waits for room in a queue, so a window whose worker is busy with a full queue
+cannot delay the other window's chooser list, and it reads its own reply once it has
+taken its inputs. Each reply names the request it answers: a late reply to a comparison
+that failed before it arrived is dropped and cannot end the next comparison's wait. A
+completed catalog is kept for the service. Closing a comparison cancels the scan once no
+other comparison waits for it; a cancelled scan keeps no partial catalog. A scan that
+fails, or panics, answers every waiting comparison with no catalog: it keeps its family
 without a chooser list, and the next comparison scans again.
 
 Arrow keys move exactly one row (`Input::Lines`), Page Up/Down move by the rows that
@@ -115,7 +119,11 @@ are never dropped: a newer one replaces the queued one of its kind and is queued
 the navigation that preceded it. A full queue therefore always holds navigation (scroll,
 line and page steps, seek, difference and zoom), and sheds the oldest such input first.
 An idle worker blocks on its input queue instead of polling, also while the font
-catalog loads: the scan's reply arrives through the same queue.
+catalog loads. Before each blocking receive it reads its inbox under the lock that
+`Session::close` and the scan's reply also take, so closing the window stops the worker
+and a catalog reply reaches it even when the full queue refused the Close input or the
+reply's wake: the worker then still has queued inputs to take, and it reads the inbox
+again before it blocks.
 
 ## Presentation and tests
 
@@ -153,7 +161,10 @@ installed fixed-pitch font scan dominates its run time. Slint keeps that proxy
 process-wide, so it is the only test in that binary that installs a platform.
 `midnight-compare-engine/src/mailbox_tests.rs` covers the wake gate, including a race of
 `take` against a concurrent output, and `capture_tests.rs` the two refusal reasons of
-`Session::send`.
+`Session::send`, the inbox (a close or catalog reply that a full queue refused, and a
+late reply to an earlier request), a window with a full queue next to one waiting for
+the same scan, and a failed earlier comparison's reply arriving while the next one
+opens its files.
 
 Tests cover existing automatic Unicode/raw-native pairing, partial physical order,
 empty/ambiguous/pending panel inputs, repeated invalid paths and retry, unchanged

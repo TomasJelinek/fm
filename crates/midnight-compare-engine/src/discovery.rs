@@ -15,8 +15,8 @@ type Scan = Box<dyn Fn(&dyn Fn() -> bool) -> Option<Arc<[String]>> + Send + Sync
 /// The catalog name of the first candidate the scan would list, without scanning the rest.
 type Check = Box<dyn Fn(&[&str], &dyn Fn() -> bool) -> Option<String> + Send + Sync>;
 /// Receives one scan's catalog, or `None` when it was cancelled, failed or panicked.
-/// Called on the scan thread only.
-pub(crate) type Deliver = Box<dyn FnOnce(Option<Arc<[String]>>) + Send>;
+/// Called on the scan thread only; it must not wait for its comparison.
+pub(crate) type Deliver = Box<dyn FnOnce(crate::FontReply) + Send>;
 
 /// Installed image viewers. A failed discovery is not kept: the next comparison retries
 /// it, so one transient error (a package being replaced, a locked file) cannot disable
@@ -238,7 +238,8 @@ impl Drop for Finish<'_> {
                 state.families = Some(families.clone());
             }
         }
-        // Outside the lock: a delivery may wait for its comparison to take an input.
+        // Outside the lock: a delivery takes its session's inbox lock. None waits for a
+        // comparison, so a window that takes no input delays no other window's reply.
         for waiter in waiting.into_iter().flatten() {
             (waiter.deliver)(self.families.clone());
         }

@@ -1,4 +1,4 @@
-use crate::{FileChoice, Frame, Input, NativeCapture, Output, Refused, Service, Session};
+use crate::{FileChoice, Frame, Inbox, Input, NativeCapture, Output, Refused, Service, Session};
 use midnight_core::{
     DirectoryIndex, Entry, EntryId, EntryKind, FileCompareLaunch, FileCompareSource,
     ViewerAppearance, ViewerGeometry,
@@ -8,7 +8,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         Arc, Mutex,
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
         mpsc,
     },
     time::{Duration, Instant},
@@ -18,6 +18,15 @@ use std::{
 struct Memory {
     bytes: &'static [u8],
     reads: Arc<AtomicUsize>,
+    gate: Option<Arc<Gate>>,
+}
+
+/// Holds the next validation of the sources sharing it, once armed, until released.
+#[derive(Debug)]
+struct Gate {
+    armed: AtomicBool,
+    entered: mpsc::SyncSender<()>,
+    release: Mutex<mpsc::Receiver<()>>,
 }
 
 impl ContentSource for Memory {
@@ -34,6 +43,17 @@ impl ContentSource for Memory {
     }
 
     fn validate(&self) -> Result<(), Error> {
+        if let Some(gate) = &self.gate
+            && gate.armed.swap(false, Ordering::AcqRel)
+        {
+            gate.entered.send(()).unwrap();
+            // Longer than any wait for output, so a wait that this hold blocks fails first.
+            let _ = gate
+                .release
+                .lock()
+                .unwrap()
+                .recv_timeout(Duration::from_secs(30));
+        }
         Ok(())
     }
 
@@ -46,9 +66,18 @@ impl ContentSource for Memory {
 }
 
 fn memory(bytes: &'static [u8], reads: &Arc<AtomicUsize>) -> Result<CapturedFile, String> {
+    source(bytes, reads, None)
+}
+
+fn source(
+    bytes: &'static [u8],
+    reads: &Arc<AtomicUsize>,
+    gate: Option<&Arc<Gate>>,
+) -> Result<CapturedFile, String> {
     CapturedFile::from_source(Arc::new(Memory {
         bytes,
         reads: reads.clone(),
+        gate: gate.cloned(),
     }))
     .map_err(|error| error.to_string())
 }
@@ -729,6 +758,191 @@ fn a_panicking_scan_answers_its_waiters_and_the_next_comparison_scans_again() {
     assert_eq!(scans.load(Ordering::SeqCst), 2);
     first.close();
     second.close();
+}
+
+/// A comparison that fails after its font request leaves that request's scan running. Here
+/// that scan panics while the next comparison opens its files; its reply (no catalog) must
+/// not end the wait of the next comparison, which scans again and publishes that catalog.
+#[test]
+fn a_failed_scan_of_an_earlier_comparison_does_not_answer_the_next_one() {
+    let root = fixture();
+    let text = paths(root.path());
+    let binary = [
+        root.path().join("left").join("binary.txt"),
+        root.path().join("right").join("binary.txt"),
+    ];
+    let (entered, entry) = mpsc::sync_channel(1);
+    let (release, held) = mpsc::sync_channel::<()>(1);
+    let held = Mutex::new(held);
+    let reads = Arc::new(AtomicUsize::new(0));
+    let failing = binary.clone();
+    let opened = text[0].clone();
+    let capture: NativeCapture = Arc::new(move |path, _| {
+        if failing.iter().any(|side| side == path) {
+            return memory(b"control \x01 byte\n", &reads);
+        }
+        if path == opened {
+            entered.send(()).unwrap();
+            let _ = held.lock().unwrap().recv_timeout(Duration::from_secs(15));
+        }
+        memory(b"same\nline\n", &reads)
+    });
+    let scans = Arc::new(AtomicUsize::new(0));
+    let scanned = scans.clone();
+    let (fail, failure) = mpsc::sync_channel::<()>(1);
+    let (finish, finished) = mpsc::sync_channel::<()>(1);
+    let (failure, finished) = (Mutex::new(failure), Mutex::new(finished));
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let service = Service::with_native_capture(runtime.handle().clone(), capture)
+        .with_image_viewer_discovery(|| Ok(Vec::new()))
+        .with_font_scan(move |_| {
+            if scanned.fetch_add(1, Ordering::SeqCst) == 0 {
+                let _ = failure
+                    .lock()
+                    .unwrap()
+                    .recv_timeout(Duration::from_secs(15));
+                panic!("deliberate font scan fault");
+            }
+            let _ = finished
+                .lock()
+                .unwrap()
+                .recv_timeout(Duration::from_secs(15));
+            Some(Arc::from(["Wide Mono".to_owned()]))
+        })
+        .with_font_check(|_, _| None);
+    let session = open_in_family(&service, launch(&binary), "Wide Mono").unwrap();
+    // The first comparison requested the catalog, then failed on the binary content.
+    assert!(choice(&session).is_error);
+    session.send(Input::Compare(text)).unwrap();
+    entry.recv_timeout(Duration::from_secs(15)).unwrap();
+    fail.send(()).unwrap();
+    // The failed scan's reply to the first request waits while the files are opened.
+    wait_for(|_| (session.inbox.answered() == Some(1)).then_some(()));
+    release.send(()).unwrap();
+    assert!(
+        frame(&session).fonts.is_none(),
+        "the first scan's reply is not the second comparison's"
+    );
+    finish.send(()).unwrap();
+    let fonts = loop {
+        if let Some(fonts) = frame(&session).fonts {
+            break fonts;
+        }
+    };
+    assert_eq!(fonts.selected, "Wide Mono");
+    assert_eq!(
+        scans.load(Ordering::SeqCst),
+        2,
+        "the second comparison scans again"
+    );
+    session.close();
+}
+
+/// One scan answers both comparison windows. The worker of the first is busy and its
+/// queue full; that must neither delay the second window's reply nor lose its own: the
+/// full queue refuses its wake, and it reads the reply once it has taken its inputs.
+#[test]
+fn a_window_with_a_full_queue_neither_delays_nor_loses_a_catalog_reply() {
+    let root = fixture();
+    let busy = paths(root.path());
+    let idle = [
+        root.path().join("left").join("idle.txt"),
+        root.path().join("right").join("idle.txt"),
+    ];
+    let (entered, entry) = mpsc::sync_channel(1);
+    let (release, held) = mpsc::sync_channel(1);
+    let gate = Arc::new(Gate {
+        armed: AtomicBool::new(false),
+        entered,
+        release: Mutex::new(held),
+    });
+    let reads = Arc::new(AtomicUsize::new(0));
+    let gated = gate.clone();
+    let capture: NativeCapture = Arc::new(move |path, _| {
+        let gate = busy.iter().any(|side| side == path).then_some(&gated);
+        source(b"same\nline\n", &reads, gate)
+    });
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let (service, deliver) = held_scan(
+        Service::with_native_capture(runtime.handle().clone(), capture)
+            .with_image_viewer_discovery(|| Ok(Vec::new())),
+        &Arc::default(),
+    );
+    let service = service.with_font_check(|_, _| None);
+    let first = open_in_family(&service, launch(&paths(root.path())), "Wide Mono").unwrap();
+    assert!(frame(&first).fonts.is_none());
+    let second = open_in_family(&service, launch(&idle), "Wide Mono").unwrap();
+    assert!(frame(&second).fonts.is_none());
+    // The first worker repaints and is held in revalidating its source.
+    gate.armed.store(true, Ordering::Release);
+    first
+        .send(Input::Resize(
+            ViewerGeometry {
+                width: 600,
+                height: 200,
+                scale: 1.0,
+            },
+            1,
+        ))
+        .unwrap();
+    entry.recv_timeout(Duration::from_secs(15)).unwrap();
+    for _ in 0..crate::INPUT_QUEUE {
+        first.send(Input::Fit).unwrap();
+    }
+    assert_eq!(first.send(Input::Fit), Err(Refused::Full));
+    deliver.send(Arc::from(["Wide Mono".to_owned()])).unwrap();
+    let fonts = loop {
+        if let Some(fonts) = frame(&second).fonts {
+            break fonts;
+        }
+    };
+    assert_eq!(fonts.selected, "Wide Mono");
+    release.send(()).unwrap();
+    let fonts = loop {
+        if let Some(fonts) = frame(&first).fonts {
+            break fonts;
+        }
+    };
+    assert_eq!(fonts.selected, "Wide Mono");
+    first.close();
+    second.close();
+}
+
+/// Neither `Session::close` nor a font catalog reply needs a free queue slot: the worker
+/// reads both from the inbox before it blocks. A late reply to an earlier request neither
+/// replaces the newer reply nor answers the newer request.
+#[test]
+fn the_inbox_keeps_a_close_and_the_current_reply_that_a_full_queue_refused() {
+    let (sender, receiver) = mpsc::sync_channel(crate::INPUT_QUEUE);
+    let inbox = Inbox::new(sender);
+    for _ in 0..crate::INPUT_QUEUE {
+        inbox.send(Input::Fit).unwrap();
+    }
+    assert_eq!(inbox.send(Input::Fit), Err(Refused::Full));
+    let earlier = inbox.font_request();
+    let current = inbox.font_request();
+    let catalog: Arc<[String]> = Arc::from(["Wide Mono".to_owned()]);
+    inbox.answer(current, Some(catalog.clone()));
+    inbox.answer(earlier, None);
+    assert_eq!(inbox.answered(), Some(current));
+    assert_eq!(inbox.check(Some(current)), Ok(Some(Some(catalog))));
+    inbox.answer(earlier, None);
+    assert_eq!(
+        inbox.check(Some(current)),
+        Ok(None),
+        "a reply to an earlier request is dropped"
+    );
+    assert_eq!(inbox.answered(), None);
+    inbox.close();
+    assert!(
+        inbox.check(None).is_err(),
+        "the refused Close still ends the worker"
+    );
+    assert_eq!(
+        receiver.try_iter().count(),
+        crate::INPUT_QUEUE,
+        "the full queue refused every wake and Close"
+    );
 }
 
 /// Opt-in timing of a process's first text comparison with the installed font scan and
