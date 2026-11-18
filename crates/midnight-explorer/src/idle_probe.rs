@@ -7,6 +7,11 @@
 //! nothing is measured. Measure serially, with the pointer outside the window, in an
 //! unlocked session: the reported timer lateness shows when the OS coalesced timers.
 //! The explorer's application handler (`native_events`) forwards the loop events.
+//!
+//! Only the preferences are isolated. The probe uses the installed plugins next to the
+//! executable and the real preview cache, so point `LOCALAPPDATA` (Windows) or
+//! `XDG_CACHE_HOME` (Linux) at a scratch directory for the run, or `thumbnails` writes
+//! previews of the measured folders into the user's cache.
 use slint::winit_030::winit::event::StartCause;
 use std::{
     cell::Cell,

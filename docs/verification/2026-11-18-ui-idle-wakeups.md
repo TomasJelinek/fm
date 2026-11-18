@@ -5,6 +5,16 @@ Scope: PERF-F0 (measurement method), PERF-F1 (five repeated UI timers) and PERF-
 batch branch from base `93d36411`. Windows only; no Linux X11 run was made for this
 record.
 
+Status: the numbers below are indicative, not acceptance evidence. They come from
+debug builds with the software renderer, mostly in a locked session, with a 10 s
+warmup and a 30 s window, and S3 and S5 were not measured (see Conditions). The
+PERF-F1 S1 target is met; S3 is unmeasured. The PERF-F2 target (S1, S2 and S4 at most
+5/s) is **not met** while the window is active: a caret blinker outside the converted
+timers remains (see below), and its fix needs a decision outside this batch. After
+that decision, the measurements are to be repeated with the PERF-F0 protocol: release
+build, default renderer, interactive desktop, 15 s warmup, 60 s window, S1 to S5, and
+Linux X11.
+
 ## Method
 
 `me` reads `MIDNIGHT_IDLE_WAKEUP_PROBE=<warmup_s>:<seconds>[:thumbnails]`. The probe
@@ -20,6 +30,13 @@ idle_wakeups=N timer_wakeups=T event_wakeups=E seconds=S per_second=R timer_late
 The wakeup that ends the measurement is excluded. Timer lateness is how long after
 its requested deadline each timer wakeup ran; small values mean the OS honoured the
 requested deadlines.
+
+Only the preferences are isolated. The probe uses the plugins installed next to the
+executable and the real preview cache (`%LOCALAPPDATA%\Midnight Explorer\cache\thumbnails\v1`
+on Windows, `$XDG_CACHE_HOME/midnight-explorer/thumbnails/v1` on Linux), so set
+`LOCALAPPDATA` or `XDG_CACHE_HOME` to a scratch directory for every run, as the harness
+below does. The first baseline S2 runs of this record were made before the harness did
+so, and stored previews of the fixture images in the real cache.
 
 Harness (not part of the repository): a PowerShell script copied each build's
 `_build\debug\me.exe` into a private runtime under the user profile, next to the
@@ -177,14 +194,19 @@ because the locked session stalls GPU presentation (see Conditions):
 | Settings picker check (`midnight-ui`) | 25 ms while a picker is open | none while closed, 1 s while open | a cancellation is pending (25 ms) |
 | Folder-size presentation | 250 ms, always | none | a size-only event arms one 250 ms single shot |
 | Viewer image preparation | 200 ms, always | none | settings apply (prepared once) and an exit request (revoked once), both on existing callbacks |
-| Window geometry sampler | 100 ms, always | none | a native resize, move or scale change of the main window or a restore, until the placement settled and its save was accepted (100 ms); never while the window is minimized or hidden, except to retry a refused save |
+| Window geometry sampler | 100 ms, always | none | a native resize, move or scale change of the main window or a restore, until the placement settled and its save was accepted (100 ms); never while the window is minimized or hidden: a pending save, or the retry of a refused one, waits for the next geometry event, such as restoring the window |
 | Thumbnail pulse | 100 ms, always | none | a pass reports work: a changed view or scale, polled frames, an animated thumbnail, a hidden window, a refused command or the wait for the cache outcome (100 ms) |
-| Visible-sync and retry pass | 100 ms, always | none | a pass reports work: live jobs, a hidden window, a refused or flushed send, an unavailable owned scope (100 ms) |
+| Visible-sync and retry pass | 100 ms, always | none | a pass reports work: an exit request waiting for live jobs, a hidden window, a refused or flushed send, an unavailable owned scope (100 ms); live jobs without an exit request do not keep it running |
 
 The thumbnail and retry pulses are woken by the main window's `presentation-changed`
 callback (refresh, layout and visible-row changes), by refused sends, by native
 visibility changes and by the thumbnail service's ready notifier; the geometry sampler
-by the explorer's winit application handler.
+by the explorer's winit application handler. A thumbnail pass wakes the retry pass
+only when it moved a pane's row range, which is also that pane's tree viewport.
+
+These three refinements (the minimized-window retry, the exit-only retry pass and
+the viewport-only wake) were made after the measurements above. None of them changes
+an idle scenario: S1, S2 and S4 have no jobs, no refused save and no moving viewport.
 
 ## Per-timer cadence evidence
 
@@ -194,11 +216,16 @@ Virtual-clock tests prove each converted cadence independently of the OS:
 - Image preparation: `viewers::preparation_tests::loaded_settings_prepare_the_spare_once_and_an_exit_request_revokes_it_once`,
   `a_failed_settings_read_prepares_and_revokes_nothing`,
   `dropping_the_preparation_releases_the_service_without_an_event_loop_callback`.
-- Window geometry: `window_state::wake_tests::the_sampler_stops_when_quiet_and_runs_after_geometry_events_or_for_a_pending_save`,
+- Window geometry: `window_state::wake_tests::the_sampler_stops_when_quiet_and_runs_after_geometry_events`,
   `a_window_moved_back_to_its_saved_geometry_settles_without_a_save`,
   `a_window_minimized_before_its_save_stops_sampling_until_the_next_geometry_event`,
+  `a_refused_save_waits_without_polling_while_the_window_cannot_be_observed`,
+  `a_refused_save_stays_pending_until_its_retry_is_accepted`,
   `native_events::tests::only_geometry_events_of_the_bound_main_window_wake_its_samplers`,
-  `a_shown_or_hidden_main_window_wakes_once_per_change`.
+  `a_shown_or_hidden_main_window_wakes_once_per_change`. On a desktop (ignored by
+  default), `window_state::native_tests::native_moves_and_resizes_reach_the_sampler_through_the_application_handler`
+  moves and resizes a real window and expects each placement saved, with only the
+  application handler waking the sampler.
 - Drag bridge (`midnight-ui`, `drag_bridge::tests`): `an_idle_bridge_polls_slowly_and_a_row_drag_polls_quickly_until_it_ends`,
   `invalidation_republishes_targets_on_the_next_turn_and_unchanged_refreshes_keep_them`,
   `native_release_wheel_and_touch_republish_without_invalidating`,
@@ -208,20 +235,52 @@ Virtual-clock tests prove each converted cadence independently of the OS:
 - Settings picker (`midnight-ui`, `settings_picker_presentation::tests`):
   `an_open_picker_is_checked_once_a_second_without_cancelling`,
   `an_invalidated_picker_preempts_the_slow_check_and_retries_every_25_ms`,
-  `a_borrowed_presenter_retries_the_check_at_the_cancellation_cadence`.
+  `a_borrowed_presenter_retries_the_check_at_the_cancellation_cadence`. These call
+  `wake` directly. The Options callbacks that invalidate an open picker (editor and
+  Custom Command draft edits, a topic change, Cancel) do not call it yet; that change
+  belongs to files outside this batch, and until it lands such a cancellation waits
+  for the 1 s check instead of 25 ms.
 - Pulses: `pulse::tests::a_pulse_ticks_while_busy_stops_when_quiet_and_wakes_without_postponing`,
   `a_wake_from_inside_a_quiet_tick_runs_one_more_tick`,
   `a_refusal_wakes_every_watching_pulse_and_is_reported_once`;
   `thumbnails::pulse_tests::a_static_view_stops_polling_and_a_presentation_change_runs_one_pass`,
   `an_animated_thumbnail_keeps_the_pulse_until_it_is_deselected`,
   `a_refused_command_icon_view_is_retried_without_another_wake`,
-  `refreshes_callbacks_and_layout_changes_invoke_presentation_changed`;
+  `refreshes_callbacks_and_layout_changes_invoke_presentation_changed`,
+  `the_cache_location_is_published_without_another_wake`,
+  `an_unreported_cache_location_keeps_the_pulse_polling`,
+  `only_a_pass_that_moves_a_row_range_wakes_the_retry_pass`;
   `retry_pass::tests::a_refused_acknowledgement_keeps_the_pass_running_until_it_is_accepted`,
   `an_unavailable_owned_scope_keeps_the_pass_running`,
-  `a_hidden_main_window_closes_viewers_and_keeps_the_pass_running`;
+  `an_unreported_unavailable_scope_for_the_flushes_or_the_acknowledgements_keeps_the_pass_running`,
+  `a_hidden_main_window_closes_viewers_and_keeps_the_pass_running`,
+  `a_live_job_without_an_exit_request_leaves_no_work`,
+  `an_exit_request_keeps_the_pass_running_until_live_jobs_end_then_hides_the_window`;
   `command_reclaim::tests::refused_owned_sends_and_unavailable_scopes_report_work_for_the_retry_pass`.
 - Probe parsing: `idle_probe::tests::the_probe_variable_names_warmup_and_measurement_seconds`,
   `smoke_settings::tests::probe_preferences_are_in_memory_defaults_with_an_optional_thumbnails_view`.
 
 S3 (an open picker: 25 ms before, 1 s after) and S5 (a selected animated thumbnail:
 100 ms by design) rely on these tests; neither was measured with the probe.
+
+## Desktop checks of the geometry wake
+
+Run on the unlocked Windows desktop of this record's machine, one test per process
+(`me-*.exe <test> --exact --ignored --test-threads=1` from `crates\midnight-explorer`),
+on the review follow-up build:
+
+- `window_state::native_tests::native_moves_and_resizes_reach_the_sampler_through_the_application_handler`
+  (software renderer): passed in 2.2 s. It saved the first placement (385, 385,
+  3015 x 1845), then the moved one (425, 415) and the resized one (2955 x 1805); the
+  application handler reported four geometry events. With the handler's geometry
+  wake removed (a temporary change, not committed) the same test failed after its
+  15 s deadline with only the first placement saved.
+- `window_state::native_tests::native_maximized_restore_keeps_normal_bounds_and_repeated_capture_has_no_drift`:
+  passed.
+- `window_state::startup_native_tests` (`femtovg-wgpu`, DX12):
+  `native_first_frame_waits_for_saved_theme_and_monitor_geometry`,
+  `native_first_frame_uses_primary_when_saved_monitor_is_removed`,
+  `native_first_frame_restores_maximized_state_and_normal_bounds` and
+  `native_failed_preferences_show_defaults_without_overwriting_settings`: passed.
+
+No probe measurement was repeated for the review follow-up.
