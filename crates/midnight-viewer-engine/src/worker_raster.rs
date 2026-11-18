@@ -7,6 +7,23 @@ mod rebase;
 const GUARD: u32 = 256;
 const MAX_PIXELS: u64 = 6 * 1024 * 1024;
 
+/// A zeroed frame buffer in a single allocation. It is painted while still
+/// unique ([`unique`]) and then moved into the frame, so delivering the pixels
+/// costs no second allocation or full-surface copy.
+pub(super) fn shared_pixels(width: u32, height: u32) -> Result<Arc<[u8]>, String> {
+    let bytes = (width as usize)
+        .checked_mul(height as usize)
+        .and_then(|pixels| pixels.checked_mul(4))
+        .ok_or("Raster exceeds pixel budget.")?;
+    // `RepeatN` has an exact length, so the Arc is allocated once at its final size.
+    Ok(std::iter::repeat_n(0, bytes).collect())
+}
+
+/// The paintable bytes of a buffer from [`shared_pixels`] that is not shared yet.
+pub(super) fn unique(pixels: &mut Arc<[u8]>) -> Result<&mut [u8], String> {
+    Arc::get_mut(pixels).ok_or_else(|| "Raster pixels are already shared.".into())
+}
+
 #[derive(Default)]
 pub(super) struct Retained {
     pub enabled: bool,
@@ -524,9 +541,9 @@ impl Worker {
             let local_raster: [f32; 2] =
                 std::array::from_fn(|axis| self.origin[axis] - before[axis] as f32);
             let raster_origin = self.raster.camera(local_raster);
-            let body = self
-                .renderer
-                .rasterize(
+            let mut pixels = shared_pixels(size[0], size[1])?;
+            self.renderer
+                .rasterize_into(
                     shaped,
                     Viewport {
                         width: size[0],
@@ -539,14 +556,17 @@ impl Worker {
                         selection_color: self.appearance.selection,
                     },
                     self.selection.map(|(a, b)| a.min(b)..a.max(b)),
+                    unique(&mut pixels)?,
                 )
                 .map_err(|e| format!("Cannot render retained page: {e:?}"))?;
             let gutter = if gutter_width != 0 {
-                let mut raster = midnight_viewer_render::Raster {
-                    width: gutter_width,
-                    height: size[1],
-                    rgba: vec![0; gutter_width as usize * size[1] as usize * 4],
-                };
+                let mut gutter_pixels = shared_pixels(gutter_width, size[1])?;
+                let mut raster = midnight_viewer_render::RasterMut::new(
+                    gutter_width,
+                    size[1],
+                    unique(&mut gutter_pixels)?,
+                )
+                .map_err(|e| format!("Cannot render retained gutter: {e:?}"))?;
                 text::paint_gutter(
                     &mut self.renderer,
                     &mut self.text,
@@ -557,14 +577,13 @@ impl Worker {
                     &mut raster,
                 )?;
                 Some(ViewerRasterGutter {
-                    width: raster.width,
-                    height: raster.height,
-                    pixels: raster.rgba.into(),
+                    width: gutter_width,
+                    height: size[1],
+                    pixels: gutter_pixels,
                 })
             } else {
                 None
             };
-            let pixels: Arc<[u8]> = body.rgba.into();
             reservation
                 .commit(&pixels, gutter.as_ref().map(|gutter| &gutter.pixels))
                 .map_err(str::to_owned)?;
@@ -580,8 +599,8 @@ impl Worker {
             ];
             self.raster.cache = Some(Snapshot {
                 layout: self.raster.layout,
-                width: body.width,
-                height: body.height,
+                width: size[0],
+                height: size[1],
                 pixels,
                 info: ViewerRasterInfo {
                     surface: ViewerSurfaceId(self.raster.surface),

@@ -1234,21 +1234,27 @@ impl Worker {
                 Some(snapshot.info),
             )
         } else {
-            let mut raster = self
-                .renderer
-                .rasterize(
+            let (width, height) = (self.geometry.width, self.geometry.height);
+            // Painted in place and moved into the frame without another copy.
+            let mut pixels = raster::shared_pixels(width, height)?;
+            let rgba = raster::unique(&mut pixels)?;
+            self.renderer
+                .rasterize_into(
                     shaped,
                     Viewport {
-                        width: self.geometry.width,
-                        height: self.geometry.height,
+                        width,
+                        height,
                         origin: [self.origin[0] - margin, self.origin[1]],
                         background: self.appearance.background,
                         selection_color: self.appearance.selection,
                     },
                     self.selection.map(|(a, b)| a.min(b)..a.max(b)),
+                    rgba,
                 )
                 .map_err(|e| format!("Cannot render page: {e:?}"))?;
             if self.mode == viewer::MODE_SOURCE && self.preferences.line_numbers {
+                let mut surface = midnight_viewer_render::RasterMut::new(width, height, rgba)
+                    .map_err(|e| format!("Cannot render page: {e:?}"))?;
                 text::paint_gutter(
                     &mut self.renderer,
                     &mut self.text,
@@ -1256,10 +1262,10 @@ impl Worker {
                     self.geometry,
                     self.origin,
                     margin,
-                    &mut raster,
+                    &mut surface,
                 )?;
             }
-            (raster.width, raster.height, Arc::from(raster.rgba), None)
+            (width, height, pixels, None)
         };
         scroll_trace::end("paint", started);
         let revision = self.frames.painted()?;

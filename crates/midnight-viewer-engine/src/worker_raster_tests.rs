@@ -209,6 +209,107 @@ fn retained_settle_matches_the_exact_viewport_reference_and_pinned_source_gutter
     }
 }
 
+/// Frames are painted in the buffer they share instead of a `Vec` that was then
+/// copied into an `Arc`. Their bytes must equal that former path exactly: the
+/// retained body and gutter, and the viewport-only frame with its gutter band.
+#[test]
+fn frames_painted_in_their_shared_buffers_match_the_former_copied_rasters() {
+    for retained_pixels in [true, false] {
+        let (mut worker, output) = retained(viewer::MODE_SOURCE);
+        if !retained_pixels {
+            worker.input(ViewerInput::RetainedRaster(false), &output);
+        }
+        // A translucent theme and a selection blend over the zeroed new buffer.
+        worker.appearance.background = [30, 60, 90, 160];
+        worker.selection = Some((90, 500));
+        worker.origin = [0.0, 37.25];
+        let frame = paint(&mut worker, &output);
+        let margin = worker.text_margin();
+        let selection = worker.selection.map(|(a, b)| a.min(b)..a.max(b));
+        let view = |width, height, origin| Viewport {
+            width,
+            height,
+            origin,
+            background: worker.appearance.background,
+            selection_color: worker.appearance.selection,
+        };
+        let shaped = worker.shaped.as_ref().unwrap();
+        let Some(info) = &frame.raster else {
+            assert!(!retained_pixels, "retained pixels were requested");
+            let mut former = worker
+                .renderer
+                .rasterize(
+                    shaped,
+                    view(
+                        worker.geometry.width,
+                        worker.geometry.height,
+                        [worker.origin[0] - margin, worker.origin[1]],
+                    ),
+                    selection,
+                )
+                .unwrap();
+            text::paint_gutter(
+                &mut worker.renderer,
+                &mut worker.text,
+                &worker.appearance,
+                worker.geometry,
+                worker.origin,
+                margin,
+                &mut midnight_viewer_render::RasterMut::new(
+                    former.width,
+                    former.height,
+                    &mut former.rgba,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+            assert_eq!((frame.width, frame.height), (former.width, former.height));
+            let copied: Arc<[u8]> = former.rgba.into();
+            assert_pixels_equal(&frame.pixels, &copied, "viewport frame with gutter band");
+            continue;
+        };
+        let gutter = info.gutter.as_ref().expect("source gutter");
+        // The raster starts its whole-pixel guard before the camera.
+        let before: [f32; 2] = std::array::from_fn(|axis| {
+            (info.origin[axis] - info.raster_origin[axis]).round() as f32
+        });
+        let local = [worker.origin[0] - before[0], worker.origin[1] - before[1]];
+        let body = worker
+            .renderer
+            .rasterize(shaped, view(frame.width, frame.height, local), selection)
+            .unwrap();
+        let mut former_gutter = midnight_viewer_render::Raster {
+            width: gutter.width,
+            height: gutter.height,
+            rgba: vec![0; gutter.width as usize * gutter.height as usize * 4],
+        };
+        text::paint_gutter(
+            &mut worker.renderer,
+            &mut worker.text,
+            &worker.appearance,
+            worker.geometry,
+            local,
+            margin,
+            &mut midnight_viewer_render::RasterMut::new(
+                former_gutter.width,
+                former_gutter.height,
+                &mut former_gutter.rgba,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let (gutter_pixels, _) = former_gutter.rgba.as_chunks::<4>();
+        assert!(
+            gutter_pixels.iter().any(|pixel| pixel != &gutter_pixels[0]),
+            "line numbers are painted"
+        );
+        let copied: Arc<[u8]> = body.rgba.into();
+        assert_pixels_equal(&frame.pixels, &copied, "retained body");
+        let copied: Arc<[u8]> = former_gutter.rgba.into();
+        assert_pixels_equal(&gutter.pixels, &copied, "retained gutter");
+    }
+}
+
 #[test]
 fn retained_stale_sequence_and_replaced_context_cannot_move_the_camera() {
     let (mut worker, output) = retained(viewer::MODE_TEXT);

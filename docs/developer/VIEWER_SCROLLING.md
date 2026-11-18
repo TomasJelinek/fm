@@ -95,10 +95,11 @@ can reach the raster. That reach is a conservative bound, not a font guarantee:
 4 em vertically and 8 em horizontally around each glyph origin (stacked marks
 carry their own origins), plus the exact extent of every underline and
 strikethrough. It covers the glyphs of real text fonts; a malformed or unusual
-font whose ink extends further can lose that ink at raster edges. The renderer
-can paint directly into a caller-owned buffer of the exact raster size
-(`rasterize_into`, `paint_over_into`), so a frame can be shared without a second
-full-surface copy.
+font whose ink extends further can lose that ink at raster edges. The engine
+allocates each body, gutter and viewport-only frame buffer once, as the shared
+`Arc<[u8]>` the frame carries, and paints it while it is still unique
+(`rasterize_into`, `paint_over_into`). Delivering a refill therefore costs no
+second allocation or full-surface copy.
 
 Raster pixel coordinates map through the frame's retained logical viewport,
 not through the current clipping canvas. Source/Markdown controls appearing with
