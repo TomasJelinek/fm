@@ -677,6 +677,120 @@ async fn queued_observations_superseded_by_completion_do_not_report_errors() {
     ));
 }
 
+fn transfer(publication: &TreePublication, request: u64) -> TreeCommand {
+    TreeCommand::Transfer(TreeTransferRequest {
+        intent: TransferIntent::Copy,
+        view: publication.view.clone(),
+        request: TreeRequestId(request),
+        selection_revision: publication.selection_revision,
+        selection: publication.selection.clone(),
+        fallback: Some(publication.view.rows[0].id),
+        cancel: Cancellation::default(),
+    })
+}
+
+/// The mailbox admitted F5 for the current view, but a completion taken first
+/// published a newer projection: that publication precedes the refusal, which
+/// the presenter retries on it. A refusal of the current view is reported, even
+/// when only the shared capture pool is busy.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn transfer_refusal_is_retryable_only_when_a_newer_projection_replaced_its_view() {
+    let mut fixture = fixture();
+    fixture.receiver.try_recv().unwrap(); // Drain the fixture output barrier.
+    let admitted = fixture
+        .worker
+        .session
+        .as_mut()
+        .unwrap()
+        .publication()
+        .unwrap();
+    fixture.gate.release();
+    let completion = next_completion(&fixture.lane).await;
+    tokio::task::block_in_place(|| fixture.worker.handle(Input::Completion(completion)));
+    let TreeEvent::Published(newer) = tree_event(&mut fixture.receiver) else {
+        panic!("the changed listing publishes a newer projection");
+    };
+    assert!(newer.view.stamp.revision.0 > admitted.view.stamp.revision.0);
+    tokio::task::block_in_place(|| fixture.worker.command(transfer(&admitted, 2)));
+    let refusal = tree_event(&mut fixture.receiver);
+    assert!(
+        matches!(&refusal, TreeEvent::Transfer { stamp, retryable: true, result: Err(_), .. }
+            if *stamp == admitted.view.stamp),
+        "{refusal:?}"
+    );
+    // The presenter acknowledges the newer view, then sends F5 for it.
+    tokio::task::block_in_place(|| {
+        fixture
+            .worker
+            .command(TreeCommand::Commit(newer.view.clone()))
+    });
+    let pool = fixture.worker.copy_capacity.clone();
+    let permits = u32::try_from(pool.available_permits()).unwrap();
+    let busy = pool.try_acquire_many_owned(permits).unwrap();
+    tokio::task::block_in_place(|| fixture.worker.command(transfer(&newer, 3)));
+    let refusal = tree_event(&mut fixture.receiver);
+    assert!(
+        matches!(&refusal, TreeEvent::Transfer { stamp, retryable: false, result: Err(_), .. }
+            if *stamp == newer.view.stamp),
+        "{refusal:?}"
+    );
+    drop(busy);
+}
+
+/// The session ended before the worker took F5 for its last view. That refusal
+/// is final, unless the panel had already asked for a new session for a changed
+/// listing: the new session replaces the view, so the refusal is retryable and
+/// the presenter drops the capture silently once that session is shown.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn transfer_after_the_session_ended_is_retryable_only_while_a_new_one_is_prepared() {
+    for re_enabled in [false, true] {
+        let mut fixture = fixture();
+        fixture.gate.release();
+        fixture.receiver.try_recv().unwrap(); // Drain the fixture output barrier.
+        let last = fixture
+            .worker
+            .session
+            .as_mut()
+            .unwrap()
+            .publication()
+            .unwrap();
+        if re_enabled {
+            let root = &last.view.root;
+            let relisted: Arc<[Entry]> = root.entries.to_vec().into();
+            let enable = TreeCommand::Enable {
+                root: TreeRootSnapshot {
+                    index: Arc::new(DirectoryIndex::from_entries(&relisted)),
+                    entries: relisted,
+                    ..root.clone()
+                },
+                selection_revision: SelectionRevision(0),
+                selected: TreeRootSelection::Empty,
+            };
+            tokio::task::block_in_place(|| fixture.worker.command(enable));
+            assert!(
+                fixture.worker.pending.is_some(),
+                "a new session is prepared"
+            );
+        }
+        tokio::task::block_in_place(|| {
+            fixture
+                .worker
+                .fail_session(ProviderError::Failed("fixture failure".into()))
+        });
+        assert!(matches!(
+            tree_event(&mut fixture.receiver),
+            TreeEvent::Unavailable { .. }
+        ));
+        tokio::task::block_in_place(|| fixture.worker.command(transfer(&last, 2)));
+        let refusal = tree_event(&mut fixture.receiver);
+        assert!(
+            matches!(&refusal, TreeEvent::Transfer { stamp, retryable, result: Err(_), .. }
+                if *stamp == last.view.stamp && *retryable == re_enabled),
+            "re-enabled {re_enabled}: {refusal:?}"
+        );
+    }
+}
+
 /// Closes the lane even when an assertion fails, so a running worker returns
 /// and the test runtime can shut down.
 struct CloseOnDrop(Arc<Mailbox>);

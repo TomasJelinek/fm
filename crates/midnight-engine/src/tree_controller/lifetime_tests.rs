@@ -87,7 +87,7 @@ fn queued_completion_does_not_retain_a_native_mount_after_model_worker_unwind() 
 }
 
 /// The tree workers' only filesystem; idle workers never call it.
-struct Idle;
+pub(super) struct Idle;
 impl DirectoryService for Idle {
     fn read_directory(
         &self,
