@@ -1,7 +1,8 @@
 //! Retained tree roots and occurrence feedback; all provider work runs on workers.
 use crate::{
+    copy_nested_retirement::{self as nested, Retained},
     providers::{ProviderError, ProviderTarget},
-    tree_actor::{CapturedSelection, Session},
+    tree_actor::{CapturedSelection, CapturedTarget, Session},
 };
 use midnight_core::*;
 use std::{
@@ -19,24 +20,83 @@ struct Lease {
 }
 impl Lease {
     fn release_on_worker(self: Arc<Self>) -> Result<(), ProviderError> {
-        use crate::copy_nested_retirement::{self as nested, Retained};
-        nested::provider_step(|| {
-            let Some(owner) = Arc::into_inner(self) else {
-                return Ok(());
-            };
-            let mut permit = Retained::new(owner._permit);
-            owner.capture.release_on_worker()?;
-            drop(permit.take());
-            Ok(())
-        })
+        nested::provider_release(
+            self,
+            |lease| {
+                let Some(owner) = Arc::into_inner(lease) else {
+                    return Ok(());
+                };
+                let mut permit = Retained::new(owner._permit);
+                release_capture(owner.capture)?;
+                drop(permit.take());
+                Ok(())
+            },
+            Self::give_up,
+        )
+    }
+    /// Decrement-only: the last reference gives its capture up and keeps the capture
+    /// permit retained, which returns only after the targets and their registrations
+    /// are destroyed.
+    fn give_up(self: Arc<Self>) {
+        if let Some(owner) = Arc::into_inner(self) {
+            let _permit = Retained::new(owner._permit);
+            give_up_capture(owner.capture);
+        }
     }
 }
+
+/// The tree Copy capture's targets, released in order. A failed release leaves this
+/// retirement unconfirmed, so every later target is given up instead of released or
+/// forgotten with its archive references. Tree clipboard and drop-directory captures
+/// hold only native targets and keep `CapturedSelection::release_on_worker`.
+fn release_capture(capture: CapturedSelection) -> Result<(), ProviderError> {
+    let mut targets = Retained::new(capture.targets.into_iter());
+    let mut result = Ok(());
+    while let Some(target) = targets.get_mut().next() {
+        if result.is_ok() {
+            result = nested::provider_release(
+                target.captured,
+                CapturedTarget::release_on_worker,
+                give_up_target,
+            );
+        } else {
+            give_up_target(target.captured);
+        }
+    }
+    drop(targets.take());
+    result
+}
+fn give_up_capture(capture: CapturedSelection) {
+    let mut targets = Retained::new(capture.targets.into_iter());
+    while let Some(target) = targets.get_mut().next() {
+        give_up_target(target.captured);
+    }
+    drop(targets.take());
+}
+/// The tree registration stays retained; the provider target gives up only what it
+/// holds (`MountedTarget::give_up`).
+fn give_up_target(target: CapturedTarget) {
+    let CapturedTarget {
+        target,
+        _registration,
+    } = target;
+    let _registration = Retained::new(_registration);
+    target.give_up();
+}
+
 #[derive(Clone)]
 struct LeaseReference(Option<Arc<Lease>>);
 impl std::ops::Deref for LeaseReference {
     type Target = Arc<Lease>;
     fn deref(&self) -> &Self::Target {
         self.0.as_ref().expect("tree capture remains owned")
+    }
+}
+impl LeaseReference {
+    fn give_up(mut self) {
+        if let Some(lease) = self.0.take() {
+            lease.give_up();
+        }
     }
 }
 impl Drop for LeaseReference {
@@ -153,13 +213,17 @@ impl CapturedTransferSources for Sources {
         true
     }
     fn release_on_worker(self: Arc<Self>) -> Result<(), FsError> {
-        crate::copy_nested_retirement::provider_step(|| {
-            if let Some(owner) = Arc::into_inner(self) {
-                drop(owner);
-            }
-            Ok(())
-        })
-        .map_err(crate::copy_nested_retirement::fs_error)
+        nested::provider_release(
+            self,
+            |sources| {
+                if let Some(owner) = Arc::into_inner(sources) {
+                    drop(owner);
+                }
+                Ok(())
+            },
+            Sources::give_up,
+        )
+        .map_err(nested::fs_error)
     }
     fn intent(&self) -> TransferIntent {
         self.intent
@@ -252,18 +316,18 @@ impl CapturedTransferSources for Sources {
                     if source.entry().item.path != *path || source.native_identity().is_none() {
                         return Err(failure("Provider returned a different native source."));
                     }
-                    source
+                    Authority::Native(NativeAuthority(Some(source)))
                 }
                 ProviderTarget::Archive(target) => {
-                    crate::copy_operations::archive_source::captured_root(
+                    Authority::Archive(crate::copy_operations::archive_source::captured_root(
                         target,
                         traversal.clone(),
                         cancel,
-                    )?
+                    )?)
                 }
             };
             roots.push_back(Box::new(LeasedSource {
-                source: NativeAuthority(Some(source)),
+                source,
                 lease: self.lease.clone(),
                 occurrence: Some(TreeCopyOccurrence {
                     stamp: self.lease.capture.view.stamp,
@@ -275,6 +339,12 @@ impl CapturedTransferSources for Sources {
     }
 }
 impl Sources {
+    /// Decrement-only: the last reference gives its capture lease up.
+    fn give_up(self: Arc<Self>) {
+        if let Some(owner) = Arc::into_inner(self) {
+            owner.lease.give_up();
+        }
+    }
     fn prepare_move(
         &self,
         service: &dyn TransferService,
@@ -313,7 +383,7 @@ impl Sources {
             }
             roots.push_back(PreparedTransferMove {
                 source: Box::new(LeasedSource {
-                    source: NativeAuthority(Some(prepared.source)),
+                    source: Authority::Native(NativeAuthority(Some(prepared.source))),
                     lease: self.lease.clone(),
                     occurrence: Some(TreeCopyOccurrence {
                         stamp: self.lease.capture.view.stamp,
@@ -395,15 +465,51 @@ fn archive_root_overlap_uses_provider_trails_within_one_mount() {
     );
 }
 
+/// What a prepared root or child owns. Children keep their root's kind.
+enum Authority {
+    /// Native authority created by the audited service.
+    Native(NativeAuthority<Box<dyn TransferSource>>),
+    /// An archive member source (`archive_source::captured_root` and its children):
+    /// plain memory plus archive references, whose drop releases them through
+    /// `release_archive`, which gives them up inside a quarantined Copy. It therefore
+    /// drops directly, also there, instead of being forgotten with those references.
+    Archive(Box<dyn TransferSource>),
+}
+impl Authority {
+    fn child(&self, source: Box<dyn TransferSource>) -> Self {
+        match self {
+            Self::Native(_) => Self::Native(NativeAuthority(Some(source))),
+            Self::Archive(_) => Self::Archive(source),
+        }
+    }
+}
+impl std::ops::Deref for Authority {
+    type Target = dyn TransferSource;
+    fn deref(&self) -> &Self::Target {
+        match self {
+            Self::Native(source) => &***source,
+            Self::Archive(source) => &**source,
+        }
+    }
+}
+impl std::ops::DerefMut for Authority {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        match self {
+            Self::Native(source) => &mut ***source,
+            Self::Archive(source) => &mut **source,
+        }
+    }
+}
+
 struct LeasedSource {
-    source: NativeAuthority<Box<dyn TransferSource>>,
+    source: Authority,
     lease: LeaseReference,
     occurrence: Option<TreeCopyOccurrence>,
 }
 impl LeasedSource {
     fn child(&self, source: Box<dyn TransferSource>) -> Box<dyn TransferSource> {
         Box::new(Self {
-            source: NativeAuthority(Some(source)),
+            source: self.source.child(source),
             lease: self.lease.clone(),
             occurrence: None,
         })
@@ -603,3 +709,7 @@ impl TransferMoveStageCleanup for LeasedCleanup {
 #[cfg(test)]
 #[path = "tree_move_capture_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "tree_copy_taint_tests.rs"]
+mod taint_tests;

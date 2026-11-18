@@ -470,7 +470,7 @@ impl MountedFilesystem for CapturedArchive {
     /// the mount, the capture only gives up its count; as the mount's last owner it
     /// reaches the host's failing release, which ends the worker. Inside an already
     /// quarantined Copy, where this step cannot run, the capture gives up that
-    /// reference the same way.
+    /// reference the same way (`release_quarantined`).
     fn release_on_worker(self: Arc<Self>) -> Result<(), ProviderError> {
         use crate::copy_nested_retirement as nested;
         nested::provider_release(
@@ -480,12 +480,14 @@ impl MountedFilesystem for CapturedArchive {
                     .map_err(|error| ProviderError::Failed(error.to_string())),
                 None => Ok(()),
             },
-            |capture| {
-                if let Some(owner) = Arc::into_inner(capture) {
-                    nested::give_up_archive(owner.mount);
-                }
-            },
+            |capture| capture.release_quarantined(),
         )
+    }
+    /// The last capture gives its mount reference up; its records are plain memory.
+    fn release_quarantined(self: Arc<Self>) {
+        if let Some(owner) = Arc::into_inner(self) {
+            crate::copy_nested_retirement::give_up_archive(owner.mount);
+        }
     }
     fn resolve_target(
         &self,

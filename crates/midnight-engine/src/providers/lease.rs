@@ -56,6 +56,10 @@ impl MountedLocation {
     pub(crate) fn release_on_worker(self) -> Result<(), ProviderError> {
         self.lease.release_on_worker()
     }
+    /// Gives this location's lease reference up (`MountLease::give_up`).
+    fn give_up(self) {
+        self.lease.give_up();
+    }
     pub(super) fn new(
         address: StoredLocation,
         reference: MountRef,
@@ -532,24 +536,47 @@ impl<'a> TokenLedger<'a> {
 impl MountLease {
     fn release_on_worker(self: Arc<Self>) -> Result<(), ProviderError> {
         use crate::copy_nested_retirement::{self as nested, Retained};
-        nested::provider_step(|| {
-            let Some(owner) = Arc::into_inner(self) else {
-                return Ok(());
-            };
-            let MountLease {
-                mount,
-                _registration,
-                _permit,
-                ..
-            } = owner;
-            let mut tail = Retained::new((_registration, _permit));
-            nested::release_mount(mount)?;
-            let (registration, permit) = tail.take();
-            let mut permit = Retained::new(permit);
-            registration.release_on_worker()?;
-            drop(permit.take());
-            Ok(())
-        })
+        nested::provider_release(
+            self,
+            |lease| {
+                let Some(owner) = Arc::into_inner(lease) else {
+                    return Ok(());
+                };
+                let MountLease {
+                    mount,
+                    _registration,
+                    _permit,
+                    ..
+                } = owner;
+                let mut tail = Retained::new((_registration, _permit));
+                nested::release_mount(mount)?;
+                let (registration, permit) = tail.take();
+                let mut permit = Retained::new(permit);
+                registration.release_on_worker()?;
+                drop(permit.take());
+                Ok(())
+            },
+            Self::give_up,
+        )
+    }
+    /// Where the release cannot run (a quarantined retirement, or a failed release of
+    /// a resource that this lease's owner guards), a shared reference only gives up its
+    /// count. The last one gives its mount up and keeps its registration and mount
+    /// permit retained: the mount's teardown is unconfirmed, and a plugin-backed mount
+    /// relies on its registration. The issued and reclaim tables are plain memory.
+    fn give_up(self: Arc<Self>) {
+        use crate::copy_nested_retirement::{self as nested, Retained};
+        let Some(owner) = Arc::into_inner(self) else {
+            return;
+        };
+        let MountLease {
+            mount,
+            _registration,
+            _permit,
+            ..
+        } = owner;
+        let _retained = Retained::new((_registration, _permit));
+        nested::give_up_mount(mount);
     }
     /// Shared reclaim gate for one call that may bind, emit or issue references.
     fn listing(&self) -> Result<RwLockReadGuard<'_, ()>, ProviderError> {

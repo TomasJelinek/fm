@@ -326,14 +326,39 @@ cleanup worker like any other session, which also ends the worker.
 Owners that hold the guard give up their reference the same way when the session is
 tainted: a tree's captured archive location (which holds one reference), tree target
 and navigation wrappers, and archive member content. A shared one only loses its
-count; the last one passes its guard reference on, also inside a quarantined Copy,
-while a wrapper keeps its own target context or tree registration retained.
-Limitation: such a retained target context still holds the tree's mount lease and,
-through it, the tree's captured archive reference. Provider-level owners (mount
-leases, target contexts, tree captures, leased member content) also keep their
-references when a quarantined Copy skips their release step or an earlier sibling's
-release failed. A session that is tainted while a tree target or navigation still
-holds it can therefore keep its worker and process permit until exit.
+count; the last one passes its guard reference on, also inside a quarantined Copy.
+The provider-level owners above them give up the same way when their release fails
+or a quarantined retirement skips it (`MountedFilesystem::release_quarantined`): a
+tree target wrapper or resolved target whose archive source release failed hands its
+target context down, and a target context, mount lease, root seed or tree Copy capture
+(with the tree targets it captured) only gives up its count, while the last one gives
+up what it holds. A tree Copy job's prepared archive roots and their children drop
+directly, also in a quarantined Copy, so their archive references are given up rather
+than forgotten. After a failed entry, the remaining entries of a target context or
+tree Copy capture are given up instead of released. Giving up never releases a
+registration or permit: the last mount lease keeps its provider registration and
+mount permit, tree targets and navigations keep the tree registration, and the last
+owner of a tree Copy capture keeps its capture permit, all until exit. A give-up runs
+synchronously on the backend worker of the failing or skipped release (a Copy's
+teardown worker, or the worker of the owner that releases), only gives up counts and
+frees plain memory, and never waits: for a tainted session's last reference it only
+asks the host to stop the worker, and the host's supervisor ends it and returns its
+process permit. A decrement can leave an ordinary owner, such as the tab, as the last
+one, which then releases or drops the session as described above; a give-up that
+consumes the last reference of a session that is not tainted keeps it retained with
+its worker, as a quarantined release does.
+
+Limitations: a Copy job whose seal is quarantined before its payload is dropped,
+because it observed the taint during the job or because a teardown cleanup step such
+as closing the current entry failed, keeps its whole payload with the rest of its
+Copy authority, including its archive references. Unless a failed host exchange
+already stopped the worker, that session keeps its worker and one of the two archive
+process permits until exit (ARCH-05 in the [backlog](../IMPLEMENTATION_BACKLOG.md)).
+A tree Copy capture held by Copy input (`CapturedTransferSources`) has no
+quarantined give-up yet, so a Copy whose context is already quarantined when that
+input is released keeps the capture and its archive references. Member content leased
+through `MountedLocation::open_content`, which has no production consumer, does not
+give up a tainted reference either (ARCH-06).
 
 Each archive-size pane reserves one guard for its pending lane before it accepts a
 root. Closing marks/cancels the lane; ordinary worker draining remains unchanged.

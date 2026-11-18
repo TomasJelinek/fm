@@ -8,18 +8,44 @@ struct TargetContext(Vec<(MountedLocation, NodeRef)>);
 
 impl TargetContext {
     fn release_on_worker(self: Arc<Self>) -> Result<(), ProviderError> {
-        use crate::copy_nested_retirement::{self as nested, Retained};
-        nested::provider_step(|| {
-            let Some(owner) = Arc::into_inner(self) else {
-                return Ok(());
-            };
-            let mut locations = Retained::new(owner.0.into_iter());
-            while let Some((location, _)) = locations.get_mut().next() {
-                location.release_on_worker()?;
+        crate::copy_nested_retirement::provider_release(
+            self,
+            |context| match Arc::into_inner(context) {
+                Some(owner) => owner.release_locations(),
+                None => Ok(()),
+            },
+            Self::give_up,
+        )
+    }
+    /// Releases the locations in order. A failed release leaves this retirement
+    /// unconfirmed, so every location after it is given up instead of released.
+    fn release_locations(self) -> Result<(), ProviderError> {
+        use crate::copy_nested_retirement::Retained;
+        let mut locations = Retained::new(self.0.into_iter());
+        let mut result = Ok(());
+        while let Some((location, _)) = locations.get_mut().next() {
+            if result.is_ok() {
+                result = location.release_on_worker();
+            } else {
+                location.give_up();
             }
-            drop(locations.take());
-            Ok(())
-        })
+        }
+        drop(locations.take());
+        result
+    }
+    /// Decrement-only: a shared reference only gives up its count, and the last one
+    /// gives up each location's lease, whose last owner keeps its registration and
+    /// mount permit retained.
+    fn give_up(self: Arc<Self>) {
+        use crate::copy_nested_retirement::Retained;
+        let Some(owner) = Arc::into_inner(self) else {
+            return;
+        };
+        let mut locations = Retained::new(owner.0.into_iter());
+        while let Some((location, _)) = locations.get_mut().next() {
+            location.give_up();
+        }
+        drop(locations.take());
     }
     /// Resolution only: every context node must still be issued by its lease.
     fn validate(&self) -> Result<(), ProviderError> {
@@ -64,18 +90,39 @@ impl MountedTarget {
             path: PathBuf::new(),
         })
     }
+    /// Releases the archive source before the target context. When that release fails
+    /// (a tainted session), the context is given up instead of released, so its last
+    /// owner still passes the tree's archive reference on.
     pub(crate) fn release_on_worker(self) -> Result<(), ProviderError> {
         use crate::copy_nested_retirement::{self as nested, Retained};
-        nested::provider_step(|| {
-            let mut context = Retained::new(self.context);
-            if let ProviderTarget::Archive(mut archive) = self.target
-                && let Some(source) = archive.location.mount.take()
-            {
-                nested::release_archive(source)
-                    .map_err(|error| ProviderError::Failed(error.to_string()))?;
-            }
-            context.take().release_on_worker()
-        })
+        nested::provider_release(
+            self,
+            |owner| {
+                let mut context = Retained::new(owner.context);
+                if let ProviderTarget::Archive(mut archive) = owner.target
+                    && let Some(source) = archive.location.mount.take()
+                    && let Err(error) = nested::release_archive(source)
+                {
+                    context.take().give_up();
+                    return Err(ProviderError::Failed(error.to_string()));
+                }
+                context.take().release_on_worker()
+            },
+            Self::give_up,
+        )
+    }
+    /// Where the release cannot run: gives up the archive source, then the target
+    /// context. Decrement-only; the context's last mount lease keeps its registration
+    /// and mount permit retained.
+    pub(crate) fn give_up(self) {
+        use crate::copy_nested_retirement::{self as nested, Retained};
+        let mut context = Retained::new(self.context);
+        if let ProviderTarget::Archive(mut archive) = self.target
+            && let Some(source) = archive.location.mount.take()
+        {
+            nested::give_up_archive(source);
+        }
+        context.take().give_up();
     }
     /// Validates registration lifetime and mount identity of the target and every
     /// enclosing context, not current issuance, source revision or a
@@ -155,23 +202,36 @@ impl LeasedArchive {
     fn context(&self) -> &TargetContext {
         self.context.as_ref().expect("archive target remains owned")
     }
+    /// A failed source release hands the target context down by give-up, never by an
+    /// ordinary release that would follow an unconfirmed resource teardown.
     fn release(&mut self) -> Result<(), FsError> {
         use crate::copy_nested_retirement::{self as nested, Retained};
         let mut context = Retained::new(self.context.take());
-        if let Some(source) = self.source.take() {
-            nested::release_archive(source)?;
+        if let Some(source) = self.source.take()
+            && let Err(error) = nested::release_archive(source)
+        {
+            if let Some(context) = context.take() {
+                context.give_up();
+            }
+            return Err(error);
         }
         if let Some(context) = context.take() {
             context.release_on_worker().map_err(nested::fs_error)?;
         }
         Ok(())
     }
-    /// Last owner of a tainted or quarantined release: its registrations stay retained,
-    /// since their teardown cannot be certified, and `release` gives up the source.
+    /// Last owner of a tainted or quarantined release: `release` gives up the source,
+    /// then the target context is given up (decrement-only; its last mount lease keeps
+    /// its registration and permit retained), so the tree's capture of the session is
+    /// not pinned.
     fn give_up(&mut self, release: impl FnOnce(Arc<dyn ArchiveMount>)) {
-        std::mem::forget(self.context.take());
+        use crate::copy_nested_retirement::Retained;
+        let mut context = Retained::new(self.context.take());
         if let Some(source) = self.source.take() {
             release(source);
+        }
+        if let Some(context) = context.take() {
+            context.give_up();
         }
     }
     fn check(&self, cancel: &Cancellation) -> Result<(), FsError> {

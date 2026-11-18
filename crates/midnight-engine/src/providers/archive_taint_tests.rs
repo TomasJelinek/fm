@@ -243,6 +243,89 @@ fn tree_capture_gives_up_its_tainted_guard_reference_so_the_last_owner_stops_the
     }
 }
 
+/// Resolves its one captured archive mount once, then holds no reference to it.
+struct OneMount(std::sync::Mutex<Option<OpenedLocation>>);
+impl FilesystemProvider for OneMount {
+    fn resolve(
+        &self,
+        _: &StoredLocation,
+        _: &Cancellation,
+    ) -> Result<OpenedLocation, ProviderError> {
+        self.0
+            .lock()
+            .unwrap()
+            .take()
+            .ok_or(ProviderError::StaleReference)
+    }
+    fn release_on_worker(self: Arc<Self>) -> Result<(), ProviderError> {
+        drop(Arc::into_inner(self));
+        Ok(())
+    }
+}
+
+#[test]
+fn a_leased_archive_dropped_last_inside_a_quarantined_copy_hands_its_target_context_down() {
+    let active = Arc::new(tokio::sync::Semaphore::new(2));
+    let (host, probe) = crate::archives::Retirement::tainted_host_for_test(&active);
+    let (tab, _, _) = crate::archives::Retirement::copy_mount_for_test(host);
+    let cancel = Cancellation::default();
+    let location = ArchiveLocation {
+        mount: Some(tab.clone()),
+        address: ArchiveAddress {
+            provider: "taint-fixture".into(),
+            format: None,
+            container: std::env::temp_dir().join("tainted.zip"),
+            source_version: vec![1],
+            components: Vec::new(),
+        },
+        directory: 1,
+        trail: vec![(1, "tainted.zip".into())],
+    };
+    let opened = captured_archive(&location, &cancel).unwrap();
+    drop(location);
+    let registry = Arc::new(ProviderRegistry::default());
+    let address = StoredLocation::new(
+        ProviderId::new("taint-fixture").unwrap(),
+        NonZeroU32::MIN,
+        Arc::from(&b"root"[..]),
+    );
+    registry
+        .register(
+            address.provider().clone(),
+            Arc::new(OneMount(std::sync::Mutex::new(Some(opened)))),
+        )
+        .unwrap();
+    let mounted = registry.resolve(&address, &cancel).unwrap();
+    let target = mounted.resolve_target(mounted.root(), &cancel).unwrap();
+    let ProviderTarget::Archive(archive) = target.value().unwrap() else {
+        panic!("archive target expected")
+    };
+    // A clone of the resolved location, as a viewer or Copy source keeps one.
+    let leased = archive.location.clone();
+    // The target and the tree's location release ordinarily before the taint.
+    nested::Context::default()
+        .with(|| target.release_on_worker())
+        .unwrap();
+    nested::Context::default()
+        .with(|| mounted.release_on_worker())
+        .unwrap();
+    probe.taint();
+    assert!(Release::Worker.archive(tab));
+    let host = || (probe.releases(), probe.stopped(), probe.dropped());
+    assert_eq!(host(), (0, false, false));
+    // Its last owner dropped inside a quarantined Copy: the source release fails, and
+    // the target context it hands down passes the tree's capture reference on.
+    let copy = Release::Quarantined.context();
+    copy.with(|| drop(leased));
+    assert!(copy.is_quarantined());
+    assert_eq!(
+        host(),
+        (1, true, false),
+        "the tree's capture pinned the session"
+    );
+    assert_eq!(active.available_permits(), 2);
+}
+
 #[test]
 fn tainted_member_content_hands_its_guard_reference_down() {
     let active = Arc::new(tokio::sync::Semaphore::new(2));

@@ -159,6 +159,15 @@ pub(crate) fn give_up_archive(mount: Arc<dyn ArchiveMount>) {
     release_quarantined(mount, &current().unwrap_or_default());
 }
 
+/// Gives up only this mount reference (`MountedFilesystem::release_quarantined`), for
+/// an owner whose release cannot run in an already quarantined context or after the
+/// failed release of a resource it guards. Its unwind is contained like a step's.
+pub(crate) fn give_up_mount(mount: Arc<dyn crate::providers::MountedFilesystem>) {
+    contain(&current().unwrap_or_default(), || {
+        mount.release_quarantined()
+    });
+}
+
 /// An unwind keeps its payload and whatever the operation still owned, and is
 /// recorded as unconfirmed cleanup.
 fn contain(context: &Context, operation: impl FnOnce()) {
@@ -213,8 +222,8 @@ pub(crate) fn content_step(
 /// [`provider_step`] that `release` runs with `owner`. A step skipped because the
 /// context is already quarantined would forget `owner` with it; `quarantined`
 /// receives it instead. That may only give up references whose release destroys
-/// nothing ([`give_up_archive`]) and must forget, or keep armed, everything else.
-/// Its unwind is contained like the step's.
+/// nothing ([`give_up_archive`], [`give_up_mount`]) and must forget, or keep armed,
+/// everything else. Its unwind is contained like the step's.
 pub(crate) fn provider_release<T>(
     owner: T,
     release: impl FnOnce(T) -> Result<(), crate::providers::ProviderError>,
@@ -245,10 +254,16 @@ pub(crate) fn release_provider(
 ) -> Result<(), crate::providers::ProviderError> {
     provider_step(|| owner.release_on_worker())
 }
+/// A step skipped because the context is already quarantined gives the mount up
+/// instead of forgetting it with its archive references.
 pub(crate) fn release_mount(
     owner: Arc<dyn crate::providers::MountedFilesystem>,
 ) -> Result<(), crate::providers::ProviderError> {
-    provider_step(|| owner.release_on_worker())
+    provider_release(
+        owner,
+        |owner| owner.release_on_worker(),
+        |owner| owner.release_quarantined(),
+    )
 }
 pub(crate) fn release_captured_file(
     owner: midnight_plugin_host::CapturedFile,

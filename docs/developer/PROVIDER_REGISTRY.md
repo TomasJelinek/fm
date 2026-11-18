@@ -149,6 +149,10 @@ an immutable snapshot. Unknown-length/sequential sources need an additive API.
 No production consumer calls `open_content` yet, and production
 `NativeProvider::audited` installs no capture, so native content through this route
 is `Unsupported`; F3 viewers, thumbnails and copy keep their existing capture routes.
+Leased content does not give up a tainted reference yet: `LeasedContent` and
+`NativeContent` retain it, and a production consumer first needs a quarantined
+give-up for content sources in the plugin host
+([ARCH-06](../IMPLEMENTATION_BACKLOG.md#deliberate-later-capabilities-and-current-limits)).
 
 The native adapter delegates directory enumeration to an injected `FileSystem`.
 `NativeProvider::new` is browse-only: `with_capture` supplies the explicit native
@@ -185,6 +189,15 @@ calls, and the container's native locator is withheld once revoked. The leased
 mount forwards cooperative reads, the locator and member identities to its source,
 so archive previews entered from a tree keep their storage classification and
 persistent cache keys. Resources are destroyed before their registrations.
+A release that cannot run because its retirement is already quarantined, or an owner
+whose resource release failed, gives its references up instead
+(`MountedFilesystem::release_quarantined`): a shared reference only gives up its
+count, and the last owner passes the archive references it holds on to their own
+quarantined release, frees plain memory and keeps its registration and mount permit
+retained, so no registration is released before its resources. A target whose archive
+source release failed hands its target context down the same way, so the last
+reference to a tainted archive session still reaches its host
+([engine lifetime](ENGINE_LIFETIME.md#archive-navigation-and-queued-size-work)).
 Cancellation and revocation propagate into running listings, which the archive
 host ends between pages without stopping the shared worker. Member reads of a
 shared archive mount go through `read_cooperative`.
