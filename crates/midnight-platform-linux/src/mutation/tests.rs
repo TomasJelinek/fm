@@ -969,6 +969,79 @@ fn refused_staging_directories_are_removed_and_the_source_is_untouched() {
     assert_eq!(fs::read_dir(fixture.path()).unwrap().count(), 1);
 }
 
+/// A refused staging directory that cannot be removed is named by what became of its
+/// name, in an error of kind Other; one that vanished leaves the plain refusal.
+#[test]
+fn a_refused_stage_that_cannot_be_removed_is_named_by_its_outcome() {
+    use std::{cell::RefCell, os::unix::fs::PermissionsExt, rc::Rc};
+    let fixture = tempfile::tempdir().unwrap();
+    fs::set_permissions(fixture.path(), fs::Permissions::from_mode(0o755)).unwrap();
+    let original = fixture.path().join("photo.jpg");
+    fs::write(&original, b"pixels").unwrap();
+    let cancel = Cancellation::default();
+    let prepared = LinuxFileSystem::new(None)
+        .prepare(&original, &cancel)
+        .unwrap();
+    // A rename whose new staging directory is refused (wider than its parent), with
+    // `interfere` acting on that directory just before its removal. Returns the error
+    // and the directory's path.
+    let refused = |interfere: fn(&Path)| {
+        let stage = Rc::new(RefCell::new(None));
+        let seen = stage.clone();
+        let parent = fixture.path().to_owned();
+        let failure = crate::ownership::simulation::with_interference_before_refused_removal(
+            move |name| {
+                let path = parent.join(name);
+                interfere(&path);
+                *seen.borrow_mut() = Some(path);
+            },
+            || {
+                crate::ownership::simulation::with_mount_mode(0o777, || {
+                    prepared.rename(OsStr::new("renamed.jpg"), &cancel)
+                })
+            },
+        )
+        .unwrap_err();
+        assert_eq!(fs::read(&original).unwrap(), b"pixels");
+        assert_eq!(failure.path, original, "{failure}");
+        let stage = stage.borrow_mut().take().expect("a refused directory");
+        (failure, stage)
+    };
+    // Another program created an entry in it: it remains, and the error says where.
+    let (failure, stage) = refused(|stage| fs::write(stage.join("foreign"), b"foreign").unwrap());
+    assert_eq!(failure.kind, ErrorKind::Other, "{failure}");
+    assert!(
+        failure.message.contains(&format!(
+            "; the unused staging directory remains at {}: ",
+            stage.display()
+        )),
+        "{failure}"
+    );
+    assert_eq!(fs::read(stage.join("foreign")).unwrap(), b"foreign");
+    fs::remove_dir_all(&stage).unwrap();
+    // Another entry took its name: that entry is reported and left untouched.
+    let (failure, stage) = refused(|stage| {
+        fs::remove_dir(stage).unwrap();
+        fs::write(stage, b"other").unwrap();
+    });
+    assert_eq!(failure.kind, ErrorKind::Other, "{failure}");
+    assert!(
+        failure.message.contains(&format!(
+            "; another entry has taken the staging directory's name {} and was left untouched",
+            stage.display()
+        )),
+        "{failure}"
+    );
+    assert!(!failure.message.contains("remains"), "{failure}");
+    assert_eq!(fs::read(&stage).unwrap(), b"other");
+    fs::remove_file(&stage).unwrap();
+    // Nothing has its name any more: nothing is left behind to report.
+    let (failure, _) = refused(|stage| fs::remove_dir(stage).unwrap());
+    assert_refused_for(&original, failure, ErrorKind::Unsupported);
+    assert!(staging_residue(fixture.path()).is_empty());
+    assert_eq!(fs::read_dir(fixture.path()).unwrap().count(), 1);
+}
+
 /// Run: `cargo test -p midnight-platform-linux --lib permanent_delete_timing --
 /// --ignored --nocapture`.
 #[test]

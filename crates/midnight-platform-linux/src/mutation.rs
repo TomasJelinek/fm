@@ -22,9 +22,12 @@
 //! completed, with that directory as a typed residue; its location is claimed
 //! only while it still has the identity it was created with. A failed change
 //! that also leaves its staging directory behind names it in an error of kind
-//! Other, never as a plain conflict or cancellation; after a failed capture
-//! request, one that holds the staged name or cannot be inspected is reported as
-//! possibly holding the item. Staging contents are never removed recursively.
+//! Other, never as a plain conflict or cancellation. After a capture request that
+//! returned an error, the selected item found at the staged name is restored to
+//! its name; a staging directory whose staged name holds another entry is
+//! reported as holding an entry that is not the selected item, and one whose
+//! staged name cannot be inspected as possibly holding the item; neither is
+//! described as unneeded. Staging contents are never removed recursively.
 //! renameat2(RENAME_NOREPLACE) support is required. Recursive operations use
 //! openat2 (Linux 5.6+) and fail explicitly if these kernel guarantees are absent.
 //! Preparation retains two file descriptors per selected item; exhaustion fails
@@ -461,8 +464,9 @@ impl Staged {
     /// Pins the staging directory just created. Where the filesystem cannot store
     /// 0700, mount-provided permissions are accepted only as
     /// `crate::ownership::check_created_directory` allows (never wider than the
-    /// parent). A refusal names the item; the directory is removed rather than
-    /// left behind, or reported with its path.
+    /// parent). A refusal names the item; the directory is removed rather than left
+    /// behind. One that cannot be removed is named in an error of kind Other, and a
+    /// name another entry has taken over is reported as such and left untouched.
     fn adopt(prepared: &Prepared, name: OsString, path: PathBuf) -> Result<Self, FsError> {
         let mut pinned = None;
         let adopted = (|| -> io::Result<(File, Identity)> {
@@ -487,13 +491,26 @@ impl Staged {
             }),
             Err(refusal) => {
                 let mut failure = staging_unavailable(prepared, "cannot be used", refusal);
-                if let Err(cleanup) =
-                    crate::ownership::remove_refused_directory(&*prepared.parent, &name, pinned)
-                {
-                    failure.message.push_str(&format!(
-                        "; the unused staging directory remains at {}: {cleanup}",
-                        path.display()
-                    ));
+                match crate::ownership::remove_refused_directory(&*prepared.parent, &name, pinned) {
+                    Ok(()) => {}
+                    // Nothing has that name any more: no location to name.
+                    Err(cleanup) if cleanup.kind() == ErrorKind::NotFound => {}
+                    Err(cleanup) => {
+                        // A location stays behind: never a plain refusal, as in `abandon`.
+                        failure.kind = ErrorKind::Other;
+                        if cleanup.kind() == ErrorKind::InvalidData {
+                            failure.message.push_str(&format!(
+                                "; another entry has taken the staging directory's name {} \
+                                 and was left untouched",
+                                path.display()
+                            ));
+                        } else {
+                            failure.message.push_str(&format!(
+                                "; the unused staging directory remains at {}: {cleanup}",
+                                path.display()
+                            ));
+                        }
+                    }
                 }
                 Err(failure)
             }

@@ -1023,6 +1023,8 @@ pub(super) struct Mutation<'a> {
     complete: bool,
     opted: bool,
     unknown_reserved: bool,
+    /// Pins reserved in this turn by announcements and private creations; each is
+    /// reserved at most once.
     announced: HashSet<usize>,
     failure: Option<FsError>,
 }
@@ -1219,10 +1221,19 @@ impl Mutation<'_> {
         .map_err(as_io)?;
         if let Creation::Private(kind) = creation {
             let pin = make_pin(prospective.clone(), kind, false, Some(job.clone()));
+            let key = Arc::as_ptr(&pin) as *const () as usize;
             let accepted = self.reserve(Some(pin), cancel).map_err(as_io)?;
             if !accepted {
                 return Err(io::ErrorKind::AlreadyExists.into());
             }
+            // The reserved private object covers every later change beneath it in this
+            // turn (the capture or recovery rename into it, publication or restoration
+            // out of it, its removal), so it is never reserved again here. A second
+            // reservation would follow this turn's first mutation, and its failure (a
+            // peer latched or quarantined since this one, a cancellation, a refresh
+            // error) would latch and veto the turn's own compensation. The host keeps
+            // every pin it accepts until the turn finishes, so this address stays unique.
+            self.announced.insert(key);
         }
         let file = create()?;
         match identity(&file, &parent_path.join(name)) {

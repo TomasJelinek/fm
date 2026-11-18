@@ -15,7 +15,8 @@ pub(super) fn attempt(
     attempt_with(capture, destination, name, replace, cancel, || {}, || {})
 }
 
-fn attempt_with(
+/// `attempt`, with test hooks run just before the capture and the publication.
+pub(super) fn attempt_with(
     capture: &Capture,
     destination: &dyn TransferDirectory,
     name: &OsStr,
@@ -109,7 +110,7 @@ fn execute_in(
     checked(cancel, &capture.entry.item.path)?;
     // Collect both original sides before the first private-directory creation.
     // The reserved private subtree covers capture, publication and restoration
-    // slots for the remainder of this one transaction.
+    // slots and the stage's removal for the remainder of this one transaction.
     capture.namespace.announce(
         capture.parent.native_file(),
         capture.parent.path(),
