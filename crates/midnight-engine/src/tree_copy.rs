@@ -2,7 +2,7 @@
 use crate::{
     copy_nested_retirement::{self as nested, Retained},
     providers::{ProviderError, ProviderTarget},
-    tree_actor::{CapturedSelection, CapturedTarget, Session},
+    tree_actor::{CapturedSelection, Session},
 };
 use midnight_core::*;
 use std::{
@@ -27,7 +27,7 @@ impl Lease {
                     return Ok(());
                 };
                 let mut permit = Retained::new(owner._permit);
-                release_capture(owner.capture)?;
+                owner.capture.release_on_worker()?;
                 drop(permit.take());
                 Ok(())
             },
@@ -40,48 +40,9 @@ impl Lease {
     fn give_up(self: Arc<Self>) {
         if let Some(owner) = Arc::into_inner(self) {
             let _permit = Retained::new(owner._permit);
-            give_up_capture(owner.capture);
+            owner.capture.give_up();
         }
     }
-}
-
-/// The tree Copy capture's targets, released in order. A failed release leaves this
-/// retirement unconfirmed, so every later target is given up instead of released or
-/// forgotten with its archive references. Tree clipboard and drop-directory captures
-/// hold only native targets and keep `CapturedSelection::release_on_worker`.
-fn release_capture(capture: CapturedSelection) -> Result<(), ProviderError> {
-    let mut targets = Retained::new(capture.targets.into_iter());
-    let mut result = Ok(());
-    while let Some(target) = targets.get_mut().next() {
-        if result.is_ok() {
-            result = nested::provider_release(
-                target.captured,
-                CapturedTarget::release_on_worker,
-                give_up_target,
-            );
-        } else {
-            give_up_target(target.captured);
-        }
-    }
-    drop(targets.take());
-    result
-}
-fn give_up_capture(capture: CapturedSelection) {
-    let mut targets = Retained::new(capture.targets.into_iter());
-    while let Some(target) = targets.get_mut().next() {
-        give_up_target(target.captured);
-    }
-    drop(targets.take());
-}
-/// The tree registration stays retained; the provider target gives up only what it
-/// holds (`MountedTarget::give_up`).
-fn give_up_target(target: CapturedTarget) {
-    let CapturedTarget {
-        target,
-        _registration,
-    } = target;
-    let _registration = Retained::new(_registration);
-    target.give_up();
 }
 
 #[derive(Clone)]

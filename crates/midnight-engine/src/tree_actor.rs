@@ -161,26 +161,60 @@ pub(crate) struct CapturedTarget {
 }
 
 impl CapturedTarget {
+    /// Releases the provider target before its registration. A step that cannot run
+    /// (the context is already quarantined) gives the target up instead of forgetting
+    /// it with its archive references.
     pub(crate) fn release_on_worker(self) -> Result<(), ProviderError> {
         use crate::copy_nested_retirement::{self as nested, Retained};
-        nested::provider_step(|| {
-            let mut registration = Retained::new(self._registration);
-            self.target.release_on_worker()?;
-            registration.take().release_on_worker()
-        })
+        nested::provider_release(
+            self,
+            |owner| {
+                let mut registration = Retained::new(owner._registration);
+                owner.target.release_on_worker()?;
+                registration.take().release_on_worker()
+            },
+            Self::give_up,
+        )
+    }
+    /// Decrement-only: the provider target gives up only what it holds
+    /// (`MountedTarget::give_up`), and the tree registration stays retained.
+    pub(crate) fn give_up(self) {
+        let _registration = crate::copy_nested_retirement::Retained::new(self._registration);
+        self.target.give_up();
     }
 }
 impl CapturedSelection {
+    /// Releases the targets in order. A failed release leaves this retirement
+    /// unconfirmed, so every later target is given up instead of released or forgotten;
+    /// a step that cannot run gives the whole selection up.
     pub(crate) fn release_on_worker(self) -> Result<(), ProviderError> {
         use crate::copy_nested_retirement::{self as nested, Retained};
-        nested::provider_step(|| {
-            let mut targets = Retained::new(self.targets.into_iter());
-            while let Some(target) = targets.get_mut().next() {
-                target.captured.release_on_worker()?;
-            }
-            drop(targets.take());
-            Ok(())
-        })
+        nested::provider_release(
+            self,
+            |owner| {
+                let mut targets = Retained::new(owner.targets.into_iter());
+                let mut result = Ok(());
+                while let Some(target) = targets.get_mut().next() {
+                    if result.is_ok() {
+                        result = target.captured.release_on_worker();
+                    } else {
+                        target.captured.give_up();
+                    }
+                }
+                drop(targets.take());
+                result
+            },
+            Self::give_up,
+        )
+    }
+    /// Decrement-only: gives up every target; the view and selection are plain memory.
+    pub(crate) fn give_up(self) {
+        use crate::copy_nested_retirement::Retained;
+        let mut targets = Retained::new(self.targets.into_iter());
+        while let Some(target) = targets.get_mut().next() {
+            target.captured.give_up();
+        }
+        drop(targets.take());
     }
 }
 
