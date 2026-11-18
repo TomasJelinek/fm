@@ -50,7 +50,6 @@ use midnight_plugin_host::Runtime;
 use std::sync::{
     Arc, Mutex, OnceLock,
     atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
-    mpsc::{self, SyncSender},
 };
 
 /// Backend-only native source capture. Failure never invokes a fallback opener.
@@ -108,7 +107,6 @@ type Catalogs = (
 );
 
 pub struct WindowSession {
-    sender: SyncSender<worker::Message>,
     wakes: Arc<input_queue::Wakes>,
     positions: input_queue::PositionQueue,
     closed: Arc<AtomicBool>,
@@ -179,16 +177,14 @@ impl WindowSession {
         !self.closed.load(Ordering::Acquire)
             && self
                 .positions
-                .enqueue(input, |message| self.sender.try_send(message).is_ok())
+                .enqueue(input, |message| self.wakes.send_input(message))
     }
 
     pub fn close(&self) {
-        self.closed.store(true, Ordering::Release);
+        // Publishes `closed`, then wakes the worker through its reserved channel slot.
+        self.wakes.close(&self.closed);
         self.mailbox
             .finish_open(Err("Viewer closed before displaying content.".into()));
-        let _ = self
-            .sender
-            .try_send(worker::Message::Input(ViewerInput::Close));
     }
 }
 
@@ -372,8 +368,7 @@ impl Service {
             }),
             started: false,
         };
-        let (sender, receiver) = mpsc::sync_channel(64);
-        let wakes = Arc::new(input_queue::Wakes::new(sender.clone()));
+        let (wakes, receiver) = input_queue::Wakes::channel();
         let backend_wakes = wakes.clone();
         let mailbox = start.output.clone();
         let closed = Arc::new(AtomicBool::new(false));
@@ -418,7 +413,6 @@ impl Service {
             }
         });
         Ok(WindowSession {
-            sender,
             wakes,
             positions: Default::default(),
             closed,
