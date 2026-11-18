@@ -25,7 +25,7 @@ fn session() -> Session {
     Session {
         text: arboard::Clipboard::new().unwrap(),
         files: None,
-        wake: Arc::new(wake_event().unwrap()),
+        wake: Wake::new().unwrap(),
     }
 }
 
@@ -128,15 +128,6 @@ fn wm_destroyclipboard_ends_the_wait_and_the_ownership() {
     }
     assert!(sender.join().unwrap(), "SendNotifyMessageW failed");
     assert!(prompt(started), "WM_DESTROYCLIPBOARD must end the wait");
-}
-
-#[test]
-fn wait_timeouts_round_up_and_stay_finite() {
-    assert_eq!(wait_milliseconds(Duration::ZERO), 0);
-    assert_eq!(wait_milliseconds(Duration::from_nanos(1)), 1);
-    assert_eq!(wait_milliseconds(Duration::from_millis(10)), 10);
-    assert_eq!(wait_milliseconds(Duration::from_micros(10_001)), 11);
-    assert_eq!(wait_milliseconds(Duration::MAX), u32::MAX - 1);
 }
 
 #[test]

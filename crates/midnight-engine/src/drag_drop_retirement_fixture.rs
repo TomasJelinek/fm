@@ -470,7 +470,7 @@ impl DropHarness {
     }
     pub(super) async fn submit_backlog(&self) -> crate::retirement::Retirement {
         let lease = self.controller.backlog.lock().await.reserve().await;
-        let retired = std::mem::take(&mut self.controller.state.lock().unwrap().retired);
+        let retired = self.controller.state.lock().unwrap().retired.take();
         lease.retire(retired)
     }
     pub(super) async fn drain_old_gesture(&self) {
