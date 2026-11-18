@@ -417,15 +417,18 @@ fn a_per_process_report_root_is_removed_after_its_last_log_and_snapshot() {
     assert!(path.is_dir());
     assert!(text(snapshot.as_ref()).contains("kept 資料 record"));
     drop(snapshot);
-    // The report cleanup worker closes the storage and then removes the root.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-    while path.exists() {
-        assert!(
-            std::time::Instant::now() < deadline,
-            "the per-process root outlived its last report"
-        );
-        std::thread::sleep(std::time::Duration::from_millis(1));
-    }
+    // The report cleanup worker closes the storage and removes its root before it
+    // returns the storage's arena node.
+    assert!(
+        temporary
+            .arena
+            .wait_idle(std::time::Duration::from_secs(10)),
+        "report cleanup kept the storage"
+    );
+    assert!(
+        !path.exists(),
+        "the per-process root outlived its last report"
+    );
 }
 
 #[test]
