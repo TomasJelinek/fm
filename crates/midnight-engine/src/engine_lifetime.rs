@@ -66,14 +66,6 @@ pub(crate) const DOMAIN_CAPACITY: usize = crate::operations::MAX_JOBS
 /// rejection path.
 pub(crate) const DOMAIN_WAITERS: usize = 8;
 impl EngineLifetime {
-    /// Shared cleanup for diagnostic reports retained by standalone directory trees.
-    ///
-    /// Clone this before transferring the lifetime to an engine. Retained reports may
-    /// outlive both the engine and Tokio; their native files still retire on workers.
-    pub fn report_arena(&self) -> crate::ReportArena {
-        self.resources.reports.clone()
-    }
-
     pub(crate) fn new() -> io::Result<Self> {
         let domain = RetirementDomain::try_start(DOMAIN_CAPACITY, DOMAIN_WAITERS)?;
         // No native child exists until this separate fixed process tracker is ready.

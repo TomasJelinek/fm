@@ -24,21 +24,6 @@ pub fn start(
     sender
 }
 
-/// A full queue keeps ownership in the UI's single pending slot; no large
-/// allocations are destroyed or synchronously waited on by this function.
-pub fn flush_pending(queue: &mpsc::Sender<Retired>, pending: &mut Option<Retired>) -> bool {
-    let Some(retired) = pending.take() else {
-        return true;
-    };
-    match queue.try_send(retired) {
-        Ok(()) => true,
-        Err(error) => {
-            *pending = Some(error.into_inner());
-            false
-        }
-    }
-}
-
 /// A FIFO barrier lets shutdown finish the last reclamation before stopping
 /// the runtime. It is used after the window has closed, never in a UI callback.
 pub async fn barrier(queue: &mpsc::Sender<Retired>) -> Result<(), String> {
@@ -127,35 +112,18 @@ mod tests {
         drop(sender);
         let mut retired = Retired::new();
         retire_receiver(receiver, &mut retired);
+        // A stopped reclaimer hands the batch back instead of dropping it here.
         let (queue, closed) = mpsc::channel(1);
         drop(closed);
-        let mut pending = Some(retired);
-        assert!(!flush_pending(&queue, &mut pending));
-        assert!(pending.is_some());
-        assert!(notification.try_recv().is_err());
-        tokio::task::spawn_blocking(move || drop(pending))
-            .await
-            .unwrap();
-        assert_ne!(notification.await.unwrap(), caller);
-    }
-
-    #[tokio::test]
-    async fn full_reclamation_queue_retains_ownership_until_retry() {
-        let (queue, mut receiver) = mpsc::channel(1);
-        assert!(queue.try_send(vec![]).is_ok());
-        let (dropped, mut notification) = oneshot::channel();
-        let mut pending = Some(vec![Box::new(DropProbe(Some(dropped))) as Box<dyn Send>]);
-        assert!(!flush_pending(&queue, &mut pending));
-        assert!(pending.is_some());
-        assert!(notification.try_recv().is_err());
-        receiver.recv().await.unwrap();
-        assert!(flush_pending(&queue, &mut pending));
-        assert!(pending.is_none());
-        let retired = receiver.recv().await.unwrap();
+        let retired = queue.try_send(retired).unwrap_err().into_inner();
+        assert!(
+            notification.try_recv().is_err(),
+            "the buffered payload was released on the caller"
+        );
         tokio::task::spawn_blocking(move || drop(retired))
             .await
             .unwrap();
-        assert!(notification.await.is_ok());
+        assert_ne!(notification.await.unwrap(), caller);
     }
 
     #[tokio::test]
