@@ -126,18 +126,25 @@ async fn cadence_never_republishes_the_terminal_state_that_teardown_stored() {
     };
     let (terminal, finished) = tokio::sync::oneshot::channel();
     let initial = snapshot(&status);
-    tokio::join!(
-        async {
-            let progress = with_progress_cadence(job, &status, &cancel, &throughput, &outbox).await;
-            let _ = terminal.send(progress);
-        },
-        outbox.clone().deliver(initial, finished),
-        async {
-            // The paused clock passes three ticks while teardown still runs.
-            tokio::time::sleep(CADENCE * 3).await;
-            let _ = release.send(());
-        },
-    );
+    // Teardown ends after three ticks. The virtual deadline elapses only if the
+    // cadence keeps ticking without returning the job's terminal state.
+    tokio::time::timeout(CADENCE * 100, async {
+        tokio::join!(
+            async {
+                let progress =
+                    with_progress_cadence(job, &status, &cancel, &throughput, &outbox).await;
+                let _ = terminal.send(progress);
+            },
+            outbox.clone().deliver(initial, finished),
+            async {
+                // The paused clock passes three ticks while teardown still runs.
+                tokio::time::sleep(CADENCE * 3).await;
+                let _ = release.send(());
+            },
+        );
+    })
+    .await
+    .expect("the cadence returns the job's terminal state to delivery after teardown");
     let mut terminal_states = Vec::new();
     while let Ok(event) = events.try_recv() {
         if let Event::Copy(CopyEvent::Progress(progress)) = event
