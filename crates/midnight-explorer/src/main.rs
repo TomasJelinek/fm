@@ -701,10 +701,9 @@ fn run_window(
                     state.shutdown_drag_drop(&*sync_controls);
                     sync_viewers.close_all();
                     sync_comparators.close_all();
-                    window.invoke_close_find_windows();
-                    window.invoke_close_checksum_windows();
-                    window.invoke_close_file_list_window();
-                    window.invoke_close_information_windows();
+                    // Every tool window family (Jobs, job progress, decisions and
+                    // the embedded forms too); the helper never borrows Presenter.
+                    midnight_ui::close_tool_windows(&window);
                     let _ = window.hide();
                 }
             }
