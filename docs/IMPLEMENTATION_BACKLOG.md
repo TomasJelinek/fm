@@ -148,6 +148,20 @@ coverage and retirement policy remain unchanged. The [runner qualification](veri
 records real Windows Rust runs and Windows/Linux process regressions. Actual
 desktop input and performance measurements remain serial.
 
+**CI-01 — P2, later (deferral recorded 18 November):** no CI job builds or tests
+the HTML viewer or the video thumbnailer; README.md and SECURITY.md state this
+gap. The normal build helpers build and package both from pinned inputs (their tests
+run only when invoked by hand): the HTML viewer from the verified CEF 156 minimal
+distribution (333 MB on Linux, 175 MB on Windows, `scripts/prepare-html-cef.py`), the
+video thumbnailer from the signature-checked FFmpeg 9.0.2 source build
+(`scripts/prepare-thumbnail-ffmpeg.py`; Windows needs a provisioned MSVC FFmpeg
+prefix). Without caching, every run would
+repeat those downloads and the FFmpeg build, and a cached setup has never run on
+hosted runners. Trigger: add a Linux-only job that restores the verified CEF
+distribution and the FFmpeg build from `actions/cache`, keyed by their pinned
+SHA-256 values and build options, when either plugin or one of its pinned inputs
+changes next, and at the latest before a release that ships them.
+
 ## Scope and completed baseline
 
 Latest integrated feature work: [embedded Chromium HTML viewer](verification/2026-11-10-html-viewer.md),
