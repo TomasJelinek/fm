@@ -641,10 +641,6 @@ export component MainWindow inherits Window {
         else { ColorOptionsView.picker-field = -1; options.close(); root.focus-files(); }
         PopupFocus.update();
     }
-    // Legacy single-editor callbacks: never invoked. Kept only while
-    // Presenter::change_editor/restore_editor still exist; remove together.
-    callback editor-apply(string, string);
-    callback editor-restore();
     callback terminal-changed(int);
     callback open-terminal();
     callback command-edited(bool);

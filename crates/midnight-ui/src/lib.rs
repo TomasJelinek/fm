@@ -1503,16 +1503,6 @@ pub fn install_with_owned(
     callback!(on_thumbnail_size_changed, |_w, p, s, size| {
         p.change_thumbnail_size(size, s);
     });
-    // Legacy single-editor surface: nothing invokes these since the Editors page
-    // moved to EditorOptionsView. Remove with Presenter::change_editor/restore_editor.
-    callback!(on_editor_apply, |w, p, s, executable, arguments| {
-        p.change_editor(executable.as_str(), arguments.as_str(), s);
-        let _ = w;
-    });
-    callback!(on_editor_restore, |w, p, s| {
-        p.restore_editor(s);
-        let _ = w;
-    });
     callback!(on_edit_file, |w, p, s, id| {
         p.edit_file(pane(id), s);
         let _ = w;

@@ -28,76 +28,6 @@ impl Presenter {
         };
     }
 
-    pub(crate) fn change_editor(
-        &mut self,
-        executable: &str,
-        arguments: &str,
-        send: &dyn Fn(Command) -> bool,
-    ) {
-        if arguments.len() > 256 * 1024 {
-            self.editor.error = "Editor argument text exceeds 256 KiB.".into();
-            return;
-        }
-        let arguments = match serde_json::from_str::<Vec<String>>(arguments) {
-            Ok(arguments) => arguments,
-            Err(error) => {
-                self.editor.error = format!("Enter arguments as a JSON list of strings: {error}");
-                return;
-            }
-        };
-        let previous = &self.preferences.values.editor.executable;
-        let executable = if executable.is_empty() {
-            None
-        } else if previous
-            .as_ref()
-            .is_some_and(|path| path.to_string_lossy() == executable)
-        {
-            // Editing only arguments must not replace a non-Unicode native path with its label.
-            previous.clone()
-        } else {
-            if previous
-                .as_deref()
-                .and_then(Path::parent)
-                .is_some_and(|parent| crate::native_path_edit::ambiguous_edit(parent, executable))
-            {
-                self.editor.error = concat!(
-                    "The displayed editor folder contains characters this editor cannot represent. ",
-                    "Enter another complete executable path without replacement characters."
-                ).into();
-                return;
-            }
-            Some(PathBuf::from(executable))
-        };
-        let editor = EditorPreferences {
-            executable,
-            arguments,
-            rules: self.preferences.values.editor.rules.clone(),
-        };
-        if let Err(error) = editor.validate() {
-            self.editor.error = error.into();
-            return;
-        }
-        self.editor.error.clear();
-        self.editor.draft = None;
-        self.editor.dirty = false;
-        self.editor.revision = self.editor.revision.saturating_add(1);
-        self.preferences.edited.editor = true;
-        let mut preferences = self.preferences.values.clone();
-        preferences.editor = editor;
-        self.update_preferences(preferences, send);
-    }
-
-    pub(crate) fn restore_editor(&mut self, send: &dyn Fn(Command) -> bool) {
-        self.editor.error.clear();
-        self.editor.draft = None;
-        self.editor.dirty = false;
-        self.editor.revision = self.editor.revision.wrapping_add(1);
-        self.preferences.edited.editor = true;
-        let mut preferences = self.preferences.values.clone();
-        preferences.editor = EditorPreferences::default();
-        self.update_preferences(preferences, send);
-    }
-
     pub(crate) fn edit_file(&mut self, pane: PaneId, send: &dyn Fn(Command) -> bool) {
         if !self.native_action_allowed(pane) {
             return;
@@ -167,6 +97,8 @@ mod tests {
         presenter
     }
 
+    /// Saving an Editors draft whose displayed text replaced characters of a raw
+    /// native parent is refused; an explicit Unicode path is then accepted.
     pub(super) fn assert_raw_parent_edit_is_refused(parent: PathBuf) {
         let mut presenter = presenter();
         presenter.preferences.loaded = true;
@@ -175,19 +107,21 @@ mod tests {
         let focus = presenter.panes[0].cursor;
         let path = presenter.panes[0].display_path().to_owned();
         let edited = parent.join("other-tool").to_string_lossy().into_owned();
-        presenter.change_editor(&edited, "[\"{file}\"]", &|_| {
-            panic!("Ambiguous editor settings were saved")
-        });
+        presenter.edit_editor_draft(edited, false);
+        presenter.save_editor_draft(&|_| panic!("Ambiguous editor settings were saved"));
         assert_eq!(presenter.preferences.values.editor, before);
         assert!(!presenter.editor.error.is_empty());
+        assert!(presenter.editor.dirty, "the refused draft stays editable");
         assert_eq!(presenter.panes[0].cursor, focus);
         assert_eq!(presenter.panes[0].display_path(), path);
         let explicit = std::env::temp_dir().join("explicit Unicode tool");
-        presenter.change_editor(explicit.to_str().unwrap(), "[\"{file}\"]", &|_| true);
+        presenter.edit_editor_draft(explicit.to_str().unwrap().into(), false);
+        presenter.save_editor_draft(&|_| true);
         assert_eq!(
             presenter.preferences.values.editor.executable,
             Some(explicit)
         );
+        assert!(!presenter.editor.dirty);
     }
 
     #[test]
@@ -215,48 +149,17 @@ mod tests {
     }
 
     #[test]
-    fn editor_settings_parse_literal_json_args_and_survive_late_preferences() {
+    fn invalid_editor_draft_preserves_saved_configuration_and_reports_error() {
         let mut presenter = presenter();
-        let executable = std::env::current_exe().unwrap();
-        presenter.change_editor(
-            executable.to_str().unwrap(),
-            r#"["{file}","--label=文档 $HOME; &","", "line\nnext"]"#,
-            &|_| panic!("await preferences"),
-        );
-        assert_eq!(
-            presenter.preferences.values.editor.arguments,
-            ["{file}", "--label=文档 $HOME; &", "", "line\nnext"]
-        );
-        presenter.preferences_loaded(Ok(UserPreferences::default()));
-        assert_eq!(
-            presenter.preferences.values.editor.executable,
-            Some(executable)
-        );
-    }
-
-    #[test]
-    fn invalid_editor_text_preserves_saved_configuration_and_reports_error() {
-        let mut presenter = presenter();
-        presenter.change_editor("relative-editor", "[\"{file}\"]", &|_| {
-            panic!("invalid must not save")
-        });
+        presenter.preferences.loaded = true;
+        presenter.edit_editor_draft("relative-editor".into(), false);
+        presenter.save_editor_draft(&|_| panic!("invalid must not save"));
         assert!(!presenter.editor.error.is_empty());
+        assert!(presenter.editor.dirty, "the refused draft stays editable");
         assert_eq!(
             presenter.preferences.values.editor,
             EditorPreferences::default()
         );
-        presenter.change_editor("relative-editor", "not json", &|_| {
-            panic!("invalid must not save")
-        });
-        assert!(!presenter.editor.error.is_empty());
-    }
-
-    #[test]
-    fn restore_default_refreshes_the_editor_draft_even_if_preferences_are_unchanged() {
-        let mut presenter = presenter();
-        let previous = presenter.editor.revision;
-        presenter.restore_editor(&|_| true);
-        assert_ne!(presenter.editor.revision, previous);
     }
 
     #[test]
