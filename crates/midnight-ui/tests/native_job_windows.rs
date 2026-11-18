@@ -651,10 +651,8 @@ fn native_jobs_failed_creation_reports_visibly_and_only_explicit_open_retries() 
     assert!(h.commands.borrow().is_empty());
 }
 
-#[test]
-fn native_rename_overwrite_uses_shared_decision_and_exact_mutation_dispatch() {
-    let h = Harness::new();
-    h.main.invoke_show_operations();
+/// Rename job 90 waiting for its overwrite decision, version 5.
+fn rename_conflict(h: &Harness) {
     h.apply(Event::Operation(OperationEvent::Progress(Arc::new(
         OperationProgress {
             pause_requested: false,
@@ -691,13 +689,65 @@ fn native_rename_overwrite_uses_shared_decision_and_exact_mutation_dispatch() {
             can_merge: false,
         },
     ))));
+}
+
+fn rename_decisions(h: &Harness) -> Vec<(OperationId, u64, CopyChoice)> {
+    h.commands
+        .borrow()
+        .iter()
+        .filter_map(|c| match c {
+            Command::DecideRename(d) => Some((d.id, d.version, d.choice.clone())),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn native_rename_decision_escape_and_x_defer_and_only_cancel_job_cancels() {
+    let h = Harness::new();
+    h.main.invoke_show_operations();
+    rename_conflict(&h);
+    let jobs = h.children(2).remove(0);
+    for dismissal in ["Escape", "X"] {
+        let decision = h.children(2).pop().unwrap();
+        assert_eq!(h.main.get_copy_token(), "rename:90:5");
+        if dismissal == "Escape" {
+            input::key(&decision, Key::Escape);
+        } else {
+            decision
+                .window()
+                .dispatch_event(WindowEvent::CloseRequested);
+        }
+        assert!(
+            rename_decisions(&h).is_empty(),
+            "{dismissal} must not decide or cancel the rename"
+        );
+        assert!(!decision.window().is_visible(), "{dismissal} closes it");
+        h.children(1);
+        modeless::click(&jobs, "Resolve");
+    }
     let decision = h.children(2).pop().unwrap();
-    assert!(
-        h.commands
-            .borrow()
-            .iter()
-            .all(|c| !matches!(c, Command::DecideRename(_)))
+    assert_eq!(
+        h.main.get_copy_token(),
+        "rename:90:5",
+        "Resolve reopens the exact deferred rename decision"
     );
+    modeless::click(&decision, "Cancel job");
+    assert!(matches!(
+        rename_decisions(&h).as_slice(),
+        [(OperationId(90), 5, CopyChoice::Cancel)]
+    ));
+    assert!(h.choices().is_empty(), "a rename never decides a Copy");
+    h.children(1);
+}
+
+#[test]
+fn native_rename_overwrite_uses_shared_decision_and_exact_mutation_dispatch() {
+    let h = Harness::new();
+    h.main.invoke_show_operations();
+    rename_conflict(&h);
+    let decision = h.children(2).pop().unwrap();
+    assert!(rename_decisions(&h).is_empty());
     modeless::click(&decision, "Decide later");
     let jobs = h.children(1).remove(0);
     modeless::click(&jobs, "Resolve");
