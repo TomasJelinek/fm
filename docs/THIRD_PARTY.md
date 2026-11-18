@@ -277,10 +277,11 @@ integration tip `93d36411` with the build and test changes of the next review ba
 pairs of `native-macos`. `scripts/dependency-inventory.py --check` passed against the
 committed tables, so they hold **643 records / 525 names / 65 direct records**
 ([record](verification/2026-11-18-workspaces-and-opt-in-qualification.md#dependency-inventory)).
-No `Cargo.toml` or `Cargo.lock` of any workspace changed between the recheck commit
-`5a0c23f2`, `93d36411` and the review's integration tip `2050f745`
-(`git diff --stat 5a0c23f2 2050f745 -- '*Cargo.toml' '*Cargo.lock'` is empty), so the
-tables also describe `2050f745`.
+No `Cargo.toml`, `Cargo.lock`, `.cargo/config.toml` or toolchain file of any
+workspace, and nothing under `vendor/`, changed between the recheck commit `5a0c23f2`,
+`93d36411` and the review's integration tip `d0f44c55` (`git diff --stat 5a0c23f2
+d0f44c55 -- '*Cargo.toml' '*Cargo.lock' '*.cargo/config.toml' 'rust-toolchain*'
+vendor/` is empty), so the tables also describe `d0f44c55`.
 
 That recheck covers Cargo package, version and feature selections. The vendored,
 patched sources also changed since `48ec78d`, with unchanged versions and licenses:

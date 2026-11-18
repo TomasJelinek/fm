@@ -169,10 +169,13 @@ argv/cwd/environment probe executable. It is cached in
 the compile flags and the probe sources. The first test to need it compiles it once,
 holding an OS file lock that other test threads and processes wait for; every
 requested probe name is then a hard link to that file. A cold run therefore compiles
-the probe once per key, and a warm run does not compile it at all. On Linux the tree
-user-command process tests (`tree_user_command_process::` in the `midnight-ui`
-integration binary) need `rustc` on `PATH`, or `RUSTC` naming it, because their probe
-compiles with it; without it they fail.
+the probe once per key, and a warm run does not compile it at all. Every test that
+builds this probe needs `rustc` on `PATH`, or `RUSTC` naming it, on any operating
+system, because the probe is compiled with it (`compiler_identity` in
+`scripts/tests/user-command-probe/assertions.rs`); without it these tests fail. They
+are the `user_commands` integration tests and `user_command_terminal_tests` of both
+platform crates and `tree_user_command_process::` in the `midnight-ui` integration
+binary; the failure was observed on Linux.
 
 Those tests use actual subprocesses and a socket rendezvous to prove simultaneous execution, bounded admission, output isolation and cleanup of owned processes while an unrelated process stays alive. They also cover filter coalescing, no-match refusal, receipt/path and independent-workspace validation, changed artifacts and anchored result parsing. They demonstrate runner behavior, not a Rust throughput improvement; report measured elapsed times with the actual selected suite and cache state when comparing runs.
 

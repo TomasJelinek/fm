@@ -296,10 +296,11 @@ inspected as possibly holding the item; neither is described as unneeded.
   limit. Deduplicate by exact text across shells; recall restores compatible
   grammar and standard privileges, never executes and never restores elevation.
   History is not written to diagnostic logs.
-- Status-field clicks copy only the current displayed value via a bounded backend
-  clipboard service. A dedicated lazy worker retains native clipboard ownership;
-  the UI never opens the OS clipboard. Clipboard managers may retain copied data.
-  Breadcrumb/history/detail tokens reject stale clicks after navigation or updates;
+- Status-field clicks copy only the current value of the clicked field, with raw
+  names (see below), via a bounded backend clipboard service. A dedicated lazy
+  worker retains native clipboard ownership; the UI never opens the OS clipboard.
+  Clipboard managers may retain copied data. Breadcrumb/history/detail tokens
+  reject stale clicks after navigation or updates;
   displayed paths are never parsed to construct a clicked filesystem identity.
 - Raw `PathBuf`/`OsString` identities are kept separately from visible text.
   Valid Unicode is not converted through an ANSI code page or normalized into a

@@ -23,15 +23,15 @@ comes first; role work still requires scoped acceptance and exclusive ownership.
 
 A deep code review of the whole repository, started from main `3a27eeb2` on
 17 November, is integrated on `claude/main-branch-code-review-97667c` at
-**`2050f745`** (576 non-merge commits). Reviewers covered the engine, core,
+**`d0f44c55`** (585 non-merge commits). Reviewers covered the engine, core,
 platforms, hosts, public APIs, plugins, UI, viewers, build scripts and CI; the
 Orchestrator, acting as Architect, decided the open design questions. What the
 review deferred, and the residuals it accepted, are rows of the
 [backlog](IMPLEMENTATION_BACKLOG.md#deferrals-and-residuals-of-the-18-november-review),
-each with its trigger. One UI package, which neutralizes explicit bidirectional
-controls in file names shown in panels, tabs and viewer captions, was still in
-follow-up and is not part of `2050f745`: until it merges, such names display raw
-there, while document text in the viewers and the comparator is already neutralized.
+each with its trigger. The last batch merged at `cd66e919` with the follow-up
+`d0f44c55`: explicit bidirectional controls in shown names and paths, the event-woken
+thumbnail pulse and the comparison font restored into open comparators (UI and
+Viewers below).
 
 Changes by area (the linked contracts describe the current behavior):
 
@@ -59,9 +59,10 @@ Changes by area (the linked contracts describe the current behavior):
   with a per-process fallback, and Linux spool bases are resolved through links by a
   resolver shared with the filesystem host. Idle clipboard sessions and open
   drag/drop sessions wait for operating-system events instead of 10 ms pumps. Find
-  formats only the results it publishes, checksum reads are admitted by source
-  storage kind, and shutdown drains the Copy and mutation actors before aborting
-  tasks.
+  formats result times only for the results it keeps or publishes, and for the one
+  duplicate group whose refusal by the retained-bytes budget ends the search
+  ([Find](developer/FIND.md)); checksum reads are admitted by source storage kind,
+  and shutdown drains the Copy and mutation actors before aborting tasks.
 - **Platforms.** Windows treats only name-surrogate reparse points as links
   (OneDrive/Cloud Files placeholders, deduplicated and WOF files are ordinary
   entries), watches folders through its own `ReadDirectoryChangesW` service instead
@@ -98,32 +99,41 @@ Changes by area (the linked contracts describe the current behavior):
   mounts no automount point and classifies links alike in Stat and listings; the
   Windows plugin fails listings on enumeration errors; the macOS plugin keeps
   unrepresentable rows. The Basic, Source and Markdown viewers fixed paging, budget,
-  checkpoint and search defects, Markdown resynchronizes after long tables and HTML
-  blocks, AVIF items without a displayable frame fail instead of spinning, the HTML
-  provider builds from the verified CEF SDK in place, and the video thumbnailer
-  reads large packets and samples partial videos.
+  checkpoint and search defects; Markdown now also resynchronizes its checkpoints
+  after long GFM tables and HTML blocks of CommonMark types 6 and 7, while other long
+  blocks still end checkpoint discovery (VIEW-01). AVIF items without a displayable
+  frame fail instead of spinning, the HTML provider builds from the verified CEF SDK
+  in place, and the video thumbnailer reads large packets and samples partial videos.
 - **UI.** Escape, X and the header close of a decision window defer it like Decide
   later; drop refusals reach the status line without an empty path suffix; a
   refused authorized retry states the helper requirement; the status line says when
   startup shows defaults because settings are still loading; the About window keeps
-  the Slint attribution visible but inert; the pane shows its watch status. Idle
-  timers stop when they have no work (about 80 to about 10 idle wakeups per second
-  in [indicative measurements](verification/2026-11-18-ui-idle-wakeups.md)), viewer
-  preferences are restored into viewers opened before the settings read, and unused
-  UI surface and its tests were removed.
+  the Slint attribution visible but inert; the pane shows its watch status. Names
+  and paths shown in rows, tabs, the path bar, dialogs, errors and status text, and
+  in viewer and comparator captions and status lines, display the explicit
+  bidirectional controls as `\u202E`-style escapes, while operations, copy actions
+  and name fields keep the raw names ([dialog ergonomics](developer/DIALOG_ERGONOMICS.md)).
+  Fixed UI timers no longer run while idle, except the drag bridge's 250 ms safety
+  net (about 80 to about 10 idle wakeups per second with the window active, in
+  [indicative measurements](verification/2026-11-18-ui-idle-wakeups.md)), and the
+  thumbnail service's notifier wakes the thumbnail pulse for its cache location and
+  notices instead of the pulse polling for them. Viewer preferences are restored
+  into viewers, and the comparison font into comparators, opened before the settings
+  read, and unused UI surface and its tests were removed.
 - **Viewers.** Text frames are painted into the buffers they share, PDF pixels move
   into their shared buffer on the image actor instead of the viewer worker, rasters
   snap to whole physical pixels, glyph painting is culled by ink reach, viewer
-  workers wake by events with a reserved wake slot, page text is shared as
-  `Arc<str>`, explicit bidirectional controls are
-  neutralized in the Basic and Source viewers and the comparator, and the
-  comparator paints its first frame in the preferred font and presents output on
-  worker wakes ([file comparison](developer/FILE_COMPARISON.md)).
-- **Tests.** Each crate's integration tests link into one test binary; many real
-  sleeps were replaced by virtual clocks, events and bounded waits; Windows
-  namespace tests run in both lookup modes; native DACL fixtures replaced PowerShell
-  ACL fixtures; the user-command probe compiles once per compiler and source; Copy/Move
-  planning tests name the qualified NTFS volume they need. Beyond the clipboard
+  workers wake by events with a reserved wake slot, and page text is shared as
+  `Arc<str>`. Explicit bidirectional controls in document text are shown as escapes
+  by the Basic viewer and the comparator and as U+FFFD by the Source and Markdown
+  viewers, and the comparator paints its first frame in the preferred font and
+  presents output on worker wakes ([file comparison](developer/FILE_COMPARISON.md)).
+- **Tests.** Most crates' integration tests link into one `integration` binary (see
+  the exceptions in [test execution](developer/TEST_EXECUTION.md)); many real sleeps
+  were replaced by virtual clocks, events and bounded waits; Windows namespace tests
+  run in both lookup modes; native DACL fixtures replaced PowerShell ACL fixtures;
+  the user-command probe compiles once per compiler and source; Copy/Move planning
+  tests name the qualified NTFS volume they need. Beyond the clipboard
   transfers named in the 17 November entry below, the root F5/F6 transfers of
   `tree_move` now also hold scalar watch hints through the transfer terminal
   ([test execution](developer/TEST_EXECUTION.md)).
@@ -152,21 +162,34 @@ worker baseline), the isolated X11 commands of [file drag and drop](verification
 and the [Linux file clipboard](verification/linux-file-clipboard.md) (updated in this
 review to `-noreset` and the CI command) and the
 [directory authorization record](verification/2026-11-11-directory-authorization.md).
+The explorer idle record predates `ba288e03`: since then the thumbnail pulse no
+longer runs while it waits for the cache outcome, and the two cache-location tests
+that the record names were replaced by
+`the_ready_notifier_publishes_the_cache_location_to_a_quiet_pulse` and
+`an_awaited_cache_location_no_longer_keeps_the_pulse_polling`.
 Full workspace runs at intermediate integration tips are orchestrator logs in its
 integration worktree's `_build/qa/`, not dated records: at `93d36411` workspace Clippy
 reported no warnings on Windows and on WSL Ubuntu 24.04, and the workspace tests
 gave 5,944 passed / 0 failed / 122 ignored in 88 test-result groups on Windows and
 5,802 / 0 / 118 in 85 groups on Linux; at `05acd6a9`, 5,957 / 0 / 122 and
 5,818 / 0 / 119, again with Clippy reporting no warnings. The batches merged after
-`05acd6a9` were checked by the targeted runs in their package reports. A full Windows
-and Linux validation of `2050f745` was running when this checkpoint was written; its
-result is not recorded here.
+`05acd6a9` were checked by the targeted runs in their package reports, and the tip
+`2050f745` again by full runs (logs `vpre-*`): workspace Clippy reported no warnings
+on Windows and on Linux, and the workspace tests gave 6,138 passed / 0 failed /
+127 ignored in 88 groups on Windows and 5,989 / 0 / 128 in 85 groups on Linux. The
+batch merged after it at `cd66e919` passed its package's Windows runs (core, UI,
+viewer UI, comparator and explorer tests); with the follow-up `d0f44c55`, Windows
+workspace Clippy reported no warnings and the tests of the compare engine,
+comparator, viewer UI and explorer gave 350 passed / 0 failed / 22 ignored (logs
+`b10e-final-*`). No full workspace run and no Linux run of `d0f44c55` is recorded.
 
 Not established by this checkpoint:
 
-- No GitHub-hosted CI run of this history (CI-02 in the backlog); the 17 November
-  hosted failures below remain unattributed.
-- No deployment or launcher registration of `2050f745` is recorded; the 18 November
+- No GitHub-hosted CI run of this history (CI-02 in the backlog). Of the 17 November
+  hosted failures below, the cause of the Linux tree-watch gate 43 failure remains
+  unattributed; the clipboard gate 40 failure was traced to fixture ordering and
+  fixed in tests only, which no hosted run has confirmed yet.
+- No deployment or launcher registration of `d0f44c55` is recorded; the 18 November
   measurements used private probe installations of their own builds. The c97 EXE
   (`2d906dea…`) and the other runtimes named below predate this review's source, so
   the 17 November statement that Windows production is unchanged from the c97 EXE
@@ -175,27 +198,33 @@ Not established by this checkpoint:
   `midnight-elevated-listing.exe` that their own older `me.exe` accepts from a folder
   the user can change; the [README](../README.md#windows-x64) says to redeploy and
   then delete them.
-- Not run on Linux: the event-driven HTML host session and the explorer idle
-  measurements (Windows only), the comparator's first-frame font check (COMPARE-01),
-  builds and tests of the image, AVIF and video plugins (formatting only), and the
-  engine stress runs. Not run at all: PowerShell 7 script paths, a real CEF/MSVC
-  HTML build, the interactive Windows desktop tests, physical IME and native Wayland
+- Not run on Linux: the real-Chromium measurements of the event-driven HTML host
+  session and the explorer idle measurements (Windows only), the comparator's
+  first-frame font check (COMPARE-01), the tests of the last batch (the bidi escapes
+  of shown names, the thumbnail notifier, the comparator font restore), builds and
+  tests of the image, AVIF and video plugins (formatting only), and the engine
+  stress runs. Not run at all: PowerShell 7 script paths, any Linux CEF build, a real
+  CEF/MSVC build with the final HTML build and packaging scripts (`71c7804f`,
+  `1ddcccd4`; the Windows HTML measurements used a package built with the scripts of
+  `93d36411`), the interactive Windows desktop tests, physical IME and native Wayland
   input, real FAT32/exFAT media, live mounts without POSIX modes and accepted
   UAC/polkit prompts (PLAT-02).
 - `same_navigation_success_then_exact_commit_quiets_watch` once failed under load;
   no cause was found, and it now prints the unexpected event, fence and hint log on
-  failure.
+  failure (TEST-02 reopens it on any recurrence).
 
 Open work is in the backlog: CI-01 and CI-02; PLAT-02 and PLAT-03; VIEW-04 and
-UI-PERF-01 (idle wakeups); ARCH-01 (small-content budget); ARCH-05, ARCH-06 and
-LIFE-02 (captures retained after a taint or quarantine); ARCH-07, REL-01 and
-SDK-01 to SDK-03 (next API/SDK releases); META-04, WATCH-01, SPOOL-01, LINK-01,
-IO-02, TREE-PERF-01, TREE-02, INPUT-01, PROC-01, PLUGIN-01, COMPARE-01, BUILD-01,
-TRASH-01, TEST-01, VIEW-03 and OPTIONS-02. The role table under
+UI-PERF-01 (idle wakeups); PERF-04 (unmeasured hot paths and the corpus test time);
+ARCH-01 (small-content budget); ARCH-05, ARCH-06 and LIFE-02 (captures retained
+after a taint or quarantine); ARCH-07, REL-01 and SDK-01 to SDK-04 (next API/SDK
+releases); META-04, WATCH-01, SPOOL-01, LINK-01, IO-02, TREE-PERF-01, TREE-02,
+INPUT-01, PROC-01, PLUGIN-01, COMPARE-01, BUILD-01, TRASH-01, TEST-01, TEST-02 and
+OPTIONS-02. The role table under
 [current role boundaries](#current-role-boundaries-and-exclusive-ownership)
 describes assignments made before this review; the review assigned no further role
 work beyond these rows. The [corrections table](#corrections-to-stale-staged-references)
-now names the 329 retirement slots of the current lifetime contract.
+now names the 329 retirement slots of the current lifetime contract and records that
+the Feature status Dialogs row and the dialog ergonomics contract are corrected.
 
 ### Clipboard and tree fixture ordering — 17 November 2026
 
@@ -944,7 +973,7 @@ their evidence or authorize edits to another role's files.
 | [5 November stages](superpowers/plans/2026-11-05-follow-up-stages.md), stage 3 and opening sequence | Whole-batch-before-delete and unconditional hash/copy wording is superseded by per-file Move and the accepted full/quick/native-rename policy. Historical stage order does not suspend the current parallel seven-role assignments. |
 | [Implementation backlog](IMPLEMENTATION_BACKLOG.md), tree introduction/consumer text | Native Delete/Rename/metadata, clipboard, focused F4, checksums, Properties/context menus, Make File List and native comparisons have captured paths. In particular the later sentence calling directory comparison guarded is stale; root-level native comparison is implemented. Generic provider writes, archive watches/attachment/nesting and complete native qualification remain open. |
 | [11 November gap audit](verification/2026-11-11-open-requirements-audit.md), tree/dialog/media/network rows | This is the named older baseline. Later reports/source add captured consumers, protocol-3 cooperative archive staging cancellation and discovery Hot Paths. Blanket native-modal migration is superseded; interactive Linux auth remains a gap. Preserve the audit as history. |
-| [Feature status](FEATURE_STATUS.md), Dialogs row, and [dialog ergonomics](developer/DIALOG_ERGONOMICS.md), native-modal examples | These descriptions predate the embedded modal migration in `2e0e554`. Current operation/copy/filter/Hot Paths/file-list/notice forms use the embedded presentation and focus/input gates above; independent modeless tools keep native hosts. Those unowned documents need a separately assigned correction; the positive-input gate now passes the retained-focus assertion and selected boundaries; private startup and shared engine retry pass their recorded scopes; the initial shared hashing anomaly is preserved/unattributed and broader native qualification remains open. |
+| [Feature status](FEATURE_STATUS.md), Dialogs row, and [dialog ergonomics](developer/DIALOG_ERGONOMICS.md), native-modal examples | Corrected; checked on 18 November: both now describe the embedded modal migration of `2e0e554`. Operation/copy/filter/Hot Paths/file-list/notice forms are modal popups embedded in the main window with the focus/input gates above, independent modeless tools keep native hosts, and no native host is owner-modal. The positive-input gate passes the retained-focus assertion and selected boundaries; private startup and shared engine retry pass their recorded scopes; the initial shared hashing anomaly is preserved/unattributed and broader native qualification remains open. |
 | [Initial retirement plan](superpowers/plans/2026-11-12-runtime-independent-retirement.md) and LIFE-01 backlog ledger | Later service/checksum/command/mailbox/report/configuration work exists. The backlog states the current 329 slots and keeps the older 308 figure as history; the [current lifetime contract](developer/ENGINE_LIFETIME.md) states 329 payload slots and eight reusable waiter tokens, which an engine test checks against the code. Architect/Backend must reconcile the current ownership ledger before closure, rather than declaring all retirement work missing or complete from checkboxes. |
 | [Tree Move contract](developer/TREE_PANEL.md#move-and-transfer-reconciliation) | Corrected in this scope, including Copy/Paste wording: copied files use the frozen Full SHA-256 or explicit quick size plus first/middle/last 64 KiB policy; same-volume native rename reads/hashes no contents. Source identity, conflict consent, per-file removal and tree reconciliation guarantees remain intact. |
 | [Transfer service](developer/TRANSFERS.md), ordinary Move/metadata descriptions | Corrected in this batch after source inspection: native same-volume rename precedes content proof; copied-file removal follows the immutable full/quick mode, with metadata/identity guards retained. Full SHA-256 remains the default, not an unconditional requirement for every Move. |

@@ -17,6 +17,11 @@ copy, verification, and validation bytes. Eight exact cancellation gates passed
 across the two verification modes, and all retained-stage directories were empty
 after explicit cleanup and native handle release. Evidence is in
 `_build/qa/operations-find/native-green.log` and the individual retained fixtures.
+That run predates the transfer namespace registry. During the deep code review of
+17–18 November the corpus test
+`real_directory_corpus_matches_independent_sha256_for_both_policies` alone took
+longer; no dated profile attributes the difference yet (PERF-04 in the
+[backlog](../IMPLEMENTATION_BACKLOG.md)).
 
 The explicit recycle test first failed inside the restricted execution sandbox
 with `0x80270021`, the pinned Windows SDK's `COPYENGINE_E_ACCESS_DENIED_SRC`.
