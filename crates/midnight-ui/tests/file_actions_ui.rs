@@ -485,6 +485,50 @@ fn fallback_menu_escape_and_outside_click_release_the_captured_menu() {
 }
 
 #[test]
+fn busy_fallback_menu_action_releases_the_captured_menu() {
+    let mut h = Harness::new();
+    let point = h.row(1);
+    h.right(point, true);
+    h.right(point, false);
+    h.apply(Event::ShellMenuFinished {
+        request: h.menu_request(),
+        result: Ok(ShellMenuOutcome::Unavailable),
+    });
+    assert!(ui::has_popup(&h.ui.window));
+    h.commands.borrow_mut().clear();
+    // Hold the fixture's only owned-command scope, as a full reclamation batch
+    // does, so the chosen action cannot run.
+    let held = (h.begin)().expect("no owned action is running");
+    ui::click_popup(&h.ui.window, "Copy", AccessibleRole::Button);
+    drop(held);
+    h.draw();
+    assert!(
+        h.commands.borrow().is_empty(),
+        "the refused action must not run"
+    );
+    assert_eq!(h.ui.window.get_message_title().as_str(), "File action busy");
+    assert!(
+        h.ui.window.get_file_menu_token().is_empty(),
+        "the refused action must still release the captured menu"
+    );
+    ui::key(&h.ui.window, Key::Escape);
+    h.draw();
+    assert!(
+        !ui::has_popup(&h.ui.window),
+        "Escape closes the busy notice"
+    );
+    h.right(point, true);
+    h.right(point, false);
+    assert!(
+        matches!(
+            h.commands.borrow().last(),
+            Some(Command::ShowShellMenu { .. })
+        ),
+        "a later right-click must open a new menu"
+    );
+}
+
+#[test]
 fn fallback_menu_dismissal_blocks_batched_keyboard_and_accessibility_actions() {
     let mut h = Harness::new();
     for escape in [true, false] {
