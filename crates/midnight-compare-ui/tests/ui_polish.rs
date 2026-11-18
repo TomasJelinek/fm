@@ -83,10 +83,18 @@ fn draw(
 }
 
 fn fixture_directory(name: &str) -> std::path::PathBuf {
+    // Native capture accepts only literal absolute paths without `.` or `..` steps,
+    // so the default root is the checkout's own _build, named without dot steps.
     let root = std::env::var_os("ME_COMPARE_POLISH_SCREENSHOTS")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| {
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../_build/qa/native-dialogs")
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .ancestors()
+                .nth(2)
+                .expect("the crate lies two levels below the checkout")
+                .join("_build")
+                .join("qa")
+                .join("native-dialogs")
         });
     let directory = root.join(format!("{name}-{}", std::process::id()));
     std::fs::create_dir_all(&directory).unwrap();
