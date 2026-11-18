@@ -12,13 +12,18 @@ fn make_shared(path: &Path) {
     }
     #[cfg(windows)]
     {
-        // S-1-1-0 is Everyone; icacls applies one explicit Modify ACE directly.
-        let status = std::process::Command::new("icacls")
-            .arg(path)
-            .args(["/grant", "*S-1-1-0:(M)", "/q"])
-            .stdout(std::process::Stdio::null())
-            .status()
-            .unwrap();
+        // S-1-1-0 is Everyone; icacls applies one explicit Modify ACE directly. Mounts
+        // in this binary launch workers, so the probe spawns under their creation lock
+        // and is waited for only after that lock is released.
+        let status = midnight_worker_platform::spawn_command(
+            std::process::Command::new("icacls")
+                .arg(path)
+                .args(["/grant", "*S-1-1-0:(M)", "/q"])
+                .stdout(std::process::Stdio::null()),
+        )
+        .unwrap()
+        .wait()
+        .unwrap();
         assert!(status.success());
     }
 }
