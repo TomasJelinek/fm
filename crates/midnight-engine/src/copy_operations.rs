@@ -639,6 +639,19 @@ async fn run_input(
         namespace,
         &throughput,
     );
+    with_progress_cadence(pending, &status, &cancel, &throughput, outbox).await
+}
+
+/// Await the job's terminal state, publishing its live status every `CADENCE` until
+/// then. Checked teardown stores that terminal state in `status` before `pending`
+/// returns it; only delivery publishes it (`publish_intermediate`).
+async fn with_progress_cadence(
+    pending: impl std::future::Future<Output = CopyProgress>,
+    status: &Status,
+    cancel: &Cancellation,
+    throughput: &Mutex<Tracker>,
+    outbox: &CopyOutbox,
+) -> CopyProgress {
     tokio::pin!(pending);
     let mut timer = tokio::time::interval(CADENCE);
     timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -652,9 +665,9 @@ async fn run_input(
                 return progress;
             },
             _ = timer.tick() => {
-                refresh_pause(&status, &cancel);
-                let progress = sample_throughput(&status, &throughput);
-                publish_progress_tick(outbox, &status, progress);
+                refresh_pause(status, cancel);
+                let progress = sample_throughput(status, throughput);
+                publish_progress_tick(outbox, status, progress);
             },
         }
     }
@@ -663,9 +676,23 @@ async fn run_input(
 fn publish_progress_tick(outbox: &CopyOutbox, status: &Status, sampled: Option<CopyProgress>) {
     // A worker can already have sampled this interval. The timer must still
     // attempt to publish the current bytes, elapsed time and activity snapshot.
-    let progress = Arc::new(sampled.unwrap_or_else(|| snapshot(status)));
-    let event = Event::Copy(CopyEvent::Progress(progress));
-    if outbox.sender.try_send(event).is_ok() {
+    publish_intermediate(outbox, sampled.unwrap_or_else(|| snapshot(status)));
+}
+
+/// Publish nonterminal progress if the output has room. A job's terminal state is
+/// published once, by delivery after the job returns it (`CopyOutbox::deliver`).
+/// Checked teardown stores it in the shared status earlier (`Completion::finish`), so
+/// late controls see a finished job; republishing that status here would deliver the
+/// terminal state twice.
+fn publish_intermediate(outbox: &CopyOutbox, progress: CopyProgress) {
+    if progress.state.is_terminal() {
+        return;
+    }
+    if outbox
+        .sender
+        .try_send(Event::Copy(CopyEvent::Progress(Arc::new(progress))))
+        .is_ok()
+    {
         (outbox.wakeup)();
     }
 }
@@ -1161,13 +1188,7 @@ fn set_state(status: &Status, state: CopyOperationState) {
     status.lock().unwrap_or_else(|e| e.into_inner()).state = state;
 }
 async fn publish(outbox: &CopyOutbox, progress: CopyProgress) {
-    if outbox
-        .sender
-        .try_send(Event::Copy(CopyEvent::Progress(Arc::new(progress))))
-        .is_ok()
-    {
-        (outbox.wakeup)();
-    }
+    publish_intermediate(outbox, progress);
 }
 #[cfg(test)]
 async fn publish_rejected(outbox: &Outbox, mut progress: CopyProgress) {

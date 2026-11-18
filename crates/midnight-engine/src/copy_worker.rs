@@ -1647,6 +1647,15 @@ pub(super) struct Completion {
     link_diagnostics: Arc<link_job::Diagnostics>,
 }
 impl Completion {
+    /// The completion of a shared status without a Job, for fixtures.
+    #[cfg(test)]
+    pub(super) fn detached(status: Status, cancel: Cancellation) -> Self {
+        Self {
+            status,
+            cancel,
+            link_diagnostics: Arc::default(),
+        }
+    }
     pub(super) fn retain_errors(&self, errors: Vec<FsError>) {
         let mut status = self
             .status
@@ -1659,6 +1668,9 @@ impl Completion {
             }
         }
     }
+    /// Store the terminal state in the shared status, so pause and cancel requests
+    /// that arrive later see a finished job, and return it. Only delivery publishes
+    /// it; progress publication skips terminal states (`publish_intermediate`).
     pub(super) fn finish(self) -> CopyProgress {
         let mut status = self
             .status
