@@ -908,7 +908,9 @@ fn present_outputs(
                 window.set_vertical_extent(frame.vertical_extent as f32);
                 window.set_horizontal_position(frame.horizontal_position as f32);
                 window.set_horizontal_extent(frame.horizontal_extent as f32);
-                window.set_caption(frame.caption.as_str().into());
+                // A file name cannot reorder the window title: explicit bidirectional
+                // controls show as escapes, as in the Basic viewer's text.
+                window.set_caption(midnight_core::visible_name(&frame.caption).as_ref().into());
                 window.set_status(frame.status.as_str().into());
                 if image_mode {
                     window.set_position_context(

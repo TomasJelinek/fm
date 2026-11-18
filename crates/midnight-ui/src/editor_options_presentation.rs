@@ -36,8 +36,8 @@ pub(crate) fn refresh(window: &MainWindow, p: &Presenter) {
     );
     view.set_dirty(p.editor.dirty);
     view.set_busy(p.settings_picker.busy());
-    view.set_error(p.editor.error.as_str().into());
-    view.set_default_label(p.editor.default_label.as_str().into());
+    view.set_error(crate::shown_text(&p.editor.error));
+    view.set_default_label(crate::shown_text(&p.editor.default_label));
     if view.get_revision() == revision {
         return;
     }
@@ -51,19 +51,23 @@ pub(crate) fn refresh(window: &MainWindow, p: &Presenter) {
         .enumerate()
         .map(|(index, rule)| {
             let program = program_label(rule.use_default, &rule.executable);
-            format!(
+            midnight_core::visible_name(&format!(
                 "{}. {}{} → {}",
                 index + 1,
                 if rule.enabled { "" } else { "[Off] " },
                 rule.expression,
                 program
-            )
+            ))
+            .into_owned()
         })
         .collect::<Vec<_>>();
-    labels.push(format!(
-        "Fallback → {}",
-        program_label(draft.use_default, &draft.executable)
-    ));
+    labels.push(
+        midnight_core::visible_name(&format!(
+            "Fallback → {}",
+            program_label(draft.use_default, &draft.executable)
+        ))
+        .into_owned(),
+    );
     view.set_labels(crate::argument_rows::sync(view.get_labels(), &labels));
     view.set_draft(EditorOptionsDraft {
         executable: form.executable.into(),

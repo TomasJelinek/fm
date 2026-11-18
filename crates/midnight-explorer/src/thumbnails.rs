@@ -203,7 +203,11 @@ impl Bridge {
         }
         let mut busy = false;
         if let Some(path) = self.service.take_cache_location() {
-            window.set_thumbnail_cache_location(path.to_string_lossy().as_ref().into());
+            window.set_thumbnail_cache_location(
+                midnight_core::visible_name(&path.to_string_lossy())
+                    .as_ref()
+                    .into(),
+            );
             self.located = true;
             busy = true;
         }

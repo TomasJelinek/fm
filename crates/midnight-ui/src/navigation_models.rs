@@ -73,9 +73,9 @@ pub(super) fn choices(presenter: &Presenter) -> Vec<NavigationChoiceRow> {
             };
             NavigationChoiceRow {
                 identity: presenter.navigation_choice_token(index).into(),
-                label: label.into(),
-                compact_label: compact.into(),
-                tooltip: tooltip.into(),
+                label: shown_text(&label),
+                compact_label: shown_text(&compact),
+                tooltip: shown_text(&tooltip),
                 icon: presenter.desktop.image(&IconKey::for_location(location)),
                 kind: match location.kind {
                     LocationKind::Volume => LocationRole::Drive,

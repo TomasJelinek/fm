@@ -29,6 +29,22 @@ pub(super) fn frame(revision: u64, sequence: u64, position: f64) -> ViewerOutput
 }
 
 #[test]
+fn the_window_caption_shows_bidi_controls_as_escapes() {
+    let (_runtime, manager, open, service) = image_presentation_tests::open();
+    let mut output = frame(10, 0, 0.2);
+    if let ViewerOutput::Frame(frame) = &mut output {
+        // Shown raw, the override control makes the name read "photoexe.jpg".
+        frame.caption = "C:\\in\\photo\u{202e}gpj.exe — Midnight Explorer".into();
+    }
+    present_outputs(&open, &service, &|_| {}, vec![output]);
+    assert_eq!(
+        open.window.get_caption(),
+        "C:\\in\\photo\\u202Egpj.exe — Midnight Explorer"
+    );
+    manager.close_all();
+}
+
+#[test]
 fn text_scrollbar_holds_latest_thumb_and_keeps_old_content_until_exact_ack_after_release() {
     let (_runtime, manager, open, service) = image_presentation_tests::open();
     present_outputs(&open, &service, &|_| {}, vec![frame(10, 0, 0.2)]);

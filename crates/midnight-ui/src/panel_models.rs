@@ -24,19 +24,16 @@ pub(super) fn bookmark_choices(presenter: &Presenter) -> Vec<NavigationChoiceRow
                 presenter.preferences.revision.0, bookmark.id.0
             )
             .into(),
-            label: bookmark
-                .slot
-                .map_or_else(
-                    || bookmark.display_text(),
-                    |slot| format!("{}  {}", slot % 10, bookmark.display_text()),
-                )
-                .into(),
+            label: shown_text(&bookmark.slot.map_or_else(
+                || bookmark.display_text(),
+                |slot| format!("{}  {}", slot % 10, bookmark.display_text()),
+            )),
             compact_label: bookmark
                 .slot
                 .map(|slot| (slot % 10).to_string())
                 .unwrap_or_default()
                 .into(),
-            tooltip: bookmark_tooltip(presenter, bookmark).into(),
+            tooltip: shown_text(&bookmark_tooltip(presenter, bookmark)),
             icon: presenter
                 .desktop
                 .image(&IconKey::action(ActionIcon::Bookmarks)),
@@ -101,8 +98,8 @@ pub(super) fn refresh(window: &MainWindow, presenter: &Presenter) {
             .into_iter()
             .map(|part| PathPartRow {
                 identity: part.identity.into(),
-                label: part.label.into(),
-                prefix: part.prefix.into(),
+                label: shown_text(&part.label),
+                prefix: shown_text(&part.prefix),
             })
             .collect();
         refresh_details(window, details_rows(presenter, pane), pane);
@@ -130,7 +127,8 @@ pub(super) fn bookmark_id(presenter: &Presenter, token: &str) -> Option<Bookmark
         .then_some(BookmarkId(id.parse::<u64>().ok()?))
 }
 
-/// Capture the bounded status projection before Slint can notify model observers.
+/// Capture the bounded status projection before Slint can notify model observers. A copied
+/// field is read from the presenter again, so it keeps the raw name.
 pub(crate) fn details_rows(presenter: &Presenter, pane: PaneId) -> Vec<DetailRow> {
     presenter
         .panel_details(pane)
@@ -138,7 +136,7 @@ pub(crate) fn details_rows(presenter: &Presenter, pane: PaneId) -> Vec<DetailRow
         .map(|field| DetailRow {
             identity: field.identity.into(),
             label: field.label.into(),
-            value: field.value.into(),
+            value: shown_text(&field.value),
             explanation: field.explanation.into(),
         })
         .collect()

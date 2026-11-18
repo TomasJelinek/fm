@@ -79,16 +79,8 @@ pub(super) fn refresh(window: &MainWindow, presenter: &Presenter) {
         busy: state.busy,
         error: state.error.as_str().into(),
         summary: state.summary.as_str().into(),
-        left_path: presenter.panes[0]
-            .display_path()
-            .to_string_lossy()
-            .as_ref()
-            .into(),
-        right_path: presenter.panes[1]
-            .display_path()
-            .to_string_lossy()
-            .as_ref()
-            .into(),
+        left_path: shown_text(&presenter.panes[0].display_path().to_string_lossy()),
+        right_path: shown_text(&presenter.panes[1].display_path().to_string_lossy()),
         by_size: state.options.by_size,
         by_modified: state.options.by_modified,
         case_sensitive: state.options.case_sensitive,

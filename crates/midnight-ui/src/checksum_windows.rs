@@ -36,20 +36,13 @@ impl Model for Rows {
         let row = s.rows().get(index)?;
         Some(ChecksumDisplayRow {
             token: format!("{}:{}", s.generation.0, row.id.0).into(),
-            name: row
-                .path
-                .file_name()
-                .unwrap_or(row.path.as_os_str())
-                .to_string_lossy()
-                .as_ref()
-                .into(),
-            path: row
-                .path
-                .parent()
-                .unwrap_or(&row.path)
-                .to_string_lossy()
-                .as_ref()
-                .into(),
+            name: crate::shown_text(
+                &row.path
+                    .file_name()
+                    .unwrap_or(row.path.as_os_str())
+                    .to_string_lossy(),
+            ),
+            path: crate::shown_text(&row.path.parent().unwrap_or(&row.path).to_string_lossy()),
             status: row_status(row).into(),
             bytes: format!("{} B", p.number_locale.format_u64(row.bytes_read)).into(),
             digests: if !row.digests.is_empty() {
@@ -287,7 +280,8 @@ fn refresh(
         w.set_stopping(s.stopping);
         w.set_saving(s.save.is_some());
         w.set_save_stopping(s.save.as_ref().is_some_and(|save| save.stopping));
-        w.set_error(s.error.clone().into());
+        // Copy details formats the session again, with raw paths.
+        w.set_error(crate::shown_text(&s.error));
         w.set_attention(
             !s.error.is_empty()
                 || s.progress.errors > 0
@@ -298,7 +292,7 @@ fn refresh(
                     .is_some_and(|r| r.summary.completion != ChecksumCompletion::Completed),
         );
         w.set_progress(progress(s, &p.number_locale).into());
-        w.set_details(details(s, &p.number_locale).into());
+        w.set_details(crate::shown_text(&details(s, &p.number_locale)));
         if record.output_algorithms != Some(s.algorithms) {
             record.output_algorithms = Some(s.algorithms);
             publish_outputs(w, s.algorithms);

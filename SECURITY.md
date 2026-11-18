@@ -304,7 +304,12 @@ inspected as possibly holding the item; neither is described as unneeded.
 - Raw `PathBuf`/`OsString` identities are kept separately from visible text.
   Valid Unicode is not converted through an ANSI code page or normalized into a
   different filename. Names that are not valid Unicode on their host remain
-  addressable by their original raw paths.
+  addressable by their original raw paths. Shown names and paths (rows, tabs, the
+  path bar, window captions, dialogs and status text) display the explicit
+  bidirectional controls U+202A-U+202E and U+2066-U+2069 as `\u202E`-style escapes,
+  so a name cannot reorder its shown extension, while operations, search,
+  comparisons, copied paths and the name fields of rename and copy dialogs keep the
+  raw name.
 - Volume labels and tooltip content are plain Unicode text, never Markdown,
   links, shell commands or navigation identities. Label/capacity lookup runs on
   separately bounded backend workers; hover reads cached data. Slow/offline

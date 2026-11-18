@@ -223,9 +223,9 @@ pub(super) fn show_conflict(window: &MainWindow, conflict: &MetadataConflict, fo
     if !force && window.get_metadata_conflict_token() == token {
         return;
     }
-    window.set_metadata_conflict_body(format!(
+    window.set_metadata_conflict_body(shown_text(&format!(
         "Source: {}\nRequested name: {}\n\nThe destination already exists. No existing entry will be overwritten. Skipping leaves this item's remaining changes unapplied; completed changes elsewhere are retained.",
-        path_text(&conflict.source), path_text(&conflict.destination)).into());
+        path_text(&conflict.source), path_text(&conflict.destination))));
     window.set_metadata_conflict_token(token.into());
     window.invoke_show_metadata_conflict();
 }

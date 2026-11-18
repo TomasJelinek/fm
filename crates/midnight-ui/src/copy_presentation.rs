@@ -36,7 +36,11 @@ fn refresh_draft(window: &MainWindow, presenter: &Presenter) {
         }
     };
     window.set_copy_draft_policy(policy.into());
-    window.set_copy_draft_body(format!("{}\n\nFrom\n{}", draft.summary, draft.source).into());
+    window.set_copy_draft_body(shown_text(&format!(
+        "{}\n\nFrom\n{}",
+        draft.summary, draft.source
+    )));
+    // The destination field edits the raw path that the dialog confirms.
     window.set_copy_draft_destination(destination.as_ref().into());
     window.set_copy_draft_selection_end(destination.len().min(i32::MAX as usize) as i32);
     window.set_copy_draft_token(draft.token.as_str().into());
@@ -117,9 +121,16 @@ fn refresh_conflict(
     window.set_copy_is_failure(false);
     window.set_copy_can_replace(conflict.can_replace);
     window.set_copy_can_merge(conflict.can_merge);
-    window.set_copy_source_details(describe(&conflict.source, &presenter.number_locale).into());
-    window.set_copy_target_details(describe(&conflict.target, &presenter.number_locale).into());
+    window.set_copy_source_details(shown_text(&describe(
+        &conflict.source,
+        &presenter.number_locale,
+    )));
+    window.set_copy_target_details(shown_text(&describe(
+        &conflict.target,
+        &presenter.number_locale,
+    )));
     window.set_copy_body(policy.into());
+    // The alternate name field edits a raw name.
     window.set_copy_name(
         conflict
             .destination
@@ -145,7 +156,7 @@ fn refresh_failure(window: &MainWindow, failure: &CopyFailure) {
     window.set_copy_can_merge(false);
     window.set_copy_source_details("".into());
     window.set_copy_target_details("".into());
-    window.set_copy_body(failure_details(failure).into());
+    window.set_copy_body(shown_text(&failure_details(failure)));
     window.set_copy_name("".into());
     window.set_copy_token(token);
     window.invoke_show_copy_conflict();

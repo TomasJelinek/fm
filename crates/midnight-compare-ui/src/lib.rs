@@ -155,8 +155,7 @@ impl OpenWindow {
                     Some(ImageMode::OnionSkin) => 2,
                     None => -1,
                 });
-                window.set_left_name(names[0].as_str().into());
-                window.set_right_name(names[1].as_str().into());
+                show_names(window, names);
                 window.set_image_mode(frame.image);
                 window.set_position(frame.position as f32);
                 window.set_status(frame.status.as_str().into());
@@ -535,6 +534,48 @@ fn key(open: &OpenWindow, action: &str) -> bool {
 }
 fn color(value: [u8; 4]) -> slint::Color {
     slint::Color::from_argb_u8(value[3], value[0], value[1], value[2])
+}
+
+/// The compared files' paths as the window shows them: explicit bidirectional controls
+/// become visible escapes, so a name cannot reorder its displayed extension. The worker
+/// keeps comparing the captured files.
+fn show_names(window: &ComparatorWindow, names: &[String; 2]) {
+    window.set_left_name(midnight_core::visible_name(&names[0]).as_ref().into());
+    window.set_right_name(midnight_core::visible_name(&names[1]).as_ref().into());
+}
+
+/// Window presentation on a platform without an event-loop proxy: the wake test owns the
+/// process-wide one, so no comparator here may wake an event loop.
+#[cfg(test)]
+mod window_tests {
+    use super::*;
+    use slint::platform::{
+        Platform, PlatformError, WindowAdapter,
+        software_renderer::{MinimalSoftwareWindow, RepaintBufferType},
+    };
+
+    struct TestPlatform;
+    impl Platform for TestPlatform {
+        fn create_window_adapter(&self) -> Result<Rc<dyn WindowAdapter>, PlatformError> {
+            Ok(MinimalSoftwareWindow::new(RepaintBufferType::ReusedBuffer))
+        }
+    }
+
+    #[test]
+    fn compared_paths_show_bidi_controls_as_escapes() {
+        slint::platform::set_platform(Box::new(TestPlatform)).unwrap();
+        let window = ComparatorWindow::new().unwrap();
+        // Shown raw, the override control makes the name read "photoexe.jpg".
+        show_names(
+            &window,
+            &[
+                "C:\\in\\photo\u{202e}gpj.exe".into(),
+                "C:\\in\\plain.txt".into(),
+            ],
+        );
+        assert_eq!(window.get_left_name(), "C:\\in\\photo\\u202Egpj.exe");
+        assert_eq!(window.get_right_name(), "C:\\in\\plain.txt");
+    }
 }
 
 #[cfg(test)]

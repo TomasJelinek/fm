@@ -1515,6 +1515,14 @@ impl Presenter {
         send: &dyn Fn(Command) -> bool,
     ) -> bool {
         let p = &self.panes[pane.index()];
+        // The editor starts from the shown location, whose explicit bidirectional controls
+        // are escaped (`shown_text`): that unchanged text names the location itself.
+        let location = p.display_location_text();
+        let text = if text != location && visible_name(&location) == text {
+            location.as_str()
+        } else {
+            text
+        };
         if p.pending_network_text() == Some(text)
             && let Some(action) = p.network_pending.clone()
         {

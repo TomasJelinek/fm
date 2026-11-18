@@ -8,13 +8,13 @@ pub(crate) fn refresh(window: &MainWindow, presenter: &Presenter) {
     let view = window.global::<ViewerPluginsView>();
     let state = &presenter.viewer_plugins;
     view.set_pending(state.pending || state.filesystems_pending || state.thumbnailers_pending);
-    view.set_thumbnailer_error(state.thumbnailer_error.as_str().into());
+    view.set_thumbnailer_error(crate::shown_text(&state.thumbnailer_error));
     view.set_thumbnailer_selected(
         presenter
             .thumbnailer_plugin_selected()
             .map_or(-1, |index| index as i32),
     );
-    view.set_filesystem_error(state.filesystem_error.as_str().into());
+    view.set_filesystem_error(crate::shown_text(&state.filesystem_error));
     view.set_filesystem_selected(
         presenter
             .filesystem_plugin_selected()
@@ -119,7 +119,7 @@ pub(crate) fn refresh(window: &MainWindow, presenter: &Presenter) {
                 kind: "".into(),
                 version: plugin.version.as_str().into(),
                 status: status.into(),
-                location: plugin.location.to_string_lossy().into_owned().into(),
+                location: crate::shown_text(&plugin.location.to_string_lossy()),
                 enabled,
                 configurable: !plugin.id.is_empty(),
                 fallback: plugin.fallback,
@@ -156,7 +156,7 @@ pub(crate) fn refresh(window: &MainWindow, presenter: &Presenter) {
         })
         .collect::<Vec<_>>()
         .join("\n\n");
-    view.set_filesystem_diagnostics(diagnostics.into());
+    view.set_filesystem_diagnostics(crate::shown_text(&diagnostics));
     let thumbnailers = state
         .thumbnailers
         .iter()
@@ -172,7 +172,7 @@ pub(crate) fn refresh(window: &MainWindow, presenter: &Presenter) {
             .into(),
             description: format!("Extensions: {}", plugin.extensions.join("; ")).into(),
             status: plugin.status.as_str().into(),
-            location: plugin.location.to_string_lossy().into_owned().into(),
+            location: crate::shown_text(&plugin.location.to_string_lossy()),
             ..Default::default()
         })
         .collect::<Vec<_>>();
@@ -214,9 +214,8 @@ fn filesystem_row(plugin: &FilesystemPluginInfo) -> ViewerPluginRow {
         location: plugin
             .location
             .as_ref()
-            .map(|path| path.to_string_lossy().into_owned())
-            .unwrap_or_default()
-            .into(),
+            .map(|path| crate::shown_text(&path.to_string_lossy()))
+            .unwrap_or_default(),
         ..Default::default()
     }
 }

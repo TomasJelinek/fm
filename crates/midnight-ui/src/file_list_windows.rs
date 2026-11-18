@@ -171,9 +171,10 @@ fn refresh(
 
 fn sync(window: &FileListPresentation<'_>, s: &FileListSession, locale: &NumberLocale) {
     window.set_busy(s.busy());
-    window.set_preview_text(s.preview.clone().into());
-    window.set_summary(s.summary.clone().into());
-    window.set_error_text(s.error.clone().into());
+    // Only the shown preview escapes bidirectional controls; the written list keeps raw names.
+    window.set_preview_text(crate::shown_text(&s.preview));
+    window.set_summary(crate::shown_text(&s.summary));
+    window.set_error_text(crate::shown_text(&s.error));
     window.set_conflict_pending(s.can_confirm());
     if let Some(entry) = &s.conflict {
         let item = &entry.item;
@@ -185,13 +186,10 @@ fn sync(window: &FileListPresentation<'_>, s: &FileListSession, locale: &NumberL
             || "Unavailable".into(),
             |v| format!("{} {}", v.date, v.time),
         );
-        window.set_conflict_text(
-            format!(
-                "{}\n\nSize: {bytes}\nModified: {modified}",
-                item.path.display()
-            )
-            .into(),
-        );
+        window.set_conflict_text(crate::shown_text(&format!(
+            "{}\n\nSize: {bytes}\nModified: {modified}",
+            item.path.display()
+        )));
         window.set_append_output(s.append);
     }
 }
