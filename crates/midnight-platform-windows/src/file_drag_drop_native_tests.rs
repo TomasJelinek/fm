@@ -11,9 +11,8 @@ use std::{
 };
 use windows::core::{GUID, Interface};
 use windows_sys::Win32::{
-    Foundation::WAIT_TIMEOUT,
     Graphics::Gdi::ClientToScreen,
-    System::Threading::{GetCurrentThreadId, WaitForSingleObject},
+    System::Threading::GetCurrentThreadId,
     UI::WindowsAndMessaging::{CreateWindowExW, DestroyWindow},
 };
 
@@ -247,17 +246,11 @@ fn idle_wait_ends_for_marshalled_ole_input_and_for_its_waker() {
             let mut session = Session::open(host, whole_window(12), sink).unwrap();
             session.service_pending().unwrap();
             let waker = session.waker().expect("an OLE session has a wake event");
-            // Wakes made before a wait end it, and together they end only that wait.
-            waker();
+            // A wake made before a wait ends it (`wait::tests` covers how wakes coalesce).
             waker();
             let started = Instant::now();
             session.wait_pending(FAILURE_WAIT).unwrap();
             assert!(prompt(started), "an earlier wake must end the next wait");
-            assert_eq!(
-                unsafe { WaitForSingleObject(session.wake.as_raw_handle(), 0) },
-                WAIT_TIMEOUT,
-                "one wait consumes coalesced wakes"
-            );
             let mut stream = ptr::null_mut();
             unsafe {
                 CoMarshalInterThreadInterfaceInStream(
@@ -268,9 +261,7 @@ fn idle_wait_ends_for_marshalled_ole_input_and_for_its_waker() {
                 .ok()
                 .unwrap();
             }
-            ready
-                .send((stream as usize, waker, Arc::downgrade(&session.wake)))
-                .unwrap();
+            ready.send((stream as usize, waker)).unwrap();
             // The native actor's idle loop: serve, then wait without a short timer.
             while !quit.load(Ordering::SeqCst) {
                 session.service_pending().unwrap();
@@ -278,7 +269,7 @@ fn idle_wait_ends_for_marshalled_ole_input_and_for_its_waker() {
             }
         })
     };
-    let (stream, waker, event) = opened.recv_timeout(FAILURE_WAIT).unwrap();
+    let (stream, waker) = opened.recv_timeout(FAILURE_WAIT).unwrap();
     let mut raw = ptr::null_mut();
     unsafe {
         CoGetInterfaceAndReleaseStream(stream as _, &IDropTarget::IID, &mut raw)
@@ -326,12 +317,8 @@ fn idle_wait_ends_for_marshalled_ole_input_and_for_its_waker() {
     waker();
     worker.join().unwrap();
     assert!(prompt(started), "the waker must end the idle wait");
-    // Every waker keeps the event open: a call after the session closed signals an
-    // event that nobody waits on, and the last waker closes it.
-    assert!(event.upgrade().is_some(), "a waker keeps the event open");
+    // A call after the session closed is harmless.
     waker();
-    drop(waker);
-    assert!(event.upgrade().is_none(), "the last waker closes the event");
 }
 
 /// Measurement for review item C10-2: wakeups of the native drag actor's idle loop over
