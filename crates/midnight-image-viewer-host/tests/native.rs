@@ -127,7 +127,7 @@ fn sandboxed_image_session_retains_original_pixels_and_rejects_source_changes() 
             .render(viewport(), &cancel, Duration::from_secs(5))
             .is_err()
     );
-    session.close();
+    session.close_checked().unwrap();
 }
 
 #[test]

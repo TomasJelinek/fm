@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::clipboard::Wake;
-use std::{collections::HashMap, os::fd::AsFd, sync::Arc, thread};
+use std::{collections::HashMap, os::fd::AsFd, sync::Arc};
 use x11rb::{
     CURRENT_TIME, NONE,
     connection::{Connection, RequestConnection},
@@ -22,6 +22,8 @@ use x11rb::{
 const EVENTS_PER_PASS: usize = 128;
 /// An incremental transfer whose requestor stops taking chunks is dropped after this.
 const TRANSFER_EXPIRY: Duration = Duration::from_secs(5);
+/// A read from another owner fails when that owner has not finished within this.
+const READ_DEADLINE: Duration = Duration::from_secs(5);
 
 struct Transfer {
     requestor: u32,
@@ -619,17 +621,24 @@ impl Clipboard {
         Ok(reply)
     }
 
+    /// The next event for a read that began at `started`. It waits on the connection for
+    /// at most the rest of the read's deadline, which an already queued event cannot extend.
     fn next_event(&self, started: Instant) -> Result<Event, FsError> {
         loop {
-            if started.elapsed() > Duration::from_secs(5) {
+            let remaining = READ_DEADLINE.saturating_sub(started.elapsed());
+            if remaining.is_zero() {
                 return Err(error(
                     "The X11 clipboard owner did not finish its response.",
                 ));
             }
+            // Flush first: a flush that cannot write reads, and queues, incoming events.
+            self.connection.flush().map_err(error)?;
             if let Some(event) = self.connection.poll_for_event().map_err(error)? {
                 return Ok(event);
             }
-            thread::sleep(Duration::from_millis(5));
+            // x11rb holds no queued event and has read the socket empty, so the socket
+            // becomes readable when the next event (or reply) arrives.
+            crate::clipboard::wait(None, Some(self.connection.stream().as_fd()), remaining)?;
         }
     }
 }
@@ -644,7 +653,7 @@ impl Drop for Clipboard {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::mpsc;
+    use std::{sync::mpsc, thread};
 
     /// Elapses only when the event that should end a wait does not.
     const FAILURE_WAIT: Duration = Duration::from_secs(30);
@@ -690,6 +699,15 @@ mod tests {
     /// the event-driven wait, as the session does, until the returned function stops it;
     /// joining the thread then returns the owner. Returns once the owner holds CLIPBOARD.
     fn serving_owner(files: FileClipboard) -> (impl FnOnce(), thread::JoinHandle<Clipboard>) {
+        serving_owner_after(files, Duration::ZERO)
+    }
+
+    /// [`serving_owner`] that starts serving only `late` after it took CLIPBOARD, like a busy
+    /// application; requests wait in its queue meanwhile.
+    fn serving_owner_after(
+        files: FileClipboard,
+        late: Duration,
+    ) -> (impl FnOnce(), thread::JoinHandle<Clipboard>) {
         let (ready, holding) = mpsc::sync_channel(1);
         let (stop, stopped) = mpsc::sync_channel(1);
         let wake = Wake::new().unwrap();
@@ -698,6 +716,7 @@ mod tests {
             let mut clipboard = Clipboard::new().unwrap();
             clipboard.copy(&files).unwrap();
             ready.send(()).unwrap();
+            thread::sleep(late);
             let began = Instant::now();
             // A dropped stop function (a failed test) ends the loop as well.
             while stopped.try_recv() == Err(mpsc::TryRecvError::Empty) {
@@ -885,6 +904,42 @@ mod tests {
             .reply()
             .unwrap();
         assert_eq!(attributes.your_event_mask, EventMask::NO_EVENT);
+    }
+
+    /// How often this thread has blocked so far: its voluntary context switches.
+    fn blocked_count() -> u64 {
+        std::fs::read_to_string("/proc/thread-self/status")
+            .unwrap()
+            .lines()
+            .find_map(|line| line.strip_prefix("voluntary_ctxt_switches:"))
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap()
+    }
+
+    #[test]
+    #[ignore = "requires an isolated Xvfb DISPLAY and MIDNIGHT_CLIPBOARD_TEST_ISOLATED=1"]
+    fn x11_read_from_a_late_owner_blocks_on_the_connection_instead_of_polling() {
+        isolated_display();
+        // The owner's delay stands for a busy application, which the read waits for; no
+        // synchronization depends on its length. Polling every 5 ms blocked 43 times
+        // meanwhile, a wait on the connection blocks once (plus once per round trip).
+        const LATE: Duration = Duration::from_millis(200);
+        let files = files("/tmp/late", FileClipboardIntent::Copy);
+        let (stop, owner) = serving_owner_after(files.clone(), LATE);
+        let mut reader = Clipboard::new().unwrap();
+        let before = blocked_count();
+        let began = Instant::now();
+        let received = reader.read();
+        let (elapsed, blocked) = (began.elapsed(), blocked_count() - before);
+        stop();
+        drop(owner.join().unwrap());
+        assert_eq!(received.unwrap(), files);
+        assert!(
+            blocked < 20,
+            "the read blocked {blocked} times in {elapsed:?}"
+        );
     }
 
     #[test]

@@ -64,7 +64,7 @@ fn rejected_constructor_cleans_owned_stage_or_reports_its_exact_failure() {
         for invalid_kind in [true, false] {
             for refuse in [false, true] {
                 let (copy, _) = copy(vec![42; 17], false);
-                let mut entry = copy.source_entry().clone();
+                let mut entry = copy.source.entry().clone();
                 if invalid_kind {
                     entry.item.kind = EntryKind::Directory;
                 } else {

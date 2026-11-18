@@ -11,6 +11,7 @@ mod native;
 mod protocol;
 
 use midnight_core::{Cancellation, ElevatedDirectoryService, Entry, EntryId, EntryKind, FsError};
+use native::HELPER_REQUIREMENT;
 use std::{
     ffi::OsString,
     io,
@@ -100,17 +101,6 @@ const HELPER: &str = if cfg!(windows) {
     "midnight-elevated-listing.exe"
 } else {
     "midnight-elevated-listing"
-};
-/// Where the helper must be installed, as the platform's refusal of an unprotected helper
-/// location also states. Per-user deployments do not include the helper, so a missing helper
-/// explains the same requirement. A test keeps this identical to the start of that refusal.
-const HELPER_REQUIREMENT: &str = if cfg!(windows) {
-    "Authorized listing requires midnight-elevated-listing.exe to be installed by an \
-     administrator in a protected folder that standard users cannot change, such as a folder \
-     under C:\\Program Files."
-} else {
-    "Authorized listing requires midnight-elevated-listing in a root-owned installation that \
-     only root can change, such as /opt/midnight-explorer installed with sudo."
 };
 
 /// Locate the helper beside the installed executable and accept it only from a protected
@@ -210,7 +200,7 @@ mod tests {
         });
         let error = native::protected_helper(refused).unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::PermissionDenied, "{error}");
-        // The missing-helper message repeats this sentence; it must not drift from it.
+        // The missing-helper message ends with the sentence that this refusal begins with.
         let message = error.to_string();
         assert!(message.starts_with(HELPER_REQUIREMENT), "{message}");
     }

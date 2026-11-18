@@ -125,7 +125,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             );
         }
         cancel.store(true, Ordering::Release);
-        session.close();
+        session.close_checked()?;
     }
     Ok(())
 }

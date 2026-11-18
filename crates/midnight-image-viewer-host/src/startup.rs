@@ -37,15 +37,8 @@ impl PreparedImageWorker {
     /// Validate and pin installed code, start the restricted child and wait for Ready.
     /// The deadline includes validation and native startup. Native process creation cannot be
     /// interrupted; cancellation/deadline after it returns terminates and reaps that actual child.
-    pub fn prepare(
-        provider: &Provider,
-        cancel: &AtomicBool,
-        timeout: Duration,
-    ) -> io::Result<Self> {
-        Self::prepare_owned(provider, cancel, timeout, Box::new(()))
-    }
-
-    /// Retain a caller's capacity owner before any possible native launch.
+    /// `owner`, such as the caller's capacity reservation, is retained before any possible
+    /// native launch and released only once the child is confirmed gone.
     pub fn prepare_owned(
         provider: &Provider,
         cancel: &AtomicBool,

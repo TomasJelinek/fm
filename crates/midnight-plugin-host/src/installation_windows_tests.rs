@@ -169,7 +169,7 @@ fn trusted_portable_installation_resolves_native_launch_path_aliases() {
         None => eprintln!("8.3 names are disabled on this volume; short alias skipped"),
     }
     for alias in aliases {
-        assert_ne!(installation_path(&alias).unwrap(), expected, "not an alias");
+        assert_ne!(runtime_path(&alias).unwrap(), expected, "not an alias");
         for verification in [RuntimeVerification::Disabled, RuntimeVerification::Sha256] {
             let resolved = resolve_at_with_digest(
                 &alias,
@@ -930,7 +930,7 @@ fn launcher_pointer_preserves_long_paths_and_raw_utf16() {
     name.push(0xd800);
     name.extend(".exe".encode_utf16());
     let name = OsString::from_wide(&name);
-    let mut directory = installation_path(fixture.source.parent().unwrap()).unwrap();
+    let mut directory = runtime_path(fixture.source.parent().unwrap()).unwrap();
     while directory.as_os_str().encode_wide().count() <= 320 {
         directory.push("long-launch-component");
     }
@@ -985,4 +985,40 @@ fn disabled_mode_needs_no_executable_read_data_permission() {
     );
     assert_eq!(calls, 1);
     assert!(strict.is_err());
+}
+
+#[test]
+fn installation_prefix_normalization_preserves_native_utf16_without_resolution() {
+    let input = PathBuf::from(OsString::from_wide(&[
+        67, 58, 92, 0xd800, 92, 109, 101, 46, 101, 120, 101,
+    ]));
+    let output = installation_path(&input).unwrap();
+    let expected: Vec<_> = "\\\\?\\"
+        .encode_utf16()
+        .chain(input.as_os_str().encode_wide())
+        .collect();
+    assert_eq!(
+        output.as_os_str().encode_wide().collect::<Vec<_>>(),
+        expected
+    );
+    assert_eq!(installation_path(&output).unwrap(), output);
+    assert_eq!(runtime_path(&input).unwrap(), output);
+    assert_eq!(
+        installation_path(Path::new(r"\\server\share\me.exe")).unwrap(),
+        PathBuf::from(r"\\?\UNC\server\share\me.exe")
+    );
+    assert!(installation_path(Path::new(r"\\.\pipe\midnight")).is_err());
+}
+
+#[test]
+fn recorded_runtime_paths_are_never_resolved_against_the_current_directory() {
+    for recorded in [r"relative\me.exe", r"C:\runtime\..\me.exe"] {
+        assert!(runtime_path(Path::new(recorded)).is_err(), "{recorded}");
+        // A host's own executable path may be relative; it resolves without following links.
+        let resolved = installation_path(Path::new(recorded)).unwrap();
+        assert!(
+            resolved.is_absolute() && resolved.as_os_str().to_string_lossy().starts_with(r"\\?\"),
+            "{resolved:?}"
+        );
+    }
 }

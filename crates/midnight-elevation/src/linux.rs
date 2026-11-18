@@ -77,15 +77,16 @@ pub(crate) fn protected_helper(helper: &Path) -> io::Result<()> {
     }
     Ok(())
 }
+/// Where the helper must be installed. A refused helper location and a missing helper (which
+/// per-user deployments omit) both explain authorization with this sentence.
+pub(crate) const HELPER_REQUIREMENT: &str = "Authorized listing requires \
+    midnight-elevated-listing in a root-owned installation that only root can change, such as \
+    /opt/midnight-explorer installed with sudo.";
+
 fn unprotected(path: &Path, reason: &str) -> io::Error {
     io::Error::new(
         io::ErrorKind::PermissionDenied,
-        format!(
-            "Authorized listing requires midnight-elevated-listing in a root-owned installation \
-             that only root can change, such as /opt/midnight-explorer installed with sudo. {} \
-             {reason}.",
-            path.display()
-        ),
+        format!("{HELPER_REQUIREMENT} {} {reason}.", path.display()),
     )
 }
 fn mounted_nosuid(path: &Path) -> io::Result<bool> {

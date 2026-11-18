@@ -17,6 +17,13 @@ pub use content::{CapturedFile, ContentResources, ContentSource};
 #[cfg(windows)]
 #[path = "installation_windows.rs"]
 mod installation;
+#[cfg(windows)]
+pub use installation::installation_path;
+#[cfg(target_os = "linux")]
+#[path = "installation_path_linux.rs"]
+mod installation_path;
+#[cfg(target_os = "linux")]
+pub use installation_path::installation_path;
 #[cfg(not(windows))]
 mod installation {
     /// Executable-relative discovery. Linux reports the kernel-resolved path
@@ -147,17 +154,6 @@ impl Runtime {
             .iter()
             .find(|info| info.id == plugin_id)
             .is_some_and(loaded::Loaded::is_loaded)
-    }
-    pub fn choose(&self, path: &Path, basic: bool) -> Option<(&PluginInfo, u16)> {
-        self.choose_enabled(path, basic, &[])
-    }
-    pub fn choose_enabled(
-        &self,
-        path: &Path,
-        basic: bool,
-        disabled: &[String],
-    ) -> Option<(&PluginInfo, u16)> {
-        discovery::choose(&self.catalog, path, basic, disabled)
     }
     pub fn open(
         &self,

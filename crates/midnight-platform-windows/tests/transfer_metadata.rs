@@ -35,7 +35,13 @@ fn required_modified_time_survives_independent_readback_publication_and_handle_d
     let stage = directory
         .stage_file_with_metadata(TransferMetadataPolicy::RequireModifiedTime, &cancel)
         .unwrap();
-    let mut copy = VerifiedFileCopy::new_with_modified_time(source, stage, pin).unwrap();
+    let mut copy = VerifiedFileCopy::new_with_options(
+        source,
+        stage,
+        Some(pin),
+        TransferVerification::default(),
+    )
+    .unwrap();
     while copy.phase() != CopyPhase::ReadyToPublish {
         copy.step(&cancel).unwrap();
     }

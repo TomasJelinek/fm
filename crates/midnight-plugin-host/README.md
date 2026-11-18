@@ -32,10 +32,15 @@ still refused first. Other platforms retain the actual executable's location.
 The cached result does not authorize any package or bypass the checks below. See
 the [runtime discovery contract](../../docs/developer/RUNTIME_DISCOVERY.md).
 
-`choose` and `choose_enabled` route by the published modes/extensions. Extension
-matches prefer Document, then Source, then Text; a Text package with no extensions
-is the generic fallback and explicit basic choice. The caller supplies its startup
-disabled-ID snapshot to `choose_enabled`. No parser or plugin ID is hardcoded.
+The thumbnail and image-viewer hosts pass their application executable path through
+`installation_path` before they derive and validate their package root. It returns
+an absolute spelling without resolving links; on Windows it uses extended `\\?\`
+syntax, keeps the raw UTF-16 and refuses device namespaces.
+
+Discovery publishes each package's modes and extensions; it routes no file. The
+viewer engine chooses a viewer from them
+([`routing.rs`](../midnight-viewer-engine/src/routing.rs)). No parser or plugin ID
+is hardcoded.
 
 An open session owns one read-only regular-file handle. Reads are at most 256 KiB,
 use u64 offsets, and compare native handle identity, length and change/write times

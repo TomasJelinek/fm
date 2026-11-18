@@ -260,10 +260,11 @@ fn newly_ambiguous_package_invalidates_a_prepared_identity() {
 #[test]
 fn preparation_cancellation_precedes_native_startup() {
     let fixture = Fixture::new();
-    let error = PreparedImageWorker::prepare(
+    let error = PreparedImageWorker::prepare_owned(
         &fixture.provider,
         &AtomicBool::new(true),
         Duration::from_secs(1),
+        Box::new(()),
     )
     .err()
     .expect("cancelled preparation cannot start the invalid fixture executable");
@@ -274,10 +275,14 @@ fn preparation_cancellation_precedes_native_startup() {
 #[test]
 fn preparation_zero_deadline_precedes_native_startup() {
     let fixture = Fixture::new();
-    let error =
-        PreparedImageWorker::prepare(&fixture.provider, &AtomicBool::new(false), Duration::ZERO)
-            .err()
-            .expect("expired preparation cannot start the invalid fixture executable");
+    let error = PreparedImageWorker::prepare_owned(
+        &fixture.provider,
+        &AtomicBool::new(false),
+        Duration::ZERO,
+        Box::new(()),
+    )
+    .err()
+    .expect("expired preparation cannot start the invalid fixture executable");
     assert_eq!(error.kind(), io::ErrorKind::TimedOut);
     assert_eq!(cleanup_status(&error), Some(CleanupStatus::Confirmed));
 }
@@ -520,8 +525,13 @@ fn paired_cold_and_prepared_worker_control() {
     );
     let preparation_start = Instant::now();
     creation_attempts += 1;
-    let prepared =
-        PreparedImageWorker::prepare(&provider, &cancel, Duration::from_secs(15)).unwrap();
+    let prepared = PreparedImageWorker::prepare_owned(
+        &provider,
+        &cancel,
+        Duration::from_secs(15),
+        Box::new(()),
+    )
+    .unwrap();
     creation_successes += 1;
     let preparation_elapsed = preparation_start.elapsed();
     assert_eq!(source.validations.load(Ordering::Relaxed), 0);
@@ -637,8 +647,13 @@ fn paired_cold_and_prepared_worker_control() {
 fn cancelled_prepared_adoption_never_reads_the_source() {
     let provider = native_provider();
     let cancel = AtomicBool::new(false);
-    let prepared =
-        PreparedImageWorker::prepare(&provider, &cancel, Duration::from_secs(15)).unwrap();
+    let prepared = PreparedImageWorker::prepare_owned(
+        &provider,
+        &cancel,
+        Duration::from_secs(15),
+        Box::new(()),
+    )
+    .unwrap();
     let source = bitmap();
     cancel.store(true, Ordering::Release);
     let error = ImageSession::open_prepared(
@@ -660,8 +675,13 @@ fn cancelled_prepared_adoption_never_reads_the_source() {
 fn prepared_open_rejects_corrupt_source_without_publishing_a_session() {
     let provider = native_provider();
     let cancel = AtomicBool::new(false);
-    let prepared =
-        PreparedImageWorker::prepare(&provider, &cancel, Duration::from_secs(15)).unwrap();
+    let prepared = PreparedImageWorker::prepare_owned(
+        &provider,
+        &cancel,
+        Duration::from_secs(15),
+        Box::new(()),
+    )
+    .unwrap();
     let source = Arc::new(Bytes {
         bytes: b"invalid image".to_vec(),
         reads: AtomicUsize::new(0),
@@ -687,8 +707,13 @@ fn prepared_open_rejects_corrupt_source_without_publishing_a_session() {
 fn prepared_open_deadline_kills_a_worker_waiting_on_the_read_budget() {
     let provider = native_provider();
     let cancel = AtomicBool::new(false);
-    let prepared =
-        PreparedImageWorker::prepare(&provider, &cancel, Duration::from_secs(15)).unwrap();
+    let prepared = PreparedImageWorker::prepare_owned(
+        &provider,
+        &cancel,
+        Duration::from_secs(15),
+        Box::new(()),
+    )
+    .unwrap();
     let budget = midnight_work_budget::shared_io();
     let held = budget
         .acquire(midnight_work_budget::Admission::Exclusive, || false)

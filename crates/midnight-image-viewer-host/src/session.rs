@@ -395,12 +395,9 @@ impl ImageSession {
         result
     }
 
-    /// Terminate and reap on the owning backend worker. UI close handlers only signal cancellation.
-    pub fn close(self) {
-        let _ = self.close_checked();
-    }
-
-    /// Positively confirm process termination and pin release; inspect errors before formatting.
+    /// Terminate and reap on the owning backend worker; UI close handlers only signal
+    /// cancellation. Positively confirm process termination and pin release; inspect errors
+    /// (`cleanup_status`) before formatting.
     pub fn close_checked(mut self) -> io::Result<()> {
         self.owner.finish()
     }

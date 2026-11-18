@@ -262,8 +262,10 @@ fn discovery_rejects_escape_abi_target_and_required_service() {
     }
 }
 
+/// Discovery publishes the manifest modes and extensions that the viewer engine routes on (its
+/// `routing_tests` build the catalog by hand); removing a manifest removes its capability.
 #[test]
-fn manifest_removal_removes_capability_and_routing_respects_modes() {
+fn discovery_publishes_manifest_modes_and_extensions_until_removal() {
     let root = fixture_root();
     package(
         root.path(),
@@ -278,45 +280,26 @@ fn manifest_removal_removes_capability_and_routing_respects_modes() {
         "modes=[\"document\"]\nextensions=[\"md\"]",
     );
     let runtime = Runtime::discover(root.path()).unwrap();
+    let [basic, document] = runtime.catalog() else {
+        panic!("unexpected catalog {:?}", runtime.catalog());
+    };
+    assert_eq!(basic.id, "viewer.basic");
     assert_eq!(
-        runtime
-            .choose(std::path::Path::new("doc.md"), false)
-            .unwrap()
-            .0
-            .id,
-        "viewer.markdown"
+        basic.modes,
+        [api::viewer::MODE_TEXT, api::viewer::MODE_BINARY]
     );
-    assert_eq!(
-        runtime
-            .choose(std::path::Path::new("doc.md"), true)
-            .unwrap()
-            .0
-            .id,
-        "viewer.basic"
-    );
-    assert_eq!(
-        runtime
-            .choose_enabled(
-                std::path::Path::new("doc.md"),
-                false,
-                &["viewer.markdown".into()]
-            )
-            .unwrap()
-            .0
-            .id,
-        "viewer.basic"
-    );
-    assert!(
-        runtime
-            .choose_enabled(
-                std::path::Path::new("doc.md"),
-                true,
-                &["viewer.basic".into()]
-            )
-            .is_none()
-    );
+    assert!(basic.extensions.is_empty(), "{:?}", basic.extensions);
+    assert_eq!(document.id, "viewer.markdown");
+    assert_eq!(document.modes, [api::viewer::MODE_DOCUMENT]);
+    assert_eq!(document.extensions, ["md"]);
     std::fs::remove_file(markdown.join("plugin.toml")).unwrap();
-    assert_eq!(Runtime::discover(root.path()).unwrap().catalog().len(), 1);
+    let runtime = Runtime::discover(root.path()).unwrap();
+    let ids: Vec<_> = runtime
+        .catalog()
+        .iter()
+        .map(|info| info.id.as_str())
+        .collect();
+    assert_eq!(ids, ["viewer.basic"]);
 }
 
 #[test]

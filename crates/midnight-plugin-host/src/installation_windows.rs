@@ -101,7 +101,7 @@ fn resolve_at_with_digest(
     mut digest: impl FnMut(&Path, ExecutableRole) -> Result<String, Error>,
 ) -> Result<PathBuf, Error> {
     // Inspect the entered namespace before any native normalization can hide a junction.
-    let executable = installation_path(executable)?;
+    let executable = runtime_path(executable)?;
     plain_path(&executable)?;
     regular_file(&fs::symlink_metadata(&executable)?)?;
     // The process reports the spelling used at launch. Letter case, 8.3, SUBST and
@@ -131,7 +131,7 @@ fn registration_directory(registration_root: Option<&Path>) -> Result<Option<Pat
     let Some(registration_root) = registration_root else {
         return Ok(None);
     };
-    let registration_root = installation_path(registration_root)?;
+    let registration_root = runtime_path(registration_root)?;
     if !exists_without_following(&registration_root)? {
         return Ok(None);
     }
@@ -240,7 +240,7 @@ fn registered_target(record: &Path, expected_digest: &str) -> Result<PathBuf, Er
             "Plugin runtime registration has an unsupported schema or build hash".into(),
         ));
     }
-    let target = installation_path(Path::new(&OsString::from_wide(
+    let target = runtime_path(Path::new(&OsString::from_wide(
         &registration.executable_utf16,
     )))?;
     trusted_executable(&target)?;
@@ -324,8 +324,17 @@ fn plain_path(path: &Path) -> Result<(), Error> {
     Ok(())
 }
 
-/// Preserve raw UTF-16 while normalizing namespace syntax without following links.
-fn installation_path(path: &Path) -> Result<PathBuf, Error> {
+/// The absolute spelling of an installation path that trust validation inspects, in native
+/// extended syntax (`\\?\C:\...`, `\\?\UNC\...`) with its raw UTF-16 preserved. A relative
+/// path is resolved against the current directory by `std::path::absolute`, which follows no
+/// link; a verbatim path stays unchanged. Device and other namespaces are refused.
+pub fn installation_path(path: &Path) -> io::Result<PathBuf> {
+    verbatim(&std::path::absolute(path)?)
+}
+
+/// The launch path and recorded deployment paths must already be absolute, without parent
+/// traversal: recorded data is never resolved against the current directory.
+fn runtime_path(path: &Path) -> Result<PathBuf, Error> {
     if !path.is_absolute()
         || path
             .components()
@@ -335,6 +344,12 @@ fn installation_path(path: &Path) -> Result<PathBuf, Error> {
             "Plugin runtime path must be absolute without parent traversal".into(),
         ));
     }
+    verbatim(path).map_err(Error::from)
+}
+
+/// Preserve raw UTF-16 while normalizing namespace syntax without following links.
+fn verbatim(path: &Path) -> io::Result<PathBuf> {
+    let invalid = |message| io::Error::new(io::ErrorKind::InvalidInput, message);
     let mut wide: Vec<_> = path
         .as_os_str()
         .encode_wide()
@@ -347,7 +362,7 @@ fn installation_path(path: &Path) -> Result<PathBuf, Error> {
         })
         .collect();
     if wide.contains(&0) {
-        return Err(Error("NUL in plugin runtime path".into()));
+        return Err(invalid("NUL in installation path"));
     }
     match path.components().next() {
         Some(Component::Prefix(prefix)) => match prefix.kind() {
@@ -358,13 +373,9 @@ fn installation_path(path: &Path) -> Result<PathBuf, Error> {
             Prefix::UNC(_, _) => {
                 wide.splice(..2, "\\\\?\\UNC\\".encode_utf16());
             }
-            _ => return Err(Error("Unsupported plugin runtime path namespace".into())),
+            _ => return Err(invalid("Unsupported installation path namespace")),
         },
-        _ => {
-            return Err(Error(
-                "Plugin runtime path has no absolute namespace".into(),
-            ));
-        }
+        _ => return Err(invalid("Installation path has no absolute namespace")),
     }
     Ok(PathBuf::from(OsString::from_wide(&wide)))
 }

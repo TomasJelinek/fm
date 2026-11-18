@@ -116,7 +116,7 @@ fn sandboxed_pdf_pages_use_retained_source_and_reject_revision_change() {
             .render_page(0, viewport(), &cancel, Duration::from_secs(5))
             .is_err()
     );
-    session.close();
+    session.close_checked().unwrap();
 }
 
 #[test]
