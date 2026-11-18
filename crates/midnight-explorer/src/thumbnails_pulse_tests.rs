@@ -1,6 +1,6 @@
 //! The thumbnail pulse runs while a pass reports work and stops after a quiet pass;
-//! presentation changes, refused sends, animation and the awaited cache location keep or
-//! restart it. Only a pass that moved a row range wakes the retry pass.
+//! presentation changes, refused sends, animation and the service's ready notifications
+//! keep or restart it. Only a pass that moved a row range wakes the retry pass.
 use super::*;
 use midnight_core::{
     DirectoryIndex, Entry, EntryId, EntryKind, Event, PaneId, PanelViewMode, UserCommand,
@@ -13,7 +13,76 @@ use slint::{
         software_renderer::{MinimalSoftwareWindow, RepaintBufferType},
     },
 };
-use std::path::PathBuf;
+use std::{
+    collections::VecDeque,
+    path::PathBuf,
+    sync::{Condvar, Mutex},
+};
+
+/// The deadline of every wait; it elapses only on failure.
+const DEADLINE: Duration = Duration::from_secs(10);
+
+type Pass = Box<dyn FnOnce() + Send>;
+
+#[derive(Default)]
+struct Posted {
+    passes: Mutex<VecDeque<Pass>>,
+    arrived: Condvar,
+}
+
+/// Stands in for Slint's event loop, which this binary's platforms do not offer: the
+/// passes the service's ready notifier posts wait here until a test runs them.
+#[derive(Clone, Default)]
+pub(super) struct TestEventLoop(Arc<Posted>);
+
+impl TestEventLoop {
+    pub(super) fn post(&self) -> Post {
+        let posted = self.0.clone();
+        Arc::new(move |pass| {
+            posted
+                .passes
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .push_back(pass);
+            posted.arrived.notify_all();
+            true
+        })
+    }
+
+    /// Block until a pass was posted; the deadline only elapses on failure.
+    pub(super) fn wait(&self) {
+        let passes = self
+            .0
+            .passes
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let (passes, _) = self
+            .0
+            .arrived
+            .wait_timeout_while(passes, DEADLINE, |passes| passes.is_empty())
+            .unwrap_or_else(|error| error.into_inner());
+        assert!(
+            !passes.is_empty(),
+            "the service posted no ready notification"
+        );
+    }
+
+    /// Run the posted passes on this thread, as the event loop runs them.
+    pub(super) fn run(&self) {
+        loop {
+            let pass = self
+                .0
+                .passes
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .pop_front();
+            let Some(pass) = pass else {
+                break;
+            };
+            pass();
+        }
+    }
+}
 
 struct ClockPlatform {
     window: Rc<MinimalSoftwareWindow>,
@@ -40,6 +109,7 @@ struct Fixture {
     refuse: Rc<Cell<bool>>,
     /// The cache location the service reports; never created, as discovery fails first.
     cache: PathBuf,
+    event_loop: TestEventLoop,
 }
 
 impl Fixture {
@@ -123,8 +193,9 @@ impl Fixture {
         let refuse = Rc::new(Cell::new(false));
         let (views, refused) = (icon_views.clone(), refuse.clone());
         let cache = root.join("thumbnail cache");
+        let event_loop = TestEventLoop::default();
         // An empty executable identity fails discovery on the first preview request.
-        let controller = install_service(
+        let controller = install_service_with(
             &window,
             presenter.clone(),
             Rc::new(Service::start(PathBuf::new(), cache.clone())),
@@ -138,6 +209,7 @@ impl Fixture {
                 }
                 !refused.get()
             }),
+            event_loop.post(),
         );
         let pulses = [controller.pulse()];
         window.on_presentation_changed(move || crate::pulse::wake_all(&pulses));
@@ -150,6 +222,7 @@ impl Fixture {
             icon_views,
             refuse,
             cache,
+            event_loop,
         };
         fixture.frame();
         fixture
@@ -175,7 +248,7 @@ impl Fixture {
     /// Run passes until the pulse stops. The service answers on its own thread; the
     /// deadline only elapses on failure.
     fn settle(&self) {
-        let deadline = Instant::now() + Duration::from_secs(10);
+        let deadline = Instant::now() + DEADLINE;
         while self.running() {
             assert!(
                 Instant::now() < deadline,
@@ -294,10 +367,22 @@ fn refreshes_callbacks_and_layout_changes_invoke_presentation_changed() {
 }
 
 #[test]
-fn the_cache_location_is_published_without_another_wake() {
+fn the_ready_notifier_publishes_the_cache_location_to_a_quiet_pulse() {
     let fixture = Fixture::new(PanelViewMode::Detailed, false);
-    // From here only the pass's own rules keep the pulse running.
+    // From here only the pass's own rules and the service's notifications wake the pulse.
     fixture.window.on_presentation_changed(|| {});
+    // The pulse has gone quiet before the location is reported, as while a slow cache
+    // root is resolved; no pass has seen the location.
+    fixture.controller.pulse.stop();
+    // The service stores its location, then its ready notifier posts a UI pass.
+    fixture.event_loop.wait();
+    for _ in 0..10 {
+        fixture.advance();
+    }
+    assert!(!fixture.running(), "nothing polls for the location");
+    assert!(fixture.window.get_thumbnail_cache_location().is_empty());
+    fixture.event_loop.run();
+    assert!(fixture.running(), "the notification wakes the pulse");
     fixture.settle();
     assert_eq!(
         fixture.window.get_thumbnail_cache_location().as_str(),
@@ -306,26 +391,17 @@ fn the_cache_location_is_published_without_another_wake() {
 }
 
 #[test]
-fn an_unreported_cache_location_keeps_the_pulse_polling() {
+fn an_awaited_cache_location_no_longer_keeps_the_pulse_polling() {
     let fixture = Fixture::new(PanelViewMode::Detailed, false);
     fixture.window.on_presentation_changed(|| {});
-    // Take the backend's answer before the first pass, so that the bridge still awaits
-    // it, as it does while a slow cache root is resolved. The deadline only elapses on
-    // failure.
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while fixture.controller.service.take_cache_location().is_none() {
-        assert!(
-            Instant::now() < deadline,
-            "the service never resolved its cache"
-        );
-        std::thread::yield_now();
-    }
+    // Take the stored location before the first pass, so that the bridge has not seen it,
+    // as while a slow cache root is resolved. Its notification stays unrun.
+    fixture.event_loop.wait();
+    assert!(fixture.controller.service.take_cache_location().is_some());
+    fixture.settle();
     for pass in 0..20 {
         fixture.advance();
-        assert!(
-            fixture.running(),
-            "pass {pass}: the location is still awaited"
-        );
+        assert!(!fixture.running(), "pass {pass}: nothing polls");
     }
     assert!(fixture.window.get_thumbnail_cache_location().is_empty());
 }

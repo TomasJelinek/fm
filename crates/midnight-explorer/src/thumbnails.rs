@@ -1,8 +1,8 @@
 //! Composition bridge: copy bounded visible identities, and present completed RGBA buffers.
 //!
 //! The pulse runs while a pass reports work and stops after a quiet pass. Presentation
-//! changes, native scale changes, refused sends, visibility changes, delivered frames and
-//! cache clears wake it again.
+//! changes, native scale changes, refused sends, visibility changes, delivered frames,
+//! the cache location and notices the service reports, and cache clears wake it again.
 use crate::{pulse::Pulse, wake_gate::WakeGate};
 use midnight_core::Command;
 use midnight_thumbnail_host::scheduler::Work;
@@ -24,10 +24,10 @@ mod content;
 mod native_linux_tests;
 
 const INTERVAL: Duration = Duration::from_millis(100);
-/// After the first preview request, keep polling until the service reports its
-/// initialization outcome (a frame or a notice), at most this long. The service sets
-/// notices without its ready notifier, so a stopped pulse would not publish them.
-const OUTCOME_WAIT: Duration = Duration::from_secs(10);
+
+/// Runs a UI pass on the event loop's thread; false when no event loop can be reached
+/// from another thread (a headless test platform).
+type Post = Arc<dyn Fn(Box<dyn FnOnce() + Send>) -> bool + Send + Sync>;
 
 pub(crate) struct Controller {
     pulse: Rc<Pulse>,
@@ -175,15 +175,12 @@ struct Bridge {
     send: Rc<dyn Fn(Command) -> bool>,
     epoch: Rc<Cell<u64>>,
     wake: Arc<WakeGate>,
+    post: Post,
     deliveries: Deliveries,
     tokens: HashMap<String, u64>,
     next_token: u64,
     tick: u64,
     last_epoch: u64,
-    /// The cache location, or the failure to resolve it, has been published.
-    located: bool,
-    /// Requests were made and the service has reported no frame or notice yet.
-    outcome_wait: Option<Instant>,
     /// The row ranges of the last pass, and whether the latest pass moved them.
     ranges: Ranges,
     ranges_moved: bool,
@@ -208,7 +205,6 @@ impl Bridge {
                     .as_ref()
                     .into(),
             );
-            self.located = true;
             busy = true;
         }
         let (rows, ranges) = window_targets(&window, &self.presenter);
@@ -233,13 +229,10 @@ impl Bridge {
             self.tokens.clear();
             self.last_epoch = self.epoch.get();
             refresh_all = true;
-            self.await_outcome();
         }
         if let Some(notice) = self.service.take_notice() {
             state.report_thumbnail_error(notice);
             refresh_all = true;
-            self.located = true;
-            self.outcome_reported();
         }
         if self.deliveries.changed(&rows, scale) {
             busy = true;
@@ -281,9 +274,6 @@ impl Bridge {
                     self.capture.target(row, token, physical_edge(row, scale))
                 })
                 .collect();
-            if !targets.is_empty() {
-                self.await_outcome();
-            }
             self.service.set_view(View {
                 generation: self.epoch.get(),
                 targets,
@@ -316,24 +306,9 @@ impl Bridge {
         } else if !changed.is_empty() {
             midnight_ui::refresh_thumbnail_rows(&window, &presenter.borrow(), &changed);
         }
+        // Nothing is awaited here: the service's ready notifier wakes the pulse for a
+        // frame, the cache location or a notice that arrives later.
         busy || refresh_all
-            || !self.located
-            || self
-                .outcome_wait
-                .is_some_and(|deadline| Instant::now() < deadline)
-    }
-
-    /// The first request starts waiting for the service's initialization outcome.
-    fn await_outcome(&mut self) {
-        if self.outcome_wait.is_none() {
-            self.outcome_wait = Some(Instant::now() + OUTCOME_WAIT);
-        }
-    }
-
-    /// A frame or a notice arrived: later results reach the presentation through the
-    /// ready notifier or the next wake.
-    fn outcome_reported(&mut self) {
-        self.outcome_wait = Some(Instant::now());
     }
 
     /// A backend wake: present ready frames without waiting for the next pulse.
@@ -353,7 +328,7 @@ impl Bridge {
         }
         if exhausted {
             // Frames may remain: schedule another pass instead of waiting for the pulse.
-            wake_bridge(&self.wake);
+            wake_bridge(&self.wake, &self.post);
         }
     }
 
@@ -367,7 +342,6 @@ impl Bridge {
             let Some(ready) = self.service.poll() else {
                 return false;
             };
-            self.outcome_reported();
             if ready.generation != self.epoch.get() {
                 continue;
             }
@@ -410,12 +384,12 @@ impl Bridge {
 }
 
 /// Schedule one delivery pass on the UI thread; coalesced until that pass releases.
-fn wake_bridge(gate: &Arc<WakeGate>) {
+fn wake_bridge(gate: &Arc<WakeGate>, post: &Post) {
     if !gate.request() {
         return;
     }
     let pass = gate.clone();
-    let scheduled = slint::invoke_from_event_loop(move || {
+    let scheduled = post(Box::new(move || {
         // Release before draining: a frame queued after this point schedules another pass.
         pass.release();
         let bridge = BRIDGE.with(|bridge| bridge.borrow().upgrade());
@@ -424,10 +398,11 @@ fn wake_bridge(gate: &Arc<WakeGate>) {
         {
             bridge.deliver();
         }
-        // A delivered frame can start an animation or retry a refused upload.
+        // A delivered frame can start an animation or retry a refused upload; a cache
+        // location or notice is taken by the pass this wake runs.
         wake_pulse();
-    });
-    if scheduled.is_err() {
+    }));
+    if !scheduled {
         // No event loop: a later pulse still delivers every frame.
         gate.release();
     }
@@ -439,6 +414,26 @@ fn install_service(
     service: Rc<Service>,
     capture: content::Factory,
     send: Rc<dyn Fn(Command) -> bool>,
+) -> Controller {
+    install_service_with(
+        window,
+        presenter,
+        service,
+        capture,
+        send,
+        Arc::new(|pass| slint::invoke_from_event_loop(pass).is_ok()),
+    )
+}
+
+/// [`install_service`] with `post` in place of Slint's event loop for the UI passes that the
+/// service's ready notifications schedule.
+fn install_service_with(
+    window: &MainWindow,
+    presenter: Rc<RefCell<Presenter>>,
+    service: Rc<Service>,
+    capture: content::Factory,
+    send: Rc<dyn Fn(Command) -> bool>,
+    post: Post,
 ) -> Controller {
     let control = service.clone();
     let epoch = Rc::new(Cell::new(1u64));
@@ -452,8 +447,9 @@ fn install_service(
         wake_pulse();
     });
     let wake = Arc::new(WakeGate::default());
-    let ready = wake.clone();
-    service.set_ready_notifier(Arc::new(move || wake_bridge(&ready)));
+    let (ready, notified) = (wake.clone(), post.clone());
+    // Called for every frame, cache location and notice the service stores.
+    service.set_ready_notifier(Arc::new(move || wake_bridge(&ready, &notified)));
     let bridge = Rc::new(RefCell::new(Bridge {
         window: window.as_weak(),
         presenter,
@@ -462,13 +458,12 @@ fn install_service(
         send,
         epoch,
         wake,
+        post,
         deliveries: Deliveries::default(),
         tokens: HashMap::new(),
         next_token: 1,
         tick: 0,
         last_epoch: 1,
-        located: false,
-        outcome_wait: None,
         ranges: Ranges::default(),
         ranges_moved: false,
     }));
