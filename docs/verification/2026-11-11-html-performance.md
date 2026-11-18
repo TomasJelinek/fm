@@ -8,7 +8,8 @@ own window, without moving the desktop cursor.
 
 ## Measurements before further optimization
 
-`wheel_latency` profiles the installed host's first colored content and each
+`html_wheel_latency` (the `midnight-web-viewer-host` example, formerly
+`wheel_latency`) profiles the installed host's first colored content and each
 wheel-to-changed-frame interval. Its bounded sampled pixel identity avoids timing
 an unrelated blank frame. Twelve isolated gestures settle before the next input.
 At 640×480 the first changed frame took 33–61 ms (median approximately 42 ms).
