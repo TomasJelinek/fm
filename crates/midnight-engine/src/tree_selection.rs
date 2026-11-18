@@ -130,7 +130,7 @@ fn apply_action(
             let (anchor, target) = (position(*anchor)?, position(*target)?);
             Some(anchor.min(target)..=anchor.max(target))
         }
-        TreeSelectionAction::Ranges { ranges, .. } if ranges.len() != view.rows.len() => {
+        TreeSelectionAction::Ranges { ranges, .. } if ranges.source_len() != view.rows.len() => {
             return Err(ProviderError::StaleReference);
         }
         _ => None,

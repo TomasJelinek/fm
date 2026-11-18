@@ -198,8 +198,6 @@ pub(crate) struct Pane {
     selection_revision: SelectionRevision,
     selection_applied: SelectionRevision,
     selection_resolved: SelectionRevision,
-    selection_reset: bool,
-    selection_restore: Option<SelectionOrigin>,
     selection_pending_bulk: bool,
     selection_dirty: bool,
     selection_rebase_pending: bool,
@@ -1362,7 +1360,6 @@ impl Presenter {
                 let show_modal = !request.keep_rows;
                 let requested_path = request.path.clone();
                 if !request.keep_rows {
-                    p.selection_reset = true;
                     // The failed destination still shares this navigation ID
                     // with the restored view. Retire its pending selection
                     // acknowledgments before scheduling the source rebase.
@@ -1370,10 +1367,9 @@ impl Presenter {
                     p.selection_resolved = p.selection_revision;
                     p.selection_preview.clear();
                     p.selection_deferred = SelectionDefaults::NONE;
-                    p.selection_restore = request.previous_selection_origin.take();
-                    p.selection_context = p
-                        .selection_restore
-                        .as_ref()
+                    p.selection_context = request
+                        .previous_selection_origin
+                        .take()
                         .map_or(NavigationId(0), |origin| origin.navigation);
                     self.retired.push(Box::new(mem::replace(
                         &mut p.selected,
@@ -1823,8 +1819,6 @@ impl Pane {
             selection_revision: SelectionRevision(0),
             selection_applied: SelectionRevision(0),
             selection_resolved: SelectionRevision(0),
-            selection_reset: true,
-            selection_restore: None,
             selection_pending_bulk: false,
             selection_dirty: false,
             selection_rebase_pending: false,

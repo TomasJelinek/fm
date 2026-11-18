@@ -406,7 +406,7 @@ impl State {
                     }
                 }
                 SelectionAction::Ranges { ranges, mode } => {
-                    if ranges.len() != view.by_id.len() {
+                    if ranges.source_len() != view.by_id.len() {
                         return Err("Selection rectangle no longer matches its captured view");
                     }
                     if *mode == SelectionMode::Replace {
@@ -746,9 +746,7 @@ mod tests {
             seed: Arc::default(),
             seed_revision: SelectionRevision(0),
             authoritative: None,
-            reset: false,
             preserve: None,
-            restore: None,
             action,
             toggle_directory: false,
         }
@@ -941,7 +939,6 @@ mod tests {
             apply(&mut state, away);
             let mut restore = request(2, Some(index.clone()), SelectionAction::Rebase);
             restore.navigation = NavigationId(2);
-            restore.restore = Some(origin.clone());
             restore.authoritative = Some(authority.clone());
             assert_eq!(apply(&mut state, restore).bits(), &[1]);
             for (revision, path, expected) in [(3, "b", 0b011), (4, "a", 0b010)] {
@@ -1094,10 +1091,8 @@ mod tests {
         }
         let mut restored = request(1, Some(original), SelectionAction::Rebase);
         restored.navigation = NavigationId(5);
-        // A retry can have neither boolean reset nor restore metadata: the
-        // persistent context barrier remains authoritative after queue refusal.
-        restored.reset = false;
-        restored.restore = None;
+        // A retry carries no origin metadata: the persistent context barrier
+        // remains authoritative after queue refusal.
         let selected = apply(&mut state, restored);
         assert!(!selected.contains_path(std::path::Path::new("a")));
         assert!(selected.contains_path(std::path::Path::new("b")));
@@ -1119,7 +1114,6 @@ mod tests {
         let mut retried = request(2, Some(index.clone()), SelectionAction::Rebase);
         retried.navigation = NavigationId(2);
         retried.context = NavigationId(2);
-        retried.reset = false;
         assert!(apply(&mut state, retried).is_empty());
         let mut next = request(
             3,

@@ -70,7 +70,7 @@ pub(super) fn archive_pane() -> Presenter {
 #[test]
 fn archive_listing_clears_native_folder_column_samples() {
     let p = archive_pane();
-    assert_eq!(p.panes[0].folder_column_samples.maximum(), None);
+    assert_eq!(p.panes[0].folder_column_samples.values().max(), None);
 }
 
 #[test]

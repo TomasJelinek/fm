@@ -115,7 +115,7 @@ impl Presenter {
         mode: SelectionMode,
     ) -> bool {
         let p = &mut self.panes[pane.index()];
-        if !capture.matches(p) || ranges.len() != capture.len {
+        if !capture.matches(p) || ranges.source_len() != capture.len {
             p.rectangle_preview = None;
             return false;
         }
@@ -197,7 +197,7 @@ impl Presenter {
         send: &dyn Fn(Command) -> bool,
     ) -> bool {
         self.cancel_rectangle(pane);
-        if !capture.matches(&self.panes[pane.index()]) || ranges.len() != capture.len {
+        if !capture.matches(&self.panes[pane.index()]) || ranges.source_len() != capture.len {
             return false;
         }
         if self.panes[pane.index()].tree_view().is_some() {

@@ -180,7 +180,6 @@ impl Presenter {
                 p.selection_revision = SelectionRevision(0);
                 p.selection_applied = SelectionRevision(0);
                 p.selection_resolved = SelectionRevision(0);
-                p.selection_reset = true;
             }
             if let Some(archive) = &mut p.archive {
                 archive.clear_tree_selection(&mut self.retired);
