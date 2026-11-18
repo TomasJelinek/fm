@@ -82,6 +82,15 @@ fn independent_spools_retain_root_and_allow_concurrent_readers() {
 }
 
 #[test]
+fn the_private_root_reports_its_volume_capacity() {
+    let temporary = tempfile::tempdir().unwrap();
+    let root = PrivateSpoolDirectory::open(&temporary.path().join("private")).unwrap();
+    let space = root.space().unwrap();
+    assert!(space.total > 0, "{space:?}");
+    assert!(space.available <= space.total, "{space:?}");
+}
+
+#[test]
 fn empty_spools_and_chunk_boundary_are_valid() {
     let temporary = tempfile::tempdir().unwrap();
     let root = PrivateSpoolDirectory::open(&temporary.path().join("private")).unwrap();

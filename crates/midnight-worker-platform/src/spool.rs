@@ -21,6 +21,26 @@ mod tests;
 /// Maximum single read or append; total length is limited only by the OS and storage.
 pub const MAX_IO: usize = 256 * 1024;
 
+/// A writer of content without a byte ceiling (decoded archive members) queries its
+/// spool volume at least once per this many appended bytes.
+pub const SPACE_CHECK_INTERVAL: u64 = 64 << 20;
+
+/// Free space that such writers leave on a spool volume of `total` bytes: the larger
+/// of 1 GiB and 2% of its capacity.
+pub fn free_space_reserve(total: u64) -> u64 {
+    (1u64 << 30).max(total / 50)
+}
+
+/// Capacity of the volume that holds a private spool directory, in bytes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SpoolSpace {
+    /// Free space this process may still use: blocks available to unprivileged
+    /// users on Linux, the caller's quota-limited free bytes on Windows.
+    pub available: u64,
+    /// The volume's capacity, also quota-limited for the caller on Windows.
+    pub total: u64,
+}
+
 #[path = "spool_report.rs"]
 mod report;
 pub use report::{AppendSpool, SpoolPrefix};
@@ -61,6 +81,11 @@ impl PrivateSpoolDirectory {
             length: 0,
             state: State::Writing,
         })
+    }
+
+    /// Query the volume that holds this directory: one native call, for backend workers.
+    pub fn space(&self) -> io::Result<SpoolSpace> {
+        native::space(&self.0)
     }
 }
 

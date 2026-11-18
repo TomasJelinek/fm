@@ -1,6 +1,8 @@
 //! Session-owned content staging. Native paths and handles never cross the worker wire.
 use midnight_filesystem_api::{MAX_READ, Message, StagePurpose};
-use midnight_worker_platform::spool::{PrivateSpoolDirectory, Spool};
+use midnight_worker_platform::spool::{
+    PrivateSpoolDirectory, SPACE_CHECK_INTERVAL, Spool, SpoolSpace, free_space_reserve,
+};
 use std::{
     collections::{HashMap, VecDeque},
     io,
@@ -26,6 +28,9 @@ struct Pending {
     expected: Option<u64>,
     maximum: u64,
     completed: u64,
+    /// Bytes this stage may still append before it queries the spool volume again.
+    /// It starts at zero, so the first append queries the volume.
+    space_budget: u64,
     spool: Spool,
 }
 struct Sealed {
@@ -70,6 +75,8 @@ struct Cached {
 }
 pub(crate) struct Staging {
     root: PrivateSpoolDirectory,
+    /// Queries the volume of `root`; tests substitute a fake volume.
+    space: fn(&PrivateSpoolDirectory) -> io::Result<SpoolSpace>,
     next: u64,
     pending: Option<(u64, Pending)>,
     sealed: HashMap<u64, Sealed>,
@@ -114,6 +121,7 @@ impl Staging {
     pub(crate) fn open(root: &Path) -> io::Result<Self> {
         Ok(Self {
             root: PrivateSpoolDirectory::open(root)?,
+            space: PrivateSpoolDirectory::space,
             next: 0,
             pending: None,
             sealed: HashMap::new(),
@@ -183,6 +191,7 @@ impl Staging {
                         expected: *expected_length,
                         maximum: *max_length,
                         completed: 0,
+                        space_budget: 0,
                         spool: self.root.create()?,
                     },
                 ));
@@ -197,14 +206,36 @@ impl Staging {
                 bytes,
                 ..
             } => {
-                let pending = self.pending_mut(*stage, request)?;
-                let end = offset.checked_add(bytes.len() as u64).ok_or_else(invalid)?;
+                let pending = pending_stage(&mut self.pending, *stage, request)?;
+                let length = bytes.len() as u64;
+                let end = offset.checked_add(length).ok_or_else(invalid)?;
                 if end > pending.maximum
                     || pending.expected.is_some_and(|expected| end > expected)
                     || bytes.is_empty()
                 {
                     return Err(invalid());
                 }
+                if pending.space_budget < length {
+                    // Each stage's first append, and at least every SPACE_CHECK_INTERVAL
+                    // bytes, queries the volume: never once per small append.
+                    let space = (self.space)(&self.root).map_err(|error| {
+                        io::Error::new(
+                            error.kind(),
+                            format!("Cannot query the archive spool volume's free space: {error}"),
+                        )
+                    })?;
+                    pending.space_budget = space_budget(space);
+                    if pending.space_budget < length {
+                        // Like any other staging failure this ends the exchange, and
+                        // the session drops the partial stage with its staging.
+                        return Err(io::Error::new(
+                            io::ErrorKind::StorageFull,
+                            "Archive staging stopped before the temporary volume's \
+                             free-space reserve (the larger of 1 GiB and 2% of its capacity)",
+                        ));
+                    }
+                }
+                pending.space_budget -= length;
                 let next_offset = pending.spool.append(*offset, bytes)?;
                 Message::StageAck {
                     request,
@@ -215,7 +246,7 @@ impl Staging {
             Message::StageProgress {
                 stage, completed, ..
             } => {
-                let pending = self.pending_mut(*stage, request)?;
+                let pending = pending_stage(&mut self.pending, *stage, request)?;
                 if *completed <= pending.completed {
                     return Err(invalid());
                 }
@@ -227,7 +258,7 @@ impl Staging {
                 }
             }
             Message::StageSeal { stage, length, .. } => {
-                let pending = self.pending_mut(*stage, request)?;
+                let pending = pending_stage(&mut self.pending, *stage, request)?;
                 if pending.spool.length() != *length
                     || pending.expected.is_some_and(|expected| expected != *length)
                 {
@@ -324,13 +355,6 @@ impl Staging {
             self.cache_bytes = self.cache_bytes.saturating_sub(evicted.lease.member_bytes);
         }
     }
-    fn pending_mut(&mut self, stage: u64, request: u64) -> io::Result<&mut Pending> {
-        self.pending
-            .as_mut()
-            .filter(|(id, pending)| *id == stage && pending.request == request)
-            .map(|(_, pending)| pending)
-            .ok_or_else(invalid)
-    }
     pub(crate) fn terminal(
         &mut self,
         operation: &Message,
@@ -407,6 +431,28 @@ impl Staging {
             _ => Err(invalid()),
         }
     }
+}
+/// The pending stage `stage` of `request`. Borrowing only the pending field lets an
+/// append query the spool volume through the root while it holds the stage.
+fn pending_stage(
+    pending: &mut Option<(u64, Pending)>,
+    stage: u64,
+    request: u64,
+) -> io::Result<&mut Pending> {
+    pending
+        .as_mut()
+        .filter(|(id, pending)| *id == stage && pending.request == request)
+        .map(|(_, pending)| pending)
+        .ok_or_else(invalid)
+}
+/// Bytes a stage may append before it queries the spool volume again: at most
+/// `SPACE_CHECK_INTERVAL`, and never so much that the volume's free space would fall
+/// below its reserve. Other programs writing to that volume meanwhile are not counted.
+fn space_budget(space: SpoolSpace) -> u64 {
+    space
+        .available
+        .saturating_sub(free_space_reserve(space.total))
+        .min(SPACE_CHECK_INTERVAL)
 }
 fn invalid() -> io::Error {
     io::Error::new(

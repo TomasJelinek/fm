@@ -68,11 +68,13 @@ window per entry.
 
 There are no artificial source, member, aggregate disk or expansion-ratio byte
 ceilings: decoded content is bounded by the free space of the host's private spool
-volume and by native file-offset ranges. Disk-full, short writes and flush failures
-discard staging and fail the request. A host free-space reserve (staging would stop
-before that volume falls below max(1 GiB, 2% of its capacity)) is planned but not
-yet enforced, so a highly compressed member can still fill the spool volume until
-staging fails. Metadata remains bounded to 100,000 entries and 8 MiB of names; a
+volume and by native file-offset ranges. The host keeps a free-space reserve on that
+volume: staging fails with a disk-full error before the volume's free space would
+fall below max(1 GiB, 2% of its capacity), so a highly compressed member cannot fill
+it. The host queries the volume on each stage's first append and at least every
+64 MiB appended; other programs' concurrent writes to the volume are not counted.
+Disk-full, short writes, flush failures and the reserve discard staging and fail
+the request. Metadata remains bounded to 100,000 entries and 8 MiB of names; a
 TAR long-name, long-link or PAX record, which tar-rs buffers completely, is bounded
 to 16 MiB and otherwise fails as corrupt; 7z's raw next-header allocation is bounded
 to 64 MiB. The pinned 7z decoder has no public decoded-header allocation hook, so

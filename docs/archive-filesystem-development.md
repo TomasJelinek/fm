@@ -11,9 +11,10 @@ Protocol 3 adds negotiated request-local thumbnail staging cancellation; the
 records same-mount ZIP/solid-7z cancellation, cache retention and retry checks.
 ZIP and TAR index captured ranges; verified member content streams into host-owned
 private spool files. There are no artificial source/member/aggregate disk byte
-ceilings; free space on the host's spool volume bounds decoded content (a reserve
-guard is planned). Metadata, chunks, XZ/Zstandard windows, 7z dictionaries, retained
-7z siblings and process memory remain bounded.
+ceilings; free space on the host's spool volume bounds decoded content, and staging
+stops before that volume falls below max(1 GiB, 2% of its capacity) free. Metadata,
+chunks, XZ/Zstandard windows, 7z dictionaries, retained 7z siblings and process
+memory remain bounded.
 Compressed TAR still requires complete outer-stream decoding and integrity checks.
 See [the resumed design and Salamander source references](superpowers/specs/2026-11-09-archive-streaming-design.md).
 The current author-facing reference is [Filesystem API](developer/FILESYSTEM_API.md).

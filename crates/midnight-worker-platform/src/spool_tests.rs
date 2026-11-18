@@ -36,6 +36,15 @@ fn failed_flush_cannot_be_retried_into_a_readable_spool() {
 }
 
 #[test]
+fn the_free_space_reserve_is_the_larger_of_one_gibibyte_and_two_percent() {
+    const GIB: u64 = 1 << 30;
+    assert_eq!(free_space_reserve(0), GIB);
+    assert_eq!(free_space_reserve(50 * GIB), GIB);
+    assert_eq!(free_space_reserve(100 * GIB), 2 * GIB);
+    assert_eq!(free_space_reserve(u64::MAX), u64::MAX / 50);
+}
+
+#[test]
 fn signed_platform_offset_range_accepts_large_files_without_a_policy_quota() {
     assert_eq!(
         checked_end(16 * 1024 * 1024 * 1024, MAX_IO).unwrap(),

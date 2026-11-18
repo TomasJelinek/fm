@@ -74,6 +74,116 @@ fn an_unusable_spool_root_yields_to_the_next_private_candidate() {
     assert!(Staging::open_first(Vec::new()).is_err());
 }
 
+const GIB: u64 = 1 << 30;
+thread_local! {
+    /// Free space above the reserve that `fake_volume` reports, and its query count.
+    static ABOVE_RESERVE: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    static QUERIES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+/// A 100 GiB volume, whose reserve is 2 GiB, with `ABOVE_RESERVE` more bytes free.
+fn fake_volume(_: &PrivateSpoolDirectory) -> io::Result<SpoolSpace> {
+    QUERIES.set(QUERIES.get() + 1);
+    Ok(SpoolSpace {
+        available: 2 * GIB + ABOVE_RESERVE.get(),
+        total: 100 * GIB,
+    })
+}
+fn staging_on_fake_volume(above_reserve: u64) -> (tempfile::TempDir, Staging) {
+    let (temp, mut staging) = staging();
+    staging.space = fake_volume;
+    ABOVE_RESERVE.set(above_reserve);
+    QUERIES.set(0);
+    (temp, staging)
+}
+fn pending_length(staging: &Staging) -> u64 {
+    staging.pending.as_ref().unwrap().1.spool.length()
+}
+
+#[test]
+fn staging_stops_before_the_spool_volume_reserve_and_writes_nothing() {
+    // Three bytes above the reserve cannot take a four-byte chunk.
+    let (_temp, mut staging) = staging_on_fake_volume(3);
+    let op = read(1, 2);
+    staging.nested(&op, &begin(1, 2)).unwrap();
+    let error = staging.nested(&op, &append(1, 1)).unwrap_err();
+    assert_eq!(error.kind(), io::ErrorKind::StorageFull);
+    assert!(error.to_string().contains("free-space reserve"), "{error}");
+    assert_eq!(pending_length(&staging), 0);
+    assert_eq!(QUERIES.get(), 1);
+    // The volume may fill exactly up to its reserve.
+    let (_temp, mut staging) = staging_on_fake_volume(4);
+    staging.nested(&op, &begin(1, 2)).unwrap();
+    staging.nested(&op, &append(1, 1)).unwrap();
+    assert_eq!(pending_length(&staging), 4);
+}
+
+#[test]
+fn the_spool_volume_is_queried_on_each_stage_and_once_per_budget_not_per_append() {
+    // Twelve bytes above the reserve: one query admits three four-byte appends.
+    let (_temp, mut staging) = staging_on_fake_volume(12);
+    let op = read(1, 2);
+    let Some(Message::StageCreated { stage, .. }) = staging
+        .nested(
+            &op,
+            &Message::StageBegin {
+                request: 1,
+                purpose: StagePurpose::Member { entry: 2 },
+                expected_length: None,
+                max_length: 20,
+            },
+        )
+        .unwrap()
+    else {
+        panic!("member stage was not created")
+    };
+    let mut queries = Vec::new();
+    for offset in (0..20).step_by(4) {
+        let chunk = Message::StageAppend {
+            request: 1,
+            stage,
+            offset,
+            bytes: b"data".to_vec(),
+        };
+        staging.nested(&op, &chunk).unwrap();
+        queries.push(QUERIES.get());
+    }
+    assert_eq!(queries, [1, 1, 1, 2, 2]);
+    // The next stage queries on its first append again.
+    let seal = Message::StageSeal {
+        request: 1,
+        stage,
+        length: 20,
+    };
+    staging.nested(&op, &seal).unwrap();
+    let reply = Message::ContentReady {
+        request: 1,
+        entry: 2,
+        stage,
+        offset: 0,
+        length: 20,
+    };
+    staging.terminal(&op, &reply).unwrap();
+    stage_member(&mut staging, 2, 3, b"next");
+    assert_eq!(QUERIES.get(), 3);
+}
+
+#[test]
+fn ample_space_is_queried_once_per_check_interval_and_a_full_volume_admits_nothing() {
+    let space = |available| SpoolSpace {
+        available,
+        total: 100 * GIB,
+    };
+    assert_eq!(space_budget(space(50 * GIB)), SPACE_CHECK_INTERVAL);
+    assert_eq!(space_budget(space(2 * GIB + 5)), 5);
+    assert_eq!(space_budget(space(GIB)), 0);
+    // A small volume keeps at least 1 GiB.
+    let small = SpoolSpace {
+        available: GIB + 1,
+        total: 10 * GIB,
+    };
+    assert_eq!(space_budget(small), 1);
+}
+
 #[test]
 fn member_is_unreadable_until_sealed_and_terminal_validates_identity_and_range() {
     let (_temp, mut staging) = staging();
