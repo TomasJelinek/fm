@@ -238,7 +238,10 @@ impl Controller {
         let cancel = self.cancel.clone();
         let outbox = self.outbox.clone();
         let wake = self.wake.clone();
-        tasks.spawn_blocking(self.scope.blocking(move || {
+        // The worker lives for the rest of the session: keep it off the bounded
+        // blocking pool that listings and scans need. Controller drop still ends it
+        // through cancellation, the closed inbox and the session waker.
+        let run = self.scope.blocking(move || {
             let mut native = Native::new(wake);
             while let Some(request) = next_request(&mut worker.receiver, &mut native, &cancel) {
                 let event = match prepare(&request.action, &cancel) {
@@ -280,8 +283,10 @@ impl Controller {
                 }
             }
             // Session never enters the transferable guard: create, pump and Drop stay here.
-            // The guarded inbox also covers cancellation before this closure ever starts.
-        }));
+            // The guarded inbox also covers cancellation before this closure ever starts
+            // (only possible when the OS refuses the thread and the pool runs it instead).
+        });
+        crate::actor_thread::spawn("midnight-clipboard", tasks, run);
         sender
     }
     async fn submit(&mut self, request: Request, tasks: &mut JoinSet<()>) {
@@ -405,7 +410,7 @@ impl Controller {
 }
 impl Drop for Controller {
     fn drop(&mut self) {
-        // A started blocking worker cannot be aborted by dropping its JoinSet: cancel it,
+        // A started worker thread cannot be aborted by dropping its JoinSet: cancel it,
         // close its inbox, then end an idle native wait so that it observes both.
         self.cancel.cancel();
         self.sender = None;
