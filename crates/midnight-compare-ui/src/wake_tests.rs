@@ -7,8 +7,9 @@
 //!
 //! Slint keeps the event-loop proxy process-wide (`set_platform` refuses a second platform
 //! that offers one), so this is the only test in this binary that installs a platform with
-//! one, and the only one whose comparators run a worker. The integration tests use
-//! proxy-less platforms, on which windows poll instead.
+//! one, and the only one whose worker can wake an event loop: the workers of other tests
+//! have wakes that return false. The integration tests use proxy-less platforms, on which
+//! windows poll instead.
 use super::*;
 use midnight_compare_engine::INPUT_QUEUE;
 use midnight_core::{
