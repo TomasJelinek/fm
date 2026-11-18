@@ -72,6 +72,10 @@ pub trait TransferMoveCapture: Send + Sync {
     /// cancellation must invoke restore; successful deletion must clean the stage.
     /// Err means no user entry was moved; terminal outcomes describe actual mutations
     /// and are idempotent. Cancellation/restoration never replaces a new source winner.
+    /// An Err may keep the empty private directory of a failed attempt that its own
+    /// namespace turn could not remove (for example because granted peers refused
+    /// that change): the next capture reuses it, and otherwise `take_stage_cleanup`
+    /// returns it once.
     fn capture(&self, cancel: &Cancellation) -> Result<TransferMoveCaptureOutcome, FsError>;
     /// Restore the held original to its original basename without replacement.
     /// Uses an independent cleanup token: user cancellation must not cancel restore.
@@ -86,9 +90,10 @@ pub trait TransferMoveCapture: Send + Sync {
     fn restoration_completed(&self) -> bool {
         false
     }
-    /// Transfer the exact temporary-directory authority once. After restore or
-    /// accepted disposition, drop ALL source/finalizer/capture handles before
-    /// invoking cleanup. This ticket never owns a source file handle.
+    /// Transfer the exact temporary-directory authority once: the stage of the
+    /// capture, or the empty one that a failed capture kept (see `capture`). After
+    /// restore or accepted disposition, drop ALL source/finalizer/capture handles
+    /// before invoking cleanup. This ticket never owns a source file handle.
     fn take_stage_cleanup(&self) -> Option<Box<dyn TransferMoveStageCleanup>> {
         None
     }
