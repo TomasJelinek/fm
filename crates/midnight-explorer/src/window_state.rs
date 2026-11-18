@@ -2,8 +2,11 @@
 //! existing bounded settings worker. Never publish defaults over an unread file.
 //!
 //! The sampler runs only after a native resize, move or scale change of the main
-//! window or a restoration, and stops once nothing is dirty and no save retry waits,
-//! or while the window is hidden or minimized and so cannot settle.
+//! window or a restoration, and stops once nothing is dirty and no save retry waits.
+//! It also stops while the window is hidden or minimized: such a window can neither
+//! settle nor retry a refused save until it is observed again. Restoring a minimized
+//! window resizes it, and the startup reveal restores its placement; both wake the
+//! sampler.
 use crate::pulse::Pulse;
 use midnight_core::{Command, WindowGeometry, WindowMonitor, WindowRect};
 use midnight_ui::{MainWindow, Presenter};
@@ -60,20 +63,16 @@ impl WindowState {
                     return false;
                 };
                 let mut shared = shared.borrow_mut();
-                let observed = window.window().is_visible()
+                // An unobservable window keeps its pending save, retry included, for
+                // the sample after its next native geometry event.
+                window.window().is_visible()
                     && shared.sample(
                         &window,
                         &mut presenter.borrow_mut(),
                         commands.as_ref(),
                         false,
-                    );
-                // A hidden or minimized window cannot settle; its next native geometry
-                // event wakes the sampler again. Only a refused save keeps it polling.
-                if observed {
-                    shared.pending()
-                } else {
-                    shared.retry_at.is_some()
-                }
+                    )
+                    && shared.pending()
             })
         });
         Self { pulse, state }
