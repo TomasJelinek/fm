@@ -151,7 +151,8 @@ generation cancellation rules and prevent canceled option publications.
   `$XDG_RUNTIME_DIR/midnight-explorer/reports`, then `midnight-explorer-<uid>-reports`
   (effective user ID) and a per-process `midnight-explorer-reports-<pid>` in the
   temporary directory; on Windows `MidnightExplorer-<hex of the account name>-reports`
-  and then `MidnightExplorer-reports-<pid>` in the per-user `%TEMP%`. Each root must
+  and then `MidnightExplorer-reports-<pid>` in the per-user `%TEMP%`. On Linux,
+  links in the runtime and temporary bases are resolved first. Each root must then
   open as an owner-only directory of this user reached without links; a foreign,
   linked or permissive root is refused for the next candidate, and a per-process root
   is removed after its last report closes.

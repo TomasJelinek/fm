@@ -19,8 +19,9 @@ on Windows. On Linux the root is `$XDG_RUNTIME_DIR/midnight-explorer/reports`, t
 `midnight-explorer-<uid>-reports` (effective user ID) and a per-process
 `midnight-explorer-reports-<pid>` in the temporary directory; on Windows
 `MidnightExplorer-<hex of the account name>-reports` and then
-`MidnightExplorer-reports-<pid>` in the per-user `%TEMP%`. Each root must be an
-owner-only directory of this user reached without links; a refused root yields to
+`MidnightExplorer-reports-<pid>` in the per-user `%TEMP%`. On Linux, links in the
+runtime and temporary bases are resolved first. Each root must then be an owner-only
+directory of this user reached without links; a refused root yields to
 the next candidate, and a per-process root is removed after its last report closes
 (`private_spool::private_spool_roots`). A record includes the operation, captured
 path or provider identity and the original reason. Raw native units and control

@@ -353,7 +353,9 @@ Copy capture (with the tree targets it captured) only gives up its count, while 
 last one gives up what it holds. A tree Copy job's prepared archive roots and their
 children drop directly, also in a quarantined Copy, so their archive references are
 given up rather than forgotten. After a failed entry, the remaining entries of a
-target context or tree Copy capture are given up instead of released. Giving up never
+target context or tree capture (Copy or clipboard) are given up instead of released,
+and a captured tree target or selection whose own release step finds the retirement
+quarantined is given up rather than forgotten. Giving up never
 releases a registration or permit: the last mount lease keeps its provider registration
 and mount permit, tree targets and navigations keep the tree registration, and the last
 owner of a tree Copy capture keeps its capture permit, all until exit. A give-up runs
