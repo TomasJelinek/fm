@@ -225,6 +225,9 @@ impl CapturedTransferSources for Sources {
         )
         .map_err(nested::fs_error)
     }
+    fn release_quarantined(self: Arc<Self>) {
+        self.give_up();
+    }
     fn intent(&self) -> TransferIntent {
         self.intent
     }

@@ -525,9 +525,19 @@ impl Directory {
             Self::from_file(file, path.clone())
         })();
         adopted.map_err(|mut failure| {
-            // Nothing was published into the refused directory this call created.
+            // Nothing was published into the refused directory this call created. The
+            // refusal keeps its kind: a refused final-name folder is not retried.
             match crate::ownership::remove_refused_directory(&*self.file, name, pinned) {
                 Ok(()) => self.namespace_changed(name),
+                // Already gone: record the vacant name, or the turn's refresh of the
+                // pins bound there fails.
+                Err(cleanup) if cleanup.kind() == io::ErrorKind::NotFound => {
+                    self.namespace_changed(name)
+                }
+                // Recording would adopt the entry that took the name.
+                Err(cleanup) if cleanup.kind() == io::ErrorKind::InvalidData => failure
+                    .message
+                    .push_str("; another entry has taken that name and was left untouched"),
                 Err(cleanup) => failure
                     .message
                     .push_str(&format!("; the empty new folder remains: {cleanup}")),

@@ -9,6 +9,8 @@ pub trait TransferNamespaceChanges: Send + Sync {
 pub trait TransferNamespaceChange: Send {
     /// Reserve a prospective private name before native creation/capture. False means
     /// choose a fresh nonce; never wait for a peer while retaining the mutation turn.
+    /// The host retains a pin it accepts at least until this transaction finishes, so an
+    /// adapter may identify it by address within the transaction.
     fn reserve_private_child(
         &mut self,
         pin: Option<Arc<dyn TransferNamespacePin>>,

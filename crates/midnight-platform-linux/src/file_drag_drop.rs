@@ -34,10 +34,10 @@ use source::Outgoing;
 
 const TRANSFER_TIMEOUT: Duration = Duration::from_secs(5);
 const EVENT_BUDGET: usize = 128;
-/// Fixed refusal reports for a drop that showed the Copy status. The first two are the
-/// Windows target's texts; neither ever repeats source-supplied data.
-const DESTINATION_CHANGED: &str = "The drop destination changed.";
-const SOURCE_LIST_MISSING: &str = "The drag source did not provide its file list.";
+/// Fixed refusal reports for a drop that showed the Copy status. The first two are shared
+/// with the Windows target; none ever repeats source-supplied data.
+const DESTINATION_CHANGED: &str = midnight_core::DROP_DESTINATION_CHANGED;
+const SOURCE_LIST_MISSING: &str = midnight_core::DROP_SOURCE_LIST_MISSING;
 const LIST_TOO_LARGE: &str = "The dropped file list exceeds the 4 MiB limit.";
 
 pub(crate) struct NativeFileDragDrop;

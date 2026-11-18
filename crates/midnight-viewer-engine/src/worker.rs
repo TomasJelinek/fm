@@ -15,9 +15,8 @@ use std::{
     time::Duration,
 };
 
-/// Bounded retry for work without a wake signal: previous browser and image actors
-/// finishing their teardown and paints waiting for shared raster budget. A closing plugin
-/// session wakes the worker when its dispatcher ends.
+/// Bounded retry for work without a wake signal: paints waiting for shared raster budget.
+/// Closing plugin sessions and browser and image actors wake the worker when they end.
 const RETRY: Duration = Duration::from_millis(12);
 /// Events handled per drain of the active plugin session.
 const DRAIN: usize = 32;

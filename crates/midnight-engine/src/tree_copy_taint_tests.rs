@@ -157,10 +157,18 @@ impl Context {
 #[test]
 fn a_tainted_session_shared_by_a_tree_copy_capture_and_a_navigation_ends_its_worker_in_either_order()
  {
+    use Context::{Fresh, Quarantined};
     let active = Arc::new(Semaphore::new(2));
-    for pane_context in [Context::Fresh, Context::Quarantined] {
+    let contexts = [
+        (Fresh, Fresh),
+        (Fresh, Quarantined),
+        (Quarantined, Fresh),
+        (Quarantined, Quarantined),
+    ];
+    for (copy_context, pane_context) in contexts {
         for copy_first in [true, false] {
-            let case = format!("pane {pane_context:?}, copy first: {copy_first}");
+            let case =
+                format!("copy {copy_context:?}, pane {pane_context:?}, copy first: {copy_first}");
             let (host, probe) = Retirement::tainted_host_for_test(&active);
             let (tab, _, _) = Retirement::copy_mount_for_test(host);
             let capacity = Arc::new(Semaphore::new(1));
@@ -178,7 +186,7 @@ fn a_tainted_session_shared_by_a_tree_copy_capture_and_a_navigation_ends_its_wor
             );
             assert_eq!(host(), (0, false, false), "{case}");
             let release_copy = move || {
-                Context::Fresh
+                copy_context
                     .context()
                     .with(|| nested::release_transfer_sources(copy))
                     .is_err()
@@ -230,41 +238,53 @@ fn release_in_order(
 fn prepared_tree_copy_archive_roots_dropped_in_a_copy_give_up_the_tainted_session() {
     let active = Arc::new(Semaphore::new(2));
     for context in [Context::Fresh, Context::Quarantined] {
-        let (host, probe) = Retirement::tainted_host_for_test(&active);
-        let (tab, _, _) = Retirement::copy_mount_for_test(host);
-        // Preparing a root lists its parent directory before the taint.
-        probe.answer_lists(vec![member(2, "a"), member(3, "b")]);
-        let capacity = Arc::new(Semaphore::new(1));
-        let (copy, _) = capture_and_navigate(&tab, &capacity, false);
-        let service = midnight_platform::LocalFileSystem::new(None);
-        let PreparedCapturedTransfer::Copy(roots) = copy
-            .prepare_with_links(&service, CopyLinkPolicy::Reject, &Cancellation::default())
-            .unwrap()
-        else {
-            panic!("tree Copy roots expected")
-        };
-        assert_eq!(roots.len(), 2);
-        // Preparation handed the capture over to its roots.
-        Context::Fresh
-            .context()
-            .with(|| nested::release_transfer_sources(copy))
-            .unwrap();
-        probe.taint();
-        assert!(
-            Context::Fresh
-                .context()
-                .with(|| nested::release_archive(tab))
-                .is_err()
-        );
-        assert_eq!(probe.releases(), 0, "{context:?}");
-        // The Copy job's payload drop: the first archive root fails on the tainted
-        // session and quarantines the context, unless it already was.
-        let copy_context = context.context();
-        copy_context.with(|| drop(roots));
-        assert!(copy_context.is_quarantined(), "{context:?}");
-        assert_eq!(probe.releases(), 1, "{context:?}: the worker was kept");
-        assert!(probe.stopped() && !probe.dropped(), "{context:?}");
-        assert_eq!(active.available_permits(), 2, "{context:?}");
-        assert_eq!(capacity.available_permits(), 0, "{context:?}");
+        for capture_last in [false, true] {
+            let case = format!("{context:?}, capture released last: {capture_last}");
+            let (host, probe) = Retirement::tainted_host_for_test(&active);
+            let (tab, _, _) = Retirement::copy_mount_for_test(host);
+            // Preparing a root lists its parent directory before the taint.
+            probe.answer_lists(vec![member(2, "a"), member(3, "b")]);
+            let capacity = Arc::new(Semaphore::new(1));
+            let (copy, _) = capture_and_navigate(&tab, &capacity, false);
+            let service = midnight_platform::LocalFileSystem::new(None);
+            let PreparedCapturedTransfer::Copy(roots) = copy
+                .prepare_with_links(&service, CopyLinkPolicy::Reject, &Cancellation::default())
+                .unwrap()
+            else {
+                panic!("tree Copy roots expected")
+            };
+            assert_eq!(roots.len(), 2);
+            let mut copy = Some(copy);
+            if !capture_last {
+                // Preparation handed the capture over to its roots.
+                Context::Fresh
+                    .context()
+                    .with(|| nested::release_transfer_sources(copy.take().unwrap()))
+                    .unwrap();
+            }
+            probe.taint();
+            assert!(
+                Context::Fresh
+                    .context()
+                    .with(|| nested::release_archive(tab))
+                    .is_err()
+            );
+            assert_eq!(probe.releases(), 0, "{case}");
+            // The Copy job's payload drop: the first archive root fails on the tainted
+            // session and quarantines the context, unless it already was. A capture
+            // released after the roots is given up in that quarantined context.
+            let copy_context = context.context();
+            copy_context.with(|| {
+                drop(roots);
+                if let Some(copy) = copy.take() {
+                    assert!(nested::release_transfer_sources(copy).is_err(), "{case}");
+                }
+            });
+            assert!(copy_context.is_quarantined(), "{case}");
+            assert_eq!(probe.releases(), 1, "{case}: the worker was kept");
+            assert!(probe.stopped() && !probe.dropped(), "{case}");
+            assert_eq!(active.available_permits(), 2, "{case}");
+            assert_eq!(capacity.available_permits(), 0, "{case}");
+        }
     }
 }

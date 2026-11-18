@@ -604,7 +604,9 @@ impl DirectoryTree {
 
     /// Bind an explicitly opened provider container, such as a captured archive.
     /// This never guesses a format from a caption or opens a container itself.
-    pub fn attach_container(
+    /// Test-only until tree container discovery and attachment exist (TREE-01).
+    #[cfg(test)]
+    pub(crate) fn attach_container(
         &mut self,
         branch: BranchId,
         target: MountedLocation,
@@ -702,8 +704,9 @@ impl DirectoryTree {
         })
     }
 
-    /// Uses the caller's startup arena for reports retained beyond this tree.
-    pub fn new(
+    /// Uses the caller's startup arena for reports retained beyond this tree. Only the
+    /// engine can construct that arena, so only the engine creates trees.
+    pub(crate) fn new(
         location: MountedLocation,
         limits: TreeLimits,
         reports: crate::ReportArena,

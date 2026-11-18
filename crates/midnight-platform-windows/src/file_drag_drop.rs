@@ -421,8 +421,8 @@ impl Target {
         }
         let (target, targets_revision) = self
             .at(point)
-            .ok_or_else(|| error("The drop destination changed."))?;
-        let data = data.ok_or_else(|| error("The drag source did not provide its file list."))?;
+            .ok_or_else(|| error(DROP_DESTINATION_CHANGED))?;
+        let data = data.ok_or_else(|| error(DROP_SOURCE_LIST_MISSING))?;
         self.sink.try_accept(FileDropRequest {
             files: read_files(data)?,
             target,

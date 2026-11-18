@@ -287,7 +287,35 @@ macro_rules! captured_release {
         }
     };
 }
-captured_release!(release_transfer_sources, CapturedTransferSources);
+/// [`release_archive`] for a tree Copy capture: a context that is already quarantined
+/// cannot run the release, so the capture gives up this reference
+/// (`CapturedTransferSources::release_quarantined`) instead of being forgotten with its
+/// archive references. Clipboard and drop-directory captures hold native targets only.
+pub(crate) fn release_transfer_sources(
+    owner: Arc<dyn midnight_core::CapturedTransferSources>,
+) -> Result<(), FsError> {
+    let context = current().unwrap_or_default();
+    let mut owner = Some(owner);
+    let mut result = Ok(());
+    let returned = context.with(|| {
+        checked_step(|| {
+            if let Some(owner) = owner.take() {
+                result = owner.release_on_worker();
+            }
+        })
+    });
+    if let Some(owner) = owner {
+        contain(&context, || owner.release_quarantined());
+        return Err(unconfirmed());
+    }
+    if !returned && result.is_ok() {
+        result = Err(unconfirmed());
+    }
+    if let Err(error) = &result {
+        context.record(error.clone());
+    }
+    result
+}
 captured_release!(release_clipboard_sources, CapturedClipboardFiles);
 captured_release!(release_drop_directory, CapturedDropDirectory);
 

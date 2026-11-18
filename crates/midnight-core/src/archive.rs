@@ -136,8 +136,9 @@ pub trait ArchiveMount: Send + Sync + std::fmt::Debug {
     /// A host session retains the incoming reference (the filesystem host ends its
     /// worker once every reference was retained that way). A wrapper only gives up its
     /// count when shared; its last owner passes its source reference to the source's
-    /// own failing release and keeps its other resources retained, so the session's
-    /// last reference still reaches the host.
+    /// own failing release, then gives up its other references to the session as a
+    /// quarantined release does, and keeps its registrations and permits retained, so
+    /// the session's last reference still reaches the host.
     fn release_on_worker(self: Arc<Self>) -> Result<(), FsError> {
         std::mem::forget(self);
         Err(FsError::from_io(
@@ -158,12 +159,13 @@ pub trait ArchiveMount: Send + Sync + std::fmt::Debug {
     /// reference is a decrement and destroys nothing. Only the call that consumes the
     /// last owner (atomic Arc::into_inner, so exactly one of any concurrent callers) may
     /// act on what that owner holds, and only as far as quarantine allows. A wrapper
-    /// gives up its source reference the same way and keeps its other resources
-    /// retained. A session owner whose cleanup_unconfirmed is true hands its host
-    /// reference to the host's failing release_on_worker, so the session may end its
-    /// worker and return its process permit while the tainted source and the owner's
-    /// other resources stay retained. An untainted last session owner stays retained,
-    /// since the quarantined caller cannot certify its native teardown.
+    /// gives up its source reference the same way, then its other references to the
+    /// session, and keeps its registrations and permits retained. A session owner
+    /// whose cleanup_unconfirmed is true hands its host reference to the host's
+    /// failing release_on_worker, so the session may end its worker and return its
+    /// process permit while the tainted source and the owner's other resources stay
+    /// retained. An untainted last session owner stays retained, since the quarantined
+    /// caller cannot certify its native teardown.
     ///
     /// The default retains the incoming Arc, which keeps a last owner's host session
     /// and worker until process exit.

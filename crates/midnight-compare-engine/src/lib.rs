@@ -422,7 +422,8 @@ impl Service {
     pub fn has_path_picker(&self) -> bool {
         self.picker.is_some()
     }
-    /// A session whose consumer polls `Session::mailbox`.
+    /// A session whose consumer polls `Session::mailbox`; tests and headless tools use it,
+    /// windows use `open_with_wake`.
     pub fn open(
         &self,
         launch: FileCompareLaunch,

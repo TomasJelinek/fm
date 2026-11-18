@@ -391,6 +391,63 @@ fn copied_folders_wider_than_their_protected_parent_are_refused_and_removed() {
     assert!(parent.join("copied").is_dir());
 }
 
+/// A refused new copied folder that another program removed, or replaced, before its
+/// removal: the error says what happened to the name instead of claiming that the
+/// folder remains, and keeps the refusal's kind.
+fn refused_copied_folder_taken_before_its_removal(replaced: bool) {
+    use std::{ffi::OsStr, os::unix::fs::PermissionsExt};
+    let (_temp, parent) = fixture();
+    fs::set_permissions(&parent, fs::Permissions::from_mode(0o755)).unwrap();
+    let provider = crate::LinuxFileSystem::new(None);
+    let cancel = Cancellation::default();
+    let target = provider
+        .prepare_transfer_destination(&parent, &cancel)
+        .unwrap();
+    let interfering = parent.clone();
+    let refused = crate::ownership::simulation::with_interference_before_refused_removal(
+        move |name| {
+            let path = interfering.join(name);
+            fs::remove_dir(&path).unwrap();
+            if replaced {
+                fs::write(&path, b"another program").unwrap();
+            }
+        },
+        || {
+            crate::ownership::simulation::with_mount_mode(0o777, || {
+                target.create_directory(OsStr::new("copied"), &cancel)
+            })
+        },
+    );
+    let refused = match refused {
+        Ok(_) => panic!("a copied folder wider than its parent was admitted"),
+        Err(error) => error,
+    };
+    assert_eq!(refused.kind, std::io::ErrorKind::Unsupported, "{refused:?}");
+    assert!(!refused.message.contains("remains"), "{}", refused.message);
+    if replaced {
+        assert!(
+            refused
+                .message
+                .contains("another entry has taken that name and was left untouched"),
+            "{}",
+            refused.message
+        );
+        assert_eq!(fs::read(parent.join("copied")).unwrap(), b"another program");
+    } else {
+        assert_eq!(fs::read_dir(&parent).unwrap().count(), 0);
+    }
+}
+
+#[test]
+fn a_refused_copied_folder_whose_name_was_taken_names_that_entry() {
+    refused_copied_folder_taken_before_its_removal(true);
+}
+
+#[test]
+fn a_refused_copied_folder_already_removed_is_not_reported_as_remaining() {
+    refused_copied_folder_taken_before_its_removal(false);
+}
+
 /// A new copied folder must be on its parent's filesystem.
 #[test]
 fn copied_folders_on_another_filesystem_than_their_parent_are_refused_and_removed() {

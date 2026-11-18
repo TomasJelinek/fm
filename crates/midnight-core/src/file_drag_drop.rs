@@ -262,6 +262,13 @@ pub enum DragDropEvent {
     },
 }
 
+/// Fixed refusal report of a native drop target (see [`FileDropSink::reject`]): the
+/// destination under the cursor changed since the Copy status was shown.
+pub const DROP_DESTINATION_CHANGED: &str = "The drop destination changed.";
+/// Fixed refusal report of a native drop target (see [`FileDropSink::reject`]): the drag
+/// source did not deliver its file list.
+pub const DROP_SOURCE_LIST_MISSING: &str = "The drag source did not provide its file list.";
+
 /// Native callbacks may acknowledge Copy only after this reserves copy-queue capacity.
 /// Implementations retain the immutable request and never wait for the UI or perform file I/O.
 pub trait FileDropSink: Send + Sync + 'static {

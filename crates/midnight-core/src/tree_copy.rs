@@ -37,6 +37,14 @@ pub trait CapturedTransferSources: std::fmt::Debug + Send + Sync {
             "release captured transfer sources",
         ))
     }
+    /// Give up this reference where its release cannot run, inside a retirement that
+    /// is already quarantined. Never waits and destroys no native resource: a shared
+    /// reference only gives up its count; the last owner passes the archive references
+    /// it holds to their own quarantined release and keeps its registrations and
+    /// permits retained. The default retains the incoming Arc.
+    fn release_quarantined(self: Arc<Self>) {
+        std::mem::forget(self);
+    }
     fn intent(&self) -> TransferIntent;
     fn root_count(&self) -> usize;
     fn metadata_available(&self) -> bool;

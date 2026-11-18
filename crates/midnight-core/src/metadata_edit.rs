@@ -6,8 +6,11 @@ pub const EDIT_READ_ONLY: u32 = 1;
 pub const EDIT_HIDDEN: u32 = 2;
 pub const EDIT_SYSTEM: u32 = 4;
 pub const EDIT_ARCHIVE: u32 = 32;
+/// Selected targets that all prepared, queued and executing metadata jobs pin together.
 pub const MAX_METADATA_TARGETS: usize = 256;
 pub const MAX_METADATA_DEPTH: usize = 64;
+/// Name bytes, each name counted as its `OsStr::len`, of the names not processed yet that
+/// the snapshots on one recursive traversal path hold together (see `MAX_METADATA_NAMES`).
 pub const MAX_METADATA_NAMES_BYTES: usize = 4 * 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
