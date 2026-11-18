@@ -37,9 +37,12 @@ mandatory fee, subscription or royalty is introduced.
 The directory authorization helper adds a project-owned crate and reuses the pinned
 `getrandom` 0.3.4 (MIT OR Apache-2.0), `windows-sys` 0.61.2 (MIT OR Apache-2.0),
 and `libc` 0.2 (MIT OR Apache-2.0) dependencies already present in the inventory.
-Its Windows API feature selection adds no new package/version and enables only
-native filesystem, process, named-pipe, security, COM initialization and shell
-declarations (`Win32_System_Com` is already selected by other application crates).
+Its twelve Windows API namespace features cover foundation types, filesystem, I/O,
+threading and process, named-pipe, memory, registry, security and security
+authorization, COM initialization, shell and window-message declarations. They add
+no package, version or feature to the application: other application crates select
+each of them too (for example `midnight-platform-windows` the COM, registry and
+window-message features, and `midnight-worker-platform` the named-pipe feature).
 The helper contains no plugin discovery or loading entry point. Existing notices apply.
 
 Make File List adds no third-party library or enabled feature. Its engine reuses
@@ -266,6 +269,17 @@ Windows-host capture for the Linux target, which is not equivalent to a native
 Linux capture for host-dependent build dependencies, found no `app`/Linux record
 missing from the inventory. No row changed. A full regeneration or `--check` still
 needs all forty-six native captures; no native Linux or Darwin capture was taken.
+
+That recheck covers Cargo package, version and feature selections. The vendored,
+patched sources also changed since `48ec78d`, with unchanged versions and licenses:
+the image-rs 0.25.10 AVIF patch now also ends the decoder's wait when an AV1 item
+produces no displayable frame ([patch provenance](../vendor/image/MIDNIGHT_PATCH.md)),
+and the FemtoVG 0.27.0 WGPU patch hardened its binding cache and upload staging
+([vendor notes](../vendor/README.md)). Those two records describe the current
+patches. The copy that the image viewer and the image thumbnailer distribute,
+`plugins/image-decoder/notices/image-0.25.10/MIDNIGHT_PATCH.md`, still describes only
+the constructor change, as does the image viewer's `THIRD-PARTY.md`; updating both
+from the vendored record is pending.
 
 Windows/Linux native 0.2 source is integrated in D merge `5baee471` from C commit
 `42d45def` (25 matching paths). The plugins are not deployed and engine/UI cutover
