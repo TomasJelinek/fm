@@ -183,7 +183,7 @@ fn navigation_shares_the_in_flight_bound_and_its_reply_admits_waiting_assets() {
                     document: 1,
                     browser: 1,
                     frame: "main".into(),
-                    url: "https://mewv-1.invalid/page.html".into(),
+                    url: "https://mewv-1.invalid/mewv-document/page.html".into(),
                 },
                 root: false,
             },

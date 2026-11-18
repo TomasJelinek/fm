@@ -33,11 +33,18 @@ impl DocumentPolicy {
         })
     }
     pub fn origin(&self) -> String {
-        format!("https://mewv-{}.invalid", self.generation)
+        Self::origin_of(self.generation)
     }
     /// Synthetic document URL; relative captured assets resolve below it.
     pub fn main_url(&self) -> String {
-        format!("{}/{DOCUMENT_ROOT}/", self.origin())
+        Self::main_url_of(self.generation)
+    }
+    /// [`Self::main_url`] of `generation`, for state created before its policy.
+    pub fn main_url_of(generation: u64) -> String {
+        format!("{}/{DOCUMENT_ROOT}/", Self::origin_of(generation))
+    }
+    fn origin_of(generation: u64) -> String {
+        format!("https://mewv-{generation}.invalid")
     }
     pub fn access(&self, url: &str) -> Access {
         // CEF provides canonical URLs; compare the full authority boundary, never a prefix host.
