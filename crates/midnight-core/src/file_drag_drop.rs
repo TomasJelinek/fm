@@ -8,6 +8,7 @@ use std::{
     io,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
+    time::Duration,
 };
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -296,9 +297,36 @@ pub trait FileDragDropService: Send + Sync + 'static {
     ) -> Result<Box<dyn FileDragDropSession>, FsError>;
 }
 
+/// Ends a [`FileDragDropSession::wait_pending`] from any thread; see
+/// [`FileDragDropSession::waker`].
+pub type FileDragDropWaker = Arc<dyn Fn() + Send + Sync>;
+
 /// Thread-affine native objects must not be moved to another worker after construction.
+/// Only the [`FileDragDropWaker`] returned by [`waker`](Self::waker) may be used on
+/// other threads.
 pub trait FileDragDropSession {
     fn service_pending(&mut self) -> Result<(), FsError>;
+    /// Block this worker until native input may need [`service_pending`](Self::service_pending),
+    /// the session's [`waker`](Self::waker) was called, or `timeout` elapsed. A wake made
+    /// at any time after the previous wait returned, including before this call started,
+    /// ends this wait at once. A session may shorten the wait to deadlines of its own,
+    /// and may serve input it already holds instead of waiting. Returns can be early or
+    /// spurious: callers call `service_pending` after every return and re-check their
+    /// own state.
+    ///
+    /// The default parks the thread for at most `timeout` and wakes for nothing else.
+    fn wait_pending(&mut self, timeout: Duration) -> Result<(), FsError> {
+        std::thread::park_timeout(timeout);
+        Ok(())
+    }
+    /// A waker that ends the current or the next [`wait_pending`](Self::wait_pending) of
+    /// this session, or None (the default) when only the timeout ends that wait; such a
+    /// session needs short timeouts to stay responsive. Any thread may keep and call the
+    /// waker any number of times (calls may coalesce into one wakeup). A call never
+    /// blocks, and has no effect once the session was dropped.
+    fn waker(&self) -> Option<FileDragDropWaker> {
+        None
+    }
     /// May run a modal native message loop on this worker. Cancellation and target snapshots
     /// remain observable during that loop. Windows may offer Copy|Move; Linux outgoing
     /// transport offers Copy only. Link is unsupported. The receiver owns external work;

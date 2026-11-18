@@ -16,12 +16,43 @@ use std::{
     },
     time::Duration,
 };
-use tokio::{sync::mpsc, task::JoinSet};
+use tokio::{
+    sync::{Notify, mpsc},
+    task::JoinSet,
+};
 
 type Pending = Arc<WorkerOwned<Mutex<HashMap<DropToken, Accepted>>>>;
-type Hover = Arc<Mutex<Option<(u64, Option<PaneId>)>>>;
+type Hover = Arc<Report<Option<(u64, Option<PaneId>)>>>;
 /// The latest undelivered refused native drop, with the lifetime of its drop window.
-type Refused = Arc<Mutex<Option<(Cancellation, FsError)>>>;
+type Refused = Arc<Report<Option<(Cancellation, FsError)>>>;
+
+/// The latest native report of one kind, which `forward` delivers to the UI.
+struct Report<T> {
+    value: Mutex<T>,
+    /// Wakes `forward`. A controller's hover and refusal reports share it, and its
+    /// shutdown signals it.
+    changed: Arc<Notify>,
+}
+impl<T> Report<T> {
+    fn lock(&self) -> std::sync::MutexGuard<'_, T> {
+        self.value.lock().unwrap_or_else(|e| e.into_inner())
+    }
+}
+/// Empty hover and refusal reports that wake the same `forward`.
+fn reports() -> (Hover, Refused) {
+    let changed = Arc::new(Notify::new());
+    (
+        Arc::new(Report {
+            value: Mutex::default(),
+            changed: changed.clone(),
+        }),
+        Arc::new(Report {
+            value: Mutex::default(),
+            changed,
+        }),
+    )
+}
+
 struct Accepted {
     files: FileClipboard,
     destination: Arc<std::path::PathBuf>,
@@ -210,7 +241,13 @@ impl FileDropSink for Sink {
         Ok(())
     }
     fn hover(&self, pane: Option<PaneId>) {
-        *self.hover.lock().unwrap_or_else(|e| e.into_inner()) = Some((self.host.generation, pane));
+        let latest = Some((self.host.generation, pane));
+        let mut hover = self.hover.lock();
+        // Native targets report every pointer motion; only a change needs delivery.
+        if *hover != latest {
+            *hover = latest;
+            self.hover.changed.notify_one();
+        }
     }
     fn reject(&self, error: FsError) {
         // Runs inside the native drop callback, so it never waits and never takes capacity
@@ -220,8 +257,8 @@ impl FileDropSink for Sink {
         if self.cancel.is_cancelled() || self.host.lifetime.is_cancelled() {
             return;
         }
-        *self.refused.lock().unwrap_or_else(|e| e.into_inner()) =
-            Some((self.host.lifetime.clone(), error));
+        *self.refused.lock() = Some((self.host.lifetime.clone(), error));
+        self.refused.changed.notify_one();
     }
 }
 
@@ -350,14 +387,46 @@ struct State {
     pending_preview: Option<InternalDropPreviewRequest>,
     preview_epoch: Option<preview::Epoch>,
     preview_revision: DragPreviewRevision,
-    retired: Vec<Box<dyn Send>>,
+    retired: Retired,
     highest_drag: u64,
     highest_host: u64,
     /// Times the native actor returned from waiting for work.
     #[cfg(test)]
     actor_wakeups: u64,
+    /// Times the preparation worker returned from waiting for work.
+    #[cfg(test)]
+    prepare_wakeups: u64,
 }
 type SharedState = Arc<WorkerOwned<Mutex<State>>>;
+
+/// Owners that the preparation worker drops, off the async executors. Every push wakes
+/// that worker once it runs, so it sleeps until there is something to drop.
+#[derive(Default)]
+struct Retired {
+    owners: Vec<Box<dyn Send>>,
+    /// The preparation worker's signal. `take` keeps it; `std::mem::take` would not.
+    wake: Option<std::sync::mpsc::SyncSender<()>>,
+}
+impl Retired {
+    fn push(&mut self, owner: Box<dyn Send>) {
+        self.owners.push(owner);
+        if let Some(wake) = &self.wake {
+            // A full channel already holds a wakeup the worker has not taken.
+            let _ = wake.try_send(());
+        }
+    }
+    fn take(&mut self) -> Vec<Box<dyn Send>> {
+        std::mem::take(&mut self.owners)
+    }
+    fn len(&self) -> usize {
+        self.owners.len()
+    }
+    #[cfg(test)]
+    fn is_empty(&self) -> bool {
+        self.owners.is_empty()
+    }
+}
+
 struct Start {
     id: DragId,
     host: u64,
@@ -410,7 +479,8 @@ pub(crate) struct Controller {
     events: mpsc::Sender<DragDropEvent>,
     native: Option<mpsc::Sender<Start>>,
     /// Wakes the native actor after a host change, a queued start or shutdown.
-    native_wake: Option<std::sync::mpsc::SyncSender<()>>,
+    native_wake: Option<actor::Wake>,
+    /// Wakes the preparation worker after queued work; retired owners wake it themselves.
     prepare: Option<std::sync::mpsc::SyncSender<()>>,
 }
 
@@ -436,8 +506,7 @@ impl Controller {
     ) -> Self {
         let (events, receiver) = mpsc::channel(64);
         let cancel = Cancellation::default();
-        let hover = Hover::default();
-        let refused = Refused::default();
+        let (hover, refused) = reports();
         tasks.spawn(forward(
             receiver,
             outbox,
@@ -503,7 +572,7 @@ impl Controller {
         if self.native.is_none() {
             let (sender, receiver) = mpsc::channel(1);
             self.native = Some(sender);
-            let (wake, woken) = std::sync::mpsc::sync_channel(1);
+            let (wake, woken) = actor::wake();
             self.native_wake = Some(wake);
             let state = self.state.clone();
             let events = self.events.clone();
@@ -515,6 +584,12 @@ impl Controller {
                 actor::run(state, service, receiver, woken, events, cancel)
             });
             let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+            // Owners retired from now on wake the worker; it drops earlier ones first.
+            self.state
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .retired
+                .wake = Some(sender.clone());
             self.prepare = Some(sender);
             let state = self.state.clone();
             let events = self.events.clone();
@@ -559,7 +634,7 @@ impl Controller {
         let lease = waiter.reserve().await;
         let retired = {
             let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-            (state.retired.len() >= 8).then(|| std::mem::take(&mut state.retired))
+            (state.retired.len() >= 8).then(|| state.retired.take())
         };
         if let Some(retired) = retired {
             // One awaited fallback bounds retirement even if the coalescing resolver
@@ -572,10 +647,9 @@ impl Controller {
             let _ = sender.try_send(());
         }
     }
-    /// A full signal channel already holds a wakeup the actor has not taken.
     fn wake_native(&self) {
-        if let Some(sender) = &self.native_wake {
-            let _ = sender.try_send(());
+        if let Some(wake) = &self.native_wake {
+            wake.wake();
         }
     }
     async fn prepare_kind(
@@ -591,7 +665,6 @@ impl Controller {
             let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
             if id.0 == 0 || id.0 <= state.highest_drag {
                 state.retired.push(Box::new(files.take()));
-                self.wake_prepare();
                 return;
             }
             state.highest_drag = id.0;
@@ -740,7 +813,6 @@ impl Controller {
                 .unwrap_or_else(|e| e.into_inner())
                 .retired
                 .push(Box::new(accepted));
-            self.wake_prepare();
         }
     }
     pub(crate) async fn cancel(&self, id: DragId) {
@@ -758,9 +830,7 @@ impl Controller {
     fn clear_source(&self, id: DragId) -> Option<bool> {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         if state.source.as_ref().is_some_and(|source| source.id == id) {
-            let running = state.clear_source();
-            self.wake_prepare();
-            running
+            state.clear_source()
         } else {
             None
         }
@@ -781,6 +851,8 @@ impl Controller {
         self.cancel.cancel();
         self.wake_prepare();
         self.wake_native();
+        // `forward` has no timer; this ends its wait, also for an undeliverable event.
+        self.hover.changed.notify_one();
         // Without a resolver, the guarded state retires the backlog on final release.
         // A stopping Tokio blocking pool must never become a destructor fallback.
     }
@@ -799,14 +871,13 @@ fn prepare_worker(
     cancel: Cancellation,
 ) {
     loop {
-        let retired = std::mem::take(&mut state.lock().unwrap_or_else(|e| e.into_inner()).retired);
+        let retired = state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .retired
+            .take();
         drop(retired);
         if cancel.is_cancelled() {
-            break;
-        }
-        if let Err(std::sync::mpsc::RecvTimeoutError::Disconnected) =
-            signal.recv_timeout(Duration::from_millis(25))
-        {
             break;
         }
         let work = state
@@ -827,12 +898,28 @@ fn prepare_worker(
             preview::execute(preview, &state, &snapshots, &events);
             continue;
         }
-        let Some(request) = state
+        let request = state
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .prepare
-            .take()
-        else {
+            .take();
+        let Some(request) = request else {
+            // Nothing is queued or retired: sleep, without the state lock, until queued
+            // work, a retired owner or shutdown signals. The worker stops only through
+            // cancellation, which shutdown signals after cancelling: the state it holds
+            // keeps a sender (`Retired::wake`), so this receive cannot fail while it runs.
+            let woken = signal.recv();
+            #[cfg(test)]
+            {
+                state
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .prepare_wakeups += 1;
+            }
+            // Not reached (see above); stopping is safer than spinning on a closed channel.
+            if woken.is_err() {
+                break;
+            }
             continue;
         };
         let result = match &request.files {
@@ -931,6 +1018,8 @@ fn send_worker_event(
     false
 }
 
+/// Delivers the drag events and the latest hover and refusal reports to the UI. It has
+/// no timer: an event, a report's `changed` signal or shutdown wakes it.
 async fn forward(
     mut events: mpsc::Receiver<DragDropEvent>,
     outbox: Outbox,
@@ -938,34 +1027,68 @@ async fn forward(
     refused: Refused,
     cancel: Cancellation,
 ) {
-    let mut tick = tokio::time::interval(Duration::from_millis(25));
+    let changed = hover.changed.clone();
     let mut previous = None;
+    // A report may have changed since both were last found unchanged. `changed` stores
+    // at most one signal, which a wait during a delivery can take.
+    let mut reported = true;
     while !cancel.is_cancelled() {
-        let event = tokio::select! {
-            event = events.recv() => match event { Some(event) => event, None => break },
-            _ = tick.tick() => {
-                let refusal = refused.lock().unwrap_or_else(|e| e.into_inner()).take();
-                // A refusal outside any gesture leaves the native session usable.
-                if let Some((lifetime, error)) = refusal && !lifetime.is_cancelled() {
-                    DragDropEvent::Failed { id: None, error }
-                } else {
-                    let latest = *hover.lock().unwrap_or_else(|e| e.into_inner());
-                    if previous == latest { continue; }
-                    previous = latest;
-                    let Some((host_generation, pane)) = latest else { continue; };
-                    DragDropEvent::Hover { host_generation, pane }
+        let report = if reported {
+            next_report(&hover, &refused, &mut previous)
+        } else {
+            None
+        };
+        let event = match report {
+            Some(event) => event,
+            None => {
+                reported = false;
+                tokio::select! {
+                    event = events.recv() => match event { Some(event) => event, None => break },
+                    () = changed.notified() => {
+                        reported = true;
+                        continue;
+                    }
                 }
-            },
+            }
         };
         let send = outbox.send(Event::DragDrop(event));
         tokio::pin!(send);
         loop {
             tokio::select! {
                 result = &mut send => { if !result { return; } break; },
-                _ = tick.tick() => if cancel.is_cancelled() { return; },
+                () = changed.notified() => {
+                    if cancel.is_cancelled() { return; }
+                    reported = true;
+                },
             }
         }
     }
+}
+
+/// The next report for the UI: a refused drop of a window that is still open, else a
+/// changed hover. A refusal precedes a hover that changed with it.
+fn next_report(
+    hover: &Hover,
+    refused: &Refused,
+    previous: &mut Option<(u64, Option<PaneId>)>,
+) -> Option<DragDropEvent> {
+    let refusal = refused.lock().take();
+    // A refusal outside any gesture leaves the native session usable.
+    if let Some((lifetime, error)) = refusal
+        && !lifetime.is_cancelled()
+    {
+        return Some(DragDropEvent::Failed { id: None, error });
+    }
+    let latest = *hover.lock();
+    if *previous == latest {
+        return None;
+    }
+    *previous = latest;
+    let (host_generation, pane) = latest?;
+    Some(DragDropEvent::Hover {
+        host_generation,
+        pane,
+    })
 }
 
 #[path = "drag_drop_actor.rs"]

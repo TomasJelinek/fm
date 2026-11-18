@@ -180,13 +180,30 @@ arboard, which serves it on its own connection, so the session cannot see that
 text's `SelectionClear`: it counts the text as owned until its own file publication
 replaces it, so after a text copy the session stays open, idle in that wait.
 Measured on Linux (Xvfb) over two idle seconds after a read, a file copy and a text
-copy alike: 196 worker wakeups before, none after. Other engine timers still wake
-while idle: the drag/drop preparation worker (25 ms) and the drag hover forwarder
-(25 ms). The native drag actor services an open native session's non-blocking pump
-every 10 ms; without a session (a native Wayland window, or no platform drag
-service) it sleeps until a host attach or detach, a drag start or shutdown signals
-it. Measured over five idle seconds without a session: 63 (Windows) and 98 (Linux)
-actor wakeups per second before, none after. A task of the operations actor that
+copy alike: 196 worker wakeups before, none after. The drag/drop workers do not
+poll while idle either. The preparation worker sleeps until queued work, a retired
+owner or shutdown signals it, and the hover forwarder until a drag event, a changed
+hover or refusal report, or shutdown. The native drag actor waits in its open
+native session (`FileDragDropSession::wait_pending`): on Windows in
+`MsgWaitForMultipleObjectsEx` on the session's wake event and its STA's messages,
+which carry other applications' OLE calls into the drop target; on Linux in
+`poll()` on an eventfd and the X11 connection, after serving the events x11rb
+already queued. A host attach or detach, a drag start or shutdown ends that wait
+through the session's waker, so they need no five-second safety timeout. The actor
+closes the session on a detach, a new host attach or shutdown, and on Linux also
+when the host window's `DestroyNotify` cancels the host lifetime. A lifetime
+cancelled without a detach ends no wait (the UI detaches after cancelling): such a
+session, on Windows even one whose window was destroyed, refuses drops and now
+closes within that safety timeout instead of within 10 ms. While an incoming X11
+drop's destination is shown or its file list is awaited, the Linux session rechecks
+them every 10 ms, because no event marks the UI changing its drop targets. Without a
+session (a native Wayland window, or no platform drag service) the actor sleeps
+until the controller signals it. Measured over five idle seconds with an open session
+(`measure_idle_wakeups_of_an_open_session` of the platform crates), the former 10 ms
+pump woke 60 (Windows) and 98 (Linux) times per second and the session wait not at
+all, so the actor now wakes only at its safety timeout. Without a session: 63
+(Windows) and 98 (Linux) actor wakeups per second before, none after. A task of the
+operations actor that
 panics or is aborted fails its own job, so the registry entry cannot hold one of
 the 32 slots (and actor exit) indefinitely.
 

@@ -13,7 +13,6 @@ fn filler() -> DragDropEvent {
 fn refused_message(sink: &Sink) -> Option<String> {
     sink.refused
         .lock()
-        .unwrap()
         .as_ref()
         .map(|(_, error)| error.message.clone())
 }
@@ -29,7 +28,7 @@ fn refused_native_drops_keep_the_latest_report_without_waiting_or_reserving_capa
         "The native file list exceeds the 4 MiB limit.",
     ));
     {
-        let refused = sink.refused.lock().unwrap();
+        let refused = sink.refused.lock();
         let (lifetime, reported) = refused.as_ref().expect("a refused drop must be kept");
         assert_eq!(reported.kind, io::ErrorKind::InvalidData);
         assert!(!lifetime.is_cancelled());
@@ -66,7 +65,7 @@ fn refused_native_drops_keep_the_latest_report_without_waiting_or_reserving_capa
     assert_eq!(queued, 64);
 
     // A closed drop window has nobody to tell.
-    sink.refused.lock().unwrap().take();
+    sink.refused.lock().take();
     sink.host.lifetime.cancel();
     sink.reject(error(
         io::ErrorKind::Interrupted,
@@ -102,9 +101,16 @@ async fn stalled_forward(
     (ui, cancel)
 }
 
+/// Stops `forward` as `Controller::shutdown` does: cancel it, then end its wait.
+async fn stop_forward(sink: &Sink, cancel: Cancellation, tasks: &mut JoinSet<()>) {
+    cancel.cancel();
+    sink.hover.changed.notify_one();
+    while tasks.join_next().await.is_some() {}
+}
+
 /// Drains the UI outbox until the Left hover sentinel arrives and returns the drag
-/// events delivered before it. `forward` sends hover only on a tick with no refusal
-/// pending, so a repeated or late refusal arrives before the sentinel.
+/// events delivered before it. `forward` reports a pending refusal before a hover, so
+/// a repeated or late refusal arrives before the sentinel.
 async fn events_before_left_hover(ui: &mut mpsc::Receiver<Event>) -> Vec<DragDropEvent> {
     tokio::time::timeout(Duration::from_secs(5), async {
         let mut before = Vec::new();
@@ -165,8 +171,7 @@ async fn refusal_raised_while_the_ui_is_stalled_is_reported_once_after_it_drains
         0,
         "a refusal is reported once"
     );
-    cancel.cancel();
-    while tasks.join_next().await.is_some() {}
+    stop_forward(&sink, cancel, &mut tasks).await;
 }
 
 #[tokio::test]
@@ -185,8 +190,77 @@ async fn refusal_for_a_window_that_closed_before_delivery_is_dropped() {
         0,
         "a closed window's refusal must not reach the UI"
     );
-    cancel.cancel();
-    while tasks.join_next().await.is_some() {}
+    stop_forward(&sink, cancel, &mut tasks).await;
+}
+
+/// The next drag event that reaches the UI.
+async fn reported(ui: &mut mpsc::Receiver<Event>) -> DragDropEvent {
+    let Ok(Some(Event::DragDrop(event))) =
+        tokio::time::timeout(Duration::from_secs(5), ui.recv()).await
+    else {
+        panic!("no drag report reached the UI");
+    };
+    event
+}
+
+/// With the clock paused, time advances only while every task waits for a timer.
+/// `forward` has none, so each report reaches the UI at the instant it was made.
+#[tokio::test(start_paused = true)]
+async fn reports_reach_the_ui_without_waiting_for_a_timer() {
+    let Harness { sink, events, .. } = Harness::new();
+    let (sender, mut ui) = mpsc::channel(4);
+    let cancel = Cancellation::default();
+    let mut tasks = JoinSet::new();
+    tasks.spawn(forward(
+        events,
+        Outbox {
+            sender,
+            wakeup: Arc::new(|| {}),
+        },
+        sink.hover.clone(),
+        sink.refused.clone(),
+        cancel.clone(),
+    ));
+    let made = tokio::time::Instant::now();
+    sink.hover(Some(PaneId::Left));
+    assert!(matches!(
+        reported(&mut ui).await,
+        DragDropEvent::Hover {
+            pane: Some(PaneId::Left),
+            ..
+        }
+    ));
+    // A refusal precedes the hover that changed with it.
+    sink.reject(error(
+        io::ErrorKind::InvalidData,
+        "The native file list exceeds the 4 MiB limit.",
+    ));
+    sink.hover(Some(PaneId::Right));
+    assert!(matches!(
+        reported(&mut ui).await,
+        DragDropEvent::Failed { id: None, .. }
+    ));
+    assert!(matches!(
+        reported(&mut ui).await,
+        DragDropEvent::Hover {
+            pane: Some(PaneId::Right),
+            ..
+        }
+    ));
+    assert_eq!(
+        tokio::time::Instant::now(),
+        made,
+        "a report waited for a timer"
+    );
+    // An unchanged hover is not delivered again.
+    sink.hover(Some(PaneId::Right));
+    assert!(
+        tokio::time::timeout(Duration::from_secs(1), ui.recv())
+            .await
+            .is_err(),
+        "an unchanged hover reached the UI again"
+    );
+    stop_forward(&sink, cancel, &mut tasks).await;
 }
 
 /// Raises one refused drop from inside its pump, as an OLE `Drop` callback does,
@@ -274,7 +348,16 @@ async fn refused_native_drop_reaches_the_ui_and_keeps_the_native_session() {
     })
     .await;
     // Nothing published after the refusal revoked readiness or repeated it.
-    *controller.hover.lock().unwrap() = Some((fixture.sink.host.generation, Some(PaneId::Left)));
+    let sink = controller
+        .state
+        .lock()
+        .unwrap()
+        .host
+        .as_ref()
+        .unwrap()
+        .sink
+        .clone();
+    sink.hover(Some(PaneId::Left));
     let later = events_before_left_hover(&mut events).await;
     controller.shutdown();
     while tasks.join_next().await.is_some() {}

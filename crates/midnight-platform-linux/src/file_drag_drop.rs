@@ -1,11 +1,12 @@
 //! X11/XWayland drag/drop; native Wayland requires a future same-connection seat bridge.
 use midnight_core::{
     Cancellation, DragFinish, DragHost, FileClipboard, FileClipboardIntent, FileDragDropService,
-    FileDragDropSession, FileDropRequest, FileDropSink, FileDropTarget, FsError,
+    FileDragDropSession, FileDragDropWaker, FileDropRequest, FileDropSink, FileDropTarget, FsError,
     MAX_FILE_CLIPBOARD_BYTES, NativeDragWindow, SharedDropTargets,
 };
 use std::{
     io,
+    os::fd::AsFd,
     path::Path,
     sync::Arc,
     time::{Duration, Instant},
@@ -34,6 +35,10 @@ use source::Outgoing;
 
 const TRANSFER_TIMEOUT: Duration = Duration::from_secs(5);
 const EVENT_BUDGET: usize = 128;
+/// While a drop's destination is shown or its file list is awaited, `service_pending`
+/// rechecks them at this interval: no event marks a read's deadline or the UI
+/// republishing its drop targets.
+const DROP_RECHECK: Duration = Duration::from_millis(10);
 /// Fixed refusal reports for a drop that showed the Copy status. The first two are shared
 /// with the Windows target; none ever repeats source-supplied data.
 const DESTINATION_CHANGED: &str = midnight_core::DROP_DESTINATION_CHANGED;
@@ -173,6 +178,9 @@ struct Session {
     /// How long a dropped file list may take to arrive (`TRANSFER_TIMEOUT`); tests
     /// shorten it.
     read_timeout: Duration,
+    /// Ends `wait_pending`; None when no eventfd could be created, and the session then
+    /// offers no waker.
+    wake: Option<crate::clipboard::Wake>,
 }
 
 impl Session {
@@ -244,6 +252,7 @@ impl Session {
             grabbed_keyboard: false,
             last_time: CURRENT_TIME,
             read_timeout: TRANSFER_TIMEOUT,
+            wake: crate::clipboard::Wake::new().ok(),
         };
         for (window, property, type_, value) in [
             (proxy, session.atoms.proxy, AtomEnum::WINDOW, proxy),
@@ -580,6 +589,53 @@ impl Session {
         }
         Ok(())
     }
+
+    /// Serve at most `EVENT_BUDGET` queued events. Returns false only when none was
+    /// queued: the request buffer is then flushed and x11rb neither holds an event nor
+    /// could read one from the socket, so a wait for the socket to become readable cannot
+    /// sleep through one. Round trips and a flush that cannot write read the events
+    /// that arrive meanwhile into x11rb's queue, so each poll follows a flush.
+    fn serve_events(&mut self) -> Result<bool, FsError> {
+        for served in 0..EVENT_BUDGET {
+            self.connection.flush().map_err(failure)?;
+            let Some(event) = self.connection.poll_for_event().map_err(failure)? else {
+                return Ok(served > 0);
+            };
+            self.event(event)?;
+        }
+        self.connection.flush().map_err(failure)?;
+        Ok(true)
+    }
+
+    /// Wait in poll() until the X11 connection becomes readable, the waker is called or
+    /// `wait_limit(timeout)` elapses. Events that x11rb already read from the socket do
+    /// not make it readable, so callers serve them first (`serve_events`).
+    fn wait_for_input(&self, timeout: Duration) -> Result<(), FsError> {
+        crate::clipboard::wait(
+            self.wake.as_ref(),
+            Some(self.connection.stream().as_fd()),
+            self.wait_limit(timeout),
+        )
+        .map(drop)
+        .map_err(|error| FsError {
+            operation: "Linux file drag/drop",
+            ..error
+        })
+    }
+
+    /// The longest wait for input: `timeout`, or `DROP_RECHECK` while a drop's
+    /// destination is shown or its file list is awaited.
+    fn wait_limit(&self, timeout: Duration) -> Duration {
+        let shown = self
+            .incoming
+            .as_ref()
+            .is_some_and(|incoming| incoming.candidate.is_some());
+        if shown || self.read.is_some() {
+            timeout.min(DROP_RECHECK)
+        } else {
+            timeout
+        }
+    }
 }
 
 impl FileDragDropSession for Session {
@@ -622,13 +678,21 @@ impl FileDragDropSession for Session {
         }
         self.transfers
             .retain(|transfer| transfer.updated.elapsed() < TRANSFER_TIMEOUT);
-        for _ in 0..EVENT_BUDGET {
-            let Some(event) = self.connection.poll_for_event().map_err(failure)? else {
-                break;
-            };
-            self.event(event)?;
+        self.serve_events().map(drop)
+    }
+
+    fn wait_pending(&mut self, timeout: Duration) -> Result<(), FsError> {
+        // Serve the events that x11rb already queued (a round trip reads the events that
+        // precede its reply), which poll() on the socket would sleep through. That also
+        // covers a closed window's session, whose `service_pending` serves nothing.
+        if self.serve_events()? {
+            return Ok(());
         }
-        self.connection.flush().map_err(failure)
+        self.wait_for_input(timeout)
+    }
+
+    fn waker(&self) -> Option<FileDragDropWaker> {
+        self.wake.as_ref().map(crate::clipboard::Wake::waker)
     }
 
     fn start_drag(

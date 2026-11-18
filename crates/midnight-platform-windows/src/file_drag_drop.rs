@@ -42,6 +42,8 @@ use windows_sys::Win32::{
 mod data;
 #[path = "file_drag_drop_input.rs"]
 mod input;
+#[path = "file_drag_drop_wait.rs"]
+pub(crate) mod wait;
 #[cfg(test)]
 use data::make_data;
 use data::read_files;
@@ -70,6 +72,7 @@ impl Session {
         sink: Arc<dyn FileDropSink>,
     ) -> Result<Self, FsError> {
         let hwnd = validate_host(&host)?;
+        let wake = wait::Wake::new().map_err(error)?;
         let ole = Ole::new()?;
         let target = make_target(host.clone(), targets, sink.clone())?;
         // SAFETY: target is an apartment-bound COM object, retained by this actor. Windows
@@ -98,6 +101,7 @@ impl Session {
             sink,
             target,
             token,
+            wake,
             _ole: ole,
         })
     }
@@ -134,6 +138,8 @@ struct Session {
     sink: Arc<dyn FileDropSink>,
     target: IDropTarget,
     token: Box<u8>,
+    /// Ends `wait_pending`; its wakers stay harmless after the session was dropped.
+    wake: wait::Wake,
     _ole: Ole,
 }
 impl FileDragDropSession for Session {
@@ -153,6 +159,14 @@ impl FileDragDropSession for Session {
             }
         }
         Ok(())
+    }
+    fn wait_pending(&mut self, timeout: Duration) -> Result<(), FsError> {
+        // OLE delivers other applications' calls into the registered target through this
+        // STA's message queue; the next `service_pending` dispatches them.
+        self.wake.wait(timeout).map_err(error)
+    }
+    fn waker(&self) -> Option<FileDragDropWaker> {
+        Some(self.wake.waker())
     }
     fn start_drag(
         &mut self,
