@@ -387,11 +387,9 @@ export component ViewerWindow inherits Window {
                             col: root.stacked-image-footer ? 0 : 1;
                             height: root.control-height;
                             spacing: 3px;
-                            // Native auto-toggle would show a layout before the backend
-                            // publishes it. Checked/primary follow the acknowledged frame.
+                            // The acknowledged frame drives the highlight and accessible state.
                             ActionButton { font-size: root.effective-ui-size; control-height: root.control-height; compact: root.compact;
                                 text: "Paged";
-                                checked: root.document-layout == 0;
                                 primary: root.document-layout == 0;
                                 accessible-label: "Paged document layout";
                                 accessible-checkable: true;
@@ -400,7 +398,6 @@ export component ViewerWindow inherits Window {
                             }
                             ActionButton { font-size: root.effective-ui-size; control-height: root.control-height; compact: root.compact;
                                 text: "Continuous";
-                                checked: root.document-layout == 1;
                                 primary: root.document-layout == 1;
                                 accessible-label: "Continuous document layout";
                                 accessible-checkable: true;
