@@ -82,6 +82,14 @@ impl NavigationArchive {
         }
         Ok(())
     }
+    /// Last owner of a tainted or quarantined release: the registration stays retained,
+    /// since its teardown cannot be certified, and `release` gives up the source.
+    fn give_up(&mut self, release: impl FnOnce(Arc<dyn ArchiveMount>)) {
+        std::mem::forget(self.registration.take());
+        if let Some(source) = self.source.take() {
+            release(source);
+        }
+    }
 }
 impl Drop for NavigationArchive {
     fn drop(&mut self) {
@@ -106,6 +114,14 @@ impl ArchiveMount for NavigationArchive {
     fn release_on_worker(self: Arc<Self>) -> Result<(), FsError> {
         let mut reference = crate::copy_nested_retirement::Retained::new(self);
         if reference.get().cleanup_unconfirmed() {
+            // Never destroyed: a shared reference only gives up its count, and the last
+            // one hands its source to the source's own failing release, so the
+            // session's last owner still reaches the host's.
+            if let Some(mut owner) = Arc::into_inner(reference.take()) {
+                owner.give_up(|source| {
+                    let _ = source.release_on_worker();
+                });
+            }
             return Err(crate::copy_nested_retirement::unconfirmed());
         }
         let Some(mut owner) = Arc::into_inner(reference.take()) else {
@@ -117,6 +133,11 @@ impl ArchiveMount for NavigationArchive {
             context.record(error.clone());
         }
         result
+    }
+    fn release_quarantined(self: Arc<Self>) {
+        if let Some(mut owner) = Arc::into_inner(self) {
+            owner.give_up(|source| source.release_quarantined());
+        }
     }
     fn id(&self) -> u64 {
         self.source().id()

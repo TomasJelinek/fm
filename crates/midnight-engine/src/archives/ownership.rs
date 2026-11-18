@@ -94,12 +94,7 @@ impl ArchiveMount for GuardedMount {
         // Armed before the status query, whose unwind then retains the owner. An
         // untainted last owner stays retained: this context cannot certify teardown.
         let mut owner = Retained::new(owner);
-        if owner
-            .get()
-            .source
-            .as_ref()
-            .is_some_and(|source| source.cleanup_unconfirmed())
-        {
+        if tainted(owner.get()) {
             release_tainted(owner.take());
         }
     }
@@ -247,6 +242,13 @@ fn last_owner(reference: Arc<GuardedMount>) -> Option<WorkerOwned<Native>> {
     Arc::into_inner(reference).and_then(|mut mount| mount.0.take())
 }
 
+fn tainted(native: &Native) -> bool {
+    native
+        .source
+        .as_ref()
+        .is_some_and(|source| source.cleanup_unconfirmed())
+}
+
 /// Give a tainted session's host reference its final release. The host stops the
 /// worker and returns its process permit but keeps the tainted source; this
 /// wrapper's retained-mount slot and cleanup lease stay quarantined as well.
@@ -274,7 +276,22 @@ fn release_tainted(owner: WorkerOwned<Native>) {
 
 fn release_native(owner: WorkerOwned<Native>) -> Result<(), FsError> {
     let context = nested::current().unwrap_or_default();
-    let (native, lease) = owner.into_parts();
+    // Armed before the status callback, which may run on this owner's Drop path: its
+    // unwind is contained and retains the owner. A tainted session also reaches its
+    // host when its last reference is dropped inside an already quarantined Copy.
+    let mut owner = Retained::new(owner);
+    let status = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| tainted(owner.get())));
+    if context.is_quarantined() || !matches!(status, Ok(false)) {
+        match status {
+            Ok(true) => release_tainted(owner.take()),
+            Ok(false) => {}
+            Err(payload) => std::mem::forget(payload),
+        }
+        let error = nested::unconfirmed();
+        context.record(error.clone());
+        return Err(error);
+    }
+    let (native, lease) = owner.take().into_parts();
     let mut native = Retained::new(native);
     let mut lease = Retained::new(lease);
     let result = context.with(|| {

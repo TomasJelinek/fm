@@ -132,9 +132,12 @@ pub trait ArchiveMount: Send + Sync + std::fmt::Debug {
     /// Opaque implementations retain the incoming Arc and fail closed. Ordinary Drop
     /// return alone is not a release receipt for an arbitrary deferred native owner.
     /// Known implementations fail if cleanup_unconfirmed is already true, before the
-    /// atomic shared-reference success shortcut, and never destroy that tainted owner:
-    /// a host session retains the incoming reference, while a wrapper gives up its
-    /// reference as [`ArchiveMount::release_quarantined`] describes.
+    /// atomic shared-reference success shortcut, and never destroy that tainted owner.
+    /// A host session retains the incoming reference (the filesystem host ends its
+    /// worker once every reference was retained that way). A wrapper only gives up its
+    /// count when shared; its last owner passes its source reference to the source's
+    /// own failing release and keeps its other resources retained, so the session's
+    /// last reference still reaches the host.
     fn release_on_worker(self: Arc<Self>) -> Result<(), FsError> {
         std::mem::forget(self);
         Err(FsError::from_io(
@@ -154,12 +157,13 @@ pub trait ArchiveMount: Send + Sync + std::fmt::Debug {
     /// the worker/domain that may be waiting for the caller. Giving up a shared
     /// reference is a decrement and destroys nothing. Only the call that consumes the
     /// last owner (atomic Arc::into_inner, so exactly one of any concurrent callers) may
-    /// release the host session, and only as far as quarantine allows: if
-    /// cleanup_unconfirmed is true, the session may end its worker and return its
-    /// process permit (a wrapper hands its host reference to the host's failing
-    /// release_on_worker), while the tainted source and the owner's other resources stay
-    /// retained. Otherwise the last owner stays retained, since the quarantined caller
-    /// cannot certify its native teardown.
+    /// act on what that owner holds, and only as far as quarantine allows. A wrapper
+    /// gives up its source reference the same way and keeps its other resources
+    /// retained. A session owner whose cleanup_unconfirmed is true hands its host
+    /// reference to the host's failing release_on_worker, so the session may end its
+    /// worker and return its process permit while the tainted source and the owner's
+    /// other resources stay retained. An untainted last session owner stays retained,
+    /// since the quarantined caller cannot certify its native teardown.
     ///
     /// The default retains the incoming Arc, which keeps a last owner's host session
     /// and worker until process exit.

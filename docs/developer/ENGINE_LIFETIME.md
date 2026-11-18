@@ -290,13 +290,23 @@ gives up that reference. Exactly one releaser of the last reference (atomic
 `Arc::into_inner`) hands the guard's single host reference to the host's tainted
 release, which ends the worker and returns its process permit
 ([filesystem API](FILESYSTEM_API.md)); the source, the retention token and the cleanup
-slot stay quarantined until exit. A last reference released from a quarantined Copy
+slot stay quarantined until exit. The same holds when the last reference is dropped
+inside a Copy, quarantined or not. A last reference released from a quarantined Copy
 whose session is not tainted stays retained with its worker. An ordinary drop of the
 last reference outside a Copy, such as a closed tab, retires the guard on the archive
-cleanup worker like any other session, which also ends the worker. Limitation: a
-tree's captured archive location, its target and navigation wrappers and provider
-member content still keep their guard reference when they fail a tainted release, so
-a guard they share has no last owner and its worker stays until exit.
+cleanup worker like any other session, which also ends the worker.
+
+Owners that hold the guard give up their reference the same way when the session is
+tainted: a tree's captured archive location (which holds one reference), tree target
+and navigation wrappers, and archive member content. A shared one only loses its
+count; the last one passes its guard reference on, also inside a quarantined Copy,
+while a wrapper keeps its own target context or tree registration retained.
+Limitation: such a retained target context still holds the tree's mount lease and,
+through it, the tree's captured archive reference. Provider-level owners (mount
+leases, target contexts, tree captures, leased member content) also keep their
+references when a quarantined Copy skips their release step or an earlier sibling's
+release failed. A session that is tainted while a tree target or navigation still
+holds it can therefore keep its worker and process permit until exit.
 
 Each archive-size pane reserves one guard for its pending lane before it accepts a
 root. Closing marks/cancels the lane; ordinary worker draining remains unchanged.

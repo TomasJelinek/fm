@@ -32,6 +32,8 @@ struct Records {
 }
 
 struct CapturedArchive {
+    /// The only mount reference: `captured` keeps the address and trail without one,
+    /// so a release hands exactly this reference on.
     mount: Arc<dyn ArchiveMount>,
     captured: ArchiveLocation,
     records: Mutex<Records>,
@@ -162,7 +164,12 @@ fn capture_location(
         );
         parent = Some(*id);
     }
-    let captured = location.clone();
+    let captured = ArchiveLocation {
+        mount: None,
+        address: location.address.clone(),
+        directory: location.directory,
+        trail: location.trail.clone(),
+    };
     check(mount.as_ref(), cancel)?;
     Ok((
         root,
@@ -458,22 +465,27 @@ impl CapturedArchive {
 }
 
 impl MountedFilesystem for CapturedArchive {
+    /// The last capture hands its single mount reference to `release_archive`. A
+    /// tainted mount fails there without destroying anything: while a tab still holds
+    /// the mount, the capture only gives up its count; as the mount's last owner it
+    /// reaches the host's failing release, which ends the worker. Inside an already
+    /// quarantined Copy, where this step cannot run, the capture gives up that
+    /// reference the same way.
     fn release_on_worker(self: Arc<Self>) -> Result<(), ProviderError> {
-        use crate::copy_nested_retirement::{self as nested, Retained};
-        nested::provider_step(|| {
-            let Some(owner) = Arc::into_inner(self) else {
-                return Ok(());
-            };
-            let mut captured = Retained::new(owner.captured);
-            nested::release_archive(owner.mount)
-                .map_err(|error| ProviderError::Failed(error.to_string()))?;
-            if let Some(mount) = captured.get_mut().mount.take() {
-                nested::release_archive(mount)
-                    .map_err(|error| ProviderError::Failed(error.to_string()))?;
-            }
-            drop(captured.take());
-            Ok(())
-        })
+        use crate::copy_nested_retirement as nested;
+        nested::provider_release(
+            self,
+            |capture| match Arc::into_inner(capture) {
+                Some(owner) => nested::release_archive(owner.mount)
+                    .map_err(|error| ProviderError::Failed(error.to_string())),
+                None => Ok(()),
+            },
+            |capture| {
+                if let Some(owner) = Arc::into_inner(capture) {
+                    nested::give_up_archive(owner.mount);
+                }
+            },
+        )
     }
     fn resolve_target(
         &self,
@@ -582,20 +594,37 @@ impl ContentSource for MemberContent {
     fn cleanup_unconfirmed(&self) -> bool {
         self.mount.cleanup_unconfirmed()
     }
+    /// Never destroys a tainted mount: a shared reference fails after giving up its
+    /// count, and the last one hands its mount reference to the mount's own failing
+    /// release, so the mount's last owner still reaches the host's.
     fn release_on_worker(self: Arc<Self>) -> Result<(), Error> {
-        let mut reference = crate::copy_nested_retirement::Retained::new(self);
-        crate::copy_nested_retirement::content_step(|| {
-            if reference.get().cleanup_unconfirmed() {
-                return Err(Error(
-                    crate::copy_nested_retirement::unconfirmed().to_string(),
-                ));
-            }
-            let Some(owner) = Arc::into_inner(reference.take()) else {
-                return Ok(());
-            };
-            crate::copy_nested_retirement::release_archive(owner.mount)
-                .map_err(|error| Error(error.to_string()))
-        })
+        use crate::copy_nested_retirement::{self as nested, Retained};
+        let unconfirmed = || Error(nested::unconfirmed().to_string());
+        nested::content_release(
+            self,
+            |reference| {
+                // Armed before the status query, whose unwind then retains it.
+                let mut reference = Retained::new(reference);
+                let tainted = reference.get().cleanup_unconfirmed();
+                let owner = Arc::into_inner(reference.take());
+                if tainted {
+                    if let Some(owner) = owner {
+                        let _ = owner.mount.release_on_worker();
+                    }
+                    return Err(unconfirmed());
+                }
+                match owner {
+                    Some(owner) => nested::release_archive(owner.mount)
+                        .map_err(|error| Error(error.to_string())),
+                    None => Ok(()),
+                }
+            },
+            |reference| {
+                if let Some(owner) = Arc::into_inner(reference) {
+                    nested::give_up_archive(owner.mount);
+                }
+            },
+        )
     }
     fn length(&self) -> u64 {
         self.length

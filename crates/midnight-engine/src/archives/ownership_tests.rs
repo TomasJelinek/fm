@@ -326,10 +326,12 @@ impl HostProbe {
     }
 }
 
-/// How an owner gives up its archive reference.
+/// How an owner gives up its guard reference. Tree captures, targets, navigations and
+/// member content that hold the guard are covered in `providers::archive_taint_tests`.
 #[derive(Clone, Copy, Debug)]
 enum Release {
-    /// `ArchiveMount::release_on_worker`, e.g. by a tree registry.
+    /// The guard's own `ArchiveMount::release_on_worker`, as a sharing owner outside
+    /// Copy calls it.
     Worker,
     /// `release_archive` inside an already quarantined Copy context.
     Quarantined,
@@ -411,6 +413,71 @@ fn shared_tainted_release_does_not_pin_the_session_past_the_last_ordinary_drop()
         );
         assert_eq!(active.available_permits(), 2);
     }
+}
+
+#[test]
+fn tainted_last_reference_dropped_inside_a_copy_still_reaches_the_host_release() {
+    let (domain, mounts) = fixture();
+    let active = Arc::new(Semaphore::new(2));
+    for quarantined in [false, true] {
+        let (host, probe) = TaintedHost::start(&active);
+        let pane: Arc<dyn ArchiveMount> = mounts.adopt(host).unwrap();
+        probe.taint();
+        let context = nested::Context::default();
+        if quarantined {
+            context.quarantine();
+        }
+        context.with(|| drop(pane));
+        assert!(context.is_quarantined());
+        assert_eq!(probe.releases(), 1, "quarantined Copy: {quarantined}");
+        assert!(probe.stopped(), "quarantined Copy: {quarantined}");
+        assert_eq!(active.available_permits(), 2);
+        assert!(!probe.dropped(), "the tainted source stays quarantined");
+    }
+    assert_eq!(mounts.retained.available_permits(), RETAINED_MOUNTS - 2);
+    let others: Vec<_> = (2..RETIREMENT_CAPACITY)
+        .map(|_| domain.try_reserve().unwrap())
+        .collect();
+    assert!(
+        domain.try_reserve().is_err(),
+        "cleanup leases stay quarantined"
+    );
+    drop(others);
+}
+
+#[test]
+fn quarantined_release_retains_an_untainted_last_owner_and_decrements_a_shared_one() {
+    let (domain, mounts) = fixture();
+    let active = Arc::new(Semaphore::new(2));
+    // A shared reference given up in a quarantined Copy only loses its count, so the
+    // pane, now the last owner, performs the actual release and nothing stays pinned.
+    let (host, probe) = TaintedHost::start(&active);
+    let pane: Arc<dyn ArchiveMount> = mounts.adopt(host).unwrap();
+    assert!(Release::Quarantined.run(pane.clone()).is_err());
+    assert_eq!(probe.releases(), 0);
+    assert!(!probe.dropped());
+    pane.release_on_worker().unwrap();
+    assert_eq!(probe.releases(), 1);
+    assert!(probe.dropped() && probe.stopped());
+    assert_eq!(active.available_permits(), 2);
+    assert_eq!(mounts.retained.available_permits(), RETAINED_MOUNTS);
+    // A quarantined Copy cannot certify an untainted last owner's native teardown: the
+    // session, its worker, retained-mount slot and cleanup lease all stay.
+    let (host, probe) = TaintedHost::start(&active);
+    let pane: Arc<dyn ArchiveMount> = mounts.adopt(host).unwrap();
+    assert!(Release::Quarantined.run(pane).is_err());
+    assert_eq!(probe.releases(), 0);
+    assert!(!probe.dropped() && !probe.stopped());
+    assert_eq!(active.available_permits(), 1);
+    assert_eq!(mounts.retained.available_permits(), RETAINED_MOUNTS - 1);
+    let others: Vec<_> = (1..RETIREMENT_CAPACITY)
+        .map(|_| domain.try_reserve().unwrap())
+        .collect();
+    assert!(
+        domain.try_reserve().is_err(),
+        "the cleanup lease stays retained"
+    );
+    drop(others);
 }
 
 #[test]
