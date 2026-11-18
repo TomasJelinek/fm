@@ -102,6 +102,72 @@ fn full_outbox_does_not_block_and_next_tick_retries_latest_status() {
     assert_eq!(wakes.load(Ordering::Relaxed), 1);
 }
 
+/// Checked teardown stores the job's terminal state in the shared status
+/// (`Completion::finish`) and still drops owned resources before the job returns
+/// that state. Ticks in that window must not publish it as progress: delivery
+/// publishes it once the job returns, so each job reports one terminal state.
+#[tokio::test(start_paused = true)]
+async fn cadence_never_republishes_the_terminal_state_that_teardown_stored() {
+    let status = running();
+    let cancel = Cancellation::default();
+    let (sender, mut events) = mpsc::channel(16);
+    let outbox = CopyOutbox::pending(Outbox {
+        sender,
+        wakeup: Arc::new(|| {}),
+    });
+    let throughput = Mutex::new(Tracker::default());
+    let completion = worker::Completion::detached(status.clone(), cancel.clone());
+    let (release, teardown) = tokio::sync::oneshot::channel::<()>();
+    let job = async move {
+        let terminal = completion.finish();
+        // Owned resources are still being dropped.
+        let _ = teardown.await;
+        terminal
+    };
+    let (terminal, finished) = tokio::sync::oneshot::channel();
+    let initial = snapshot(&status);
+    // Teardown ends after three ticks. The virtual deadline elapses only if the
+    // cadence keeps ticking without returning the job's terminal state.
+    tokio::time::timeout(CADENCE * 100, async {
+        tokio::join!(
+            async {
+                let progress =
+                    with_progress_cadence(job, &status, &cancel, &throughput, &outbox).await;
+                let _ = terminal.send(progress);
+            },
+            outbox.clone().deliver(initial, finished),
+            async {
+                // The paused clock passes three ticks while teardown still runs.
+                tokio::time::sleep(CADENCE * 3).await;
+                let _ = release.send(());
+            },
+        );
+    })
+    .await
+    .expect("the cadence returns the job's terminal state to delivery after teardown");
+    let mut terminal_states = Vec::new();
+    while let Ok(event) = events.try_recv() {
+        if let Event::Copy(CopyEvent::Progress(progress)) = event
+            && progress.state.is_terminal()
+        {
+            terminal_states.push(progress.state);
+        }
+    }
+    assert_eq!(terminal_states, [CopyOperationState::Completed]);
+}
+
+#[tokio::test]
+async fn progress_publication_skips_terminal_states() {
+    let status = running();
+    status.lock().unwrap().state = CopyOperationState::Cancelled;
+    let (outbox, mut receiver, wakes) = outbox();
+    publish(&outbox, snapshot(&status)).await;
+    publish_progress_tick(&outbox, &status, Some(snapshot(&status)));
+    publish_progress_tick(&outbox, &status, None);
+    assert!(receiver.try_recv().is_err());
+    assert_eq!(wakes.load(Ordering::Relaxed), 0);
+}
+
 #[test]
 fn closed_outbox_does_not_wake_or_block_the_copy_worker() {
     let status = running();

@@ -8,16 +8,25 @@ use std::{
     path::Path,
 };
 
-/// A session whose bases resolve only through `links` (link, target); any other
-/// base is used as entered.
-fn linked_session(variables: &[(&str, &str)], links: &[(&str, &str)], uid: Option<u32>) -> Session {
+fn variable<'a>(variables: &'a [(&str, &str)]) -> impl Fn(&str) -> Option<OsString> + 'a {
+    move |name: &str| {
+        variables
+            .iter()
+            .find(|(key, _)| *key == name)
+            .map(|(_, value)| OsString::from(value))
+    }
+}
+
+/// A session for `content` whose bases resolve only through `links` (link,
+/// target); any other base is used as entered.
+fn linked_session(
+    variables: &[(&str, &str)],
+    links: &[(&str, &str)],
+    uid: Option<u32>,
+    content: SpoolContent,
+) -> Session {
     from_environment(
-        |name| {
-            variables
-                .iter()
-                .find(|(key, _)| *key == name)
-                .map(|(_, value)| OsString::from(value))
-        },
+        variable(variables),
         |path| {
             links
                 .iter()
@@ -26,11 +35,20 @@ fn linked_session(variables: &[(&str, &str)], links: &[(&str, &str)], uid: Optio
         },
         uid,
         PathBuf::from("/tmp"),
+        content,
     )
 }
 
-fn session(variables: &[(&str, &str)], uid: Option<u32>) -> Session {
-    linked_session(variables, &[], uid)
+/// The roots of `name` for `content`, in a session looked up for that content.
+fn roots(
+    variables: &[(&str, &str)],
+    uid: Option<u32>,
+    process: u32,
+    name: &str,
+    content: SpoolContent,
+) -> Vec<SpoolRoot> {
+    let session = linked_session(variables, &[], uid, content);
+    spool_roots(&session, process, name, content)
 }
 
 fn kept(path: impl Into<PathBuf>) -> SpoolRoot {
@@ -49,16 +67,13 @@ fn per_process(path: impl Into<PathBuf>) -> SpoolRoot {
 
 #[test]
 fn spool_roots_use_xdg_directories_first_and_the_temporary_directory_last() {
-    let desktop = session(
-        &[
-            ("XDG_CACHE_HOME", "/home/u/cache"),
-            ("HOME", "/home/u"),
-            ("XDG_RUNTIME_DIR", "/run/user/1000"),
-        ],
-        Some(1000),
-    );
+    let desktop = [
+        ("XDG_CACHE_HOME", "/home/u/cache"),
+        ("HOME", "/home/u"),
+        ("XDG_RUNTIME_DIR", "/run/user/1000"),
+    ];
     assert_eq!(
-        spool_roots(&desktop, 42, "file-list", SpoolContent::Large),
+        roots(&desktop, Some(1000), 42, "file-list", SpoolContent::Large),
         [
             kept("/home/u/cache/midnight-explorer/file-list"),
             kept("/run/user/1000/midnight-explorer/file-list"),
@@ -68,7 +83,7 @@ fn spool_roots_use_xdg_directories_first_and_the_temporary_directory_last() {
     );
     // Small reports skip the disk-backed cache.
     assert_eq!(
-        spool_roots(&desktop, 42, "reports", SpoolContent::Reports),
+        roots(&desktop, Some(1000), 42, "reports", SpoolContent::Reports),
         [
             kept("/run/user/1000/midnight-explorer/reports"),
             kept("/tmp/midnight-explorer-1000-reports"),
@@ -77,15 +92,13 @@ fn spool_roots_use_xdg_directories_first_and_the_temporary_directory_last() {
     );
     // Relative XDG variables are ignored; the cache defaults to ~/.cache.
     assert_eq!(
-        spool_roots(
-            &session(
-                &[
-                    ("XDG_CACHE_HOME", "relative"),
-                    ("HOME", "/home/u"),
-                    ("XDG_RUNTIME_DIR", "run"),
-                ],
-                Some(1000),
-            ),
+        roots(
+            &[
+                ("XDG_CACHE_HOME", "relative"),
+                ("HOME", "/home/u"),
+                ("XDG_RUNTIME_DIR", "run"),
+            ],
+            Some(1000),
             7,
             "file-list",
             SpoolContent::Large,
@@ -99,8 +112,9 @@ fn spool_roots_use_xdg_directories_first_and_the_temporary_directory_last() {
     // su/sudo/ssh/container sessions without a home, XDG directories or
     // procfs still keep the per-process temporary root.
     assert_eq!(
-        spool_roots(
-            &session(&[("HOME", "relative")], None),
+        roots(
+            &[("HOME", "relative")],
+            None,
             7,
             "file-list",
             SpoolContent::Large
@@ -109,12 +123,14 @@ fn spool_roots_use_xdg_directories_first_and_the_temporary_directory_last() {
     );
 }
 
+/// Both bases go through the shared resolver (`resolve_base`, whose own tests
+/// cover missing trailing names and unresolvable bases); the temporary
+/// directory is used as entered.
 #[test]
 fn linked_cache_and_runtime_bases_resolve_before_the_spool_names_are_appended() {
     let links = [
         ("/data/cache", "/mnt/disk/cache"),
-        ("/home/u", "/var/home/u"),
-        ("/run/user/1000", "/run/user/1000"),
+        ("/run/user/1000", "/run/user-sessions/1000"),
     ];
     assert_eq!(
         spool_roots(
@@ -125,6 +141,7 @@ fn linked_cache_and_runtime_bases_resolve_before_the_spool_names_are_appended() 
                 ],
                 &links,
                 Some(1000),
+                SpoolContent::Large,
             ),
             42,
             "file-list",
@@ -132,30 +149,65 @@ fn linked_cache_and_runtime_bases_resolve_before_the_spool_names_are_appended() 
         ),
         [
             kept("/mnt/disk/cache/midnight-explorer/file-list"),
-            kept("/run/user/1000/midnight-explorer/file-list"),
+            kept("/run/user-sessions/1000/midnight-explorer/file-list"),
             kept("/tmp/midnight-explorer-1000-file-list"),
             per_process("/tmp/midnight-explorer-file-list-42"),
         ]
     );
-    // A linked home resolves before its missing `.cache` is appended; a base that
-    // cannot be resolved is used as entered.
+}
+
+/// Resolving a cache base on an unresponsive network home blocks in
+/// `realpath`, so the session of reports, which skip the cache, never looks it
+/// up.
+#[test]
+fn reports_never_resolve_the_cache_base() {
+    let variables = [
+        ("XDG_CACHE_HOME", "/nfs/u/.cache"),
+        ("HOME", "/nfs/u"),
+        ("XDG_RUNTIME_DIR", "/run/user/1000"),
+    ];
+    let resolved = std::cell::RefCell::new(Vec::new());
+    let session = |content: SpoolContent| {
+        from_environment(
+            variable(&variables),
+            |path: &Path| {
+                assert!(
+                    content == SpoolContent::Large || !path.starts_with("/nfs"),
+                    "reports resolved the cache base {path:?}"
+                );
+                resolved.borrow_mut().push(path.to_owned());
+                None
+            },
+            Some(1000),
+            PathBuf::from("/tmp"),
+            content,
+        )
+    };
     assert_eq!(
         spool_roots(
-            &linked_session(
-                &[("HOME", "/home/u"), ("XDG_RUNTIME_DIR", "/run/user/7")],
-                &links,
-                None,
-            ),
+            &session(SpoolContent::Reports),
             42,
-            "file-list",
-            SpoolContent::Large,
+            "reports",
+            SpoolContent::Reports
         ),
         [
-            kept("/var/home/u/.cache/midnight-explorer/file-list"),
-            kept("/run/user/7/midnight-explorer/file-list"),
-            per_process("/tmp/midnight-explorer-file-list-42"),
+            kept("/run/user/1000/midnight-explorer/reports"),
+            kept("/tmp/midnight-explorer-1000-reports"),
+            per_process("/tmp/midnight-explorer-reports-42"),
         ]
     );
+    assert!(resolved.borrow().contains(&PathBuf::from("/run/user/1000")));
+    // Large content still resolves its cache base.
+    assert_eq!(
+        spool_roots(
+            &session(SpoolContent::Large),
+            42,
+            "file-list",
+            SpoolContent::Large
+        )[0],
+        kept("/nfs/u/.cache/midnight-explorer/file-list")
+    );
+    assert!(resolved.borrow().contains(&PathBuf::from("/nfs/u/.cache")));
 }
 
 #[test]
@@ -172,6 +224,7 @@ fn a_linked_cache_base_is_usable_while_links_below_it_stay_refused() {
             None,
             // Not absolute: no temporary candidates.
             PathBuf::from("relative"),
+            SpoolContent::Large,
         );
         spool_roots(&session, 7, "file-list", SpoolContent::Large)
     };
