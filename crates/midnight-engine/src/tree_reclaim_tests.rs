@@ -5,8 +5,9 @@
 use super::*;
 use crate::providers::NativeProvider;
 use midnight_core::{
-    DirectoryIndex, DirectoryService, Entry, FsError, SpaceInfo, StorageService, TreeEvent,
-    TreeRefreshRequest, TreeSelectionAction, Volume, VolumeService,
+    DirectoryIndex, DirectoryService, Entry, FileClipboardIntent, FsError, SpaceInfo,
+    StorageService, TreeClipboardRequest, TreeClipboardScope, TreeEvent, TreeRefreshRequest,
+    TreeSelectionAction, Volume, VolumeService,
 };
 use std::{
     io,
@@ -283,6 +284,84 @@ fn watched_temporary_churn_keeps_reference_tables_bounded_and_live_rows_intact()
     assert_eq!(published, 0, "reclamation changed a live token");
     assert!(Arc::ptr_eq(session.projection(), &published_view));
     assert_eq!(references(&session), (live, live, live));
+}
+
+/// A paste request whose destination is `row` (no marks, so the fallback row).
+fn paste_request(session: &mut Session, row: TreeRowId) -> TreeClipboardRequest {
+    let publication = session.publication().unwrap();
+    assert!(session.commit(&publication.view));
+    TreeClipboardRequest {
+        scope: TreeClipboardScope::SelectionOrFallback,
+        intent: FileClipboardIntent::Copy,
+        view: publication.view,
+        request: session.last_request.checked_next().unwrap(),
+        selection_revision: publication.selection_revision,
+        selection: publication.selection,
+        fallback: Some(row),
+        cancel: Cancellation::default(),
+    }
+}
+
+#[test]
+fn watch_paste_and_drop_targets_of_a_vanished_row_keep_resolving_after_reclamation() {
+    let churn = Churn::new(10, 10);
+    let mut session = native_session(&churn);
+    expand(&mut session, "keep");
+    expand(&mut session, "tmpdir-0-0");
+    session.tree.reclaim_eagerly();
+    let folder = churn.keep().join("tmpdir-0-0");
+    let folder_row = row(&session, "tmpdir-0-0");
+    // An old watch scope observing the temporary folder, and a paste and a drop
+    // destination captured on its row.
+    let request = paste_request(&mut session, folder_row);
+    let scope = session.watch_scope().unwrap().unwrap();
+    let watched = scope
+        .targets
+        .iter()
+        .find(|target| target.path == folder)
+        .unwrap()
+        .clone();
+    let paste = session
+        .capture_clipboard(
+            &request,
+            &Arc::new(Semaphore::new(1)),
+            &Cancellation::default(),
+        )
+        .unwrap();
+    let drop_target = session
+        .capture_drop_directory(
+            &request.view,
+            folder_row,
+            session.last_request.checked_next().unwrap(),
+            &Arc::new(Semaphore::new(1)),
+            &Cancellation::default(),
+        )
+        .unwrap();
+
+    // The folder disappears and the sweep's completions release its reference.
+    churn.generation.store(1, Ordering::SeqCst);
+    let (event, _) = sweep(&mut session, true);
+    assert!(matches!(event, TreeEvent::Refreshed { result: Ok(()), .. }));
+    assert!(!session.retains_row(folder_row));
+    let (issued, native, live) = references(&session);
+    assert_eq!((issued, native), (live, live));
+
+    // `ScopeTarget::probe` checks exactly this before and after each observation,
+    // so the old scope keeps probing without a spurious failure until replaced.
+    assert!(matches!(
+        watched._mounted.value(),
+        Ok(ProviderTarget::Native(path)) if *path == watched.path
+    ));
+    // Paste resolves its destination before and after the native clipboard read.
+    let files = paste.resolve(&Cancellation::default()).unwrap();
+    assert_eq!(files.paths, std::slice::from_ref(&folder));
+    assert_eq!(
+        drop_target.resolve(&Cancellation::default()).unwrap(),
+        folder
+    );
+    let view = session.projection().clone();
+    assert!(session.commit(&view));
+    assert_eq!(session.watch_scope().unwrap().unwrap().targets.len(), 2);
 }
 
 #[test]

@@ -98,16 +98,20 @@ that failed, stopped or presence-only enumerations bound but never issued, and
 reports its record count (`node_count`) so those count toward reclamation. Both
 tables return their spare capacity once they shrink below a quarter of it.
 
-A per-lease reclaim gate keeps this safe without waiting. Listings, presence
-probes and parent lookups hold it shared from their first check through the
-provider call and the issue step; reclamation takes it only if it is free and
-otherwise skips (`Ok(None)`), so it never releases a reference that a call in
-flight may bind, emit or issue. The lease forgets before the provider, so every
-reference it still issues stays known to the provider. Providers that keep the
-default `retain_nodes`, such as captured archives, keep every record, and a mount
-whose owner never reclaims keeps its history up to the caps above. Under the tree,
-both tables hold the live model, at most one reclamation threshold and one listing,
-regardless of how long the mount lives.
+A per-lease reclaim gate covers the calls in flight without waiting. Listings,
+presence probes and parent lookups hold it shared from their first check through
+the provider call and the issue step; reclamation takes it only if it is free and
+otherwise skips (`Ok(None)`), so it never releases a reference that a running call
+may bind, emit or issue. The gate does not cover a call that has returned: `keep`
+must also hold the references of results the lister has not applied yet, and the
+tree meets this by not reclaiming while any of its branch work or results is
+outstanding. The lease forgets before the provider, so every reference it still
+issues stays known to the provider. Providers that keep the default
+`retain_nodes`, such as captured archives, keep every record, and a mount whose
+owner never reclaims keeps its history up to the caps above. Under the tree, both
+tables hold the live model plus at most one reclamation threshold and the listings
+since the last settled completion (one listing, or one unpublished recursive
+batch), regardless of how long the mount lives.
 
 Plugin-backed native mounts cannot honour `retain_nodes` until the public ABI gains
 a node-release operation. The SDK's native helper keeps up to one million node
@@ -186,8 +190,9 @@ to mutate, or proof that a row is still selected in the current panel snapshot.
 Tests cover provider isolation, cancellation, late output, exhausted IDs, retained
 content and destruction order, malformed responses, unknown providers/codecs,
 non-Unicode names, native source replacement detection, archive reads, and
-reclamation (released and kept references, the reclaim gate, never-reused native
-tokens, returned capacity and resolved targets after release). See
+reclamation (released and kept references, the reclaim gate, no release while
+branch work or results are outstanding, never-reused native tokens, returned
+capacity, and resolved, watch, paste and drop targets after release). See
 `providers/*tests.rs`, `tree_reclaim_tests.rs`, `midnight-core/tests/vfs_identity.rs`
 and `midnight-core/tests/linked_cancellation.rs`.
 

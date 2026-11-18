@@ -396,16 +396,19 @@ impl DirectoryTree {
 
     /// The tree is its mount's only lister and owns reference liveness. Count one
     /// branch completion after the session applied, restored or discarded it, then
-    /// release the root mount's references that no occurrence holds once their
-    /// count (the larger of the issued and the provider's records, which includes
-    /// records failed or presence-only listings bound) reaches the larger of the
-    /// live count and 4,096, or just exceeds 4,096 after a failed or unpublished
-    /// listing, or after 1,024 completions.
+    /// check whether to release the root mount's references that no occurrence
+    /// holds: once their count (the larger of the issued and the provider's
+    /// records, which includes records failed or presence-only listings bound)
+    /// reaches the larger of the live count and 4,096, once it just exceeds 4,096
+    /// after a failed or unpublished listing, or once 1,024 completions passed.
     ///
-    /// `settled`: no unpublished checkpoint can restore other occurrences. A branch
-    /// listing still in flight makes the lease skip without releasing anything.
-    /// Best effort: an error or a skip leaves the tables to a later completion.
-    /// Returns the references kept when it reclaimed.
+    /// Skips, keeping the completion count, unless `settled` (no unpublished
+    /// checkpoint can restore other occurrences) and no `BranchWork` or
+    /// `BranchResult` of this tree is outstanding: a listing that returned but is
+    /// not applied yet issued references that no occurrence holds yet. The lease's
+    /// reclaim gate covers only provider calls in flight. Best effort: a skip or an
+    /// error leaves the tables to a later completion. Returns the references kept
+    /// when it reclaimed.
     pub(crate) fn reclaim_after_completion(
         &mut self,
         settled: bool,
@@ -413,7 +416,8 @@ impl DirectoryTree {
         cancel: &Cancellation,
     ) -> Option<usize> {
         self.completions = self.completions.saturating_add(1);
-        if !settled {
+        // Every outstanding work item and result holds one permit.
+        if !settled || self.active.load(Ordering::Acquire) != 0 {
             return None;
         }
         let (issued, provider) = self.source_reference_counts().ok()?;

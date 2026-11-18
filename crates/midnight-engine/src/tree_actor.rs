@@ -876,10 +876,11 @@ impl Session {
     ) -> Result<bool, ProviderError> {
         let failed = completion.result.failed();
         let applied = self.apply_completion(completion, cancel);
-        // The completion's listing has returned, and a pane runs one branch job at a
-        // time, so no listing of this mount is outstanding (the lease's reclaim gate
-        // skips otherwise). Local checkpoints are committed or restored by now; an
-        // unpublished recursive batch could still restore occurrences from its
+        // The completion and its result are gone, and a pane runs one branch job at
+        // a time, so no branch work or result of this tree is outstanding (the tree
+        // skips otherwise) and no call of the mount is in flight (the lease's reclaim
+        // gate skips otherwise). Local checkpoints are committed or restored by now;
+        // an unpublished recursive batch could still restore occurrences from its
         // checkpoint, so it defers reclamation until it is published or rolled back.
         if let Ok(published) = applied {
             self.tree.reclaim_after_completion(

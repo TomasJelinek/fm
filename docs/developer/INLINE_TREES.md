@@ -131,21 +131,27 @@ snapshots have separate lifecycle requirements; provider reference tables are
 reclaimed down to the model as described next.
 
 After applying, restoring or discarding each branch completion, the session
-releases the root mount's references that no occurrence holds
-(`DirectoryTree::reclaim_after_completion`). It counts released references from
-the larger of the lease's issued references and the provider's records, so native
-records that failed or presence-only listings bound but never issued count too.
-It reclaims once they reach the larger of the live occurrence count and 4,096,
-once they exceed 4,096 after a failed or unpublished listing, or after 1,024
-completions. A pane runs one branch job at a time, so no listing of the mount is
-in flight then, and the lease's reclaim gate skips the pass if one ever is. Local
-listing checkpoints are committed or restored by then. An unpublished recursive
-batch defers reclamation until it is published or rolled back, because a rollback
-restores occurrences from its checkpoint. Captured operation and watch targets
-check registration only, so a queued copy of a row that disappeared keeps its
-target. Under churn, such as temporary files appearing and disappearing in a
-watched folder, the provider tables therefore hold the live references plus at
-most one threshold and one listing, regardless of uptime.
+checks the root mount's references that no occurrence holds
+(`DirectoryTree::reclaim_after_completion`) and releases them once that is due.
+It counts released references from the larger of the lease's issued references
+and the provider's records, so native records that failed or presence-only
+listings bound but never issued count too. Release is due once they reach the
+larger of the live occurrence count and 4,096, once they exceed 4,096 after a
+failed or unpublished listing, or once 1,024 completions have passed. The tree
+skips the check while any of its branch work or results is outstanding, because
+a listing that returned but is not applied yet has issued references that no
+occurrence holds yet; a pane runs one branch job at a time, so in production
+none is outstanding then. The lease's reclaim gate covers only provider calls in
+flight and skips the pass if one ever is. Local listing checkpoints are committed
+or restored by then. An unpublished recursive batch defers reclamation until it
+is published or rolled back, because a rollback restores occurrences from its
+checkpoint. Captured operation, clipboard, drop and watch targets check
+registration only, so a queued copy or paste whose row disappeared keeps its
+target and an old watch scope keeps probing until it is replaced. Under churn,
+such as temporary files appearing and disappearing in a watched folder, the
+provider tables therefore hold the live references plus at most one threshold
+and the listings since the last settled completion (one listing, or one
+unpublished recursive batch of at most 128 listings), regardless of uptime.
 
 Without reclamation a long-lived churning mount would reach the 100,000-reference
 caps. A listing that then meets a new name fails as resource-limited. The root is

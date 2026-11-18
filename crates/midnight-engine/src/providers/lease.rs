@@ -29,8 +29,9 @@ struct MountLease {
     nodes: Mutex<HashMap<NodeToken, EntryKind>>,
     // Listings, presence probes and parent lookups hold this shared from their
     // first check through the provider call and issue step. Reclamation takes it
-    // exclusively without waiting, so it never releases a reference that a call in
-    // flight may bind, emit or issue, and the lease and provider forget together.
+    // exclusively without waiting, so it never releases a reference that a running
+    // call may bind, emit or issue, and the lease and provider forget together.
+    // References a call already returned are the lister's to keep (`retain_issued`).
     reclaim: RwLock<()>,
     // Plugin-backed mount destructor runs before its registration/library owner.
     _registration: Arc<Registration>,
@@ -220,11 +221,12 @@ impl MountedLocation {
     /// `keep` and the root, release every other issued reference and let the
     /// provider forget the tokens it no longer needs (`retain_nodes`). Released
     /// references fail with `StaleReference`. `keep` must contain every reference
-    /// the lister, its checkpoints and its pending work still hold; a resolved
+    /// the lister still holds, including those in its checkpoints and in results
+    /// of calls that returned but that it has not applied yet; a resolved
     /// `MountedTarget` keeps working, as it checks registration only.
     ///
     /// Never waits: returns `Ok(None)` without releasing anything while a listing,
-    /// presence probe or parent lookup of this mount is in flight. Otherwise
+    /// presence probe or parent lookup of this mount is running. Otherwise
     /// returns the number of references still issued. The provider call runs
     /// outside the issued-table lock.
     pub(crate) fn retain_issued(
