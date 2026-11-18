@@ -293,7 +293,8 @@ fn only_a_transient_access_refusal_is_retried_within_its_one_second_budget() {
     )
     .unwrap();
     assert_eq!(millis(&waits), [10, 20]);
-    // A genuine permission refusal, and any other failure, is returned at once.
+    // A refusal the parent directory's DACL explains, and any other failure, is returned at
+    // once.
     for (error, transient) in [
         (denied(), false),
         (os(ERROR_SHARING_VIOLATION as i32), true),

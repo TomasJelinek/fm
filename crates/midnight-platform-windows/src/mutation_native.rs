@@ -318,14 +318,17 @@ fn create_relative(
 /// open files for a moment after they are written (Microsoft Defender: about 10-50 ms per
 /// new file on the test host). Such a refusal is waited out: the same rename is repeated
 /// after 10 ms, then after twice as long each time, for about one second in all, and
-/// then reported (a program keeps an entry below the directory open). Only a directory is
-/// retried, and only while the caller may still add a subdirectory to `parent`: NTFS
-/// refuses a caller without that right with the same error, and the DELETE access the
-/// rename also needs was granted when `source` was opened, so a genuine permission
-/// refusal is reported at once. Meanwhile the handle denies delete sharing, so neither the
-/// directory nor (by the same rule) its ancestors can be renamed, and the no-replace
-/// rename still fails when another entry takes `name`. A paused job waits paused; a
-/// cancelled one stops waiting with `Interrupted`.
+/// then reported. Only a directory is retried, and only while the caller may still add a
+/// subdirectory to `parent`: NTFS refuses a caller without that right with the same
+/// error, and the DELETE access the rename also needs was granted when `source` was
+/// opened, so a refusal by the parent directory's DACL is reported at once. Any other
+/// refusal of a directory rename (a program, including this application's watch of a
+/// subfolder, keeps an entry below open, or a filter driver refuses the rename) is
+/// repeated and reported after about one second, once per refused folder. Meanwhile the
+/// handle denies delete sharing, so neither the directory nor (by the same rule) its
+/// ancestors can be renamed, and the no-replace rename still fails when another entry
+/// takes `name`. A paused job waits paused; a cancelled one stops waiting with
+/// `Interrupted`.
 pub(crate) fn rename(
     source: &File,
     parent: &File,
@@ -349,9 +352,9 @@ fn rename_with(
     )
 }
 
-/// Repeats `attempt` while it fails with `ERROR_ACCESS_DENIED` and `transient` confirms
-/// that the refusal can pass, waiting 10 ms, then twice as long each time, for at most
-/// [`RENAME_RETRY_BUDGET`] in all. Any other result, and the last refusal, is returned.
+/// Repeats `attempt` while it fails with `ERROR_ACCESS_DENIED` and `transient` does not
+/// rule out that the refusal passes, waiting 10 ms, then twice as long each time, for at
+/// most [`RENAME_RETRY_BUDGET`] in all. Any other result, and the last refusal, is returned.
 fn retry_refusal(
     mut attempt: impl FnMut() -> io::Result<()>,
     mut transient: impl FnMut() -> bool,
@@ -377,9 +380,11 @@ fn retry_refusal(
     }
 }
 
-/// Whether `ERROR_ACCESS_DENIED` from renaming `source` can only mean that an entry below
-/// it is open: `source` is a directory, not a link, and the caller may still add a
-/// subdirectory to `parent`, the one right besides DELETE that NTFS checks for it.
+/// Whether `ERROR_ACCESS_DENIED` from renaming `source` may pass, as it does once no entry
+/// below it is open: `source` is a directory, not a link, and the caller may still add a
+/// subdirectory to `parent`, the one right besides DELETE that NTFS checks for it. A
+/// filter driver that refuses the rename itself cannot be told apart and is waited for
+/// too.
 fn refused_for_open_entry(source: &File, parent: &File) -> bool {
     Native::query(source).is_ok_and(|native| native.directory() && !native.link())
         && reopen(
