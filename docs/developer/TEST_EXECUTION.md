@@ -66,16 +66,21 @@ only pure scalar `Changed` / `DirectoryChanged` through transfer terminal, then
 replay the originals before reconciliation/external-write assertions; retain
 native watchers and pre-ACK coverage. Tree watch checks (`tree_watch`,
 `tree_clipboard`, `tree_move`) require the UI row plus native evidence for each
-changed directory after the change: a fresh callback from a live subscription
-whose mask names that directory (an error or overflow names every directory of its
-batch), or the registration of a batch that contains it, because the engine probes
-a directory that joins a batch at once instead of waiting for a callback. Another
-pane's subscription or the engine's periodic poll is no evidence, so a broken
-watch fails its wait even when the poll later reconciles the row. Fences wait
-until a live subscription covers every changed directory. A refresh admitted after
-a callback can still coalesce its hint. Test before-admission coalescing
-separately from post-admission dirty-state survival, retaining existing
-post-admission and default-timing coverage.
+changed directory after the change. Evidence is either a fresh callback from a live
+subscription that contains the directory and whose mask names it (an error or
+overflow names every directory of its batch), or the registration of a batch that
+contains the directory. A registration counts because a directory that joins a
+batch is probed at once instead of waiting for a callback; a directory already in
+the old batch stays covered by the old subscription until the swap ends, and the
+new registration counts for it as well. The subscription may belong to either pane:
+these fixtures root the other pane at `destination`, so its subscription can supply
+that directory's evidence. A subscription that does not contain the directory and
+the engine's periodic poll are no evidence, so the poll alone never satisfies a
+wait; a batch registered after the change does, even when the old subscription
+missed the change. Fences wait until a live subscription covers every changed
+directory. A refresh admitted after a callback can still coalesce its hint. Test
+before-admission coalescing separately from post-admission dirty-state survival,
+retaining existing post-admission and default-timing coverage.
 
 To run two independent headless targets concurrently, select both in the build
 and in the runner (no second Cargo process is needed):
