@@ -146,17 +146,19 @@ captured length/version. The returned source also enforces the broker's bounded
 the mount owner and checks revocation around calls. Viewer consumers never receive
 a fabricated native member path. This is LiveValidated content, not a claim of
 an immutable snapshot. Unknown-length/sequential sources need an additive API.
-No production consumer calls `open_content` yet, and production
-`NativeProvider::audited` installs no capture, so native content through this route
-is `Unsupported`; F3 viewers, thumbnails and copy keep their existing capture routes.
+`open_content` is compiled for tests only until a production consumer exists, and
+production `NativeProvider::audited` installs no capture, so native content through
+this route would be `Unsupported`; F3 viewers, thumbnails and copy keep their existing
+capture routes.
 Leased content does not give up a tainted reference yet: `LeasedContent` and
 `NativeContent` retain it, and a production consumer first needs a quarantined
 give-up for content sources in the plugin host
 ([ARCH-06](../IMPLEMENTATION_BACKLOG.md#deliberate-later-capabilities-and-current-limits)).
 
 The native adapter delegates directory enumeration to an injected `FileSystem`.
-`NativeProvider::new` is browse-only: `with_capture` supplies the explicit native
-plugin capture seam and unavailable capture fails without a built-in fallback.
+`NativeProvider::new` and production `NativeProvider::audited` are browse-only; the
+test seam `with_capture` supplies an explicit capture, and unavailable capture fails
+without a built-in fallback.
 `with_locale` uses the shared backend date/time formatter; complete enumeration
 metadata avoids an extra stat, while incomplete rows use the injected service.
 The adapter is read-only and

@@ -357,8 +357,8 @@ process permits until exit (ARCH-05 in the [backlog](../IMPLEMENTATION_BACKLOG.m
 A tree Copy capture held by Copy input (`CapturedTransferSources`) has no
 quarantined give-up yet, so a Copy whose context is already quarantined when that
 input is released keeps the capture and its archive references. Member content leased
-through `MountedLocation::open_content`, which has no production consumer, does not
-give up a tainted reference either (ARCH-06).
+through `MountedLocation::open_content`, compiled for tests only until a production
+consumer exists, does not give up a tainted reference either (ARCH-06).
 
 Each archive-size pane reserves one guard for its pending lane before it accepts a
 root. Closing marks/cancels the lane; ordinary worker draining remains unchanged.

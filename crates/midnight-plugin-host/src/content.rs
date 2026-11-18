@@ -142,6 +142,10 @@ impl CapturedFile {
             resources: None,
         })
     }
+    /// The absolute path this capture was taken from (`capture`), or empty when a
+    /// provider source supplies the content (`from_source`). Diagnostic only: callers
+    /// read content through this capture's revision-checked reads, never by opening
+    /// this path themselves.
     pub fn path(&self) -> &Path {
         &self.path
     }

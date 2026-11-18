@@ -5,10 +5,10 @@ use super::{
 use midnight_core::{
     Cancellation, EntryKind, MountRef, NodeRef, NodeToken, SizeDirectoryIdentity, StoredLocation,
 };
+#[cfg(test)]
 use midnight_plugin_host::{CapturedFile, ContentSource};
 use std::{
     collections::{HashMap, HashSet},
-    fmt,
     sync::{Arc, Mutex, RwLock, RwLockReadGuard, TryLockError},
 };
 
@@ -118,7 +118,9 @@ impl MountedLocation {
         Ok(identity)
     }
 
-    pub fn parent(
+    /// Test-only until a consumer looks up provider parents through a lease.
+    #[cfg(test)]
+    pub(crate) fn parent(
         &self,
         node: &NodeRef,
         cancel: &Cancellation,
@@ -395,8 +397,11 @@ impl MountedLocation {
         Ok((entries, observation))
     }
 
-    /// Viewer/thumbnail brokers consume this source without inventing a native path.
-    pub fn open_content(
+    /// Viewer/thumbnail brokers would consume this source without inventing a native
+    /// path. Test-only until a production consumer exists, which first needs leased
+    /// content to give up a tainted reference (backlog ARCH-06).
+    #[cfg(test)]
+    pub(crate) fn open_content(
         &self,
         node: &NodeRef,
         cancel: &Cancellation,
@@ -447,11 +452,13 @@ impl MountedLocation {
     }
 }
 
+#[cfg(test)]
 struct ContentConstruction {
     source: Option<Arc<dyn ContentSource>>,
     captured: Option<CapturedFile>,
     lease: Option<Arc<MountLease>>,
 }
+#[cfg(test)]
 impl ContentConstruction {
     fn release_source(&mut self) -> Result<(), ProviderError> {
         if let Some(source) = self.source.take() {
@@ -634,14 +641,16 @@ impl MountLease {
     }
 }
 
+#[cfg(test)]
 struct LeasedContent {
     source: CapturedFile,
     // Source destructor runs while the mount and plugin registration are alive.
     lease: Arc<MountLease>,
 }
 
-impl fmt::Debug for LeasedContent {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+#[cfg(test)]
+impl std::fmt::Debug for LeasedContent {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("LeasedContent")
             .field("mount", &self.lease.reference)
@@ -649,6 +658,7 @@ impl fmt::Debug for LeasedContent {
     }
 }
 
+#[cfg(test)]
 impl ContentSource for LeasedContent {
     fn cleanup_unconfirmed(&self) -> bool {
         self.source.cleanup_unconfirmed()
