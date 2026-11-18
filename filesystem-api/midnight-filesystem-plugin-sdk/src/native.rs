@@ -42,6 +42,12 @@ pub trait NativeAdapter: Send + Sync + 'static {
     fn name(name: &OsStr) -> (NameEncoding, Vec<u8>);
     fn stat(path: &Path, context: &CallContext<'_>) -> Result<NativeInfo, Failure>;
     fn list(path: &Path, context: &CallContext<'_>) -> Result<Self::Directory, Failure>;
+    /// The next entry of a directory that `list` opened, or `None` after the last.
+    /// Return `NotFound` for an entry that was removed between enumeration and
+    /// inspection: the SDK skips it. After 1024 such results in a row within one page
+    /// the next one fails that page with `Io`, so an adapter that only reports
+    /// removals cannot keep a call from ending. That and every other failure end the
+    /// listing and close its cursor.
     fn next(
         directory: &mut Self::Directory,
         context: &CallContext<'_>,
