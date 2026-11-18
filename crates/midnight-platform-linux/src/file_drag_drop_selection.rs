@@ -130,38 +130,43 @@ impl Session {
     }
 
     fn accept_bytes(&mut self, bytes: Vec<u8>) -> Result<(), FsError> {
-        let accepted = (|| {
-            let read = self.read.as_ref()?;
-            if read.started.elapsed() >= TRANSFER_TIMEOUT
-                || !self.candidate_current(&read.candidate)
-            {
-                return None;
+        let accepted = match self.admit(&bytes) {
+            Ok(accepted) => accepted,
+            Err(refusal) => {
+                // The source was told Copy is accepted here: say once why nothing
+                // happens. The sink only records the report and never waits, so this
+                // X11 event loop is not blocked.
+                self.sink.reject(refusal);
+                false
             }
-            let owner = self
-                .connection
-                .get_selection_owner(self.atoms.selection)
-                .ok()?
-                .reply()
-                .ok()?
-                .owner;
-            if owner != read.source {
-                return None;
-            }
-            let request = FileDropRequest {
-                files: FileClipboard {
-                    paths: crate::file_clipboard::decode_uris(&bytes).ok()?,
-                    intent: FileClipboardIntent::Copy,
-                },
-                target: read.candidate.target.clone(),
-                targets_revision: read.candidate.revision,
-            };
-            request.validate().ok()?;
-            // This synchronous callback reserves actual backend queue capacity.
-            // No native Copy success is sent before it returns successfully.
-            self.sink.try_accept(request).ok()
-        })()
-        .is_some();
+        };
         self.finish_incoming(accepted)
+    }
+
+    /// `Ok(false)` refuses silently a read that no longer serves a current drop: it
+    /// timed out, or the destination or the selection owner changed. `Err` is this
+    /// drop's own refusal, in fixed text.
+    fn admit(&self, bytes: &[u8]) -> Result<bool, FsError> {
+        let Some(read) = self.read.as_ref() else {
+            return Ok(false);
+        };
+        if read.started.elapsed() >= TRANSFER_TIMEOUT || !self.candidate_current(&read.candidate) {
+            return Ok(false);
+        }
+        let owner = self
+            .connection
+            .get_selection_owner(self.atoms.selection)
+            .ok()
+            .and_then(|cookie| cookie.reply().ok())
+            .map(|reply| reply.owner);
+        if owner != Some(read.source) {
+            return Ok(false);
+        }
+        let request = drop_request(bytes, &read.candidate)?;
+        // This synchronous callback reserves actual backend queue capacity.
+        // No native Copy success is sent before it returns successfully.
+        self.sink.try_accept(request)?;
+        Ok(true)
     }
 
     pub(super) fn selection_request(
@@ -309,4 +314,32 @@ impl Session {
         }
         Ok(())
     }
+}
+
+/// The Copy request for a dropped `text/uri-list` aimed at `candidate`. A refusal is
+/// shown to the user, so it carries fixed text and never repeats the source's bytes.
+pub(super) fn drop_request(
+    bytes: &[u8],
+    candidate: &Candidate,
+) -> Result<FileDropRequest, FsError> {
+    // The shared decoder words its errors for the clipboard; one drop message names
+    // every condition it rejects.
+    let paths = crate::file_clipboard::decode_uris(bytes).map_err(|_| {
+        failure(format!(
+            "The dropped file list is empty, malformed, names non-local files, or is \
+             longer than {} items.",
+            midnight_core::MAX_FILE_CLIPBOARD_PATHS
+        ))
+    })?;
+    let request = FileDropRequest {
+        files: FileClipboard {
+            paths,
+            intent: FileClipboardIntent::Copy,
+        },
+        target: candidate.target.clone(),
+        targets_revision: candidate.revision,
+    };
+    // Core validation reports fixed text of its own.
+    request.validate()?;
+    Ok(request)
 }
