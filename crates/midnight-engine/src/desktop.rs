@@ -766,23 +766,18 @@ async fn context_worker(
         let worker = services.clone();
         let locale = locale.clone();
         let result = tokio::task::spawn_blocking(scope.blocking(move || {
-            let (locations, network_position) =
+            let locations =
                 crate::navigation_ordering::locations(worker.locations()?, locale.as_deref())?;
             let system_locations = crate::navigation_ordering::system_locations(
                 &locations,
                 worker.supports_system_location(SystemLocation::RecycleBin),
                 locale.as_deref(),
             )?;
-            Ok((
-                worker.shell_flavor(),
-                locations,
-                network_position,
-                system_locations,
-            ))
+            Ok((worker.shell_flavor(), locations, system_locations))
         }))
         .await;
         let (event, keys) = match result {
-            Ok(Ok((shell, locations, network_position, system_locations))) => {
+            Ok(Ok((shell, locations, system_locations))) => {
                 // Keep the finite semantic aliases ahead of large mount inventories.
                 let keys = locations
                     .iter()
@@ -799,7 +794,10 @@ async fn context_worker(
                     Event::DesktopContext {
                         shell,
                         locations,
-                        network_position,
+                        // Network is a virtual section boundary after the drives,
+                        // before every local special folder. Its label never
+                        // takes part in native location sorting.
+                        network_position: 0,
                         system_locations,
                     },
                     keys,

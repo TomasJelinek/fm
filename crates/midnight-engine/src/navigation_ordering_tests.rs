@@ -11,7 +11,7 @@ fn location(id: &str, label: &str, kind: LocationKind) -> NavigationLocation {
 }
 
 #[test]
-fn network_follows_drives_before_deduplicated_special_locations() {
+fn drives_precede_deduplicated_special_locations() {
     for duplicate_label in ["Documents", "Music", "Zulu"] {
         let input = vec![
             location("documents", duplicate_label, LocationKind::Documents),
@@ -20,15 +20,11 @@ fn network_follows_drives_before_deduplicated_special_locations() {
             location("documents", "Documents", LocationKind::Documents),
             location("disk-a", "Alpha", LocationKind::Volume),
         ];
-        let (ordered, position) = locations(input, None).unwrap();
-        assert_eq!(
-            position, 0,
-            "duplicate {duplicate_label} must not shift Network into special locations"
-        );
+        let ordered = locations(input, None).unwrap();
         assert_eq!(
             ordered.len(),
             4,
-            "publish the same canonical identities consumed by UI"
+            "duplicate {duplicate_label}: publish the same canonical identities consumed by UI"
         );
         assert_eq!(
             ordered
@@ -42,14 +38,13 @@ fn network_follows_drives_before_deduplicated_special_locations() {
 }
 
 #[test]
-fn same_path_aliases_remain_distinct_after_network() {
+fn same_path_aliases_remain_distinct() {
     let input = vec![
         location("documents", "Documents", LocationKind::Documents),
         location("home", "Home", LocationKind::Home),
         location("pictures", "Pictures", LocationKind::Pictures),
     ];
-    let (ordered, position) = locations(input, None).unwrap();
-    assert_eq!(position, 0);
+    let ordered = locations(input, None).unwrap();
     assert_eq!(ordered.len(), 3);
     assert_eq!(
         ordered
@@ -72,7 +67,7 @@ fn named_volumes_precede_raw_mount_paths_without_mutating_paths() {
         .iter()
         .map(|label| location(label, label, LocationKind::Volume))
         .collect();
-    let (ordered, _) = locations(input, None).unwrap();
+    let ordered = locations(input, None).unwrap();
     assert_eq!(
         ordered
             .iter()
@@ -88,8 +83,8 @@ fn named_volumes_precede_raw_mount_paths_without_mutating_paths() {
 }
 
 #[test]
-fn recycle_bin_rank_excludes_volumes_and_keeps_network_at_the_front() {
-    let (ordered, network_position) = locations(
+fn recycle_bin_rank_excludes_volumes() {
+    let ordered = locations(
         vec![
             location("disk", "A disk", LocationKind::Volume),
             location("z", "Zulu", LocationKind::Home),
@@ -100,7 +95,6 @@ fn recycle_bin_rank_excludes_volumes_and_keeps_network_at_the_front() {
     )
     .unwrap();
     let choices = system_locations(&ordered, true, None).unwrap();
-    assert_eq!(network_position, 0);
     assert_eq!(choices.len(), 1);
     assert_eq!(choices[0].location, SystemLocation::RecycleBin);
     assert_eq!(choices[0].label, "Recycle Bin");
@@ -131,7 +125,7 @@ fn recycle_bin_rank_uses_worker_locale_keys_and_raw_name_fallback() {
         location("z", "Zulu", LocationKind::Home),
         location("raw", "/unrepresentable", LocationKind::Temporary),
     ];
-    let (ordered, _) = locations(input, Some(&RecycleLocale)).unwrap();
+    let ordered = locations(input, Some(&RecycleLocale)).unwrap();
     let choices = system_locations(&ordered, true, Some(&RecycleLocale)).unwrap();
     assert_eq!(choices[0].special_position, 1);
     assert_eq!(
