@@ -200,7 +200,10 @@ class HtmlViewerBuildWindows(unittest.TestCase):
             "with open(os.environ['HTML_TEST_LOG'], 'a') as log:\n"
             "    log.write(json.dumps({'arguments': arguments, 'cef_path': os.environ.get('CEF_PATH')}) + '\\n')\n"
             "if 'metadata' in arguments:\n"
-            "    print(json.dumps({'packages': []}))\n"
+            "    # Like Cargo: raw UTF-8, whatever the console code page.\n"
+            "    dependency = os.environ.get('HTML_TEST_DEPENDENCY')\n"
+            "    packages = [{'name': 'dep', 'version': '1.0.0', 'manifest_path': dependency}] if dependency else []\n"
+            "    sys.stdout.buffer.write(json.dumps({'packages': packages}, ensure_ascii=False).encode() + b'\\n')\n"
             "elif 'build' in arguments:\n"
             "    output = pathlib.Path(arguments[arguments.index('--target-dir') + 1]) / 'debug'\n"
             "    output.mkdir(parents=True, exist_ok=True)\n"
@@ -267,6 +270,68 @@ class HtmlViewerBuildWindows(unittest.TestCase):
         self.assert_package(self.library.read_bytes())
         if len(str(short)) <= 80:
             self.assertNotIn("MIDNIGHT_HTML_TARGET_DIR", output)
+
+    def test_dependency_notices_below_a_non_ascii_path_survive_a_legacy_console_code_page(self):
+        # Cargo prints UTF-8, but PowerShell decodes native output with the console
+        # code page (437 by default), so a dependency below a non-ASCII CARGO_HOME was
+        # not found and notice collection failed.
+        dependency = self.root / "cargo home Jiří 文档/registry/src/dep-1.0.0"
+        dependency.mkdir(parents=True)
+        (dependency / "Cargo.toml").write_text('[package]\nname = "dep"\n', encoding="utf-8")
+        (dependency / "LICENSE-MIT").write_text("Dependency notice\n", encoding="utf-8")
+        driver = self.root / "legacy-console.ps1"
+        report = self.root / "code-page.txt"
+        driver.write_text(
+            "param([string]$Script, [string]$Config, [string]$App, [string]$Report)\n"
+            "[Console]::OutputEncoding = [Text.Encoding]::GetEncoding(850)\n"
+            "try { & $Script -SdkConfig $Config -AppDirectory $App }\n"
+            "finally { [IO.File]::WriteAllText($Report, [string][Console]::OutputEncoding.CodePage) }\n",
+            encoding="utf-8")
+        # A console of its own (without a window): the code page belongs to the console,
+        # not to the process, so the test runner's console stays untouched.
+        result = subprocess.run(
+            [shutil.which("pwsh") or "powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
+             str(driver), "-Script", str(self.root / "scripts/build-html-viewer.ps1"), "-Config", str(self.config),
+             "-App", str(self.root / "_build/debug"), "-Report", str(report)],
+            cwd=self.root, env=dict(self.environment, HTML_TEST_DEPENDENCY=str(dependency / "Cargo.toml")),
+            capture_output=True, encoding="utf-8", errors="replace", timeout=120,
+            creationflags=subprocess.CREATE_NO_WINDOW)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual((self.package / "notices/dep-1.0.0/LICENSE-MIT").read_text(encoding="utf-8"),
+                         "Dependency notice\n")
+        metadata = json.loads((self.package / "dependency-metadata.json").read_bytes().decode("utf-8"))
+        self.assertEqual(metadata["packages"][0]["manifest_path"], str(dependency / "Cargo.toml"))
+        self.assertEqual(report.read_text(), "850", "The caller's console encoding was not restored")
+
+    def test_relative_packaging_paths_follow_the_powershell_location(self):
+        # Set-Location moves PowerShell's location but not the process directory, which
+        # .NET path methods use. Relative paths must name the same files for both.
+        location = self.sdk.parent
+        target = location / "relative target"
+        (target / "debug").mkdir(parents=True)
+        (target / "debug/midnight_viewer_html.dll").write_bytes(self.library.read_bytes())
+        driver = self.root / "relative-location.ps1"
+        driver.write_text(
+            "param([string]$Script, [string]$Config, [string]$Location)\n"
+            "$ErrorActionPreference = 'Stop'\n"
+            "Set-Location -LiteralPath $Location\n"
+            "& $Script -SdkConfig $Config -TargetDirectory 'relative target' -CefDirectory 'cef-sdk' "
+            "-CefReceipt 'cef-sdk.verified.json' -OutputDirectory 'relative package'\n",
+            encoding="utf-8")
+        result = subprocess.run(
+            [shutil.which("pwsh") or "powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
+             str(driver), "-Script", str(self.root / "plugins/midnight-viewer-html/scripts/package-windows.ps1"),
+             "-Config", str(self.config), "-Location", str(location)],
+            cwd=self.root, env=self.environment, capture_output=True, text=True, timeout=120)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        package = location / "relative package"
+        self.assertEqual((package / "midnight-viewer-html.dll").read_bytes(), self.library.read_bytes())
+        self.assertEqual((package / "dependency-metadata.json").read_bytes(),
+                         (target / "dependency-metadata.json").read_bytes())
+        self.assertIn("locales/en-US.pak", {entry["path"] for entry in json.loads(
+            (package / "runtime-files.json").read_text(encoding="utf-8-sig"))["files"]})
+        self.assertFalse((self.root / "relative package").exists())
+        self.assertFalse((self.root / "relative target").exists())
 
     def test_packaged_cef_files_must_match_the_sdk_receipt(self):
         code, output, _ = self.build()
