@@ -692,6 +692,12 @@ fn web_policy_widgets_require_backend_permission_for_pointer_actions() {
                         assert_eq!(window.get_web_network(), network);
                         assert!(!window.get_web_scripts());
                     }
+                    // The boxes are bound two-way and change themselves on a click;
+                    // the viewer then presents the policy in force
+                    // (web_input::present_policy). Present this unchanged policy
+                    // before the next box is checked.
+                    window.set_web_network(network);
+                    window.set_web_scripts(false);
                 }
             }
         }
