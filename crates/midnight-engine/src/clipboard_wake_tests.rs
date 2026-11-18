@@ -12,7 +12,8 @@ const FAILURE_WAIT: Duration = Duration::from_secs(10);
 /// What the fake native owner observed, and what the test lets it do.
 #[derive(Debug, Default)]
 struct State {
-    /// The session offers a waker (as on Windows) or not (as X11 today).
+    /// The session offers a waker (as on Windows and Linux) or not (a session without a
+    /// wake event).
     wakes: bool,
     owns: bool,
     fail_waits: bool,

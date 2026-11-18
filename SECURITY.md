@@ -635,7 +635,9 @@ universal context-menu API and uses an application action menu.
 
 Windows file clipboard uses CF_HDROP and Preferred DropEffect without lossy
 canonicalization. Linux X11/XWayland uses raw-byte file URIs with GNOME/KDE intent,
-bounded incremental transfers, and an owner pumped by the backend worker.
+bounded incremental transfers, and an owner session that the backend worker serves
+from an event-driven wait (`poll()` on the X11 connection and the session's eventfd)
+and closes once it no longer owns clipboard content.
 Native Wayland file-copy ownership is unavailable until a bounded writer is
 implemented; a usable XWayland bridge is preferred. Native Wayland file-list reads
 remain bounded. No per-copy detached ownership threads may accumulate.

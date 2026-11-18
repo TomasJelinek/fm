@@ -1,7 +1,8 @@
 //! ICCCM selection owner with bounded incremental transfers and timed clipboard reads.
 
 use super::*;
-use std::{collections::HashMap, sync::Arc, thread};
+use crate::clipboard::Wake;
+use std::{collections::HashMap, os::fd::AsFd, sync::Arc, thread};
 use x11rb::{
     CURRENT_TIME, NONE,
     connection::{Connection, RequestConnection},
@@ -16,6 +17,11 @@ use x11rb::{
     rust_connection::RustConnection,
     wrapper::ConnectionExt as _,
 };
+
+/// Owner events served in one pass; the rest stay queued for the next pass.
+const EVENTS_PER_PASS: usize = 128;
+/// An incremental transfer whose requestor stops taking chunks is dropped after this.
+const TRANSFER_EXPIRY: Duration = Duration::from_secs(5);
 
 struct Transfer {
     requestor: u32,
@@ -202,15 +208,94 @@ impl Clipboard {
     }
 
     pub(super) fn service_pending(&mut self) -> Result<(), FsError> {
-        self.transfers
-            .retain(|transfer| transfer.updated.elapsed() < Duration::from_secs(5));
-        for _ in 0..128 {
+        self.serve_queued().map(drop)
+    }
+
+    /// Serve the queued owner events, at most `EVENTS_PER_PASS` of them, after dropping
+    /// expired incremental transfers. Returns false only when nothing changed and nothing
+    /// is left: then the request buffer is flushed and x11rb neither holds a queued event
+    /// nor could read one from the socket, so a wait for the socket to become readable
+    /// cannot sleep while an event is already buffered (round trips such as `owner()`
+    /// queue the events that arrive before their reply). True means events were served,
+    /// transfers expired or events remain, and the caller re-checks its state.
+    fn serve_queued(&mut self) -> Result<bool, FsError> {
+        let mut changed = self.expire_transfers()?;
+        for _ in 0..EVENTS_PER_PASS {
+            // Flush first: a flush that cannot write reads, and queues, incoming events.
+            self.connection.flush().map_err(error)?;
             let Some(event) = self.connection.poll_for_event().map_err(error)? else {
-                break;
+                return Ok(changed);
             };
             self.event(event)?;
+            changed = true;
         }
-        self.connection.flush().map_err(error)
+        self.connection.flush().map_err(error)?;
+        Ok(true)
+    }
+
+    /// Drop the incremental transfers whose requestor stopped taking chunks; returns
+    /// whether any expired.
+    fn expire_transfers(&mut self) -> Result<bool, FsError> {
+        let mut expired = false;
+        let mut index = 0;
+        while index < self.transfers.len() {
+            if self.transfers[index].updated.elapsed() < TRANSFER_EXPIRY {
+                index += 1;
+            } else {
+                let transfer = self.transfers.swap_remove(index);
+                self.release_requestor(transfer.requestor)?;
+                expired = true;
+            }
+        }
+        Ok(expired)
+    }
+
+    /// Stop receiving the events of a requestor window that `start_transfer` selected,
+    /// once no transfer to it remains, so that its later property changes do not wake
+    /// this owner. Event masks are per client: the requestor's own selection stays. This
+    /// client selects nothing else on a requestor, which is never its own window (see
+    /// `request`). A window that is gone already makes this an ignored error.
+    fn release_requestor(&self, requestor: u32) -> Result<(), FsError> {
+        if self
+            .transfers
+            .iter()
+            .all(|transfer| transfer.requestor != requestor)
+        {
+            self.connection
+                .change_window_attributes(
+                    requestor,
+                    &ChangeWindowAttributesAux::new().event_mask(EventMask::NO_EVENT),
+                )
+                .map_err(error)?
+                .ignore_error();
+        }
+        Ok(())
+    }
+
+    /// Whether other applications may still need this owner: it owns CLIPBOARD (the only
+    /// selection it takes) until a `SelectionClear` from a newer owner, and it finishes the
+    /// incremental transfers that started before that until they complete or expire.
+    pub(super) fn owns_clipboard(&self) -> bool {
+        self.owned.is_some() || !self.transfers.is_empty()
+    }
+
+    /// Block until the X11 connection becomes readable, `wake` is signaled or `timeout`
+    /// elapses, and serve the owner events that arrived. Events that are already queued
+    /// (or that a pass leaves queued) end the wait at once, served, without blocking. An
+    /// active incremental transfer shortens the wait to its expiry, which no event marks.
+    pub(super) fn wait(&mut self, wake: Option<&Wake>, timeout: Duration) -> Result<(), FsError> {
+        if self.serve_queued()? {
+            return Ok(());
+        }
+        let timeout = self.transfers.iter().fold(timeout, |timeout, transfer| {
+            timeout.min(TRANSFER_EXPIRY.saturating_sub(transfer.updated.elapsed()))
+        });
+        let readable =
+            crate::clipboard::wait(wake, Some(self.connection.stream().as_fd()), timeout)?;
+        if readable {
+            self.serve_queued()?;
+        }
+        Ok(())
     }
 
     fn event(&mut self, event: Event) -> Result<(), FsError> {
@@ -244,7 +329,8 @@ impl Clipboard {
                         .map_err(error)?
                         .check();
                     if sent.is_err() || transfer.offset == transfer.bytes.len() {
-                        self.transfers.swap_remove(index);
+                        let transfer = self.transfers.swap_remove(index);
+                        self.release_requestor(transfer.requestor)?;
                     } else {
                         transfer.offset = end;
                         transfer.updated = Instant::now();
@@ -260,6 +346,15 @@ impl Clipboard {
     }
 
     fn request(&mut self, request: SelectionRequestEvent) -> Result<(), FsError> {
+        // A requestor is another client's window. Serving a request that names this
+        // owner's window would write to it and select, then on release clear, the property
+        // events that its incremental reads rely on. Only a misbehaving client sends one;
+        // leave it unanswered, because the answer would reach only this owner (a SendEvent
+        // without an event mask goes to the window's creator), where a read in progress
+        // could take it for the reply it waits for.
+        if request.requestor == self.window {
+            return Ok(());
+        }
         let property = if request.property == NONE {
             request.target
         } else {
@@ -409,6 +504,7 @@ impl Clipboard {
             .check()
             .is_err()
         {
+            self.release_requestor(request.requestor)?;
             return Ok(false);
         }
         self.transfers.push(Transfer {
@@ -550,13 +646,163 @@ mod tests {
     use super::*;
     use std::sync::mpsc;
 
-    #[test]
-    #[ignore = "requires an isolated Xvfb DISPLAY and MIDNIGHT_CLIPBOARD_TEST_ISOLATED=1"]
-    fn x11_delayed_selection_clear_preserves_reacquired_clipboard() {
+    /// Elapses only when the event that should end a wait does not.
+    const FAILURE_WAIT: Duration = Duration::from_secs(30);
+
+    /// Whether a wait or loop that began at `started` ended well within `FAILURE_WAIT`.
+    fn prompt(started: Instant) -> bool {
+        started.elapsed() < FAILURE_WAIT / 2
+    }
+
+    /// Assert that the test runs against a private X display, and keep that display from
+    /// resetting between tests.
+    fn isolated_display() {
         assert_eq!(
             std::env::var("MIDNIGHT_CLIPBOARD_TEST_ISOLATED").as_deref(),
             Ok("1")
         );
+        crate::clipboard::tests::keep_display_open();
+    }
+
+    fn files(path: &str, intent: FileClipboardIntent) -> FileClipboard {
+        FileClipboard {
+            paths: vec![path.into()],
+            intent,
+        }
+    }
+
+    /// Raw (non-UTF-8) paths whose encoded list exceeds one property chunk, so that the URI
+    /// and GNOME targets need incremental transfers.
+    fn large_files(name: &str, intent: FileClipboardIntent) -> FileClipboard {
+        FileClipboard {
+            paths: (0..1000)
+                .map(|index| {
+                    let mut bytes = format!("/tmp/{name}-{index}-{}", "x".repeat(90)).into_bytes();
+                    bytes.push(255);
+                    PathBuf::from(OsString::from_vec(bytes))
+                })
+                .collect(),
+            intent,
+        }
+    }
+
+    /// A new owner of `files` on another thread. It serves every request and chunk from
+    /// the event-driven wait, as the session does, until the returned function stops it;
+    /// joining the thread then returns the owner. Returns once the owner holds CLIPBOARD.
+    fn serving_owner(files: FileClipboard) -> (impl FnOnce(), thread::JoinHandle<Clipboard>) {
+        let (ready, holding) = mpsc::sync_channel(1);
+        let (stop, stopped) = mpsc::sync_channel(1);
+        let wake = Wake::new().unwrap();
+        let waker = wake.waker();
+        let owner = thread::spawn(move || {
+            let mut clipboard = Clipboard::new().unwrap();
+            clipboard.copy(&files).unwrap();
+            ready.send(()).unwrap();
+            let began = Instant::now();
+            // A dropped stop function (a failed test) ends the loop as well.
+            while stopped.try_recv() == Err(mpsc::TryRecvError::Empty) {
+                assert!(prompt(began), "the reader did not finish");
+                clipboard.wait(Some(&wake), FAILURE_WAIT / 2).unwrap();
+            }
+            clipboard
+        });
+        holding.recv_timeout(FAILURE_WAIT).unwrap();
+        let stop = move || {
+            let _ = stop.send(());
+            waker();
+        };
+        (stop, owner)
+    }
+
+    #[test]
+    #[ignore = "requires an isolated Xvfb DISPLAY and MIDNIGHT_CLIPBOARD_TEST_ISOLATED=1"]
+    fn x11_selection_clear_ends_the_wait_and_the_ownership() {
+        isolated_display();
+        let mut clipboard = Clipboard::new().unwrap();
+        assert!(!clipboard.owns_clipboard(), "a new window owns nothing");
+        clipboard
+            .copy(&files("/tmp/owned", FileClipboardIntent::Copy))
+            .unwrap();
+        assert!(clipboard.owns_clipboard());
+        // Another client takes CLIPBOARD while the owner waits on its connection alone:
+        // only the SelectionClear on the X11 socket can end the wait.
+        let taker = thread::spawn(|| {
+            let mut other = Clipboard::new().unwrap();
+            other
+                .copy(&files("/tmp/other", FileClipboardIntent::Move))
+                .unwrap();
+            other
+        });
+        let started = Instant::now();
+        while clipboard.owns_clipboard() {
+            assert!(prompt(started), "SelectionClear must end the wait");
+            clipboard.wait(None, FAILURE_WAIT).unwrap();
+        }
+        assert!(prompt(started), "SelectionClear must end the wait");
+        drop(taker.join().unwrap());
+        assert!(
+            clipboard.data.is_empty(),
+            "the replaced file list is released"
+        );
+    }
+
+    #[test]
+    #[ignore = "requires an isolated Xvfb DISPLAY and MIDNIGHT_CLIPBOARD_TEST_ISOLATED=1"]
+    fn x11_event_queued_by_a_round_trip_ends_the_wait_without_socket_input() {
+        isolated_display();
+        let mut clipboard = Clipboard::new().unwrap();
+        let mut other = Clipboard::new().unwrap();
+        let first = files("/tmp/first", FileClipboardIntent::Copy);
+        clipboard.copy(&first).unwrap();
+        // Checked requests: the server sent the SelectionClear before `copy` returned.
+        other.copy(&first).unwrap();
+        // The reply follows that SelectionClear on the socket, so reading it queues the
+        // event in x11rb and leaves the socket empty: poll() alone would sleep through it.
+        clipboard
+            .connection
+            .get_input_focus()
+            .unwrap()
+            .reply()
+            .unwrap();
+        let started = Instant::now();
+        clipboard.wait(None, FAILURE_WAIT).unwrap();
+        assert!(
+            prompt(started),
+            "an event already read from the socket must end the wait"
+        );
+        assert!(
+            !clipboard.owns_clipboard(),
+            "the wait serves that SelectionClear"
+        );
+    }
+
+    #[test]
+    #[ignore = "requires an isolated Xvfb DISPLAY and MIDNIGHT_CLIPBOARD_TEST_ISOLATED=1"]
+    fn x11_wake_ends_a_wait_on_the_connection() {
+        isolated_display();
+        let mut clipboard = Clipboard::new().unwrap();
+        clipboard.service_pending().unwrap();
+        let wake = Wake::new().unwrap();
+        // A wake before the wait and one from another thread during (or before) the next.
+        wake.waker()();
+        let started = Instant::now();
+        clipboard.wait(Some(&wake), FAILURE_WAIT).unwrap();
+        assert!(prompt(started), "an earlier wake must end the next wait");
+        let waker = wake.waker();
+        let other = thread::spawn(move || waker());
+        let started = Instant::now();
+        clipboard.wait(Some(&wake), FAILURE_WAIT).unwrap();
+        assert!(
+            prompt(started),
+            "a wake from another thread must end the wait"
+        );
+        other.join().unwrap();
+    }
+
+    #[test]
+    #[ignore = "requires an isolated Xvfb DISPLAY and MIDNIGHT_CLIPBOARD_TEST_ISOLATED=1"]
+    fn x11_delayed_selection_clear_preserves_reacquired_clipboard() {
+        isolated_display();
         let mut clipboard = Clipboard::new().unwrap();
         let mut other = Clipboard::new().unwrap();
         let first = FileClipboard {
@@ -587,10 +833,7 @@ mod tests {
     #[test]
     #[ignore = "requires an isolated Xvfb DISPLAY and MIDNIGHT_CLIPBOARD_TEST_ISOLATED=1"]
     fn x11_event_flood_cannot_bypass_an_expired_clipboard_deadline() {
-        assert_eq!(
-            std::env::var("MIDNIGHT_CLIPBOARD_TEST_ISOLATED").as_deref(),
-            Ok("1")
-        );
+        isolated_display();
         let clipboard = Clipboard::new().unwrap();
         for _ in 0..128 {
             clipboard
@@ -624,38 +867,93 @@ mod tests {
     #[test]
     #[ignore = "requires an isolated Xvfb DISPLAY and MIDNIGHT_CLIPBOARD_TEST_ISOLATED=1"]
     fn x11_native_file_clipboard_transfers_raw_paths_incrementally() {
-        assert_eq!(
-            std::env::var("MIDNIGHT_CLIPBOARD_TEST_ISOLATED").as_deref(),
-            Ok("1")
-        );
-        let files = FileClipboard {
-            paths: (0..1000)
-                .map(|index| {
-                    let mut bytes = format!("/tmp/{index}-{}", "x".repeat(90)).into_bytes();
-                    bytes.push(255);
-                    PathBuf::from(OsString::from_vec(bytes))
-                })
-                .collect(),
-            intent: FileClipboardIntent::Move,
-        };
-        let expected = files.clone();
-        let (ready, started) = mpsc::sync_channel(1);
-        let (stop, stopped) = mpsc::sync_channel(1);
-        let owner = thread::spawn(move || {
-            let mut clipboard = Clipboard::new().unwrap();
-            clipboard.copy(&files).unwrap();
-            ready.send(()).unwrap();
-            let began = Instant::now();
-            while stopped.try_recv().is_err() && began.elapsed() < Duration::from_secs(15) {
-                clipboard.service_pending().unwrap();
-                thread::sleep(Duration::from_millis(2));
-            }
-        });
-        started.recv_timeout(Duration::from_secs(5)).unwrap();
+        isolated_display();
+        let files = large_files("raw", FileClipboardIntent::Move);
+        let (stop, owner) = serving_owner(files.clone());
         let mut reader = Clipboard::new().unwrap();
         let received = reader.read();
-        let _ = stop.send(());
-        owner.join().unwrap();
-        assert_eq!(received.unwrap(), expected);
+        stop();
+        let owner = owner.join().unwrap();
+        assert_eq!(received.unwrap(), files);
+        // The finished transfer no longer selects the requestor window's events, so its
+        // later property changes cannot wake this idle owner.
+        assert!(owner.transfers.is_empty());
+        let attributes = owner
+            .connection
+            .get_window_attributes(reader.window)
+            .unwrap()
+            .reply()
+            .unwrap();
+        assert_eq!(attributes.your_event_mask, EventMask::NO_EVENT);
+    }
+
+    #[test]
+    #[ignore = "requires an isolated Xvfb DISPLAY and MIDNIGHT_CLIPBOARD_TEST_ISOLATED=1"]
+    fn x11_request_naming_the_owner_window_is_ignored_and_keeps_incremental_reads() {
+        isolated_display();
+        let mut clipboard = Clipboard::new().unwrap();
+        clipboard
+            .copy(&large_files("owned", FileClipboardIntent::Copy))
+            .unwrap();
+        // A misbehaving client names the owner's own window as the requestor of a target
+        // that needs an incremental transfer.
+        let (foreign, _) = x11rb::connect(None).unwrap();
+        let property = foreign
+            .intern_atom(false, b"MIDNIGHT_FOREIGN_REQUEST")
+            .unwrap()
+            .reply()
+            .unwrap()
+            .atom;
+        foreign
+            .convert_selection(
+                clipboard.window,
+                clipboard.clipboard,
+                clipboard.formats[URI],
+                property,
+                CURRENT_TIME,
+            )
+            .unwrap()
+            .check()
+            .unwrap();
+        // The server sent the SelectionRequest before that checked request returned, so it
+        // precedes this reply on the owner's socket and the owner serves it below.
+        clipboard
+            .connection
+            .get_input_focus()
+            .unwrap()
+            .reply()
+            .unwrap();
+        clipboard.service_pending().unwrap();
+        assert!(
+            clipboard.transfers.is_empty(),
+            "no transfer to the owner's own window"
+        );
+        let written = foreign
+            .get_property(false, clipboard.window, property, AtomEnum::ANY, 0, 1)
+            .unwrap()
+            .reply()
+            .unwrap();
+        assert_eq!(
+            written.type_, NONE,
+            "nothing is written to the owner's window"
+        );
+        let attributes = clipboard
+            .connection
+            .get_window_attributes(clipboard.window)
+            .unwrap()
+            .reply()
+            .unwrap();
+        assert_eq!(
+            attributes.your_event_mask,
+            EventMask::PROPERTY_CHANGE,
+            "the owner's window keeps the selection that its reads rely on"
+        );
+        // An incremental read from a newer owner arrives as property events on that window.
+        let newer = large_files("newer", FileClipboardIntent::Move);
+        let (stop, owner) = serving_owner(newer.clone());
+        let received = clipboard.read();
+        stop();
+        drop(owner.join().unwrap());
+        assert_eq!(received.unwrap(), newer);
     }
 }

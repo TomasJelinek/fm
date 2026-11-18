@@ -1527,3 +1527,72 @@ fn cancellation_after_turn_acquisition_finishes_without_creating_a_name() {
     assert_eq!(events.finished.load(Ordering::SeqCst), 1);
     assert_eq!(events.abandoned.load(Ordering::SeqCst), 0);
 }
+
+/// A turn whose host answers the opaque (unknown-scope) reservation of an incomplete
+/// announcement with `accept`.
+struct OpaqueTurn {
+    accept: bool,
+    opaque: usize,
+}
+impl TransferNamespaceChange for OpaqueTurn {
+    fn reserve_private_child(
+        &mut self,
+        pin: Option<Arc<dyn TransferNamespacePin>>,
+        _: &Cancellation,
+    ) -> Result<bool, FsError> {
+        assert!(
+            pin.is_none(),
+            "an incomplete announcement names no exact pin"
+        );
+        self.opaque += 1;
+        Ok(self.accept)
+    }
+    fn finish(self: Box<Self>) -> Result<(), FsError> {
+        Ok(())
+    }
+}
+
+#[test]
+fn refused_incomplete_announcement_is_a_retryable_would_block_like_a_refused_pin() {
+    let path = Path::new("/announced/parent");
+    let cancel = Cancellation::default();
+    for accept in [false, true] {
+        let mut turn = OpaqueTurn { accept, opaque: 0 };
+        // The production `Change`; this module's `Change` is a host fixture.
+        let mut change = super::Change {
+            inner: Some(&mut turn),
+            complete: true,
+            opted: true,
+        };
+        let result = change.incomplete(path, &cancel);
+        assert!(!change.complete);
+        // `change` is no longer used, so its borrow of `turn` has ended.
+        assert_eq!(
+            turn.opaque, 1,
+            "an opted-in turn reserves the unknown scope"
+        );
+        match result {
+            Ok(()) => assert!(accept, "a refused reservation must fail the change"),
+            Err(error) => {
+                assert!(!accept, "an accepted reservation must not fail: {error:?}");
+                // As `Bindings::announce` reports a refused exact pin: the engine retries a
+                // refusal recorded before any mutation, while InvalidInput is final.
+                assert_eq!(error.kind, io::ErrorKind::WouldBlock, "{error:?}");
+                assert_eq!(error.path, path);
+            }
+        }
+    }
+    // Before the turn opted in, nothing is reserved and nothing is refused.
+    let mut turn = OpaqueTurn {
+        accept: false,
+        opaque: 0,
+    };
+    let mut change = super::Change {
+        inner: Some(&mut turn),
+        complete: true,
+        opted: false,
+    };
+    assert!(change.incomplete(path, &cancel).is_ok());
+    assert!(!change.complete);
+    assert_eq!(turn.opaque, 0);
+}

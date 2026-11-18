@@ -16,8 +16,9 @@ use std::{
 };
 use tokio::{sync::mpsc, task::JoinSet};
 
-/// Pump interval of an open session without a waker. Such a session (X11 today) must keep
-/// serving other applications' selection and paste requests between commands.
+/// Pump interval of an open session without a waker (a Linux session whose eventfd could
+/// not be created, for example). Such a session must keep serving other applications'
+/// selection and paste requests between commands.
 const PUMP_INTERVAL: Duration = Duration::from_millis(10);
 /// Longest idle wait of a session with a waker. A queued request, Controller drop and the
 /// session's own owner events (on Windows, WM_DESTROYCLIPBOARD) end the wait, so its expiry
@@ -418,7 +419,7 @@ impl Drop for Controller {
 /// may request; once idle and no longer owning, it is closed and the worker blocks on the
 /// queue again. A session with a waker then waits for its own owner events, the
 /// controller's wake (a queued request or Controller drop) or `IDLE_WAIT`; one without a
-/// waker (X11 owners today) is pumped every `PUMP_INTERVAL`.
+/// waker is pumped every `PUMP_INTERVAL`.
 ///
 /// No wake is lost: `Native::open` installs the waker before this function next checks
 /// the queue, and the controller wakes after each queued request. A request queued

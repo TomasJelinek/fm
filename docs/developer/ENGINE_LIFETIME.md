@@ -160,15 +160,20 @@ meanwhile the worker waits in `wait_pending` (`MsgWaitForMultipleObjectsEx` on t
 session's event and its owner thread's messages). A queued request or Controller
 drop ends that wait through the session's waker; its five-second safety timeout is
 not needed for correctness. Measured on Windows over two idle seconds after a
-clipboard command: 120 worker wakeups before, none after. Linux sessions still use
-the trait defaults (owning, no waker), so an open X11 session stays open and is
-pumped every 10 ms. Follow-up: `poll()` on the X11 connection plus an eventfd for
-`wait_pending`/`waker`, and `SelectionClear` of every owned selection for
-`owns_clipboard`. Other engine timers still wake while idle: the drag/drop
-preparation worker (25 ms), the drag hover forwarder (25 ms) and the native drag
-actor (10 ms). A task of the operations actor that panics or is aborted fails its
-own job, so the registry entry cannot hold one of the 32 slots (and actor exit)
-indefinitely.
+clipboard command: 120 worker wakeups before, none after. A Linux session waits in
+`poll()` on its eventfd (the waker) and, once it has an X11 owner connection, on
+that connection, after serving the events x11rb already queued. It owns CLIPBOARD
+(never PRIMARY) from a file publication until a `SelectionClear` from a newer owner
+and while an incremental transfer it started is unfinished. Text goes through
+arboard, which serves it on its own connection, so the session cannot see that
+text's `SelectionClear`: it counts the text as owned until its own file publication
+replaces it, so after a text copy the session stays open, idle in that wait.
+Measured on Linux (Xvfb) over two idle seconds after a read, a file copy and a text
+copy alike: 196 worker wakeups before, none after. Other engine timers still wake
+while idle: the drag/drop preparation worker (25 ms), the drag hover forwarder
+(25 ms) and the native drag actor (10 ms). A task of the operations actor that
+panics or is aborted fails its own job, so the registry entry cannot hold one of
+the 32 slots (and actor exit) indefinitely.
 
 ## Image viewer spare shutdown
 
