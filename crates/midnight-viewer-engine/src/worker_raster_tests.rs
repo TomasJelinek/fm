@@ -1,4 +1,5 @@
 use super::*;
+use crate::raster_budget::MAX_SNAPSHOT_BYTES;
 
 fn content() -> String {
     (0..120)
@@ -105,6 +106,12 @@ fn visible(frame: &ViewerFrame) -> Vec<u8> {
     pixels
 }
 
+/// Body and gutter bytes of a retained frame, which share one snapshot budget.
+fn retained_bytes(frame: &ViewerFrame) -> usize {
+    let gutter = frame.raster.as_ref().and_then(|info| info.gutter.as_ref());
+    frame.pixels.len() + gutter.map_or(0, |gutter| gutter.pixels.len())
+}
+
 fn assert_pixels_equal(actual: &[u8], expected: &[u8], context: &str) {
     assert_eq!(
         actual.len(),
@@ -151,7 +158,7 @@ fn retained_text_source_and_markdown_have_guard_pixels_without_changing_wrap_wid
         assert_eq!(info.gutter.is_some(), mode == viewer::MODE_SOURCE);
         assert_eq!(info.limit_min[1], Some(0.0));
         assert!(info.limit_max[1].unwrap() > info.coverage_max[1]);
-        assert!(frame.pixels.len() <= 6 * 1024 * 1024 * 4);
+        assert!(retained_bytes(&frame) <= MAX_SNAPSHOT_BYTES);
     }
 }
 
@@ -209,21 +216,31 @@ fn retained_settle_matches_the_exact_viewport_reference_and_pinned_source_gutter
     }
 }
 
-/// Frames are painted in the buffer they share instead of a `Vec` that was then
-/// copied into an `Arc`. Their bytes must equal that former path exactly: the
-/// retained body and gutter, and the viewport-only frame with its gutter band.
+/// Text frames are painted in the `Arc` buffer that delivers them. This guards the
+/// engine's buffer and parameter wiring: their text pixels must equal, byte for
+/// byte, what the renderer's allocating `rasterize` (the former path) paints for
+/// the same viewport, both for the retained body and beside the gutter band of a
+/// viewport-only frame. Gutters are painted by `paint_gutter` on both paths, so
+/// rebuilding one here would compare it with itself; the independent check that
+/// the retained gutter equals the viewport frame's band is
+/// `retained_settle_matches_the_exact_viewport_reference_and_pinned_source_gutter`.
 #[test]
-fn frames_painted_in_their_shared_buffers_match_the_former_copied_rasters() {
+fn frames_painted_in_their_shared_buffers_match_the_allocating_renderer() {
     for retained_pixels in [true, false] {
         let (mut worker, output) = retained(viewer::MODE_SOURCE);
         if !retained_pixels {
             worker.input(ViewerInput::RetainedRaster(false), &output);
         }
-        // A translucent theme and a selection blend over the zeroed new buffer.
+        // A translucent theme and a selection, painted over the zeroed new buffer.
         worker.appearance.background = [30, 60, 90, 160];
         worker.selection = Some((90, 500));
         worker.origin = [0.0, 37.25];
         let frame = paint(&mut worker, &output);
+        assert_eq!(
+            frame.raster.is_some(),
+            retained_pixels,
+            "retained pixels follow the request"
+        );
         let margin = worker.text_margin();
         let selection = worker.selection.map(|(a, b)| a.min(b)..a.max(b));
         let view = |width, height, origin| Viewport {
@@ -235,8 +252,7 @@ fn frames_painted_in_their_shared_buffers_match_the_former_copied_rasters() {
         };
         let shaped = worker.shaped.as_ref().unwrap();
         let Some(info) = &frame.raster else {
-            assert!(!retained_pixels, "retained pixels were requested");
-            let mut former = worker
+            let expected = worker
                 .renderer
                 .rasterize(
                     shaped,
@@ -248,27 +264,45 @@ fn frames_painted_in_their_shared_buffers_match_the_former_copied_rasters() {
                     selection,
                 )
                 .unwrap();
-            text::paint_gutter(
-                &mut worker.renderer,
-                &mut worker.text,
-                &worker.appearance,
-                worker.geometry,
-                worker.origin,
-                margin,
-                &mut midnight_viewer_render::RasterMut::new(
-                    former.width,
-                    former.height,
-                    &mut former.rgba,
-                )
-                .unwrap(),
-            )
-            .unwrap();
-            assert_eq!((frame.width, frame.height), (former.width, former.height));
-            let copied: Arc<[u8]> = former.rgba.into();
-            assert_pixels_equal(&frame.pixels, &copied, "viewport frame with gutter band");
+            assert_eq!(
+                (frame.width, frame.height),
+                (expected.width, expected.height)
+            );
+            assert_eq!(frame.pixels.len(), expected.rgba.len());
+            // The gutter band covers the first `margin` columns of every row.
+            let stride = frame.width as usize * 4;
+            let band = margin as usize * 4;
+            let mut numbers = Vec::new();
+            for (row, (actual, expected)) in frame
+                .pixels
+                .chunks_exact(stride)
+                .zip(expected.rgba.chunks_exact(stride))
+                .enumerate()
+            {
+                assert_pixels_equal(
+                    &actual[band..],
+                    &expected[band..],
+                    &format!("viewport frame row {row} beside the gutter band"),
+                );
+                numbers.extend_from_slice(actual[..band].as_chunks::<4>().0);
+            }
+            assert!(
+                numbers.iter().any(|pixel| pixel != &numbers[0]),
+                "line numbers are painted in the gutter band"
+            );
             continue;
         };
         let gutter = info.gutter.as_ref().expect("source gutter");
+        assert_eq!((gutter.width, gutter.height), (margin as u32, frame.height));
+        assert_eq!(
+            gutter.pixels.len(),
+            gutter.width as usize * gutter.height as usize * 4
+        );
+        let numbers = gutter.pixels.as_chunks::<4>().0;
+        assert!(
+            numbers.iter().any(|pixel| pixel != &numbers[0]),
+            "line numbers are painted in the retained gutter"
+        );
         // The raster starts its whole-pixel guard before the camera.
         let before: [f32; 2] = std::array::from_fn(|axis| {
             (info.origin[axis] - info.raster_origin[axis]).round() as f32
@@ -278,35 +312,7 @@ fn frames_painted_in_their_shared_buffers_match_the_former_copied_rasters() {
             .renderer
             .rasterize(shaped, view(frame.width, frame.height, local), selection)
             .unwrap();
-        let mut former_gutter = midnight_viewer_render::Raster {
-            width: gutter.width,
-            height: gutter.height,
-            rgba: vec![0; gutter.width as usize * gutter.height as usize * 4],
-        };
-        text::paint_gutter(
-            &mut worker.renderer,
-            &mut worker.text,
-            &worker.appearance,
-            worker.geometry,
-            local,
-            margin,
-            &mut midnight_viewer_render::RasterMut::new(
-                former_gutter.width,
-                former_gutter.height,
-                &mut former_gutter.rgba,
-            )
-            .unwrap(),
-        )
-        .unwrap();
-        let (gutter_pixels, _) = former_gutter.rgba.as_chunks::<4>();
-        assert!(
-            gutter_pixels.iter().any(|pixel| pixel != &gutter_pixels[0]),
-            "line numbers are painted"
-        );
-        let copied: Arc<[u8]> = body.rgba.into();
-        assert_pixels_equal(&frame.pixels, &copied, "retained body");
-        let copied: Arc<[u8]> = former_gutter.rgba.into();
-        assert_pixels_equal(&gutter.pixels, &copied, "retained gutter");
+        assert_pixels_equal(&frame.pixels, &body.rgba, "retained body");
     }
 }
 
@@ -623,7 +629,7 @@ fn retained_refill_preserves_logical_lead_on_scaled_monitors() {
                 next.coverage_min[1] < info.coverage_min[1]
             });
             assert!(worker.viewport_request.is_none());
-            assert!(refreshed.pixels.len() <= 6 * 1024 * 1024 * 4);
+            assert!(retained_bytes(&refreshed) <= MAX_SNAPSHOT_BYTES);
         }
     }
 }
@@ -646,7 +652,7 @@ fn retained_refill_budget_limited_guard_does_not_replace_stationary_pixels() {
     let unchanged = paint(&mut worker, &output);
     assert_eq!(unchanged.raster.as_ref().unwrap().pixel_id, info.pixel_id);
     assert!(Arc::ptr_eq(&first.pixels, &unchanged.pixels));
-    assert!(unchanged.pixels.len() <= 6 * 1024 * 1024 * 4);
+    assert!(retained_bytes(&unchanged) <= MAX_SNAPSHOT_BYTES);
 }
 
 #[test]
@@ -682,7 +688,7 @@ fn retained_guard_geometry_caps_body_and_gutter_at_high_dpi() {
             assert!(
                 (u64::from(geometry.width) + 2 * u64::from(x))
                     * (u64::from(geometry.height) + 2 * u64::from(y))
-                    <= 6 * 1024 * 1024
+                    <= VIEWER_RETAINED_RASTER_PIXELS as u64
             );
             let demand = ViewerGeometry {
                 height: geometry.height + 2 * y,
