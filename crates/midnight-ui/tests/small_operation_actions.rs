@@ -1,4 +1,4 @@
-//! Native operation confirmations remain usable in a 320×200 host.
+//! Embedded operation confirmations remain usable in a 320×200 main window.
 #[path = "support/operation_form.rs"]
 mod ui;
 
@@ -44,6 +44,7 @@ fn inside(test: &ui::TestUi, item: &ItemRc, label: &str) {
         "{label} outside viewport: {:?}",
         bounds(item)
     );
+    ui::assert_inside(item, label);
 }
 
 fn scroll_parent(item: &ItemRc) -> ItemRc {
@@ -58,11 +59,11 @@ fn scroll_parent(item: &ItemRc) -> ItemRc {
 }
 
 fn primary_caption(test: &ui::TestUi, title: &str) -> ItemRc {
-    let action = ui::root_item(&test.window, title, AccessibleRole::Button);
+    let action = ui::root_item(test, title, AccessibleRole::Button);
     if action.downcast::<FocusScope>().is_some() {
         // The stationary proxy owns accessibility. Pointer/scroll regressions
         // still exercise the underlying native caption itself.
-        ui::root_item(&test.window, title, AccessibleRole::None)
+        ui::root_item(test, title, AccessibleRole::None)
     } else {
         action
     }
@@ -84,7 +85,7 @@ fn named_buttons(item: ItemRc, title: &str) -> usize {
 }
 
 fn assert_focused_primary(test: &ui::TestUi, title: &str) {
-    let inner = WindowInner::from_pub(test.window.window());
+    let inner = WindowInner::from_pub(test.main.window());
     let focus = inner
         .focus_item
         .borrow()
@@ -104,16 +105,13 @@ fn assert_focused_primary(test: &ui::TestUi, title: &str) {
         "true"
     );
     assert_eq!(
-        named_buttons(ItemRc::new_root(inner.component()), title),
+        named_buttons(test.popup(), title),
         1,
         "one accessible primary action"
     );
     let (left, top, right, bottom) = bounds(&focus);
     inside(test, &focus, "focused primary viewport");
-    let expected = test
-        .window
-        .global::<midnight_ui::Theme>()
-        .get_active_frame();
+    let expected = test.main.global::<midnight_ui::Theme>().get_active_frame();
     for (x, y) in [
         (left.floor() as usize + 1, ((top + bottom) / 2.0) as usize),
         (right.ceil() as usize - 2, ((top + bottom) / 2.0) as usize),
@@ -136,7 +134,7 @@ fn assert_focused_primary(test: &ui::TestUi, title: &str) {
 
 fn scroll(test: &mut ui::TestUi, viewport: &ItemRc, x: f32, y: f32) {
     let (left, top, right, bottom) = bounds(viewport);
-    test.window
+    test.main
         .window()
         .dispatch_event(WindowEvent::PointerScrolled {
             position: LogicalPosition::new((left + right) / 2.0, (top + bottom) / 2.0),
@@ -162,7 +160,7 @@ fn click_visible(test: &mut ui::TestUi, item: &ItemRc, viewport: &ItemRc) {
         bounds(viewport)
     );
     ui::click(
-        &test.window,
+        test,
         (visible.0 + visible.2) / 2.0,
         (visible.1 + visible.3) / 2.0,
     );
@@ -170,9 +168,9 @@ fn click_visible(test: &mut ui::TestUi, item: &ItemRc, viewport: &ItemRc) {
 }
 
 fn small(test: &mut ui::TestUi, font: i32) {
-    test.window
-        .invoke_apply_preferences(0, 1, "".into(), font, font);
-    test.resize(320, 200);
+    test.apply_preferences(0, 1, "", font, font);
+    // A 320×200 dialog body inside the minimum frame margin.
+    test.resize(328, 208);
     settle(test);
 }
 
@@ -180,22 +178,22 @@ fn small(test: &mut ui::TestUi, font: i32) {
 fn short_rename_summary_uses_a_compact_dialog_and_long_summaries_can_scroll() {
     let mut test = ui::TestUi::new();
     test.resize(1340, 900);
-    test.window.set_kind(0);
-    test.window.set_title_text("Rename".into());
-    test.window.set_confirm_text("Rename".into());
-    test.window.set_has_name(true);
-    test.window.set_initial_name("example.txt".into());
-    test.window.set_body("example.txt\n1 024 bytes".into());
-    test.window.invoke_begin();
+    test.form().set_kind(0);
+    test.form().set_title_text("Rename".into());
+    test.form().set_confirm_text("Rename".into());
+    test.form().set_has_name(true);
+    test.form().set_initial_name("example.txt".into());
+    test.form().set_body("example.txt\n1 024 bytes".into());
+    test.begin();
     settle(&mut test);
-    let cancel = ui::root_item(&test.window, "Cancel", AccessibleRole::Button);
+    let cancel = ui::root_item(&test, "Cancel", AccessibleRole::Button);
     let short_height = test.preferred_height();
     assert!(
         short_height < 400.0,
         "short form wastes vertical space: {short_height}"
     );
     ui::snapshot(&test, "compact-rename-content");
-    test.window.set_body(
+    test.form().set_body(
         "A longer description with a Unicode path C:\\文档\\example.txt\n"
             .repeat(30)
             .into(),
@@ -215,25 +213,25 @@ fn long_operation_confirmations_scroll_and_keep_cancel_visible() {
     small(&mut test, 32);
     let confirmed = Rc::new(RefCell::new(Vec::new()));
     let captured = confirmed.clone();
-    test.window
-        .on_confirm(move |name| captured.borrow_mut().push(name));
+    test.form()
+        .on_confirm(move |_, name| captured.borrow_mut().push(name));
     let cancelled = Rc::new(Cell::new(0));
     let captured = cancelled.clone();
-    test.window
-        .on_request_dismiss(move || captured.set(captured.get() + 1));
+    test.form()
+        .on_request_dismiss(move |_| captured.set(captured.get() + 1));
     for (kind, title, has_name) in [
         (1, "Move to Trash", false),
         (2, "Permanently delete", false),
         (3, "Create directory", true),
     ] {
-        test.window.set_kind(kind);
-        test.window.set_title_text(title.into());
-        test.window.set_confirm_text(title.into());
-        test.window.set_has_name(has_name);
-        test.window.set_initial_name("new folder".into());
-        test.window.invoke_begin();
+        test.form().set_kind(kind);
+        test.form().set_title_text(title.into());
+        test.form().set_confirm_text(title.into());
+        test.form().set_has_name(has_name);
+        test.form().set_initial_name("new folder".into());
+        test.begin();
         settle(&mut test);
-        let cancel = ui::root_item(&test.window, "Cancel", AccessibleRole::Button);
+        let cancel = ui::root_item(&test, "Cancel", AccessibleRole::Button);
         inside(&test, &cancel, "Cancel");
         let confirm = primary_caption(&test, title);
         let viewport = scroll_parent(&confirm);
@@ -257,7 +255,7 @@ fn long_operation_confirmations_scroll_and_keep_cancel_visible() {
         assert_eq!(confirmed.borrow().len(), count + 1);
         assert_focused_primary(&test, title);
         assert_eq!(confirmed.borrow().last().unwrap().as_str(), "new folder");
-        ui::key(&test.window, Key::Escape);
+        ui::key(&test, Key::Escape);
         settle(&mut test);
         assert_eq!(
             cancelled.get(),
@@ -272,16 +270,16 @@ fn long_operation_confirmations_scroll_and_keep_cancel_visible() {
 #[test]
 fn fitting_primary_focus_uses_the_native_caption_width() {
     let mut test = ui::TestUi::new();
-    test.window.set_kind(0);
-    test.window.set_title_text("Rename".into());
-    test.window.set_confirm_text("Rename".into());
-    test.window.set_has_name(false);
-    test.window.invoke_begin();
+    test.form().set_kind(0);
+    test.form().set_title_text("Rename".into());
+    test.form().set_confirm_text("Rename".into());
+    test.form().set_has_name(false);
+    test.begin();
     settle(&mut test);
     let caption = primary_caption(&test, "Rename");
     let viewport = scroll_parent(&caption);
     assert!(caption.geometry().width() < viewport.geometry().width());
-    let semantic = ui::root_item(&test.window, "Rename", AccessibleRole::Button);
+    let semantic = ui::root_item(&test, "Rename", AccessibleRole::Button);
     assert!(
         (semantic.geometry().width() - caption.geometry().width()).abs() < 1.0,
         "fitting focus must not outline unused footer width"
@@ -299,18 +297,18 @@ fn scrolling_primary_confirmation_keeps_default_enter_and_escape() {
     small(&mut test, 32);
     let confirmed = Rc::new(Cell::new(0));
     let captured = confirmed.clone();
-    test.window
-        .on_confirm(move |_| captured.set(captured.get() + 1));
+    test.form()
+        .on_confirm(move |_, _| captured.set(captured.get() + 1));
     let cancelled = Rc::new(Cell::new(0));
     let captured = cancelled.clone();
-    test.window
-        .on_request_dismiss(move || captured.set(captured.get() + 1));
+    test.form()
+        .on_request_dismiss(move |_| captured.set(captured.get() + 1));
     for (kind, title) in [(1, "Move to Trash"), (2, "Permanently delete")] {
-        test.window.set_kind(kind);
-        test.window.set_title_text(title.into());
-        test.window.set_confirm_text(title.into());
-        test.window.set_has_name(false);
-        test.window.invoke_begin();
+        test.form().set_kind(kind);
+        test.form().set_title_text(title.into());
+        test.form().set_confirm_text(title.into());
+        test.form().set_has_name(false);
+        test.begin();
         settle(&mut test);
         let confirm = primary_caption(&test, title);
         let viewport = scroll_parent(&confirm);
@@ -326,34 +324,31 @@ fn scrolling_primary_confirmation_keeps_default_enter_and_escape() {
             "wheel input never confirms"
         );
         assert_focused_primary(&test, title);
-        ui::key(&test.window, Key::Tab);
+        ui::key(&test, Key::Tab);
         settle(&mut test);
         assert_eq!(
-            named_buttons(
-                ItemRc::new_root(WindowInner::from_pub(test.window.window()).component()),
-                title
-            ),
+            named_buttons(test.popup(), title),
             1,
             "unfocused proxy must not duplicate the native action"
         );
-        ui::key(&test.window, Key::Tab);
+        ui::key(&test, Key::Tab);
         settle(&mut test);
         assert_focused_primary(&test, title);
         // No pointer click can restore focus before these keys.
-        ui::key(&test.window, Key::Return);
+        ui::key(&test, Key::Return);
         assert_eq!(
             confirmed.get(),
             (kind - 1) * 2 + 1,
             "Return keeps the primary action after scrolling"
         );
         assert_eq!(cancelled.get(), kind - 1, "Return must not select Cancel");
-        ui::key(&test.window, Key::Space);
+        ui::key(&test, Key::Space);
         assert_eq!(
             confirmed.get(),
             kind * 2,
             "Space activates the focused primary action"
         );
-        ui::key(&test.window, Key::Escape);
+        ui::key(&test, Key::Escape);
         settle(&mut test);
         assert_eq!(
             cancelled.get(),

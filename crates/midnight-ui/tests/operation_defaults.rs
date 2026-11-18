@@ -1,4 +1,7 @@
-//! Confirm defaults through actual child-window keyboard input, without filesystem operations.
+//! Confirm defaults through actual keyboard input to the shipped embedded operation
+//! form, without filesystem operations.
+#[path = "support/embedded_form.rs"]
+mod form;
 #[path = "support/window_input.rs"]
 mod input;
 #[path = "support/modeless.rs"]
@@ -9,42 +12,48 @@ use i_slint_core::{
     items::{AccessibleRole, FocusReason, FocusScope},
     window::WindowInner,
 };
-use midnight_ui::OperationWindow;
-use slint::{
-    ComponentHandle,
-    platform::{Key, WindowAdapter, software_renderer::MinimalSoftwareWindow},
-};
+use midnight_ui::OperationPresentation;
+use slint::{ComponentHandle, platform::Key};
 use std::{cell::RefCell, rc::Rc};
 
-fn window() -> (OperationWindow, Rc<MinimalSoftwareWindow>) {
-    let windows = Rc::new(RefCell::new(Vec::new()));
-    slint::platform::set_platform(Box::new(modeless::Windows(windows.clone()))).unwrap();
-    let window = OperationWindow::new().unwrap();
-    window.show().unwrap();
-    let native = windows.borrow()[0].clone();
-    modeless::draw(&native, 640, 420, "operation-default");
-    (window, native)
+/// The embedded operation form of a bare main window; nothing closes it, so each
+/// test sees every confirmation and cancellation request.
+fn host() -> form::Host {
+    let host = form::Host::new();
+    host.main
+        .global::<OperationPresentation>()
+        .set_token("operation".into());
+    host.layout(640, 420);
+    host
+}
+
+/// (Re)start the form, which restores the initial name and the default focus.
+fn begin(host: &form::Host) {
+    host.main.global::<OperationPresentation>().invoke_begin();
+    host.draw(640, 420, "operation-default");
 }
 
 #[test]
 fn transfer_enter_proceeds_and_explicit_cancel_and_escape_remain_available() {
-    let (window, child) = window();
+    let host = host();
+    let child = host.native.clone();
+    let form = host.main.global::<OperationPresentation>();
     let confirmations = Rc::new(RefCell::new(Vec::new()));
     let cancellations = Rc::new(RefCell::new(0));
     let sink = confirmations.clone();
-    window.on_confirm(move |path| sink.borrow_mut().push(path));
+    form.on_confirm(move |_, path| sink.borrow_mut().push(path));
     let sink = cancellations.clone();
-    window.on_request_dismiss(move || *sink.borrow_mut() += 1);
+    form.on_request_dismiss(move |_| *sink.borrow_mut() += 1);
     let path = "D:\\target 文档\\";
-    window.set_initial_name(path.into());
-    window.set_has_name(true);
-    window.set_option_visible(true);
-    window.set_option_enabled(true);
-    window.set_option_label("Preserve exact modified time".into());
+    form.set_initial_name(path.into());
+    form.set_has_name(true);
+    form.set_option_visible(true);
+    form.set_option_enabled(true);
+    form.set_option_label("Preserve exact modified time".into());
     for title in ["Copy", "Move"] {
-        window.set_title_text(title.into());
-        window.set_confirm_text(title.into());
-        window.invoke_begin();
+        form.set_title_text(title.into());
+        form.set_confirm_text(title.into());
+        begin(&host);
         confirmations.borrow_mut().clear();
         *cancellations.borrow_mut() = 0;
         input::key(&child, Key::Return);
@@ -56,7 +65,7 @@ fn transfer_enter_proceeds_and_explicit_cancel_and_escape_remain_available() {
 
         // Space toggles the option; Enter retains the same default action.
         confirmations.borrow_mut().clear();
-        window.invoke_begin();
+        begin(&host);
         input::key(&child, Key::Tab);
         input::key(&child, Key::Space);
         assert!(confirmations.borrow().is_empty());
@@ -64,57 +73,59 @@ fn transfer_enter_proceeds_and_explicit_cancel_and_escape_remain_available() {
         assert_eq!(confirmations.borrow().len(), 1);
 
         confirmations.borrow_mut().clear();
-        window.invoke_begin();
+        begin(&host);
         input::key(&child, Key::Escape);
         assert_eq!(*cancellations.borrow(), 1);
         assert!(confirmations.borrow().is_empty());
 
-        window.invoke_begin();
+        begin(&host);
         input::key(&child, Key::Tab);
         input::key(&child, Key::Tab);
         input::key(&child, Key::Return);
         assert_eq!(*cancellations.borrow(), 2);
         assert!(confirmations.borrow().is_empty());
 
-        window.set_initial_name("".into());
-        window.invoke_begin();
+        form.set_initial_name("".into());
+        begin(&host);
         input::key(&child, Key::Return);
         assert!(
             confirmations.borrow().is_empty(),
             "empty destinations never submit"
         );
-        window.set_initial_name(path.into());
+        form.set_initial_name(path.into());
     }
 }
 
 #[test]
 fn transfer_wait_option_toggles_without_submitting_and_preserves_default_enter() {
-    let (window, child) = window();
+    let host = host();
+    let child = host.native.clone();
+    let form = host.main.global::<OperationPresentation>();
     let confirmed = Rc::new(RefCell::new(Vec::new()));
     let cancelled = Rc::new(RefCell::new(0));
     let sink = confirmed.clone();
-    window.on_confirm(move |value| sink.borrow_mut().push(value));
+    form.on_confirm(move |_, value| sink.borrow_mut().push(value));
     let sink = cancelled.clone();
-    window.on_request_dismiss(move || *sink.borrow_mut() += 1);
-    window.set_has_name(true);
-    window.set_initial_name("D:\\target 文档".into());
-    window.set_wait_visible(true);
-    window.set_option_visible(true);
-    window.set_option_label("Preserve exact modified time".into());
+    form.on_request_dismiss(move |_| *sink.borrow_mut() += 1);
+    form.set_has_name(true);
+    form.set_initial_name("D:\\target 文档".into());
+    form.set_wait_visible(true);
+    form.set_option_visible(true);
+    form.set_option_label("Preserve exact modified time".into());
     for title in ["Copy", "Move"] {
-        window.set_title_text(title.into());
-        window.set_confirm_text(title.into());
+        form.set_title_text(title.into());
+        form.set_confirm_text(title.into());
         for metadata in [false, true] {
-            window.set_option_enabled(metadata);
-            window.set_wait_checked(false);
-            window.invoke_begin();
+            form.set_option_enabled(metadata);
+            form.set_wait_checked(false);
+            begin(&host);
             confirmed.borrow_mut().clear();
             input::key(&child, Key::Tab);
             if metadata {
                 input::key(&child, Key::Tab);
             }
             input::key(&child, Key::Space);
-            assert!(window.get_wait_checked());
+            assert!(form.get_wait_checked());
             assert!(confirmed.borrow().is_empty());
             input::key(&child, Key::Return);
             assert_eq!(
@@ -135,25 +146,27 @@ fn transfer_wait_option_toggles_without_submitting_and_preserves_default_enter()
 
 #[test]
 fn delete_default_does_not_remove_explicit_cancellation() {
-    let (window, child) = window();
+    let host = host();
+    let child = host.native.clone();
+    let form = host.main.global::<OperationPresentation>();
     let confirmed = Rc::new(RefCell::new(0));
     let cancelled = Rc::new(RefCell::new(0));
     let sink = confirmed.clone();
-    window.on_confirm(move |_| *sink.borrow_mut() += 1);
+    form.on_confirm(move |_, _| *sink.borrow_mut() += 1);
     let sink = cancelled.clone();
-    window.on_request_dismiss(move || *sink.borrow_mut() += 1);
-    window.set_has_name(false);
-    window.set_title_text("Permanently delete".into());
-    window.set_confirm_text("Permanently delete".into());
-    window.set_dangerous(true);
-    window.invoke_begin();
+    form.on_request_dismiss(move |_| *sink.borrow_mut() += 1);
+    form.set_has_name(false);
+    form.set_title_text("Permanently delete".into());
+    form.set_confirm_text("Permanently delete".into());
+    form.set_dangerous(true);
+    begin(&host);
     input::key(&child, Key::Escape);
-    window.invoke_begin();
-    modeless::click(&child, "Cancel");
-    // Native X is covered through the installed host in native_operation_windows.
+    begin(&host);
+    host.click("Cancel");
+    // The installed host covers native close requests in native_operation_windows.
     assert_eq!(*cancelled.borrow(), 2);
     assert_eq!(*confirmed.borrow(), 0);
-    window.invoke_begin();
+    begin(&host);
     input::key(&child, Key::Return);
     assert_eq!(*confirmed.borrow(), 1);
     assert_eq!(*cancelled.borrow(), 2);
@@ -175,20 +188,22 @@ fn focus_scope(item: ItemRc) -> Option<ItemRc> {
 
 #[test]
 fn enter_on_accessibility_focused_cancel_never_confirms_delete() {
-    let (window, child) = window();
+    let host = host();
+    let child = host.native.clone();
+    let form = host.main.global::<OperationPresentation>();
     let confirmed = Rc::new(RefCell::new(0));
     let cancelled = Rc::new(RefCell::new(0));
     let sink = confirmed.clone();
-    window.on_confirm(move |_| *sink.borrow_mut() += 1);
+    form.on_confirm(move |_, _| *sink.borrow_mut() += 1);
     let sink = cancelled.clone();
-    window.on_request_dismiss(move || *sink.borrow_mut() += 1);
-    window.set_has_name(false);
+    form.on_request_dismiss(move |_| *sink.borrow_mut() += 1);
+    form.set_has_name(false);
     for dangerous in [false, true] {
-        window.set_dangerous(dangerous);
-        window.invoke_begin();
-        let cancel = modeless::accessible_item(&child, AccessibleRole::Button, "Cancel").unwrap();
+        form.set_dangerous(dangerous);
+        begin(&host);
+        let cancel = host.item(AccessibleRole::Button, "Cancel");
         let scope = focus_scope(cancel).expect("Cancel keyboard focus scope");
-        let inner = WindowInner::from_pub(child.window());
+        let inner = WindowInner::from_pub(host.main.window());
         inner.set_focus_item(&scope, true, FocusReason::Programmatic);
         assert_eq!(inner.focus_item.borrow().upgrade().as_ref(), Some(&scope));
         input::key(&child, Key::Return);

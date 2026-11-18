@@ -230,7 +230,7 @@ fn denied_folder_open_restores_cursor_and_exact_viewport_after_layout_settles() 
             true
         }),
     );
-    // This viewport harness has one adapter. Separate notice-window tests render the modal.
+    // This viewport harness only counts notice requests; dialog_theme renders the notice.
     let notice_opens = Rc::new(Cell::new(0));
     let observed = notice_opens.clone();
     test.window

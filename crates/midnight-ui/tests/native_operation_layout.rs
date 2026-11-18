@@ -1,12 +1,10 @@
-//! Native operation content keeps all lines and actions at every theme/font/density.
+//! Embedded operation content keeps all lines and actions at every theme/font/density.
 #[path = "support/operation_form.rs"]
 mod ui;
 use i_slint_core::{
     item_tree::ItemRc,
     items::{AccessibleRole, ComplexText, SimpleText},
-    window::WindowInner,
 };
-use slint::ComponentHandle;
 fn find_text(item: ItemRc, value: &str) -> Option<ItemRc> {
     let text = item
         .downcast::<SimpleText>()
@@ -28,20 +26,6 @@ fn find_text(item: ItemRc, value: &str) -> Option<ItemRc> {
     None
 }
 
-fn inside(test: &ui::TestUi, item: ItemRc, label: &str) {
-    let rect = item.geometry();
-    let origin = item.map_to_native_window(rect.origin);
-    assert!(
-        rect.size.width > 0.0
-            && rect.size.height > 0.0
-            && origin.x >= 0.0
-            && origin.y >= 0.0
-            && origin.x + rect.size.width <= test.width as f32 + 1.0
-            && origin.y + rect.size.height <= test.height as f32 + 1.0,
-        "{label} clipped: {origin:?}, {rect:?}"
-    );
-}
-
 #[test]
 fn native_operation_layout_preserves_long_unicode_content_and_action_bounds() {
     let mut test = ui::TestUi::new();
@@ -53,8 +37,7 @@ fn native_operation_layout_preserves_long_unicode_content_and_action_bounds() {
         let render = scheme == themes[0]
             || std::env::var_os("MIDNIGHT_UI_RENDER_DIR").is_some_and(|dir| !dir.is_empty());
         for (density, font) in [(0, 11), (1, 15), (0, 32), (1, 32)] {
-            test.window
-                .invoke_apply_preferences(scheme, density, "".into(), font, font);
+            test.apply_preferences(scheme, density, "", font, font);
             let label = format!("native-theme-{scheme}-density-{density}-font-{font}");
             for (kind, title, has_name, warning) in [
                 (0, "Rename", true, ""),
@@ -73,26 +56,23 @@ fn native_operation_layout_preserves_long_unicode_content_and_action_bounds() {
                 (3, "Create directory", true, ""),
                 (4, "New empty file", true, ""),
             ] {
-                test.window.set_kind(kind);
-                test.window.set_title_text(title.into());
-                test.window.set_confirm_text(title.into());
-                test.window.set_has_name(has_name);
-                test.window.set_dangerous(kind == 2);
-                test.window.set_warning(warning.into());
-                test.window.set_initial_name("文档 👩🏽‍💻.txt".into());
-                test.window.set_body(format!("Location: /very/long/文档/e\u{301}/👩🏽‍💻/folder\n\n{}\n123 456 789 bytes · 06.11.2026 10:20:30", "source-file-with-long-Unicode-name-文档.txt\n".repeat(20)).into());
-                test.window.invoke_begin();
+                let form = test.form();
+                form.set_kind(kind);
+                form.set_title_text(title.into());
+                form.set_confirm_text(title.into());
+                form.set_has_name(has_name);
+                form.set_dangerous(kind == 2);
+                form.set_warning(warning.into());
+                form.set_initial_name("文档 👩🏽‍💻.txt".into());
+                form.set_body(format!("Location: /very/long/文档/e\u{301}/👩🏽‍💻/folder\n\n{}\n123 456 789 bytes · 06.11.2026 10:20:30", "source-file-with-long-Unicode-name-文档.txt\n".repeat(20)).into());
+                test.begin();
                 if render {
                     test.draw();
                 } else {
                     test.layout();
                 }
-                let body = test.window.get_body();
-                let text = find_text(
-                    ItemRc::new_root(WindowInner::from_pub(test.window.window()).component()),
-                    &body,
-                )
-                .unwrap();
+                let body = test.form().get_body();
+                let text = find_text(test.popup(), &body).unwrap();
                 assert_eq!(
                     text.geometry().origin,
                     Default::default(),
@@ -104,11 +84,7 @@ fn native_operation_layout_preserves_long_unicode_content_and_action_bounds() {
                     text.geometry()
                 );
                 for label in [title, "Cancel"] {
-                    inside(
-                        &test,
-                        ui::root_item(&test.window, label, AccessibleRole::Button),
-                        label,
-                    );
+                    ui::assert_inside(&ui::root_item(&test, label, AccessibleRole::Button), label);
                 }
                 if font != 32 {
                     ui::snapshot(&test, &format!("{label}-operation-{kind}"));
@@ -121,36 +97,35 @@ fn native_operation_layout_preserves_long_unicode_content_and_action_bounds() {
 #[test]
 fn rename_initial_height_fits_its_summary_without_a_large_empty_body() {
     let mut test = ui::TestUi::new();
-    test.window
-        .invoke_apply_preferences(3, 0, "Segoe UI".into(), 12, 15);
-    test.window.set_kind(0);
-    test.window.set_title_text("Rename".into());
-    test.window.set_confirm_text("Rename".into());
-    test.window.set_has_name(true);
-    test.window.set_input_label("New name".into());
-    test.window.set_initial_name("Picture 文档.jpg".into());
-    test.window
-        .set_body("Current item\nC:\\Users\\user\\Pictures\\Backgrounds\\Picture 文档.jpg".into());
-    test.resize(test.window.get_initial_width().round() as usize, 300);
-    let height = test.window.get_initial_height().ceil() as usize;
+    test.apply_preferences(3, 0, "Segoe UI", 12, 15);
+    let form = test.form();
+    form.set_kind(0);
+    form.set_title_text("Rename".into());
+    form.set_confirm_text("Rename".into());
+    form.set_has_name(true);
+    form.set_input_label("New name".into());
+    form.set_initial_name("Picture 文档.jpg".into());
+    form.set_body("Current item\nC:\\Users\\user\\Pictures\\Backgrounds\\Picture 文档.jpg".into());
+    // In a larger main window the dialog body takes the form's initial size.
+    test.resize(1340, 900);
+    test.begin();
+    test.draw();
+    let (_, size) = ui::body(&ui::root_item(&test, "Cancel", AccessibleRole::Button));
+    assert_eq!(size.width, 540.0, "the initial width at a 12 px font");
+    let height = size.height.ceil() as usize;
     assert!(
         (220..=360).contains(&height),
         "Unexpected initial rename height {height}"
     );
-    test.resize(test.width, height);
-    test.window.invoke_begin();
-    test.draw();
     for (label, role) in [
         ("Rename", AccessibleRole::Button),
         ("Cancel", AccessibleRole::Button),
         ("New name", AccessibleRole::TextInput),
     ] {
-        inside(&test, ui::root_item(&test.window, label, role), label);
+        ui::assert_inside(&ui::root_item(&test, label, role), label);
     }
-    let root = ItemRc::new_root(WindowInner::from_pub(test.window.window()).component());
-    inside(
-        &test,
-        find_text(root, "Rename").expect("The form needs an internal title"),
+    ui::assert_inside(
+        &find_text(test.popup(), "Rename").expect("The form needs an internal title"),
         "title",
     );
     ui::snapshot(&test, "rename-content-sized");

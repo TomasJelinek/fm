@@ -713,15 +713,20 @@ fn render_pixels(window: &MinimalSoftwareWindow, width: u32, height: u32) -> Vec
 }
 
 #[test]
-fn native_operation_client_paints_the_native_icon_and_distinct_fallback_artwork() {
+fn embedded_operation_paints_the_native_icon_and_distinct_fallback_artwork() {
     let windows = Rc::new(RefCell::new(Vec::new()));
     slint::platform::set_platform(Box::new(modeless::Windows(windows.clone()))).unwrap();
-    let form = midnight_ui::OperationWindow::new().unwrap();
+    let main = MainWindow::new().unwrap();
+    main.invoke_apply_fonts("".into(), 11, 15);
+    main.invoke_apply_preferences(0, 0);
+    main.show().unwrap();
+    // The shipped embedded form, driven through its presentation like the adapter.
+    let form = main.global::<OperationPresentation>();
     form.set_title_text("Action".into());
     form.set_confirm_text("Proceed".into());
     form.set_body("Selected file 文档.txt\nCaptured source summary".into());
-    form.invoke_apply_preferences(0, 0, "".into(), 11, 15);
-    form.show().unwrap();
+    form.set_token("icon".into());
+    form.invoke_begin();
     let child = windows.borrow()[0].clone();
     let marker = slint::Rgb8Pixel {
         r: 241,
