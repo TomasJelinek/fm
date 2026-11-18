@@ -16,8 +16,8 @@ corruption between samples. It revalidates the opened source
 before accepting replacement consent and immediately before publishing. A failed
 copy stays stopped until an explicitly supported Retry restores its checkpoint. The
 one automatic retry repeats a namespace change (stage, directory or link creation,
-publication, a Move's source or empty-directory removal) that granted peers refused
-before any mutation, once a refusing peer changes; see
+publication, a Move's source capture, source removal or empty-directory removal) that
+granted peers refused before any mutation, once a refusing peer changes; see
 [operation progress](OPERATION_PROGRESS.md#admission-policy-and-waits). Cancelled
 and recovery-terminal copies cannot publish again. A late no-replace
 collision leaves the verified stage available for a different name or explicit
@@ -148,7 +148,9 @@ Retry retains native identities and the original source/stage handles:
   It never recopies the file. Directory removal retries the exhausted frame,
   revalidating bindings without enumerating that directory again. When granted
   peers refused either removal, its retry runs automatically (the file removal
-  still with the full rehash).
+  still with the full rehash). A source capture they refused captured nothing; it
+  is repeated automatically from the capture step, and the post-capture proof
+  still rehashes both files before removal.
 
 Skip All is scoped by phase, native error kind and operation name within one job.
 Successful retries do not increment failed counts; skipped errors and cleanup or
@@ -252,7 +254,7 @@ The recovery directory is `.midnight-recovery-<random>` beneath the destination
 folder. Windows uses a protected owner-only DACL; Linux requires owned private
 recovery and a parent protected against other-user name replacement (owned by the
 user or root, and sticky or writable only by the user and the user's private
-group, without a POSIX access ACL). These are
+group, the latter only without a POSIX access ACL). These are
 not isolation from root/administrators or malicious processes of the same user.
 An error after namespace mutation is a structured outcome, never a request to
 delete recovery data during cleanup:
@@ -396,8 +398,12 @@ successful move retains no source copy and removes its empty temporary directory
 This is internal staging, not a selectable recovery mode, journal or catalogue.
 If a new source-name winner blocks restoration, both objects are preserved and
 the exact exceptional temporary location is reported. Failed empty-directory
-cleanup is also reported; cleanup never removes an unexpected child. Progress
-reports actual file removals, source disposition/durability facts, exceptional
+cleanup is also reported; cleanup never removes an unexpected child. One known
+gap: on Windows, when granted peers refuse a capture's rename into the private
+directory that the same capture has just created, that refused turn cannot remove
+the empty directory, and the automatic repeat of the capture uses a new one, so an
+empty owner-only `.midnight-move-*` directory remains beside the source unreported.
+Progress reports actual file removals, source disposition/durability facts, exceptional
 residual counts, first16 raw residual mappings and at most64 source parents for
 refresh, prioritizing selected-root parents. File-removal counts exclude directories;
 disposition/durability counters include empty-directory removals. They do not
@@ -512,10 +518,10 @@ an external change to one of their bindings is a job namespace error. Private pi
 witness the stages a job creates and then their published outputs; once every native
 owner of such an object has closed, the next refresh retires that alias, so published
 outputs neither accumulate claims nor turn later external changes into job errors.
-Their names stay covered by the original destination pins. A retired output's object
-identity no longer takes part in peer admission: another job that reaches the same
-object through a different hard-link name is not excluded by it (this job never
-touches that object again). This retirement ruling awaits Architect/F1 confirmation.
+Their names stay covered by the original destination pins. By design, a retired
+output's object identity no longer takes part in peer admission: another job that
+reaches the same object through a different hard-link name is not excluded by it,
+because this job never touches that object again.
 
 Windows Copy and Move require 128-bit `FileIdInfo` identities, because they compare
 identities across their own stage publications, Move captures and namespace pins.

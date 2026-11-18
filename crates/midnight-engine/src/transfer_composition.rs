@@ -16,6 +16,9 @@ pub(crate) struct QualifiedTransferInstallation {
     locale: Option<QualifiedLocaleInstallation>,
 }
 impl QualifiedTransferInstallation {
+    /// Test fixtures only: production installs transfers through
+    /// `Engine::configure_audited_transfers`, which always records the audited witness.
+    #[cfg(test)]
     pub(crate) fn unqualified(service: Arc<dyn TransferService>) -> Self {
         Self {
             service,

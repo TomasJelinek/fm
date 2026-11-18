@@ -1,6 +1,6 @@
 //! Startup-owned commands with Copy admission before successful transport acceptance.
 use crate::{
-    copy_operations::{Admission, Admitted},
+    copy_operations::{self, Admission, Admitted},
     retirement::{RetirementLease, WorkerOwned},
 };
 use midnight_core::Command;
@@ -186,28 +186,14 @@ impl OwnedCommandPermit {
         reason = "Keep refused commands intact for caller reclamation without an additional box."
     )]
     pub fn try_send(self, command: Command) -> Result<(), CommandSendError> {
-        if is_copy(&command) {
+        // The same Copy-family list guarded admission uses for its operation ID.
+        if copy_operations::is_copy_command(&command) {
             self.admission.send_reserved(command, self.permit)
         } else {
             self.permit.send(Message::Plain(PlainCommand(command)));
             Ok(())
         }
     }
-}
-
-fn is_copy(command: &Command) -> bool {
-    matches!(
-        command,
-        Command::EnqueueCopy(_)
-            | Command::EnqueueSelectedCopy(_)
-            | Command::EnqueueMove(_)
-            | Command::EnqueueSelectedMove(_)
-            | Command::EnqueueClipboardMove(_)
-            | Command::EnqueueTransferWithMetadata(_)
-            | Command::EnqueueCopyWithOptions(_)
-            | Command::EnqueueArchiveCopy(_)
-            | Command::EnqueueCapturedTransfer(_)
-    )
 }
 
 /// Must remain WorkerOwned, including before the first run poll. Draining may

@@ -434,15 +434,16 @@ display strings nor temporary extraction paths are exported. Native tree Paste
 uses the captured panel root, not its focused child, and preserves the clipboard's
 Copy/Move intent and ordinary Move confirmation. This grants no archive writes.
 
-Copying is serial and conservative on all storage classes in this milestone;
-one copy job and one native I/O step run at a time across the copy queue, including
-source reads, destination writes and independent verification reads. Cancellation
+Copying is conservative on all storage classes in this milestone. Each copy job
+runs one native I/O step at a time, including source reads, destination writes and
+independent verification reads; independent jobs whose namespace footprints are
+disjoint run concurrently up to the configured disk-I/O limit. Cancellation
 retains capacity until the in-flight native call and cleanup actually return.
-Future parallel Copy/Move is permitted only when **both source and destination
-are positively identified as local SSDs**, with a shared physical-device scheduler.
-HDD, network, unknown or failed classification on either endpoint requires serial
-copying; an SSD at the other endpoint does not override this. SSD-to-SSD copying
-also remains serial today.
+Future parallel streams within one Copy/Move job are permitted only when **both
+source and destination are positively identified as local SSDs**, with a shared
+physical-device scheduler. HDD, network, unknown or failed classification on either
+endpoint requires one stream per job; an SSD at the other endpoint does not override
+this. SSD-to-SSD copying within one job also remains serial today.
 
 Ordinary Copy leaves source files untouched. Untrusted Move clipboard intent
 through the ordinary Copy route is rejected. Explicit native Move accepts at most

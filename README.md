@@ -57,6 +57,12 @@ Link/provider moves, link copying and full metadata preservation remain pending
 API exposes yet); required modified-time preservation currently accepts regular
 files only.
 See [the transfer capabilities and implementation limits](docs/developer/TRANSFERS.md).
+On Linux, Copy and cross-volume Move write only to filesystems with anonymous
+`O_TMPFILE` files (ext4, XFS, Btrfs, tmpfs): FAT/exFAT/NTFS media and NFS/SMB,
+sshfs or GVfs shares are refused as destinations. Rename and permanent Delete on
+vfat, exFAT, ntfs3 and CIFS mounts are designed to work when the mount maps file
+ownership to your user, as desktop automounting does; this is not yet verified on a
+live mount. See [system requirements](docs/SYSTEM_REQUIREMENTS.md).
 
 Copy/Move pauses for supported Retry/Skip/Cancel decisions on I/O errors, including
 an unavailable destination or a full disk. Retry preserves the verification policy captured when the job started;

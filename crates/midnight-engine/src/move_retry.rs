@@ -46,6 +46,22 @@ impl MoveWork {
             && self.proofs[0].phase() == FileProofPhase::Complete
     }
 
+    /// A source capture that granted peers refused before any mutation captured nothing:
+    /// return to the capture phase so the owner repeats it after a refusing peer changes.
+    pub(in super::super) fn resume_refused_capture(&mut self) -> bool {
+        if self.failed_phase != Some(Phase::Capture)
+            || self.active.is_some()
+            || self.finalizer.is_some()
+            || self.proofs.len() != 1
+        {
+            return false;
+        }
+        self.phase = Phase::Capture;
+        self.failed_phase = None;
+        self.retryable_failure = false;
+        true
+    }
+
     pub(in super::super) fn retry(&mut self, job: &mut Job) -> Result<(), FsError> {
         if !self.can_retry() {
             return Err(unsupported(

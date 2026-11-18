@@ -13,7 +13,9 @@ pub(super) enum RetryCheckpoint {
 
 impl VerifiedFileCopy {
     /// True only for a failed pre-publication operation with a safe checkpoint.
-    /// No worker retries automatically; the caller must obtain an explicit choice.
+    /// Workers retry only after an explicit choice, except that the engine repeats a
+    /// namespace change that the host registry recorded as refused by a granted peer
+    /// before any mutation.
     pub fn can_retry(&self) -> bool {
         self.phase == CopyPhase::Failed && self.retry_checkpoint.is_some()
     }

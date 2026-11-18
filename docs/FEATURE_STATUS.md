@@ -295,10 +295,9 @@ the configured disk-I/O limit on every storage class; each job copies one file a
 a time and holds its disk slot only while it executes native steps (not while
 paused or waiting for a decision). A namespace change that a running peer refuses
 before any mutation is repeated automatically, without a prompt, once that peer
-changes (a refused Move source capture is still offered as an error). Endpoint
-qualification and device budgets for
-streams within one job remain required. Details are in the repository's security
-and architecture documents.
+changes. Endpoint qualification and device budgets for streams within one job
+remain required. Details are in the repository's security and architecture
+documents.
 
 The [10 November same-SSD benchmark](verification/2026-11-10-ssd-copy-probe.md)
 measured substantial gains in the native primitive for large/mixed files, but

@@ -583,16 +583,10 @@ impl EngineServices {
         let copies = copy_operations::Controller::with_admission(
             resources.copies,
             copy_admission,
+            // `configure_audited_transfers` installs the qualified installation together
+            // with every transfer service, so there is no unqualified production path.
             self.qualified_transfers
-                .clone()
-                .map(|installation| installation.with_locale(self.qualified_locale.clone()))
-                .or_else(|| {
-                    self.transfers.as_ref().map(|service| {
-                        transfer_composition::QualifiedTransferInstallation::unqualified(
-                            service.clone(),
-                        )
-                    })
-                }),
+                .map(|installation| installation.with_locale(self.qualified_locale.clone())),
             self.outbox.clone(),
             mutation_gate.clone(),
             transfer_leases::IoBudget::new(midnight_work_budget::shared_io()),

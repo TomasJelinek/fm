@@ -21,8 +21,18 @@ file because their tests change or inspect process-wide containment and terminal
 state. Crates with at most three integration files also keep one binary per
 file; CI selects some of those by name (`--test native`, `--test pdf_native`,
 `--test worker`). A test that re-runs its own executable must select the child
-by its module-qualified name (see `child_test` in
-`crates/midnight-core/tests/desktop_windows.rs`).
+by its module-qualified name (`<file>::<test>`, derived from `module_path!()`, run
+with `--exact`).
+
+The `midnight-engine` library test executable re-runs itself for ten Copy seal
+tests (`copy_seal_tests.rs`, `copy_finish_seal_tests.rs` and
+`copy_nested_retirement_tests.rs`), whose deliberately panicking cleanups and
+destructors must fail one child instead of aborting sibling tests. `child_case` in
+`copy_seal_tests.rs` starts the same executable with `--exact <test> --nocapture`,
+`MIDNIGHT_COPY_SEAL_TEST_CHILD=<test>` (the child then runs the test body) and
+`RUST_BACKTRACE=0`, drains both pipes, and fails the parent test if the child has not
+exited within 30 seconds; the parent kills and reaps its child when it fails. A
+runner that terminates the parent process itself must also terminate those children.
 
 When reproducing a failed CI job, match its workspace/package selection,
 feature flags, profile, target, toolchain and lockfile. A targeted `-p` pass does

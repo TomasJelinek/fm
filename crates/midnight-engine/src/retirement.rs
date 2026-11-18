@@ -185,11 +185,6 @@ impl RetirementDomain {
             slot: Some(slot),
         })
     }
-
-    /// Former name of [`Self::try_reserve`]; remove once copy admission migrates.
-    pub(crate) fn try_reserve_nowait(&self) -> Result<RetirementLease, RetirementBusy> {
-        self.try_reserve()
-    }
 }
 
 fn claim_slot(shared: &Shared) -> Option<usize> {

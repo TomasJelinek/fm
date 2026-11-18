@@ -1053,10 +1053,19 @@ impl Job {
             _ => true,
         }
     }
-    /// A Move source removal refused by peers: rebuild the finalizer through the ordinary
-    /// rehashing Retry (the proof stays required after any wait). Other Move phases have
-    /// no automatic retry checkpoint and take the ordinary failure path.
+    /// A Move source capture refused by peers captured nothing: repeat the capture (the
+    /// After proof still rehashes both files before removal). A refused source removal
+    /// rebuilds the finalizer through the ordinary rehashing Retry (the proof stays
+    /// required after any wait). Other Move phases have no automatic retry checkpoint and
+    /// take the ordinary failure path.
     fn resume_refused_move(&mut self) -> Result<bool, FsError> {
+        if self
+            .move_work
+            .as_mut()
+            .is_some_and(move_job::MoveWork::resume_refused_capture)
+        {
+            return Ok(true);
+        }
         if !self
             .move_work
             .as_ref()

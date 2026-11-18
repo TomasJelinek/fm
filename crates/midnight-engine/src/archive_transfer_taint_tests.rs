@@ -273,7 +273,10 @@ fn shared_archive_read_taint_keeps_real_copy_authority_and_finished_pending() {
     assert_eq!(leaf.calls.load(Ordering::SeqCst), 1);
     assert_eq!(leaf.releases.load(Ordering::SeqCst), 0);
     assert!(shared.cleanup_unconfirmed());
-    assert_eq!(io.snapshot().active_shared, 1);
+    // Quarantine returns the disk slot: it is an admission counter, not native
+    // authority, and a quarantined job must not block later exclusive I/O. The
+    // namespace share, job capacity and FINISHED stay retained.
+    assert_eq!(io.snapshot().active_shared, 0);
     assert_eq!(namespace.available_permits(), 0);
     assert_eq!(capacity.available_permits(), 0);
     assert!(!pending.is_finished());
