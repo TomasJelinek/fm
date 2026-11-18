@@ -8,6 +8,7 @@ import sys
 import subprocess
 import tarfile
 import tempfile
+import time
 import unittest
 from unittest import mock
 import zipfile
@@ -99,7 +100,7 @@ class BootstrapTests(unittest.TestCase):
     def test_publication_waits_for_a_scanner_to_release_an_extracted_file(self):
         data = self.zip_bytes([('nasm/nasm.exe', b'fresh executable')])
         artifact = self.artifact(data)
-        restore, held, delays = self.module.restore_timestamps, [], []
+        restore, held, delays, backoff = self.module.restore_timestamps, [], [], time.sleep
         self.addCleanup(lambda: [handle.close() for handle in held])
         def extracted(root, entries):
             restore(root, entries)
@@ -107,11 +108,17 @@ class BootstrapTests(unittest.TestCase):
             held.append((root / 'nasm/nasm.exe').open('rb'))
         def wait(seconds):
             delays.append(seconds)
-            held.pop().close()
+            if held:
+                held.pop().close()
+            else:
+                # The machine's own scanner may briefly hold the file that this test just
+                # closed: keep the publication's real backoff, bounded by its schedule.
+                backoff(seconds)
         with mock.patch.object(self.module, 'restore_timestamps', extracted), mock.patch('time.sleep', wait):
             destination = self.module.unpack(self.root, artifact, data)
         self.assertEqual((destination / 'nasm/nasm.exe').read_bytes(), b'fresh executable')
-        self.assertEqual(delays, list(self.module.PUBLISH_RETRY_DELAYS[:1]))
+        self.assertTrue(delays, 'The held file did not delay publication')
+        self.assertEqual(delays, list(self.module.PUBLISH_RETRY_DELAYS[:len(delays)]))
         self.assertEqual([path.name for path in (self.root / 'tools').iterdir()], ['fixture'])
 
     def test_publication_retry_is_bounded_and_only_for_windows_permission_errors(self):
