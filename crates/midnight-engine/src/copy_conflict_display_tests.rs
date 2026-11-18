@@ -1,9 +1,7 @@
 //! A conflict prompt formats the modification times of its two displayed entries
-//! through the job's reviewed locale. The Windows transfer adapter reports raw
+//! through the job's reviewed locale. The native transfer adapters report raw
 //! times, so enumerated, inspected, published and automatically resolved entries
-//! are never formatted (review P1-T1-2). The Linux adapter still formats every
-//! entry itself until its follow-up, so these assertions run on Windows.
-#![cfg(windows)]
+//! are never formatted (review P1-T1-2).
 use super::*;
 use crate::transfer_composition::{
     QualifiedLocaleInstallation, QualifiedTransferInstallation, tests::CountingLocale,

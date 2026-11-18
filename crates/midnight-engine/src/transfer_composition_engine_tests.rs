@@ -3,8 +3,7 @@
 //! application (audited native transfers and mutations, audited locale), and fails
 //! when that prompt's composition line drops the locale: Copy/Move through the
 //! audited installation, Rename and Make File List through the engine locale.
-//! The Windows transfer adapter reports raw times; the Linux adapter still formats
-//! its own entries until its follow-up, so these run on Windows.
+//! The native transfer adapters report raw times, so only these lines format them.
 use super::CountingLocale;
 use crate::{CommandSender, Engine};
 use midnight_core::*;

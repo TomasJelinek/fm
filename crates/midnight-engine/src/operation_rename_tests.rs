@@ -217,9 +217,8 @@ fn rename_alternate_basename_rule_matches_confirmation() {
     }
 }
 
-/// The Windows adapter reports raw times; each displayed prompt formats its two
-/// entries (the Linux adapter still formats them itself until its follow-up).
-#[cfg(windows)]
+/// The native adapters report raw times; each displayed prompt formats its two
+/// entries.
 #[tokio::test]
 async fn rename_conflict_prompts_format_only_their_displayed_entries() {
     use crate::transfer_composition::tests::CountingLocale;
