@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 
+#[cfg(test)]
 mod actor_thread;
 mod archive_selection;
 mod archive_shared;

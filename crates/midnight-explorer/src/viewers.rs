@@ -404,12 +404,15 @@ mod preparation_tests {
     fn presenter(read: Result<UserPreferences, FsError>) -> Presenter {
         let root = std::env::current_dir().unwrap();
         let mut presenter = Presenter::new(root.clone(), root);
-        presenter.apply(Event::PreferencesLoaded(read.map(|preferences| {
-            Box::new(midnight_core::AcceptedPreferences {
-                preferences,
-                comparators: Default::default(),
+        let accepted = read
+            .map(|preferences| {
+                Box::new(midnight_core::AcceptedPreferences {
+                    preferences,
+                    comparators: Default::default(),
+                })
             })
-        })));
+            .map_err(Into::into);
+        presenter.apply(Event::PreferencesLoaded(accepted));
         presenter
     }
 

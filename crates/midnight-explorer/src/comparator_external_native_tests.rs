@@ -806,7 +806,7 @@ fn actual_cancel_before_worker_returns_two_guarded_session_credits_without_spawn
     ));
     first.close();
     second.close();
-    assert!(!first.send(Input::Seek(0.0)) && !second.send(Input::Seek(0.0)));
+    assert!(first.send(Input::Seek(0.0)).is_err() && second.send(Input::Seek(0.0)).is_err());
     assert!(matches!(
         harness.open(&snapshot, None),
         Err(OpenError::SessionLimit)
