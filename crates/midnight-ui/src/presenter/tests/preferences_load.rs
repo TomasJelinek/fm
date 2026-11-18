@@ -293,6 +293,40 @@ fn failed_initial_read_blocks_saves_that_could_replace_unknown_saved_bookmarks()
 }
 
 #[test]
+fn deadline_status_explains_defaults_until_a_successful_or_failed_read_applies() {
+    for loaded in [true, false] {
+        let mut p = Presenter::new(test_root(), test_root());
+        p.note_settings_pending();
+        assert_eq!(p.desktop.status, Presenter::SETTINGS_PENDING_STATUS);
+        let read = if loaded {
+            Ok(Box::default())
+        } else {
+            Err(FsError::from_io(
+                "load preferences",
+                &test_root(),
+                io::Error::from(io::ErrorKind::PermissionDenied),
+            ))
+        };
+        p.apply_with_sender(Event::PreferencesLoaded(read), &|_| true);
+        assert!(p.desktop.status.is_empty(), "loaded={loaded}");
+        assert_eq!(
+            p.desktop.notice.is_some(),
+            !loaded,
+            "a failed read keeps its own error report"
+        );
+        // A late deadline after the read changes nothing.
+        p.note_settings_pending();
+        assert!(p.desktop.status.is_empty());
+    }
+    // A newer status is not cleared by the read.
+    let mut p = Presenter::new(test_root(), test_root());
+    p.note_settings_pending();
+    p.desktop.status = "Copied to clipboard".into();
+    p.apply_with_sender(Event::PreferencesLoaded(Ok(Box::default())), &|_| true);
+    assert_eq!(p.desktop.status, "Copied to clipboard");
+}
+
+#[test]
 fn explicit_same_index_default_font_preserves_loaded_sizes_and_other_preferences() {
     let mut p = Presenter::new(test_root(), test_root());
     p.apply(Event::FontFamiliesLoaded(Ok(vec!["Installed".into()])));

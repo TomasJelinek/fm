@@ -79,13 +79,20 @@ impl Startup {
 
     /// Never stay hidden indefinitely: reveal after `deadline`, or as soon as the backend
     /// stops (its sender is dropped when the engine returns or unwinds) without answering.
+    /// `on_deadline` runs only when the deadline itself released a startup that was still
+    /// waiting for its settings, never after a read or a stopped backend.
     pub(crate) fn arm(
         &self,
         deadline: Duration,
         engine_stopped: oneshot::Receiver<()>,
+        on_deadline: Box<dyn FnOnce()>,
     ) -> Result<(), String> {
         let ready = self.ready.clone();
-        slint::Timer::single_shot(deadline, move || release(&ready));
+        slint::Timer::single_shot(deadline, move || {
+            if release(&ready) {
+                on_deadline();
+            }
+        });
         let ready = self.ready.clone();
         let watcher = slint::spawn_local(async move {
             let _ = engine_stopped.await;
@@ -117,10 +124,13 @@ impl Startup {
     }
 }
 
-fn release(ready: &Ready) {
-    if let Some(ready) = ready.borrow_mut().take() {
-        let _ = ready.send(());
-    }
+/// Returns whether this call released a startup that was still waiting.
+fn release(ready: &Ready) -> bool {
+    let Some(ready) = ready.borrow_mut().take() else {
+        return false;
+    };
+    let _ = ready.send(());
+    true
 }
 
 #[cfg(test)]
@@ -210,10 +220,18 @@ mod tests {
             run_queued(&queue);
         };
 
+        let notices = |count: &Rc<Cell<u32>>| -> Box<dyn FnOnce()> {
+            let count = count.clone();
+            Box::new(move || count.set(count.get() + 1))
+        };
+
         // The settings read never answers and the backend keeps running.
         let (unanswered, mut response) = hidden();
         let (_running, engine_stop) = oneshot::channel::<()>();
-        unanswered.arm(DEADLINE, engine_stop).unwrap();
+        let deadline_notices = Rc::new(Cell::new(0));
+        unanswered
+            .arm(DEADLINE, engine_stop, notices(&deadline_notices))
+            .unwrap();
         advance(DEADLINE - Duration::from_millis(1));
         assert!(
             matches!(
@@ -222,20 +240,39 @@ mod tests {
             ),
             "startup was released before its deadline"
         );
+        assert_eq!(deadline_notices.get(), 0);
         advance(DEADLINE);
         assert!(
             response.try_recv().is_ok(),
             "the deadline must reveal a startup whose read never answers"
         );
+        assert_eq!(deadline_notices.get(), 1, "defaults are explained once");
         // A read that arrives late still applies, but releases nothing twice.
         unanswered.preferences_applied();
         unanswered.finish().unwrap();
+        assert_eq!(deadline_notices.get(), 1);
+
+        // A read before the deadline reveals the window without the notice.
+        let (answered, mut response) = hidden();
+        let (_answering, engine_stop) = oneshot::channel::<()>();
+        let answered_notices = Rc::new(Cell::new(0));
+        answered
+            .arm(DEADLINE, engine_stop, notices(&answered_notices))
+            .unwrap();
+        answered.preferences_applied();
+        assert!(response.try_recv().is_ok());
+        advance(DEADLINE * 2);
+        assert_eq!(answered_notices.get(), 0, "a timely read needs no notice");
+        answered.finish().unwrap();
 
         // The backend stops (here: unwinds) before answering; its dropped sender
         // releases startup at once, long before the deadline.
         let (stopping, mut response) = hidden();
         let (stopped, engine_stop) = oneshot::channel::<()>();
-        stopping.arm(DEADLINE, engine_stop).unwrap();
+        let stopped_notices = Rc::new(Cell::new(0));
+        stopping
+            .arm(DEADLINE, engine_stop, notices(&stopped_notices))
+            .unwrap();
         run_queued(&queue);
         assert!(matches!(
             response.try_recv(),
@@ -250,6 +287,12 @@ mod tests {
         assert!(
             response.try_recv().is_ok(),
             "a stopped backend must reveal a startup that is still hidden"
+        );
+        advance(DEADLINE * 4);
+        assert_eq!(
+            stopped_notices.get(),
+            0,
+            "a stopped backend reports its own error"
         );
         stopping.finish().unwrap();
     }

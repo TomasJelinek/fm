@@ -521,7 +521,25 @@ fn run_window(
         window_state.clone(),
         startup_owner.gate(),
     )?);
-    startup.arm(startup::DEADLINE, engine_stop)?;
+    let pending_state = Rc::downgrade(&presenter);
+    let pending_window = window.as_weak();
+    startup.arm(
+        startup::DEADLINE,
+        engine_stop,
+        Box::new(move || {
+            // The deadline reveals defaults before the settings read answered.
+            let (Some(state), Some(window)) = (pending_state.upgrade(), pending_window.upgrade())
+            else {
+                return;
+            };
+            let Ok(mut presenter) = state.try_borrow_mut() else {
+                return;
+            };
+            presenter.note_settings_pending();
+            drop(presenter);
+            midnight_ui::refresh(&window, &state.borrow());
+        }),
+    )?;
     let startup_ready = startup.clone();
     // Bound after the viewers are installed; the event loop has not run before then.
     let settings_loaded: Rc<OnceCell<viewers::SettingsLoaded>> = Rc::default();
