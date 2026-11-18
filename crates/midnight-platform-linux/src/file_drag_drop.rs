@@ -607,6 +607,22 @@ impl Session {
         Ok(true)
     }
 
+    /// Wait in poll() until the X11 connection becomes readable, the waker is called or
+    /// `wait_limit(timeout)` elapses. Events that x11rb already read from the socket do
+    /// not make it readable, so callers serve them first (`serve_events`).
+    fn wait_for_input(&self, timeout: Duration) -> Result<(), FsError> {
+        crate::clipboard::wait(
+            self.wake.as_ref(),
+            Some(self.connection.stream().as_fd()),
+            self.wait_limit(timeout),
+        )
+        .map(drop)
+        .map_err(|error| FsError {
+            operation: "Linux file drag/drop",
+            ..error
+        })
+    }
+
     /// The longest wait for input: `timeout`, or `DROP_RECHECK` while a drop's
     /// destination is shown or its file list is awaited.
     fn wait_limit(&self, timeout: Duration) -> Duration {
@@ -672,16 +688,7 @@ impl FileDragDropSession for Session {
         if self.serve_events()? {
             return Ok(());
         }
-        crate::clipboard::wait(
-            self.wake.as_ref(),
-            Some(self.connection.stream().as_fd()),
-            self.wait_limit(timeout),
-        )
-        .map(drop)
-        .map_err(|error| FsError {
-            operation: "Linux file drag/drop",
-            ..error
-        })
+        self.wait_for_input(timeout)
     }
 
     fn waker(&self) -> Option<FileDragDropWaker> {

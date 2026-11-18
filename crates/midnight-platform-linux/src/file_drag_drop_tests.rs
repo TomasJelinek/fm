@@ -1154,9 +1154,33 @@ fn assert_proxy_registration_restored() {
     connection.destroy_window(window).unwrap().check().unwrap();
 }
 
+impl Fixture {
+    /// Sends the XdndEnter and the XdndPosition of a Copy drag over the right pane.
+    fn enter_right_pane(&self) {
+        let (uri, copy) = (self.atom("text/uri-list"), self.atom("XdndActionCopy"));
+        self.send("XdndEnter", [self.source, 5 << 24, uri, 0, 0]);
+        self.send("XdndPosition", [self.source, 0, (135 << 16) | 245, 0, copy]);
+    }
+    /// The data of the last `name` client message that the session sent the drag source
+    /// so far. Interning `name` is a round trip, and x11rb queues the events that precede
+    /// its reply; the session's sends are round trips too, so none is still in flight.
+    fn received(&self, name: &str) -> Option<[u32; 5]> {
+        let atom = self.atom(name);
+        let mut last = None;
+        while let Some(event) = self.connection.poll_for_event().unwrap() {
+            if let Event::ClientMessage(event) = event
+                && event.type_ == atom
+            {
+                last = Some(event.data.as_data32());
+            }
+        }
+        last
+    }
+}
+
 #[test]
 #[ignore = "requires isolated Xvfb DISPLAY and MIDNIGHT_DND_TEST_ISOLATED=1"]
-fn x11_idle_wait_ends_for_its_waker_xdnd_input_and_events_already_read() {
+fn x11_idle_wait_ends_for_its_waker_events_already_read_and_a_shown_destination() {
     let mut f = Fixture::new();
     // Serve the property changes that opening the session queued.
     f.session.service_pending().unwrap();
@@ -1166,19 +1190,24 @@ fn x11_idle_wait_ends_for_its_waker_xdnd_input_and_events_already_read() {
     let started = Instant::now();
     f.session.wait_pending(FAILURE_WAIT).unwrap();
     assert!(prompt(started), "an earlier wake must end the next wait");
-    // XDND input of another client ends the idle wait; the next pass answers it.
-    f.send(
-        "XdndEnter",
-        [f.source, 5 << 24, f.atom("text/uri-list"), 0, 0],
-    );
-    f.send(
-        "XdndPosition",
-        [f.source, 0, (135 << 16) | 245, 0, f.atom("XdndActionCopy")],
-    );
+    // A drag enters. Its events precede the reply to a round trip on the session's
+    // connection, so reading that reply queues them in x11rb and leaves the socket
+    // empty: poll() alone would sleep through them, so the wait serves them first.
+    f.enter_right_pane();
+    f.session
+        .connection
+        .get_input_focus()
+        .unwrap()
+        .reply()
+        .unwrap();
     let started = Instant::now();
     f.session.wait_pending(FAILURE_WAIT).unwrap();
-    assert!(prompt(started), "XDND input must end the idle wait");
-    assert_eq!(f.message("XdndStatus")[1] & 1, 1);
+    assert!(prompt(started), "events already read must end the wait");
+    assert_eq!(
+        f.received("XdndStatus").map(|status| status[1] & 1),
+        Some(1),
+        "the wait served the drag and accepted Copy"
+    );
     assert!(f.sink.2.load(Ordering::Acquire), "the destination is shown");
     // No event marks the UI withdrawing that destination: while it is shown, the wait
     // ends in time for the next pass to recheck it.
@@ -1195,23 +1224,32 @@ fn x11_idle_wait_ends_for_its_waker_xdnd_input_and_events_already_read() {
         !f.sink.2.load(Ordering::Acquire),
         "the withdrawn destination is no longer shown"
     );
-    // The drag leaves. Its XdndLeave precedes the reply to a round trip on the
-    // session's connection, so reading that reply queues the event in x11rb and leaves
-    // the socket empty: poll() alone would sleep through it.
-    f.send("XdndLeave", [f.source, 0, 0, 0, 0]);
-    f.session
-        .connection
-        .get_input_focus()
-        .unwrap()
-        .reply()
-        .unwrap();
+}
+
+#[test]
+#[ignore = "requires isolated Xvfb DISPLAY and MIDNIGHT_DND_TEST_ISOLATED=1"]
+fn x11_idle_wait_ends_for_xdnd_input_arriving_after_the_queue_was_served() {
+    let mut f = Fixture::new();
+    // `wait_pending` first serves what x11rb queued or can read without blocking, until
+    // nothing is left (here, the property changes that opening the session queued).
+    f.session.service_pending().unwrap();
+    while f.session.serve_events().unwrap() {}
+    // Then another client's drag arrives. Each send is a round trip of the source's
+    // connection, so the server has processed it, but the session has not read it.
+    // Only poll() on the X11 connection can end the wait for it: no waker was called,
+    // and without a shown destination the wait has no shorter limit.
+    f.enter_right_pane();
     let started = Instant::now();
-    f.session.wait_pending(FAILURE_WAIT).unwrap();
-    assert!(prompt(started), "an event already read must end the wait");
-    assert!(
-        f.session.incoming.is_none(),
-        "the wait served that XdndLeave"
+    f.session.wait_for_input(FAILURE_WAIT).unwrap();
+    assert!(prompt(started), "XDND input must end the wait in poll()");
+    // The next pass serves it.
+    f.session.service_pending().unwrap();
+    assert_eq!(
+        f.received("XdndStatus").map(|status| status[1] & 1),
+        Some(1),
+        "the session accepted Copy"
     );
+    assert!(f.sink.2.load(Ordering::Acquire), "the destination is shown");
 }
 
 /// Measurement for review item C10-2: wakeups of the native drag actor's idle loop over
