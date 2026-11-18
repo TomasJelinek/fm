@@ -5,6 +5,7 @@ mod render;
 mod ui;
 
 use i_slint_core::{
+    accessibility::AccessibleStringProperty,
     item_tree::ItemRc,
     items::AccessibleRole,
     window::{WindowInner, WindowKind},
@@ -87,7 +88,20 @@ fn footer_keeps_actual_save_failure_visible_above_its_actions() {
     test.window.set_preferences_save_failed(true);
     test.window.invoke_show_options();
     test.draw();
-    let error = ui::popup_item(&test.window, message, AccessibleRole::Text);
+    // The footer error keeps a stable accessible name; the message is its value
+    // and its visible text.
+    let error = ui::popup_item(&test.window, "Options error", AccessibleRole::Text);
+    assert_eq!(
+        error
+            .accessible_string_property(AccessibleStringProperty::Value)
+            .as_deref(),
+        Some(message)
+    );
+    assert!(
+        ui::visible_text_values(error.clone())
+            .iter()
+            .any(|text| text == message)
+    );
     let rect = error.geometry();
     let origin = error.map_to_native_window(rect.origin);
     let reset = bounds(&test, "Reset to defaults");
