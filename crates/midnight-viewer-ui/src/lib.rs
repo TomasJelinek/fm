@@ -182,7 +182,6 @@ impl OpenWindow {
                 | ViewerInput::Seek(_)
                 | ViewerInput::Pan(_)
                 | ViewerInput::Position { .. }
-                | ViewerInput::Wrap(_)
         );
         let accepted = sender(input);
         if accepted && interrupts {
@@ -1325,7 +1324,6 @@ fn dispatch_key(open: &OpenWindow, action: &str) -> bool {
             | ViewerInput::Seek(_)
             | ViewerInput::Pan(_)
             | ViewerInput::Search { .. }
-            | ViewerInput::Wrap(_)
     );
     let accepted = send_input(open, input);
     if changing && accepted {

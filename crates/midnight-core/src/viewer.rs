@@ -239,8 +239,6 @@ pub enum ViewerInput {
     /// Move backwards within the same captured order, wrapping at the beginning.
     PreviousFile,
     Mode(u16),
-    /// Reflow Text/Source within the viewport; ignored by fixed-column modes.
-    Wrap(bool),
     Image {
         frame: u64,
         input: ViewerImageInput,
