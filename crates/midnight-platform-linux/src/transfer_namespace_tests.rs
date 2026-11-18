@@ -147,8 +147,11 @@ impl TransferNamespaceChange for AnnouncementTurn {
     }
 }
 
+/// The recovery item's observer is reserved after the recovery directory was created;
+/// a failure there removes that still-empty directory (created in this change, so
+/// without another reservation) and publishes nothing.
 #[test]
-fn refused_recovery_item_observer_reports_owned_directory_without_publishing_file() {
+fn refused_recovery_item_observer_removes_the_new_directory_without_publishing_file() {
     use std::io::Write;
     let temp = tempfile::tempdir().unwrap();
     std::fs::write(temp.path().join("target"), b"old bytes").unwrap();
@@ -177,34 +180,29 @@ fn refused_recovery_item_observer_reports_owned_directory_without_publishing_fil
             )
             .unwrap();
         stage.write_all(b"unpublished replacement").unwrap();
-        let result = stage
+        let error = stage
             .publish_replace(OsStr::new("target"), &cancel)
-            .unwrap();
-        let TransferPublication::RecoveryRequired {
-            published,
-            recovery,
-            error,
-        } = result
-        else {
-            panic!("the actual owned recovery directory must be reported");
-        };
-        assert!(published.is_none());
-        assert_eq!(recovery.len(), 1);
-        assert!(recovery[0].path.is_dir());
-        assert!(!recovery[0].path.join("item").exists());
-        assert!(recovery[0].identity.is_some());
-        assert!(error.message.contains("fixture refuses recovery item"));
+            .unwrap_err();
+        assert!(
+            error.message.contains("fixture refuses recovery item"),
+            "{error:?}"
+        );
+        assert!(!error.message.contains("cleanup"), "{error:?}");
+        let names: Vec<_> = std::fs::read_dir(temp.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert!(
+            !names
+                .iter()
+                .any(|name| name.to_string_lossy().starts_with(".midnight-recovery-")),
+            "{names:?}"
+        );
         assert_eq!(
             std::fs::read(temp.path().join("target")).unwrap(),
             b"old bytes"
         );
         stage.cleanup().unwrap();
-        let pins: Vec<_> = events.aliases.lock().unwrap().values().cloned().collect();
-        assert!(
-            pins.iter()
-                .flat_map(|pin| known(pin.as_ref()).to_vec())
-                .any(|scope| scope.object == recovery[0].identity)
-        );
     });
 }
 
@@ -1563,6 +1561,7 @@ fn refused_incomplete_announcement_is_a_retryable_would_block_like_a_refused_pin
             inner: Some(&mut turn),
             complete: true,
             opted: true,
+            private: Vec::new(),
         };
         let result = change.incomplete(path, &cancel);
         assert!(!change.complete);
@@ -1591,6 +1590,7 @@ fn refused_incomplete_announcement_is_a_retryable_would_block_like_a_refused_pin
         inner: Some(&mut turn),
         complete: true,
         opted: false,
+        private: Vec::new(),
     };
     assert!(change.incomplete(path, &cancel).is_ok());
     assert!(!change.complete);

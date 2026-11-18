@@ -124,11 +124,18 @@ second for external changes the registry cannot see. This covers stage creation,
 publication, directory creation, and a Move's source capture (repeated from the
 capture step; the After proof still rehashes both files before removal), its
 empty-directory removal and its verified source removal (whose retry rebuilds the
-finalizer and rehashes both files first). A capture refused only after creating its
-private directory (on Windows at its rename into that directory, on Linux at the
-removal that follows another failure) keeps that empty directory: the automatic
-repeat of the capture reuses it, and otherwise the job's cleanup removes it or
-reports its path (see [bounded ordinary Move](TRANSFERS.md#bounded-ordinary-move)).
+finalizer and rehashes both files first). On both platforms the reservation made when
+a change creates its private directory (a Move stage or a recovery directory) also
+covers the later renames into and out of that directory and its removal in that
+change, so peers can refuse a Move capture, a native Move or a replacement only
+before its first namespace change (see
+[Windows namespace pins](TRANSFERS.md#windows-namespace-pins)). A Linux replacement
+still reserves the witness of its staged file inside the recovery directory it has
+just created; a refusal there removes that still-empty directory without another
+reservation, so the refused change leaves nothing behind. A capture whose empty
+directory cannot be removed keeps it for a repeated capture, which announces it again,
+or for the job's cleanup, which removes it or reports its path (see
+[bounded ordinary Move](TRANSFERS.md#bounded-ordinary-move)).
 A refusal by a quarantined peer never clears and fails the entry with the
 non-retryable restart error, and a quarantined claim makes later jobs fail at once
 and ask for an application restart instead of waiting.

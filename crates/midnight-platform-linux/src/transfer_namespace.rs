@@ -17,10 +17,22 @@ pub(super) struct Change<'a> {
     inner: Option<&'a mut dyn TransferNamespaceChange>,
     complete: bool,
     opted: bool,
+    /// The private directories this change created (see `created_private`).
+    private: Vec<TransferIdentity>,
 }
 impl<'a> Change<'a> {
     pub(super) fn as_mut(&mut self) -> Option<&mut (dyn TransferNamespaceChange + 'a)> {
         self.inner.as_deref_mut()
+    }
+    /// Records a private directory (a Move stage or a recovery directory) that this
+    /// change created. The reservation made at its creation covers the later changes
+    /// beneath it and its removal in this change.
+    pub(super) fn created_private(&mut self, directory: TransferIdentity) {
+        self.private.push(directory);
+    }
+    /// Whether this change created the private directory `directory`.
+    pub(super) fn created_here(&self, directory: TransferIdentity) -> bool {
+        self.private.contains(&directory)
     }
     fn incomplete(&mut self, path: &Path, cancel: &Cancellation) -> Result<(), FsError> {
         self.complete = false;
@@ -47,6 +59,7 @@ pub(super) fn change<T>(
                 inner,
                 complete: true,
                 opted: false,
+                private: Vec::new(),
             })
         },
     );

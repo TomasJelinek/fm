@@ -73,8 +73,9 @@ pub trait TransferMoveCapture: Send + Sync {
     /// Err means no user entry was moved; terminal outcomes describe actual mutations
     /// and are idempotent. Cancellation/restoration never replaces a new source winner.
     /// An Err may keep the empty private directory of a failed attempt that its own
-    /// namespace turn could not remove (for example because granted peers refused
-    /// that change): the next capture reuses it, and otherwise `take_stage_cleanup`
+    /// namespace turn could not remove (for example because another program created
+    /// an entry in it, or granted peers refused the turn of a repeated capture that
+    /// reused it): the next capture reuses it, and otherwise `take_stage_cleanup`
     /// returns it once.
     fn capture(&self, cancel: &Cancellation) -> Result<TransferMoveCaptureOutcome, FsError>;
     /// Restore the held original to its original basename without replacement.

@@ -402,11 +402,13 @@ If a new source-name winner blocks restoration, both objects are preserved and
 the exact exceptional temporary location is reported. Failed empty-directory
 cleanup is also reported; cleanup never removes an unexpected child. A capture
 that fails before moving its source removes its empty private directory in the
-same namespace turn. When that turn cannot (on Windows, granted peers refused the
-capture's rename into the directory, and the refused turn permits no further
-change; on Linux, they refused the removal itself), the capture keeps the
-directory: the automatic repeat of the capture reuses it, and otherwise the job's
-cleanup removes it or reports its path.
+same namespace turn; the reservation made when the turn created the directory
+covers that removal. When the removal itself fails (for example because another
+program created an entry in the directory), the capture keeps the directory: a
+repeated capture reuses it, and otherwise the job's cleanup removes it or reports
+its path. A repeated capture announces the reused directory again; granted peers
+can refuse that (nothing has moved), and the capture keeps it the same way until
+the engine repeats the capture.
 Progress reports actual file removals, source disposition/durability facts, exceptional
 residual counts, first16 raw residual mappings and at most64 source parents for
 refresh, prioritizing selected-root parents. File-removal counts exclude directories;
@@ -526,6 +528,17 @@ Their names stay covered by the original destination pins. By design, a retired
 output's object identity no longer takes part in peer admission: another job that
 reaches the same object through a different hard-link name is not excluded by it,
 because this job never touches that object again.
+
+A turn reserves each pin at most once. The pin of a private directory that the turn
+creates (a Move stage or a `.midnight-recovery-*` directory) is reserved before the
+directory exists and then also covers the renames into and out of it and its removal
+in that turn. Granted peers can therefore refuse a Move capture, a native replacement
+or a replacement publication only before its first namespace change; in that turn
+they never refuse a no-replace restoration or the removal of a directory the turn
+created. Only a binding whose parent's ancestry or lookup rules change during the
+turn needs a later unknown reservation. Outside the exclusive opaque lane the host
+rejects it as `Unsupported`, the turn makes no further change, and a native
+replacement or publication keeps the displaced original in recovery and reports it.
 
 Windows Copy and Move require 128-bit `FileIdInfo` identities, because they compare
 identities across their own stage publications, Move captures and namespace pins.

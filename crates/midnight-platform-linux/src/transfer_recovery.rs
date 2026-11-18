@@ -267,7 +267,10 @@ fn create_named_directory(
         // The created directory is pinned, owned and exactly owner-only; it is used
         // directly rather than reopened and rebuilt.
         match directory.create_child_directory(&name, cancel, change, NewDirectory::Private) {
-            Ok(created) => return Ok(created),
+            Ok(created) => {
+                change.created_private(created.identity);
+                return Ok(created);
+            }
             Err(failure) if failure.kind == io::ErrorKind::AlreadyExists => continue,
             Err(failure) => return Err(failure),
         }
@@ -326,7 +329,15 @@ impl Directory {
             // The parent is held and protected; the private random name is checked
             // without following links. Linux rmdir refuses nonempty directories.
             // As with creation, same-UID/privileged namespace mutation is not isolated.
-            self.namespace_announce(&name, change, &cleanup)?;
+            // A stage this change created is covered by the reservation made at its
+            // creation, as its raw capture, publication and restoration renames are:
+            // nothing more is reserved, so no peer can refuse its removal after this
+            // change's first mutation. A stage reused from an earlier change
+            // (`reuse_stage_in`), or removed by `remove_empty_stage` in a change of its
+            // own, is announced again.
+            if !change.created_here(stage.identity) {
+                self.namespace_announce(&name, change, &cleanup)?;
+            }
             rustix::fs::unlinkat(&*self.file, &name, AtFlags::REMOVEDIR)
                 .map_err(|e| error(&stage.path, e.into()))?;
             Ok(name)
@@ -432,19 +443,15 @@ impl Stage {
         let recovery = create_recovery(&self.directory, cancel, change)?;
         // A pre-exchange failure can leave the new object only in recovery/item.
         // Its file identity needs an independent observer, not just path coverage
-        // by the enclosing private recovery directory.
-        if let Err(error) = recovery
+        // by the enclosing private recovery directory. That reservation follows the
+        // directory's creation, so a refusal of it (or a cancellation) removes the
+        // still-empty directory without another reservation: the refusal stays this
+        // change's last one, and the engine repeats the publication.
+        if let Err(failure) = recovery
             .namespace_reserve_file(OsStr::new("item"), change, cancel)
             .and_then(|()| recovery.namespace_announce(OsStr::new("item"), change, cancel))
         {
-            return Ok(TransferPublication::RecoveryRequired {
-                published: None,
-                recovery: vec![TransferRecovery {
-                    path: recovery.path.clone(),
-                    identity: Some(recovery.identity),
-                }],
-                error,
-            });
+            return self.remove_unused_recovery(recovery, failure, change);
         }
         let retained = recovery.path.join("item");
         let linked = (|| {
@@ -464,35 +471,8 @@ impl Stage {
         })();
         let staged_identity = match linked {
             Ok(identity) => identity,
-            Err(mut failure) => {
-                // Nothing was linked, so the private recovery directory is still empty:
-                // remove it, or report it as a residual instead of leaking it silently.
-                // A directory removed before its parent's sync failed is no residual.
-                let residual = TransferRecovery {
-                    path: recovery.path.clone(),
-                    identity: Some(recovery.identity),
-                };
-                return match self.directory.remove_empty_stage_checked(recovery, change) {
-                    Ok(()) => Err(failure),
-                    Err(StageRemovalError::Unsynced(sync)) => {
-                        failure.message.push_str(&format!(
-                            "; the empty recovery directory was removed, but that removal \
-                             may not be durable: {sync}"
-                        ));
-                        Err(failure)
-                    }
-                    Err(StageRemovalError::Retained(cleanup, _)) => {
-                        failure
-                            .message
-                            .push_str(&format!("; empty recovery directory cleanup: {cleanup}"));
-                        Ok(TransferPublication::RecoveryRequired {
-                            published: None,
-                            recovery: vec![residual],
-                            error: failure,
-                        })
-                    }
-                };
-            }
+            // Nothing was linked, so the private recovery directory is still empty.
+            Err(failure) => return self.remove_unused_recovery(recovery, failure, change),
         };
         // The linked verified bytes now belong to persistent recovery. No subsequent error
         // or Drop may silently remove this link. Retrying requires an explicit new job.
@@ -634,5 +614,41 @@ impl Stage {
             path,
             recovery: receipt,
         })
+    }
+
+    /// Ends a publication that failed before anything entered `recovery`, the private
+    /// directory this change created for it: removes that empty directory, or reports
+    /// it as a residual instead of leaking it silently, and returns `failure`. A
+    /// directory removed before its parent's sync failed is no residual.
+    fn remove_unused_recovery(
+        &self,
+        recovery: Directory,
+        mut failure: FsError,
+        change: &mut namespace::Change<'_>,
+    ) -> Result<TransferPublication, FsError> {
+        let residual = TransferRecovery {
+            path: recovery.path.clone(),
+            identity: Some(recovery.identity),
+        };
+        match self.directory.remove_empty_stage_checked(recovery, change) {
+            Ok(()) => Err(failure),
+            Err(StageRemovalError::Unsynced(sync)) => {
+                failure.message.push_str(&format!(
+                    "; the empty recovery directory was removed, but that removal may not \
+                     be durable: {sync}"
+                ));
+                Err(failure)
+            }
+            Err(StageRemovalError::Retained(cleanup, _)) => {
+                failure
+                    .message
+                    .push_str(&format!("; empty recovery directory cleanup: {cleanup}"));
+                Ok(TransferPublication::RecoveryRequired {
+                    published: None,
+                    recovery: vec![residual],
+                    error: failure,
+                })
+            }
+        }
     }
 }

@@ -142,10 +142,10 @@ fn prepare_native_child(
 struct State {
     outcome: Option<TransferMoveCaptureOutcome>,
     retained: Option<destination::Directory>,
-    /// The empty private stage of a failed capture whose own turn could not remove it
-    /// (see `Capture::keep_or_remove_stage_in`). The next capture reuses it; without
-    /// one, `take_stage_cleanup` hands it to the engine's cleanup. A capture that moves
-    /// the source consumes it, so it is never set together with `retained`.
+    /// The empty private stage of a failed capture whose removal failed (see
+    /// `Capture::keep_or_remove_stage_in`). The next capture reuses it; without one,
+    /// `take_stage_cleanup` hands it to the engine's cleanup. A capture that moves the
+    /// source consumes it, so it is never set together with `retained`.
     unused: Option<destination::Directory>,
 }
 struct Capture {
@@ -576,14 +576,15 @@ impl Capture {
         Ok(outcome)
     }
 
-    /// Removes, within the capture's own turn, the empty private stage of a capture
-    /// that moved nothing. Granted peers can refuse that removal like any other
-    /// change; the refusal is then the turn's last reservation, so the engine repeats
-    /// the capture without a prompt once a refusing peer changes, and drops `failure`.
-    /// The capture therefore keeps the stage instead of dropping it unreported: its
-    /// next attempt reuses the stage, and otherwise `take_stage_cleanup` returns it for
-    /// the engine to remove or report. Any other failed removal keeps the stage the
-    /// same way.
+    /// Removes, in the capture's own change, the empty private stage of a capture that
+    /// moved nothing. If this change created the stage, the reservation made at its
+    /// creation covers the removal, so peers cannot refuse it. A stage reused from an
+    /// earlier attempt is announced again, and peers can refuse its removal (nothing
+    /// moved); the refusal is then the change's last reservation, so the engine
+    /// repeats the capture without a prompt once a refusing peer changes, and drops
+    /// `failure`. A stage the removal cannot remove (refused, another entry in it, an
+    /// I/O error) is kept instead of dropped unreported: the next attempt reuses it,
+    /// and otherwise `take_stage_cleanup` returns it for the engine to remove or report.
     fn keep_or_remove_stage_in(
         &self,
         state: &mut State,
