@@ -221,9 +221,9 @@ locations refuse authorization; browsing is otherwise unaffected.
 So does a folder created directly under a drive root such as `C:\`, even by an
 administrator, because it inherits Modify permission for all authenticated users from
 the root. **Retry with authorization** is still offered in those installations, and
-the refusal explains the requirement: the Cannot open folder message states it when no
-helper is installed beside `me` (as in private runtimes), and **Copy details**
-contains it when a helper copy sits in a refused location. On Windows, install a
+the Cannot open folder message that follows the retry states the requirement, whether
+no helper is installed beside `me` (as in private runtimes) or a helper copy sits in a
+refused location. On Windows, install a
 release build from a PowerShell started with **Run as administrator** in the
 checkout, then start Midnight Explorer from that folder:
 

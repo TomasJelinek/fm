@@ -388,10 +388,10 @@ also trusts the current user, does not decide this.
   filesystem is not mounted `nosuid` (removable or user-mounted storage).
 
 Any other location, such as build output, the per-user Windows private runtime or
-`$HOME/.local/bin`, refuses authorization; the retry is still offered there. The error
-explains the requirement: the Cannot open folder message shows it when no helper is
-installed beside the executable (per-user deployments omit it), and the copied
-details of that message include it for a helper in a refused location.
+`$HOME/.local/bin`, refuses authorization; the retry is still offered there. The
+Cannot open folder message after the retry states the requirement, both when no
+helper is installed beside the executable (per-user deployments omit it) and for a
+helper in a refused location.
 
 Builds before this check accepted a helper beside their executable through the plugin
 trust policy alone, and earlier versions left the helper in folders that their user

@@ -32,7 +32,10 @@ impl Presenter {
     ) {
         self.panes[pane.index()].record_folder_failure(navigation, path, error, &mut self.retired);
         self.retire_warning_viewer();
-        let reason = if error.kind == std::io::ErrorKind::PermissionDenied {
+        // A failed authorized retry shows its own reason, such as the helper
+        // installation requirement, instead of the concise ordinary denial.
+        let authorized = self.panes[pane.index()].authorized_retry == Some(navigation);
+        let reason = if error.kind == std::io::ErrorKind::PermissionDenied && !authorized {
             "Access to this folder was denied.".into()
         } else {
             crate::error_presentation::folder_reason(&error.message, &error.path)
@@ -107,6 +110,8 @@ impl Presenter {
         if self.panes[pane.index()].loading {
             self.desktop.notice_navigation = None;
         } else {
+            // The busy notice replaces the offer, so its receipt is unreachable.
+            self.panes[pane.index()].elevation_retry = None;
             self.desktop.report(
                 "Cannot retry folder",
                 "The navigation queue is busy. Try opening the folder again.".into(),

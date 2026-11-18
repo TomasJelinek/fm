@@ -206,6 +206,8 @@ pub(crate) struct Pane {
     pub(crate) history_index: Option<usize>,
     pub(crate) error: String,
     elevation_retry: Option<(NavigationId, PathBuf)>,
+    /// The navigation that the last authorized retry started.
+    authorized_retry: Option<NavigationId>,
     error_details: Option<panel_warnings::PanelError>,
     error_revision: u64,
     pub(crate) loading: bool,
@@ -548,6 +550,7 @@ impl Presenter {
             .elevation_retry
             .clone()
             .expect("validated receipt");
+        let retry = std::cell::Cell::new(None);
         if self.navigate(pane, path, None, &|command| {
             let command = match command {
                 Command::Navigate {
@@ -558,16 +561,21 @@ impl Presenter {
                 }
                 | Command::Resort {
                     pane, navigation, ..
-                } => Command::RetryDirectoryWithElevation {
-                    pane,
-                    denied_navigation,
-                    navigation,
-                },
+                } => {
+                    retry.set(Some(navigation));
+                    Command::RetryDirectoryWithElevation {
+                        pane,
+                        denied_navigation,
+                        navigation,
+                    }
+                }
                 command => command,
             };
             send(command)
         }) {
-            self.panes[pane.index()].elevation_retry = None;
+            let p = &mut self.panes[pane.index()];
+            p.elevation_retry = None;
+            p.authorized_retry = retry.get();
         }
     }
 
@@ -1827,6 +1835,7 @@ impl Pane {
             history_index: None,
             error: String::new(),
             elevation_retry: None,
+            authorized_retry: None,
             error_details: None,
             error_revision: 0,
             loading: false,

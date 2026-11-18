@@ -51,9 +51,8 @@ Retry with authorization for a folder you cannot open runs the included
 midnight-elevated-listing as root through pkexec and the desktop's polkit agent.
 It is used only from an installation that only root can change (root-owned, not
 group- or world-writable, not on a nosuid mount). In the per-user installation above
-or the extracted folder, the retry is still offered but refused with this
-requirement, shown in the message when the helper is absent and in its Copy details
-when the included helper is refused. Earlier packages' me used the included helper
+or the extracted folder, the retry is still offered but refused, and the message
+states this requirement. Earlier packages' me used the included helper
 from a folder you own, where any program running as you could replace it: replace
 an earlier extracted package with this one, or at least delete its
 midnight-elevated-listing. System-wide installation from the extracted folder:
