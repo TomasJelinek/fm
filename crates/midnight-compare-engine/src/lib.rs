@@ -80,6 +80,9 @@ pub enum Input {
 
 pub struct Frame {
     pub fonts: Option<FontChoices>,
+    /// Tests only: the family a text frame was painted in.
+    #[cfg(test)]
+    pub(crate) text_family: Option<String>,
     pub geometry_revision: u64,
     pub mode: Option<ImageMode>,
     pub width: u32,
@@ -123,6 +126,14 @@ pub struct FileChoice {
 /// Inputs a session queues for its worker; `Session::send` refuses more (`Refused::Full`)
 /// until the worker takes some.
 pub const INPUT_QUEUE: usize = 32;
+
+/// A message for the comparison worker: an input, or the reply of the font catalog scan,
+/// which the scan thread delivers through the worker's own queue so the worker always
+/// blocks in `recv` instead of polling for it.
+pub(crate) enum Message {
+    Input(Input),
+    Fonts(Option<Arc<[String]>>),
+}
 
 /// Why `Session::send` refused an input.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -190,10 +201,13 @@ pub struct Service {
     fonts: Arc<discovery::FixedPitchFonts>,
     active: Arc<AtomicUsize>,
     picker: Option<Arc<dyn PathPickerService>>,
+    /// Tests only: counts the turns of comparison workers' input loops.
+    #[cfg(test)]
+    turns: Option<Arc<AtomicUsize>>,
 }
 
 pub struct Session {
-    sender: SyncSender<Input>,
+    sender: SyncSender<Message>,
     cancelled: Arc<AtomicBool>,
     picker_cancel: Cancellation,
     pub mailbox: Arc<Mailbox>,
@@ -203,15 +217,17 @@ pub struct Session {
 impl Session {
     /// Queues an input for the worker without blocking.
     pub fn send(&self, input: Input) -> Result<(), Refused> {
-        self.sender.try_send(input).map_err(|error| match error {
-            TrySendError::Full(_) => Refused::Full,
-            TrySendError::Disconnected(_) => Refused::Stopped,
-        })
+        self.sender
+            .try_send(Message::Input(input))
+            .map_err(|error| match error {
+                TrySendError::Full(_) => Refused::Full,
+                TrySendError::Disconnected(_) => Refused::Stopped,
+            })
     }
     pub fn close(&self) {
         self.picker_cancel.cancel();
         self.cancelled.store(true, Ordering::Release);
-        let _ = self.sender.try_send(Input::Close);
+        let _ = self.sender.try_send(Message::Input(Input::Close));
     }
 }
 impl Drop for Session {
@@ -251,6 +267,8 @@ impl Service {
             fonts: Arc::new(discovery::FixedPitchFonts::installed()),
             active: Arc::new(AtomicUsize::new(0)),
             picker: None,
+            #[cfg(test)]
+            turns: None,
         }
     }
     #[cfg(test)]
@@ -267,9 +285,33 @@ impl Service {
     #[cfg(test)]
     fn with_font_scan(
         mut self,
-        scan: impl Fn(&AtomicBool) -> Option<Arc<[String]>> + Send + Sync + 'static,
+        scan: impl Fn(&dyn Fn() -> bool) -> Option<Arc<[String]>> + Send + Sync + 'static,
     ) -> Self {
         self.fonts = Arc::new(discovery::FixedPitchFonts::with_scan(scan));
+        self
+    }
+    /// Replaces the check of the preferred family that runs before a catalog is kept.
+    #[cfg(test)]
+    fn with_font_check(
+        mut self,
+        check: impl Fn(&[&str], &dyn Fn() -> bool) -> Option<String> + Send + Sync + 'static,
+    ) -> Self {
+        self.fonts_mut().set_check(check);
+        self
+    }
+    /// The font scan cannot get a thread, as when the system refuses one.
+    #[cfg(test)]
+    fn without_font_thread(mut self) -> Self {
+        self.fonts_mut().unspawnable = true;
+        self
+    }
+    #[cfg(test)]
+    fn fonts_mut(&mut self) -> &mut discovery::FixedPitchFonts {
+        Arc::get_mut(&mut self.fonts).expect("configure fonts before opening a session")
+    }
+    #[cfg(test)]
+    fn with_turn_counter(mut self, turns: Arc<AtomicUsize>) -> Self {
+        self.turns = Some(turns);
         self
     }
     pub fn with_path_picker(mut self, picker: Arc<dyn PathPickerService>) -> Self {
@@ -318,6 +360,11 @@ impl Service {
             .map_err(|_| "Close a comparator before opening another (maximum two).")?;
         let permit = Permit(self.active.clone());
         let (sender, receiver) = mpsc::sync_channel(INPUT_QUEUE);
+        // The worker keeps its own sender for font catalog deliveries; it never relies on
+        // the queue disconnecting, because Close and the cancellation flag end it.
+        let deliveries = sender.clone();
+        #[cfg(test)]
+        let turns = self.turns.clone();
         let mailbox = Arc::new(Mailbox::with_wake(wake));
         let cancelled = Arc::new(AtomicBool::new(false));
         let output = mailbox.clone();
@@ -345,7 +392,10 @@ impl Service {
                         storage: storage.as_ref(),
                         viewers: &viewers,
                         fonts: &fonts,
+                        deliveries: &deliveries,
                         cancel: &stop,
+                        #[cfg(test)]
+                        turns: turns.as_deref(),
                     },
                     picker,
                 )

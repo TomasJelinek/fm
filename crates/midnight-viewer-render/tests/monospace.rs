@@ -1,5 +1,55 @@
-use midnight_viewer_render::{TextOptions, TextRenderer, installed_families, monospace_families};
-use std::sync::Arc;
+use midnight_viewer_render::{
+    TextOptions, TextRenderer, fixed_pitch_family, installed_families, monospace_families,
+};
+use std::{sync::Arc, time::Instant};
+
+#[test]
+fn fixed_pitch_family_agrees_with_the_catalog() {
+    let catalog = monospace_families(|| false).unwrap();
+    assert!(!catalog.is_empty(), "the test host needs a code font");
+    let first = catalog[0].as_str();
+    for name in catalog.iter().take(8).map(String::as_str) {
+        assert_eq!(fixed_pitch_family(&[name], || false).as_deref(), Some(name));
+        // The first listed candidate wins, as the chooser resolves a saved family.
+        assert_eq!(
+            fixed_pitch_family(&["No Such Family 7f1c", name, first], || false).as_deref(),
+            Some(name)
+        );
+    }
+    let installed = installed_families(|| false).unwrap();
+    let proportional = installed
+        .iter()
+        .find(|name| !catalog.iter().any(|fixed| fixed.eq_ignore_ascii_case(name)))
+        .expect("the test host has a proportional family");
+    assert_eq!(fixed_pitch_family(&[proportional.as_str()], || false), None);
+    assert_eq!(fixed_pitch_family(&["No Such Family 7f1c"], || false), None);
+    assert_eq!(fixed_pitch_family(&[], || false), None);
+    assert_eq!(fixed_pitch_family(&[first], || true), None);
+}
+
+/// Opt-in cost of the preferred-family check against the full catalog scan. Run
+/// optimized in a fresh process (the catalog is cached process-wide):
+/// `cargo test --release -p midnight-viewer-render --test integration preferred_family_check_timing -- --ignored --nocapture`
+#[test]
+#[ignore = "timing harness; run optimized with --ignored --nocapture"]
+fn preferred_family_check_timing() {
+    let time = |check: &dyn Fn() -> Option<String>| {
+        let started = Instant::now();
+        let family = check();
+        (started.elapsed().as_secs_f64() * 1000.0, family)
+    };
+    let (cold, family) = time(&|| fixed_pitch_family(&["Cascadia Mono", "Consolas"], || false));
+    let (warm, _) = time(&|| fixed_pitch_family(&["Cascadia Mono", "Consolas"], || false));
+    let (missing, fallback) = time(&|| fixed_pitch_family(&["No Such Mono", "Consolas"], || false));
+    let started = Instant::now();
+    let catalog = monospace_families(|| false).unwrap();
+    let scan = started.elapsed().as_secs_f64() * 1000.0;
+    println!(
+        "font_timing check_cold_ms={cold:.1} check_warm_ms={warm:.1} check_fallback_ms={missing:.1} \
+         family={family:?} fallback={fallback:?} catalog_scan_ms={scan:.1} families={}",
+        catalog.len()
+    );
+}
 
 #[test]
 fn installed_catalog_includes_proportional_families_and_preserves_literal_names() {

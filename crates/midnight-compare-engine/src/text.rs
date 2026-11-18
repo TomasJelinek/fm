@@ -24,7 +24,11 @@ pub(crate) struct TextComparison {
     rows: Vec<Row>,
     differences: Vec<usize>,
     renderer: TextRenderer,
+    /// The chooser's catalog and selection; `None` until the catalog arrives, which keeps
+    /// the chooser disabled.
     fonts: Option<FontChoices>,
+    /// The family painted while `fonts` is `None`.
+    family: String,
     pub top: usize,
     pub horizontal: f32,
     vertical_remainder: f32,
@@ -139,6 +143,7 @@ impl TextComparison {
             differences,
             renderer: TextRenderer::default(),
             fonts: None,
+            family: "monospace".into(),
             top: 0,
             horizontal: 0.0,
             vertical_remainder: 0.0,
@@ -147,12 +152,19 @@ impl TextComparison {
         })
     }
 
-    /// Install the fixed-pitch catalog scanned by the worker's font thread and resolve the
-    /// preferred family against it. Until then frames use the generic monospace family
-    /// and carry no font choices, so the first frame never waits for the font scan.
+    /// Install the fixed-pitch catalog scanned by the service's font thread and resolve the
+    /// preferred family against it. Until then frames carry no font choices and paint in
+    /// the family of `set_family`, so the first frame never waits for the font scan.
     pub fn set_font_catalog(&mut self, families: Arc<[String]>, preferred: &str) {
         let selected = resolve_family(&families, preferred);
+        self.family.clone_from(&selected);
         self.fonts = Some(FontChoices { families, selected });
+    }
+
+    /// The family to paint before the catalog arrives, resolved by a check of at most two
+    /// families (`FixedPitchFonts::resolve`).
+    pub fn set_family(&mut self, family: String) {
+        self.family = family;
     }
 
     pub fn scroll(&mut self, rows: i64) {
@@ -218,8 +230,7 @@ impl TextComparison {
         let family = self
             .fonts
             .as_ref()
-            .map(|fonts| fonts.selected.as_str())
-            .unwrap_or("monospace");
+            .map_or(self.family.as_str(), |fonts| fonts.selected.as_str());
         let (width, height) = (geometry.width, geometry.height);
         let mut pixels = appearance
             .background
@@ -330,6 +341,8 @@ impl TextComparison {
         };
         Ok(Frame {
             fonts: self.fonts.clone(),
+            #[cfg(test)]
+            text_family: Some(family.to_owned()),
             geometry_revision: 0,
             mode: None,
             width,
@@ -393,7 +406,9 @@ fn bidi_control(c: char) -> bool {
     matches!(c, '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
 }
 
-fn resolve_family(families: &[String], preferred: &str) -> String {
+/// The catalog's name for the preferred family (ASCII case-insensitive), else Consolas,
+/// else generic monospace.
+pub(crate) fn resolve_family(families: &[String], preferred: &str) -> String {
     if preferred == "monospace" {
         return preferred.into();
     }

@@ -83,13 +83,20 @@ the raw lines. NUL and other control characters mark the file as binary.
 
 The installed fixed-pitch families are scanned on a `comparator-fonts` thread, started
 when a text comparison begins reading; the scan reads every installed family and can
-take seconds on a loaded machine. The preferred family is resolved against the catalog
-(case-insensitive match, else Consolas, else generic monospace). A completed catalog is
-kept for the service, so every later text comparison resolves the preferred family
-before its first frame. Only a comparison that starts while no scan has completed
-paints its first frame in the generic monospace family and is repainted when the
-catalog arrives; its font chooser stays disabled (*Loading fonts…*) until then. Closing
-the comparison cancels its scan, which then keeps no partial catalog.
+take seconds on a loaded machine. At most one scan runs per service: a comparison that
+starts while it runs, in either window, waits for the same scan. Before its first frame
+a comparison resolves the preferred family (case-insensitive match, else Consolas, else
+generic monospace): against the kept catalog when the service has one, otherwise by
+checking only those one or two families with the catalog's own name filters and
+fixed-pitch test (`midnight_viewer_render::fixed_pitch_family`, one face load per
+installed candidate), so even the first comparison of a session paints in the resolved
+family at once. The scan delivers its catalog to the comparison worker as an internal
+message, which wakes the worker to publish the chooser list; the chooser stays disabled
+(*Loading fonts…*) until then, and the worker does not poll while it waits. A completed
+catalog is kept for the service. Closing a comparison cancels the scan once no other
+comparison waits for it; a cancelled scan keeps no partial catalog. A scan that fails,
+or panics, answers every waiting comparison with no catalog: it keeps its family
+without a chooser list, and the next comparison scans again.
 
 Arrow keys move exactly one row (`Input::Lines`), Page Up/Down move by the rows that
 were fully visible (`Input::Pages`), and wheel distances are converted with the painted
@@ -107,8 +114,8 @@ inputs (geometry, image mode, font, Fit or Actual pixels, and a file-choice requ
 are never dropped: a newer one replaces the queued one of its kind and is queued after
 the navigation that preceded it. A full queue therefore always holds navigation (scroll,
 line and page steps, seek, difference and zoom), and sheds the oldest such input first.
-An idle worker blocks on its input queue instead of polling; only a pending font
-catalog bounds that wait.
+An idle worker blocks on its input queue instead of polling, also while the font
+catalog loads: the scan's reply arrives through the same queue.
 
 ## Presentation and tests
 
