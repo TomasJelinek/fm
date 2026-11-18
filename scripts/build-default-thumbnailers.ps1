@@ -6,6 +6,7 @@ param(
     [switch]$Offline
 )
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'utf8-native-output.ps1')
 if (-not $WorkerSdkConfig) { $WorkerSdkConfig = $env:MIDNIGHT_THUMBNAIL_SDK_CONFIG }
 if ($env:MIDNIGHT_THUMBNAILERS_OFFLINE -eq '1' -or $env:MIDNIGHT_VIEWERS_OFFLINE -eq '1') { $Offline = $true }
 $savedEnvironment = [Collections.Generic.Dictionary[string,string]]::new([StringComparer]::OrdinalIgnoreCase)
@@ -28,6 +29,8 @@ $temporaryRoot = Join-Path $projectRoot '_build/tmp'
 New-Item -ItemType Directory -Force $buildRoot, $temporaryRoot | Out-Null
 $env:TEMP = $temporaryRoot
 $env:TMP = $temporaryRoot
+# Python before 3.15 writes and decodes text in the ANSI code page unless UTF-8 mode is on.
+$env:PYTHONUTF8 = '1'
 $localCargo = Join-Path $projectRoot '.tools/cargo/bin'
 if (Test-Path -LiteralPath (Join-Path $localCargo 'cargo.exe')) {
     $env:CARGO_HOME = Join-Path $projectRoot '.tools/cargo'
@@ -68,7 +71,9 @@ try {
                 if ($LASTEXITCODE -ne 0) { throw "Cannot fetch $workspace dependencies" }
             }
             $env:CARGO_TARGET_DIR = Join-Path $buildRoot 'sdk-target'
-            $output = & cargo run --manifest-path api/Cargo.toml -p midnight-api-package --bin worker-packages --locked --offline -- $projectRoot (Join-Path $buildRoot 'releases')
+            $output = Invoke-Utf8NativeCommand {
+                & cargo run --manifest-path api/Cargo.toml -p midnight-api-package --bin worker-packages --locked --offline -- $projectRoot (Join-Path $buildRoot 'releases')
+            }
             if ($LASTEXITCODE -ne 0) { throw 'Cannot package public worker SDK' }
             $prefix = 'Public worker API/SDK release bundle: '
             $line = @($output | Where-Object { $_.ToString().StartsWith($prefix) }) | Select-Object -Last 1
@@ -90,7 +95,7 @@ try {
     $nativeArguments = $pythonArguments + @((Join-Path $PSScriptRoot 'prepare-thumbnail-ffmpeg.py'),
         '--build-root', (Join-Path $buildRoot 'ffmpeg'))
     if ($Offline) { $nativeArguments += '--offline' }
-    $nativeOutput = & $python @nativeArguments
+    $nativeOutput = Invoke-Utf8NativeCommand { & $python @nativeArguments }
     if ($LASTEXITCODE -ne 0) { throw 'Cannot prepare required thumbnail FFmpeg runtime' }
     $native = ($nativeOutput -join "`n") | ConvertFrom-Json
     foreach ($key in @('prefix', 'source_archive', 'libclang_path')) {

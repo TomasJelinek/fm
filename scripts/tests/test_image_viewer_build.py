@@ -10,7 +10,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
 PWSH = shutil.which("pwsh")
-WRAPPER_SCRIPTS = ("build-image-viewer.ps1",)
+WRAPPER_SCRIPTS = ("build-image-viewer.ps1", "utf8-native-output.ps1")
 
 
 class ImageViewerBuildWrapperTests(unittest.TestCase):
@@ -151,13 +151,26 @@ class ImageViewerWorkerSdkWindows(unittest.TestCase):
             "[IO.File]::WriteAllText($env:IMAGE_TEST_SDK, $SdkConfig)\n", encoding="utf-8")
         return checkout
 
-    def run_wrapper(self, checkout):
+    def run_wrapper(self, checkout, code_page=0):
+        """Run the wrapper from a console of its own, set to `code_page` unless it is 0."""
+        report = self.owner / "code-page.txt"
+        driver = self.owner / "driver.ps1"
+        driver.write_text(
+            "param([string]$Script, [string]$App, [string]$Report, [int]$CodePage)\n"
+            "if ($CodePage) { [Console]::OutputEncoding = [Text.Encoding]::GetEncoding($CodePage) }\n"
+            "try { & $Script -AppDirectory $App }\n"
+            "finally { [IO.File]::WriteAllText($Report, [string][Console]::OutputEncoding.CodePage) }\n",
+            encoding="utf-8")
+        # The code page belongs to the console, not to the process: CREATE_NO_WINDOW gives
+        # the wrapper a console of its own and leaves the test runner's console untouched.
         result = subprocess.run(
-            [PWSH or "powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
-             str(checkout / "scripts/build-image-viewer.ps1"), "-AppDirectory", str(checkout / "_build/app")],
+            [PWSH or "powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(driver),
+             "-Script", str(checkout / "scripts/build-image-viewer.ps1"), "-App", str(checkout / "_build/app"),
+             "-Report", str(report), "-CodePage", str(code_page)],
             cwd=checkout, env=self.environment, capture_output=True, encoding="utf-8", errors="replace",
-            timeout=120)
+            timeout=120, creationflags=subprocess.CREATE_NO_WINDOW)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        return report.read_text()
 
     def cargo_calls(self, command):
         calls = [json.loads(line) for line in self.log.read_text(encoding="utf-8").splitlines()]
@@ -176,6 +189,16 @@ class ImageViewerWorkerSdkWindows(unittest.TestCase):
         self.assertFalse((checkout / "_build/pdf-viewer").exists())
         self.assertFalse((checkout / "_build/thumbnailers").exists())
         self.assertEqual(Path(self.sdk_report.read_text(encoding="utf-8")), bundle / ".cargo/registry.toml")
+
+    def test_worker_sdk_below_a_non_ascii_path_survives_a_legacy_console_code_page(self):
+        # worker-packages prints its bundle path in UTF-8, but PowerShell decodes native
+        # output with the console code page, so the SDK below a non-ASCII checkout was lost.
+        checkout = self.checkout(self.owner / "Jiří 文档")
+        self.assertEqual(self.run_wrapper(checkout, 850), "850", "The caller's console encoding was not restored")
+        config = checkout / "_build/image-viewer/releases/worker-sdk-1/.cargo/registry.toml"
+        self.assertEqual(Path(self.sdk_report.read_text(encoding="utf-8")), config)
+        plugin_fetch = self.cargo_calls("fetch")[-1]
+        self.assertEqual(Path(plugin_fetch[plugin_fetch.index("--config") + 1]), config)
 
 
 if __name__ == "__main__":

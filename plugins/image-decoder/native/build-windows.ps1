@@ -12,9 +12,18 @@ foreach ($tool in @('cl.exe', 'ninja.exe', 'nasm.exe')) {
     }
 }
 $BuildRoot = [IO.Path]::GetFullPath($BuildRoot)
-$prepare = @('-3', '-I', '-S', '-B', (Join-Path $PSScriptRoot 'prepare-source.py'), $BuildRoot)
+# The source path may be below a non-ASCII directory. Isolated Python ignores PYTHONUTF8,
+# so -X utf8 makes it print UTF-8 (before 3.15 it uses the ANSI code page), and PowerShell
+# decodes that as UTF-8 instead of the console's OEM code page, restored afterwards.
+$prepare = @('-3', '-I', '-S', '-B', '-X', 'utf8', (Join-Path $PSScriptRoot 'prepare-source.py'), $BuildRoot)
 if ($Offline) { $prepare += '--offline' }
-$source = & py @prepare
+$consoleEncoding = [Console]::OutputEncoding
+[Console]::OutputEncoding = New-Object Text.UTF8Encoding $false
+try {
+    $source = & py @prepare
+} finally {
+    [Console]::OutputEncoding = $consoleEncoding
+}
 if ($LASTEXITCODE -ne 0) { throw 'Pinned dav1d source preparation failed' }
 $source = $source.Trim()
 $build = Join-Path $BuildRoot 'msvc-x64'

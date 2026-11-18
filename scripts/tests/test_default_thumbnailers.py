@@ -357,5 +357,92 @@ class WindowsThumbnailerSwapTests(unittest.TestCase):
             kernel32.FreeLibrary(module)
 
 
+@unittest.skipUnless(os.name == "nt", "Windows thumbnail build wrapper")
+class DefaultThumbnailerWindowsTests(unittest.TestCase):
+    """The real wrapper; Cargo, the Python helpers and the provider build are stubs."""
+
+    def setUp(self):
+        temporary = ROOT / "_build/tmp"
+        temporary.mkdir(parents=True, exist_ok=True)
+        owner = tempfile.TemporaryDirectory(prefix="thumbnail sdk ", dir=temporary)
+        self.addCleanup(owner.cleanup)
+        self.owner = Path(owner.name)
+        # cmd.exe reads a batch file in the console code page: keep the stubs on an ASCII path.
+        tools = self.owner / "bin"
+        tools.mkdir()
+        (tools / "cargo.py").write_text(
+            "import pathlib, sys\n"
+            "if 'run' in sys.argv:\n"
+            "    # Like worker-packages: a new bundle, reported in UTF-8 whatever the console code page.\n"
+            "    bundle = pathlib.Path(sys.argv[-1]) / 'worker-sdk-1'\n"
+            "    (bundle / '.cargo').mkdir(parents=True)\n"
+            "    (bundle / '.cargo/registry.toml').write_text('# worker SDK fixture\\n')\n"
+            "    sys.stdout.buffer.write(b'Public worker API/SDK release bundle: ' + str(bundle).encode() + b'\\n')\n",
+            encoding="utf-8")
+        (tools / "cargo.cmd").write_text(f'@"{sys.executable}" "{tools / "cargo.py"}" %*\n')
+        self.checkout = self.owner / "Jiří 文档/checkout"
+        scripts = self.checkout / "scripts"
+        scripts.mkdir(parents=True)
+        for name in ("build-default-thumbnailers.ps1", "utf8-native-output.ps1"):
+            shutil.copyfile(ROOT / "scripts" / name, scripts / name)
+        for directory in ("api/tools/package", "worker-api", "thumbnail-api", "filesystem-api", "image-viewer-api"):
+            (self.checkout / directory).mkdir(parents=True)
+            (self.checkout / directory / "source").write_text("source fixture\n")
+        # The pinned FFmpeg helper escapes non-ASCII JSON, but Thumbnail notices decode
+        # Cargo metadata as text: Python children must write and read UTF-8 too.
+        (scripts / "prepare-thumbnail-ffmpeg.py").write_text(
+            "import json, pathlib\n"
+            "build = pathlib.Path(__file__).resolve().parents[1] / '_build'\n"
+            "print(json.dumps({'prefix': str(build / 'ffmpeg prefix'), 'source_archive': str(build / 'ffmpeg.tar.xz'),\n"
+            "                  'libclang_path': str(build / 'libclang')}, ensure_ascii=False))\n",
+            encoding="utf-8")
+        (scripts / "thumbnail-notices.py").write_text("", encoding="utf-8")
+        self.report = self.owner / "provider-build.json"
+        (scripts / "build-thumbnailers.ps1").write_text(
+            "param($ApiConfig, $Destination, $BuildRoot, $NoticesRoot, $FfmpegPrefix, $FfmpegSourceArchive,\n"
+            "    $LibclangPath, $Profile, [switch]$NativeOffline)\n"
+            "$report = @{ ApiConfig = $ApiConfig; FfmpegPrefix = $FfmpegPrefix;\n"
+            "    FfmpegSourceArchive = $FfmpegSourceArchive; LibclangPath = $LibclangPath }\n"
+            "[IO.File]::WriteAllText($env:THUMBNAIL_TEST_REPORT, ($report | ConvertTo-Json))\n",
+            encoding="utf-8")
+        # Python before 3.15 writes the ANSI code page to pipes; PYTHONUTF8=0 restores that default.
+        self.environment = dict(os.environ, PATH=str(tools) + os.pathsep + os.environ["PATH"],
+                                THUMBNAIL_TEST_REPORT=str(self.report), PYTHONUTF8="0")
+        for name in ("CARGO_TARGET_DIR", "MIDNIGHT_THUMBNAIL_SDK_CONFIG", "MIDNIGHT_THUMBNAILERS_OFFLINE",
+                     "MIDNIGHT_VIEWERS_OFFLINE", "PYTHONIOENCODING"):
+            self.environment.pop(name, None)
+
+    def test_sdk_and_python_paths_below_a_non_ascii_path_survive_a_legacy_console_code_page(self):
+        # Cargo prints UTF-8, but PowerShell decodes native output with the console code
+        # page, so the SDK bundle below a non-ASCII checkout was lost.
+        console = self.owner / "console.json"
+        driver = self.owner / "driver.ps1"
+        driver.write_text(
+            "param([string]$Script, [string]$Report)\n"
+            "[Console]::OutputEncoding = [Text.Encoding]::GetEncoding(850)\n"
+            "try { & $Script }\n"
+            "finally {\n"
+            "    $state = @{ code_page = [Console]::OutputEncoding.CodePage; python_utf8 = $env:PYTHONUTF8 }\n"
+            "    [IO.File]::WriteAllText($Report, ($state | ConvertTo-Json))\n"
+            "}\n", encoding="utf-8")
+        # The code page belongs to the console, not to the process: CREATE_NO_WINDOW gives
+        # the wrapper a console of its own and leaves the test runner's console untouched.
+        result = subprocess.run(
+            [shutil.which("pwsh") or "powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
+             str(driver), "-Script", str(self.checkout / "scripts/build-default-thumbnailers.ps1"),
+             "-Report", str(console)],
+            cwd=self.checkout, env=self.environment, capture_output=True, encoding="utf-8", errors="replace",
+            timeout=120, creationflags=subprocess.CREATE_NO_WINDOW)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        build = self.checkout / "_build"
+        report = json.loads(self.report.read_text(encoding="utf-8"))
+        self.assertEqual(Path(report["ApiConfig"]), build / "thumbnailers/releases/worker-sdk-1/.cargo/registry.toml")
+        self.assertEqual(Path(report["FfmpegPrefix"]), build / "ffmpeg prefix")
+        self.assertEqual(Path(report["FfmpegSourceArchive"]), build / "ffmpeg.tar.xz")
+        self.assertEqual(Path(report["LibclangPath"]), build / "libclang")
+        self.assertEqual(json.loads(console.read_text()), {"code_page": 850, "python_utf8": "0"},
+                         "The caller's console encoding and Python environment were not restored")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -7,6 +7,7 @@ param(
     [ValidateSet('image', 'pdf')][string]$Viewer = 'image'
 )
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'utf8-native-output.ps1')
 if (-not $WorkerSdkConfig) { $WorkerSdkConfig = $env:MIDNIGHT_IMAGE_VIEWER_SDK_CONFIG }
 if ($env:MIDNIGHT_VIEWERS_OFFLINE -eq '1') { $Offline = $true }
 # Native compiler activation can introduce many variables. Restore the complete
@@ -67,7 +68,9 @@ try {
                 if ($LASTEXITCODE -ne 0) { throw "Cannot fetch $workspace dependencies" }
             }
             $env:CARGO_TARGET_DIR = Join-Path $buildRoot 'sdk-target'
-            $output = & cargo run --manifest-path api/Cargo.toml -p midnight-api-package --bin worker-packages --locked --offline -- $projectRoot (Join-Path $buildRoot 'releases')
+            $output = Invoke-Utf8NativeCommand {
+                & cargo run --manifest-path api/Cargo.toml -p midnight-api-package --bin worker-packages --locked --offline -- $projectRoot (Join-Path $buildRoot 'releases')
+            }
             if ($LASTEXITCODE -ne 0) { throw 'Cannot package public worker SDK' }
             $prefix = 'Public worker API/SDK release bundle: '
             $line = @($output | Where-Object { $_.ToString().StartsWith($prefix) }) | Select-Object -Last 1
