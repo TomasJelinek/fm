@@ -284,41 +284,25 @@ pub(crate) fn install(
     window
         .global::<UserCommandSettingsView>()
         .on_picker_context(move |page| {
-            let mut closed = false;
-            if let Ok(mut state) = context_state.try_borrow_mut() {
-                let was_busy = state.settings_picker.busy();
-                state.settings_picker_context(page, context_send.as_ref());
-                closed = was_busy && !state.settings_picker.busy();
-            } else {
-                let state = context_state.clone();
-                let send = context_send.clone();
-                let weak = weak.clone();
-                slint::Timer::single_shot(std::time::Duration::ZERO, move || {
-                    if let Some(window) = weak.upgrade() {
-                        let page = if window.get_options_open() {
-                            window.get_options_topic_index()
-                        } else {
-                            -1
-                        };
-                        state
-                            .borrow_mut()
-                            .settings_picker_context(page, send.as_ref());
-                    }
-                });
+            if let Ok(presenter) = context_state.try_borrow_mut() {
+                apply_picker_context(&weak, &context_state, presenter, &context_send, page);
+                return;
             }
-            // A cancellation delivered here closed the picker: publish its idle state
-            // now, as the other callbacks that invalidate a picker do, instead of at the
-            // next slow check. One the queue refused retries at the cancellation cadence.
-            if let Some(window) = weak.upgrade() {
-                if closed {
-                    crate::refresh(&window, &context_state.borrow());
+            // The presenter is borrowed: apply the page in force once the borrow ended,
+            // with the same publication and check as a direct change.
+            let state = context_state.clone();
+            let send = context_send.clone();
+            let weak = weak.clone();
+            slint::Timer::single_shot(std::time::Duration::ZERO, move || {
+                if let Some(window) = weak.upgrade() {
+                    let page = if window.get_options_open() {
+                        window.get_options_topic_index()
+                    } else {
+                        -1
+                    };
+                    apply_picker_context(&weak, &state, state.borrow_mut(), &send, page);
                 }
-                crate::settings_picker_presentation::wake(
-                    &window,
-                    &context_state,
-                    context_send.clone(),
-                );
-            }
+            });
         });
     let weak = window.as_weak();
     let selected = state.clone();
@@ -433,6 +417,30 @@ pub(crate) fn install(
             }
             accepted
         });
+}
+
+/// Applies the Options page `page` to an open settings picker through `presenter`, the
+/// borrow of `state`. When the cancellation delivered here closed the picker, its idle
+/// state is published now, as the other callbacks that invalidate a picker do, instead
+/// of at the next slow check; one the queue refused retries at the cancellation cadence.
+fn apply_picker_context(
+    window: &slint::Weak<MainWindow>,
+    state: &Rc<RefCell<Presenter>>,
+    mut presenter: std::cell::RefMut<'_, Presenter>,
+    send: &Rc<dyn Fn(Command) -> bool>,
+    page: i32,
+) {
+    let was_busy = presenter.settings_picker.busy();
+    presenter.settings_picker_context(page, send.as_ref());
+    let closed = was_busy && !presenter.settings_picker.busy();
+    drop(presenter);
+    let Some(window) = window.upgrade() else {
+        return;
+    };
+    if closed {
+        crate::refresh(&window, &state.borrow());
+    }
+    crate::settings_picker_presentation::wake(&window, state, send.clone());
 }
 
 fn to_view(form: Form) -> UserCommandSettingsForm {

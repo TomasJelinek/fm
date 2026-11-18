@@ -4,7 +4,8 @@
 use super::*;
 use crate::{
     EditorOptionsDraft, EditorOptionsView, UserCommandSettingsView,
-    presenter::settings_picker::Target, test_harness::Harness,
+    presenter::settings_picker::{OPTIONS_TOPIC_CUSTOM_COMMANDS, Target},
+    test_harness::Harness,
 };
 use midnight_core::{PathPickerOwner, UserPreferences};
 use std::cell::Cell;
@@ -276,6 +277,72 @@ fn an_invalidated_picker_preempts_the_slow_check_and_retries_every_25_ms() {
     assert!(!timer.running(), "a closed picker needs no check");
     harness.advance(OPEN_CHECK * 5);
     assert_eq!(attempts.get(), 4);
+}
+
+/// Open an editor picker while Custom Commands is shown, then report that page while the
+/// presenter is borrowed, as a topic change can reach it. The callback leaves the page to
+/// the event loop, which applies it once the borrow has ended, with the queue refusing
+/// commands while `refuse` is set.
+fn leave_the_picker_page_during_a_borrow(harness: &mut Harness, refuse: bool) {
+    let send = sender(harness, &Rc::default());
+    open_editor_picker(harness, &send);
+    harness.refresh();
+    assert!(harness.window.global::<EditorOptionsView>().get_busy());
+    assert_eq!(check_timer(&harness.window).interval(), OPEN_CHECK);
+    {
+        let _held = harness.presenter.borrow();
+        harness
+            .window
+            .global::<UserCommandSettingsView>()
+            .invoke_picker_context(OPTIONS_TOPIC_CUSTOM_COMMANDS);
+    }
+    assert!(
+        !harness
+            .presenter
+            .borrow()
+            .settings_picker
+            .cancellation_pending(),
+        "a borrowed presenter is left unchanged"
+    );
+    harness.refuse.set(refuse);
+    harness.settle();
+    harness.refuse.set(false);
+}
+
+#[test]
+fn a_page_change_during_a_presenter_borrow_publishes_the_closed_picker_at_once() {
+    let mut harness = Harness::options(UserPreferences::default(), OPTIONS_TOPIC_CUSTOM_COMMANDS);
+    harness.freeze_time();
+    leave_the_picker_page_during_a_borrow(&mut harness, false);
+    assert_eq!(cancellations(&harness), 1);
+    assert!(!harness.presenter.borrow().settings_picker.busy());
+    assert!(
+        !harness.window.global::<EditorOptionsView>().get_busy(),
+        "the closed picker is published with its cancellation, not at the slow check"
+    );
+}
+
+#[test]
+fn a_page_change_during_a_presenter_borrow_retries_a_refused_cancellation_every_25_ms() {
+    let mut harness = Harness::options(UserPreferences::default(), OPTIONS_TOPIC_CUSTOM_COMMANDS);
+    harness.freeze_time();
+    leave_the_picker_page_during_a_borrow(&mut harness, true);
+    assert!(
+        harness
+            .presenter
+            .borrow()
+            .settings_picker
+            .cancellation_pending()
+    );
+    assert_eq!(cancellations(&harness), 0);
+    harness.advance(CANCEL_RETRY);
+    assert_eq!(
+        cancellations(&harness),
+        1,
+        "the deferred change wakes the check"
+    );
+    assert!(!harness.presenter.borrow().settings_picker.busy());
+    assert!(!harness.window.global::<EditorOptionsView>().get_busy());
 }
 
 #[test]
