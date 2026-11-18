@@ -123,6 +123,10 @@ fn flat_view(navigation: NavigationId) -> WatchedView {
     }
 }
 
+fn watch_text(p: &Presenter) -> Option<&'static str> {
+    p.watch_notice(PaneId::Left).map(|notice| notice.text)
+}
+
 #[test]
 fn a_watch_status_is_shown_non_modally_only_for_the_rows_it_concerns() {
     let mut p = Presenter::new("left".into(), "right".into());
@@ -132,16 +136,22 @@ fn a_watch_status_is_shown_non_modally_only_for_the_rows_it_concerns() {
         view: flat_view(first),
         status: polling_only("left"),
     });
-    let polling = p
-        .watch_status_text(PaneId::Left)
+    let notice = p
+        .watch_notice(PaneId::Left)
         .expect("the current rows are only checked periodically");
+    let polling = notice.text;
     assert!(polling.contains("about every 15 seconds"), "{polling}");
+    assert!(
+        notice.details.contains("OS file watch limit reached"),
+        "the registration error explains it: {}",
+        notice.details
+    );
     assert!(p.panes[0].error.is_empty(), "never a panel error");
     assert!(p.desktop.notice.is_none(), "never a dialog");
-    assert_eq!(p.watch_status_text(PaneId::Right), None);
+    assert!(p.watch_notice(PaneId::Right).is_none());
     // The rows stay shown while another folder loads and after it failed.
     let other = begin(&mut p, PaneId::Left, "other");
-    assert_eq!(p.watch_status_text(PaneId::Left), Some(polling));
+    assert_eq!(watch_text(&p), Some(polling));
     p.apply(Event::ListingFailed {
         pane: PaneId::Left,
         navigation: other,
@@ -151,28 +161,33 @@ fn a_watch_status_is_shown_non_modally_only_for_the_rows_it_concerns() {
             io::Error::from(io::ErrorKind::NotFound),
         ),
     });
-    assert_eq!(p.watch_status_text(PaneId::Left), Some(polling));
+    assert_eq!(watch_text(&p), Some(polling));
     p.apply(Event::WatchStatus {
         view: flat_view(first),
         status: WatchStatus::Native,
     });
-    assert_eq!(p.watch_status_text(PaneId::Left), None, "Native clears it");
+    assert_eq!(watch_text(&p), None, "Native clears it");
     p.apply(Event::WatchStatus {
         view: flat_view(first),
         status: WatchStatus::Restarting,
     });
-    let restarting = p.watch_status_text(PaneId::Left).unwrap();
-    assert!(restarting.contains("at most once a minute"), "{restarting}");
+    let restarting = p.watch_notice(PaneId::Left).unwrap();
+    assert!(
+        restarting.text.contains("at most once a minute"),
+        "{}",
+        restarting.text
+    );
+    assert!(restarting.details.is_empty());
     // Another accepted folder is a new view, watched natively until reported
     // otherwise; a late status of the replaced rows is not shown.
     let next = begin(&mut p, PaneId::Left, "next");
     finish(&mut p, PaneId::Left, next, vec![entry(2, "next/b")]);
-    assert_eq!(p.watch_status_text(PaneId::Left), None);
+    assert_eq!(watch_text(&p), None);
     p.apply(Event::WatchStatus {
         view: flat_view(first),
         status: polling_only("left"),
     });
-    assert_eq!(p.watch_status_text(PaneId::Left), None);
+    assert_eq!(watch_text(&p), None);
     assert!(
         !p.take_retired().is_empty(),
         "replaced statuses are retired"
@@ -194,7 +209,7 @@ fn a_tree_watch_status_needs_the_tree_navigation_and_session() {
         view: flat_view(stamp.navigation),
         status: polling_only("tree"),
     });
-    assert_eq!(p.watch_status_text(PaneId::Left), None);
+    assert_eq!(watch_text(&p), None);
     p.apply(Event::WatchStatus {
         view: WatchedView::Tree(TreeViewStamp {
             session: TreeSessionId(stamp.session.0 + 1),
@@ -202,7 +217,7 @@ fn a_tree_watch_status_needs_the_tree_navigation_and_session() {
         }),
         status: polling_only("tree"),
     });
-    assert_eq!(p.watch_status_text(PaneId::Left), None, "another session");
+    assert_eq!(watch_text(&p), None, "another session");
     // The projection revision can advance while a status waits.
     p.apply(Event::WatchStatus {
         view: WatchedView::Tree(TreeViewStamp {
@@ -211,7 +226,7 @@ fn a_tree_watch_status_needs_the_tree_navigation_and_session() {
         }),
         status: polling_only("tree"),
     });
-    assert!(p.watch_status_text(PaneId::Left).is_some());
+    assert!(watch_text(&p).is_some());
 }
 
 #[test]

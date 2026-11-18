@@ -7,6 +7,13 @@ const POLLING_ONLY: &str = "Change notifications are unavailable for this folder
 const RESTARTING: &str =
     "Automatic refresh is paused after an internal error; it is retried at most once a minute.";
 
+/// A pane's watch status as the pane shows it: never a panel error or a dialog.
+pub(crate) struct WatchNotice {
+    pub(crate) text: &'static str,
+    /// Why notifications are unavailable (the registration error), or empty.
+    pub(crate) details: String,
+}
+
 impl Presenter {
     /// Keeps the newest status of the pane's watch; it is presented only while
     /// its view is the pane's current view.
@@ -16,11 +23,10 @@ impl Presenter {
             .push(Box::new(p.watch_status.replace((view, status))));
     }
 
-    /// The pane's watch status text, never a panel error or a dialog: shown
-    /// while the reported view is the pane's current view (a flat navigation
-    /// without a tree, or the tree's navigation and session) and it is not
-    /// watched natively.
-    pub(crate) fn watch_status_text(&self, pane: PaneId) -> Option<&'static str> {
+    /// The pane's watch status while the reported view is the pane's current
+    /// view (a flat navigation without a tree, or the tree's navigation and
+    /// session) and it is not watched natively.
+    pub(crate) fn watch_notice(&self, pane: PaneId) -> Option<WatchNotice> {
         let p = &self.panes[pane.index()];
         let (view, status) = p.watch_status.as_ref()?;
         let current = match view {
@@ -34,8 +40,14 @@ impl Presenter {
         match status {
             _ if !current => None,
             WatchStatus::Native => None,
-            WatchStatus::PollingOnly(_) => Some(POLLING_ONLY),
-            WatchStatus::Restarting => Some(RESTARTING),
+            WatchStatus::PollingOnly(error) => Some(WatchNotice {
+                text: POLLING_ONLY,
+                details: crate::error_presentation::describe(error),
+            }),
+            WatchStatus::Restarting => Some(WatchNotice {
+                text: RESTARTING,
+                details: String::new(),
+            }),
         }
     }
 }

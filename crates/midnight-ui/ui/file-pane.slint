@@ -145,6 +145,9 @@ export component FilePane inherits Rectangle {
     }
     in property <[LocationRow]> locations;
     in property <string> status;
+    // How the backend watches the current view, when not natively; never an error.
+    in property <string> watch-status;
+    in property <string> watch-details;
     in property <string> error;
     in property <string> error-revision;
     in property <bool> can-elevate;
@@ -776,6 +779,27 @@ export component FilePane inherits Rectangle {
             }
             if root.drop-highlight : DragFeedback {
                 label: root.drag-label; highlight-panel: root.drop-row < 0;
+            }
+        }
+        // Non-modal and not an error: rows, actions and Refresh stay usable.
+        // The presenter sets it only for the pane's current flat or tree view.
+        if root.watch-status != "" : Rectangle {
+            height: root.minimal ? Theme.small-font + 4px : Theme.status-height;
+            background: Theme.secondary-surface;
+            accessible-role: text;
+            accessible-label: root.watch-status;
+            accessible-description: root.watch-details;
+            Rectangle { x: 0px; y: 0px; width: parent.width; height: 1px; background: Theme.frame; }
+            Text {
+                x: 8px; width: max(0px, parent.width - 16px); height: parent.height;
+                text: root.watch-status; font-size: Theme.small-font; color: Theme.secondary-text;
+                vertical-alignment: center; overflow: elide;
+                accessible-role: none;
+            }
+            Tooltip {
+                TipBody {
+                    text: root.watch-status + (root.watch-details == "" ? "" : "\n\n" + root.watch-details);
+                }
             }
         }
         details-bar := PanelDetails { visible: !root.minimal; height: root.minimal ? 0px : Theme.status-height; model: root.details; free-space: root.free-space; copy-field(identity) => { root.activate(); root.detail-copy(identity); } }

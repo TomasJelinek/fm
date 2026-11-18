@@ -940,11 +940,12 @@ for the 15-second check. A refresh during which no notification arrives is not
 followed by another listing, and re-sorting rows that a check found current does
 not check them again. If native notifications cannot be registered for a panel's
 folder or its expanded branches (for example when the system's watch limit is
-reached), the panel's status line says that the folder is only checked
-periodically; a refresh registers the folder again, and an expanded tree retries
-with a later refresh, expansion or collapse, at most once per check interval. If a
-panel's watcher fails, it restarts at once, and afterwards at most once a minute;
-until then the panel says that automatic refresh is paused. In tree mode, a
+reached), a line above the panel's details bar says that the folder is only
+checked periodically, and its tooltip gives the reason; a refresh registers the
+folder again, and an expanded tree retries with a later refresh, expansion or
+collapse, at most once per check interval. If a panel's watcher fails, it restarts
+at once, and afterwards at most once a minute; until then that line says that
+automatic refresh is paused. Neither is a panel error or a dialog. In tree mode, a
 changed set of watched branches registers its native watches before the old ones
 are released, so directories watched before and after stay covered; a directory
 that becomes natively watched is checked at once, and a collapse alone requests

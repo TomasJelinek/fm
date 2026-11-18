@@ -67,10 +67,13 @@ earlier status of the same view. Each status is sent once per change of a view's
 status, never blocks the watch worker (a full event queue keeps the newest status
 until it can be sent), and a status for a view the pane no longer shows is
 dropped. It is non-fatal: rows, actions and manual Refresh stay usable, and it is
-never shown as a panel error or a modal dialog. The presenter adds it to the pane's
-status line only while its view is the pane's current view (a flat navigation, or
-the tree's navigation and session). `TreeEvent::WatchFailed` keeps reporting scope
-enrollment failures and epoch exhaustion.
+never shown as a panel error or a modal dialog. The presenter
+(`Presenter::watch_notice`) shows it only while its view is the pane's current
+view (a flat navigation, or the tree's navigation and session), in flat and tree
+mode alike, as one line of secondary text above the pane's details bar. Its tooltip
+and accessible description give the registration error of `PollingOnly`.
+`TreeEvent::WatchFailed` keeps reporting scope enrollment failures and epoch
+exhaustion.
 
 A flat folder registers again with a refresh; a tree batch with a later scope
 update, at most once per poll interval. A pane's watch worker that panics restarts
