@@ -388,7 +388,20 @@ also trusts the current user, does not decide this.
   filesystem is not mounted `nosuid` (removable or user-mounted storage).
 
 Any other location, such as build output, the per-user Windows private runtime or
-`$HOME/.local/bin`, refuses authorization with an explanation of the requirement.
+`$HOME/.local/bin`, refuses authorization; the retry is still offered there. The error
+explains the requirement: the Cannot open folder message shows it when no helper is
+installed beside the executable (per-user deployments omit it), and the copied
+details of that message include it for a helper in a refused location.
+
+Builds before this check accepted a helper beside their executable through the plugin
+trust policy alone, and earlier versions of the deployment scripts and Linux per-user
+instructions copied the helper into per-user installations. In such an installation
+(a Windows private runtime that contains `midnight-elevated-listing.exe`, or
+`$HOME/.local/bin/midnight-elevated-listing` beside an older `me`), any process
+running as that user can replace the helper that the older build then runs as
+Administrator or root. Current builds refuse such a copy. Build deployments made
+before deployment retirement existed are never removed automatically, so remove
+those installations or helper copies after redeploying.
 
 The channel is bound by process identity. On Windows the parent checks the pipe
 client PID against the launched process; the helper checks the pipe server PID and
@@ -555,7 +568,12 @@ original-name winner is never clobbered. Earlier completed moves stay completed 
 published destinations are never rolled back. Drop never finalizes retained data.
 Success retains no source copy or empty temporary stage. Failed restoration or
 empty-stage cleanup preserves all remaining data and reports exact exceptional
-paths. Cleanup never recursively deletes unexpected entries. Structured outcomes
+paths, with one known Windows gap: when granted peers refuse a capture's rename into
+the private directory that the same capture has just created, that empty owner-only
+`.midnight-move-*` directory stays beside the source unreported, because the capture
+is repeated automatically with a new one (no source data is affected; see
+[bounded ordinary Move](docs/developer/TRANSFERS.md#bounded-ordinary-move)).
+Cleanup never recursively deletes unexpected entries. Structured outcomes
 distinguish removal from residuals and durability uncertainty. Linux uses no-replace
 temporary staging and live-validated directory-relative unlink for owned,
 single-link regular files on qualified local ext filesystems with protected
@@ -841,21 +859,31 @@ fields and conservative physical-device classifications.
   child inside a replaceable parent is insufficient. This does not turn trusted
   native code into a sandbox or authenticate a publisher's identity.
 - Plugin projects share one Git repository but only depend on the public API/SDK.
-  Their independent Cargo workspaces and CI jobs
-  contain their tests and have no write access to the host application's sources.
-  Exported-plugin CI runs without host sources, using the released public SDK.
+  Their independent Cargo workspaces contain their tests and have no write access to
+  the host application's sources. CI checks the basic, source, Markdown, image and
+  PDF viewers, the image thumbnailer, the viewer conformance fixture and the
+  Windows/Linux native, network and archive filesystems from exported directories,
+  without host sources: viewers and workers against the released public SDK
+  bundles, filesystem libraries against the checked-in public filesystem API/SDK.
+  The HTML viewer, the video thumbnailer and the macOS native filesystem have no CI
+  job yet.
   Building, testing or installing a plugin must never patch host sources or the
   executable. Integration tests consume a released host binary in a temporary
   distribution; extending host API requires a separate host-owned change.
 - Shared Windows host builds can resolve a private runtime published by explicit
-  deployment. Its protected per-user registration and target executable must match
-  the running host's SHA-256. Registration and target paths reject reparse points
-  before canonicalization and retain the same ancestor/owner/DACL policy. Reads use
-  handles denying concurrent writes and renames, with bounded lengths and revision
-  checks. No package is copied or trusted automatically at startup. The process
-  caches the resolved location; existing discovery/load checks still validate code.
-  The hash matches builds; it does **not** authenticate a publisher or make an
-  already launched shared executable safe. See [runtime discovery](docs/developer/RUNTIME_DISCOVERY.md).
+  deployment. By default a protected per-user launcher pointer for the launch
+  executable's native path selects the registration, but only while that executable
+  keeps the length and last-write time recorded at deployment; startup hashes no
+  executable. Deployment verified that the registered executable had the build's
+  SHA-256, and `MIDNIGHT_VERIFY_RUNTIME_SHA256=1` instead requires the registration
+  and its target executable to match the running host's SHA-256 at startup.
+  Registration and target paths reject reparse points before canonicalization and
+  retain the same ancestor/owner/DACL policy. Record reads use handles denying
+  concurrent writes and renames, with bounded lengths and revision checks. No
+  package is copied or trusted automatically at startup. The process caches the
+  resolved location; existing discovery/load checks still validate code. The
+  pointer and the hash only match builds; they do **not** authenticate a publisher
+  or make an already launched shared executable safe. See [runtime discovery](docs/developer/RUNTIME_DISCOVERY.md).
 - Host-owned leases scope content services; no Rust allocator, future, Tokio
   runtime or Slint object crosses the ABI. Buffers have explicit ownership and
   release functions. Loaded code outlives every worker, callback, session and
