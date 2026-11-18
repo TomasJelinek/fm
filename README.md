@@ -862,7 +862,9 @@ and shortcut overrides are stored as versioned UTF-8 JSON (supported schemas thr
 `$XDG_CONFIG_HOME/midnight-explorer/preferences.json` /
 `~/.config/midnight-explorer/preferences.json` on Linux. When the new file is absent,
 the former `FM` (Windows) / `fm` (Linux) location is read safely; saves use only the
-new location and preserve the old file.
+new location and preserve the old file. If settings take longer than 10 seconds to
+load, the window opens with defaults and the status line says so; the saved settings
+apply when they arrive, except the window's position and size for that session.
 Viewer preferences include wrapping, line numbers, fonts, Markdown presentation
 and image/PDF zoom modes; see [viewer settings](docs/developer/VIEWER_PREFERENCES.md).
 Source mode exposes line numbers and the current logical line/column. Markdown

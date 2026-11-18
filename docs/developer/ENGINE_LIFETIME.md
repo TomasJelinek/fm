@@ -199,7 +199,7 @@ spare; it does not retain the service or wait for active foreground sessions.
 and refill, cancels a starting spare and marks a ready spare for backend cleanup.
 Foreground sessions and ordinary cold admission remain independent.
 
-Normal close stops and drops the preparation controller, requests spare stop,
+Normal close drops the preparation handle, requests spare stop,
 then closes viewer windows. After the event loop exits, including startup failure,
 the application stops the spare and awaits `wait()` outside UI callbacks before
 shutting down Tokio. Success follows any late spare creation, actual native

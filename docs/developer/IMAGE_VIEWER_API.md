@@ -227,8 +227,10 @@ eligibility; document providers are not selected for speculative preparation.
 Policy/catalog generation changes, provider mismatch, changed pinned code,
 expiry and shutdown invalidate the spare. Claim revalidates installed identity,
 and the host retains the final live code/source guard immediately before Open.
-A successfully opened session can request one background refill; failed
-preparation does not create a speculative retry loop.
+A successfully opened session can request one background refill; failed preparation
+does not create a speculative retry loop. The explorer prepares the spare once,
+after a successful initial settings read, and revokes it once when exit is
+requested; no timer polls the preparation policy.
 
 Explicit Open requests take priority over refill and may share a matching start.
 Canceling one waiter only detaches that waiter; another waiter's shared launch

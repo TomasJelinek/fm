@@ -15,6 +15,16 @@ that decision, the measurements are to be repeated with the PERF-F0 protocol: re
 build, default renderer, interactive desktop, 15 s warmup, 60 s window, S1 to S5, and
 Linux X11.
 
+Decision (orchestrator, 18 November 2026): the PERF-F2 budget is amended to at most
+5/s while the window is inactive or no text input has focus. With the window active,
+the remaining wakeups (about 9.7/s, down from about 80/s) are the caret blink of the
+focused type-to-search input (Slint's text cursor blinker, about 5.7/s) and the 250
+ms drag safety net (4/s). An idle focus scope that forwards the first key to the
+search input would remove the blink but must keep IME composition start, so it stays
+in the backlog (UI-PERF-01). The explorer owns the process's single winit
+application handler (`native_events::Observer`); any other event-loop consumer is
+composed into it.
+
 ## Method
 
 `me` reads `MIDNIGHT_IDLE_WAKEUP_PROBE=<warmup_s>:<seconds>[:thumbnails]`. The probe
