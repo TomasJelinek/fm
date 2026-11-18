@@ -13,20 +13,33 @@ shared owner with a cached `SizeWarningSummary` for presentation and a private
 clone ownership only when retaining a result or requesting details.
 
 Native, archive and inline-tree scanners append complete diagnostic records to
-private temporary storage. A record includes the operation, captured path or
-provider identity and the original reason. Raw native units and control characters
-are escaped losslessly. Report storage failure does not stop useful counting:
-the summary and report distinguish observed issues from successfully saved records.
-Cancellation alone is not an issue, but cannot erase an actual concurrent failure.
+private temporary storage: a file in this user's private report root, which listing
+and presence error reports share, that is anonymous on Linux and deleted on close
+on Windows. On Linux the root is `$XDG_RUNTIME_DIR/midnight-explorer/reports`, then
+`midnight-explorer-<uid>-reports` (effective user ID) and a per-process
+`midnight-explorer-reports-<pid>` in the temporary directory; on Windows
+`MidnightExplorer-<hex of the account name>-reports` and then
+`MidnightExplorer-reports-<pid>` in the per-user `%TEMP%`. Each root must be an
+owner-only directory of this user reached without links; a refused root yields to
+the next candidate, and a per-process root is removed after its last report closes
+(`private_spool::private_spool_roots`). A record includes the operation, captured
+path or provider identity and the original reason. Raw native units and control
+characters are escaped losslessly. Report storage failure does not stop useful
+counting: the summary and report distinguish observed issues from successfully
+saved records. Cancellation alone is not an issue, but cannot erase an actual
+concurrent failure.
 
 `Command::OpenSizeWarnings` carries the retained report, request ID and cancellation.
-Two blocking workers and eight pending slots bound snapshot requests. The matching
-`Event::SizeWarningsReady` returns an immutable `GeneratedTextSource`. Stale results,
-queue rejection and shutdown retire ownership on backend workers. No source reads,
-report writes or final native-file destruction belong on the UI thread.
+Two dedicated `midnight-report-reader` threads (normally outside Tokio's blocking
+pool) and eight pending slots bound report snapshot and preview requests. The
+matching `Event::SizeWarningsReady` returns an immutable `GeneratedTextSource`.
+Stale results, queue rejection and shutdown retire ownership on backend workers. No
+source reads, report writes or final native-file destruction belong on the UI
+thread.
 
-Native scans share four lazy worker-lane logs; archive scans share a depth-first
-log with exact subtree ranges. A snapshot never sees partial records or later
+Native scans keep one lazy log per I/O lane (four lanes by default, up to 32 with a
+Manual **Disk I/O concurrency** setting); archive scans share a depth-first log with
+exact subtree ranges. A snapshot never sees partial records or later
 appends. Rerunning, navigating or evicting a cache does not change an opened report.
 Backing storage remains until the lane/generation owner and all readers release it;
 navigation does not promise immediate deletion of every shared backing file.
@@ -84,12 +97,18 @@ path grants authority. Closing/replacing the message, a new error occurrence or
 navigation prevents an obsolete dialog callback from authorizing anything.
 
 The existing Windows helper uses the OS UAC prompt; Linux uses the desktop polkit
-agent through `pkexec`. Unsupported/unavailable services do not advertise the
-button. Denial, cancellation and queue failure remain explicit errors and preserve
-the existing listing; no silent retry, ACL change or privileged host launch is
-introduced. The helper grants one read-only directory listing and does not grant
-file content or mutation permissions. See the
-[directory authorization contract](../verification/2026-11-11-directory-authorization.md).
+agent through `pkexec`. An engine without an authorization service does not
+advertise the button. Denial, cancellation and queue failure remain explicit errors
+and preserve the existing listing; no silent retry, ACL change or privileged host
+launch is introduced. The helper grants one read-only directory listing and does not
+grant file content or mutation permissions. It runs only from an installation that
+standard users cannot change (administrator-protected on Windows, root-owned on
+Linux). Elsewhere, for example in a per-user runtime or build output, the button
+still appears and the retry is refused with an explanation of that requirement. See
+the [directory authorization helper](../../SECURITY.md#directory-authorization-helper)
+for the current contract; the
+[first qualification record](../verification/2026-11-11-directory-authorization.md)
+keeps its dated scope.
 
 A generated report title is only a display label and never authority to reopen a
 native path. Missing size-report viewer support and diagnostic read failures are
