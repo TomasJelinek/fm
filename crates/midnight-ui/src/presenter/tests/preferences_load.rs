@@ -146,6 +146,9 @@ fn early_theme_preview_defers_saving_and_preserves_every_untouched_loaded_field(
             comparators: midnight_core::FileComparatorSnapshot::default(),
         }))),
         &|command| {
+            if startup_metadata(&command) {
+                return true;
+            }
             let Command::SavePreferences {
                 revision,
                 preferences,
@@ -187,6 +190,9 @@ fn early_desktop_size_edit_preserves_loaded_family_touch_size_and_bookmarks() {
             comparators: midnight_core::FileComparatorSnapshot::default(),
         }))),
         &|command| {
+            if startup_metadata(&command) {
+                return true;
+            }
             let Command::SavePreferences { preferences, .. } = command else {
                 panic!()
             };
@@ -223,6 +229,9 @@ fn early_bookmark_rename_removal_and_assignment_survive_reconciliation() {
             comparators: midnight_core::FileComparatorSnapshot::default(),
         }))),
         &|command| {
+            if startup_metadata(&command) {
+                return true;
+            }
             let Command::SavePreferences { preferences, .. } = command else {
                 panic!()
             };
@@ -263,7 +272,13 @@ fn startup_reconciliation_over_capacity_preserves_all_bookmarks_and_never_saves_
             preferences: saved,
             comparators: midnight_core::FileComparatorSnapshot::default(),
         }))),
-        &|_| panic!("128 bookmarks must never escape as a save command"),
+        &|command| {
+            assert!(
+                startup_metadata(&command),
+                "128 bookmarks must never escape as a save command"
+            );
+            true
+        },
     );
     assert_eq!(p.bookmarks().len(), 128);
     assert!(p.preferences.unsaved);
@@ -377,6 +392,9 @@ fn explicit_same_index_default_font_preserves_loaded_sizes_and_other_preferences
             comparators: midnight_core::FileComparatorSnapshot::default(),
         }))),
         &|command| {
+            if startup_metadata(&command) {
+                return true;
+            }
             let Command::SavePreferences { preferences, .. } = command else {
                 panic!()
             };
@@ -404,6 +422,9 @@ fn explicit_same_index_default_theme_preserves_loaded_density() {
             comparators: midnight_core::FileComparatorSnapshot::default(),
         }))),
         &|command| {
+            if startup_metadata(&command) {
+                return true;
+            }
             let Command::SavePreferences { preferences, .. } = command else {
                 panic!()
             };

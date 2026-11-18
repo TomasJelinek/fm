@@ -1086,7 +1086,10 @@ mod tests {
         let mut p = Presenter::new("left".into(), "right".into());
         let sent = RefCell::new(vec![]);
         let send = |command| {
-            sent.borrow_mut().push(command);
+            // The first read also requests comparator image metadata; keep the saves.
+            if !matches!(command, Command::ListComparatorCapabilities { .. }) {
+                sent.borrow_mut().push(command);
+            }
             true
         };
         p.change_preferences(2, 1, -1, &send);

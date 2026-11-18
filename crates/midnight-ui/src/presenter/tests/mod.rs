@@ -51,6 +51,13 @@ mod user_commands;
 mod volumes;
 mod watch;
 
+/// The first successful settings read also requests the comparator image metadata
+/// (`Command::ListComparatorCapabilities`). Senders that inspect startup saves
+/// accept that request and check every save.
+fn startup_metadata(command: &Command) -> bool {
+    matches!(command, Command::ListComparatorCapabilities { .. })
+}
+
 #[cfg(unix)]
 mod unix;
 #[cfg(windows)]
