@@ -11,6 +11,12 @@ use std::{
 
 static NEXT_TREE: AtomicU64 = AtomicU64::new(1);
 
+/// Released root-mount references that trigger reclamation: at least this many,
+/// and at least as many as occurrences still hold, so each pass is amortized.
+const RECLAIM_MIN: usize = 4_096;
+/// Branch completions after which any released references are reclaimed.
+const RECLAIM_COMPLETIONS: u32 = 1_024;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct BranchId {
     tree: u64,
@@ -103,6 +109,10 @@ pub struct DirectoryTree {
     limits: TreeLimits,
     active: Arc<AtomicUsize>,
     reports: crate::size_warnings::ReportLog,
+    // Branch completions since the root mount's references were last reclaimed.
+    completions: u32,
+    #[cfg(test)]
+    eager_reclaim: bool,
 }
 
 /// Bounded rollback state for an atomic model/projection publication. It holds
@@ -175,6 +185,13 @@ pub struct BranchResult {
     listing: Result<Listing, ProviderError>,
     identity: Option<SizeDirectoryIdentity>,
     _permit: Permit,
+}
+
+impl BranchResult {
+    /// The listing or probe failed: references it bound may be orphaned.
+    pub(crate) fn failed(&self) -> bool {
+        self.listing.is_err()
+    }
 }
 
 /// What one branch request observed.
@@ -359,6 +376,88 @@ impl DirectoryTree {
     ) -> Result<super::MountedTarget, ProviderError> {
         let root = &self.nodes[&self.root];
         root.source.resolve_target(&root.node, cancel)
+    }
+
+    /// References the root mount's lease issues, and the node records its provider
+    /// retains when it reports them.
+    pub(crate) fn source_reference_counts(&self) -> Result<(usize, Option<usize>), ProviderError> {
+        let source = &self.nodes[&self.root].source;
+        Ok((source.issued_count()?, source.provider_node_count()))
+    }
+
+    /// Occurrences holding a reference of the root's own mount, the hidden root
+    /// included. Attached containers are other leases with their own tables.
+    fn source_occurrences(&self) -> impl Iterator<Item = &Node> {
+        let mount = self.nodes[&self.root].node.mount;
+        self.nodes
+            .values()
+            .filter(move |node| node.node.mount == mount)
+    }
+
+    /// The tree is its mount's only lister and owns reference liveness. Count one
+    /// branch completion after the session applied, restored or discarded it, then
+    /// release the root mount's references that no occurrence holds once their
+    /// count (the larger of the issued and the provider's records, which includes
+    /// records failed or presence-only listings bound) reaches the larger of the
+    /// live count and 4,096, or just exceeds 4,096 after a failed or unpublished
+    /// listing, or after 1,024 completions.
+    ///
+    /// `settled`: no unpublished checkpoint can restore other occurrences. A branch
+    /// listing still in flight makes the lease skip without releasing anything.
+    /// Best effort: an error or a skip leaves the tables to a later completion.
+    /// Returns the references kept when it reclaimed.
+    pub(crate) fn reclaim_after_completion(
+        &mut self,
+        settled: bool,
+        unsettled_listing: bool,
+        cancel: &Cancellation,
+    ) -> Option<usize> {
+        self.completions = self.completions.saturating_add(1);
+        if !settled {
+            return None;
+        }
+        let (issued, provider) = self.source_reference_counts().ok()?;
+        let held = issued.max(provider.unwrap_or(0));
+        let periodic = self.completions >= RECLAIM_COMPLETIONS;
+        #[cfg(test)]
+        let periodic = periodic || self.eager_reclaim;
+        // Cheap common case: below the minimum, released references cannot reach it.
+        if !periodic && held <= RECLAIM_MIN {
+            return None;
+        }
+        let live = self.source_occurrences().count();
+        let released = held.saturating_sub(live);
+        let due = released >= live.max(RECLAIM_MIN)
+            || (unsettled_listing && released > RECLAIM_MIN)
+            || (periodic && released > 0);
+        if !due {
+            if periodic {
+                self.completions = 0;
+            }
+            return None;
+        }
+        let keep = self
+            .source_occurrences()
+            .map(|node| node.node.token.clone())
+            .collect::<HashSet<_>>();
+        let kept = self.nodes[&self.root]
+            .source
+            .retain_issued(&keep, cancel)
+            .ok()
+            .flatten()?;
+        self.completions = 0;
+        Some(kept)
+    }
+
+    /// Reclaim after every settled completion with any released reference.
+    #[cfg(test)]
+    pub(crate) fn reclaim_eagerly(&mut self) {
+        self.eager_reclaim = true;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn source_occurrence_count(&self) -> usize {
+        self.source_occurrences().count()
     }
 
     /// Parent-first retained native directory scope, including collapsed cached nodes.
@@ -616,6 +715,9 @@ impl DirectoryTree {
             limits,
             active: Arc::default(),
             reports: crate::tree_diagnostics::log(&reports),
+            completions: 0,
+            #[cfg(test)]
+            eager_reclaim: false,
             nodes: HashMap::from([(
                 root,
                 Node {

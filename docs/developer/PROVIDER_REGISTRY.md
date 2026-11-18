@@ -21,7 +21,12 @@ after native plugins become mandatory.
   persisted. The same opaque node bytes in different mounts cannot be interchanged.
 - Node tokens contain at most 256 opaque bytes. They are not paths; native adapters
   retain full paths in bounded backend tables. The provider must never reuse a
-  token for another node or kind during that mount's lifetime.
+  token for another node or kind during that mount's lifetime. A token stays
+  valid for the mount's lifetime unless the mount's single lister opts in to
+  [reclamation](#lifetimes-cancellation-and-budgets): a released token fails with
+  `StaleReference`, and a node seen again later may receive a new token. A
+  provider that kept its record emits the same token again; the native adapter
+  never mints a released value again.
 - A node reference identifies a logical browse target, not a pinned inode or
   mutation capability. Content captures retain their own revision validation.
 - Stored locations retain provider, nonzero codec version and exact address bytes.
@@ -59,12 +64,10 @@ cancelling either parent or unrelated requests.
 Initial bounds are 128 registrations, 64 in-flight/open/retained mounts per
 registry, 50,000 entries/32 MiB charged payload per complete list, and 100,000
 issued nodes per mount. The native adapter separately accounts for 32 MiB of raw
-path storage and 100,000 cached tokens. Neither table evicts during a mount's
-lifetime: every node issued by a complete listing or `parent` counts until the
-mount closes. Folder-only listings and presence probes let the native adapter skip
-regular files before metadata, name encoding and token binding, so those files never
-count. These are admission/cache budgets, not an OS path limit or an exact process
-RSS promise. A failure returns an explicit error.
+path storage and 100,000 cached tokens. Folder-only listings and presence probes
+let the native adapter skip regular files before metadata, name encoding and token
+binding, so those files never count. These are admission/cache budgets, not an OS
+path limit or an exact process RSS promise. A failure returns an explicit error.
 Native stored addresses are admitted before codec allocation, using the cache
 budget and that codec's worst-case expansion; native encoding checks its raw
 charge first. The production cutover must also align caches across mounts with
@@ -82,10 +85,43 @@ emits after the stop cannot change the answer. See
 [inline provider branches](INLINE_TREES.md) for the backend tree model, ownership,
 limits and pending production projection.
 
+Without reclamation neither table evicts: every node a listing or `parent` issues,
+and every native record a listing or probe binds, counts until the mount closes.
+Reclamation is opt-in per mount and belongs to its single lister. The inline-tree
+session is the only one: it resolves its own mount, lists it only through its
+branch work and owns which references are live (see
+[inline provider branches](INLINE_TREES.md#budgets) for when it reclaims).
+`MountedLocation::retain_issued` keeps the references the lister still holds plus
+the root, drops every other issued reference, then asks the provider to forget the
+rest (`MountedFilesystem::retain_nodes`). The native adapter also forgets records
+that failed, stopped or presence-only enumerations bound but never issued, and
+reports its record count (`node_count`) so those count toward reclamation. Both
+tables return their spare capacity once they shrink below a quarter of it.
+
+A per-lease reclaim gate keeps this safe without waiting. Listings, presence
+probes and parent lookups hold it shared from their first check through the
+provider call and the issue step; reclamation takes it only if it is free and
+otherwise skips (`Ok(None)`), so it never releases a reference that a call in
+flight may bind, emit or issue. The lease forgets before the provider, so every
+reference it still issues stays known to the provider. Providers that keep the
+default `retain_nodes`, such as captured archives, keep every record, and a mount
+whose owner never reclaims keeps its history up to the caps above. Under the tree,
+both tables hold the live model, at most one reclamation threshold and one listing,
+regardless of how long the mount lives.
+
+Plugin-backed native mounts cannot honour `retain_nodes` until the public ABI gains
+a node-release operation. The SDK's native helper keeps up to one million node
+records per mount within a 256 MiB cache budget that all mounts of one plugin
+instance share, so a churning tree on such a mount would also exhaust the
+instance's other mounts. That operation is a prerequisite for removing this
+transitional native adapter.
+
 Listings reject duplicate/self-referencing tokens, contradictory known kinds,
 oversized output and cancellation. A failed registry listing issues no partial
-new references. Parent navigation is delegated to the provider. The initial
-location's `root()` is its starting directory; it may have a provider parent.
+new references. A released reference fails with `StaleReference`; listing its
+node again issues a reference anew. Parent navigation is delegated to the
+provider. The initial location's `root()` is its starting directory; it may have a
+provider parent.
 
 ## Content and adapters
 
@@ -125,10 +161,13 @@ It never interprets captions, lists again or extracts data to reconstruct a
 target. Invalid/cyclic ancestry and resource exhaustion fail explicitly; links
 and special archive members do not gain unsupported actions.
 
-`MountedTarget` validates the source registration and any enclosing tree
-contexts. Cloning an archive location or mount retains the same leases: list,
-read and validate reject revocation before and after provider calls. Resources
-are destroyed before their registrations. Cancellation and revocation propagate into
+Resolution requires issued references. `MountedTarget` then validates the
+registration lifetime and mount identity of the target and of every enclosing tree
+context, not current issuance: a resolved target, such as a queued copy source or
+a watch target, keeps its value after its lister releases the node references.
+Cloning an archive location or mount retains the same leases: list, read and
+validate reject revocation before and after provider calls. Resources are
+destroyed before their registrations. Cancellation and revocation propagate into
 running listings, which the archive host ends between pages without stopping the
 shared worker. Member reads of a shared archive mount go through `read_cooperative`.
 Cancelling a listing or member read never ends the worker that other tabs, viewers
@@ -142,9 +181,11 @@ to mutate, or proof that a row is still selected in the current panel snapshot.
 
 Tests cover provider isolation, cancellation, late output, exhausted IDs, retained
 content and destruction order, malformed responses, unknown providers/codecs,
-non-Unicode names, native source replacement detection, and archive reads. See
-`providers/*tests.rs`, `midnight-core/tests/vfs_identity.rs` and
-`midnight-core/tests/linked_cancellation.rs`.
+non-Unicode names, native source replacement detection, archive reads, and
+reclamation (released and kept references, the reclaim gate, never-reused native
+tokens, returned capacity and resolved targets after release). See
+`providers/*tests.rs`, `tree_reclaim_tests.rs`, `midnight-core/tests/vfs_identity.rs`
+and `midnight-core/tests/linked_cancellation.rs`.
 
 Before production use, migrate complete navigation → projection → selection → F3
 and native capability checks, qualify real worker adapters, publish the independent

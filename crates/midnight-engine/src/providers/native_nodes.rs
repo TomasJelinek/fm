@@ -1,6 +1,10 @@
 use super::ProviderError;
 use midnight_core::{EntryKind, NodeToken};
-use std::{collections::HashMap, path::PathBuf, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet, hash_map::Entry},
+    path::PathBuf,
+    sync::Arc,
+};
 
 const MAX_NODES: usize = 100_000;
 pub(super) const MAX_PATH_STORAGE: usize = 32 * 1024 * 1024;
@@ -20,9 +24,18 @@ pub(super) struct NativeNodes {
 }
 
 impl NativeNodes {
-    #[cfg(test)]
-    pub(super) fn node_count(&self) -> usize {
+    pub fn len(&self) -> usize {
         self.by_token.len()
+    }
+
+    #[cfg(test)]
+    pub(super) fn path_bytes(&self) -> usize {
+        self.path_bytes
+    }
+
+    #[cfg(test)]
+    pub(super) fn capacities(&self) -> (usize, usize) {
+        (self.by_token.capacity(), self.by_path.capacity())
     }
 
     pub fn get(&self, token: &NodeToken) -> Result<NativeNode, ProviderError> {
@@ -61,4 +74,37 @@ impl NativeNodes {
             .insert(token.clone(), NativeNode { path, kind });
         Ok(token)
     }
+
+    /// Forget every token outside `keep`. Kept tokens keep their path and kind,
+    /// and each kept path is again reachable by `bind` through its newest kept
+    /// token, as after that binding. `next` never moves back, so a forgotten
+    /// token value is never minted again: a forgotten path bound later receives
+    /// a new token.
+    pub fn retain(&mut self, keep: &HashSet<NodeToken>) {
+        self.by_token.retain(|token, _| keep.contains(token));
+        super::super::release_spare_capacity(&mut self.by_token);
+        let mut by_path = HashMap::with_capacity(self.by_token.len());
+        let mut path_bytes = 0_usize;
+        for (token, node) in &self.by_token {
+            path_bytes = path_bytes.saturating_add(node.path.as_os_str().as_encoded_bytes().len());
+            match by_path.entry(node.path.clone()) {
+                Entry::Vacant(slot) => {
+                    slot.insert(token.clone());
+                }
+                // A kind change bound the same path again; the newest binding wins.
+                Entry::Occupied(mut slot) => {
+                    if serial(token) > serial(slot.get()) {
+                        slot.insert(token.clone());
+                    }
+                }
+            }
+        }
+        self.by_path = by_path;
+        self.path_bytes = path_bytes;
+    }
+}
+
+/// The counter value `bind` minted into a token.
+fn serial(token: &NodeToken) -> u64 {
+    token.as_bytes().try_into().map_or(0, u64::from_le_bytes)
 }

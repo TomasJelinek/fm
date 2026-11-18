@@ -14,6 +14,8 @@ mod rename_capture_tests;
 #[path = "tree_user_command_capture_tests.rs"]
 mod user_command_capture_tests;
 
+#[path = "tree_reclaim_tests.rs"]
+mod reclaim_tests;
 #[path = "tree_recursive_tests.rs"]
 mod recursive_tests;
 #[path = "tree_refresh_tests.rs"]

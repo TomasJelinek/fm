@@ -9,7 +9,7 @@ use midnight_plugin_host::{CapturedFile, ContentSource};
 use std::{
     collections::{HashMap, HashSet},
     fmt,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, RwLock, RwLockReadGuard, TryLockError},
 };
 
 const MAX_LIST_ENTRIES: usize = 50_000;
@@ -27,6 +27,11 @@ struct MountLease {
     mount: Arc<dyn MountedFilesystem>,
     lifetime: Cancellation,
     nodes: Mutex<HashMap<NodeToken, EntryKind>>,
+    // Listings, presence probes and parent lookups hold this shared from their
+    // first check through the provider call and issue step. Reclamation takes it
+    // exclusively without waiting, so it never releases a reference that a call in
+    // flight may bind, emit or issue, and the lease and provider forget together.
+    reclaim: RwLock<()>,
     // Plugin-backed mount destructor runs before its registration/library owner.
     _registration: Arc<Registration>,
     _permit: MountPermit,
@@ -69,6 +74,7 @@ impl MountedLocation {
                 mount: opened.mount,
                 lifetime,
                 nodes: Mutex::new(nodes),
+                reclaim: RwLock::new(()),
                 _registration: registration,
                 _permit: permit,
             }),
@@ -112,6 +118,7 @@ impl MountedLocation {
         node: &NodeRef,
         cancel: &Cancellation,
     ) -> Result<Option<NodeRef>, ProviderError> {
+        let _listing = self.lease.listing()?;
         self.lease.check_node(node)?;
         let request = self.lease.lifetime.linked(cancel);
         check_cancel(&request)?;
@@ -148,6 +155,7 @@ impl MountedLocation {
         node: &NodeRef,
         cancel: &Cancellation,
     ) -> Result<bool, ProviderError> {
+        let _listing = self.lease.listing()?;
         if !matches!(
             self.lease.check_node(node)?,
             EntryKind::Directory | EntryKind::DirectoryLink
@@ -196,6 +204,69 @@ impl MountedLocation {
         self.lease.check_node(node).map(|_| ())
     }
 
+    /// References this lease currently issues, its root included.
+    pub(crate) fn issued_count(&self) -> Result<usize, ProviderError> {
+        Ok(self.lease.nodes.lock().map_err(|_| poisoned())?.len())
+    }
+
+    /// Node records the provider retains for this mount, when it reports them.
+    /// Can exceed the issued count: failed, stopped and presence-only listings
+    /// may bind records that are never issued.
+    pub(crate) fn provider_node_count(&self) -> Option<usize> {
+        self.lease.mount.node_count()
+    }
+
+    /// Opt-in reclamation by the mount's single lister: keep the references in
+    /// `keep` and the root, release every other issued reference and let the
+    /// provider forget the tokens it no longer needs (`retain_nodes`). Released
+    /// references fail with `StaleReference`. `keep` must contain every reference
+    /// the lister, its checkpoints and its pending work still hold; a resolved
+    /// `MountedTarget` keeps working, as it checks registration only.
+    ///
+    /// Never waits: returns `Ok(None)` without releasing anything while a listing,
+    /// presence probe or parent lookup of this mount is in flight. Otherwise
+    /// returns the number of references still issued. The provider call runs
+    /// outside the issued-table lock.
+    pub(crate) fn retain_issued(
+        &self,
+        keep: &HashSet<NodeToken>,
+        cancel: &Cancellation,
+    ) -> Result<Option<usize>, ProviderError> {
+        check_cancel(cancel)?;
+        check_cancel(&self.lease.lifetime)?;
+        let _exclusive = match self.lease.reclaim.try_write() {
+            Ok(guard) => guard,
+            Err(TryLockError::WouldBlock) => return Ok(None),
+            Err(TryLockError::Poisoned(_)) => return Err(poisoned()),
+        };
+        let with_root;
+        let keep = if keep.contains(&self.root.token) {
+            keep
+        } else {
+            with_root = keep
+                .iter()
+                .cloned()
+                .chain([self.root.token.clone()])
+                .collect::<HashSet<_>>();
+            &with_root
+        };
+        let issued = {
+            let mut nodes = self.lease.nodes.lock().map_err(|_| poisoned())?;
+            nodes.retain(|token, _| keep.contains(token));
+            super::release_spare_capacity(&mut nodes);
+            nodes.len()
+        };
+        // The lease forgot first: every reference it still issues remains known
+        // to the provider even if the provider fails to forget its own records.
+        self.lease.mount.retain_nodes(keep)?;
+        Ok(Some(issued))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn issued_capacity(&self) -> usize {
+        self.lease.nodes.lock().unwrap().capacity()
+    }
+
     fn list_selected(
         &self,
         node: &NodeRef,
@@ -203,6 +274,7 @@ impl MountedLocation {
         folders_only: bool,
         limit: usize,
     ) -> Result<Vec<MountedEntry>, ProviderError> {
+        let _listing = self.lease.listing()?;
         if !matches!(
             self.lease.check_node(node)?,
             EntryKind::Directory | EntryKind::DirectoryLink
@@ -431,6 +503,19 @@ impl MountLease {
             Ok(())
         })
     }
+    /// Shared reclaim gate for one call that may bind, emit or issue references.
+    fn listing(&self) -> Result<RwLockReadGuard<'_, ()>, ProviderError> {
+        self.reclaim.read().map_err(|_| poisoned())
+    }
+
+    /// Registration lifetime and mount identity only, not current issuance.
+    fn check_registration(&self, node: &NodeRef) -> Result<(), ProviderError> {
+        if self.lifetime.is_cancelled() || node.mount != self.reference {
+            return Err(ProviderError::StaleReference);
+        }
+        Ok(())
+    }
+
     fn validate_kind(&self, token: &NodeToken, kind: EntryKind) -> Result<(), ProviderError> {
         let nodes = self.nodes.lock().map_err(|_| poisoned())?;
         if nodes.get(token).is_some_and(|known| *known != kind) {
@@ -440,9 +525,7 @@ impl MountLease {
     }
 
     fn check_node(&self, node: &NodeRef) -> Result<EntryKind, ProviderError> {
-        if self.lifetime.is_cancelled() || node.mount != self.reference {
-            return Err(ProviderError::StaleReference);
-        }
+        self.check_registration(node)?;
         self.nodes
             .lock()
             .map_err(|_| poisoned())?

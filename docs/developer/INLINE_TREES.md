@@ -19,6 +19,9 @@ See the [panel contract and dated evidence](TREE_PANEL.md).
 root and each visible occurrence have a nonreused `BranchId`, independent of row
 position, caption and provider token. Nodes retain exact mount-scoped `NodeRef`
 identities. Identical node tokens in different mounts cannot be substituted.
+Each session resolves its own mount and lists it only through its branch work, so
+it is that mount's only lister and the authority on which provider references are
+live (see [budgets](#budgets)).
 
 `request` creates an owned `BranchWork` without performing provider I/O. The
 engine must run `BranchWork::run` under its shared blocking-worker admission.
@@ -67,10 +70,13 @@ successful children, with an explicit error. The hidden root has a state accesso
 too; failed root loading is not an empty folder.
 
 Refresh reconciles children by mount-scoped node identity, preserves surviving
-occurrence IDs, removes obsolete descendants and rejects ancestor cycles. It
-does not sort the entire flattened tree. The production projection sorts each
-sibling group independently. Persistent panel filters and optional prefix
-filtering use the same unselectable ancestor-context model.
+occurrence IDs, removes obsolete descendants and rejects ancestor cycles. The
+references of removed rows are released at a later reclamation; surviving rows
+keep their tokens, occurrence IDs, expansion and marks, so an unchanged
+re-listing stays unchanged. It does not sort the entire flattened tree. The
+production projection sorts each sibling group independently. Persistent panel
+filters and optional prefix filtering use the same unselectable ancestor-context
+model.
 
 Prefix search examines only loaded visible model rows and performs no enumeration
 or archive extraction. It shares the flat panel's Unicode folding and original
@@ -121,7 +127,31 @@ Default per-tree bounds are 10,000 retained occurrences including the hidden roo
 attached container targets. Callers can lower these bounds. Overflow rejects the
 attempt atomically; it does not silently truncate children or label them empty.
 These are admission budgets, not an exact process RSS guarantee. Old presentation
-snapshots and provider caches have separate lifecycle/shared-budget requirements.
+snapshots have separate lifecycle requirements; provider reference tables are
+reclaimed down to the model as described next.
+
+After applying, restoring or discarding each branch completion, the session
+releases the root mount's references that no occurrence holds
+(`DirectoryTree::reclaim_after_completion`). It counts released references from
+the larger of the lease's issued references and the provider's records, so native
+records that failed or presence-only listings bound but never issued count too.
+It reclaims once they reach the larger of the live occurrence count and 4,096,
+once they exceed 4,096 after a failed or unpublished listing, or after 1,024
+completions. A pane runs one branch job at a time, so no listing of the mount is
+in flight then, and the lease's reclaim gate skips the pass if one ever is. Local
+listing checkpoints are committed or restored by then. An unpublished recursive
+batch defers reclamation until it is published or rolled back, because a rollback
+restores occurrences from its checkpoint. Captured operation and watch targets
+check registration only, so a queued copy of a row that disappeared keeps its
+target. Under churn, such as temporary files appearing and disappearing in a
+watched folder, the provider tables therefore hold the live references plus at
+most one threshold and one listing, regardless of uptime.
+
+Without reclamation a long-lived churning mount would reach the 100,000-reference
+caps. A listing that then meets a new name fails as resource-limited. The root is
+refreshed first and a failed branch drops its subtree from the sweep, so with a
+churning root every later sweep would stop at the root, leaving the whole tree
+stale behind an explicit refresh error until navigation.
 
 Recursive expansion batches at most 128 returned results or 50 ms per
 publication. The historical cap16 candidate failed its
@@ -140,7 +170,8 @@ normally triggers earlier. The existing general listing limit remains 50,000
 entries/32 MiB payload; folder requests may lower their retained-row limit.
 Failed/cancelled attempts issue no partial references. Presence probes use the
 same ledger for the entries they inspect, retain no row and issue no reference.
-Provider-side node/cache limits still apply independently.
+Provider-side node limits still apply; their tables are reclaimed together with
+the issued references (above).
 
 Owned String capacities count toward payload admission, including localized date
 and time. Diagnostics use a fresh bounded UTF-8 allocation, at most 4096 bytes

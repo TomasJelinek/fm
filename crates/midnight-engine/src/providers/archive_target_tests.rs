@@ -1,6 +1,7 @@
 //! Exact archive action context is derived from captured raw ancestry, never captions.
 use super::*;
 use crate::providers::{ArchiveTarget, ProviderTarget};
+use std::collections::HashSet;
 
 fn target(mount: &dyn MountedFilesystem, node: &NodeToken) -> ArchiveTarget {
     match mount
@@ -584,5 +585,78 @@ fn revoked_target_registration_does_not_terminate_a_shared_archive_read() {
         b"hello"
     );
     drop((resolved, location, registry));
+    std::thread::spawn(move || drop(escaped)).join().unwrap();
+}
+
+type Leased = (
+    crate::providers::ProviderRegistry,
+    midnight_core::StoredLocation,
+    midnight_core::ProviderInstanceId,
+    crate::providers::MountedLocation,
+);
+
+/// Registers `location` behind a provider that captures it once, as a tree whose
+/// root is an archive does, and resolves that registry mount.
+fn leased(location: ArchiveLocation, name: &str) -> Leased {
+    use crate::providers::{FilesystemProvider, ProviderRegistry};
+    use midnight_core::{ProviderId, StoredLocation};
+
+    struct Owner(Mutex<Option<ArchiveLocation>>);
+    impl FilesystemProvider for Owner {
+        fn resolve(
+            &self,
+            _: &StoredLocation,
+            cancel: &Cancellation,
+        ) -> Result<OpenedLocation, ProviderError> {
+            let location = self.0.lock().unwrap().take();
+            captured_archive(&location.ok_or(ProviderError::Unavailable)?, cancel)
+        }
+    }
+    let registry = ProviderRegistry::default();
+    let address = StoredLocation::new(
+        ProviderId::new(name).unwrap(),
+        std::num::NonZeroU32::MIN,
+        Arc::from([]),
+    );
+    let instance = registry
+        .register(
+            address.provider().clone(),
+            Arc::new(Owner(Mutex::new(Some(location)))),
+        )
+        .unwrap();
+    let mounted = registry
+        .resolve(&address, &Cancellation::default())
+        .unwrap();
+    (registry, address, instance, mounted)
+}
+
+fn escaped_mount(target: &crate::providers::MountedTarget) -> Arc<dyn ArchiveMount> {
+    match target.value().unwrap() {
+        ProviderTarget::Archive(target) => target.location.mount.as_ref().unwrap().clone(),
+        ProviderTarget::Native(_) => panic!("archive target became native"),
+    }
+}
+
+#[test]
+fn leased_archive_reads_survive_reference_release() {
+    let (location, state) = fixture(42, 1);
+    let (registry, address, instance, mounted) = leased(location, "archive.target.reclaim");
+    let cancel = Cancellation::default();
+    let rows = mounted.list(mounted.root(), &cancel).unwrap();
+    let resolved = mounted.resolve_target(&rows[0].node, &cancel).unwrap();
+    let escaped = escaped_mount(&resolved);
+    // The lister released every reference but the root, for example after the
+    // member's row disappeared while a copy of it was still queued.
+    assert_eq!(mounted.retain_issued(&HashSet::new(), &cancel), Ok(Some(1)));
+    resolved.value().unwrap();
+    escaped.validate().unwrap();
+    assert_eq!(escaped.list(1, &cancel).unwrap().len(), 3);
+    assert_eq!(escaped.read(2, 0, 5, &cancel).unwrap(), b"hello");
+    assert!(registry.unregister(address.provider(), instance).unwrap());
+    let reads = state.reads.load(Ordering::Acquire);
+    assert!(escaped.validate().is_err());
+    assert!(escaped.read(2, 0, 5, &cancel).is_err());
+    assert_eq!(state.reads.load(Ordering::Acquire), reads);
+    drop((resolved, mounted, registry));
     std::thread::spawn(move || drop(escaped)).join().unwrap();
 }
