@@ -628,15 +628,12 @@ mod tests {
         api.submit = Some(submit);
         let shared = crate::session::tests::shared();
         for (id, cancelled, submitted) in [(2, true, true), (3, true, false), (4, false, true)] {
-            lock(&shared.state).requests.insert(
-                id,
-                session::RequestState {
-                    cancelled,
-                    submitted,
-                    cancel_delivered: false,
-                    ..session::RequestState::new(abi::REQUEST_VIEWPORT)
-                },
-            );
+            // The background permit field stays private to the session.
+            let mut request = session::RequestState::new(abi::REQUEST_VIEWPORT);
+            request.cancelled = cancelled;
+            request.submitted = submitted;
+            request.cancel_delivered = false;
+            lock(&shared.state).requests.insert(id, request);
         }
         for _ in 0..3 {
             deliver_cancels(&api, 9, &shared);
