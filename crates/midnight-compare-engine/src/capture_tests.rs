@@ -745,7 +745,8 @@ fn a_missing_preferred_family_falls_back_to_consolas_then_monospace_before_the_c
     let runtime = tokio::runtime::Runtime::new().unwrap();
     let (_owner, spawner) = crate::resident_test_support::workers();
     for (installed, painted) in [(Some("Consolas"), "Consolas"), (None, "monospace")] {
-        let (service, release) = held_scan(text_service(&runtime, spawner), &Arc::default());
+        let (service, release) =
+            held_scan(text_service(&runtime, spawner.clone()), &Arc::default());
         let service = service.with_font_check(move |candidates, _| {
             installed
                 .filter(|family| candidates.contains(family))
