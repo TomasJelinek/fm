@@ -398,7 +398,6 @@ fn a_failed_context_lease_gives_up_the_remaining_lease_and_keeps_its_registratio
             })
         }
         fn release_on_worker(self: Arc<Self>) -> Result<(), ProviderError> {
-            drop(Arc::into_inner(self));
             Ok(())
         }
     }
