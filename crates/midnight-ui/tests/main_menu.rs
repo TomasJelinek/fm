@@ -246,7 +246,7 @@ fn menu_hints_use_remapped_shortcuts_and_update_while_the_menu_stays_open() {
     let (mut test, shortcuts) = shortcut_menu(&[("files.rename", &["Ctrl+Alt+R"])]);
     assert_eq!(menu_shortcut(&test, "Rename…"), ["Ctrl+Alt+R"]);
     // The keyboard editor's Remove and Restore act while the menu stays open.
-    shortcut_editor::unassign(&test.window, "files.rename");
+    shortcuts.unassign(&test.window, "files.rename");
     test.draw();
     assert!(ui::has_popup(&test.window));
     assert!(
@@ -255,7 +255,7 @@ fn menu_hints_use_remapped_shortcuts_and_update_while_the_menu_stays_open() {
     );
     render::snapshot(&test, "main-menu-unassigned");
 
-    shortcut_editor::restore(&test.window, "files.rename");
+    shortcuts.restore(&test.window, "files.rename");
     test.draw();
     assert!(ui::has_popup(&test.window));
     assert_eq!(menu_shortcut(&test, "Rename…"), ["F2"]);
@@ -276,14 +276,14 @@ fn menu_suppresses_a_new_default_key_reassigned_to_another_action_and_restores_i
     // A newly introduced default yields to an explicit user assignment saved before
     // that default existed. Existing defaults such as Edit/F4 still require their
     // conflicting binding to be removed.
-    let (mut test, _) = shortcut_menu(&[("files.rename", &["Ctrl+D"])]);
+    let (mut test, shortcuts) = shortcut_menu(&[("files.rename", &["Ctrl+D"])]);
     assert_eq!(menu_shortcut(&test, "Rename…"), ["Ctrl+D"]);
     assert!(
         menu_shortcut(&test, "Deselect files and folders").is_empty(),
         "the suppressed default must not advertise a chord now assigned to Rename"
     );
     // The keyboard editor's Reset all restores both defaults in the open menu.
-    shortcut_editor::reset_all(&test.window);
+    shortcuts.reset_all(&test.window);
     test.draw();
     assert!(ui::has_popup(&test.window));
     assert_eq!(menu_shortcut(&test, "Rename…"), ["F2"]);
@@ -343,7 +343,7 @@ fn menu_shows_the_primary_alias_and_its_hover_hint_lists_every_alias() {
 
 #[test]
 fn view_shortcuts_change_only_the_active_pane_and_leave_command_editing_alone() {
-    let (mut test, _) = shortcut_menu(&[]);
+    let (mut test, shortcuts) = shortcut_menu(&[]);
     ui::key(&test.window, Key::Escape);
     for pane in 0..2 {
         test.window.invoke_activate(pane);
@@ -373,14 +373,14 @@ fn view_shortcuts_change_only_the_active_pane_and_leave_command_editing_alone() 
         // The test backend supplies a text-bearing Alt key event. Native editors
         // may accept that text (including Alt/Option layout input), so compare
         // against the same widget with this application binding disabled.
-        shortcut_editor::unassign(&test.window, action);
+        shortcuts.unassign(&test.window, action);
         test.draw();
         test.window.invoke_set_command("kept view draft".into(), 15);
         ui::chord(&test.window, &[Key::Alt], key);
         test.draw();
         let native_text = test.window.get_command_text();
         assert_eq!(test.window.get_focused_pane(), -1);
-        shortcut_editor::restore(&test.window, action);
+        shortcuts.restore(&test.window, action);
         test.draw();
 
         // A different mode makes accidental panel dispatch observable.
@@ -417,7 +417,7 @@ fn view_menu_hints_and_key_dispatch_follow_live_remapping() {
         assert_eq!(menu_shortcut(&test, label), [key]);
     }
     // Removing the alias updates the open menu at once.
-    shortcut_editor::unassign(&test.window, "view.brief");
+    shortcuts.unassign(&test.window, "view.brief");
     test.draw();
     assert!(ui::has_popup(&test.window));
     assert!(menu_shortcut(&test, "Brief view").is_empty());
@@ -546,7 +546,7 @@ fn panel_view_and_sort_dropdowns_show_live_shortcuts_without_changing_labels() {
         AccessibleRole::Combobox,
     );
     // Removing the alias updates the open dropdown at once.
-    shortcut_editor::unassign(&test.window, "view.brief");
+    shortcuts.unassign(&test.window, "view.brief");
     test.draw();
     assert!(ui::has_popup(&test.window));
     let text = ui::visible_text_values(ui::popup_item(

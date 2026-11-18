@@ -489,7 +489,7 @@ fn live_remapping_moves_the_physical_slot_and_respects_filename_search_scope() {
     ui::click_root(&test.window, "Shift+F5 Rename", AccessibleRole::Button);
     assert_eq!(&*captured.borrow(), &[(0, 0), (0, 0)]);
     modifiers(&test, 4, false);
-    shortcut_editor::unassign(&test.window, "files.attributes");
+    shortcuts.unassign(&test.window, "files.attributes");
     shortcuts.assign(&test.window, "files.copy", &["Ctrl+F2"]);
     test.window.set_left_can_target_selection(true);
     modifiers(&test, 1, true);
