@@ -1301,7 +1301,8 @@ impl Worker {
             height,
             pixels,
             tiles: None,
-            accessible_text: page.text.clone().into(),
+            // A reference-count increment: every frame of a page shares its text.
+            accessible_text: page.text.clone(),
             position,
             vertical_extent,
             horizontal_position: f64::from(

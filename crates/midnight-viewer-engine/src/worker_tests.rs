@@ -422,7 +422,7 @@ fn text_page(text: String) -> Page {
             .collect(),
         start: 8000,
         end: 8000 + text.len() as u64,
-        text,
+        text: text.into(),
         spans: vec![],
         styles: vec![],
         tables: vec![],
@@ -430,6 +430,29 @@ fn text_page(text: String) -> Page {
         style_size: 14.0,
         before: true,
         after: true,
+    }
+}
+
+#[test]
+fn consecutive_frames_of_one_page_share_its_accessible_text() {
+    let (mut worker, output) = worker();
+    assert!(worker.set_page(text_page("shared page text\n".repeat(40)), &output));
+    let mut frames = Vec::new();
+    for scroll in [0.0, 17.0] {
+        worker.origin[1] = scroll;
+        worker.paint(&output).unwrap();
+        frames.extend(output.take().into_iter().filter_map(|event| match event {
+            ViewerOutput::Frame(frame) => Some(frame),
+            _ => None,
+        }));
+    }
+    assert_eq!(frames.len(), 2);
+    let page = &worker.page.as_ref().unwrap().text;
+    for frame in &frames {
+        assert!(
+            Arc::ptr_eq(&frame.accessible_text, page),
+            "a frame copied the page text instead of sharing it"
+        );
     }
 }
 
@@ -643,7 +666,7 @@ fn locate_reply_updates_numbers_without_acknowledging_or_replacing_a_viewport() 
     worker.event(12, EventKind::TextPosition(position), &output);
     worker.event(12, EventKind::Completed, &output);
     assert_eq!(worker.positions.acknowledged, [0; 2]);
-    assert_eq!(worker.page.as_ref().unwrap().text, "visible");
+    assert_eq!(&*worker.page.as_ref().unwrap().text, "visible");
     assert_eq!(worker.text.coordinate.unwrap().line, 501);
     assert!(!worker.text.unavailable);
     worker.text.locate_request = Some((13, 8000));
@@ -972,7 +995,7 @@ fn wrapping_and_resize_preserve_page_anchor_selection_and_visible_text() {
     );
     assert_eq!(worker.selection, Some((selected, selected + "café".len())));
     assert_eq!(worker.anchor, 8000);
-    assert_eq!(worker.page.as_ref().unwrap().text, text);
+    assert_eq!(&*worker.page.as_ref().unwrap().text, text);
     worker.input(
         ViewerInput::Resize(ViewerGeometry {
             width: 140,

@@ -323,7 +323,7 @@ mod tests {
                     source_offset: (start + at) as u64,
                 })
                 .collect(),
-            text,
+            text: text.into(),
             spans: vec![],
             styles: vec![],
             tables: vec![],
@@ -350,15 +350,16 @@ mod tests {
         page.end = 100 + selected.end as u64 * 100;
         page.before = true;
         page.anchors.clear();
+        let mut text = String::new();
         for index in selected {
-            if !page.text.is_empty() {
-                page.text.push_str("\n\n");
+            if !text.is_empty() {
+                text.push_str("\n\n");
             }
             let (content, kind) = contents[index];
-            let start = page.text.len();
-            page.text.push_str(content);
+            let start = text.len();
+            text.push_str(content);
             page.document_blocks.push(DocumentBlock {
-                range: start..page.text.len(),
+                range: start..text.len(),
                 kind,
                 depth: 0,
             });
@@ -374,6 +375,7 @@ mod tests {
                     }),
             );
         }
+        page.text = text.into();
         page
     }
 
@@ -496,7 +498,9 @@ mod tests {
             let mut page = document_fragment(1..4);
             let next = &mut page.document_blocks[2];
             let start = next.range.start;
-            page.text.insert_str(start, prefix);
+            let mut text = page.text.to_string();
+            text.insert_str(start, prefix);
+            page.text = text.into();
             next.range.end += prefix.len();
             next.kind = kind;
             for anchor in &mut page.anchors {
