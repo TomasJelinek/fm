@@ -148,6 +148,41 @@ mod tests {
         presenter.edit_file(PaneId::Left, &|_| panic!("directory must not dispatch"));
     }
 
+    /// Saving waits for the saved settings: a draft saved before they load is kept,
+    /// unsent, and its literal arguments are saved once the load completes.
+    #[test]
+    fn editor_draft_waits_for_saved_preferences_and_saves_after_they_load() {
+        let mut presenter = presenter();
+        let executable = std::env::current_exe().unwrap();
+        presenter.edit_editor_draft(executable.to_string_lossy().into_owned(), false);
+        presenter.edit_editor_argument(1, 0, "--label=文档 $HOME; &");
+        presenter.save_editor_draft(&|_| panic!("the draft must wait for saved preferences"));
+        assert!(presenter.editor.dirty, "the unsaved draft stays editable");
+        assert!(presenter.editor.error.is_empty());
+        assert_eq!(
+            presenter.preferences.values.editor,
+            EditorPreferences::default()
+        );
+        presenter.preferences_loaded(Ok(UserPreferences::default()));
+        assert!(presenter.editor.dirty, "loading keeps the draft");
+        let commands = RefCell::new(Vec::new());
+        presenter.save_editor_draft(&|command| {
+            commands.borrow_mut().push(command);
+            true
+        });
+        assert!(!presenter.editor.dirty);
+        let editor = &presenter.preferences.values.editor;
+        assert_eq!(editor.executable, Some(executable));
+        assert_eq!(editor.arguments, ["{file}", "--label=文档 $HOME; &"]);
+        assert!(
+            matches!(
+                commands.borrow().as_slice(),
+                [Command::SavePreferences { preferences, .. }] if preferences.editor == *editor
+            ),
+            "the loaded draft is saved once"
+        );
+    }
+
     #[test]
     fn invalid_editor_draft_preserves_saved_configuration_and_reports_error() {
         let mut presenter = presenter();

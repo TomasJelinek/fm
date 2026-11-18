@@ -601,7 +601,14 @@ fn reset_discards_editor_and_late_color_validation_but_keeps_command_draft() {
             _ => None,
         })
         .unwrap();
+    let editor_revision = p.editor.revision;
+    let values = p.preferences.values.clone();
     p.reset_options(&send);
+    assert_eq!(p.preferences.values, values, "the defaults were in effect");
+    assert_ne!(
+        p.editor.revision, editor_revision,
+        "Reset refreshes the Editors view although the saved editor is unchanged"
+    );
     p.apply(Event::FilenameColorsValidated {
         request,
         result: Ok(()),
