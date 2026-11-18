@@ -31,9 +31,11 @@ has not been exercised by the native verification described below.
 
 ## Native regression harness
 
-`_build/qa/panel-shell/clipboard-xvfb-smoke.sh` starts a separate Xvfb server and
-runs the ignored `file_clipboard::x11::tests` tests with
-`MIDNIGHT_CLIPBOARD_TEST_ISOLATED=1`. The tests run serially because they share that
+CI's Linux `check` job, with the command in [Targeted test
+execution](../developer/TEST_EXECUTION.md#isolated-x11-tests), starts a separate
+Xvfb server and runs the ignored `file_clipboard::x11::tests` tests and the
+clipboard session test with `MIDNIGHT_CLIPBOARD_TEST_ISOLATED=1` and
+`WAYLAND_DISPLAY` unset. The tests run serially because they share that
 server's clipboard. They never connect to or replace the user's desktop clipboard.
 
 The native cases transfer a 1000-item raw-byte list using INCR, reacquire ownership

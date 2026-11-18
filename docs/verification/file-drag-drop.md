@@ -14,7 +14,7 @@ Install the README build prerequisites plus `xvfb` and `xauth`. Run from the rep
 root on Linux with the pinned toolchain:
 
 ```sh
-xvfb-run -a -s "-screen 0 1280x1024x24 -nolisten tcp" \
+xvfb-run -a -s "-screen 0 1280x1024x24 -nolisten tcp -noreset" \
     env MIDNIGHT_DND_TEST_ISOLATED=1 \
     cargo test -p midnight-platform-linux --lib --locked \
     file_drag_drop:: -- --ignored --test-threads=1

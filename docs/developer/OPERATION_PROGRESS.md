@@ -64,6 +64,11 @@ Other submission routes default to Immediate.
 
 `WaitForEarlier` atomically captures earlier unfinished Copy/Move admissions,
 excluding self and future jobs. Paused/decision-waiting predecessors are unfinished.
+Escape and X on a decision window defer it like Decide later, so a deferred decision
+keeps its job unfinished until Jobs → Resolve answers it: a Copy/Move decision holds
+later destructive mutations behind the predecessor fence, and a Rename or metadata
+decision holds the single mutation lane while its worker checks for the answer every
+25 ms.
 Failure or cancellation releases this scheduling wait only after actual native
 cleanup/retirement. The separate destructive-operation fence still requires
 verified success. Later ready jobs may bypass waiters and unfilled handoffs.

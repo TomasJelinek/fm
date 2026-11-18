@@ -815,8 +815,12 @@ editor scope and shortcuts reserved for later stages.
   octal and symbolic text. Mixed bits remain unchanged until edited; three octal
   digits preserve special bits, while four explicitly replace them. Unicode case
   conversion supports whole names, basenames and extensions. Recursive edits process
-  children first without following links or crossing mount points. Name conflicts
-  offer Skip, Skip all or Cancel; existing entries are never overwritten.
+  children first without following links or crossing mount points. Each folder's
+  names are captured before its entries change; a folder whose names do not fit in
+  what one edit holds (100,000 names and 4 MiB of names not processed yet, shared
+  with the folders above it) is reported and left unchanged with its contents. Name
+  conflicts offer Skip, Skip all or Cancel; a name that stays is never a conflict,
+  and existing entries are never overwritten.
 - Click the blank area after the top breadcrumb to enter a custom path; Enter
   navigates and Escape cancels. Breadcrumb navigation/copy gestures remain available.
 - Panel view picker: independent Brief, Detailed and large-icon Thumbnails modes.

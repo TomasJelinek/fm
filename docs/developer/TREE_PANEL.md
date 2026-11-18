@@ -427,6 +427,15 @@ cannot substitute another source. It is not an immutable filesystem snapshot:
 native identity is pinned by ordinary copy preparation and retained across Retry;
 archive member/version checks remain authoritative.
 
+If the backend refuses the capture because a newer publication of the same session
+(a watch refresh, for example) replaced its view in flight, the panel sends the same
+capture again on that publication: the same selection revision and, with no marks,
+the occurrence F5 named, not the one the caret reached meanwhile. The panel reports
+that the tree changed only when the selection changed or, with no marks, that
+occurrence is gone. F6 shares this protocol. Until `TreeEvent::Transfer` says
+whether a refusal is retryable, a refusal that reaches the panel before that
+publication is still reported as Copy (or Move) unavailable.
+
 Four live captured batches share an engine-wide permit pool. Opening the draft
 does not reserve a job; confirmation uses the existing 32-job FIFO copy admission.
 Preparation validates duplicate roots, source ancestry and native destination

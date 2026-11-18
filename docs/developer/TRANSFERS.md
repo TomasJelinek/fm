@@ -157,11 +157,12 @@ restoration failures remain in history. A source-name restoration conflict retai
 both objects and reports the residual path. Unsafe cleanup/commit failures stop
 the job instead of offering an optimistic Retry.
 
-The error dialog has Retry/Skip/Skip All/Cancel only when supported. Decide later
-preserves the attention state; Jobs → Resolve opens the exact pending decision.
-Escape and the window's close button (X) on a native decision window cancel that
-exact job, as Cancel job does; whether they should mean Decide later instead is an
-open design decision. Successful Copy/Move closes only automatically opened
+The error dialog has Retry/Skip/Skip All/Cancel only when supported. Decide later,
+Escape, the window's close button (X) and the dialog's header close button close
+only the decision window and preserve the attention state; Jobs → Resolve opens the
+exact pending decision. Only Cancel job cancels the job from that window. A deferred
+Copy/Move decision keeps later destructive mutations waiting behind the predecessor
+fence until it is answered. Successful Copy/Move closes only automatically opened
 progress, after all associated work succeeds. Manually opened Jobs remains open. Completed
 records remain for the current session, including when progress closes. The Jobs
 ledger is separate from the operation window. Copy, Move, Delete and Recycle use the same

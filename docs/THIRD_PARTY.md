@@ -495,9 +495,13 @@ workspaces. Name the outputs
 
 Example PowerShell capture for one scope/target; repeat using the table. Omit
 `--config $sdkConfig` for application, API, native and network filesystem workspaces.
-These filesystem packages use only the checked-in public API/SDK. Viewer plugins use the
-released viewer bundle; archive and thumbnail plugins use the separate public
-worker bundle described in [the worker SDK](developer/WORKER_SDK.md). Supply the
+These filesystem packages use only the checked-in public API/SDK. Viewer plugins use
+the released viewer bundle, except `source` and `markdown`, which use the
+configuration that their `scripts/prepare-sdk.ps1`/`prepare-sdk.py` derives from it
+(as their CI does); archive, image, PDF and thumbnail plugins use the separate
+public worker bundle described in [the worker SDK](developer/WORKER_SDK.md), and the
+HTML viewer uses the web SDK configuration that `web-viewer-api/scripts/package.py`
+prints. Supply the
 matching bundle's absolute config path; plugin lockfiles pin its package checksums.
 
 ```powershell
