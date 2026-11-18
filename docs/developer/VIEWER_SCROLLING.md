@@ -82,9 +82,11 @@ The frontend moves covered pixels without waiting for a new backend raster and
 keeps the gutter horizontally fixed. Each guard targets 256 logical pixels per
 side, converted using the effective raster scale, including the initial parent
 DPI. The combined body and gutter still fit the 24 MiB snapshot cap, so guards
-shrink when necessary. Guard refills retain the existing request ceilings: 12 KiB
-for text and source, 64 KiB for Markdown and 4 KiB for binary, at most 512 lines;
-a higher DPI does not enlarge those source budgets. An uncovered
+shrink when necessary. The engine and the UI's frame check take that cap from one
+`midnight-core` constant (`VIEWER_RETAINED_RASTER_PIXELS`). Guard refills retain
+the existing request ceilings: 12 KiB for text and source, 64 KiB for Markdown
+and 4 KiB for binary, at most 512 lines; a higher DPI does not enlarge those
+source budgets. An uncovered
 frontier pauses displayed motion until usable pixels arrive; it is not an inferred
 end of file. Settling can request exact fractional glyph phase.
 The [retained-raster contract](../superpowers/plans/2026-11-11-retained-viewer-raster.md)
@@ -95,10 +97,11 @@ can reach the raster. That reach is a conservative bound, not a font guarantee:
 4 em vertically and 8 em horizontally around each glyph origin (stacked marks
 carry their own origins), plus the exact extent of every underline and
 strikethrough. It covers the glyphs of real text fonts; a malformed or unusual
-font whose ink extends further can lose that ink at raster edges. The renderer
-can paint directly into a caller-owned buffer of the exact raster size
-(`rasterize_into`, `paint_over_into`), so a frame can be shared without a second
-full-surface copy.
+font whose ink extends further can lose that ink at raster edges. The engine
+allocates each body, gutter and viewport-only frame buffer once, as the shared
+`Arc<[u8]>` the frame carries, and paints it while it is still unique
+(`rasterize_into`, `paint_over_into`). Delivering a refill therefore costs no
+second allocation or full-surface copy.
 
 Raster pixel coordinates map through the frame's retained logical viewport,
 not through the current clipping canvas. Source/Markdown controls appearing with
@@ -151,7 +154,9 @@ Surface identity and sequence checks prevent a late reply from moving a new view
 Decoder work and tile caching remain on backend workers. The UI texture cache
 copies each newly arriving 256×256 tile into a Slint buffer on the event loop (at
 most 128 tiles, 32 MiB, per frame) and reuses it by tile identity, so panning
-copies only newly exposed tiles.
+copies only newly exposed tiles. The UI refuses a frame with more tiles. These
+bounds, which the backend tile cache uses too, are defined once in `midnight-core`
+(`VIEWER_TILE_CACHE_BYTES`, `VIEWER_TILE_CACHE_ENTRIES`).
 
 ## Verification
 

@@ -9,10 +9,9 @@ use std::{
 
 // At most 32 MiB in the cache/model and another 32 MiB in the previous Slint
 // model while a repaint replaces its items. Driver-deferred GPU releases are separate.
-// Must match the engine's tile cache bounds (`image_tiles.rs` CACHE_BYTES and
-// CACHE_ENTRIES): a larger working set is refused here.
-const MAX_BYTES: usize = 32 * 1024 * 1024;
-const MAX_ENTRIES: usize = 128;
+// The engine's tile cache uses the same bounds; a larger working set is refused here.
+const MAX_BYTES: usize = midnight_core::VIEWER_TILE_CACHE_BYTES;
+const MAX_ENTRIES: usize = midnight_core::VIEWER_TILE_CACHE_ENTRIES;
 const EDGE: f64 = 256.0;
 
 struct Texture {
@@ -52,7 +51,8 @@ impl Textures {
         displayed: [f64; 2],
         replace_camera: bool,
     ) -> Result<ModelRc<ViewerRasterTile>, String> {
-        if tiles.len() > 128 {
+        // Engine scenes (visible tiles plus one frontier) fit the same entry bound.
+        if tiles.len() > MAX_ENTRIES {
             return Err("Image scene exceeds its tile bound.".into());
         }
         let same_surface = self.surface == Some(info.surface);

@@ -322,9 +322,10 @@ pub(super) fn paint_gutter(
     geometry: ViewerGeometry,
     origin: [f32; 2],
     margin: f32,
-    raster: &mut midnight_viewer_render::Raster,
+    raster: &mut midnight_viewer_render::RasterMut<'_>,
 ) -> Result<(), String> {
-    let width = (margin as usize).min(raster.width as usize);
+    let width = (margin as usize).min(raster.width() as usize);
+    let stride = raster.width() as usize * 4;
     // The app theme uses opaque backgrounds; still preserve premultiplication.
     let background = appearance.background;
     let color = [
@@ -333,7 +334,7 @@ pub(super) fn paint_gutter(
         ((u16::from(background[2]) * u16::from(background[3]) + 127) / 255) as u8,
         background[3],
     ];
-    for row in raster.rgba.chunks_exact_mut(raster.width as usize * 4) {
+    for row in raster.rgba_mut().chunks_exact_mut(stride) {
         for pixel in row[..width * 4].as_chunks_mut::<4>().0 {
             pixel.copy_from_slice(&color);
         }
@@ -348,7 +349,7 @@ pub(super) fn paint_gutter(
         foreground: appearance.foreground,
         ..TextOptions::default()
     };
-    let bottom = origin[1] + raster.height as f32;
+    let bottom = origin[1] + raster.height() as f32;
     // A number is one row tall. Line starts are ordered by y, so rows that end above the
     // band are skipped with a two-row allowance and painting stops below the band.
     let reach = appearance.font_size * geometry.scale * 2.0;
@@ -372,7 +373,7 @@ pub(super) fn paint_gutter(
         }
         let x = (margin - label.width() - 8.0 * geometry.scale).max(0.0);
         renderer
-            .paint_over(label, raster, [-x, origin[1] - line.y])
+            .paint_over_into(label, raster, [-x, origin[1] - line.y])
             .map_err(|error| error.to_string())?;
     }
     Ok(())

@@ -5,7 +5,7 @@ use std::sync::{
 };
 
 pub(crate) const MAX_SNAPSHOTS: usize = 12;
-pub(crate) const MAX_SNAPSHOT_BYTES: usize = 6 * 1024 * 1024 * 4;
+pub(crate) const MAX_SNAPSHOT_BYTES: usize = midnight_core::VIEWER_RETAINED_RASTER_PIXELS * 4;
 const MAX_PER_OWNER: usize = 3;
 
 /// Shared by every worker opened through a Service, including replaced/closed windows.
