@@ -19,6 +19,8 @@ enum PendingBatch {
 pub(crate) struct CommandReclaim {
     queue: mpsc::Sender<reclaim::Retired>,
     pending: Rc<RefCell<PendingBatch>>,
+    /// Told when an owned send is refused or no scope can be claimed; never borrows.
+    refused: Rc<dyn Fn()>,
 }
 
 impl CommandReclaim {
@@ -27,7 +29,15 @@ impl CommandReclaim {
         Self {
             queue,
             pending: Rc::new(RefCell::new(PendingBatch::Empty)),
+            refused: Rc::new(|| {}),
         }
+    }
+
+    /// Report refused owned sends and unavailable scopes: the work behind them waits
+    /// for the retry pass.
+    pub(crate) fn observe_refusals(mut self, observer: Rc<dyn Fn()>) -> Self {
+        self.refused = observer;
+        self
     }
 
     /// Claim before constructing a request, taking a capture or dequeuing an event.
@@ -76,6 +86,14 @@ impl CommandReclaim {
     }
 
     fn claim<T: Transport + 'static>(&self, sender: T) -> Option<Box<dyn OwnedCommandScope>> {
+        let scope = self.try_claim(sender);
+        if scope.is_none() {
+            (self.refused)();
+        }
+        scope
+    }
+
+    fn try_claim<T: Transport + 'static>(&self, sender: T) -> Option<Box<dyn OwnedCommandScope>> {
         if !self.flush() {
             return None;
         }
@@ -118,6 +136,7 @@ impl<T: Transport> OwnedCommandScope for Scope<T> {
             Ok(()) => true,
             Err(error) => {
                 self.retire(Box::new(error.into_inner()));
+                (self.reclaim.refused)();
                 false
             }
         }

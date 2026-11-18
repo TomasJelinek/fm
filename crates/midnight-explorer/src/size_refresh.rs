@@ -1,24 +1,52 @@
 //! Batch size-only presentation updates independently of interactive events.
-use std::time::Duration;
+use std::{
+    cell::Cell,
+    rc::{Rc, Weak},
+    time::Duration,
+};
 
 pub(crate) const INTERVAL: Duration = Duration::from_millis(250);
 
-#[derive(Default)]
+/// One single-shot pulse armed by the first size-only change after a presentation.
 pub(crate) struct SizeRefresh {
-    pending: bool,
+    pending: Cell<bool>,
+    timer: slint::Timer,
+    present: Box<dyn Fn()>,
 }
 
 impl SizeRefresh {
-    pub(crate) fn changed(&mut self) {
-        self.pending = true;
+    pub(crate) fn new(present: impl Fn() + 'static) -> Rc<Self> {
+        Rc::new(Self {
+            pending: Cell::new(false),
+            timer: slint::Timer::default(),
+            present: Box::new(present),
+        })
     }
 
-    pub(crate) fn painted(&mut self) {
-        self.pending = false;
+    /// A size-only event changed cached totals: present them within one interval.
+    pub(crate) fn changed(self: &Rc<Self>) {
+        self.pending.set(true);
+        if self.timer.running() {
+            return;
+        }
+        let pulse: Weak<Self> = Rc::downgrade(self);
+        self.timer
+            .start(slint::TimerMode::SingleShot, INTERVAL, move || {
+                if let Some(pulse) = pulse.upgrade()
+                    && pulse.pending.replace(false)
+                {
+                    (pulse.present)();
+                }
+            });
     }
 
-    pub(crate) fn take_pending(&mut self) -> bool {
-        std::mem::take(&mut self.pending)
+    /// An interactive refresh already presented the latest totals.
+    pub(crate) fn painted(&self) {
+        self.pending.set(false);
+    }
+
+    pub(crate) fn stop(&self) {
+        self.timer.stop();
     }
 }
 
@@ -26,7 +54,6 @@ impl SizeRefresh {
 mod tests {
     use super::*;
     use slint::platform::{Platform, PlatformError, WindowAdapter};
-    use std::{cell::Cell, rc::Rc};
 
     struct Clock(Rc<Cell<Duration>>);
     impl Platform for Clock {
@@ -40,49 +67,59 @@ mod tests {
     }
 
     #[test]
-    fn size_flood_from_both_panes_paints_four_times_per_second() {
+    fn size_flood_from_both_panes_paints_four_times_per_second_and_idle_wakes_nothing() {
         let clock = Rc::new(Cell::new(Duration::ZERO));
         slint::platform::set_platform(Box::new(Clock(clock.clone()))).unwrap();
-        let state = Rc::new(std::cell::RefCell::new(SizeRefresh::default()));
         let frames = Rc::new(Cell::new(0));
-        let timer = slint::Timer::default();
-        let observed = state.clone();
         let painted = frames.clone();
-        timer.start(slint::TimerMode::Repeated, INTERVAL, move || {
-            if observed.borrow_mut().take_pending() {
-                painted.set(painted.get() + 1);
-            }
-        });
+        let sizes = SizeRefresh::new(move || painted.set(painted.get() + 1));
+        let advance = |to: u64| {
+            clock.set(Duration::from_millis(to));
+            slint::platform::update_timers_and_animations();
+        };
+        // Three changes within one interval share one presentation at its end.
+        sizes.changed();
+        advance(100);
+        sizes.changed();
+        sizes.changed();
+        advance(249);
+        assert_eq!(frames.get(), 0);
+        advance(250);
+        assert_eq!(frames.get(), 1);
+        assert!(!sizes.timer.running(), "nothing pending arms no pulse");
+        // Ten idle seconds fire nothing.
+        for second in 1..=10 {
+            advance(250 + second * 1000);
+            assert!(!sizes.timer.running());
+        }
+        assert_eq!(frames.get(), 1);
+        let start = 10_250;
         for millis in 1..=1000 {
             // Concurrent scans share a single presentation pulse.
-            state.borrow_mut().changed();
-            state.borrow_mut().changed();
-            clock.set(Duration::from_millis(millis));
-            slint::platform::update_timers_and_animations();
+            sizes.changed();
+            sizes.changed();
+            advance(start + millis);
         }
         assert_eq!(
             frames.get(),
-            4,
+            5,
             "size floods must not repaint on every event"
         );
-        clock.set(Duration::from_millis(1250));
-        slint::platform::update_timers_and_animations();
-        assert_eq!(frames.get(), 4, "an idle timer does not repaint");
-        state.borrow_mut().changed();
-        state.borrow_mut().painted();
-        clock.set(Duration::from_millis(1500));
-        slint::platform::update_timers_and_animations();
-        assert_eq!(
-            frames.get(),
-            4,
-            "an immediate interactive repaint consumes pending sizes"
-        );
-        state.borrow_mut().changed();
-        clock.set(Duration::from_millis(1750));
-        slint::platform::update_timers_and_animations();
+        advance(start + 1250);
+        assert_eq!(frames.get(), 5, "an idle pulse does not repaint");
+        sizes.changed();
+        sizes.painted();
+        advance(start + 1500);
         assert_eq!(
             frames.get(),
             5,
+            "an immediate interactive repaint consumes pending sizes"
+        );
+        sizes.changed();
+        advance(start + 1750);
+        assert_eq!(
+            frames.get(),
+            6,
             "a final update is delivered at the next pulse"
         );
     }

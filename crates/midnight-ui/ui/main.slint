@@ -388,6 +388,15 @@ export component MainWindow inherits Window {
     out property <int> left-thumbnail-row-end: left.thumbnail-row-end;
     out property <int> right-thumbnail-row-start: right.thumbnail-row-start;
     out property <int> right-thumbnail-row-end: right.thumbnail-row-end;
+    // Thumbnail targets and the tree viewport follow these without a presenter refresh.
+    changed left-thumbnail-row-start => { root.presentation-changed(); }
+    changed left-thumbnail-row-end => { root.presentation-changed(); }
+    changed right-thumbnail-row-start => { root.presentation-changed(); }
+    changed right-thumbnail-row-end => { root.presentation-changed(); }
+    changed left-hovered-row => { root.presentation-changed(); }
+    changed right-hovered-row => { root.presentation-changed(); }
+    changed active-pane => { root.presentation-changed(); }
+    changed panel-zoomed => { root.presentation-changed(); }
     out property <int> left-visible-row-end: left.visible-row-end;
     out property <int> right-visible-row-start: right.visible-row-start;
     out property <int> right-visible-row-end: right.visible-row-end;
@@ -557,6 +566,9 @@ export component MainWindow inherits Window {
     out property <int> command-anchor: command-input.anchor-position-byte-offset;
     out property <int> command-cursor: command-input.cursor-position-byte-offset;
     callback backend-ready();
+    // Invoked at the end of every presenter refresh and when thumbnail or tree-viewport
+    // inputs change without one; hosts wake demand-gated work. Never borrow Presenter.
+    callback presentation-changed();
     callback action(int, int);
     callback navigate(int, string);
     callback volume(int, int);
@@ -694,7 +706,10 @@ export component MainWindow inherits Window {
     private property <string> custom-command-context;
     private property <bool> custom-command-popup-open;
     changed toolbar-context => { if root.custom-command-popup-open { root.close-custom-commands(); } }
-    changed compact-window => { if root.custom-command-popup-open { root.close-custom-commands(); } }
+    changed compact-window => {
+        if root.custom-command-popup-open { root.close-custom-commands(); }
+        root.presentation-changed();
+    }
     function close-custom-commands() {
         custom-commands-popup.close(); root.custom-command-popup-open = false; root.focus-files();
     }
@@ -1017,7 +1032,10 @@ export component MainWindow inherits Window {
                 if id != "" { UserCommandSettingsView.select(id); }
                 root.options-topic-index = 9; root.show-options();
             }
-            icon-visible(id, revision, visible) => { root.user-command-icon-visible(id, revision, visible); }
+            icon-visible(id, revision, visible) => {
+                root.user-command-icon-visible(id, revision, visible);
+                root.presentation-changed();
+            }
         }
         command-bar := Rectangle {
             height: root.compact-window ? min(32px, Theme.command-height) : Theme.command-height;
@@ -1227,7 +1245,10 @@ export component MainWindow inherits Window {
                             root.options-topic-index = 9; root.show-options();
                         }
                     }
-                    icon-visible(id, revision, visible) => { root.user-command-icon-visible(id, revision, visible); }
+                    icon-visible(id, revision, visible) => {
+                        root.user-command-icon-visible(id, revision, visible);
+                        root.presentation-changed();
+                    }
                 }
             }
         }

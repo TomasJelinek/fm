@@ -7,9 +7,11 @@ mod native;
 #[path = "window_backend_windows.rs"]
 mod native;
 
-pub fn select(software: bool) -> Result<(), String> {
+/// `observer` sees winit events before Slint dispatches them; it changes no dispatch.
+pub fn select(software: bool, observer: crate::native_events::Observer) -> Result<(), String> {
     let explicit_renderer = std::env::var_os("SLINT_BACKEND").is_some();
-    let mut selector = slint::BackendSelector::new();
+    let mut selector =
+        slint::BackendSelector::new().with_winit_custom_application_handler(observer);
     if software {
         selector = selector
             .backend_name("winit".into())

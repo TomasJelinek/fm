@@ -835,6 +835,8 @@ fn refresh_properties(window: &MainWindow, presenter: &Presenter, reset_rows: bo
         }
     }
     tooltip::synchronize(window);
+    // Every refresh path ends here, including callback handlers; hosts only wake work.
+    window.invoke_presentation_changed();
 }
 
 fn update_strings(

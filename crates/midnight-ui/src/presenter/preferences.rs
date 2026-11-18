@@ -224,12 +224,29 @@ impl Presenter {
         !self.preferences.loaded && self.preferences.unsaved
     }
 
+    /// Status line while the startup deadline has revealed the window before the
+    /// settings read answered.
+    pub const SETTINGS_PENDING_STATUS: &'static str =
+        "Settings are still loading; defaults are shown.";
+
+    /// The startup deadline revealed the window with defaults: say so until the read
+    /// applies, successfully or not.
+    pub fn note_settings_pending(&mut self) {
+        if !self.preferences.loaded {
+            self.desktop.status = Self::SETTINGS_PENDING_STATUS.into();
+        }
+    }
+
     pub(super) fn preferences_loaded(&mut self, result: Result<UserPreferences, FsError>) {
         if self.preferences.loaded {
             self.retired.push(Box::new(result));
             return;
         }
         self.preferences.loaded = true;
+        // Successful and failed reads end the wait; a failure keeps its own report.
+        if self.desktop.status == Self::SETTINGS_PENDING_STATUS {
+            self.desktop.status.clear();
+        }
         match result {
             Ok(mut loaded) => {
                 for change in self.preferences.viewer_before_load.drain(..) {

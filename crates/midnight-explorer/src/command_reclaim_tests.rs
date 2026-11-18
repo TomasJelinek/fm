@@ -259,6 +259,24 @@ fn an_empty_or_reentrant_claim_neither_releases_nor_steals_the_pending_slot() {
     assert!(reclaimer.claim(full()).is_some());
 }
 
+#[test]
+fn refused_owned_sends_and_unavailable_scopes_report_work_for_the_retry_pass() {
+    let (queue, _receiver) = mpsc::channel::<reclaim::Retired>(4);
+    let refusals = Rc::new(Cell::new(0));
+    let counted = refusals.clone();
+    let reclaimer = CommandReclaim::new(queue)
+        .observe_refusals(Rc::new(move || counted.set(counted.get() + 1)));
+    let scope = reclaimer.claim(full()).unwrap();
+    assert_eq!(refusals.get(), 0, "a claimed scope reports nothing");
+    assert!(!scope.send(Command::Shutdown));
+    assert_eq!(refusals.get(), 1, "a refused send is reported");
+    assert!(reclaimer.claim(full()).is_none());
+    assert_eq!(refusals.get(), 2, "an unavailable scope is reported");
+    drop(scope);
+    assert!(reclaimer.claim(full()).is_some());
+    assert_eq!(refusals.get(), 2);
+}
+
 #[tokio::test]
 async fn a_closed_reclaim_queue_retains_ready_until_the_post_loop_worker_drain() {
     let caller = std::thread::current().id();
