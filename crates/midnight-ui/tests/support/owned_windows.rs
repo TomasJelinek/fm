@@ -59,14 +59,23 @@ pub fn with_buffer(buffer: RepaintBufferType) -> (TestUi, Windows) {
 pub fn bare_with_clock(clock: Rc<Cell<Duration>>) -> (TestUi, Windows) {
     clocked(clock, RepaintBufferType::ReusedBuffer, false)
 }
+/// Only the platform of [`with_clock`], for tests that create their own main windows
+/// (several in turn, if they like); it records every adapter, newest last.
+pub fn clock_platform(clock: Rc<Cell<Duration>>) -> Windows {
+    install_clocked(clock, RepaintBufferType::ReusedBuffer)
+}
+fn install_clocked(clock: Rc<Cell<Duration>>, buffer: RepaintBufferType) -> Windows {
+    let windows = Windows::default();
+    let boundary = Boundary(windows.clone(), buffer);
+    slint::platform::set_platform(Box::new(ClockBoundary(boundary, clock))).unwrap();
+    windows
+}
 fn clocked(
     clock: Rc<Cell<Duration>>,
     buffer: RepaintBufferType,
     widget_callbacks: bool,
 ) -> (TestUi, Windows) {
-    let windows = Windows::default();
-    let boundary = Boundary(windows.clone(), buffer);
-    slint::platform::set_platform(Box::new(ClockBoundary(boundary, clock))).unwrap();
+    let windows = install_clocked(clock, buffer);
     (window(&windows, widget_callbacks), windows)
 }
 fn window(windows: &Windows, widget_callbacks: bool) -> TestUi {

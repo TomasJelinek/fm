@@ -16,21 +16,23 @@ use midnight_ui::OperationPresentation;
 use slint::{ComponentHandle, platform::Key};
 use std::{cell::RefCell, rc::Rc};
 
-/// The embedded operation form of a bare main window; nothing closes it, so each
-/// test sees every confirmation and cancellation request.
+/// The embedded operation form of a bare main window, rendered once; nothing closes
+/// it, so each test sees every confirmation and cancellation request.
 fn host() -> form::Host {
     let host = form::Host::new();
     host.main
         .global::<OperationPresentation>()
         .set_token("operation".into());
-    host.layout(640, 420);
+    host.main.global::<OperationPresentation>().invoke_begin();
+    host.draw(640, 420, "operation-default");
     host
 }
 
 /// (Re)start the form, which restores the initial name and the default focus.
+/// Keyboard input needs the laid-out form, not a new frame.
 fn begin(host: &form::Host) {
     host.main.global::<OperationPresentation>().invoke_begin();
-    host.draw(640, 420, "operation-default");
+    host.layout(640, 420);
 }
 
 #[test]

@@ -24,18 +24,22 @@ use std::{
 };
 
 /// The shipped embedded Make File List form; Cancel closes it like the adapter does.
-fn file_list_host() -> form::Host {
+/// The returned log holds the token of every cancel request the form sent.
+fn file_list_host() -> (form::Host, Rc<RefCell<Vec<String>>>) {
     let host = form::Host::new();
     host.apply_preferences(1, 0, "", 14, 16);
+    let cancels = Rc::new(RefCell::new(Vec::new()));
+    let log = cancels.clone();
     let weak = host.main.as_weak();
     host.main
         .global::<FileListPresentation>()
-        .on_cancel(move |_| {
+        .on_cancel(move |token| {
+            log.borrow_mut().push(token.to_string());
             if let Some(main) = weak.upgrade() {
                 main.global::<FileListPresentation>().set_active(false);
             }
         });
-    host
+    (host, cancels)
 }
 
 fn begin(host: &form::Host) {
@@ -47,7 +51,7 @@ fn begin(host: &form::Host) {
 
 #[test]
 fn existing_output_is_a_separate_explicit_decision_at_minimum_size() {
-    let host = file_list_host();
+    let (host, _) = file_list_host();
     let form = host.main.global::<FileListPresentation>();
     let confirmations = Rc::new(Cell::new(0));
     let captured = confirmations.clone();
@@ -65,7 +69,7 @@ fn existing_output_is_a_separate_explicit_decision_at_minimum_size() {
 
 #[test]
 fn file_list_keeps_output_explicit_and_escape_cancels_while_busy() {
-    let host = file_list_host();
+    let (host, cancels) = file_list_host();
     let form = host.main.global::<FileListPresentation>();
     let generated = Rc::new(Cell::new(0));
     let captured = generated.clone();
@@ -89,15 +93,21 @@ fn file_list_keeps_output_explicit_and_escape_cancels_while_busy() {
     );
     host.click("Create file list");
     assert_eq!(generated.get(), 1, "busy output cannot be submitted twice");
+    assert!(cancels.borrow().is_empty());
     form.invoke_begin();
     host.key(Key::Escape);
+    assert_eq!(
+        *cancels.borrow(),
+        ["file-list"],
+        "Escape sends exactly one cancel request for the open form"
+    );
     assert!(!form.get_active(), "Escape cancels the busy form");
     assert!(!host.is_open());
 }
 
 #[test]
 fn file_list_browse_is_explicit_and_footer_remains_reachable_at_small_sizes() {
-    let host = file_list_host();
+    let (host, cancels) = file_list_host();
     let form = host.main.global::<FileListPresentation>();
     let browsed = Rc::new(Cell::new(0));
     let captured = browsed.clone();
@@ -117,14 +127,20 @@ fn file_list_browse_is_explicit_and_footer_remains_reachable_at_small_sizes() {
         assert_eq!(form.get_destination_path(), "一覧.txt");
         assert!(form.get_append_output());
     }
+    assert!(cancels.borrow().is_empty());
     host.click("Cancel");
+    assert_eq!(
+        *cancels.borrow(),
+        ["file-list"],
+        "Cancel sends exactly one cancel request for the open form"
+    );
     assert!(!form.get_active());
     assert!(!host.is_open());
 }
 
 #[test]
 fn file_list_template_input_reports_edits_and_retains_unicode_selection_offsets() {
-    let host = file_list_host();
+    let (host, _) = file_list_host();
     let form = host.main.global::<FileListPresentation>();
     let edits = Rc::new(RefCell::new(Vec::new()));
     let captured = edits.clone();
@@ -294,7 +310,7 @@ fn embedded_file_list_cancel_waits_for_exact_request_release_without_another_ada
 
 #[test]
 fn file_list_preview_grows_with_the_dialog_and_resize_preserves_the_draft_caret() {
-    let host = file_list_host();
+    let (host, cancels) = file_list_host();
     host.apply_preferences(3, 0, "", 13, 18);
     let form = host.main.global::<FileListPresentation>();
     form.set_template_text("文档$(FileName)$(CRLF)".into());
@@ -353,6 +369,7 @@ fn file_list_preview_grows_with_the_dialog_and_resize_preserves_the_draft_caret(
         form::assert_inside(&host.item(AccessibleRole::Button, "Cancel"), "Cancel");
     }
     host.click("Cancel");
+    assert_eq!(*cancels.borrow(), ["file-list"]);
     assert!(!host.is_open());
 }
 
