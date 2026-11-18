@@ -14,12 +14,25 @@ use slint::{
 };
 use std::{
     cell::{Cell, RefCell},
-    rc::Rc,
+    rc::{Rc, Weak},
     time::Duration,
 };
 
 #[path = "drag_input_native.rs"]
 mod native;
+
+/// Cadence while a gesture, cancellation, shutdown, native hand-off, external hover
+/// or refused drag command is pending: pointer feedback and retries stay prompt.
+const ACTIVE_POLL: Duration = Duration::from_millis(16);
+/// Safety net otherwise. Refreshes, invalidations and native releases, wheel and touch
+/// input republish on the next loop turn; a popup closed on release or a finished
+/// scroll is caught here, and such staleness can only refuse a drop.
+const IDLE_POLL: Duration = Duration::from_millis(250);
+
+thread_local! {
+    /// This UI thread's bridges, each found through its own window.
+    static BRIDGES: RefCell<Vec<Weak<Bridge>>> = const { RefCell::new(Vec::new()) };
+}
 
 type DragVisual = (
     Option<Phase>,
@@ -39,6 +52,7 @@ struct Target {
 }
 
 struct Bridge {
+    window: slint::Weak<MainWindow>,
     presenter: Rc<RefCell<Presenter>>,
     send: Rc<dyn Fn(Command) -> bool>,
     begin_owned: BeginOwned,
@@ -52,6 +66,10 @@ struct Bridge {
     visual: RefCell<Option<DragVisual>>,
     lifetime: RefCell<Option<(u64, Cancellation)>>,
     timer: slint::Timer,
+    /// One zero-delay turn is queued; later requests in the same loop turn share it.
+    turn_scheduled: Cell<bool>,
+    /// The last publication could not run or a drag command was refused.
+    retry: Cell<bool>,
 }
 
 impl Drop for Bridge {
@@ -139,13 +157,22 @@ impl Bridge {
             *self.lifetime.borrow_mut() = Some((host.generation, host.lifetime.clone()));
         }
     }
+    /// A refused drag command stays queued in Presenter; retry it at the quick cadence.
+    fn observe(&self, sent: bool) -> bool {
+        if !sent {
+            self.retry.set(true);
+        }
+        sent
+    }
+
     fn flush_cancel(&self) -> bool {
+        let send = |command| self.observe((self.send)(command));
         if self.shutdown_pending.get() {
             let Ok(mut p) = self.presenter.try_borrow_mut() else {
                 return false;
             };
             self.shutdown_pending.set(false);
-            p.shutdown_drag_drop(self.send.as_ref());
+            p.shutdown_drag_drop(&send);
         }
         let Some(id) = self.cancel_pending.get() else {
             return true;
@@ -161,7 +188,7 @@ impl Bridge {
         {
             // Presenter retains the exact CancelDrag in its existing retry queue
             // even when backend backpressure outlives this local gesture.
-            p.cancel_file_drag(self.send.as_ref());
+            p.cancel_file_drag(&send);
         }
         true
     }
@@ -279,18 +306,67 @@ impl Bridge {
     fn publish(&self, window: &MainWindow) {
         let rectangles = rectangles(window);
         let Ok(mut p) = self.presenter.try_borrow_mut() else {
+            self.retry.set(true);
             return;
         };
+        // This flush retries every queued drag command; its refusals set the cadence.
+        self.retry.set(false);
+        let send = |command| self.observe((self.send)(command));
         if let Some(host) = host(window) {
-            p.attach_drag_host(host, self.send.as_ref());
+            p.attach_drag_host(host, &send);
         }
         self.remember_host(&p);
         p.publish_drag_targets(rectangles);
-        p.flush_drag_control_commands(self.send.as_ref());
+        p.flush_drag_control_commands(&send);
         drop(p);
         let _ = crate::with_owned_commands(&self.presenter, &self.begin_owned, |p, send| {
-            p.flush_drag_commands(send);
+            p.flush_drag_commands(&|command| self.observe(send(command)));
         });
+    }
+
+    /// One poll, then the cadence its outcome needs.
+    fn turn(&self, window: &MainWindow) {
+        self.poll(window);
+        self.cadence();
+    }
+
+    fn cadence(&self) {
+        let pending = self.retry.get()
+            || self.handoff.get()
+            || self.shutdown_pending.get()
+            || self.cancel_pending.get().is_some()
+            || self.gesture.current().is_some()
+            || self
+                .presenter
+                .try_borrow()
+                .map_or(true, |p| p.drag_drop.hover.is_some());
+        let interval = if pending { ACTIVE_POLL } else { IDLE_POLL };
+        if self.timer.interval() != interval {
+            self.timer.set_interval(interval);
+        }
+    }
+
+    /// Queue one zero-delay turn after the current callback has released its borrows.
+    fn schedule_turn(self: &Rc<Self>) {
+        if self.turn_scheduled.replace(true) {
+            return;
+        }
+        let bridge = Rc::downgrade(self);
+        slint::Timer::single_shot(Duration::ZERO, move || {
+            let Some(bridge) = bridge.upgrade() else {
+                return;
+            };
+            bridge.turn_scheduled.set(false);
+            if let Some(window) = bridge.window.upgrade() {
+                bridge.turn(&window);
+            }
+        });
+    }
+
+    fn owns(&self, window: &MainWindow) -> bool {
+        self.window
+            .upgrade()
+            .is_some_and(|own| std::ptr::eq(own.window(), window.window()))
     }
 
     fn target(&self, window: &MainWindow, p: &Presenter) -> Option<Target> {
@@ -407,6 +483,7 @@ impl Bridge {
         if self.flush_cancel() {
             self.update(window);
         }
+        self.cadence();
         true
     }
 
@@ -474,6 +551,7 @@ pub(crate) fn install(
         )
     };
     let bridge = Rc::new(Bridge {
+        window: window.as_weak(),
         presenter,
         send,
         begin_owned,
@@ -487,8 +565,19 @@ pub(crate) fn install(
         visual: RefCell::new(None),
         lifetime: RefCell::new(None),
         timer: slint::Timer::default(),
+        turn_scheduled: Cell::new(false),
+        retry: Cell::new(false),
     });
-    window.on_drag_invalidate_targets(move || invalidate(&targets));
+    BRIDGES.with(|bridges| {
+        let mut bridges = bridges.borrow_mut();
+        bridges.retain(|bridge| bridge.strong_count() > 0);
+        bridges.push(Rc::downgrade(&bridge));
+    });
+    let state = bridge.clone();
+    window.on_drag_invalidate_targets(move || {
+        invalidate(&targets);
+        state.schedule_turn();
+    });
     let weak = window.as_weak();
     let state = bridge.clone();
     window.on_row_drag(move |id, row, identity, x, y| {
@@ -518,6 +607,7 @@ pub(crate) fn install(
         crate::refresh(&window, &state.presenter.borrow());
         state.publish(&window);
         state.update(&window);
+        state.cadence();
         started
     });
     let weak = window.as_weak();
@@ -563,20 +653,43 @@ pub(crate) fn install(
         }
         state.shutdown_pending.set(true);
         state.flush_cancel();
+        state.cadence();
     });
     let weak = window.as_weak();
     let state = Rc::downgrade(&bridge);
-    bridge.timer.start(
-        slint::TimerMode::Repeated,
-        Duration::from_millis(16),
-        move || {
+    bridge
+        .timer
+        .start(slint::TimerMode::Repeated, IDLE_POLL, move || {
             if let (Some(window), Some(state)) = (weak.upgrade(), state.upgrade()) {
-                state.poll(&window);
+                state.turn(&window);
             }
-        },
-    );
+        });
+    bridge.cadence();
 }
 
+/// The bridge installed on `window`, if any. None while thread storage is torn down.
+fn bridge(window: &MainWindow) -> Option<Rc<Bridge>> {
+    BRIDGES
+        .try_with(|bridges| {
+            let mut bridges = bridges.borrow_mut();
+            bridges.retain(|bridge| bridge.strong_count() > 0);
+            bridges
+                .iter()
+                .filter_map(Weak::upgrade)
+                .find(|bridge| bridge.owns(window))
+        })
+        .ok()
+        .flatten()
+}
+
+/// Republish targets and present drag feedback on the next loop turn.
+fn schedule(window: &MainWindow) {
+    if let Some(bridge) = bridge(window) {
+        bridge.schedule_turn();
+    }
+}
+
+/// Every presenter refresh can change navigation, loading, modal or hover state.
 pub(crate) fn refresh(window: &MainWindow, p: &Presenter) {
     let active = p.drag_drop.lifecycle.active();
     window.set_drag_active(active.is_some());
@@ -584,6 +697,7 @@ pub(crate) fn refresh(window: &MainWindow, p: &Presenter) {
         window.set_drag_hover_pane(-1);
         window.set_drag_hover_row(-1);
     }
+    schedule(window);
 }
 
 /// The shared software/native event observer runs after normal Slint dispatch.
@@ -627,8 +741,20 @@ pub(crate) fn observe_native(
             ..
         }
         | WindowEvent::KeyboardInput { .. } => window.invoke_drag_invalidate_targets(),
+        // A popup closed on release, or a scroll started by wheel or touch, changes
+        // the published regions without invalidating them.
+        WindowEvent::MouseInput {
+            state: ElementState::Released,
+            ..
+        }
+        | WindowEvent::MouseWheel { .. }
+        | WindowEvent::Touch(_) => schedule(window),
         WindowEvent::Focused(false) => window.invoke_drag_cancel(),
         WindowEvent::Destroyed => window.invoke_drag_host_closed(),
         _ => {}
     }
 }
+
+#[cfg(test)]
+#[path = "drag_bridge_tests.rs"]
+mod tests;
