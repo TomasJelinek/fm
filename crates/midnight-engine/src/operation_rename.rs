@@ -2,6 +2,8 @@
 use super::*;
 use std::{ffi::OsString, io, path::Path};
 
+/// Decision routing only. The actor indexes it by job outside the job's lease, so
+/// it owns no service; the job's lease-owned `rename_locale` formats the prompt.
 #[derive(Default)]
 pub(super) struct ConflictState {
     next: AtomicU64,
@@ -173,7 +175,7 @@ pub(super) fn execute(job: worker::Job, outbox: Outbox) -> OperationProgress {
                 break;
             }
         };
-        let conflict = CopyConflict {
+        let mut conflict = CopyConflict {
             id: progress.id,
             version: 0,
             source: prepared.movement.capture.entry().item.clone(),
@@ -182,6 +184,11 @@ pub(super) fn execute(job: worker::Job, outbox: Outbox) -> OperationProgress {
             can_replace: true,
             can_merge: false,
         };
+        // Only this displayed prompt formats its two entries' times; the pins keep
+        // the entries as their provider reported them.
+        let locale = job.rename_locale.as_deref();
+        crate::transfer_composition::localize_displayed(&mut conflict.source, locale);
+        crate::transfer_composition::localize_displayed(&mut conflict.target, locale);
         match job.rename_conflicts.ask(conflict, &outbox, &job.cancel) {
             CopyChoice::Cancel => {
                 job.cancel.cancel();

@@ -209,6 +209,13 @@ impl Engine {
 
     /// Admit native locale services once; duplicate configuration accepts no owner.
     /// New engines start without a locale service and preserve their existing fallback.
+    ///
+    /// Transfer adapters may report raw modification times, so the engine formats
+    /// the transfer entries a prompt displays. This locale formats those of Rename
+    /// conflicts and Make File List save confirmations. Copy/Move conflicts need
+    /// [`Self::configure_audited_locale`], because a copy job retains only audited
+    /// owners; without it they show only adapter-supplied text or the UI's UTC
+    /// fallback.
     pub fn configure_locale(
         &mut self,
     ) -> Result<ServiceSlot<'_, Arc<dyn LocaleService>>, ServiceAlreadyConfigured> {
@@ -216,6 +223,10 @@ impl Engine {
     }
 
     /// Install locale from a concrete reviewed synchronous native service.
+    ///
+    /// It serves everything [`Self::configure_locale`] does and also formats both
+    /// entries of a Copy/Move conflict prompt, and only those: copy jobs never
+    /// format enumerated, inspected or automatically resolved entries.
     pub fn configure_audited_locale(
         &mut self,
     ) -> Result<AuditedLocaleSlot<'_>, ServiceAlreadyConfigured> {

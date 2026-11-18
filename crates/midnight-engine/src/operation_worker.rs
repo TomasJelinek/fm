@@ -14,6 +14,9 @@ pub(super) struct Job {
     directory: Option<Arc<dyn PreparedDirectory>>,
     pub(super) name: Option<OsString>,
     pub(super) rename_conflicts: Arc<super::rename::ConflictState>,
+    /// Formats the two entries a Rename conflict prompt displays. Only a Rename job
+    /// retains it, inside its lease; it drops before the mutation permit.
+    pub(super) rename_locale: Option<Arc<dyn LocaleService>>,
     preview: OperationPreview,
     pub(super) metadata: Option<super::metadata::Edit>,
     pub(super) metadata_budget: Arc<Semaphore>,
@@ -215,6 +218,7 @@ fn new_job(
         directory: None,
         name: None,
         rename_conflicts: Arc::default(),
+        rename_locale: None,
         metadata: None,
         metadata_budget,
         metadata_traversal: None,
@@ -323,6 +327,13 @@ impl Job {
     }
     pub(super) fn hold_mutation_permit(&mut self, permit: tokio::sync::OwnedSemaphorePermit) {
         self.mutation_permit = Some(permit);
+    }
+    /// Only a Rename can prompt with transfer entries, so only it keeps the locale
+    /// that formats them; every other kind drops this owner here.
+    pub(super) fn retain_rename_locale(&mut self, locale: Option<Arc<dyn LocaleService>>) {
+        if self.preview.kind == MutationKind::Rename {
+            self.rename_locale = locale;
+        }
     }
     pub(super) fn confirm(&mut self, name: Option<String>) -> Result<(), FsError> {
         let progress = self.progress();

@@ -342,6 +342,43 @@ async fn queued_file_save_holds_no_worker_and_publishes_once_the_gate_opens() {
     assert_eq!(gate.available_permits(), NAMESPACE_WEIGHT as usize);
 }
 
+/// The Windows adapter reports raw times; the save confirmation formats only the
+/// one existing output it displays (the Linux adapter still formats it itself).
+#[cfg(windows)]
+#[tokio::test]
+async fn file_list_save_conflict_formats_only_the_displayed_existing_file() {
+    use crate::transfer_composition::tests::CountingLocale;
+    let gate = crate::transfer_leases::namespace_gate();
+    let (mut controller, mut events, mut tasks, root) = file_controller(gate);
+    let locale = Arc::new(CountingLocale::default());
+    controller.locale = Some(locale.clone());
+    std::fs::write(root.path().join("list.txt"), b"existing").unwrap();
+    controller.start(file_request(&root), &mut tasks).unwrap();
+    let Event::FileList(event) = tokio::time::timeout(Duration::from_secs(10), events.recv())
+        .await
+        .unwrap()
+        .unwrap()
+    else {
+        panic!("file-list result")
+    };
+    let Ok(FileListUpdate::Conflict { entry, append }) = &event.result else {
+        panic!("expected a save confirmation: {:?}", event.result)
+    };
+    assert!(!append);
+    assert!(entry.item.metadata.modified.is_some(), "{entry:?}");
+    assert_eq!(
+        entry.item.metadata.localized_modified,
+        Some(CountingLocale::text())
+    );
+    assert_eq!(locale.calls(), 1);
+    controller.cancel(DesktopRequestId(1), 1);
+    while tasks.join_next().await.is_some() {}
+    assert_eq!(
+        std::fs::read(root.path().join("list.txt")).unwrap(),
+        b"existing"
+    );
+}
+
 /// Counts panics on threads named `name`, then defers to the previous hook so
 /// every other test still reports its panics as usual.
 fn panics_on(name: &'static str) -> Arc<std::sync::atomic::AtomicUsize> {

@@ -698,6 +698,8 @@ fn prepare_on_worker(
     if let Some(edit) = &mut job.metadata {
         edit.localize(locale.as_deref());
     }
+    // A Rename conflict prompt formats its two displayed entries with this locale.
+    job.retain_rename_locale(locale);
     Ok(job)
 }
 

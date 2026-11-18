@@ -268,6 +268,9 @@ impl Preparation {
         if let Some(witness) = self.service.witness {
             job.set_retirement_witness(witness);
         }
+        if let Some(locale) = &self.service.locale {
+            job.set_locale(locale.clone());
+        }
         if let Some(tracker) = &self.tracker {
             job.attach_tracker(tracker.clone());
         }
@@ -411,6 +414,7 @@ struct Pins {
 struct RetainedService {
     service: Arc<dyn TransferService>,
     witness: Option<crate::transfer_composition::TransferRetirementWitness>,
+    locale: Option<crate::transfer_composition::QualifiedLocaleInstallation>,
     pins: Mutex<Pins>,
 }
 
@@ -424,6 +428,7 @@ impl RetainedService {
     fn qualified(service: crate::transfer_composition::QualifiedTransferInstallation) -> Self {
         Self {
             witness: service.witness(),
+            locale: service.locale(),
             service: service.service(),
             pins: Mutex::default(),
         }

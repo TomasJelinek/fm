@@ -70,6 +70,8 @@ pub(crate) struct Controller {
     budget: Arc<Semaphore>,
     mutation: Arc<Semaphore>,
     service: Option<Arc<dyn TransferService>>,
+    /// Formats the existing output file shown by a save confirmation.
+    locale: Option<Arc<dyn LocaleService>>,
     scope: TaskLifetime,
     retirement: Retirement,
     retained: Arc<Semaphore>,
@@ -81,6 +83,7 @@ impl Controller {
         retirement: Retirement,
         scope: TaskLifetime,
         service: Option<Arc<dyn TransferService>>,
+        locale: Option<Arc<dyn LocaleService>>,
         mutation: Arc<Semaphore>,
         outbox: Outbox,
         snapshots: crate::Snapshots,
@@ -90,6 +93,7 @@ impl Controller {
             budget: Arc::new(Semaphore::new(MAX_WORKERS)),
             mutation,
             service,
+            locale,
             scope,
             retirement,
             retained: Arc::new(Semaphore::new(MAX_RETAINED)),
@@ -206,6 +210,7 @@ impl Controller {
     ) {
         let output = Output {
             service: self.service.clone(),
+            locale: self.locale.clone(),
             workers: self.budget.clone(),
             mutation: self.mutation.clone(),
             scope: self.scope.clone(),
@@ -256,6 +261,7 @@ type Worker = Arc<OwnedSemaphorePermit>;
 /// workers, while the waits between them stay on the async task.
 struct Output {
     service: Option<Arc<dyn TransferService>>,
+    locale: Option<Arc<dyn LocaleService>>,
     workers: Arc<Semaphore>,
     mutation: Arc<Semaphore>,
     scope: TaskLifetime,
@@ -308,12 +314,13 @@ impl Output {
             Ok(worker) => Arc::new(worker),
             Err(error) => return (Err(error), None),
         };
+        let locale = self.locale.clone();
         let saved = self
             .native(job, worker.clone(), move |job| {
                 // The gate stays held until native publication returns, even if
                 // the outer task is aborted meanwhile.
                 let _gate = gate;
-                save(job, source, service.as_ref())
+                save(job, source, service.as_ref(), locale.as_deref())
             })
             .await;
         (saved, Some(worker))
@@ -406,6 +413,7 @@ fn save(
     job: &Job,
     generated: Option<Arc<Text>>,
     service: &dyn TransferService,
+    locale: Option<&dyn LocaleService>,
 ) -> Result<FileListUpdate, FsError> {
     let (source, pin) = match generated {
         Some(source) => (source, None),
@@ -431,7 +439,9 @@ fn save(
         &job.cancel,
     )? {
         FileListSaveOutcome::Conflict(pin) => {
-            let entry = pin.entry().clone();
+            // Only the confirmation's copy is formatted; the pin keeps its entry.
+            let mut entry = pin.entry().clone();
+            crate::transfer_composition::localize_displayed(&mut entry.item, locale);
             *job.pending.lock().unwrap_or_else(|e| e.into_inner()) = Some(Pending { source, pin });
             Ok(FileListUpdate::Conflict {
                 entry,
@@ -461,6 +471,7 @@ impl Controller {
             },
             TaskLifetime::testing(service.clone()),
             service,
+            None,
             mutation,
             outbox,
             snapshots,
