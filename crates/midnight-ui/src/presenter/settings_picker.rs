@@ -1,6 +1,11 @@
 //! One pending native picker, bound to the original field and draft revision.
 use super::*;
 
+/// Options topic identities of the picker pages (`OptionsTopics` in
+/// ui/options-navigation.slint); `settings_picker_tests` guards them.
+pub(crate) const OPTIONS_TOPIC_EDITORS: i32 = 4;
+pub(crate) const OPTIONS_TOPIC_CUSTOM_COMMANDS: i32 = 9;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Target {
     Editor,
@@ -182,9 +187,9 @@ impl Presenter {
                 pending.target,
                 Target::Editor | Target::EditorWorkingDirectory
             ) {
-                4
+                OPTIONS_TOPIC_EDITORS
             } else {
-                9
+                OPTIONS_TOPIC_CUSTOM_COMMANDS
             };
             if page != expected {
                 pending.cancelled = true;

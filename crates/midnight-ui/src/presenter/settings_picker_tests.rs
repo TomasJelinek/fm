@@ -3,8 +3,8 @@ use std::cell::RefCell;
 
 #[test]
 fn picker_pages_are_the_editors_and_custom_commands_options_topics() {
-    // settings_picker_context (and these tests) identify pickers by the Options
-    // topic identities 4 and 9; they must follow ui/options-navigation.slint.
+    // settings_picker_context and the Custom Commands shortcut identify picker pages
+    // by these Options topic identities; they must follow ui/options-navigation.slint.
     let source = include_str!("../../ui/options-navigation.slint");
     assert!(
         source.contains("return index >= 2 ? index + 1 : index;"),
@@ -25,8 +25,11 @@ fn picker_pages_are_the_editors_and_custom_commands_options_topics() {
             .unwrap_or_else(|| panic!("no Options topic {title}"));
         if index >= 2 { index + 1 } else { index }
     };
-    assert_eq!(topic("Editors"), 4);
-    assert_eq!(topic("Custom Commands"), 9);
+    assert_eq!(topic("Editors"), OPTIONS_TOPIC_EDITORS as usize);
+    assert_eq!(
+        topic("Custom Commands"),
+        OPTIONS_TOPIC_CUSTOM_COMMANDS as usize
+    );
 }
 
 fn loaded() -> Presenter {
@@ -67,7 +70,9 @@ fn new_command_picker_cancel_keeps_pristine_draft_unchanged() {
             p.user_command_settings.edit_revision,
         );
         let id = request(&mut p, target);
-        p.settings_picker_context(9, &|_| panic!("current picker cancelled"));
+        p.settings_picker_context(OPTIONS_TOPIC_CUSTOM_COMMANDS, &|_| {
+            panic!("current picker cancelled")
+        });
         p.flush_settings_picker(&|_| panic!("current picker cancelled"));
         p.apply(Event::PathPicked {
             request: id,

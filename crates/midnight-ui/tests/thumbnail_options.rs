@@ -108,7 +108,7 @@ fn archive_checkbox_defaults_on_hides_resident_pixels_and_supports_cancel_ok_and
     assert!(
         presenter
             .borrow_mut()
-            .receive_thumbnail(&identity, 0, 7, 3, &[255; 84])
+            .receive_thumbnail_at_resolution(&identity, 0, 7, 3, 96, &[255; 84])
     );
     refresh(&ui.window, &presenter.borrow());
     let window = ui.window.clone_strong();
@@ -152,7 +152,7 @@ fn archive_checkbox_defaults_on_hides_resident_pixels_and_supports_cancel_ok_and
     assert!(
         !presenter
             .borrow_mut()
-            .receive_thumbnail(&identity, 1, 7, 3, &[255; 84])
+            .receive_thumbnail_at_resolution(&identity, 1, 7, 3, 96, &[255; 84])
     );
     assert!(
         !sent
@@ -319,11 +319,12 @@ fn actual_size_control_previews_cancel_restores_and_ok_persists() {
         .borrow_mut()
         .thumbnail_targets([(0, 10), (0, 0)], ["", ""]);
     let identity = targets[0].identity.clone();
-    assert!(presenter.borrow_mut().receive_thumbnail(
+    assert!(presenter.borrow_mut().receive_thumbnail_at_resolution(
         &identity,
         0,
         96,
         48,
+        96,
         &vec![180; 96 * 48 * 4]
     ));
     refresh(&ui.window, &presenter.borrow());

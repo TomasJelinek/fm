@@ -170,8 +170,8 @@ impl Presenter {
     }
     /// Test helper: a 96-pixel request. The thumbnail host uses
     /// [`Self::receive_thumbnail_at_resolution`].
-    #[doc(hidden)]
-    pub fn receive_thumbnail(
+    #[cfg(test)]
+    pub(crate) fn receive_thumbnail(
         &mut self,
         identity: &str,
         frame: u8,

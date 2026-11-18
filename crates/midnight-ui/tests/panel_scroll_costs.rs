@@ -323,11 +323,12 @@ fn cache_pressure_after_reversal_before_the_next_target_report() {
             .thumbnail_targets([(row, row + 1), (0, 0)], ["", ""]);
         assert_eq!(targets.len(), 1);
         identities.push(targets[0].identity.clone());
-        assert!(h.presenter.borrow_mut().receive_thumbnail(
+        assert!(h.presenter.borrow_mut().receive_thumbnail_at_resolution(
             &targets[0].identity,
             0,
             1,
             1,
+            96,
             if index == 0 { &first } else { &other },
         ));
     }
@@ -362,11 +363,12 @@ fn cache_pressure_after_reversal_before_the_next_target_report() {
         96
     );
     // Deliberately leave the last target report unchanged while completing C.
-    assert!(h.presenter.borrow_mut().receive_thumbnail(
+    assert!(h.presenter.borrow_mut().receive_thumbnail_at_resolution(
         &targets[1].identity,
         0,
         1,
         1,
+        96,
         &[201, 37, 51, 255],
     ));
     let coverage = h.presenter.borrow().thumbnail_coverage(first_identity, 0);

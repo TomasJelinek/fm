@@ -1614,7 +1614,9 @@ impl Presenter {
             None => false,
         }
     }
-    pub fn select_row(
+    /// Test shorthand for an unshifted [`Self::select_row_modified`].
+    #[cfg(test)]
+    pub(crate) fn select_row(
         &mut self,
         pane: PaneId,
         row: usize,
