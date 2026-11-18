@@ -401,8 +401,20 @@ fn create(
     callback!(on_confirm, |p, send, _window| {
         p.confirm_file_list(id, send);
     });
+    // The notice shows the error with escaped bidirectional controls (`sync`). Copy copies
+    // the session's error itself, and only while it is the error shown.
     callback!(on_copy_error, |p, send, _window, text| {
-        p.copy_viewer_text(text.to_string(), send);
+        let error = p
+            .file_list
+            .session
+            .as_ref()
+            .filter(|s| s.id == id && !s.error.is_empty())
+            .map(|s| s.error.as_str())
+            .filter(|error| *error == text.as_str() || visible_name(error) == text.as_str())
+            .map(str::to_owned);
+        if let Some(error) = error {
+            p.copy_viewer_text(error, send);
+        }
     });
     Ok(Record {
         host,
