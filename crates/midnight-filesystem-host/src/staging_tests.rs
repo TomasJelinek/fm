@@ -58,6 +58,18 @@ fn seal(staging: &mut Staging, request: u64, entry: u64) -> u64 {
         .unwrap();
     stage
 }
+fn kept(path: &Path) -> SpoolRoot {
+    SpoolRoot {
+        path: path.to_owned(),
+        per_process: false,
+    }
+}
+fn per_process(path: &Path) -> SpoolRoot {
+    SpoolRoot {
+        path: path.to_owned(),
+        per_process: true,
+    }
+}
 #[test]
 fn an_unusable_spool_root_yields_to_the_next_private_candidate() {
     let temp = tempfile::tempdir().unwrap();
@@ -65,13 +77,54 @@ fn an_unusable_spool_root_yields_to_the_next_private_candidate() {
     let occupied = temp.path().join("occupied");
     std::fs::write(&occupied, b"not a directory").unwrap();
     let private = temp.path().join("private");
-    let mut staging = Staging::open_first([occupied.clone(), private.clone()]).unwrap();
+    let mut staging = Staging::open_first([kept(&occupied), kept(&private)]).unwrap();
     assert!(private.is_dir());
     let op = read(1, 2);
     staging.nested(&op, &begin(1, 2)).unwrap();
-    let error = Staging::open_first([occupied.clone()]).err().unwrap();
+    let error = Staging::open_first([kept(&occupied)]).err().unwrap();
     assert!(error.to_string().contains("occupied"), "{error}");
     assert!(Staging::open_first(Vec::new()).is_err());
+    drop(staging);
+    assert!(private.is_dir(), "a per-user root is kept for later runs");
+}
+
+#[test]
+fn the_last_spool_root_candidate_belongs_to_this_process_alone() {
+    let roots = root::candidates();
+    let (last, earlier) = roots.split_last().unwrap();
+    assert!(last.per_process);
+    let name = last.path.file_name().unwrap().to_string_lossy();
+    let suffix = format!("-archive-spool-{}", std::process::id());
+    assert!(name.ends_with(&suffix), "{last:?}");
+    assert!(earlier.iter().all(|root| !root.per_process), "{roots:?}");
+}
+
+#[test]
+fn mounts_share_a_per_process_root_until_its_last_spool_closes() {
+    let temp = tempfile::tempdir().unwrap();
+    let occupied = temp.path().join("occupied");
+    std::fs::write(&occupied, b"not a directory").unwrap();
+    let path = temp.path().join("archive-spool-7");
+    let roots = || [kept(&occupied), per_process(&path)];
+    let mut first = Staging::open_first(roots()).unwrap();
+    let mut second = Staging::open_first(roots()).unwrap();
+    let lease = stage_member(&mut first, 1, 2, b"read");
+    drop(first);
+    // The other mount still stages members in the root.
+    assert!(path.is_dir());
+    stage_member(&mut second, 1, 2, b"next");
+    drop(second);
+    // A read that outlives its mount keeps the root until the read ends.
+    assert!(path.is_dir());
+    assert_eq!(lease.read(0, 4).unwrap(), b"read");
+    drop(lease);
+    assert!(
+        !path.exists(),
+        "the last spool removes the per-process root"
+    );
+    // A later mount of this process creates it again.
+    drop(Staging::open_first(roots()).unwrap());
+    assert!(!path.exists());
 }
 
 const GIB: u64 = 1 << 30;

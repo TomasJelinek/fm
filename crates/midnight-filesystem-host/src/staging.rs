@@ -6,8 +6,8 @@ use midnight_worker_platform::spool::{
 use std::{
     collections::{HashMap, VecDeque},
     io,
-    path::Path,
-    sync::Arc,
+    path::{Path, PathBuf},
+    sync::{Arc, Mutex, PoisonError, Weak},
 };
 
 const CACHE_ENTRIES: usize = 16;
@@ -45,6 +45,8 @@ pub(crate) struct Lease {
     length: u64,
     /// Storage only member leases keep allocated; scratch stages stay sealed anyway.
     member_bytes: u64,
+    /// Declared after the spool, which closes first: a read can outlive its mount.
+    _process_root: Option<Arc<ProcessRoot>>,
 }
 impl Lease {
     pub(crate) fn read(&self, offset: u64, length: u32) -> io::Result<Vec<u8>> {
@@ -86,6 +88,16 @@ pub(crate) struct Staging {
     cache_budget: u64,
     /// Member reads served from or added to the cache by this mount.
     reads: u64,
+    /// Declared last: the root and every spool of this mount close first.
+    process_root: Option<Arc<ProcessRoot>>,
+}
+/// One candidate private spool root.
+#[derive(Debug, PartialEq, Eq)]
+struct SpoolRoot {
+    path: PathBuf,
+    /// Only this process uses the root, so it is removed after its last spool closes
+    /// instead of accumulating one directory per run.
+    per_process: bool,
 }
 impl Staging {
     /// Open this user's private spool root, trying the platform's per-user candidates in
@@ -94,19 +106,30 @@ impl Staging {
     pub(crate) fn open_private() -> io::Result<Self> {
         Self::open_first(root::candidates())
     }
-    fn open_first(roots: impl IntoIterator<Item = std::path::PathBuf>) -> io::Result<Self> {
+    fn open_first(roots: impl IntoIterator<Item = SpoolRoot>) -> io::Result<Self> {
         let mut failure = None;
         for root in roots {
-            let opened = Self::open(&root).and_then(|staging| {
+            // The guard exists before the open, so a closing mount of this process
+            // cannot remove the root between its open and the spools created in it.
+            let process_root = root.per_process.then(|| ProcessRoot::acquire(&root.path));
+            let opened = Self::open(&root.path).and_then(|staging| {
                 drop(staging.root.create()?);
                 Ok(staging)
             });
             match opened {
-                Ok(staging) => return Ok(staging),
+                Ok(staging) => {
+                    return Ok(Self {
+                        process_root,
+                        ..staging
+                    });
+                }
                 Err(error) => {
                     failure = Some(io::Error::new(
                         error.kind(),
-                        format!("Archive spool root {} is unusable: {error}", root.display()),
+                        format!(
+                            "Archive spool root {} is unusable: {error}",
+                            root.path.display()
+                        ),
                     ));
                 }
             }
@@ -129,6 +152,7 @@ impl Staging {
             cache_bytes: 0,
             cache_budget: CACHE_BYTES,
             reads: 0,
+            process_root: None,
         })
     }
     #[cfg(test)]
@@ -299,6 +323,7 @@ impl Staging {
                     offset: 0,
                     length: sealed.spool.length(),
                     member_bytes: 0,
+                    _process_root: self.process_root.clone(),
                 };
                 Message::SpoolData {
                     request,
@@ -419,6 +444,7 @@ impl Staging {
                     offset: *offset,
                     length: *length,
                     member_bytes: if member { sealed.spool.length() } else { 0 },
+                    _process_root: self.process_root.clone(),
                 };
                 if member {
                     self.sealed.remove(stage);
@@ -459,6 +485,47 @@ fn invalid() -> io::Error {
         io::ErrorKind::InvalidData,
         "Invalid archive staging exchange",
     )
+}
+
+/// Guards of live per-process spool roots. A guard is created, and an unused root is
+/// removed, only under this lock, so no mount of this process sees its root disappear.
+static PROCESS_ROOTS: Mutex<Vec<(PathBuf, Weak<ProcessRoot>)>> = Mutex::new(Vec::new());
+
+/// Keeps a per-process spool root while a mount of this process or a read lease may
+/// use it. Every mount that falls back to the same root shares one guard.
+struct ProcessRoot(PathBuf);
+impl ProcessRoot {
+    fn acquire(path: &Path) -> Arc<Self> {
+        let mut roots = PROCESS_ROOTS.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(live) = roots
+            .iter()
+            .filter(|(root, _)| root == path)
+            .find_map(|(_, guard)| guard.upgrade())
+        {
+            return live;
+        }
+        roots.retain(|(root, _)| root != path);
+        let guard = Arc::new(Self(path.to_owned()));
+        roots.push((path.to_owned(), Arc::downgrade(&guard)));
+        guard
+    }
+}
+impl Drop for ProcessRoot {
+    fn drop(&mut self) {
+        let mut roots = PROCESS_ROOTS.lock().unwrap_or_else(PoisonError::into_inner);
+        if roots
+            .iter()
+            .any(|(root, guard)| *root == self.0 && guard.strong_count() != 0)
+        {
+            // A newer guard keeps the root for its own mount.
+            return;
+        }
+        roots.retain(|(root, _)| *root != self.0);
+        // Spools are anonymous (Linux) or deleted on close (Windows), so the root is
+        // empty once its last spool closed. `remove_dir` removes only an empty
+        // directory, never a link target; a root it cannot remove is kept.
+        let _ = std::fs::remove_dir(&self.0);
+    }
 }
 
 #[cfg(test)]
