@@ -155,8 +155,9 @@ motion, while allowing later navigation to recover.
 Body and gutter together are capped at 6 Mi pixels (24 MiB RGBA) per snapshot.
 Shared admission permits at most three snapshots per worker and twelve across a
 Service, including closed workers awaiting retirement. This caps retained CPU
-raster storage at 288 MiB, separately from bounded construction copies, UI/GPU
-images and layout caches. Dead weak allocation owners are reaped off the UI
+raster storage at 288 MiB, separately from UI/GPU images and layout caches; each
+snapshot is painted in its shared allocation, so building one adds no second
+snapshot-sized buffer. Dead weak allocation owners are reaped off the UI
 thread. Text decoding remains capped at 12 KiB (4 KiB for binary) and 512 lines;
 guards do not widen word wrapping or permit whole-file loading. An incomplete
 byte-limited fragment shorter than a viewport temporarily retains the existing
