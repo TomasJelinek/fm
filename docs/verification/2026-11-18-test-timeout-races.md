@@ -123,6 +123,18 @@ while the test does not read a bounded event channel that the Engine fills.
   names at the crate root. The workaround changes no code that these tests
   exercise; the engine binaries therefore run the 32 `retirement` unit tests once
   more than the source declares.
+- The after runs below used the sources before two cosmetic edits (a line join in
+  `navigation.rs` and `matches!` in `navigation_fallback.rs`). The committed
+  sources were rebuilt and run again: on Linux `navigation::` passed 50 of 50 runs,
+  `navigation_fallback::`, `find_actor::` and `find_sort_after_stop::` 20 of 20 and
+  the full engine binary 2 of 2; on Windows `navigation::` passed 20 of 20, those
+  three modules 5 of 5 and `operations_native_ui::` 5 of 5.
+- `cargo fmt -p midnight-engine -p midnight-ui -- --check` passes. Windows Clippy
+  (`-p midnight-engine -p midnight-ui --all-targets`) reports nothing in the changed
+  files; with `-D warnings` it stops at code that predates these changes: four
+  unused functions in `actor_thread.rs`, the unused `providers` imports of the two
+  checksum test modules and two compile errors in the engine's library tests
+  (`preferences/tests.rs`, `tree_controller/worker_refresh_tests.rs`).
 
 ## Environment
 
