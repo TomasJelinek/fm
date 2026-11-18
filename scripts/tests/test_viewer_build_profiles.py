@@ -272,5 +272,78 @@ foreach ($case in (Get-Content -LiteralPath $Cases -Raw | ConvertFrom-Json)) {
         self.assertEqual((linked / "keep").read_text(), "user data\n")
 
 
+@unittest.skipUnless(os.name == "nt", "Windows viewer build wrapper")
+class ViewerSdkWindows(unittest.TestCase):
+    """The real wrapper, API packaging script and Cargo wrapper; Cargo and the viewer builds are stubs."""
+
+    def test_viewer_sdk_below_a_non_ascii_path_survives_a_legacy_console_code_page(self):
+        # midnight-api-package prints its bundle path in UTF-8, but PowerShell decodes native
+        # output with the console code page, so the SDK below a non-ASCII checkout was lost.
+        temporary = ROOT / "_build/tmp"
+        temporary.mkdir(parents=True, exist_ok=True)
+        owner = tempfile.TemporaryDirectory(prefix="viewer sdk ", dir=temporary)
+        self.addCleanup(owner.cleanup)
+        owner = Path(owner.name)
+        # cmd.exe reads a batch file in the console code page: keep the stubs on an ASCII path.
+        tools = owner / "bin"
+        tools.mkdir()
+        log = owner / "cargo.jsonl"
+        (tools / "cargo.py").write_text(
+            "import json, os, pathlib, sys\n"
+            "with open(os.environ['VIEWERS_TEST_LOG'], 'a', encoding='utf-8') as log:\n"
+            "    log.write(json.dumps(sys.argv[1:]) + '\\n')\n"
+            "if 'run' in sys.argv:\n"
+            "    # Like midnight-api-package: a new bundle, reported in UTF-8 whatever the code page.\n"
+            "    bundle = pathlib.Path(sys.argv[-1]) / '_build/api-release/midnight-api-1'\n"
+            "    (bundle / '.cargo').mkdir(parents=True)\n"
+            "    (bundle / '.cargo/config.toml').write_text('# viewer SDK fixture\\n')\n"
+            "    sys.stdout.buffer.write(b'Public API/SDK release bundle: ' + str(bundle).encode() + b'\\n')\n",
+            encoding="utf-8")
+        (tools / "cargo.cmd").write_text(f'@"{sys.executable}" "{tools / "cargo.py"}" %*\n')
+        (tools / "rustc.cmd").write_text("@echo host: x86_64-pc-windows-msvc\n")
+        checkout = owner / "Jiří 文档/checkout"
+        for relative in ("scripts/build-viewers.ps1", "scripts/cargo.ps1", "scripts/utf8-native-output.ps1",
+                         "api/scripts/package.ps1"):
+            (checkout / relative).parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(ROOT / relative, checkout / relative)
+        builds = owner / "builds.txt"
+        for name in ("basic", "source", "markdown"):
+            scripts = checkout / f"plugins/midnight-viewer-{name}/scripts"
+            scripts.mkdir(parents=True)
+            (scripts / "build.ps1").write_text(
+                "param($SdkConfig, $BuildRoot, $OutputDirectory, $Profile)\n"
+                "[IO.File]::AppendAllText($env:VIEWERS_TEST_BUILDS, $SdkConfig + \"`n\")\n", encoding="utf-8")
+        for name in ("build-image-viewer.ps1", "build-html-viewer.ps1"):
+            (checkout / "scripts" / name).write_text(
+                "param($Viewer, $Profile, $WorkerSdkConfig, $AppDirectory, [switch]$Test, [switch]$Offline)\n",
+                encoding="utf-8")
+        report = owner / "code-page.txt"
+        driver = owner / "driver.ps1"
+        driver.write_text(
+            "param([string]$Script, [string]$Report)\n"
+            "[Console]::OutputEncoding = [Text.Encoding]::GetEncoding(850)\n"
+            "try { & $Script }\n"
+            "finally { [IO.File]::WriteAllText($Report, [string][Console]::OutputEncoding.CodePage) }\n",
+            encoding="utf-8")
+        environment = dict(os.environ, PATH=str(tools) + os.pathsep + os.environ["PATH"],
+                           VIEWERS_TEST_LOG=str(log), VIEWERS_TEST_BUILDS=str(builds))
+        for name in ("CARGO_TARGET_DIR", "MIDNIGHT_VIEWER_SDK_CONFIG", "MIDNIGHT_VIEWERS_OFFLINE"):
+            environment.pop(name, None)
+        # The code page belongs to the console, not to the process: CREATE_NO_WINDOW gives
+        # the wrapper a console of its own and leaves the test runner's console untouched.
+        result = subprocess.run(
+            [shutil.which("pwsh") or "powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
+             str(driver), "-Script", str(checkout / "scripts/build-viewers.ps1"), "-Report", str(report)],
+            cwd=checkout, env=environment, capture_output=True, encoding="utf-8", errors="replace",
+            timeout=120, creationflags=subprocess.CREATE_NO_WINDOW)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(report.read_text(), "850", "The caller's console encoding was not restored")
+        config = checkout / "_build/api-release/midnight-api-1/.cargo/config.toml"
+        self.assertEqual([Path(line) for line in builds.read_text(encoding="utf-8").splitlines()], [config] * 3)
+        calls = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+        fetches = [call for call in calls if "--config" in call]
+        self.assertEqual([Path(call[call.index("--config") + 1]) for call in fetches], [config] * 3)
+
+
 if __name__ == "__main__":
     unittest.main()

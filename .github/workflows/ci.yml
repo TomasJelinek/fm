@@ -516,6 +516,8 @@ jobs:
         run: cargo fmt --all -- --check
       - name: Build script and packaging tests
         run: python -B -m unittest discover -s scripts/tests -v
+      - name: Shared image decoder native helper tests
+        run: python -B -m unittest discover -s plugins/image-decoder/native/tests -v
       - name: Deployment, registration and shortcut tests (Windows PowerShell 5.1 and 7)
         if: runner.os == 'Windows'
         shell: pwsh

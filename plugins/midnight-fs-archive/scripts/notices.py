@@ -121,10 +121,11 @@ def main():
     args = parser.parse_args()
     root = pathlib.Path(__file__).resolve().parents[1]
     output = checked_output(args.output)
+    # Cargo writes UTF-8 JSON; Python before 3.15 would decode it in the ANSI code page.
     metadata = json.loads(subprocess.check_output([
         "cargo", "metadata", "--format-version", "1", "--locked", "--offline",
         "--manifest-path", str(root / "Cargo.toml"), "--config", args.config,
-    ], text=True))
+    ], text=True, encoding="utf-8"))
     plan, inventory = notice_plan(metadata)
     replace_notices(output, plan, inventory)
 

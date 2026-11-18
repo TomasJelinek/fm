@@ -359,5 +359,49 @@ class ArchiveNoticeReplacementTests(unittest.TestCase):
         self.assertEqual(sorted(path.name for path in moved.iterdir()), ["inventory.json", "kept-1.0.0"])
 
 
+# Runs the notices command line in a child Python. Only Cargo is replaced: a process replays
+# the fixture metadata's raw UTF-8 bytes, so the script's own decoding of the output is real.
+REPLAYING_CARGO = """import importlib.util, subprocess, sys
+script, metadata, *arguments = sys.argv[1:]
+check_output = subprocess.check_output
+def cargo(command, **options):
+    replay = "import sys; sys.stdout.buffer.write(open(sys.argv[1], 'rb').read())"
+    return check_output([sys.executable, "-c", replay, metadata], **options)
+subprocess.check_output = cargo
+spec = importlib.util.spec_from_file_location("archive_notices", script)
+notices = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(notices)
+sys.argv = [script, *arguments]
+notices.main()
+"""
+
+
+@unittest.skipUnless(os.name == "nt", "Python before 3.15 decodes text output in the Windows ANSI code page")
+class ArchiveNoticeEncodingWindows(unittest.TestCase):
+    def test_cargo_metadata_below_a_non_ascii_path_is_decoded_as_utf8(self):
+        # A crates.io dependency below a non-ASCII CARGO_HOME, such as a user profile. Cargo
+        # writes UTF-8 JSON, which Python's pre-3.15 default (-X utf8=0) decoded as ANSI.
+        temporary = ROOT / "_build/tmp"
+        temporary.mkdir(parents=True, exist_ok=True)
+        owner = tempfile.TemporaryDirectory(prefix="archive notice encoding ", dir=temporary)
+        self.addCleanup(owner.cleanup)
+        root = Path(owner.name)
+        source = root / "Jiří 文档/.cargo/registry/src/index.crates.io-0000/zip-2.0.0"
+        source.mkdir(parents=True)
+        (source / "LICENSE-MIT").write_text("zip terms\n", encoding="utf-8")
+        metadata = root / "metadata.json"
+        metadata.write_bytes(json.dumps({"packages": [{
+            "name": "zip", "version": "2.0.0", "license": "MIT",
+            "source": "registry+https://github.com/rust-lang/crates.io-index",
+            "manifest_path": str(source / "Cargo.toml")}]}, ensure_ascii=False).encode("utf-8"))
+        output = root / "_build/package/licenses"
+        result = subprocess.run(
+            [sys.executable, "-X", "utf8=0", "-B", "-c", REPLAYING_CARGO, str(PLUGIN / "scripts/notices.py"),
+             str(metadata), "--config", str(metadata), "--output", str(output)],
+            capture_output=True, encoding="utf-8", errors="replace", timeout=60)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual((output / "zip-2.0.0/LICENSE-MIT").read_text(encoding="utf-8"), "zip terms\n")
+
+
 if __name__ == "__main__":
     unittest.main()

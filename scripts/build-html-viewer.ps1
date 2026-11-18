@@ -6,6 +6,7 @@ param(
     [switch]$Offline
 )
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'utf8-native-output.ps1')
 
 function Test-HtmlPackageCurrent([string]$StatePath, [string]$Fingerprint, [string]$Destination) {
     if (-not (Test-Path -LiteralPath $StatePath -PathType Leaf)) { return $false }
@@ -71,6 +72,8 @@ try {
     New-Item -ItemType Directory -Force $buildRoot, (Join-Path $projectRoot '_build/tmp') | Out-Null
     $env:TEMP = Join-Path $projectRoot '_build/tmp'
     $env:TMP = $env:TEMP
+    # Python before 3.15 writes and decodes text in the ANSI code page unless UTF-8 mode is on.
+    $env:PYTHONUTF8 = '1'
     if (-not $SdkConfig) {
         $stamp = (Get-ChildItem -LiteralPath (Join-Path $projectRoot 'web-viewer-api') -Recurse -File |
             Sort-Object FullName | ForEach-Object {
@@ -88,7 +91,7 @@ try {
             if ($Offline) { $fetch += '--offline' }
             & cargo @fetch
             if ($LASTEXITCODE -ne 0) { throw 'Cannot fetch public web SDK dependencies' }
-            $SdkConfig = & (Join-Path $projectRoot 'web-viewer-api/scripts/package.ps1')
+            $SdkConfig = Invoke-Utf8NativeCommand { & (Join-Path $projectRoot 'web-viewer-api/scripts/package.ps1') }
             if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $SdkConfig -PathType Leaf)) {
                 throw 'Public web SDK packager did not report a configuration'
             }
@@ -122,7 +125,7 @@ try {
     }
     $nativeArguments = $pythonArguments + @((Join-Path $PSScriptRoot 'prepare-html-cef.py'), '--output', (Join-Path $defaultTarget 'cef-sdk'))
     if ($Offline) { $nativeArguments += '--offline' }
-    $nativeOutput = & $python @nativeArguments
+    $nativeOutput = Invoke-Utf8NativeCommand { & $python @nativeArguments }
     if ($LASTEXITCODE -ne 0) { throw 'Required CEF SDK preparation failed' }
     $native = ($nativeOutput -join "`n") | ConvertFrom-Json
     if ($native.cef_path -isnot [string] -or -not (Test-Path -LiteralPath $native.cef_path -PathType Container)) {

@@ -166,7 +166,8 @@ class HtmlViewerBuildWindows(unittest.TestCase):
         self.addCleanup(owner.cleanup)
         self.root = Path(owner.name)
         (self.root / "scripts").mkdir()
-        shutil.copyfile(ROOT / "scripts/build-html-viewer.ps1", self.root / "scripts/build-html-viewer.ps1")
+        for name in ("build-html-viewer.ps1", "utf8-native-output.ps1"):
+            shutil.copyfile(ROOT / "scripts" / name, self.root / "scripts" / name)
         plugin = self.root / "plugins/midnight-viewer-html"
         for relative in ("scripts/build-windows.ps1", "scripts/package-windows.ps1", "web-viewer.json",
                          "THIRD_PARTY.md", "README.md", "Cargo.toml", "Cargo.lock", ".cargo/config.toml"):
@@ -411,6 +412,78 @@ class HtmlViewerBuildWindows(unittest.TestCase):
             with self.subTest(value=value):
                 self.assertIn("MIDNIGHT_HTML_TARGET_DIR", message or "")
         self.assertFalse(self.log.exists(), "A refused target reached Cargo")
+
+
+@unittest.skipUnless(os.name == "nt", "Windows HTML build wrapper")
+class HtmlViewerWebSdkWindows(unittest.TestCase):
+    """The real wrapper and web SDK packaging script; Cargo and the Python helpers are stubs."""
+
+    def test_web_sdk_below_a_non_ascii_path_survives_a_legacy_console_code_page(self):
+        # package.py prints the SDK configuration path, which PowerShell decoded with the
+        # console code page; Python before 3.15 also writes the ANSI code page to a pipe.
+        temporary = ROOT / "_build/tmp"
+        temporary.mkdir(parents=True, exist_ok=True)
+        owner = tempfile.TemporaryDirectory(prefix="html sdk ", dir=temporary)
+        self.addCleanup(owner.cleanup)
+        owner = Path(owner.name)
+        # cmd.exe reads a batch file in the console code page: keep the stubs on an ASCII path.
+        tools = owner / "bin"
+        tools.mkdir()
+        log = owner / "cargo.jsonl"
+        # The provider fetch is the first step that uses the SDK; stop there, since
+        # HtmlViewerBuildWindows covers the provider build and packaging.
+        (tools / "cargo.py").write_text(
+            "import json, os, sys\n"
+            "with open(os.environ['HTML_TEST_LOG'], 'a', encoding='utf-8') as log:\n"
+            "    log.write(json.dumps(sys.argv[1:]) + '\\n')\n"
+            "sys.exit(3 if '--config' in sys.argv else 0)\n", encoding="utf-8")
+        (tools / "cargo.cmd").write_text(f'@"{sys.executable}" "{tools / "cargo.py"}" %*\n')
+        checkout = owner / "Jiří 文档/checkout"
+        (checkout / "scripts").mkdir(parents=True)
+        for name in ("build-html-viewer.ps1", "utf8-native-output.ps1"):
+            shutil.copyfile(ROOT / "scripts" / name, checkout / "scripts" / name)
+        (checkout / "scripts/prepare-html-cef.py").write_text(
+            "import json, pathlib, sys\n"
+            "output = pathlib.Path(sys.argv[sys.argv.index('--output') + 1])\n"
+            "output.mkdir(parents=True)\n"
+            "print(json.dumps({'cef_path': str(output)}))\n", encoding="utf-8")
+        api = checkout / "web-viewer-api"
+        (api / "scripts").mkdir(parents=True)
+        (api / "Cargo.toml").write_text("# Workspace API0.2\n")
+        shutil.copyfile(ROOT / "web-viewer-api/scripts/package.ps1", api / "scripts/package.ps1")
+        config = checkout / "_build/web-sdk/.cargo/config.toml"
+        (api / "scripts/package.py").write_text(
+            "import pathlib\n"
+            "config = pathlib.Path(__file__).resolve().parents[2] / '_build/web-sdk/.cargo/config.toml'\n"
+            "config.parent.mkdir(parents=True)\n"
+            "config.write_text('# web SDK fixture\\n')\n"
+            "print(config)\n", encoding="utf-8")
+        report = owner / "code-page.txt"
+        driver = owner / "driver.ps1"
+        driver.write_text(
+            "param([string]$Script, [string]$Report)\n"
+            "[Console]::OutputEncoding = [Text.Encoding]::GetEncoding(850)\n"
+            "try { & $Script }\n"
+            "finally { [IO.File]::WriteAllText($Report, [string][Console]::OutputEncoding.CodePage) }\n",
+            encoding="utf-8")
+        # Python before 3.15 writes the ANSI code page to pipes; PYTHONUTF8=0 restores that default.
+        environment = dict(os.environ, PATH=str(tools) + os.pathsep + os.environ["PATH"],
+                           HTML_TEST_LOG=str(log), PYTHONUTF8="0")
+        for name in ("MIDNIGHT_HTML_SDK_CONFIG", "MIDNIGHT_HTML_TARGET_DIR", "MIDNIGHT_VIEWERS_OFFLINE",
+                     "CARGO_TARGET_DIR", "PYTHONIOENCODING"):
+            environment.pop(name, None)
+        # The code page belongs to the console, not to the process: CREATE_NO_WINDOW gives
+        # the wrapper a console of its own and leaves the test runner's console untouched.
+        result = subprocess.run(
+            [shutil.which("pwsh") or "powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
+             str(driver), "-Script", str(checkout / "scripts/build-html-viewer.ps1"), "-Report", str(report)],
+            cwd=checkout, env=environment, capture_output=True, encoding="utf-8", errors="replace",
+            timeout=120, creationflags=subprocess.CREATE_NO_WINDOW)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Cannot fetch HTML provider dependencies", result.stdout + result.stderr)
+        provider_fetch = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()][-1]
+        self.assertEqual(Path(provider_fetch[provider_fetch.index("--config") + 1]), config)
+        self.assertEqual(report.read_text(), "850", "The caller's console encoding was not restored")
 
 
 class LinuxHtmlManifest(unittest.TestCase):

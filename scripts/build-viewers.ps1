@@ -7,6 +7,7 @@ param(
     [switch]$Offline
 )
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'utf8-native-output.ps1')
 if (-not $SdkConfig) { $SdkConfig = $env:MIDNIGHT_VIEWER_SDK_CONFIG }
 if ($env:MIDNIGHT_VIEWERS_OFFLINE -eq '1') { $Offline = $true }
 $savedEnvironment = @{}
@@ -57,7 +58,7 @@ try {
             & cargo @fetch
             if ($LASTEXITCODE -ne 0) { throw 'Cannot fetch public SDK dependencies' }
             $env:CARGO_TARGET_DIR = Join-Path $buildRoot 'sdk-target'
-            $output = & (Join-Path $projectRoot 'api/scripts/package.ps1')
+            $output = Invoke-Utf8NativeCommand { & (Join-Path $projectRoot 'api/scripts/package.ps1') }
             if ($LASTEXITCODE -ne 0) { throw 'Cannot package public SDK' }
             $prefix = 'Public API/SDK release bundle: '
             $line = @($output | Where-Object { $_.ToString().StartsWith($prefix) })[-1]

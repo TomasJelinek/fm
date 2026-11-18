@@ -35,6 +35,9 @@ Every build/tool root must be an explicit absolute ordinary path below a directo
 named `_build`. Downloads, extraction, NASM objects, executables and temporary
 files stay there. Downloads are checksum-verified and bounded; archive paths,
 links, case collisions and expansion limits are checked before publication. On
+Windows, the rename that publishes an extracted tool directory is retried for up
+to 12.7 s while another process, such as antivirus software scanning a new file,
+holds a file below it (WinError 5, 32 or 33); other errors fail at once. On
 reuse, immutable tool contents are compared with the verified archive, including
 rejection of unexpected files. Verified source timestamps are retained, and NASM
 build recipes are regenerated from the pinned source before object reuse.
@@ -87,6 +90,9 @@ python3 -B -m unittest discover -s plugins/image-decoder/native/tests
 Set `MIDNIGHT_NATIVE_TEST_TOOL_ROOT` to the prepared private tool root to include
 the real pinned-Meson test with hostile cwd/Python startup modules. Without that
 explicit cache, the integration test is skipped; offline unit guards still run.
+On Windows the suite also runs both PowerShell wrappers below a non-ASCII
+directory from a console set to code page 850; the bootstrap-windows.ps1 case
+needs PowerShell 7 (pwsh) and is skipped without it.
 See the
 [native qualification evidence](../../../docs/verification/2026-11-12-native-av1.md)
 for exact hashes and limits. A compiled library and C lifecycle probe do not
