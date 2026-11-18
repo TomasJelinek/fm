@@ -6,16 +6,18 @@ enter their existing Windows AppContainer/Linux worker restrictions before
 parsing. Only opaque seek/read source bytes enter this library.
 
 PNG, JPEG, GIF, WebP, BMP, ICO and TIFF use image-rs 0.25.10 and moxcms 0.8.1.
-Orientation and embedded RGB and gray ICC profiles are honored; output is
-straight-alpha sRGB RGBA8. image-rs converts CMYK samples to RGB without a profile,
-so an embedded CMYK profile is not applied, exactly as for CMYK files without one.
-Profiles of other color models are rejected rather than claimed sRGB. CICP-only
-color signalling (AVIF nclx, PNG cICP) is not converted: those pixels are used as
-sRGB. The first still frame is used. Original dimensions are limited to 32768
-pixels per edge and 128 MiB of RGBA storage; profiles to 4 MiB. Thumbnails reduce
-the frame first, averaging colors with alpha weights so transparent edges keep
-their color, and orient the small result afterwards. A frame that already fits the
-requested bound is not resampled.
+Orientation, embedded RGB ICC profiles and gray ICC profiles of gray images are
+honored; output is straight-alpha sRGB RGBA8. image-rs converts CMYK samples to RGB
+without a profile, so an embedded CMYK profile is not applied, exactly as for CMYK
+files without one. An image whose embedded profile has another color model, or a
+gray profile on a color image, fails to decode with an `Unsupported` error rather
+than being claimed sRGB. CICP-only color signalling (AVIF nclx, PNG cICP) is not
+converted: those pixels are used as sRGB. The first still frame is used. Original
+dimensions are limited to 32768 pixels per edge and 128 MiB of RGBA storage;
+profiles to 4 MiB. Thumbnails reduce the frame first, averaging colors with alpha
+weights so pixels next to transparency are not darkened or tinted, and orient the
+small result afterwards. A frame that already fits the requested bound is not
+resampled.
 
 Source reads go through a seek-preserving window of at most 256 KiB: it batches
 small codec reads into brokered reads and keeps fetched bytes across codec seeks,

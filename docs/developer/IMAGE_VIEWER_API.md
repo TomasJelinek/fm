@@ -76,15 +76,17 @@ The image viewer and image thumbnail workers share the independent
 `plugins/image-decoder` library. PNG, JPEG, GIF, WebP, BMP, ICO and TIFF retain
 image-rs/moxcms decoding and color management: embedded RGB profiles, and gray
 profiles of gray images, are converted to sRGB. image-rs converts CMYK samples to
-RGB without a profile, so an embedded CMYK profile is not applied; profiles of other
-color models are refused rather than claimed as sRGB. CICP-only color signalling
-(AVIF nclx, PNG cICP) is not converted; those pixels are used as sRGB. Raster
-thumbnails reduce the frame first, averaging colors with alpha weights so
-transparent edges keep their color, and orient the small result afterwards; a frame
-that already fits the requested bound is not resampled. Static SVG uses pinned
-resvg 0.48.1 inside the same restricted worker boundary. SVG thumbnails rasterize
-directly at the requested size; the viewer retains a bounded original-size raster,
-so magnifying SVG uses image sampling rather than rerendering vectors.
+RGB without a profile, so an embedded CMYK profile is not applied. An image whose
+embedded profile has another color model, or a gray profile on a color image,
+fails to decode with an `Unsupported` error instead of being shown as sRGB.
+CICP-only color signalling (AVIF nclx, PNG cICP) is not converted; those pixels are
+used as sRGB. Raster thumbnails reduce the frame first, averaging colors with alpha
+weights so pixels next to transparency are not darkened or tinted, and orient the
+small result afterwards; a frame that already fits the requested bound is not
+resampled. Static SVG uses pinned resvg 0.48.1 inside the same restricted worker
+boundary. SVG thumbnails rasterize directly at the requested size; the viewer
+retains a bounded original-size raster, so magnifying SVG uses image sampling
+rather than rerendering vectors.
 
 SVG supports paths/shapes, gradients, bounded local reuse and text from embedded
 Noto Sans fonts. It does not load system/document-selected fonts, local or remote
