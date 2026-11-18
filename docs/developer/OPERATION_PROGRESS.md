@@ -70,10 +70,12 @@ verified success. Later ready jobs may bypass waiters and unfilled handoffs.
 
 `EarlierTransfers` means an outstanding explicit dependency; `Resources` means
 actual I/O, namespace or scope admission is blocked. Selecting a policy alone is
-not a current wait. Display Queued/waiting or Waiting for available capacity;
-Discovering/Calculating requires actual discovery activity. Clear wait reasons on
-acquisition, cancel-request and terminal publication. Cancellation, pause and
-decision state take precedence over ordinary wait/discovery presentation.
+not a current wait. While waiting, a Copy/Move shows Queued, Queued — waiting for
+earlier transfers or Waiting for available capacity. It shows Discovering only while
+its discovery is actually scanning and never shows Calculating (see ETA under
+[Verification and charts](#verification-and-charts); Delete differs there). Clear
+wait reasons on acquisition, cancel-request and terminal publication. Cancellation,
+pause and decision state take precedence over ordinary wait/discovery presentation.
 
 Each job retains one whole-job namespace share and its complete native scopes
 through actual provider destruction, plus one retained slot identity of the
@@ -201,10 +203,14 @@ Logical committed bytes are separate from actual I/O counters. Retries and
 verification reads cannot inflate completion. Cross-volume Move keeps files in
 Items remaining until their source removal is confirmed, even when destination
 publication has already succeeded. ETA is an explicitly approximate
-presentation of remaining logical work and backend-measured rates. While
-discovery or rates are unavailable, Delete shows Time remaining: Calculating..., and
-Copy/Move show their current activity instead (for example Copying..., Saving... or
-Verifying current file...). While paused, both show Paused instead of an estimate.
+presentation of remaining logical work and backend-measured rates. Copy/Move
+without an estimate show their current activity instead (for example Copying...,
+Saving... or Verifying current file...). Delete has no activity label: whenever it
+has no estimate (for example while Queued, before its discovery completes or a rate
+is measured, or after a failed item) it shows Time remaining: Calculating..., and
+its headline reads Discovering: N items until its discovery finishes, already
+showing 0 items while it is Queued and discovery has not started. While paused,
+both show Paused instead of an estimate.
 The backend budgets writes and selected-policy readback for each discovered file:
 full length for SHA-256, or up to 192 KiB of disjoint samples. Cross-volume Move
 also includes source and destination proof reads both before and after source
