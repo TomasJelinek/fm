@@ -242,13 +242,24 @@ fn font_options_keep_family_and_density_bases_independent() {
 
 /// The User menu is sized for its title and all of its rows at every font size and
 /// density: Close, the last row, is visible without scrolling and ends the list
-/// with no blank band below it.
+/// with no blank band below it, down to the smallest desktop font.
 #[test]
 fn user_menu_fits_its_rows_at_every_font_size() {
     let mut test = ui::TestUi::new();
     test.set_size(1040, 820);
     let window = test.window.clone_strong();
-    for (density, font) in [(0, 12), (0, 13), (0, 16), (0, 32), (1, 15), (1, 32)] {
+    let smallest = i32::from(midnight_core::FONT_SIZE_MIN);
+    for (density, font) in [
+        (0, smallest),
+        (0, 10),
+        (0, 12),
+        (0, 13),
+        (0, 16),
+        (0, 32),
+        (1, smallest),
+        (1, 15),
+        (1, 32),
+    ] {
         window.invoke_apply_fonts("".into(), font, font);
         window.invoke_apply_preferences(0, density);
         window.invoke_focus_files();
