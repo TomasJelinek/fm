@@ -245,19 +245,9 @@ fn font_options_keep_family_and_density_bases_independent() {
 /// of the list stays blank below it.
 #[test]
 fn user_menu_fits_its_rows_at_every_font_size() {
-    let native = MinimalSoftwareWindow::new(RepaintBufferType::ReusedBuffer);
-    slint::platform::set_platform(Box::new(TestPlatform(native.clone()))).unwrap();
-    let window = MainWindow::new().unwrap();
-    window.set_preferences_ready(true);
-    midnight_ui::install_file_keys(&window);
-    window.show().unwrap();
-    window
-        .window()
-        .dispatch_event(WindowEvent::WindowActiveChanged(true));
-    native.set_size(slint::PhysicalSize::new(1040, 820));
-    window.window().dispatch_event(WindowEvent::Resized {
-        size: slint::LogicalSize::new(1040.0, 820.0),
-    });
+    let mut test = ui::TestUi::new();
+    test.set_size(1040, 820);
+    let window = test.window.clone_strong();
     for (density, font) in [(0, 12), (0, 13), (0, 16), (0, 32), (1, 15), (1, 32)] {
         window.invoke_apply_fonts("".into(), font, font);
         window.invoke_apply_preferences(0, density);
