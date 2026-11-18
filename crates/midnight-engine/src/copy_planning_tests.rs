@@ -156,7 +156,9 @@ fn fixture(opaque: bool) -> (tempfile::TempDir, RetainedService, Arc<Counts>) {
 fn known(source: &dyn TransferSource, cancel: &Cancellation) {
     assert!(
         matches!(source.native_namespace_scope(cancel).unwrap().unwrap().refresh(cancel).unwrap(), TransferNamespaceProbe::Known(scopes) if !scopes.is_empty()),
-        "this native qualification fixture requires a supported local lookup domain"
+        "this native qualification fixture requires a supported local lookup domain: on Windows, \
+         TEMP and TMP on an NTFS volume with persistent 8.3 short-name creation disabled \
+         (docs/developer/TEST_EXECUTION.md)"
     );
 }
 
