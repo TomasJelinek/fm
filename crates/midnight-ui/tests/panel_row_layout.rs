@@ -371,7 +371,7 @@ fn folder_links_files_and_folders_share_the_same_name_gutter() {
         FileRow {
             identity: "junction".into(),
             name: "Documents and Settings".into(),
-            kind: "Folder link".into(),
+            folder_link: true,
             directory: true,
             ..Default::default()
         },
@@ -400,6 +400,14 @@ fn folder_links_files_and_folders_share_the_same_name_gutter() {
             "mode {mode}: {positions:?}"
         );
         render::snapshot(&test, &format!("panel-row-gutter-mode-{mode}"));
+        // Accessibility announces only the link row as a folder link.
+        for label in [
+            "Ordinary folder",
+            "Documents and Settings · Folder link",
+            "regular.txt",
+        ] {
+            ui::root_item(&test.window, label, AccessibleRole::ListItem);
+        }
     }
 }
 

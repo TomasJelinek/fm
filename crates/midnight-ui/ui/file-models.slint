@@ -19,8 +19,8 @@ export struct FileRow {
     warning-revision: string,
     modified-date: string,
     modified-time: string,
-    // "Folder link" for directory links (announced by accessibility), otherwise empty.
-    kind: string,
+    // A directory link; accessibility announces it as a folder link.
+    folder-link: bool,
     icon: image,
     directory: bool,
     selected: bool,

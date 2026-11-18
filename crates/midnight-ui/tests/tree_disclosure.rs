@@ -330,7 +330,7 @@ fn recursive_disclosure_uses_pressed_control_in_both_panes_and_all_layouts() {
             for link in [false, true] {
                 for expanded in [false, true] {
                     let mut row = folders().row_data(0).unwrap();
-                    row.kind = if link { "Folder link" } else { "Folder" }.into();
+                    row.folder_link = link;
                     row.tree_expanded = expanded;
                     row.tree_disclosure = if expanded { 4 } else { 3 };
                     rows.set_row_data(0, row);

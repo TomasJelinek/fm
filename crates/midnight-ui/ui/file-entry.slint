@@ -68,7 +68,7 @@ export component FileEntry inherits Rectangle {
     // and other metadata keep their established theme colors and contrast.
     background: root.row-color;
     accessible-role: list-item;
-    accessible-label: item.name + (item.kind == "Folder link" ? " · Folder link" : "")
+    accessible-label: item.name + (item.folder-link ? " · Folder link" : "")
         + (item.compressed ? " · Filesystem compressed" : "")
         + (item.browsable-archive ? " · Archive: open as folder" : "")
         + (item.size-state == 3 ? " · Folder size warning" : "");

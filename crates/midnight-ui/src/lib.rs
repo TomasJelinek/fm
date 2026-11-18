@@ -110,9 +110,6 @@ use std::{
 
 pub use midnight_ui_bindings::*;
 
-/// `FileRow.kind` marker that file-entry.slint announces as " · Folder link".
-const FOLDER_LINK_KIND: &str = "Folder link";
-
 struct Rows {
     presenter: Rc<RefCell<Presenter>>,
     pane: PaneId,
@@ -254,13 +251,6 @@ impl Model for Rows {
         let (modified_date, modified_time) = time_presentation::modified(metadata)
             .map(|value| (value.date, value.time))
             .unwrap_or_else(|| ("—".into(), "—".into()));
-        // Slint reads `kind` only to announce folder links. Leave it empty
-        // otherwise: every visible row is rebuilt on scroll and refresh.
-        let kind = if entry.kind == EntryKind::DirectoryLink {
-            SharedString::from(FOLDER_LINK_KIND)
-        } else {
-            SharedString::default()
-        };
         let filename_style = state.filename_style(self.pane, entry);
         Some(FileRow {
             // Include intent and committed generations: a pending refresh may keep
@@ -304,7 +294,7 @@ impl Model for Rows {
             },
             modified_date: modified_date.into(),
             modified_time: modified_time.into(),
-            kind,
+            folder_link: entry.kind == EntryKind::DirectoryLink,
             icon: state.thumbnail_image(self.pane, entry).unwrap_or_else(|| {
                 state
                     .desktop
