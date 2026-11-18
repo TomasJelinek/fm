@@ -27,6 +27,10 @@ fn find(item: ItemRc, predicate: &dyn Fn(&ItemRc) -> bool) -> Option<ItemRc> {
 }
 
 fn popup(open: &OpenWindow) -> ItemRc {
+    // The mode chooser is a CompactPicker, which closes an open list when its model
+    // changes. Run the change handlers that configure's model write queued first, as
+    // the event loop does before a user can open the list.
+    slint::platform::update_timers_and_animations();
     let inner = WindowInner::from_pub(open.window.window());
     let combo = find(ItemRc::new_root(inner.component()), &|item| {
         item.accessible_role() == AccessibleRole::Combobox
