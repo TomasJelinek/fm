@@ -4,12 +4,10 @@
 //! in-memory default preferences (Thumbnails view on both panes with `thumbnails`), waits
 //! `warmup_s` seconds after the event loop starts, counts winit wakeups by cause for
 //! `seconds`, prints one line to stderr and quits the event loop. Without the variable
-//! nothing is installed. Measure serially, with the pointer outside the window, in an
+//! nothing is measured. Measure serially, with the pointer outside the window, in an
 //! unlocked session: the reported timer lateness shows when the OS coalesced timers.
-use slint::winit_030::{
-    CustomApplicationHandler, EventResult,
-    winit::{event::StartCause, event_loop::ActiveEventLoop},
-};
+//! The explorer's application handler (`native_events`) forwards the loop events.
+use slint::winit_030::winit::event::StartCause;
 use std::{
     cell::Cell,
     rc::Rc,
@@ -114,7 +112,7 @@ impl Probe {
     }
 
     /// Arm the warmup and then the measurement once the event loop is running.
-    fn arm(&mut self) {
+    pub(crate) fn arm(&mut self) {
         if std::mem::replace(&mut self.armed, true) {
             return;
         }
@@ -143,18 +141,6 @@ impl Probe {
                 let _ = slint::quit_event_loop();
             });
         });
-    }
-}
-
-impl CustomApplicationHandler for Probe {
-    fn new_events(&mut self, _: &ActiveEventLoop, cause: StartCause) -> EventResult {
-        self.wakeup(cause);
-        EventResult::Propagate
-    }
-
-    fn about_to_wait(&mut self, _: &ActiveEventLoop) -> EventResult {
-        self.arm();
-        EventResult::Propagate
     }
 }
 

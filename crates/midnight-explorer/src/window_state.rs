@@ -1,5 +1,9 @@
 //! Native geometry is sampled on the UI; serialization and storage stay on the
 //! existing bounded settings worker. Never publish defaults over an unread file.
+//!
+//! The sampler runs only after a native resize, move or scale change of the main
+//! window or a restoration, and stops once nothing is dirty and no save retry waits.
+use crate::pulse::Pulse;
 use midnight_core::{Command, WindowGeometry, WindowMonitor, WindowRect};
 use midnight_ui::{MainWindow, Presenter};
 use slint::{ComponentHandle, winit_030::WinitWindowAccessor};
@@ -17,6 +21,8 @@ mod policy;
 mod position_tests;
 #[cfg(all(test, windows))]
 mod startup_native_tests;
+#[cfg(test)]
+mod wake_tests;
 
 const POLL: Duration = Duration::from_millis(100);
 const IDLE: Duration = Duration::from_millis(600);
@@ -32,9 +38,9 @@ struct State {
 }
 
 pub(crate) struct WindowState {
-    timer: slint::Timer,
+    /// None when geometry is not persisted (automated UI runs).
+    pulse: Option<Rc<Pulse>>,
     state: Rc<RefCell<State>>,
-    enabled: bool,
 }
 
 impl WindowState {
@@ -45,32 +51,38 @@ impl WindowState {
         enabled: bool,
     ) -> Self {
         let state = Rc::new(RefCell::new(State::default()));
-        let timer = slint::Timer::default();
-        if enabled {
+        let pulse = enabled.then(|| {
             let weak = window.as_weak();
             let shared = state.clone();
-            timer.start(slint::TimerMode::Repeated, POLL, move || {
-                let Some(window) = weak.upgrade() else { return };
+            Pulse::start(POLL, move || {
+                let Some(window) = weak.upgrade() else {
+                    return false;
+                };
+                let mut shared = shared.borrow_mut();
                 if window.window().is_visible() {
-                    shared.borrow_mut().sample(
+                    shared.sample(
                         &window,
                         &mut presenter.borrow_mut(),
                         commands.as_ref(),
                         false,
                     );
                 }
-            });
-        }
-        Self {
-            timer,
-            state,
-            enabled,
+                shared.pending()
+            })
+        });
+        Self { pulse, state }
+    }
+
+    /// A native resize, move or scale change of the main window: sample until it settles.
+    pub(crate) fn geometry_changed(&self) {
+        if let Some(pulse) = &self.pulse {
+            pulse.wake();
         }
     }
 
     pub(crate) fn finish(&self, window: &MainWindow, presenter: &mut Presenter) {
-        self.timer.stop();
-        if self.enabled {
+        if let Some(pulse) = &self.pulse {
+            pulse.stop();
             // Leave the final command for the bounded asynchronous shutdown grace.
             self.state
                 .borrow_mut()
@@ -79,13 +91,20 @@ impl WindowState {
     }
 
     pub(crate) fn restore(&self, window: &MainWindow, presenter: &Presenter) {
-        if self.enabled {
+        if self.pulse.is_some() {
             self.state.borrow_mut().restore(window, presenter);
+            // Sample the revealed placement once, as the first session saves its default.
+            self.geometry_changed();
         }
     }
 }
 
 impl State {
+    /// A change waits for its save, or a refused save waits for its retry.
+    fn pending(&self) -> bool {
+        self.dirty_since.is_some() || self.changed_at.is_some() || self.retry_at.is_some()
+    }
+
     fn restore(&mut self, window: &MainWindow, presenter: &Presenter) {
         if self.initialized || !presenter.window_geometry_ready() {
             return;

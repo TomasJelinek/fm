@@ -6,6 +6,8 @@ mod command_reclaim;
 mod comparator;
 mod idle_probe;
 mod native_content;
+mod native_events;
+mod pulse;
 mod shutdown;
 mod shutdown_preferences;
 mod size_refresh;
@@ -305,9 +307,12 @@ fn run_window(
         false,
     );
     let wakeup_probe = idle_probe::from_env();
-    if let Err(error) =
-        window_backend::select(options.software, wakeup_probe.map(idle_probe::Probe::new))
-    {
+    let main_events = Rc::new(native_events::MainWindowEvents::default());
+    let observer = native_events::Observer::new(
+        wakeup_probe.map(idle_probe::Probe::new),
+        main_events.clone(),
+    );
+    if let Err(error) = window_backend::select(options.software, observer) {
         return startup_recovery::native_failure(
             format!("Cannot initialize renderer: {error}"),
             may_retry,
@@ -320,6 +325,7 @@ fn run_window(
             return startup_recovery::native_failure(error, may_retry);
         }
     };
+    main_events.bind(&window);
     // This owner aborts/wakes a pending settings write on every early return.
     let startup_owner = startup_gate::Owner::new();
     let settings = match wakeup_probe {
@@ -502,6 +508,12 @@ fn run_window(
         control_send.clone(),
         !options.ui_smoke,
     ));
+    let geometry_state = Rc::downgrade(&window_state);
+    main_events.on_geometry(move || {
+        if let Some(state) = geometry_state.upgrade() {
+            state.geometry_changed();
+        }
+    });
     let startup = Rc::new(startup::Startup::install(
         &window,
         presenter.clone(),
