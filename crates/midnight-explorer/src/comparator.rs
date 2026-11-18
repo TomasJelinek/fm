@@ -68,6 +68,19 @@ pub(crate) fn install(
     windows
 }
 
+/// Comparators opened before the initial settings read show the default comparison font;
+/// apply the loaded one, merged with edits made before the read, as viewers restore their
+/// preferences. Call once that read, successful or failed, was applied.
+pub(crate) fn settings_applied(windows: &ComparatorWindows, presenter: &RefCell<Presenter>) {
+    let family = presenter
+        .borrow()
+        .viewer_preferences()
+        .comparison_font
+        .clone();
+    // No Presenter borrow is held while windows send their inputs.
+    windows.restore_font(&family);
+}
+
 pub(crate) fn service(
     runtime: &tokio::runtime::Handle,
     filesystem: Arc<midnight_native_filesystem_host::InstalledProvider>,

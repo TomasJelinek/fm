@@ -9,10 +9,10 @@ pub(super) fn present(open: &OpenWindow, fonts: Option<&FontChoices>) {
         return;
     };
     let mut current = open.fonts.borrow_mut();
-    if current
+    let arrived = current
         .as_ref()
-        .is_none_or(|old| !Arc::ptr_eq(&old.families, &fonts.families))
-    {
+        .is_none_or(|old| !Arc::ptr_eq(&old.families, &fonts.families));
+    if arrived {
         let choices = std::iter::once(SharedString::from("System monospace"))
             .chain(
                 fonts
@@ -37,6 +37,36 @@ pub(super) fn present(open: &OpenWindow, fonts: Option<&FontChoices>) {
     open.window.set_font_index(index as i32);
     open.window.set_fonts_ready(true);
     *current = Some(fonts.clone());
+    drop((current, requested));
+    // A font restored before the catalog arrived: only now can the worker change to it.
+    if arrived && let Some(family) = open.restored_font.take() {
+        request_restored(open, &family);
+    }
+}
+
+/// Apply a loaded comparison font without saving it (`ComparatorWindows::restore_font`).
+pub(super) fn restore(open: &OpenWindow, family: &str) {
+    if open.fonts.borrow().is_none() {
+        // The worker ignores a font change until its catalog is known.
+        *open.restored_font.borrow_mut() = Some(family.to_owned());
+    } else {
+        request_restored(open, family);
+    }
+}
+
+/// Ask the worker for `family`; the choice shown follows the frame it paints with it. A
+/// family the catalog does not offer leaves the font as it is.
+fn request_restored(open: &OpenWindow, family: &str) {
+    let change = open.fonts.borrow().as_ref().is_some_and(|fonts| {
+        let current = open.requested_font.borrow();
+        current.as_deref().unwrap_or(&fonts.selected) != family
+            && (family == "monospace" || fonts.families.iter().any(|name| name == family))
+    });
+    if change {
+        // The loaded choice replaces an explicit one the worker has not shown yet.
+        *open.requested_font.borrow_mut() = None;
+        open.send(Input::FontFamily(family.to_owned()));
+    }
 }
 
 pub(super) fn bind(open: &Rc<OpenWindow>, listener: Rc<RefCell<Option<FontListener>>>) {

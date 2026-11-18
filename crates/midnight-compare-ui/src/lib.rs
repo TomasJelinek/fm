@@ -53,6 +53,8 @@ struct OpenWindow {
     choice_paths: RefCell<[std::path::PathBuf; 2]>,
     fonts: RefCell<Option<midnight_compare_engine::FontChoices>>,
     requested_font: RefCell<Option<String>>,
+    /// A loaded comparison font that waits for the font catalog (`fonts::restore`).
+    restored_font: RefCell<Option<String>>,
     surfaces: RefCell<images::Surfaces>,
 }
 /// Inputs waiting for room in the bounded session queue.
@@ -63,6 +65,24 @@ const MAX_PENDING: usize = 64;
 const BATCH_INTERVAL: Duration = Duration::from_millis(16);
 
 impl OpenWindow {
+    fn new(window: ComparatorWindow, session: Session) -> Rc<Self> {
+        Rc::new_cyclic(|me| OpenWindow {
+            window,
+            session,
+            me: me.clone(),
+            batch: Timer::default(),
+            poll: Timer::default(),
+            closed: Cell::new(false),
+            geometry: Cell::new((0, 0, 0)),
+            geometry_revision: Cell::new(0),
+            pending: RefCell::new(Vec::new()),
+            choice_paths: RefCell::new(Default::default()),
+            fonts: RefCell::new(None),
+            requested_font: RefCell::new(None),
+            restored_font: RefCell::new(None),
+            surfaces: RefCell::new(images::Surfaces::default()),
+        })
+    }
     fn send(&self, input: Input) {
         if self.closed.get() {
             return;
@@ -263,21 +283,7 @@ impl ComparatorWindows {
                     .is_ok()
             }),
         )?;
-        let open = Rc::new_cyclic(|me| OpenWindow {
-            window,
-            session,
-            me: me.clone(),
-            batch: Timer::default(),
-            poll: Timer::default(),
-            closed: Cell::new(false),
-            geometry: Cell::new((0, 0, 0)),
-            geometry_revision: Cell::new(0),
-            pending: RefCell::new(Vec::new()),
-            choice_paths: RefCell::new(Default::default()),
-            fonts: RefCell::new(None),
-            requested_font: RefCell::new(None),
-            surfaces: RefCell::new(images::Surfaces::default()),
-        });
+        let open = OpenWindow::new(window, session);
         bind(&open, keys, self.service.clone());
         fonts::bind(&open, self.font_listener.clone());
         file_choice::bind(&open, self.picker_owner);
@@ -309,6 +315,19 @@ impl ComparatorWindows {
         for open in self.windows.borrow_mut().drain(..) {
             open.close();
             self.service.retire(open.session.mailbox.take());
+        }
+    }
+    /// Apply the comparison font that the settings read loaded to the open windows, as
+    /// viewer windows restore their preferences: nothing is saved and the font listener is
+    /// not called. A window still waiting for its font catalog applies it with the catalog.
+    pub fn restore_font(&self, family: &str) {
+        for open in self
+            .windows
+            .borrow()
+            .iter()
+            .filter(|open| !open.closed.get())
+        {
+            fonts::restore(open, family);
         }
     }
 }
@@ -575,6 +594,92 @@ mod window_tests {
         );
         assert_eq!(window.get_left_name(), "C:\\in\\photo\\u202Egpj.exe");
         assert_eq!(window.get_right_name(), "C:\\in\\plain.txt");
+    }
+
+    /// The font families of the inputs the window sent or holds for its worker.
+    fn fonts_sent(open: &OpenWindow) -> Vec<String> {
+        open.pending
+            .borrow()
+            .iter()
+            .filter_map(|input| match input {
+                Input::FontFamily(family) => Some(family.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_restored_font_reaches_the_worker_with_its_catalog_and_is_not_saved() {
+        slint::platform::set_platform(Box::new(TestPlatform)).unwrap();
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let service = Service::new(runtime.handle().clone());
+        // A worker for the file form. Its outputs are never presented here, and it has no
+        // wake, so it cannot reach the process-wide event-loop proxy.
+        let session = service
+            .open_with_wake(
+                FileCompareLaunch {
+                    sources: Vec::new(),
+                    disabled_plugins: Arc::from([]),
+                },
+                ViewerAppearance {
+                    family: "monospace".into(),
+                    font_size: 14.0,
+                    foreground: [240, 240, 240, 255],
+                    background: [20, 20, 20, 255],
+                    selection: [60, 80, 120, 255],
+                    accent: [100, 150, 220, 255],
+                },
+                ViewerGeometry {
+                    width: 200,
+                    height: 100,
+                    scale: 1.0,
+                },
+                Arc::new(|| false),
+            )
+            .unwrap();
+        let open = OpenWindow::new(ComparatorWindow::new().unwrap(), session);
+        let saved = Rc::new(Cell::new(0));
+        let counted = saved.clone();
+        let listener: FontListener = Rc::new(move |_| counted.set(counted.get() + 1));
+        fonts::bind(&open, Rc::new(RefCell::new(Some(listener))));
+        let manager = ComparatorWindows::new(service);
+        manager.windows.borrow_mut().push(open.clone());
+        // Inputs right after a sent batch wait for the next one, so what the window sends
+        // stays in its queue; the batch timer never fires without a timer update.
+        open.flush();
+        assert!(open.batch.running());
+
+        // The worker ignores a font change before its catalog: the window keeps the family
+        // and sends it once the catalog arrives.
+        manager.restore_font("Mono B");
+        assert!(fonts_sent(&open).is_empty());
+        let families: Arc<[String]> = Arc::from(["Mono A".to_owned(), "Mono B".to_owned()]);
+        let catalog = |selected: &str| midnight_compare_engine::FontChoices {
+            families: families.clone(),
+            selected: selected.into(),
+        };
+        fonts::present(&open, Some(&catalog("Mono A")));
+        assert_eq!(fonts_sent(&open), ["Mono B"]);
+        assert_eq!(
+            open.window.get_font_index(),
+            1,
+            "the choice follows the worker, which still paints Mono A"
+        );
+        fonts::present(&open, Some(&catalog("Mono B")));
+        assert_eq!(open.window.get_font_index(), 2);
+
+        // With the catalog known a restore is sent at once, unless the worker already
+        // paints the family or the catalog does not offer it.
+        open.pending.borrow_mut().clear();
+        manager.restore_font("Mono B");
+        manager.restore_font("Missing Mono");
+        assert!(fonts_sent(&open).is_empty());
+        manager.restore_font("monospace");
+        assert_eq!(fonts_sent(&open), ["monospace"]);
+        fonts::present(&open, Some(&catalog("monospace")));
+        assert_eq!(open.window.get_font_index(), 0);
+        assert_eq!(saved.get(), 0, "restoring saves nothing");
+        manager.close_all();
     }
 }
 
