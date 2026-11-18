@@ -277,9 +277,8 @@ produces no displayable frame ([patch provenance](../vendor/image/MIDNIGHT_PATCH
 and the FemtoVG 0.27.0 WGPU patch hardened its binding cache and upload staging
 ([vendor notes](../vendor/README.md)). Those two records describe the current
 patches. The copy that the image viewer and the image thumbnailer distribute,
-`plugins/image-decoder/notices/image-0.25.10/MIDNIGHT_PATCH.md`, still describes only
-the constructor change, as does the image viewer's `THIRD-PARTY.md`; updating both
-from the vendored record is pending.
+`plugins/image-decoder/notices/image-0.25.10/MIDNIGHT_PATCH.md`, is identical to the
+vendored record, and the image viewer's `THIRD-PARTY.md` names both changes.
 
 Windows/Linux native 0.2 source is integrated in D merge `5baee471` from C commit
 `42d45def` (25 matching paths). The plugins are not deployed and engine/UI cutover

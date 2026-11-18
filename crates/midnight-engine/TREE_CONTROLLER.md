@@ -105,6 +105,18 @@ generation cancellation rules and prevent canceled option publications.
   projection and stale-result cleanup. A recursive result releases them right
   after installation; its batch is projected once when the batch finishes.
   A saturated typed navigation request is rejected explicitly and may be retried.
+- After applying, restoring or discarding each branch completion, the session
+  checks the provider references its model no longer holds and releases them
+  once due: when released references reach the larger of the live occurrences
+  and 4,096, exceed 4,096 after a failed or unpublished listing, or 1,024
+  completions have passed. The tree skips the check while any of its branch work
+  or results is outstanding (a pane runs one branch job, so none is then) and
+  during an unpublished recursive batch, whose rollback restores occurrences; the
+  lease's reclaim gate skips the pass while a listing, probe or parent lookup of
+  the mount is running. A pass runs before that completion's publication; in
+  measured churn it lengthened applying that completion by 7-22%. Captured
+  operation, clipboard, drop and watch targets check registration only and are
+  unaffected. See [inline provider branches](../../docs/developer/INLINE_TREES.md#budgets).
 - Maintenance listings (refresh of loaded native branches) hold every share of
   the engine's transfer-namespace gate through each list/apply step, so they
   never observe a running transfer. While transfers run, the model worker

@@ -137,8 +137,12 @@ each package. The packager also requires and ships `midnight-elevated-listing`
 (`.exe` on Windows) beside the executable. **Retry with authorization** uses it only
 when an administrator (Windows, for example below `C:\Program Files`) or root (Linux,
 for example `/opt/midnight-explorer`) installs the extracted folder where standard
-users cannot change it; the bundled README explains this. Private per-user
-installations, including `build.bat`'s, do not offer it.
+users cannot change it; the bundled README explains this. In private per-user
+installations, including `build.bat`'s, and in an extracted folder that its user can
+change, the retry is still offered but is refused with that requirement. Packages
+built before this check used the shipped helper from such a folder; see
+[the authorization helper](../SECURITY.md#directory-authorization-helper) for what
+their users must replace or delete.
 The packager also requires one compatible native and one network filesystem provider
 and the `midnight.fs.archive` worker under `filesystems/` (or `--filesystems-root`).
 It validates the native protocol, ABI, target, address encoding, capabilities,
