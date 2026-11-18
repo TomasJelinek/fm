@@ -1,5 +1,5 @@
 #![cfg(target_os = "linux")]
-use midnight_worker_platform::{CpuBudget, ResourcePolicy};
+use midnight_worker_platform::{CpuBudget, ExitStatus, ResourcePolicy};
 use rustix::process::{Resource, Rlimit, setrlimit};
 
 #[test]
@@ -24,6 +24,8 @@ fn no_additional_cpu_limit_preserves_inherited_hard_limits() {
         .unwrap();
         midnight_worker_sdk::read_policy_ready(&mut worker.output).unwrap();
         worker.process.kill().unwrap();
+        // The running worker was killed: its exit names SIGKILL.
+        assert_eq!(worker.process.wait_status().unwrap(), ExitStatus::Signal(9));
         assert!(!worker.process.wait().unwrap());
         return;
     }

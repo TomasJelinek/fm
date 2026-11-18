@@ -4,7 +4,7 @@
 //! inheritable only for its `CreateProcessW` call, under the process-creation lock, and are
 //! closed before the lock is released, so launches that inherit all inheritable handles
 //! (`std::process::Command`) cannot capture them unless they overlap that single call.
-use crate::{CpuBudget, ResourcePolicy, Worker};
+use crate::{CpuBudget, ExitStatus, ResourcePolicy, Worker};
 use std::{
     fs::{File, OpenOptions},
     io,
@@ -47,7 +47,12 @@ impl Process {
 
     /// Wait for the worker to exit; `Ok(false)` reports a nonzero exit status, as on Linux.
     pub fn wait(&mut self) -> io::Result<bool> {
-        wait_process(&self.process).map(|code| code == 0)
+        self.wait_status().map(ExitStatus::success)
+    }
+
+    /// Wait for the worker to exit and return its full 32-bit exit code.
+    pub fn wait_status(&mut self) -> io::Result<ExitStatus> {
+        wait_process(&self.process).map(ExitStatus::Code)
     }
 }
 
