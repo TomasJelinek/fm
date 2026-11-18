@@ -149,6 +149,12 @@ pub trait PreparedMutation: Send + Sync {
     }
     /// Snapshot child names and pin identities before any child is renamed. Implementations
     /// reject links/mount crossings and enforce MAX_METADATA_TARGETS / names-byte limits.
+    ///
+    /// A directory with more than `max_targets` children (at most MAX_METADATA_TARGETS),
+    /// or whose child names exceed the names-byte limit, fails with
+    /// `std::io::ErrorKind::Other` before any child is opened or pinned. Every other
+    /// failure uses another kind: callers rely on `Other` to tell this budget refusal
+    /// apart (the engine reports it as too few pinned targets for the folder).
     fn metadata_children(
         &self,
         cancel: &Cancellation,

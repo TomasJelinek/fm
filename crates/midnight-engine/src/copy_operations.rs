@@ -1,6 +1,7 @@
 //! Bounded independent transfers with admission-ordered opt-in waiting.
-//! Each active job retains its real I/O slot and complete native namespace claim
-//! through checked teardown. Within-job file parallelism remains separately gated.
+//! Each active job retains its I/O slot identity and complete native namespace claim
+//! through checked teardown; the slot consumes capacity only while the job executes
+//! native steps. Within-job file parallelism remains separately gated.
 use crate::Outbox;
 use crate::operation_throughput::{CADENCE, Tracker};
 use midnight_core::*;
