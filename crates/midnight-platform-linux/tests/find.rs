@@ -165,17 +165,30 @@ fn locations_reached_through_ancestor_links_are_searchable_but_never_the_final_l
 }
 
 #[test]
-fn native_find_metadata_uses_existing_backend_locale_date_and_time() {
+fn native_find_leaves_dates_to_the_engine_locale_which_formats_them_like_listings() {
     let temporary = tempfile::tempdir().unwrap();
     let path = temporary.path().join("localized.txt");
     fs::write(&path, b"date metadata").unwrap();
     let service = LinuxFileSystem::new(None);
-    let metadata = service.entry_metadata(&path).unwrap();
-    let source = service
-        .open_find_source(&path, &Cancellation::default())
-        .unwrap();
-    assert_eq!(
-        source.entry().metadata.localized_modified,
-        metadata.localized_modified
-    );
+    let cancel = Cancellation::default();
+    let listed = service.entry_metadata(&path).unwrap();
+    assert!(listed.localized_modified.is_some());
+    // Neither an opened source nor an enumerated child is formatted per node...
+    let source = service.open_find_source(&path, &cancel).unwrap();
+    let mut directory = service.open_find_source(temporary.path(), &cancel).unwrap();
+    let Some(FindChild::Entry(child)) = directory.next_child(&cancel).unwrap() else {
+        panic!("the fixture file is enumerated");
+    };
+    for entry in [source.entry(), directory.entry(), child.entry()] {
+        assert_eq!(entry.metadata.localized_modified, None, "{:?}", entry.path);
+    }
+    // ...and the engine formats a result's captured time with this native locale
+    // exactly as the panel listing does.
+    for entry in [source.entry(), child.entry()] {
+        assert_eq!(entry.metadata.modified, listed.modified);
+        assert_eq!(
+            service.format_datetime(entry.metadata.modified.unwrap()),
+            listed.localized_modified
+        );
+    }
 }
