@@ -119,6 +119,23 @@ pub(super) struct TreeControl {
     retiring: Option<u64>,
     diagnostic: Option<TreeDiagnostic>,
     exhausted: bool,
+    /// Send times of the session's last `Changed` hints, oldest first.
+    #[cfg(test)]
+    hints: std::collections::VecDeque<Instant>,
+}
+
+/// Test view of a session's dirty epochs and hint pacing.
+#[cfg(test)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct TreeFence {
+    pub(super) epoch: u64,
+    pub(super) acknowledged: u64,
+    /// The dirty epoch a successful refresh captured, until an exact Commit
+    /// acknowledges it.
+    pub(super) fence: Option<u64>,
+    /// Send times of the session's last 16 `Changed` hints, oldest first,
+    /// recorded by the worker under the control lock.
+    pub(super) hints: Vec<Instant>,
 }
 
 #[derive(Clone, Copy)]
@@ -146,7 +163,17 @@ impl TreeControl {
             retiring: None,
             diagnostic: None,
             exhausted: false,
+            #[cfg(test)]
+            hints: std::collections::VecDeque::new(),
         }
+    }
+
+    #[cfg(test)]
+    fn record_hint(&mut self, sent: Instant) {
+        if self.hints.len() == 16 {
+            self.hints.pop_front();
+        }
+        self.hints.push_back(sent);
     }
 
     fn dirty(&mut self) {
@@ -361,6 +388,21 @@ impl Handle {
         drop(state);
         shared.wake();
     }
+
+    #[cfg(test)]
+    pub(super) fn tree_fence(&self, pane: PaneId) -> Option<TreeFence> {
+        let state = self.panes[pane.index()]
+            .state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tree = state.tree.as_ref()?;
+        Some(TreeFence {
+            epoch: tree.epoch,
+            acknowledged: tree.acknowledged,
+            fence: tree.fence.map(|(ticket, _)| ticket.epoch),
+            hints: tree.hints.iter().copied().collect(),
+        })
+    }
 }
 
 struct Observed {
@@ -382,7 +424,14 @@ pub(super) struct Runtime {
     due: BinaryHeap<Reverse<(Instant, usize)>>,
     slots: Vec<Arc<ScopeTarget>>,
     batch: u64,
+    /// When a batch whose native registration failed may be registered again
+    /// with a later scope update.
+    retry_batch_at: Option<Instant>,
     epoch: u64,
+    /// The dirty epoch the last sent `Changed` hint covered. Only an epoch
+    /// hinted already is retried at the poll cadence; a newer one waits for
+    /// its debounce.
+    hinted: u64,
     debounce: Debouncer,
     hint_pending: bool,
     exhausted_reported: bool,
@@ -398,7 +447,9 @@ impl Runtime {
             slots: Vec::new(),
             subscription: None,
             batch: 0,
+            retry_batch_at: None,
             epoch: 0,
+            hinted: 0,
             debounce: Debouncer::default(),
             hint_pending: false,
             exhausted_reported: false,
@@ -428,14 +479,18 @@ impl Runtime {
             .collect();
     }
 
+    /// Adopts `scope`, registering a new native batch when its slots change.
+    /// Returns the status of a batch it registered.
     pub(super) fn update(
         &mut self,
         scope: Arc<TreeScope>,
         shared: &SharedOwner,
         native: Option<&dyn WatchService>,
-    ) {
+        supervision: &mut Supervision,
+        timing: Timing,
+    ) -> Option<WatchStatus> {
         if Arc::ptr_eq(&self.scope, &scope) && !self.slots.is_empty() {
-            return;
+            return None;
         }
         let targets = scope
             .targets
@@ -492,41 +547,51 @@ impl Runtime {
                 .iter()
                 .zip(&slots)
                 .any(|(old, new)| !old.same_notification_directory(new));
+        // A batch whose native registration failed is registered again with a
+        // later scope update (an expansion, a collapse or a refresh's Commit),
+        // at most once per poll interval. A refresh alone keeps the slots.
+        let retry = !changed
+            && native.is_some()
+            && self
+                .retry_batch_at
+                .is_some_and(|retry_at| Instant::now() >= retry_at);
         self.scope = scope;
-        if !changed {
+        if !changed && !retry {
             self.schedule(&[]);
             // A surviving alias may represent the same physical slot. Retain
             // only its current provider context while keeping the subscription.
             self.slots = slots;
-            return;
+            return None;
         }
         // A directory joining the batch was only polled (or not observed yet),
         // so probe it at once instead of requesting a sweep of every branch.
-        // Directories in both batches stay covered by the overlap below.
-        let joined = slots
-            .iter()
-            .filter(|new| {
-                !self
-                    .slots
-                    .iter()
-                    .any(|old| old.same_notification_directory(new))
-            })
-            .cloned()
-            .collect::<Vec<_>>();
+        // Directories in both batches stay covered by the overlap below. A
+        // retried batch had no subscription, so all of its directories join.
+        let joined = if retry {
+            slots.clone()
+        } else {
+            slots
+                .iter()
+                .filter(|new| {
+                    !self
+                        .slots
+                        .iter()
+                        .any(|old| old.same_notification_directory(new))
+                })
+                .cloned()
+                .collect::<Vec<_>>()
+        };
         self.schedule(&joined);
         let stamp = self.scope.stamp;
         let batch = {
             let mut state = shared.state.lock().unwrap_or_else(|e| e.into_inner());
             if state.stopped || self.cancel.is_cancelled() || state.navigation != stamp.navigation {
-                return;
+                return None;
             }
-            let Some(tree) = state
+            let tree = state
                 .tree
                 .as_mut()
-                .filter(|tree| same_session(tree.scope.stamp, stamp))
-            else {
-                return;
-            };
+                .filter(|tree| same_session(tree.scope.stamp, stamp))?;
             let replaced = tree.batch;
             tree.batch = tree
                 .batch
@@ -542,7 +607,7 @@ impl Runtime {
         // and old slots keep their provider scope until their callbacks end.
         let replaced = self.subscription.take();
         let retired = std::mem::replace(&mut self.slots, slots);
-        self.subscribe(stamp, batch, shared, native);
+        let status = self.subscribe(stamp, batch, shared, native, supervision, timing);
         // Destruction can join native watcher threads; it stays on this worker.
         drop(replaced);
         drop(retired);
@@ -554,17 +619,24 @@ impl Runtime {
         {
             tree.retiring = None;
         }
+        status
     }
 
+    /// Registers the batch of the current slots. A failed batch leaves its
+    /// targets polled (no loop creates single-directory replacements).
     fn subscribe(
         &mut self,
         stamp: TreeViewStamp,
         batch: u64,
         shared: &SharedOwner,
         native: Option<&dyn WatchService>,
-    ) {
+        supervision: &mut Supervision,
+        timing: Timing,
+    ) -> Option<WatchStatus> {
+        self.retry_batch_at = None;
+        let native = native?;
         if self.slots.is_empty() {
-            return;
+            return None;
         }
         let paths = self
             .slots
@@ -602,8 +674,19 @@ impl Runtime {
                 shared.wake();
             }
         });
-        self.subscription =
-            native.and_then(|native| native.watch_directories(&paths, callback).ok());
+        let attempt = Attempt::Tree(stamp.navigation, stamp.session);
+        match supervision.register(attempt, &paths[0], || {
+            native.watch_directories(&paths, callback)
+        }) {
+            Ok(subscription) => {
+                self.subscription = Some(subscription);
+                Some(WatchStatus::Native)
+            }
+            Err(error) => {
+                self.retry_batch_at = Some(Instant::now() + timing.poll);
+                Some(WatchStatus::PollingOnly(error))
+            }
+        }
     }
 
     pub(super) fn step(
@@ -636,7 +719,12 @@ impl Runtime {
             if tree.epoch == tree.acknowledged && !tree.exhausted {
                 self.debounce = Debouncer::default();
                 self.hint_pending = false;
-            } else if now >= tree.retry_at && tree.active_request.is_none() {
+            } else if now >= tree.retry_at
+                && tree.active_request.is_none()
+                && tree.epoch <= self.hinted
+            {
+                // A hint the UI ignored, or whose sweep failed, is retried at
+                // the poll cadence. A newer change waits for its debounce.
                 self.hint_pending = true;
             }
             if self.debounce.take_due(now, timing.quiet, timing.maximum) {
@@ -657,10 +745,19 @@ impl Runtime {
                 None
             };
             if let Some(event) = event {
+                let hint = matches!(event, TreeEvent::Changed { .. });
                 match outbox.sender.try_send(Event::Tree(Box::new(event))) {
                     Ok(()) => {
                         self.exhausted_reported |= tree.exhausted;
                         self.hint_pending = false;
+                        // The hint covers every change counted so far; a later
+                        // one arms the debounce again.
+                        self.debounce = Debouncer::default();
+                        if hint {
+                            self.hinted = tree.epoch;
+                            #[cfg(test)]
+                            tree.record_hint(now);
+                        }
                         tree.retry_at = now + timing.poll;
                         drop(state);
                         (outbox.wakeup)();
@@ -766,6 +863,7 @@ impl Runtime {
         let state = shared.state.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(tree) = &state.tree
             && tree.epoch > tree.acknowledged
+            && tree.epoch <= self.hinted
             && tree.active_request.is_none()
         {
             deadline = deadline.min(tree.retry_at);

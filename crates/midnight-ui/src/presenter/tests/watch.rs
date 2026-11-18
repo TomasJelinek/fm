@@ -108,6 +108,168 @@ fn leaving_a_staged_refresh_then_failing_restores_the_latest_committed_selection
     );
 }
 
+fn polling_only(path: &str) -> WatchStatus {
+    WatchStatus::PollingOnly(FsError::from_io(
+        "watch directory",
+        Path::new(path),
+        io::Error::other("OS file watch limit reached"),
+    ))
+}
+
+fn flat_view(navigation: NavigationId) -> WatchedView {
+    WatchedView::Flat {
+        pane: PaneId::Left,
+        navigation,
+    }
+}
+
+fn watch_text(p: &Presenter) -> Option<&'static str> {
+    p.watch_notice(PaneId::Left).map(|notice| notice.text)
+}
+
+#[test]
+fn a_watch_status_is_shown_non_modally_only_for_the_rows_it_concerns() {
+    let mut p = Presenter::new("left".into(), "right".into());
+    let first = begin(&mut p, PaneId::Left, "left");
+    finish(&mut p, PaneId::Left, first, vec![entry(1, "left/a")]);
+    p.apply(Event::WatchStatus {
+        view: flat_view(first),
+        status: polling_only("left"),
+    });
+    let notice = p
+        .watch_notice(PaneId::Left)
+        .expect("the current rows are only checked periodically");
+    let polling = notice.text;
+    assert!(polling.contains("about every 15 seconds"), "{polling}");
+    assert!(
+        notice.details.contains("OS file watch limit reached"),
+        "the registration error explains it: {}",
+        notice.details
+    );
+    assert!(p.panes[0].error.is_empty(), "never a panel error");
+    assert!(p.desktop.notice.is_none(), "never a dialog");
+    assert!(p.watch_notice(PaneId::Right).is_none());
+    // The rows stay shown while another folder loads and after it failed.
+    let other = begin(&mut p, PaneId::Left, "other");
+    assert_eq!(watch_text(&p), Some(polling));
+    p.apply(Event::ListingFailed {
+        pane: PaneId::Left,
+        navigation: other,
+        error: FsError::from_io(
+            "list",
+            Path::new("other"),
+            io::Error::from(io::ErrorKind::NotFound),
+        ),
+    });
+    assert_eq!(watch_text(&p), Some(polling));
+    p.apply(Event::WatchStatus {
+        view: flat_view(first),
+        status: WatchStatus::Native,
+    });
+    assert_eq!(watch_text(&p), None, "Native clears it");
+    p.apply(Event::WatchStatus {
+        view: flat_view(first),
+        status: WatchStatus::Restarting,
+    });
+    let restarting = p.watch_notice(PaneId::Left).unwrap();
+    assert!(
+        restarting.text.contains("at most once a minute"),
+        "{}",
+        restarting.text
+    );
+    assert!(restarting.details.is_empty());
+    // Another accepted folder is a new view, watched natively until reported
+    // otherwise; a late status of the replaced rows is not shown.
+    let next = begin(&mut p, PaneId::Left, "next");
+    finish(&mut p, PaneId::Left, next, vec![entry(2, "next/b")]);
+    assert_eq!(watch_text(&p), None);
+    p.apply(Event::WatchStatus {
+        view: flat_view(first),
+        status: polling_only("left"),
+    });
+    assert_eq!(watch_text(&p), None);
+    assert!(
+        !p.take_retired().is_empty(),
+        "replaced statuses are retired"
+    );
+}
+
+#[test]
+fn a_tree_watch_status_needs_the_tree_navigation_and_session() {
+    let (mut p, root) = super::tree::fixture();
+    p.apply_with_sender(
+        Event::Tree(Box::new(TreeEvent::Published(super::tree::publication(
+            root, 1, false, false,
+        )))),
+        &|_| true,
+    );
+    let stamp = p.panes[0].tree_view().expect("an adopted tree").stamp;
+    // The flat rows the tree was opened from are no longer shown.
+    p.apply(Event::WatchStatus {
+        view: flat_view(stamp.navigation),
+        status: polling_only("tree"),
+    });
+    assert_eq!(watch_text(&p), None);
+    p.apply(Event::WatchStatus {
+        view: WatchedView::Tree(TreeViewStamp {
+            session: TreeSessionId(stamp.session.0 + 1),
+            ..stamp
+        }),
+        status: polling_only("tree"),
+    });
+    assert_eq!(watch_text(&p), None, "another session");
+    // The projection revision can advance while a status waits.
+    p.apply(Event::WatchStatus {
+        view: WatchedView::Tree(TreeViewStamp {
+            revision: TreeRevision(stamp.revision.0 + 5),
+            ..stamp
+        }),
+        status: polling_only("tree"),
+    });
+    assert!(watch_text(&p).is_some());
+}
+
+#[test]
+fn a_watch_hint_keeps_a_pending_tree_disclosure_and_then_refreshes_that_tree() {
+    // The user disclosed a folder; its tree is not published yet.
+    let (mut p, root) = super::tree::fixture();
+    let navigation = p.panes[0].successful_generation.unwrap();
+    assert!(
+        !p.refresh_if_changed(PaneId::Left, navigation, &|command| panic!(
+            "a re-read would discard the pending disclosure: {command:?}"
+        )),
+        "the hint waits for the tree"
+    );
+    assert!(!p.panes[0].loading);
+    p.apply_with_sender(
+        Event::Tree(Box::new(TreeEvent::Published(super::tree::publication(
+            root, 1, true, false,
+        )))),
+        &|_| true,
+    );
+    let view = p.panes[0]
+        .tree_view()
+        .expect("the disclosed tree is adopted")
+        .clone();
+    let refreshed = RefCell::new(Vec::new());
+    p.flush_selection(&|command| {
+        if let Command::Tree(command) = &command
+            && let TreeCommand::RefreshLoaded(request) = command.as_ref()
+        {
+            refreshed.borrow_mut().push(request.view.clone());
+        }
+        assert!(
+            !matches!(command, Command::Refresh { .. } | Command::Navigate { .. }),
+            "the tree is kept: {command:?}"
+        );
+        true
+    });
+    let refreshed = refreshed.into_inner();
+    assert_eq!(refreshed.len(), 1, "the retained hint refreshes the tree");
+    assert!(Arc::ptr_eq(&refreshed[0], &view));
+    assert!(Arc::ptr_eq(p.panes[0].tree_view().unwrap(), &view));
+}
+
 fn file(id: u64, name: &str) -> Entry {
     Entry::new(EntryId(id), PathBuf::from(name), EntryKind::File)
 }

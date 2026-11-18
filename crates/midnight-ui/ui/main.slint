@@ -451,6 +451,11 @@ export component MainWindow inherits Window {
     in property <int> right-volume: -1;
     in property <string> left-status;
     in property <string> right-status;
+    // Non-modal watch status of the pane's current view (PANEL_DIAGNOSTICS.md).
+    in property <string> left-watch-status;
+    in property <string> right-watch-status;
+    in property <string> left-watch-details;
+    in property <string> right-watch-details;
     in property <bool> left-can-elevate;
     in property <bool> right-can-elevate;
     callback retry-directory-elevated(int);
@@ -851,6 +856,7 @@ export component MainWindow inherits Window {
                 volume-tooltips: root.volume-tooltips;
                 volumes-revision: root.volumes-revision;
                 path: root.left-path; status: root.left-status; error: root.left-error; error-revision: root.left-error-revision; loading: root.left-loading;
+                watch-status: root.left-watch-status; watch-details: root.left-watch-details;
                 cursor-index: root.left-cursor; sort-column: root.left-sort; descending: root.left-descending;
                 action(a) => { root.action(0, a); } navigate(p) => { root.navigate(0, p); } volume(v) => { root.volume(0, v); }
                 sort(c) => { root.sort(0, c); } row-click(r, c, s) => { root.row-click(0, r, c, s); } open(r) => { root.open(0, r); }
@@ -935,6 +941,7 @@ export component MainWindow inherits Window {
                 volume-tooltips: root.volume-tooltips;
                 volumes-revision: root.volumes-revision;
                 path: root.right-path; status: root.right-status; error: root.right-error; error-revision: root.right-error-revision; loading: root.right-loading;
+                watch-status: root.right-watch-status; watch-details: root.right-watch-details;
                 cursor-index: root.right-cursor; sort-column: root.right-sort; descending: root.right-descending;
                 action(a) => { root.action(1, a); } navigate(p) => { root.navigate(1, p); } volume(v) => { root.volume(1, v); }
                 sort(c) => { root.sort(1, c); } row-click(r, c, s) => { root.row-click(1, r, c, s); } open(r) => { root.open(1, r); }

@@ -61,6 +61,8 @@ mod refresh_churn_tests;
 mod test_harness;
 #[cfg(test)]
 mod tool_window_shutdown_tests;
+#[cfg(test)]
+mod watch_status_tests;
 pub use owned_commands::{BeginOwned, OwnedCommandScope, with_owned_commands};
 mod panel_filter_windows;
 mod panel_models;
@@ -668,12 +670,18 @@ fn refresh_properties(window: &MainWindow, presenter: &Presenter, reset_rows: bo
                 format_size(space.total, &presenter.number_locale)
             ));
         }
-        let error = presenter.panel_error_text(if index == 0 {
+        let pane_id = if index == 0 {
             PaneId::Left
         } else {
             PaneId::Right
-        });
+        };
+        let error = presenter.panel_error_text(pane_id);
+        let watch = presenter.watch_notice(pane_id);
+        let (watch, watch_details) =
+            watch.map_or(("", String::new()), |notice| (notice.text, notice.details));
         if index == 0 {
+            window.set_left_watch_status(watch.into());
+            window.set_left_watch_details(watch_details.into());
             window.set_left_path(location.into());
             window.set_left_volume(volume);
             window.set_left_status(status.into());
@@ -685,6 +693,8 @@ fn refresh_properties(window: &MainWindow, presenter: &Presenter, reset_rows: bo
             window.set_left_sort(column_index(p.sort.column));
             window.set_left_descending(p.sort.descending);
         } else {
+            window.set_right_watch_status(watch.into());
+            window.set_right_watch_details(watch_details.into());
             window.set_right_path(location.into());
             window.set_right_volume(volume);
             window.set_right_status(status.into());

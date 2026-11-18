@@ -8,7 +8,10 @@ activated native share follows the native listing path.
 
 `presenter/tree.rs` retains the original entries and index, and requests Enable
 with those exact allocations and the accepted selection revision. Pending flat
-selection must settle before migration. A publication seeded before a later
+selection must settle before migration. A change notification for the folder
+waits while Enable is pending instead of re-reading the folder, which would
+discard the disclosure; it then refreshes the adopted tree, or re-reads the
+folder if the tree is refused. A publication seeded before a later
 selection is rejected and retried; it cannot erase newer marks. Initial adoption
 uses the backend root-alias map to preserve the caret. Every publication is
 adopted with its matching selection and acknowledged with its exact projection
@@ -581,6 +584,14 @@ mismatch requests maintenance rather than accepting the observation as unchanged
 The two existing backend workers own subscriptions, metadata probes and cleanup.
 Events use a 150 ms quiet interval and a 500 ms batching ceiling; slow
 probes or output backpressure can add delay. Polling/failure retries use 15 seconds.
+A hint the UI ignored, or whose sweep failed, is repeated at that cadence; a newer
+change always waits for its quiet interval, and a sent hint covers the changes
+counted until then, so its debounce cannot repeat it.
+A batch whose native registration fails leaves its targets polled and reports a
+polling-only [watch status](PANEL_DIAGNOSTICS.md#watch-status) for the session. A
+later scope update (a refresh's Commit, an expansion or a collapse) registers the
+batch again, at most once per poll interval, and its directories are then probed at
+once; a successful batch clears the status.
 
 The accepted listing signature and full immediate-directory observation remain
 separate, so files hidden by the folder-only branch view still invalidate sizes

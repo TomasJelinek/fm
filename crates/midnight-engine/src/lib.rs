@@ -1169,6 +1169,7 @@ impl EngineServices {
                             let denied_navigations = denied_navigations.clone();
                             let worker_scope = scope.clone();
                             let listing_watch = watcher.as_ref().map(watch::Controller::reporter);
+                            let watch = listing_watch.clone();
                             let listing = tasks.spawn(scope.future(async move {
                                 if !outbox.send(Event::ListingStarted { pane, navigation, path: listing_path.clone() }).await { return; }
                                 let Ok(permit) = budget.acquire_owned().await else { return; };
@@ -1181,7 +1182,7 @@ impl EngineServices {
                                     // The blocking worker owns its permit until it really finishes,
                                     // including when its async parent has been superseded.
                                     let _permit = permit;
-                                    list_directory(ListingTask { elevated, offer_elevation, denied_navigations, filesystem, locale, outbox, pane, navigation, path: listing_path, sort, cancel: request_cancel, icons, snapshots: listing_snapshots, source, continued_sizes, selection_stream, navigation_fallback });
+                                    list_directory(ListingTask { elevated, offer_elevation, denied_navigations, filesystem, locale, outbox, pane, navigation, path: listing_path, sort, cancel: request_cancel, icons, snapshots: listing_snapshots, source, continued_sizes, selection_stream, navigation_fallback, watch });
                                 })).await;
                                 if let Err(error) = result
                                     && !error_cancel.is_cancelled() {
@@ -1315,6 +1316,8 @@ struct ListingTask {
     snapshots: Snapshots,
     source: Option<CommittedSnapshot>,
     continued_sizes: Option<SharedSizes>,
+    /// Told when the listing has read its first entry (`Reporter::listing_read`).
+    watch: Option<watch::Reporter>,
 }
 
 fn list_directory(task: ListingTask) {
@@ -1336,6 +1339,7 @@ fn list_directory(task: ListingTask) {
         snapshots,
         source,
         continued_sizes,
+        watch,
     } = task;
     if let Some(source) = source {
         let entries = source.entries.to_vec();
@@ -1358,9 +1362,15 @@ fn list_directory(task: ListingTask) {
     let mut icon_types = std::collections::HashSet::new();
     let mut entries = Vec::new();
     let mut batch = Vec::with_capacity(BATCH_SIZE);
+    let mut watch = watch;
     let mut emit = |mut entry: Entry| {
         if cancel.is_cancelled() {
             return false;
+        }
+        // The folder is readable: the pane's watch may subscribe it while the
+        // rest is listed.
+        if let Some(watch) = watch.take() {
+            watch.listing_read(pane, navigation);
         }
         localize_metadata(&mut entry.metadata, locale.as_deref());
         entries.push(entry.clone());

@@ -1,6 +1,6 @@
 //! Native event sources report hints; backend debounce and polling establish refresh policy.
 
-use crate::{Entry, FsError, NavigationId, PaneId};
+use crate::{Entry, FsError, NavigationId, PaneId, TreeViewStamp};
 use std::{
     path::{Path, PathBuf},
     sync::Arc,
@@ -13,6 +13,43 @@ pub struct VisibleDirectory {
     pub navigation: NavigationId,
     pub path: PathBuf,
     pub entries: Arc<[Entry]>,
+}
+
+/// A view whose watch status the backend reports (`Event::WatchStatus`): an
+/// accepted flat listing, or an adopted tree session. Tree views match on pane,
+/// navigation and session; the projection revision can advance meanwhile.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WatchedView {
+    Flat {
+        pane: PaneId,
+        navigation: NavigationId,
+    },
+    Tree(TreeViewStamp),
+}
+
+impl WatchedView {
+    pub fn pane(&self) -> PaneId {
+        match self {
+            Self::Flat { pane, .. } => *pane,
+            Self::Tree(stamp) => stamp.pane,
+        }
+    }
+}
+
+/// How the backend watches a view. Every status is non-fatal: rows, actions and
+/// manual Refresh stay usable. A new view starts as `Native`, so `Native` is
+/// reported only to clear an earlier status of the same view.
+#[derive(Clone, Debug)]
+pub enum WatchStatus {
+    /// Native change notifications are registered.
+    Native,
+    /// Native registration failed with this error (for example when the
+    /// system's watch limit is reached), so only the periodic check finds
+    /// changes.
+    PollingOnly(FsError),
+    /// The pane's watch worker failed and waits for its rate-limited restart;
+    /// neither notifications nor periodic checks run meanwhile.
+    Restarting,
 }
 
 /// Dropping a subscription may stop/join native workers; do so on a backend worker.

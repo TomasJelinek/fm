@@ -87,6 +87,7 @@ mod user_commands;
 mod viewer_associations;
 mod viewer_plugins;
 mod volumes;
+mod watch_status;
 pub(crate) use file_actions::MenuAnchor;
 use std::{
     collections::{HashMap, HashSet},
@@ -225,6 +226,8 @@ pub(crate) struct Pane {
     pending: Option<Request>,
     /// A current watch hint that waits for a gesture, a comparison or queue capacity.
     refresh_hint: bool,
+    /// The newest watch status the backend reported for a view of this pane.
+    watch_status: Option<(WatchedView, WatchStatus)>,
     pub(crate) generation: u64,
     successful_generation: Option<NavigationId>,
     committed_sort: SortSpec,
@@ -394,7 +397,11 @@ impl Presenter {
             return true;
         }
         let path = self.panes[pane.index()].path.clone();
+        // A re-read would discard a disclosure whose tree is not published
+        // yet; the retained hint refreshes that tree once it is adopted, or
+        // re-reads the folder if it is refused.
         if self.background_refresh_blocked(pane)
+            || self.panes[pane.index()].tree_enable_pending()
             || !self.navigate_impl(pane, path, None, Reload::Background, send)
         {
             self.panes[pane.index()].refresh_hint = true;
@@ -948,6 +955,10 @@ impl Presenter {
         }
         if let Event::FolderPresence(result) = event {
             self.apply_folder_presence(result);
+            return;
+        }
+        if let Event::WatchStatus { view, status } = event {
+            self.apply_watch_status(view, status);
             return;
         }
         if let Event::RectangleSummary {
@@ -1850,6 +1861,7 @@ impl Pane {
             metadata: HashMap::new(),
             pending: None,
             refresh_hint: false,
+            watch_status: None,
             generation: 0,
             successful_generation: None,
             index: Arc::new(DirectoryIndex::from_entries(&[])),

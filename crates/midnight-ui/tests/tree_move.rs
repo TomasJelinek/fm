@@ -165,13 +165,18 @@ fn root_transfer_updates_both_trees(intent: TransferIntent) {
     fs::create_dir_all(fixture.root.join("destination/existing/retained")).unwrap();
     let service = Arc::new(midnight_platform::LocalFileSystem::new(None));
     let watch = Arc::new(watch::ObservedWatch::new(service.clone()));
+    // F5/F6 capture the exact trees, which independent maintenance (a hint, its
+    // refresh and the new projection) may replace first. Hints are held until
+    // the transfer's terminal and replayed before the reconciliation below.
     let mut h = support::Harness::with_native_watch_transfer(
         PaneId::Left,
         fixture.root.clone(),
         service.clone(),
         service,
         watch.clone(),
+        true,
     );
+    assert!(h.maintenance_hints_held());
     let source_session = h.view.as_ref().unwrap().stamp.session;
     let existing =
         h.ui.window
@@ -239,6 +244,7 @@ fn root_transfer_updates_both_trees(intent: TransferIntent) {
             .last()
             .is_some_and(|progress| progress.state.is_terminal())
     });
+    h.release_maintenance_hints();
     let progress = h.copy_progress.last().unwrap();
     assert_eq!(progress.intent, intent);
     assert_eq!(

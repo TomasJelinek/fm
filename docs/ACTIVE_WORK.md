@@ -34,9 +34,12 @@ local runtime qualification. An opt-in fixture holds only pure scalar `Changed` 
 `DirectoryChanged` hints through native clipboard-transfer terminal, then releases
 and replays the original hints before the original reconciliation/external-write
 assertions. Native watchers and pre-ACK coverage remain enabled. Watch assertions
-still require a real callback plus the UI row; a refresh admitted after a callback
-may coalesce its hint, so a fresh per-mutation hint is not the contract. A new
-deterministic Engine unit covers before-admission coalescing; existing
+require the UI row plus native evidence for each changed directory: a fresh
+callback from a live subscription that names it, or the registration of a batch
+that contains it; a subscription without the directory and the periodic poll are
+no evidence, and fences wait for a live subscription. A refresh admitted after a
+callback may coalesce its hint, so a fresh per-mutation hint is not the contract.
+A new deterministic Engine unit covers before-admission coalescing; existing
 post-admission survival and default-timing tests are unchanged.
 
 Root verified **Windows 37 passed / 0 failed / 0 ignored** and **Linux 37/0/0**:
