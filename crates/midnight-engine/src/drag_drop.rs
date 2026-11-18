@@ -905,7 +905,9 @@ fn prepare_worker(
             .take();
         let Some(request) = request else {
             // Nothing is queued or retired: sleep, without the state lock, until queued
-            // work, a retired owner or shutdown signals.
+            // work, a retired owner or shutdown signals. The worker stops only through
+            // cancellation, which shutdown signals after cancelling: the state it holds
+            // keeps a sender (`Retired::wake`), so this receive cannot fail while it runs.
             let woken = signal.recv();
             #[cfg(test)]
             {
@@ -914,6 +916,7 @@ fn prepare_worker(
                     .unwrap_or_else(|e| e.into_inner())
                     .prepare_wakeups += 1;
             }
+            // Not reached (see above); stopping is safer than spinning on a closed channel.
             if woken.is_err() {
                 break;
             }
