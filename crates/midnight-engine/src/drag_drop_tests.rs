@@ -44,6 +44,7 @@ impl Harness {
             },
         ]);
         let (events, receiver) = mpsc::channel(64);
+        let (hover, refused) = reports();
         Self {
             sink: Sink {
                 host: DragHost {
@@ -65,8 +66,8 @@ impl Harness {
                 capacity: copy_operations::Admission::default(),
                 events,
                 next: Arc::new(AtomicU64::new(0)),
-                hover: Arc::default(),
-                refused: Arc::default(),
+                hover,
+                refused,
                 cancel: Cancellation::default(),
             },
             events: receiver,
@@ -128,6 +129,28 @@ async fn native_ack_requires_actual_capacity_and_delivery_admission() {
     assert!(h.sink.try_accept(h.request).is_err());
     capacity_returned(h.sink.capacity.capacity(), 32).await;
     assert!(h.sink.pending.lock().unwrap().is_empty());
+}
+
+#[test]
+fn retired_owners_wake_the_preparation_worker_that_drops_them() {
+    let (wake, woken) = std::sync::mpsc::sync_channel(1);
+    let mut retired = Retired::default();
+    // Owners retired before the worker runs need no wake: it drops them when it starts.
+    retired.push(Box::new(()));
+    retired.wake = Some(wake);
+    retired.push(Box::new(()));
+    retired.push(Box::new(()));
+    assert!(
+        woken.try_recv().is_ok(),
+        "a retired owner must wake the worker"
+    );
+    assert!(woken.try_recv().is_err(), "wakes coalesce");
+    assert_eq!(retired.take().len(), 3);
+    retired.push(Box::new(()));
+    assert!(
+        woken.try_recv().is_ok(),
+        "taking the owners keeps the worker's signal"
+    );
 }
 
 #[test]

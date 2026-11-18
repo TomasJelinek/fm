@@ -4,6 +4,7 @@ use midnight_core::*;
 use std::{
     cell::{Cell, RefCell},
     io,
+    os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle},
     path::Path,
     ptr,
     sync::Arc,
@@ -28,13 +29,14 @@ use windows::{
     core::{BOOL, HRESULT, Ref, implement, w},
 };
 use windows_sys::Win32::{
-    Foundation::POINT,
+    Foundation::{POINT, WAIT_FAILED},
     Graphics::Gdi::ScreenToClient,
-    System::Threading::GetCurrentProcessId,
+    System::Threading::{CreateEventW, GetCurrentProcessId, SetEvent},
     UI::WindowsAndMessaging::{
         CreateWindowExW, DestroyWindow, DispatchMessageW, GetPropW, GetWindowThreadProcessId,
-        HWND_MESSAGE, IsWindow, KillTimer, MSG, PM_REMOVE, PeekMessageW, PostMessageW, RemovePropW,
-        SetPropW, SetTimer, TranslateMessage, WM_KEYDOWN,
+        HWND_MESSAGE, IsWindow, KillTimer, MSG, MWMO_INPUTAVAILABLE, MsgWaitForMultipleObjectsEx,
+        PM_REMOVE, PeekMessageW, PostMessageW, QS_ALLINPUT, RemovePropW, SetPropW, SetTimer,
+        TranslateMessage, WM_KEYDOWN,
     },
 };
 
@@ -70,6 +72,7 @@ impl Session {
         sink: Arc<dyn FileDropSink>,
     ) -> Result<Self, FsError> {
         let hwnd = validate_host(&host)?;
+        let wake = Arc::new(wake_event()?);
         let ole = Ole::new()?;
         let target = make_target(host.clone(), targets, sink.clone())?;
         // SAFETY: target is an apartment-bound COM object, retained by this actor. Windows
@@ -98,9 +101,30 @@ impl Session {
             sink,
             target,
             token,
+            wake,
             _ole: ole,
         })
     }
+}
+
+/// An unnamed auto-reset event, as the clipboard session uses: a wake made while no wait
+/// runs keeps it signaled until the next wait consumes it, so no wake is lost and several
+/// wakes end one wait.
+fn wake_event() -> Result<OwnedHandle, FsError> {
+    // SAFETY: default security, auto-reset, initially nonsignaled and unnamed.
+    let event = unsafe { CreateEventW(ptr::null(), 0, 0, ptr::null()) };
+    if event.is_null() {
+        return Err(error(io::Error::last_os_error()));
+    }
+    // SAFETY: ownership starts only after successful native handle creation.
+    Ok(unsafe { OwnedHandle::from_raw_handle(event) })
+}
+
+/// `timeout` in whole milliseconds for a Win32 wait: rounded up, so that a short nonzero
+/// timeout never becomes a zero-time poll, and kept finite (below INFINITE).
+fn wait_milliseconds(timeout: Duration) -> u32 {
+    let finite = u32::MAX - 1;
+    u32::try_from(timeout.as_nanos().div_ceil(1_000_000)).map_or(finite, |ms| ms.min(finite))
 }
 
 fn error(message: impl std::fmt::Display) -> FsError {
@@ -134,6 +158,9 @@ struct Session {
     sink: Arc<dyn FileDropSink>,
     target: IDropTarget,
     token: Box<u8>,
+    /// Auto-reset event that ends `wait_pending`. Each waker holds a clone, so the handle
+    /// stays open, and a late wake harmless, until the last holder is dropped.
+    wake: Arc<OwnedHandle>,
     _ole: Ole,
 }
 impl FileDragDropSession for Session {
@@ -153,6 +180,34 @@ impl FileDragDropSession for Session {
             }
         }
         Ok(())
+    }
+    fn wait_pending(&mut self, timeout: Duration) -> Result<(), FsError> {
+        let event = self.wake.as_raw_handle();
+        // SAFETY: waits on one live event handle owned by this session and on the message
+        // queue of this STA, where OLE delivers other applications' calls into the
+        // registered target. MWMO_INPUTAVAILABLE also returns for messages that an
+        // earlier `service_pending` saw but left queued.
+        let result = unsafe {
+            MsgWaitForMultipleObjectsEx(
+                1,
+                &event,
+                wait_milliseconds(timeout),
+                QS_ALLINPUT,
+                MWMO_INPUTAVAILABLE,
+            )
+        };
+        if result == WAIT_FAILED {
+            return Err(error(io::Error::last_os_error()));
+        }
+        Ok(())
+    }
+    fn waker(&self) -> Option<FileDragDropWaker> {
+        let event = self.wake.clone();
+        Some(Arc::new(move || {
+            // SAFETY: the captured Arc keeps this event handle open while the waker exists;
+            // SetEvent neither blocks nor waits for the actor.
+            unsafe { SetEvent(event.as_raw_handle()) };
+        }))
     }
     fn start_drag(
         &mut self,

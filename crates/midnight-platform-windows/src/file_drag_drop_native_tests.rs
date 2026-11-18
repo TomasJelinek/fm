@@ -11,10 +11,19 @@ use std::{
 };
 use windows::core::{GUID, Interface};
 use windows_sys::Win32::{
+    Foundation::WAIT_TIMEOUT,
     Graphics::Gdi::ClientToScreen,
-    System::Threading::GetCurrentThreadId,
+    System::Threading::{GetCurrentThreadId, WaitForSingleObject},
     UI::WindowsAndMessaging::{CreateWindowExW, DestroyWindow},
 };
+
+/// Elapses only when the input or wake that should end a wait does not.
+const FAILURE_WAIT: Duration = Duration::from_secs(30);
+
+/// Whether something that began at `started` ended well within `FAILURE_WAIT`.
+fn prompt(started: Instant) -> bool {
+    started.elapsed() < FAILURE_WAIT / 2
+}
 
 // Exact OLE declarations avoid expanding the production SDK feature set for this test harness.
 #[link(name = "ole32")]
@@ -199,4 +208,180 @@ fn production_target_registers_on_worker_and_marshals_drop_away_from_ui_window_o
     drop(
         Session::open(replacement, targets, sink).expect("worker cleanup must revoke registration"),
     );
+}
+
+/// One Copy target over the whole test window.
+fn whole_window(generation: u64) -> SharedDropTargets {
+    Arc::new(std::sync::Mutex::new(DropTargets {
+        host_generation: generation,
+        revision: 3,
+        targets: vec![FileDropTarget {
+            pane: PaneId::Right,
+            navigation: NavigationId(6),
+            directory: Arc::new("C:\\destination".into()),
+            rect: DropRect {
+                x: 0,
+                y: 0,
+                width: 160,
+                height: 100,
+            },
+        }],
+    }))
+}
+
+#[test]
+fn idle_wait_ends_for_marshalled_ole_input_and_for_its_waker() {
+    let _ole = Ole::new().unwrap();
+    let window = Window::new();
+    let host = DragHost {
+        generation: 12,
+        native: NativeDragWindow::Windows { hwnd: window.0 },
+        lifetime: Cancellation::default(),
+    };
+    let sink = Arc::new(Receiver::default());
+    let quit = Arc::new(AtomicBool::new(false));
+    let (ready, opened) = mpsc::sync_channel(1);
+    let worker = {
+        let (sink, quit) = (sink.clone(), quit.clone());
+        thread::spawn(move || {
+            let mut session = Session::open(host, whole_window(12), sink).unwrap();
+            session.service_pending().unwrap();
+            let waker = session.waker().expect("an OLE session has a wake event");
+            // Wakes made before a wait end it, and together they end only that wait.
+            waker();
+            waker();
+            let started = Instant::now();
+            session.wait_pending(FAILURE_WAIT).unwrap();
+            assert!(prompt(started), "an earlier wake must end the next wait");
+            assert_eq!(
+                unsafe { WaitForSingleObject(session.wake.as_raw_handle(), 0) },
+                WAIT_TIMEOUT,
+                "one wait consumes coalesced wakes"
+            );
+            let mut stream = ptr::null_mut();
+            unsafe {
+                CoMarshalInterThreadInterfaceInStream(
+                    &IDropTarget::IID,
+                    session.target.as_raw(),
+                    &mut stream,
+                )
+                .ok()
+                .unwrap();
+            }
+            ready
+                .send((stream as usize, waker, Arc::downgrade(&session.wake)))
+                .unwrap();
+            // The native actor's idle loop: serve, then wait without a short timer.
+            while !quit.load(Ordering::SeqCst) {
+                session.service_pending().unwrap();
+                session.wait_pending(2 * FAILURE_WAIT).unwrap();
+            }
+        })
+    };
+    let (stream, waker, event) = opened.recv_timeout(FAILURE_WAIT).unwrap();
+    let mut raw = ptr::null_mut();
+    unsafe {
+        CoGetInterfaceAndReleaseStream(stream as _, &IDropTarget::IID, &mut raw)
+            .ok()
+            .unwrap();
+    }
+    let target = unsafe { IDropTarget::from_raw(raw) };
+    let files = FileClipboard {
+        paths: vec!["C:\\source\\文档.txt".into()],
+        intent: FileClipboardIntent::Copy,
+    };
+    let data = make_data(&files).unwrap();
+    let mut point = POINT { x: 50, y: 40 };
+    unsafe {
+        assert_ne!(ClientToScreen(window.0 as _, &mut point), 0);
+    }
+    let point = POINTL {
+        x: point.x,
+        y: point.y,
+    };
+    // Each call is marshalled into the worker's apartment, whose wait outlasts this
+    // test: only that input can end the wait in time.
+    let started = Instant::now();
+    let mut effect = DROPEFFECT_COPY;
+    unsafe {
+        target
+            .DragEnter(&data, MODIFIERKEYS_FLAGS(1), point, &mut effect)
+            .unwrap();
+        assert_eq!(effect, DROPEFFECT_COPY);
+        target
+            .Drop(&data, MODIFIERKEYS_FLAGS(0), point, &mut effect)
+            .unwrap();
+    }
+    assert_eq!(effect, DROPEFFECT_COPY);
+    assert!(
+        prompt(started),
+        "marshalled OLE input must end the idle wait"
+    );
+    assert_eq!(sink.requests.lock().unwrap()[0].files, files);
+    drop(target);
+    drop(data);
+    // The waker ends the wait in progress, or the next one if it wins the race.
+    quit.store(true, Ordering::SeqCst);
+    let started = Instant::now();
+    waker();
+    worker.join().unwrap();
+    assert!(prompt(started), "the waker must end the idle wait");
+    // Every waker keeps the event open: a call after the session closed signals an
+    // event that nobody waits on, and the last waker closes it.
+    assert!(event.upgrade().is_some(), "a waker keeps the event open");
+    waker();
+    drop(waker);
+    assert!(event.upgrade().is_none(), "the last waker closes the event");
+}
+
+/// Measurement for review item C10-2: wakeups of the native drag actor's idle loop over
+/// five seconds with a real OLE session, for the 10 ms pump the actor ran before and for
+/// the session wait it runs now. It prints counts only. Run alone on an idle machine:
+/// `cargo test -p midnight-platform-windows --lib -- --ignored --nocapture
+/// file_drag_drop::native_tests::measure_idle_wakeups_of_an_open_session`.
+#[test]
+#[ignore = "manual measurement: ten idle seconds with a hidden native window"]
+fn measure_idle_wakeups_of_an_open_session() {
+    let window = Window::new();
+    let host = DragHost {
+        generation: 13,
+        native: NativeDragWindow::Windows { hwnd: window.0 },
+        lifetime: Cancellation::default(),
+    };
+    let mut session = Session::open(host, whole_window(13), Arc::new(Receiver::default())).unwrap();
+    let measured = Duration::from_secs(5);
+    let (_controller, signal) = mpsc::sync_channel::<()>(1);
+    let pumped = idle_wakeups(measured, |_| {
+        session.service_pending().unwrap();
+        // The actor's former pump: a 10 ms wait for a controller signal.
+        let _ = signal.recv_timeout(Duration::from_millis(10));
+    });
+    let waited = idle_wakeups(measured, |left| {
+        session.service_pending().unwrap();
+        // The actor's idle wait, here until just past the window: only native input or
+        // a spurious return ends it within the window.
+        session
+            .wait_pending(left + Duration::from_millis(50))
+            .unwrap();
+    });
+    eprintln!(
+        "idle wakeups in {measured:?} with an open OLE session: 10 ms pump {pumped}, session wait {waited}"
+    );
+}
+
+/// Wakeups of an idle loop within `measured`: returns of `iteration`, which gets the
+/// time left, before the window ended.
+fn idle_wakeups(measured: Duration, mut iteration: impl FnMut(Duration)) -> u32 {
+    let started = Instant::now();
+    let mut wakeups = 0;
+    loop {
+        let left = measured.saturating_sub(started.elapsed());
+        if left.is_zero() {
+            return wakeups;
+        }
+        iteration(left);
+        if started.elapsed() < measured {
+            wakeups += 1;
+        }
+    }
 }

@@ -44,6 +44,14 @@ const CHANGED: &str = "The drop destination changed.";
 const MISSING: &str = "The drag source did not provide its file list.";
 const TOO_LARGE: &str = "The dropped file list exceeds the 4 MiB limit.";
 
+/// Elapses only when the input or wake that should end a wait does not.
+const FAILURE_WAIT: Duration = Duration::from_secs(30);
+
+/// Whether a wait that began at `started` ended well within `FAILURE_WAIT`.
+fn prompt(started: Instant) -> bool {
+    started.elapsed() < FAILURE_WAIT / 2
+}
+
 use x11rb::{
     protocol::{
         Event,
@@ -57,7 +65,7 @@ struct Fixture {
     host: u32,
     source: u32,
     proxy: u32,
-    session: Box<dyn FileDragDropSession>,
+    session: Session,
     targets: SharedDropTargets,
     sink: Arc<Sink>,
     lifetime: Cancellation,
@@ -121,17 +129,12 @@ impl Fixture {
             native: NativeDragWindow::X11 { window: host },
             lifetime: lifetime.clone(),
         };
-        let session: Box<dyn FileDragDropSession> = match read_timeout {
-            None => NativeFileDragDrop
-                .open_session(drag_host, targets.clone(), sink.clone())
-                .unwrap(),
-            Some(timeout) => {
-                let mut session =
-                    Session::new(drag_host, host, targets.clone(), sink.clone()).unwrap();
-                session.read_timeout = timeout;
-                Box::new(session)
-            }
-        };
+        // `x11_registers_verified_proxy_and_restores_previous_host_properties` opens
+        // sessions through `open_session`; tests reach this one's connection directly.
+        let mut session = Session::new(drag_host, host, targets.clone(), sink.clone()).unwrap();
+        if let Some(timeout) = read_timeout {
+            session.read_timeout = timeout;
+        }
         let proxy_atom = connection
             .intern_atom(false, b"XdndProxy")
             .unwrap()
@@ -1149,4 +1152,116 @@ fn assert_proxy_registration_restored() {
         vec![4]
     );
     connection.destroy_window(window).unwrap().check().unwrap();
+}
+
+#[test]
+#[ignore = "requires isolated Xvfb DISPLAY and MIDNIGHT_DND_TEST_ISOLATED=1"]
+fn x11_idle_wait_ends_for_its_waker_xdnd_input_and_events_already_read() {
+    let mut f = Fixture::new();
+    // Serve the property changes that opening the session queued.
+    f.session.service_pending().unwrap();
+    let waker = f.session.waker().expect("the session has an eventfd");
+    // A wake made before the wait ends it.
+    waker();
+    let started = Instant::now();
+    f.session.wait_pending(FAILURE_WAIT).unwrap();
+    assert!(prompt(started), "an earlier wake must end the next wait");
+    // XDND input of another client ends the idle wait; the next pass answers it.
+    f.send(
+        "XdndEnter",
+        [f.source, 5 << 24, f.atom("text/uri-list"), 0, 0],
+    );
+    f.send(
+        "XdndPosition",
+        [f.source, 0, (135 << 16) | 245, 0, f.atom("XdndActionCopy")],
+    );
+    let started = Instant::now();
+    f.session.wait_pending(FAILURE_WAIT).unwrap();
+    assert!(prompt(started), "XDND input must end the idle wait");
+    assert_eq!(f.message("XdndStatus")[1] & 1, 1);
+    assert!(f.sink.2.load(Ordering::Acquire), "the destination is shown");
+    // No event marks the UI withdrawing that destination: while it is shown, the wait
+    // ends in time for the next pass to recheck it.
+    {
+        let mut targets = f.targets.lock().unwrap();
+        targets.revision += 1;
+        targets.targets.clear();
+    }
+    let started = Instant::now();
+    f.session.wait_pending(FAILURE_WAIT).unwrap();
+    assert!(prompt(started), "a shown destination must be rechecked");
+    f.session.service_pending().unwrap();
+    assert!(
+        !f.sink.2.load(Ordering::Acquire),
+        "the withdrawn destination is no longer shown"
+    );
+    // The drag leaves. Its XdndLeave precedes the reply to a round trip on the
+    // session's connection, so reading that reply queues the event in x11rb and leaves
+    // the socket empty: poll() alone would sleep through it.
+    f.send("XdndLeave", [f.source, 0, 0, 0, 0]);
+    f.session
+        .connection
+        .get_input_focus()
+        .unwrap()
+        .reply()
+        .unwrap();
+    let started = Instant::now();
+    f.session.wait_pending(FAILURE_WAIT).unwrap();
+    assert!(prompt(started), "an event already read must end the wait");
+    assert!(
+        f.session.incoming.is_none(),
+        "the wait served that XdndLeave"
+    );
+}
+
+/// Measurement for review item C10-2: wakeups of the native drag actor's idle loop over
+/// five seconds with a real X11 session, for the 10 ms pump the actor ran before and
+/// for the session wait it runs now. It prints counts only. CI runs the ignored tests
+/// of this module, so this one also needs `MIDNIGHT_DND_IDLE_MEASUREMENT=1`:
+/// `xvfb-run -a -s "-screen 0 1280x1024x24 -nolisten tcp -noreset" env
+/// MIDNIGHT_DND_TEST_ISOLATED=1 MIDNIGHT_DND_IDLE_MEASUREMENT=1 "$executable"
+/// file_drag_drop::tests::measure_idle_wakeups_of_an_open_session --ignored --nocapture`.
+#[test]
+#[ignore = "manual measurement: ten idle seconds; requires isolated Xvfb DISPLAY and MIDNIGHT_DND_TEST_ISOLATED=1"]
+fn measure_idle_wakeups_of_an_open_session() {
+    if std::env::var("MIDNIGHT_DND_IDLE_MEASUREMENT").as_deref() != Ok("1") {
+        return;
+    }
+    let mut f = Fixture::new();
+    f.session.service_pending().unwrap();
+    let measured = Duration::from_secs(5);
+    let (_controller, signal) = std::sync::mpsc::sync_channel::<()>(1);
+    let pumped = idle_wakeups(measured, |_| {
+        f.session.service_pending().unwrap();
+        // The actor's former pump: a 10 ms wait for a controller signal.
+        let _ = signal.recv_timeout(Duration::from_millis(10));
+    });
+    let waited = idle_wakeups(measured, |left| {
+        f.session.service_pending().unwrap();
+        // The actor's idle wait, here until just past the window: only native input or
+        // a spurious return ends it within the window.
+        f.session
+            .wait_pending(left + Duration::from_millis(50))
+            .unwrap();
+    });
+    eprintln!(
+        "idle wakeups in {measured:?} with an open X11 session: 10 ms pump {pumped}, session wait {waited}"
+    );
+}
+
+/// Wakeups of an idle loop within `measured`: returns of `iteration`, which gets the
+/// time left, before the window ended.
+fn idle_wakeups(measured: Duration, mut iteration: impl FnMut(Duration)) -> u32 {
+    let started = Instant::now();
+    let mut wakeups = 0;
+    loop {
+        let left = measured.saturating_sub(started.elapsed());
+        if left.is_zero() {
+            return wakeups;
+        }
+        iteration(left);
+        if started.elapsed() < measured {
+            wakeups += 1;
+        }
+    }
 }
