@@ -1,13 +1,10 @@
 //! Installed file-list presentation with deterministic UI time and command capture.
-use super::modeless;
+use super::{modeless, owned_windows};
 use midnight_core::*;
 use midnight_ui::{FileListPresentation, MainWindow, Presenter, install, refresh};
 use slint::{
     ComponentHandle, Model,
-    platform::{
-        Platform, PlatformError, WindowAdapter,
-        software_renderer::{MinimalSoftwareWindow, RepaintBufferType},
-    },
+    platform::software_renderer::{MinimalSoftwareWindow, RepaintBufferType},
 };
 use std::{
     cell::{Cell, RefCell},
@@ -16,21 +13,6 @@ use std::{
     sync::Arc,
     time::Duration,
 };
-
-struct Boundary {
-    windows: Rc<RefCell<Vec<Rc<MinimalSoftwareWindow>>>>,
-    clock: Rc<Cell<Duration>>,
-}
-impl Platform for Boundary {
-    fn create_window_adapter(&self) -> Result<Rc<dyn WindowAdapter>, PlatformError> {
-        let window = MinimalSoftwareWindow::new(RepaintBufferType::NewBuffer);
-        self.windows.borrow_mut().push(window.clone());
-        Ok(window)
-    }
-    fn duration_since_start(&self) -> Duration {
-        self.clock.get()
-    }
-}
 
 pub struct Harness {
     pub main: MainWindow,
@@ -44,15 +26,11 @@ pub struct Harness {
 }
 impl Harness {
     pub fn new() -> Self {
-        let windows = Rc::new(RefCell::new(Vec::new()));
         let clock = Rc::new(Cell::new(Duration::ZERO));
-        slint::platform::set_platform(Box::new(Boundary {
-            windows: windows.clone(),
-            clock: clock.clone(),
-        }))
-        .unwrap();
-        let main = MainWindow::new().unwrap();
-        midnight_ui::install_file_keys(&main);
+        // `tick` renders each frame into a new buffer.
+        let (ui, windows) =
+            owned_windows::with_clock_and_buffer(clock.clone(), RepaintBufferType::NewBuffer);
+        let main = ui.window;
         let root = std::env::temp_dir().join("embedded-file-list 文档");
         let state = Rc::new(RefCell::new(Presenter::new(root.clone(), root.clone())));
         let mut preferences = UserPreferences::default();

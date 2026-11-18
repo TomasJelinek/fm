@@ -23,11 +23,39 @@ export component NoticeDialog inherits Rectangle {
     callback authorize-retry();
     callback close();
     callback move-dialog(length, length);
+    // The height that shows every row below at its natural size with the regular
+    // padding and spacing, details collapsed. It depends only on the width, so
+    // EmbeddedNotice sizes its dialog from it.
+    out property <length> natural-height: 40px + header.regular-height
+        + 12px + body-measure.preferred-height
+        + (root.folder-path == "" ? 0px : 12px + root.folder-height)
+        + (root.can-authorize ? 12px + hint-measure.preferred-height : 0px)
+        + (root.can-authorize && root.narrow ? 12px + copy-button.preferred-height : 0px)
+        + 12px + root.action-row-height;
+    // Below this width the authorization offer is a row of its own.
+    private property <bool> narrow: root.width < 500px;
+    private property <length> folder-height: min(88px, Theme.font-size * 3 + 18px);
+    private property <length> action-row-height: max(32px, Theme.control-height, copy-button.preferred-height)
+        + (root.narrow ? 14px : 0px);
+    private property <string> authorization-hint: "Your operating system will ask for permission to read this folder.";
     public function focus-close() { close-button.focus(); }
     init => { close-button.focus(); }
     changed generation => { root.details-expanded = false; close-button.focus(); }
     background: Theme.surface; border-color: Theme.active-frame;
     border-width: 1px; border-radius: 6px;
+    // Hidden measures of the wrapped texts at the widths the regular layout gives
+    // them: DialogText wraps 16px inside its scroll view, the hint fills the row.
+    body-measure := Text {
+        visible: false; accessible-role: none;
+        width: max(1px, root.width - 56px);
+        text: root.body; wrap: word-wrap;
+        font-family: Theme.effective-font-family; font-size: Theme.font-size;
+    }
+    hint-measure := Text {
+        visible: false; accessible-role: none;
+        width: max(1px, root.width - 40px);
+        text: root.authorization-hint; font-size: Theme.small-font; wrap: word-wrap;
+    }
     FocusScope {
         key-pressed(event) => {
             if event.text == Key.Escape { root.close(); return accept; }
@@ -36,7 +64,7 @@ export component NoticeDialog inherits Rectangle {
         VerticalLayout {
             padding: root.height < 280px ? 12px : 20px;
             spacing: root.height < 280px ? 8px : 12px;
-            DialogHeader {
+            header := DialogHeader {
                 title: root.title; foreground: root.error ? Theme.error-text : Theme.strong-text;
                 error: root.error;
                 fallback-icon: FallbackIcons.about;
@@ -48,7 +76,7 @@ export component NoticeDialog inherits Rectangle {
             if root.folder-path != "": Rectangle {
                 background: Theme.secondary-surface; border-color: Theme.frame;
                 border-width: 1px; border-radius: 3px;
-                height: min(88px, Theme.font-size * 3 + 18px);
+                height: root.folder-height;
                 VerticalLayout {
                     padding: 8px; spacing: 3px;
                     Text { text: "Folder"; color: Theme.secondary-text; font-size: Theme.small-font; }
@@ -56,7 +84,7 @@ export component NoticeDialog inherits Rectangle {
                 }
             }
             if root.can-authorize: Text {
-                text: "Your operating system will ask for permission to read this folder.";
+                text: root.authorization-hint;
                 color: Theme.secondary-text; font-size: Theme.small-font; wrap: word-wrap;
             }
             if root.details-expanded && root.details != "": Rectangle {
@@ -68,15 +96,14 @@ export component NoticeDialog inherits Rectangle {
                     DialogText { text: root.details; vertical-stretch: 1; min-height: 0px; }
                 }
             }
-            if root.can-authorize && root.width < 500px: AuthorizationButton {
+            if root.can-authorize && root.narrow: AuthorizationButton {
                 clicked => { root.authorize-retry(); }
             }
             HorizontalLayout {
                 spacing: 8px;
                 ScrollView {
                     horizontal-stretch: 1; min-width: 0px;
-                    height: max(32px, Theme.control-height, copy-button.preferred-height)
-                        + (root.width < 500px ? 14px : 0px);
+                    height: root.action-row-height;
                     horizontal-scrollbar-policy: as-needed; vertical-scrollbar-policy: always-off;
                     HorizontalLayout {
                         alignment: start; spacing: 8px;
@@ -91,7 +118,7 @@ export component NoticeDialog inherits Rectangle {
                             hint: "Copy the complete message and diagnostic report to the clipboard.";
                             clicked => { root.copy-details(); }
                         }
-                        if root.can-authorize && root.width >= 500px: AuthorizationButton {
+                        if root.can-authorize && !root.narrow: AuthorizationButton {
                             clicked => { root.authorize-retry(); }
                         }
                     }

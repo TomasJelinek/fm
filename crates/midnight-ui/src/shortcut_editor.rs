@@ -110,6 +110,8 @@ pub(crate) fn install(
     bind!(on_clear, |_w, p, _send| {
         p.clear_editor_shortcut();
     });
+    // Assign and its replacement decision act only in an open Options session: the
+    // confirmation that removes the chord from other commands belongs to it.
     bind!(on_assign, |window, p, send, id, candidate| {
         if window.get_options_open() {
             p.assign_editor_shortcut(id.as_str(), candidate.as_str(), send);
@@ -120,6 +122,10 @@ pub(crate) fn install(
             p.decide_shortcut_replacement(token.as_str(), replace, send);
         }
     });
+    // Remove, Restore and Reset all are intentionally not gated on a session: they
+    // never take a chord from another command, so they need no confirmation. Like
+    // any other preference edit, they change an open Options session's draft (saved
+    // by OK, discarded by Cancel) and otherwise apply and save at once.
     bind!(on_remove, |_w, p, send, id, key| {
         p.remove_editor_shortcut(id.as_str(), key.as_str(), send);
     });

@@ -30,22 +30,14 @@ export component EmbeddedNotice inherits Rectangle {
         }
         PopupFocus.update();
     }
-    measure := Text {
-        visible: false; accessible-role: none;
-        width: max(1px, min(root.width - 56px, max(560px, Theme.font-size * 30) - 56px));
-        text: NoticePresentation.body; font-size: Theme.font-size; wrap: word-wrap;
-    }
     notice := PopupWindow {
         x: 0px; y: 0px; width: root.width; height: root.height;
         close-policy: no-auto-close;
         frame := DialogFrame {
             init => { self.reset(); }
             desired-width: max(560px, Theme.font-size * 30);
-            desired-height: clamp(measure.preferred-height
-                + max(Theme.control-height, Theme.font-size * 2) + 100px
-                + (NoticePresentation.folder-path == "" ? 0px : min(88px, Theme.font-size * 3 + 18px) + 12px)
-                + (NoticePresentation.can-authorize ? Theme.font-size * 2 + 12px : 0px)
-                + (NoticePresentation.can-authorize && root.width < 524px ? Theme.control-height + 12px : 0px), 220px, 440px)
+            // The form's own measure at the dialog's width; long text scrolls.
+            desired-height: clamp(form.natural-height, 220px, 440px)
                 + (root.details-expanded ? 200px : 0px);
             dim: true; dismiss-on-outside: false;
             form := NoticeDialog {

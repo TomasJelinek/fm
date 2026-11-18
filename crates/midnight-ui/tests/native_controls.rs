@@ -15,10 +15,7 @@ use midnight_ui::{
 };
 use slint::{
     ComponentHandle, Model, ModelRc, VecModel,
-    platform::{
-        Key, Platform, PlatformError, PointerEventButton, WindowAdapter, WindowEvent,
-        software_renderer::{MinimalSoftwareWindow, RepaintBufferType},
-    },
+    platform::{Key, PointerEventButton, WindowEvent},
 };
 use std::{
     cell::{Cell, RefCell},
@@ -37,15 +34,6 @@ mod raw_paths;
 #[path = "support/unix_raw_paths.rs"]
 mod raw_paths;
 
-struct TestPlatform(Rc<MinimalSoftwareWindow>, Rc<Cell<Duration>>);
-impl Platform for TestPlatform {
-    fn create_window_adapter(&self) -> Result<Rc<dyn WindowAdapter>, PlatformError> {
-        Ok(self.0.clone())
-    }
-    fn duration_since_start(&self) -> Duration {
-        self.1.get()
-    }
-}
 fn key(window: &MainWindow, key: Key) {
     platform_keys::key(window, key.into());
 }
@@ -168,10 +156,10 @@ fn details() -> VolumeDetails {
 
 #[test]
 fn native_choices_keep_gestures_tooltips_and_full_unicode_working_paths() {
-    let native = MinimalSoftwareWindow::new(RepaintBufferType::ReusedBuffer);
     let time = Rc::new(Cell::new(Duration::ZERO));
-    slint::platform::set_platform(Box::new(TestPlatform(native.clone(), time.clone()))).unwrap();
-    let window = MainWindow::new().unwrap();
+    let test = ui::TestUi::bare_with_clock(time.clone());
+    let window = test.window.clone_strong();
+    let native = test.native.clone();
     let root = std::env::temp_dir().join("midnight-ui-native-controls 文档");
     let home = root.join("Home e\u{301} 👩🏽‍💻");
     let downloads = home.join("Downloads & [plain]");
@@ -211,15 +199,8 @@ fn native_choices_keep_gestures_tooltips_and_full_unicode_working_paths() {
         ],
     });
     refresh(&window, &presenter.borrow());
-    window.show().unwrap();
-    window
-        .window()
-        .dispatch_event(WindowEvent::WindowActiveChanged(true));
-    native.set_size(slint::PhysicalSize::new(1340, 820));
-    window.window().dispatch_event(WindowEvent::Resized {
-        size: slint::LogicalSize::new(1340.0, 820.0),
-    });
-    let mut pixels = vec![slint::Rgb8Pixel::default(); 1340 * 820];
+    // Partial repaints build on the shared host's last full frame.
+    let mut pixels = test.pixels.clone();
     let draw = |pixels: &mut [slint::Rgb8Pixel], width| {
         slint::platform::update_timers_and_animations();
         native.draw_if_needed(|renderer| {

@@ -1,16 +1,22 @@
 //! Real keyboard/pointer routing; mock commands never touch a filesystem.
-#[allow(dead_code)] // This fixture uses the platform/render helpers, not its pointer helpers.
+#[allow(dead_code)] // This fixture uses the render helpers, not its pointer helpers.
 #[path = "support/modeless.rs"]
 mod modeless;
+#[path = "support/owned_windows.rs"]
+mod owned_windows;
 #[path = "support/ui.rs"]
 mod ui;
 #[path = "support/window_input.rs"]
 mod window_input;
 use midnight_core::*;
 use midnight_ui::{Presenter, install, refresh};
+use owned_windows::Windows as ChildWindows;
 use slint::{
     ComponentHandle,
-    platform::{Key, WindowAdapter, software_renderer::MinimalSoftwareWindow},
+    platform::{
+        Key, WindowAdapter,
+        software_renderer::{MinimalSoftwareWindow, RepaintBufferType},
+    },
 };
 use std::{
     cell::{Cell, RefCell},
@@ -306,24 +312,8 @@ fn clicking_after_breadcrumb_edits_path_and_enter_submits_unicode() {
     assert_eq!(ui.window.get_left_path_draft(), "C:\\folder");
 }
 
-type ChildWindows = Rc<RefCell<Vec<Rc<MinimalSoftwareWindow>>>>;
 fn main_with_children() -> (TestUi, ChildWindows) {
-    let windows = Rc::new(RefCell::new(Vec::new()));
-    slint::platform::set_platform(Box::new(modeless::Windows(windows.clone()))).unwrap();
-    let window = midnight_ui::MainWindow::new().unwrap();
-    midnight_ui::install_file_keys(&window);
-    window.set_preferences_ready(true);
-    window.show().unwrap();
-    let native = windows.borrow()[0].clone();
-    let mut test = TestUi {
-        window,
-        native,
-        pixels: Vec::new(),
-        width: 0,
-        height: 0,
-    };
-    test.resize(1340, 820);
-    (test, windows)
+    owned_windows::with_buffer(RepaintBufferType::NewBuffer)
 }
 fn current(test: &TestUi, _windows: &ChildWindows) -> Rc<MinimalSoftwareWindow> {
     slint::platform::update_timers_and_animations();

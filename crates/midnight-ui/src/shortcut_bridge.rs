@@ -2,7 +2,7 @@
 use crate::{
     MainWindow, Presenter, ShortcutHints, file_key_bridge, file_keys,
     presenter::keyboard::{KeyboardBindings, KeyboardState},
-    refresh, shortcut_input,
+    shortcut_input,
 };
 use midnight_core::{Command, ShortcutChord, ShortcutContext};
 use slint::{ComponentHandle, Model};
@@ -327,45 +327,7 @@ pub(crate) fn install(
     send: Rc<dyn Fn(Command) -> bool>,
 ) {
     install_routing(window, presenter.borrow().keyboard.bindings.clone());
-    crate::shortcut_editor::install(window, presenter.clone(), send.clone());
-    let weak = window.as_weak();
-    let state = presenter.clone();
-    let sender = send.clone();
-    window.on_keyboard_apply(move |action, text| {
-        let Some(window) = weak.upgrade() else {
-            return;
-        };
-        let keys = text
-            .lines()
-            .map(str::trim)
-            .filter(|key| !key.is_empty())
-            .map(str::to_owned)
-            .collect();
-        state
-            .borrow_mut()
-            .change_shortcuts(action.as_str(), keys, sender.as_ref());
-        refresh(&window, &state.borrow());
-    });
-    let weak = window.as_weak();
-    let state = presenter.clone();
-    let sender = send.clone();
-    window.on_keyboard_restore(move |action| {
-        let Some(window) = weak.upgrade() else {
-            return;
-        };
-        state
-            .borrow_mut()
-            .restore_shortcut(action.as_str(), sender.as_ref());
-        refresh(&window, &state.borrow());
-    });
-    let weak = window.as_weak();
-    window.on_keyboard_restore_all(move || {
-        let Some(window) = weak.upgrade() else {
-            return;
-        };
-        presenter.borrow_mut().restore_shortcuts(send.as_ref());
-        refresh(&window, &presenter.borrow());
-    });
+    crate::shortcut_editor::install(window, presenter, send);
 }
 
 pub(crate) fn refresh_bindings(window: &MainWindow, presenter: &Presenter) {
@@ -374,20 +336,6 @@ pub(crate) fn refresh_bindings(window: &MainWindow, presenter: &Presenter) {
     let hints = window.global::<ShortcutHints>();
     if hints.get_revision() != state.snapshot.revision_text {
         hints.set_revision(state.snapshot.revision_text.clone());
-    }
-    // Legacy test surface (main.slint `keyboard-*`): the selected shortcut's
-    // keys and scope and the last edit error. Compare first; they rarely change.
-    let action = &state.snapshot.map.definitions()[state.selected];
-    let bindings = state.snapshot.editor_text(&action.id);
-    if window.get_keyboard_bindings().as_str() != bindings {
-        window.set_keyboard_bindings(bindings.into());
-    }
-    let scope = state.snapshot.scope(&action.id);
-    if window.get_keyboard_scope().as_str() != scope {
-        window.set_keyboard_scope(scope.into());
-    }
-    if window.get_keyboard_error() != state.error {
-        window.set_keyboard_error(state.error.as_str().into());
     }
 }
 

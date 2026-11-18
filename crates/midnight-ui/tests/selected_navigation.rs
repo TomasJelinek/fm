@@ -1,4 +1,6 @@
 //! Native key dispatch through the installed presenter, preserving every selection mark.
+#[path = "support/shortcut_editor.rs"]
+mod shortcut_editor;
 #[path = "support/ui.rs"]
 mod ui;
 
@@ -135,9 +137,11 @@ fn selected_navigation_real_keys_preserve_marks_in_all_layouts_and_respect_edit_
     }
     assert_eq!(cursors(), before);
     ui::key(&test.window, Key::Escape);
-    test.window
-        .invoke_keyboard_apply("panel.next-selected".into(), "Ctrl+Shift+J".into());
-    assert!(test.window.get_keyboard_error().is_empty());
+    shortcut_editor::Shortcuts {
+        presenter: presenter.clone(),
+        commands: commands.clone(),
+    }
+    .assign(&test.window, "panel.next-selected", &["Ctrl+Shift+J"]);
     test.window.invoke_focus_files();
     ui::chord(&test.window, &[Key::Alt], Key::DownArrow);
     assert_eq!(test.window.get_right_cursor(), 1);

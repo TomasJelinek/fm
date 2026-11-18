@@ -493,6 +493,8 @@ fn embedded_filter_history_recall_and_clear_edit_only_while_show_all_removes_the
     h.filter_closed();
 }
 
+#[path = "support/embedded_form.rs"]
+mod embedded_form;
 #[path = "support/native_panel_failure.rs"]
 mod failure;
 #[path = "support/native_filter_form.rs"]

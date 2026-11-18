@@ -123,9 +123,14 @@ fn shortcut_scope_explains_each_alias_when_native_search_rules_differ() {
             true
         },)
     );
-    let snapshot = &p.keyboard.snapshot;
-    let scope = snapshot.scope("files.rename");
-    assert!(scope.contains("Ctrl+C — File list outside filename search"));
-    assert!(scope.contains("F2 — File list and filename search"));
-    assert!(snapshot.help.contains(scope));
+    // Keyboard help lists each Rename alias with its own scope, one per line.
+    let help = &p.keyboard.snapshot.help;
+    let lines = [
+        "Ctrl+C — File list outside filename search",
+        "F2 — File list and filename search",
+    ];
+    assert!(
+        help.contains(&lines.join("\n")) || help.contains(&[lines[1], lines[0]].join("\n")),
+        "{help}"
+    );
 }

@@ -1,10 +1,13 @@
 //! F10 exposes commands through the same callbacks as toolbar and keyboard actions.
 #[path = "support/render.rs"]
 mod render;
+#[path = "support/shortcut_editor.rs"]
+mod shortcut_editor;
 #[path = "support/ui.rs"]
 mod ui;
 
 use i_slint_core::{accessibility::AccessibleStringProperty, items::AccessibleRole};
+use shortcut_editor::Shortcuts;
 use slint::platform::Key;
 use std::{cell::RefCell, rc::Rc};
 
@@ -166,16 +169,13 @@ fn category_makes_application_actions_reachable_and_close_never_runs_them() {
     ui::key(&test.window, Key::Escape);
 }
 
-fn shortcut_menu(bindings: &[(&str, &[&str])]) -> ui::TestUi {
+fn shortcut_menu(bindings: &[(&str, &[&str])]) -> (ui::TestUi, Shortcuts) {
     shortcut_menu_on(ui::TestUi::new(), bindings)
 }
 
-fn shortcut_menu_on(mut test: ui::TestUi, bindings: &[(&str, &[&str])]) -> ui::TestUi {
+fn shortcut_menu_on(mut test: ui::TestUi, bindings: &[(&str, &[&str])]) -> (ui::TestUi, Shortcuts) {
     use midnight_core::{Event, ShortcutBinding, UserPreferences};
-    let presenter = Rc::new(RefCell::new(midnight_ui::Presenter::new(
-        std::env::temp_dir(),
-        std::env::temp_dir(),
-    )));
+    let mut presenter = midnight_ui::Presenter::new(std::env::temp_dir(), std::env::temp_dir());
     let preferences = UserPreferences {
         shortcuts: bindings
             .iter()
@@ -187,12 +187,14 @@ fn shortcut_menu_on(mut test: ui::TestUi, bindings: &[(&str, &[&str])]) -> ui::T
         ..Default::default()
     };
     preferences.validate().unwrap();
-    presenter
-        .borrow_mut()
-        .apply(Event::PreferencesLoaded(Ok(Box::new(preferences))));
-    midnight_ui::install(&test.window, presenter.clone(), Rc::new(|_| true));
-    midnight_ui::refresh(&test.window, &presenter.borrow());
+    presenter.apply(Event::PreferencesLoaded(Ok(Box::new(preferences))));
+    let shortcuts = Shortcuts::install(&test.window, presenter);
     test.window.set_left_can_target_cursor(true);
+    open_menu(&mut test);
+    (test, shortcuts)
+}
+
+fn open_menu(test: &mut ui::TestUi) {
     test.window.invoke_focus_files();
     ui::key(&test.window, Key::F10);
     test.draw();
@@ -200,7 +202,6 @@ fn shortcut_menu_on(mut test: ui::TestUi, bindings: &[(&str, &[&str])]) -> ui::T
         ui::has_popup(&test.window),
         "F10 must open the existing menu"
     );
-    test
 }
 
 fn menu_shortcut(test: &ui::TestUi, label: &str) -> Vec<String> {
@@ -214,7 +215,7 @@ fn menu_shortcut(test: &ui::TestUi, label: &str) -> Vec<String> {
 
 #[test]
 fn selection_menu_shows_current_defaults_and_dispatches_exact_file_or_folder_scope() {
-    let mut test = shortcut_menu(&[]);
+    let (mut test, _) = shortcut_menu(&[]);
     ui::key(&test.window, Key::Escape);
     test.window.set_active_pane(1);
     let selections = Rc::new(RefCell::new(Vec::new()));
@@ -242,17 +243,10 @@ fn selection_menu_shows_current_defaults_and_dispatches_exact_file_or_folder_sco
 
 #[test]
 fn menu_hints_use_remapped_shortcuts_and_update_while_the_menu_stays_open() {
-    let mut test = shortcut_menu(&[("files.rename", &["Ctrl+Alt+R"])]);
+    let (mut test, shortcuts) = shortcut_menu(&[("files.rename", &["Ctrl+Alt+R"])]);
     assert_eq!(menu_shortcut(&test, "Rename…"), ["Ctrl+Alt+R"]);
-    test.window
-        .invoke_keyboard_apply("files.rename".into(), "Ctrl+Alt+T".into());
-    test.draw();
-    assert!(ui::has_popup(&test.window));
-    assert_eq!(menu_shortcut(&test, "Rename…"), ["Ctrl+Alt+T"]);
-    render::snapshot(&test, "main-menu-live-remapped");
-
-    test.window
-        .invoke_keyboard_apply("files.rename".into(), "".into());
+    // The keyboard editor's Remove and Restore act while the menu stays open.
+    shortcuts.unassign(&test.window, "files.rename");
     test.draw();
     assert!(ui::has_popup(&test.window));
     assert!(
@@ -261,39 +255,35 @@ fn menu_hints_use_remapped_shortcuts_and_update_while_the_menu_stays_open() {
     );
     render::snapshot(&test, "main-menu-unassigned");
 
-    test.window.invoke_keyboard_restore("files.rename".into());
+    shortcuts.restore(&test.window, "files.rename");
     test.draw();
     assert!(ui::has_popup(&test.window));
     assert_eq!(menu_shortcut(&test, "Rename…"), ["F2"]);
+    ui::key(&test.window, Key::Escape);
+    assert!(!ui::has_popup(&test.window));
+
+    // Assigning a new chord needs Options; the menu then advertises that chord.
+    shortcuts.assign(&test.window, "files.rename", &["Ctrl+Alt+T"]);
+    open_menu(&mut test);
+    assert_eq!(menu_shortcut(&test, "Rename…"), ["Ctrl+Alt+T"]);
+    render::snapshot(&test, "main-menu-live-remapped");
     ui::key(&test.window, Key::Escape);
     assert!(!ui::has_popup(&test.window));
 }
 
 #[test]
 fn menu_suppresses_a_new_default_key_reassigned_to_another_action_and_restores_it() {
-    let mut test = shortcut_menu(&[]);
-    assert_eq!(
-        menu_shortcut(&test, "Deselect files and folders"),
-        ["Ctrl+D"]
-    );
-    assert_eq!(menu_shortcut(&test, "Rename…"), ["F2"]);
-    // A newly introduced default yields to an explicit user assignment. Existing
-    // defaults such as Edit/F4 still require their conflicting binding to be removed.
-    test.window
-        .invoke_keyboard_apply("files.rename".into(), "Ctrl+D".into());
-    test.draw();
-    assert!(
-        test.window.get_keyboard_error().is_empty(),
-        "{}",
-        test.window.get_keyboard_error()
-    );
-    assert!(ui::has_popup(&test.window));
+    // A newly introduced default yields to an explicit user assignment saved before
+    // that default existed. Existing defaults such as Edit/F4 still require their
+    // conflicting binding to be removed.
+    let (mut test, shortcuts) = shortcut_menu(&[("files.rename", &["Ctrl+D"])]);
     assert_eq!(menu_shortcut(&test, "Rename…"), ["Ctrl+D"]);
     assert!(
         menu_shortcut(&test, "Deselect files and folders").is_empty(),
         "the suppressed default must not advertise a chord now assigned to Rename"
     );
-    test.window.invoke_keyboard_restore_all();
+    // The keyboard editor's Reset all restores both defaults in the open menu.
+    shortcuts.reset_all(&test.window);
     test.draw();
     assert!(ui::has_popup(&test.window));
     assert_eq!(menu_shortcut(&test, "Rename…"), ["F2"]);
@@ -312,7 +302,7 @@ fn menu_shows_the_primary_alias_and_its_hover_hint_lists_every_alias() {
     };
     use slint::{ComponentHandle, platform::WindowEvent};
     let (test, clock) = ui::TestUi::with_virtual_clock();
-    let mut test = shortcut_menu_on(test, &[("files.rename", &["Ctrl+Alt+R", "F2"])]);
+    let (mut test, _) = shortcut_menu_on(test, &[("files.rename", &["Ctrl+Alt+R", "F2"])]);
     assert_eq!(
         menu_shortcut(&test, "Rename…"),
         ["F2"],
@@ -353,7 +343,7 @@ fn menu_shows_the_primary_alias_and_its_hover_hint_lists_every_alias() {
 
 #[test]
 fn view_shortcuts_change_only_the_active_pane_and_leave_command_editing_alone() {
-    let mut test = shortcut_menu(&[]);
+    let (mut test, shortcuts) = shortcut_menu(&[]);
     ui::key(&test.window, Key::Escape);
     for pane in 0..2 {
         test.window.invoke_activate(pane);
@@ -383,17 +373,15 @@ fn view_shortcuts_change_only_the_active_pane_and_leave_command_editing_alone() 
         // The test backend supplies a text-bearing Alt key event. Native editors
         // may accept that text (including Alt/Option layout input), so compare
         // against the same widget with this application binding disabled.
-        test.window.invoke_keyboard_apply(action.into(), "".into());
+        shortcuts.unassign(&test.window, action);
         test.draw();
-        assert!(test.window.get_keyboard_error().is_empty());
         test.window.invoke_set_command("kept view draft".into(), 15);
         ui::chord(&test.window, &[Key::Alt], key);
         test.draw();
         let native_text = test.window.get_command_text();
         assert_eq!(test.window.get_focused_pane(), -1);
-        test.window.invoke_keyboard_restore(action.into());
+        shortcuts.restore(&test.window, action);
         test.draw();
-        assert!(test.window.get_keyboard_error().is_empty());
 
         // A different mode makes accidental panel dispatch observable.
         test.window.invoke_view_mode(1, (mode + 1) % 3);
@@ -419,7 +407,7 @@ fn view_shortcuts_change_only_the_active_pane_and_leave_command_editing_alone() 
 
 #[test]
 fn view_menu_hints_and_key_dispatch_follow_live_remapping() {
-    let mut test = shortcut_menu(&[]);
+    let (mut test, shortcuts) = shortcut_menu(&[]);
     category(&mut test, 3);
     for (label, key) in [
         ("Brief view", "Alt+2"),
@@ -428,15 +416,16 @@ fn view_menu_hints_and_key_dispatch_follow_live_remapping() {
     ] {
         assert_eq!(menu_shortcut(&test, label), [key]);
     }
-    test.window
-        .invoke_keyboard_apply("view.brief".into(), "Ctrl+Shift+R".into());
+    // Removing the alias updates the open menu at once.
+    shortcuts.unassign(&test.window, "view.brief");
     test.draw();
-    assert!(
-        test.window.get_keyboard_error().is_empty(),
-        "{}",
-        test.window.get_keyboard_error()
-    );
     assert!(ui::has_popup(&test.window));
+    assert!(menu_shortcut(&test, "Brief view").is_empty());
+    assert_eq!(menu_shortcut(&test, "Detailed view"), ["Alt+3"]);
+    ui::key(&test.window, Key::Escape);
+    shortcuts.assign(&test.window, "view.brief", &["Ctrl+Shift+R"]);
+    open_menu(&mut test);
+    category(&mut test, 3);
     assert_eq!(menu_shortcut(&test, "Brief view"), ["Ctrl+Shift+R"]);
     assert_eq!(menu_shortcut(&test, "Detailed view"), ["Alt+3"]);
     assert_eq!(menu_shortcut(&test, "Thumbnail view"), ["Alt+5"]);
@@ -482,7 +471,7 @@ fn window_commands_route_navigation_and_panel_view_modes() {
 
 #[test]
 fn panel_view_and_sort_dropdowns_show_live_shortcuts_without_changing_labels() {
-    let mut test = shortcut_menu(&[]);
+    let (mut test, shortcuts) = shortcut_menu(&[]);
     ui::key(&test.window, Key::Escape);
     for pane in ["Left", "Right"] {
         ui::click_root(
@@ -532,15 +521,14 @@ fn panel_view_and_sort_dropdowns_show_live_shortcuts_without_changing_labels() {
         }
         ui::key(&test.window, Key::Escape);
     }
+    shortcuts.assign(&test.window, "view.brief", &["Ctrl+Shift+R"]);
+    test.draw();
     ui::click_root(
         &test.window,
         "Left panel view mode",
         AccessibleRole::Combobox,
     );
-    test.window
-        .invoke_keyboard_apply("view.brief".into(), "Ctrl+Shift+R".into());
     test.draw();
-    assert!(test.window.get_keyboard_error().is_empty());
     assert!(ui::has_popup(&test.window));
     let text = ui::visible_text_values(ui::popup_item(
         &test.window,
@@ -557,9 +545,10 @@ fn panel_view_and_sort_dropdowns_show_live_shortcuts_without_changing_labels() {
         "Left panel view mode",
         AccessibleRole::Combobox,
     );
-    test.window
-        .invoke_keyboard_apply("view.brief".into(), "".into());
+    // Removing the alias updates the open dropdown at once.
+    shortcuts.unassign(&test.window, "view.brief");
     test.draw();
+    assert!(ui::has_popup(&test.window));
     let text = ui::visible_text_values(ui::popup_item(
         &test.window,
         "Brief",

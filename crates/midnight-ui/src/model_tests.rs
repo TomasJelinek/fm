@@ -113,7 +113,7 @@ fn directory_links_have_folder_appearance_and_queued_target_size() {
     presenter.borrow_mut().panes[0].size_scan = Some(FolderSizeScanId(7));
     let row = Rows::new(presenter, PaneId::Left).row_data(0).unwrap();
     assert!(row.directory);
-    assert_eq!(row.kind.as_str(), "Folder link");
+    assert!(row.folder_link);
     assert_eq!(row.size.as_str(), "…");
     assert_eq!(row.modified_date.as_str(), "27. 6. 2024");
     assert_eq!(row.modified_time.as_str(), "15:26:30");
@@ -501,11 +501,7 @@ fn final_snapshot_rows_show_identity_selection_and_cursor() {
     let row = model.row_data(1).unwrap();
     assert!(row.cursor && row.selected);
     assert_eq!(row.name.as_str(), "readme.md");
-    assert_eq!(
-        row.kind.as_str(),
-        "",
-        "only folder links carry an announced kind; rows never format extensions"
-    );
+    assert!(!row.folder_link, "only folder links are announced as links");
 }
 
 #[test]

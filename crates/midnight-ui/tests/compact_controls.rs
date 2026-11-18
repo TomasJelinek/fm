@@ -11,22 +11,9 @@ use i_slint_core::{
 use midnight_ui::{LocationRow, MainWindow, NavigationChoiceRow};
 use slint::{
     ComponentHandle, ModelRc, VecModel,
-    platform::{
-        Key, Platform, PlatformError, PointerEventButton, WindowAdapter, WindowEvent,
-        software_renderer::{MinimalSoftwareWindow, RepaintBufferType},
-    },
+    platform::{Key, PointerEventButton, WindowEvent},
 };
 use std::{cell::Cell, rc::Rc, time::Duration};
-
-struct TestPlatform(Rc<MinimalSoftwareWindow>, Rc<Cell<Duration>>);
-impl Platform for TestPlatform {
-    fn create_window_adapter(&self) -> Result<Rc<dyn WindowAdapter>, PlatformError> {
-        Ok(self.0.clone())
-    }
-    fn duration_since_start(&self) -> Duration {
-        self.1.get()
-    }
-}
 // The shared helpers send keys the way the platform does (on Windows, with the
 // Winit-shaped key metadata).
 use ui::{click, key};
@@ -69,11 +56,9 @@ fn popup_position(window: &MainWindow, label: &str) -> slint::LogicalPosition {
 
 #[test]
 fn icon_shell_picker_commits_only_on_enter_and_restores_editor_focus() {
-    let native = MinimalSoftwareWindow::new(RepaintBufferType::ReusedBuffer);
-    let time = Rc::new(Cell::new(Duration::ZERO));
-    slint::platform::set_platform(Box::new(TestPlatform(native.clone(), time.clone()))).unwrap();
-    let window = MainWindow::new().unwrap();
-    midnight_ui::install_file_keys(&window);
+    let (test, time) = ui::TestUi::with_virtual_clock();
+    let window = test.window.clone_strong();
+    let native = test.native.clone();
     window.set_terminal_available(true);
     window.set_terminal_choices(ModelRc::new(VecModel::from(vec![
         "PowerShell — PowerShell syntax".into(),
@@ -91,15 +76,8 @@ fn icon_shell_picker_commits_only_on_enter_and_restores_editor_focus() {
             weak.upgrade().unwrap().set_terminal_index(index);
         }
     });
-    window.show().unwrap();
-    window
-        .window()
-        .dispatch_event(WindowEvent::WindowActiveChanged(true));
-    native.set_size(slint::PhysicalSize::new(1340, 820));
-    window.window().dispatch_event(WindowEvent::Resized {
-        size: slint::LogicalSize::new(1340.0, 820.0),
-    });
-    let mut pixels = vec![slint::Rgb8Pixel::default(); 1340 * 820];
+    // Partial repaints build on the shared host's last full frame.
+    let mut pixels = test.pixels.clone();
     let draw = |pixels: &mut [slint::Rgb8Pixel]| {
         native.draw_if_needed(|renderer| {
             renderer.render(pixels, 1340);

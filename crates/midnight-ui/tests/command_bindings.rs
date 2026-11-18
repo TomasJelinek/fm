@@ -11,19 +11,9 @@ mod bitmap;
 mod ui;
 use slint::{
     ComponentHandle,
-    platform::{
-        Key, Platform, PlatformError, WindowAdapter, WindowEvent,
-        software_renderer::{MinimalSoftwareWindow, RepaintBufferType},
-    },
+    platform::{Key, WindowEvent},
 };
 use std::{cell::RefCell, path::PathBuf, rc::Rc, sync::Arc};
-
-struct TestPlatform(Rc<MinimalSoftwareWindow>);
-impl Platform for TestPlatform {
-    fn create_window_adapter(&self) -> Result<Rc<dyn WindowAdapter>, PlatformError> {
-        Ok(self.0.clone())
-    }
-}
 
 /// Through the shared key path (on Windows, the Winit-shaped key metadata).
 fn control(window: &MainWindow, text: impl Into<slint::SharedString>) {
@@ -32,13 +22,10 @@ fn control(window: &MainWindow, text: impl Into<slint::SharedString>) {
 
 #[test]
 fn extension_sort_header_and_ctrl_f4_target_each_panel_and_reverse_order() {
-    let native = MinimalSoftwareWindow::new(RepaintBufferType::ReusedBuffer);
-    slint::platform::set_platform(Box::new(TestPlatform(native.clone()))).unwrap();
-    let window = MainWindow::new().unwrap();
-    window.show().unwrap();
-    window
-        .window()
-        .dispatch_event(WindowEvent::WindowActiveChanged(true));
+    // The production initializer installs every callback below.
+    let test = ui::TestUi::bare();
+    let window = test.window.clone_strong();
+    let native = test.native.clone();
     let root = std::env::temp_dir();
     let state = Rc::new(RefCell::new(Presenter::new(root.clone(), root.clone())));
     let sent = Rc::new(RefCell::new(Vec::new()));
@@ -56,7 +43,8 @@ fn extension_sort_header_and_ctrl_f4_target_each_panel_and_reverse_order() {
     window.window().dispatch_event(WindowEvent::Resized {
         size: slint::LogicalSize::new(1340.0, 820.0),
     });
-    let mut pixels = vec![slint::Rgb8Pixel::default(); 1340 * 820];
+    // Partial repaints build on the shared host's last full frame.
+    let mut pixels = test.pixels.clone();
     native.draw_if_needed(|renderer| {
         renderer.render(&mut pixels, 1340);
     });
@@ -190,13 +178,10 @@ fn click_header(window: &MainWindow, item: &ItemRc) {
 
 #[test]
 fn control_enter_appends_literal_basename_and_control_p_uses_active_panel() {
-    let native = MinimalSoftwareWindow::new(RepaintBufferType::ReusedBuffer);
-    slint::platform::set_platform(Box::new(TestPlatform(native.clone()))).unwrap();
-    let window = MainWindow::new().unwrap();
-    window.show().unwrap();
-    window
-        .window()
-        .dispatch_event(WindowEvent::WindowActiveChanged(true));
+    // The production initializer installs every callback below.
+    let test = ui::TestUi::bare();
+    let window = test.window.clone_strong();
+    let native = test.native.clone();
     let left = PathBuf::from("left 文档");
     let right = PathBuf::from("right 👩🏽‍💻");
     let name = "Žlutý ' $(data) & 文档.txt";
@@ -231,7 +216,8 @@ fn control_enter_appends_literal_basename_and_control_p_uses_active_panel() {
     window.window().dispatch_event(WindowEvent::Resized {
         size: slint::LogicalSize::new(1340.0, 820.0),
     });
-    let mut pixels = vec![slint::Rgb8Pixel::default(); 1340 * 820];
+    // Partial repaints build on the shared host's last full frame.
+    let mut pixels = test.pixels.clone();
     native.draw_if_needed(|renderer| {
         renderer.render(&mut pixels, 1340);
     });

@@ -1,42 +1,45 @@
-//! Form-only checks complement the installed native callback tests.
-use super::{key, modeless, replace, value};
+//! Form-only checks of the shipped embedded Filter and Hot Paths hosts, driven through
+//! their presentation globals; the installed adapter tests cover callbacks and identity.
+use super::{
+    embedded_form::{self, Host},
+    key, modeless, replace, value,
+};
 use i_slint_core::{accessibility::AccessibleStringProperty, items::AccessibleRole};
-use midnight_ui::{HotPathsWindow, PanelFilterView, PanelFilterWindow};
+use midnight_ui::{HotPathsPresentation, PanelFilterPresentation, PanelFilterView};
 use slint::{
     ComponentHandle,
     platform::{PointerEventButton, WindowAdapter, WindowEvent},
 };
 use std::{cell::RefCell, rc::Rc};
 struct Form {
-    window: PanelFilterWindow,
-    native: Rc<slint::platform::software_renderer::MinimalSoftwareWindow>,
+    host: Host,
 }
 impl Form {
+    /// Open the embedded Filter on a `width`×`height` main window; Cancel and Escape
+    /// close it as the adapter does.
     fn new(model: PanelFilterView, width: u32, height: u32, density: i32, font: i32) -> Self {
-        let windows = Rc::new(RefCell::new(Vec::new()));
-        slint::platform::set_platform(Box::new(modeless::Windows(windows.clone()))).unwrap();
-        let window = PanelFilterWindow::new().unwrap();
-        window.invoke_apply_preferences(0, density, "".into(), font, font);
-        window.set_model(model);
-        let weak = window.as_weak();
-        window.on_request_dismiss(move || {
-            if let Some(window) = weak.upgrade() {
-                window.hide().unwrap();
+        let host = Host::new();
+        host.apply_preferences(0, density, "", font, font);
+        let presentation = host.main.global::<PanelFilterPresentation>();
+        presentation.set_model(model);
+        let weak = host.main.as_weak();
+        presentation.on_dismiss(move |_| {
+            if let Some(main) = weak.upgrade() {
+                main.global::<PanelFilterPresentation>()
+                    .set_token("".into());
             }
         });
-        window.show().unwrap();
-        let native = windows.borrow()[0].clone();
-        modeless::draw(&native, width, height, "native-filter-form");
-        window.invoke_begin();
-        native
-            .window()
-            .dispatch_event(WindowEvent::WindowActiveChanged(true));
-        Self { window, native }
+        presentation.set_token("filter".into());
+        host.draw(width, height, "embedded-filter-form");
+        Self { host }
+    }
+    fn presentation(&self) -> PanelFilterPresentation<'_> {
+        self.host.main.global::<PanelFilterPresentation>()
     }
     fn feedback(&self) {
-        let mut model = self.window.get_model();
+        let mut model = self.presentation().get_model();
         model.error = "Validation feedback preserves the typed draft.".into();
-        self.window.set_model(model);
+        self.presentation().set_model(model);
     }
 }
 pub(super) fn click_control(
@@ -65,20 +68,10 @@ pub(super) fn click_control(
         });
 }
 fn action_visible(form: &Form, name: &str) {
-    let item = modeless::accessible_item(&form.native, AccessibleRole::Button, name).unwrap();
-    let rect = item.geometry();
-    let pos = item.map_to_native_window(rect.origin);
-    let size = form.native.window().size();
-    assert!(
-        pos.x >= -0.5
-            && pos.y >= -0.5
-            && pos.x + rect.width() <= size.width as f32 + 0.5
-            && pos.y + rect.height() <= size.height as f32 + 0.5,
-        "{name} outside native form"
-    );
+    embedded_form::assert_inside(&form.host.item(AccessibleRole::Button, name), name);
 }
 #[test]
-fn native_filter_first_open_at_minimum_large_fonts_accepts_escape_without_pointer_repair() {
+fn embedded_filter_first_open_at_minimum_large_fonts_accepts_escape_without_pointer_repair() {
     let form = Form::new(
         PanelFilterView {
             open: true,
@@ -87,25 +80,28 @@ fn native_filter_first_open_at_minimum_large_fonts_accepts_escape_without_pointe
             case_sensitive: true,
             ..Default::default()
         },
-        320,
-        200,
+        // A 320×200 dialog body inside the minimum frame margin.
+        328,
+        208,
         1,
         32,
     );
-    assert_eq!(value(&form.native), "*.český;*.世界");
+    let native = &form.host.native;
+    assert_eq!(value(native), "*.český;*.世界");
     assert_eq!(
-        modeless::accessible_item(&form.native, AccessibleRole::Checkbox, "Case sensitive")
-            .unwrap()
+        form.host
+            .item(AccessibleRole::Checkbox, "Case sensitive")
             .accessible_string_property(AccessibleStringProperty::Checked)
             .unwrap(),
         "true"
     );
     action_visible(&form, "Cancel");
-    key(&form.native, slint::platform::Key::Escape);
-    assert!(!form.native.window().is_visible());
+    key(native, slint::platform::Key::Escape);
+    assert!(!form.host.is_open());
 }
 #[test]
-fn native_filter_ok_enables_draft_and_show_all_is_a_separate_action() {
+fn embedded_filter_ok_enables_draft_and_show_all_is_a_separate_action() {
+    // A 540 px dialog body inside the main window's 12 px frame margin.
     let form = Form::new(
         PanelFilterView {
             open: true,
@@ -113,26 +109,29 @@ fn native_filter_ok_enables_draft_and_show_all_is_a_separate_action() {
             expression: "*.rs".into(),
             ..Default::default()
         },
-        540,
-        360,
+        564,
+        384,
         0,
         11,
     );
+    let native = &form.host.native;
     let calls = Rc::new(RefCell::new(Vec::new()));
     let out = calls.clone();
-    form.window.on_apply(move |enabled, mode, text, case| {
-        out.borrow_mut().push((enabled, mode, text, case))
-    });
+    form.presentation()
+        .on_apply(move |_, enabled, mode, text, case| {
+            out.borrow_mut().push((enabled, mode, text, case))
+        });
     let clears = Rc::new(RefCell::new(0));
     let out = clears.clone();
-    form.window.on_clear(move || *out.borrow_mut() += 1);
-    modeless::click(&form.native, "OK");
+    form.presentation()
+        .on_clear(move |_| *out.borrow_mut() += 1);
+    modeless::click(native, "OK");
     assert_eq!(calls.borrow().as_slice(), [(true, 0, "*.rs".into(), false)]);
-    let mut model = form.window.get_model();
+    let mut model = form.presentation().get_model();
     model.enabled = true;
-    form.window.set_model(model);
-    modeless::draw(&form.native, 540, 360, "native-filter-clear");
-    modeless::click(&form.native, "Show all");
+    form.presentation().set_model(model);
+    form.host.draw(564, 384, "embedded-filter-clear");
+    modeless::click(native, "Show all");
     assert_eq!(*clears.borrow(), 1);
     assert_eq!(
         calls.borrow().len(),
@@ -141,7 +140,7 @@ fn native_filter_ok_enables_draft_and_show_all_is_a_separate_action() {
     );
 }
 #[test]
-fn native_filter_feedback_and_resizing_preserve_expression_mode_and_edits() {
+fn embedded_filter_feedback_and_resizing_preserve_expression_mode_and_edits() {
     let form = Form::new(
         PanelFilterView {
             open: true,
@@ -155,20 +154,22 @@ fn native_filter_feedback_and_resizing_preserve_expression_mode_and_edits() {
         0,
         11,
     );
+    let native = &form.host.native;
     let calls = Rc::new(RefCell::new(Vec::new()));
     let out = calls.clone();
-    form.window.on_apply(move |enabled, mode, text, case| {
-        out.borrow_mut().push((enabled, mode, text, case))
-    });
-    click_control(&form.native, "Filter mode", AccessibleRole::Combobox);
-    key(&form.native, slint::platform::Key::DownArrow);
-    key(&form.native, slint::platform::Key::DownArrow);
-    key(&form.native, slint::platform::Key::Return);
+    form.presentation()
+        .on_apply(move |_, enabled, mode, text, case| {
+            out.borrow_mut().push((enabled, mode, text, case))
+        });
+    click_control(native, "Filter mode", AccessibleRole::Combobox);
+    key(native, slint::platform::Key::DownArrow);
+    key(native, slint::platform::Key::DownArrow);
+    key(native, slint::platform::Key::Return);
     assert!(calls.borrow().is_empty(), "selecting mode never applies");
     form.feedback();
-    modeless::draw(&form.native, 320, 200, "native-expression-compact");
+    form.host.draw(328, 208, "embedded-expression-compact");
     action_visible(&form, "Cancel");
-    modeless::click(&form.native, "OK");
+    modeless::click(native, "OK");
     assert_eq!(calls.borrow().last().unwrap().1, 2);
     assert_eq!(
         calls.borrow().last().unwrap().2,
@@ -176,46 +177,42 @@ fn native_filter_feedback_and_resizing_preserve_expression_mode_and_edits() {
     );
     for density in [0, 1] {
         for font in [11, 32] {
-            form.window
-                .invoke_apply_preferences(0, density, "".into(), font, font);
-            modeless::draw(&form.native, 1040, 820, "native-filter-large");
-            click_control(
-                &form.native,
-                "File filter expression",
-                AccessibleRole::TextInput,
-            );
-            replace(&form.native, "*.rs;*.md");
+            form.host.apply_preferences(0, density, "", font, font);
+            form.host.draw(1040, 820, "embedded-filter-large");
+            click_control(native, "File filter expression", AccessibleRole::TextInput);
+            replace(native, "*.rs;*.md");
             form.feedback();
-            modeless::draw(&form.native, 1040, 820, "native-filter-feedback");
+            form.host.draw(1040, 820, "embedded-filter-feedback");
             for label in ["OK", "Cancel", "Show all"] {
                 action_visible(&form, label);
             }
-            assert_eq!(value(&form.native), "*.rs;*.md");
-            modeless::click(&form.native, "OK");
+            assert_eq!(value(native), "*.rs;*.md");
+            modeless::click(native, "OK");
             assert_eq!(calls.borrow().last().unwrap().2, "*.rs;*.md");
         }
     }
-    key(&form.native, slint::platform::Key::Escape);
-    assert!(!form.native.window().is_visible());
+    key(native, slint::platform::Key::Escape);
+    assert!(!form.host.is_open());
 }
 #[test]
-fn native_hotpaths_first_open_at_minimum_large_fonts_accepts_escape() {
-    let windows = Rc::new(RefCell::new(Vec::new()));
-    slint::platform::set_platform(Box::new(modeless::Windows(windows.clone()))).unwrap();
-    let window = HotPathsWindow::new().unwrap();
-    window.invoke_apply_preferences(0, 1, "".into(), 32, 32);
-    let weak = window.as_weak();
-    window.on_request_dismiss(move || weak.upgrade().unwrap().hide().unwrap());
-    window.show().unwrap();
-    let native = windows.borrow()[0].clone();
-    modeless::draw(&native, 320, 200, "native-hotpaths-first-minimum");
-    window.invoke_begin();
-    key(&native, slint::platform::Key::Escape);
-    assert!(!native.window().is_visible());
+fn embedded_hotpaths_first_open_at_minimum_large_fonts_accepts_escape() {
+    let host = Host::new();
+    host.apply_preferences(0, 1, "", 32, 32);
+    let presentation = host.main.global::<HotPathsPresentation>();
+    let weak = host.main.as_weak();
+    presentation.on_dismiss(move |_| {
+        if let Some(main) = weak.upgrade() {
+            main.global::<HotPathsPresentation>().set_token("".into());
+        }
+    });
+    presentation.set_token("hot-paths".into());
+    host.draw(328, 208, "embedded-hotpaths-first-minimum");
+    key(&host.native, slint::platform::Key::Escape);
+    assert!(!host.is_open());
 }
 
 #[test]
-fn native_filter_history_restores_mode_case_and_text_without_applying_and_clear_edits_only() {
+fn embedded_filter_history_restores_mode_case_and_text_without_applying_and_clear_edits_only() {
     use midnight_ui::PanelFilterHistoryItem;
     let item = PanelFilterHistoryItem {
         label: "Regex (case sensitive): \\.TXT$".into(),
@@ -234,32 +231,34 @@ fn native_filter_history_restores_mode_case_and_text_without_applying_and_clear_
             ])),
             ..Default::default()
         },
-        540,
-        360,
+        564,
+        384,
         0,
         11,
     );
+    let native = &form.host.native;
     let calls = Rc::new(RefCell::new(Vec::new()));
     let out = calls.clone();
-    form.window
-        .on_apply(move |enabled, mode, expression, case| {
+    form.presentation()
+        .on_apply(move |_, enabled, mode, expression, case| {
             out.borrow_mut().push((enabled, mode, expression, case));
         });
     let clears = Rc::new(RefCell::new(0));
     let out = clears.clone();
-    form.window.on_clear(move || *out.borrow_mut() += 1);
-    click_control(&form.native, "Filter history", AccessibleRole::Combobox);
-    key(&form.native, slint::platform::Key::DownArrow);
-    key(&form.native, slint::platform::Key::Return);
-    assert_eq!(value(&form.native), r"\.TXT$");
+    form.presentation()
+        .on_clear(move |_| *out.borrow_mut() += 1);
+    click_control(native, "Filter history", AccessibleRole::Combobox);
+    key(native, slint::platform::Key::DownArrow);
+    key(native, slint::platform::Key::Return);
+    assert_eq!(value(native), r"\.TXT$");
     assert!(calls.borrow().is_empty());
     form.feedback();
-    modeless::draw(&form.native, 540, 360, "native-filter-history");
+    form.host.draw(564, 384, "embedded-filter-history");
     for label in ["Help", "OK", "Cancel"] {
         action_visible(&form, label);
     }
-    let ok = modeless::accessible_item(&form.native, AccessibleRole::Button, "OK").unwrap();
-    let cancel = modeless::accessible_item(&form.native, AccessibleRole::Button, "Cancel").unwrap();
+    let ok = form.host.item(AccessibleRole::Button, "OK");
+    let cancel = form.host.item(AccessibleRole::Button, "Cancel");
     assert!(
         (ok.map_to_native_window(ok.geometry().origin).y
             - cancel.map_to_native_window(cancel.geometry().origin).y)
@@ -267,13 +266,13 @@ fn native_filter_history_restores_mode_case_and_text_without_applying_and_clear_
             < 1.,
         "normal-width footer actions must share one row"
     );
-    modeless::click(&form.native, "OK");
+    modeless::click(native, "OK");
     assert_eq!(
         calls.borrow().as_slice(),
         [(true, 1, r"\.TXT$".into(), true)]
     );
-    modeless::click(&form.native, "Clear filter expression");
-    assert_eq!(value(&form.native), "");
+    modeless::click(native, "Clear filter expression");
+    assert_eq!(value(native), "");
     assert_eq!(
         *clears.borrow(),
         0,

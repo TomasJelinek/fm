@@ -1,57 +1,6 @@
 //! Presentation of verified transfers and versioned conflict/error decisions.
 use super::*;
 
-pub(super) fn install(
-    window: &MainWindow,
-    presenter: Rc<RefCell<Presenter>>,
-    _send: Rc<dyn Fn(Command) -> bool>,
-    begin_owned: crate::BeginOwned,
-) {
-    // The shipped Copy/Move form confirms through OperationPresentation
-    // (operation_windows.rs); this MainWindow callback remains for tests only.
-    let weak = window.as_weak();
-    let state = presenter;
-    window.on_confirm_copy_draft(move |token, destination| {
-        let Some(window) = weak.upgrade() else {
-            return;
-        };
-        // Claim before the Presenter action clones a captured draft or builds a request.
-        if crate::with_owned_commands(&state, &begin_owned, |p, send| {
-            if window.get_copy_draft_wait() {
-                p.confirm_copy_dialog_options(
-                    token.as_str(),
-                    destination.as_str(),
-                    if window.get_copy_draft_preserve_time() {
-                        TransferMetadataPolicy::RequireModifiedTime
-                    } else {
-                        TransferMetadataPolicy::ContentOnly
-                    },
-                    TransferStartPolicy::WaitForEarlier,
-                    send,
-                );
-            } else if window.get_copy_draft_preserve_time() {
-                p.confirm_copy_dialog_metadata(
-                    token.as_str(),
-                    destination.as_str(),
-                    TransferMetadataPolicy::RequireModifiedTime,
-                    send,
-                );
-            } else {
-                p.confirm_copy_dialog(token.as_str(), destination.as_str(), send);
-            }
-        })
-        .is_none()
-            && let Ok(mut p) = state.try_borrow_mut()
-        {
-            p.copy_dialog_reclaim_busy(token.as_str());
-        }
-        // Showing/closing popups synchronously reads presenter-backed row models.
-        if let Ok(p) = state.try_borrow() {
-            crate::refresh(&window, &p);
-        }
-    });
-}
-
 fn refresh_draft(window: &MainWindow, presenter: &Presenter) {
     let Some(draft) = presenter
         .copies
@@ -74,8 +23,6 @@ fn refresh_draft(window: &MainWindow, presenter: &Presenter) {
     let moving = draft.intent == TransferIntent::Move;
     window.set_copy_draft_move(moving);
     window.set_copy_draft_metadata_enabled(draft.metadata_available());
-    window.set_copy_draft_preserve_time(false);
-    window.set_copy_draft_wait(false);
     let policy = match (moving, presenter.transfer_verification()) {
         (false, TransferVerification::FullSha256) => "Verification: full SHA-256.",
         (false, TransferVerification::SizeAndSamples) => {

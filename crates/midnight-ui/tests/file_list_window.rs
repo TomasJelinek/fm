@@ -1,148 +1,159 @@
+#[path = "support/embedded_form.rs"]
+mod form;
 #[path = "support/window_input.rs"]
 mod input;
 #[path = "support/embedded_file_list.rs"]
 mod installed;
 #[path = "support/modeless.rs"]
 mod modeless;
+#[path = "support/owned_windows.rs"]
+mod owned_windows;
+#[path = "support/ui.rs"]
+mod ui;
 
 use i_slint_core::{accessibility::AccessibleStringProperty, items::AccessibleRole};
-use midnight_ui::FileListWindow;
-use modeless::{Windows, click, draw};
+use midnight_ui::FileListPresentation;
+use modeless::{Windows, draw};
 use slint::{
-    ComponentHandle,
-    platform::{Key, WindowAdapter, WindowEvent},
+    ComponentHandle, LogicalPosition,
+    platform::{Key, PointerEventButton, WindowAdapter, WindowEvent},
 };
 use std::{
     cell::{Cell, RefCell},
     rc::Rc,
 };
 
+/// The shipped embedded Make File List form; Cancel closes it like the adapter does.
+/// The returned log holds the token of every cancel request the form sent.
+fn file_list_host() -> (form::Host, Rc<RefCell<Vec<String>>>) {
+    let host = form::Host::new();
+    host.apply_preferences(1, 0, "", 14, 16);
+    let cancels = Rc::new(RefCell::new(Vec::new()));
+    let log = cancels.clone();
+    let weak = host.main.as_weak();
+    host.main
+        .global::<FileListPresentation>()
+        .on_cancel(move |token| {
+            log.borrow_mut().push(token.to_string());
+            if let Some(main) = weak.upgrade() {
+                main.global::<FileListPresentation>().set_active(false);
+            }
+        });
+    (host, cancels)
+}
+
+fn begin(host: &form::Host) {
+    let form = host.main.global::<FileListPresentation>();
+    form.set_token("file-list".into());
+    form.invoke_begin();
+    host.settle();
+}
+
 #[test]
 fn existing_output_is_a_separate_explicit_decision_at_minimum_size() {
-    let windows = Rc::new(RefCell::new(Vec::new()));
-    slint::platform::set_platform(Box::new(Windows(windows.clone()))).unwrap();
-    let window = FileListWindow::new().unwrap();
-    window.invoke_apply_preferences(1, 0, "".into(), 14, 16);
+    let (host, _) = file_list_host();
+    let form = host.main.global::<FileListPresentation>();
     let confirmations = Rc::new(Cell::new(0));
     let captured = confirmations.clone();
-    window.on_confirm(move || captured.set(captured.get() + 1));
-    window.set_destination(2);
-    window.set_busy(true);
-    window.set_conflict_pending(true);
-    window
-        .set_conflict_text("文档-list.txt\n\nSize: 1,024 bytes\nModified: 2026-11-09 14:20".into());
-    window.show().unwrap();
-    let native = windows.borrow()[0].clone();
-    draw(&native, 320, 200, "file-list-conflict");
+    form.on_confirm(move |_| captured.set(captured.get() + 1));
+    form.set_destination(2);
+    form.set_busy(true);
+    form.set_conflict_pending(true);
+    form.set_conflict_text("文档-list.txt\n\nSize: 1,024 bytes\nModified: 2026-11-09 14:20".into());
+    begin(&host);
+    host.draw(328, 208, "file-list-conflict");
     assert_eq!(confirmations.get(), 0);
-    click(&native, "Confirm existing file list output");
+    host.click("Confirm existing file list output");
     assert_eq!(confirmations.get(), 1);
 }
 
 #[test]
 fn file_list_keeps_output_explicit_and_escape_cancels_while_busy() {
-    let windows = Rc::new(RefCell::new(Vec::new()));
-    slint::platform::set_platform(Box::new(Windows(windows.clone()))).unwrap();
-    let window = FileListWindow::new().unwrap();
-    window.invoke_apply_preferences(1, 0, "".into(), 14, 16);
+    let (host, cancels) = file_list_host();
+    let form = host.main.global::<FileListPresentation>();
     let generated = Rc::new(Cell::new(0));
     let captured = generated.clone();
-    window.on_generate(move || captured.set(captured.get() + 1));
-    let cancelled = Rc::new(Cell::new(0));
-    let captured = cancelled.clone();
-    window.on_cancel(move || captured.set(captured.get() + 1));
-    window.set_preview_text("文档.txt\r\nfolder\r\n".into());
-    window.set_summary("2 selected items".into());
-    window.show().unwrap();
-    let native = windows.borrow()[0].clone();
-    draw(&native, 720, 520, "file-list-clipboard");
-    assert_eq!(window.get_template_text(), "$(FileName)$(CRLF)");
+    form.on_generate(move |_| captured.set(captured.get() + 1));
+    form.set_preview_text("文档.txt\r\nfolder\r\n".into());
+    form.set_summary("2 selected items".into());
+    begin(&host);
+    host.draw(744, 544, "file-list-clipboard");
+    assert_eq!(form.get_template_text(), "$(FileName)$(CRLF)");
     assert_eq!(generated.get(), 0, "preview must not publish output");
-    click(&native, "Create file list");
+    host.click("Create file list");
     assert_eq!(generated.get(), 1);
-    window.set_busy(true);
-    draw(&native, 720, 520, "file-list-busy");
-    let create =
-        modeless::accessible_item(&native, AccessibleRole::Button, "Create file list").unwrap();
+    form.set_busy(true);
+    host.draw(744, 544, "file-list-busy");
+    let create = host.item(AccessibleRole::Button, "Create file list");
     assert_eq!(
         create
             .accessible_string_property(AccessibleStringProperty::Enabled)
             .as_deref(),
         Some("false")
     );
-    click(&native, "Create file list");
+    host.click("Create file list");
     assert_eq!(generated.get(), 1, "busy output cannot be submitted twice");
-    window.invoke_begin();
-    native.window().dispatch_event(WindowEvent::KeyPressed {
-        text: Key::Escape.into(),
-    });
-    assert_eq!(cancelled.get(), 1);
-    window.hide().unwrap();
+    assert!(cancels.borrow().is_empty());
+    form.invoke_begin();
+    host.key(Key::Escape);
+    assert_eq!(
+        *cancels.borrow(),
+        ["file-list"],
+        "Escape sends exactly one cancel request for the open form"
+    );
+    assert!(!form.get_active(), "Escape cancels the busy form");
+    assert!(!host.is_open());
 }
 
 #[test]
 fn file_list_browse_is_explicit_and_footer_remains_reachable_at_small_sizes() {
-    let windows = Rc::new(RefCell::new(Vec::new()));
-    slint::platform::set_platform(Box::new(Windows(windows.clone()))).unwrap();
-    let window = FileListWindow::new().unwrap();
-    window.invoke_apply_preferences(1, 0, "".into(), 14, 16);
+    let (host, cancels) = file_list_host();
+    let form = host.main.global::<FileListPresentation>();
     let browsed = Rc::new(Cell::new(0));
     let captured = browsed.clone();
-    window.on_browse(move || captured.set(captured.get() + 1));
-    let cancelled = Rc::new(Cell::new(0));
-    let captured = cancelled.clone();
-    window.on_cancel(move || captured.set(captured.get() + 1));
-    window.set_destination(2);
-    window.set_destination_path("一覧.txt".into());
-    window.set_append_output(true);
-    window.show().unwrap();
-    let native = windows.borrow()[0].clone();
-    draw(&native, 720, 520, "file-list-file");
+    form.on_browse(move |_| captured.set(captured.get() + 1));
+    form.set_destination(2);
+    form.set_destination_path("一覧.txt".into());
+    form.set_append_output(true);
+    begin(&host);
+    host.draw(744, 544, "file-list-file");
     assert_eq!(browsed.get(), 0);
-    click(&native, "Browse file list destination");
+    host.click("Browse file list destination");
     assert_eq!(browsed.get(), 1);
-    for (density, size, width, height) in [(0, 11, 320, 200), (1, 18, 390, 300)] {
-        window.invoke_apply_preferences(1, density, "".into(), size, size);
-        draw(&native, width, height, "file-list-compact");
-        let cancel = modeless::accessible_item(&native, AccessibleRole::Button, "Cancel")
-            .expect("fixed cancel action");
-        let geometry = cancel.geometry();
-        let origin = cancel.map_to_native_window(geometry.origin);
-        assert!(origin.y >= 0.0);
-        assert!(origin.y + geometry.height() <= height as f32);
-        assert_eq!(window.get_destination_path(), "一覧.txt");
-        assert!(window.get_append_output());
+    for (density, size, width, height) in [(0, 11, 328, 208), (1, 18, 398, 308)] {
+        host.apply_preferences(1, density, "", size, size);
+        host.draw(width, height, "file-list-compact");
+        form::assert_inside(&host.item(AccessibleRole::Button, "Cancel"), "Cancel");
+        assert_eq!(form.get_destination_path(), "一覧.txt");
+        assert!(form.get_append_output());
     }
-    click(&native, "Cancel");
-    assert_eq!(cancelled.get(), 1);
-    window.hide().unwrap();
+    assert!(cancels.borrow().is_empty());
+    host.click("Cancel");
+    assert_eq!(
+        *cancels.borrow(),
+        ["file-list"],
+        "Cancel sends exactly one cancel request for the open form"
+    );
+    assert!(!form.get_active());
+    assert!(!host.is_open());
 }
 
 #[test]
 fn file_list_template_input_reports_edits_and_retains_unicode_selection_offsets() {
-    let windows = Rc::new(RefCell::new(Vec::new()));
-    slint::platform::set_platform(Box::new(Windows(windows.clone()))).unwrap();
-    let window = FileListWindow::new().unwrap();
-    window.invoke_apply_preferences(1, 0, "".into(), 14, 16);
+    let (host, _) = file_list_host();
+    let form = host.main.global::<FileListPresentation>();
     let edits = Rc::new(RefCell::new(Vec::new()));
     let captured = edits.clone();
-    window.on_template_edited(move |text| captured.borrow_mut().push(text.to_string()));
-    window.set_template_text("文档$(FileName)".into());
-    window.show().unwrap();
-    let native = windows.borrow()[0].clone();
-    draw(&native, 720, 520, "file-list-template");
-    window.invoke_focus_template_at(6);
-    native
-        .window()
-        .dispatch_event(WindowEvent::KeyPressed { text: "-".into() });
-    native
-        .window()
-        .dispatch_event(WindowEvent::KeyReleased { text: "-".into() });
-    assert_eq!(window.get_template_text(), "文档-$(FileName)");
-    assert_eq!(window.get_template_cursor(), 7);
-    assert_eq!(window.get_template_anchor(), 7);
+    form.on_template_edited(move |_, text| captured.borrow_mut().push(text.to_string()));
+    form.set_template_text("文档$(FileName)".into());
+    begin(&host);
+    host.draw(744, 544, "file-list-template");
+    form.invoke_focus_template_at(6);
+    host.key("-");
+    assert_eq!(form.get_template_text(), "文档-$(FileName)");
+    assert_eq!(form.get_template_cursor(), 7);
+    assert_eq!(form.get_template_anchor(), 7);
     assert_eq!(&*edits.borrow(), &["文档-$(FileName)"]);
-    window.hide().unwrap();
 }
 
 #[test]
@@ -298,55 +309,53 @@ fn embedded_file_list_cancel_waits_for_exact_request_release_without_another_ada
 }
 
 #[test]
-fn file_list_preview_grows_with_the_window_and_resize_preserves_the_draft_caret() {
-    let windows = Rc::new(RefCell::new(Vec::new()));
-    slint::platform::set_platform(Box::new(Windows(windows.clone()))).unwrap();
-    let window = FileListWindow::new().unwrap();
-    window.invoke_apply_preferences(3, 0, "".into(), 13, 18);
-    window.set_template_text("文档$(FileName)$(CRLF)".into());
-    window.set_preview_text("文档.txt\nnotes.txt\n".into());
-    window.set_summary("2 selected items".into());
+fn file_list_preview_grows_with_the_dialog_and_resize_preserves_the_draft_caret() {
+    let (host, cancels) = file_list_host();
+    host.apply_preferences(3, 0, "", 13, 18);
+    let form = host.main.global::<FileListPresentation>();
+    form.set_template_text("文档$(FileName)$(CRLF)".into());
+    form.set_preview_text("文档.txt\nnotes.txt\n".into());
+    form.set_summary("2 selected items".into());
     let edits = Rc::new(Cell::new(0));
     let observed = edits.clone();
-    window.on_template_edited(move |_| observed.set(observed.get() + 1));
-    let weak = window.as_weak();
-    window.on_cancel(move || weak.upgrade().unwrap().hide().unwrap());
-    window.show().unwrap();
-    let native = windows.borrow()[0].clone();
-    draw(&native, 720, 520, "file-list-preview-normal");
-    window.invoke_focus_template_at(6);
-    let preview =
-        modeless::accessible_item(&native, AccessibleRole::TextInput, "File list preview").unwrap();
+    form.on_template_edited(move |_, _| observed.set(observed.get() + 1));
+    begin(&host);
+    // The dialog opens at its own 720×520 size inside the larger main window.
+    host.draw(1000, 820, "file-list-preview-normal");
+    form.invoke_focus_template_at(6);
+    host.settle();
+    let preview = host.item(AccessibleRole::TextInput, "File list preview");
     let old_height = preview.geometry().height();
-    draw(&native, 1000, 820, "file-list-preview-expanded");
+    let (_, before) = form::body(&preview);
+    host.stretch_vertically(&preview);
+    host.draw(1000, 820, "file-list-preview-expanded");
+    let extra = form::body(&preview).1.height - before.height;
+    assert!(extra >= 250.0, "the dialog grew by only {extra}");
     let new_height = preview.geometry().height();
     assert!(
-        new_height >= old_height + 260.0,
-        "extra height belongs to preview: {old_height} -> {new_height}"
+        new_height >= old_height + extra * 0.85,
+        "extra height belongs to preview: {old_height} -> {new_height} for {extra}"
     );
-    assert_eq!(window.get_template_cursor(), 6);
-    assert_eq!(window.get_template_anchor(), 6);
-    assert_eq!(window.get_template_text(), "文档$(FileName)$(CRLF)");
+    assert_eq!(form.get_template_cursor(), 6);
+    assert_eq!(form.get_template_anchor(), 6);
+    assert_eq!(form.get_template_text(), "文档$(FileName)$(CRLF)");
     assert_eq!(edits.get(), 0, "resizing does not edit or submit a draft");
     let bounds = preview.geometry();
     let origin = preview.map_to_native_window(bounds.origin);
-    let position = slint::LogicalPosition::new(origin.x + 20.0, origin.y + 20.0);
-    native.window().dispatch_event(WindowEvent::PointerPressed {
-        position,
-        button: slint::platform::PointerEventButton::Left,
-    });
-    native
-        .window()
-        .dispatch_event(WindowEvent::PointerReleased {
+    let position = LogicalPosition::new(origin.x + 20.0, origin.y + 20.0);
+    for event in [
+        WindowEvent::PointerPressed {
             position,
-            button: slint::platform::PointerEventButton::Left,
-        });
-    native
-        .window()
-        .dispatch_event(WindowEvent::KeyPressed { text: "x".into() });
-    native
-        .window()
-        .dispatch_event(WindowEvent::KeyReleased { text: "x".into() });
+            button: PointerEventButton::Left,
+        },
+        WindowEvent::PointerReleased {
+            position,
+            button: PointerEventButton::Left,
+        },
+    ] {
+        host.native.window().dispatch_event(event);
+    }
+    host.key("x");
     assert_eq!(
         preview
             .accessible_string_property(AccessibleStringProperty::Value)
@@ -355,20 +364,13 @@ fn file_list_preview_grows_with_the_window_and_resize_preserves_the_draft_caret(
         "preview remains read-only"
     );
     for (density, font) in [(0, 11), (1, 32)] {
-        window.invoke_apply_preferences(3, density, "".into(), font, font);
-        draw(&native, 320, 200, "file-list-preview-compact");
-        let cancel = modeless::accessible_item(&native, AccessibleRole::Button, "Cancel").unwrap();
-        let rect = cancel.geometry();
-        let at = cancel.map_to_native_window(rect.origin);
-        assert!(
-            at.x >= 0.0
-                && at.y >= 0.0
-                && at.x + rect.width() <= 320.5
-                && at.y + rect.height() <= 200.5
-        );
+        host.apply_preferences(3, density, "", font, font);
+        host.draw(328, 208, "file-list-preview-compact");
+        form::assert_inside(&host.item(AccessibleRole::Button, "Cancel"), "Cancel");
     }
-    click(&native, "Cancel");
-    assert!(!window.window().is_visible());
+    host.click("Cancel");
+    assert_eq!(*cancels.borrow(), ["file-list"]);
+    assert!(!host.is_open());
 }
 
 #[test]

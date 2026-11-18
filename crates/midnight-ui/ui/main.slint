@@ -5,8 +5,6 @@ import { EmbeddedOperation, OperationPresentation } from "embedded-operation.sli
 import { EmbeddedFileList, FileListPresentation } from "embedded-file-list.slint";
 import { EmbeddedNotice, NoticePresentation } from "embedded-notice.slint";
 export { PanelFilterPresentation, HotPathsPresentation, OperationPresentation, FileListPresentation, NoticePresentation, PopupFocus }
-import { FileListWindow } from "file-list-window.slint";
-export { FileListWindow }
 import { FindWindow, FindRow, FindDraft } from "find-window.slint";
 export { FindWindow, FindRow, FindDraft }
 import { ChecksumWindow, ChecksumDisplayRow, ChecksumDraft } from "checksum-window.slint";
@@ -17,18 +15,12 @@ import { ShortcutHints } from "shortcut-hints.slint";
 export { ShortcutHints }
 import { HelpWindow } from "help-window.slint";
 import { AboutWindow } from "about-window.slint";
-import { NoticeWindow } from "notice-window.slint";
-export { HelpWindow, AboutWindow, NoticeWindow }
-import { OperationWindow } from "operation-window.slint";
-export { OperationWindow }
+export { HelpWindow, AboutWindow }
 import { JobProgressWindow } from "job-progress-window.slint";
 export { JobProgressWindow }
 import { JobsWindow } from "jobs-window.slint";
 import { DecisionWindow } from "decision-window.slint";
 export { JobsWindow, DecisionWindow }
-import { PanelFilterWindow } from "panel-filter-window.slint";
-import { HotPathsWindow } from "hot-paths-window.slint";
-export { PanelFilterWindow, HotPathsWindow }
 
 import { HintedActionButton } from "hinted-inputs.slint";
 import { ScrollView, Palette } from "std-widgets.slint";
@@ -65,8 +57,8 @@ import { OperationRow, JobsView } from "jobs-dialog.slint";
 import { SpeedChartData } from "operation-speed-chart.slint";
 export { SpeedChartData }
 export { JobsView }
-import { MetadataDialog, MetadataDraft, MetadataFileRow } from "metadata-controls.slint";
-export { MetadataDraft, MetadataFileRow }
+import { MetadataDialog, MetadataDraft } from "metadata-controls.slint";
+export { MetadataDraft }
 import { UnixPermissionsCodec, UnixPermissionBits, UnixPermissionView } from "unix-permissions.slint";
 export { UnixPermissionsCodec, UnixPermissionBits, UnixPermissionView }
 import { ComparisonView, CompareDirectoriesDialog } from "comparison-dialog.slint";
@@ -146,14 +138,6 @@ export component MainWindow inherits Window {
     in property <int> drag-hover-pane: -1;
     in property <int> drag-hover-row: -1;
     in property <string> drag-label;
-    // Legacy test surface for the selected shortcut (Options uses
-    // KeyboardEditorView); remove once no test reads or invokes it.
-    in property <string> keyboard-bindings;
-    in property <string> keyboard-scope;
-    in property <string> keyboard-error;
-    callback keyboard-apply(string, string);
-    callback keyboard-restore(string);
-    callback keyboard-restore-all();
     callback window-key(KeyEvent) -> bool;
     callback window-key-release(KeyEvent);
     callback function-action(string, int);
@@ -202,7 +186,6 @@ export component MainWindow inherits Window {
     in property <bool> network-available;
     in property <bool> network-discovery-available;
     callback mutation(int, int);
-    callback cancel-operation(string);
     callback cancel-job(string);
     callback pause-job(string, bool);
     callback copy-job-details(string);
@@ -235,7 +218,6 @@ export component MainWindow inherits Window {
     in property <bool> copy-can-skip;
     in property <string> copy-source-details;
     in property <string> copy-target-details;
-    callback decide-copy(string, int, string);
     callback resolve-copy(string);
     public function show-copy-conflict() { root.open-decision-window(false, false); }
     public function close-copy-conflict() { root.close-decision-window(false); }
@@ -243,13 +225,10 @@ export component MainWindow inherits Window {
     in property <bool> copy-draft-move;
     in property <string> copy-draft-body;
     in property <string> copy-draft-policy;
-    in-out property <bool> copy-draft-wait;
     in property <string> copy-draft-destination;
     in property <int> copy-draft-selection-end;
     in property <string> copy-draft-error;
     in property <bool> copy-draft-metadata-enabled;
-    in-out property <bool> copy-draft-preserve-time;
-    callback confirm-copy-draft(string, string);
     in property <string> metadata-conflict-token;
     in property <string> metadata-conflict-body;
     public function show-metadata-conflict() { root.open-decision-window(true, false); }
@@ -261,7 +240,6 @@ export component MainWindow inherits Window {
     in property <string> metadata-summary;
     in property <string> metadata-timestamp-example: "2026-11-06T12:30:00+01:00";
     in property <string> metadata-preview-text;
-    in property <[MetadataFileRow]> metadata-rows;
     in property <string> metadata-list-status;
     in property <bool> metadata-preview-current;
     in property <string> metadata-error;
@@ -302,8 +280,6 @@ export component MainWindow inherits Window {
     in property <string> right-filter-label;
     callback submit-comparison(bool, bool, bool, string, bool);
     callback cancel-comparison();
-    callback apply-panel-filter(int, bool, int, string, bool);
-    callback cancel-panel-filter();
     callback clear-panel-filter(int);
     private property <bool> comparison-open: root.comparison-view.open;
     changed comparison-open => {
@@ -649,10 +625,6 @@ export component MainWindow inherits Window {
         else { ColorOptionsView.picker-field = -1; options.close(); root.focus-files(); }
         PopupFocus.update();
     }
-    // Legacy single-editor callbacks: never invoked. Kept only while
-    // Presenter::change_editor/restore_editor still exist; remove together.
-    callback editor-apply(string, string);
-    callback editor-restore();
     callback terminal-changed(int);
     callback open-terminal();
     callback command-edited(bool);

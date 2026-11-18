@@ -17,7 +17,6 @@ export component PathNavigation inherits Rectangle {
     in property <string> hint;
     in-out property <string> text <=> editor.text;
     out property <bool> has-focus: editor.has-focus;
-    out property <bool> editing: root.edit-mode;
     out property <string> highlighted-prefix: root.hovered-index >= 0 && root.hovered-index < root.parts.length
         ? root.parts[root.hovered-index].prefix : "";
     private property <bool> edit-mode;

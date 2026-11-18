@@ -68,6 +68,11 @@ impl TestUi {
         Self::initialize(None, false)
     }
 
+    /// [`Self::bare`] whose Slint timers and animations only follow `clock`.
+    pub fn bare_with_clock(clock: Rc<Cell<Duration>>) -> Self {
+        Self::initialize(Some(clock), false)
+    }
+
     fn initialize(clock: Option<Rc<Cell<Duration>>>, widget_callbacks: bool) -> Self {
         let native = MinimalSoftwareWindow::new(RepaintBufferType::ReusedBuffer);
         let platform: Box<dyn Platform> = if let Some(clock) = clock {

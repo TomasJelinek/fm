@@ -110,9 +110,6 @@ use std::{
 
 pub use midnight_ui_bindings::*;
 
-/// `FileRow.kind` marker that file-entry.slint announces as " · Folder link".
-const FOLDER_LINK_KIND: &str = "Folder link";
-
 struct Rows {
     presenter: Rc<RefCell<Presenter>>,
     pane: PaneId,
@@ -254,13 +251,6 @@ impl Model for Rows {
         let (modified_date, modified_time) = time_presentation::modified(metadata)
             .map(|value| (value.date, value.time))
             .unwrap_or_else(|| ("—".into(), "—".into()));
-        // Slint reads `kind` only to announce folder links. Leave it empty
-        // otherwise: every visible row is rebuilt on scroll and refresh.
-        let kind = if entry.kind == EntryKind::DirectoryLink {
-            SharedString::from(FOLDER_LINK_KIND)
-        } else {
-            SharedString::default()
-        };
         let filename_style = state.filename_style(self.pane, entry);
         Some(FileRow {
             // Include intent and committed generations: a pending refresh may keep
@@ -304,7 +294,7 @@ impl Model for Rows {
             },
             modified_date: modified_date.into(),
             modified_time: modified_time.into(),
-            kind,
+            folder_link: entry.kind == EntryKind::DirectoryLink,
             icon: state.thumbnail_image(self.pane, entry).unwrap_or_else(|| {
                 state
                     .desktop
@@ -966,7 +956,6 @@ pub fn install_with_owned(
     tooltip::install(window).expect("install tooltip event observer after Slint initialization");
     scroll_input::install(window);
     shell_bridge::install(window, presenter.clone(), send.clone(), begin_owned.clone());
-    copy_presentation::install(window, presenter.clone(), send.clone(), begin_owned.clone());
     operation_windows::install(window, presenter.clone(), send.clone(), begin_owned.clone());
     jobs_windows::install(window, presenter.clone(), send.clone());
     decision_windows::install(window, presenter.clone(), send.clone());
@@ -1036,20 +1025,6 @@ pub fn install_with_owned(
             );
         }
     });
-    callback!(on_cancel_operation, |w, p, s, token| {
-        if let Some(token) = token.strip_prefix("metadata-job:") {
-            p.cancel_operation(token, s);
-            return;
-        }
-        if token.starts_with("copy-job:") {
-            p.cancel_copy(token.as_str(), s);
-        } else {
-            p.cancel_operation(token.as_str(), s);
-            if p.operations.preview.is_none() {
-                w.invoke_focus_files();
-            }
-        }
-    });
     callback!(on_cancel_job, |_w, p, s, token| {
         if token.starts_with("command-job:") {
             p.cancel_user_command(token.as_str(), s);
@@ -1077,10 +1052,6 @@ pub fn install_with_owned(
         {
             p.copy_viewer_text(row.detail.to_string(), s);
         }
-    });
-    callback!(on_decide_copy, |w, p, s, token, choice, name| {
-        p.decide_copy(token.as_str(), choice, name.to_string(), s);
-        let _ = w;
     });
     {
         let weak = window.as_weak();
@@ -1502,16 +1473,6 @@ pub fn install_with_owned(
     );
     callback!(on_thumbnail_size_changed, |_w, p, s, size| {
         p.change_thumbnail_size(size, s);
-    });
-    // Legacy single-editor surface: nothing invokes these since the Editors page
-    // moved to EditorOptionsView. Remove with Presenter::change_editor/restore_editor.
-    callback!(on_editor_apply, |w, p, s, executable, arguments| {
-        p.change_editor(executable.as_str(), arguments.as_str(), s);
-        let _ = w;
-    });
-    callback!(on_editor_restore, |w, p, s| {
-        p.restore_editor(s);
-        let _ = w;
     });
     callback!(on_edit_file, |w, p, s, id| {
         p.edit_file(pane(id), s);

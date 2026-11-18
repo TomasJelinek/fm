@@ -1,4 +1,7 @@
 //! Shared command-menu delegates retain callbacks and gestures during native icon delivery.
+#[path = "support/ui.rs"]
+mod ui;
+
 use i_slint_core::{
     accessibility::AccessibleStringProperty,
     item_tree::ItemRc,
@@ -8,37 +11,16 @@ use i_slint_core::{
 use midnight_ui::{MainWindow, Presenter, install};
 use slint::{
     ComponentHandle, Image, Rgb8Pixel, SharedPixelBuffer,
-    platform::{
-        Key, Platform, PlatformError, PointerEventButton, WindowAdapter, WindowEvent,
-        software_renderer::{MinimalSoftwareWindow, RepaintBufferType},
-    },
+    platform::{Key, PointerEventButton, WindowEvent, software_renderer::MinimalSoftwareWindow},
 };
 use std::{
     cell::{Cell, RefCell},
     rc::Rc,
 };
+use ui::key;
 
 const WIDTH: usize = 1340;
 const HEIGHT: usize = 900;
-
-struct TestPlatform(Rc<MinimalSoftwareWindow>);
-impl Platform for TestPlatform {
-    fn create_window_adapter(&self) -> Result<Rc<dyn WindowAdapter>, PlatformError> {
-        Ok(self.0.clone())
-    }
-}
-
-#[cfg(windows)]
-#[path = "support/windows_keys.rs"]
-mod platform_keys;
-#[cfg(not(windows))]
-#[path = "support/default_keys.rs"]
-mod platform_keys;
-
-/// Through the shared key path (on Windows, the Winit-shaped key metadata).
-fn key(window: &MainWindow, key: Key) {
-    platform_keys::key(window, key.into());
-}
 
 fn draw(native: &MinimalSoftwareWindow, pixels: &mut [Rgb8Pixel]) {
     slint::platform::update_timers_and_animations();
@@ -87,9 +69,10 @@ fn center(item: &ItemRc) -> slint::LogicalPosition {
 
 #[test]
 fn native_icon_delivery_during_menu_press_keeps_its_command_and_command_focus_never_executes() {
-    let native = MinimalSoftwareWindow::new(RepaintBufferType::ReusedBuffer);
-    slint::platform::set_platform(Box::new(TestPlatform(native.clone()))).unwrap();
-    let window = MainWindow::new().unwrap();
+    // The production initializer installs the widget callbacks.
+    let test = ui::TestUi::bare();
+    let window = test.window.clone_strong();
+    let native = test.native.clone();
     let path = std::env::temp_dir();
     install(
         &window,
@@ -105,7 +88,8 @@ fn native_icon_delivery_during_menu_press_keeps_its_command_and_command_focus_ne
         captured.set(captured.get() + 1);
         false
     });
-    window.show().unwrap();
+    // Resizing repaints the whole window (its root item changes size), so the new
+    // buffer can start empty.
     native.set_size(slint::PhysicalSize::new(WIDTH as u32, HEIGHT as u32));
     window.window().dispatch_event(WindowEvent::Resized {
         size: slint::LogicalSize::new(WIDTH as f32, HEIGHT as f32),

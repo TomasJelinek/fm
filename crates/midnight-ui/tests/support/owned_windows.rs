@@ -39,20 +39,51 @@ pub fn new() -> (TestUi, Windows) {
 }
 /// [`new`] whose Slint timers and animations only follow `clock`.
 pub fn with_clock(clock: Rc<Cell<Duration>>) -> (TestUi, Windows) {
-    let windows = Windows::default();
-    let boundary = Boundary(windows.clone(), RepaintBufferType::ReusedBuffer);
-    slint::platform::set_platform(Box::new(ClockBoundary(boundary, clock))).unwrap();
-    (main_window(&windows), windows)
+    clocked(clock, RepaintBufferType::ReusedBuffer, true)
+}
+/// [`with_clock`] for harnesses that render every frame into a new buffer
+/// (`RepaintBufferType::NewBuffer`, as `modeless::draw` expects).
+pub fn with_clock_and_buffer(
+    clock: Rc<Cell<Duration>>,
+    buffer: RepaintBufferType,
+) -> (TestUi, Windows) {
+    clocked(clock, buffer, true)
 }
 pub fn with_buffer(buffer: RepaintBufferType) -> (TestUi, Windows) {
     let windows = Windows::default();
     slint::platform::set_platform(Box::new(Boundary(windows.clone(), buffer))).unwrap();
-    (main_window(&windows), windows)
+    (window(&windows, true), windows)
 }
-fn main_window(windows: &Windows) -> TestUi {
+/// [`with_clock`] without preinstalled widget callbacks, for tests that install the
+/// production initializer (a Presenter) themselves.
+pub fn bare_with_clock(clock: Rc<Cell<Duration>>) -> (TestUi, Windows) {
+    clocked(clock, RepaintBufferType::ReusedBuffer, false)
+}
+/// Only the platform of [`with_clock`], for tests that create their own main windows
+/// (several in turn, if they like); it records every adapter, newest last.
+pub fn clock_platform(clock: Rc<Cell<Duration>>) -> Windows {
+    install_clocked(clock, RepaintBufferType::ReusedBuffer)
+}
+fn install_clocked(clock: Rc<Cell<Duration>>, buffer: RepaintBufferType) -> Windows {
+    let windows = Windows::default();
+    let boundary = Boundary(windows.clone(), buffer);
+    slint::platform::set_platform(Box::new(ClockBoundary(boundary, clock))).unwrap();
+    windows
+}
+fn clocked(
+    clock: Rc<Cell<Duration>>,
+    buffer: RepaintBufferType,
+    widget_callbacks: bool,
+) -> (TestUi, Windows) {
+    let windows = install_clocked(clock, buffer);
+    (window(&windows, widget_callbacks), windows)
+}
+fn window(windows: &Windows, widget_callbacks: bool) -> TestUi {
     let window = midnight_ui::MainWindow::new().unwrap();
     window.set_preferences_ready(true);
-    midnight_ui::install_file_keys(&window);
+    if widget_callbacks {
+        midnight_ui::install_file_keys(&window);
+    }
     window.show().unwrap();
     window
         .window()

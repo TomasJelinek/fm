@@ -605,8 +605,12 @@ fn loaded_dynamic_command_can_assign_and_remove_alias_without_changing_other_com
         .is_none()
     );
     assert!(p.remove_editor_shortcut("user-command.first", "Ctrl+Alt+Y", &|_| true));
-    assert_eq!(p.keyboard.snapshot.editor_text("user-command.first"), "");
-    assert_eq!(p.keyboard.snapshot.editor_text("files.copy"), "Ctrl+C");
+    let map = &p.keyboard.snapshot.map;
+    assert_eq!(map.bindings("user-command.first"), Some(&[][..]));
+    assert_eq!(
+        map.bindings("files.copy"),
+        Some(&[ShortcutChord::parse("Ctrl+C").unwrap()][..])
+    );
 }
 
 #[test]

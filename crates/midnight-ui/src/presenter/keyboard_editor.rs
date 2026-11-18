@@ -379,16 +379,21 @@ mod tests {
         presenter.capture_editor_shortcut(ShortcutChord::parse("ctrl+alt+y").unwrap());
         assert!(presenter.inspect_editor_shortcut().can_assign);
         assert!(sent.borrow().is_empty());
+        let aliases = |presenter: &Presenter| {
+            presenter
+                .keyboard
+                .snapshot
+                .map
+                .bindings("files.copy")
+                .expect("catalog action")
+                .iter()
+                .map(ShortcutChord::display)
+                .collect::<Vec<_>>()
+        };
         assert!(presenter.assign_editor_shortcut("files.copy", "Ctrl+Alt+Y", &send));
-        assert_eq!(
-            presenter.keyboard.snapshot.editor_text("files.copy"),
-            "Ctrl+C\nCtrl+Alt+Y"
-        );
+        assert_eq!(aliases(&presenter), ["Ctrl+C", "Ctrl+Alt+Y"]);
         assert!(presenter.remove_editor_shortcut("files.copy", "Ctrl+C", &send));
-        assert_eq!(
-            presenter.keyboard.snapshot.editor_text("files.copy"),
-            "Ctrl+Alt+Y"
-        );
+        assert_eq!(aliases(&presenter), ["Ctrl+Alt+Y"]);
         assert!(matches!(
             sent.borrow().last(),
             Some(Command::SavePreferences { .. })

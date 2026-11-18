@@ -1,4 +1,6 @@
 //! Filter-specific input and layout boundaries across supported presentation modes.
+#[path = "support/embedded_form.rs"]
+mod form;
 #[path = "support/window_input.rs"]
 mod input;
 #[path = "support/modeless.rs"]
@@ -12,7 +14,7 @@ use i_slint_core::{
     window::WindowInner,
 };
 use midnight_ui::{
-    HelpWindow, MainWindow, PanelFilterHistoryItem, PanelFilterView, PanelFilterWindow,
+    HelpWindow, MainWindow, PanelFilterHistoryItem, PanelFilterPresentation, PanelFilterView,
 };
 use slint::{
     ComponentHandle,
@@ -58,26 +60,54 @@ fn model() -> PanelFilterView {
     }
 }
 
-fn form(
-    windows: &Windows,
-    scheme: i32,
-    density: i32,
-) -> (PanelFilterWindow, Rc<MinimalSoftwareWindow>) {
-    let window = PanelFilterWindow::new().unwrap();
-    window.invoke_apply_preferences(scheme, density, "Segoe UI".into(), 12, 15);
-    window.set_model(model());
-    let weak = window.as_weak();
-    window.on_request_dismiss(move || weak.upgrade().unwrap().hide().unwrap());
-    window.show().unwrap();
-    let native = windows.borrow().last().unwrap().clone();
-    modeless::draw(&native, 540, 360, "filter-qualification-initial");
-    window.invoke_begin();
-    native
-        .window()
-        .dispatch_event(WindowEvent::WindowActiveChanged(true));
-    (window, native)
+/// The embedded Filter of a bare main window, closed by Cancel/Escape as the adapter
+/// closes it.
+fn filter_host() -> form::Host {
+    let host = form::Host::new();
+    let weak = host.main.as_weak();
+    host.main
+        .global::<PanelFilterPresentation>()
+        .on_dismiss(move |_| {
+            if let Some(main) = weak.upgrade() {
+                main.global::<PanelFilterPresentation>()
+                    .set_token("".into());
+            }
+        });
+    host
 }
 
+/// Open a new Filter occurrence with this appearance.
+fn open(host: &form::Host, scheme: i32, density: i32) {
+    host.apply_preferences(scheme, density, "Segoe UI", 12, 15);
+    let presentation = host.main.global::<PanelFilterPresentation>();
+    presentation.set_model(model());
+    presentation.set_token(format!("filter-{scheme}-{density}").into());
+    host.draw(564, 384, "filter-qualification-initial");
+    assert!(host.is_open());
+}
+
+/// The filter control is visible inside the dialog body and every scroll viewport.
+fn form_inside(host: &form::Host, role: AccessibleRole, label: &str) -> ItemRc {
+    let item = host
+        .try_item(role, label)
+        .unwrap_or_else(|| panic!("Missing filter control: {label}"));
+    form::assert_unclipped(&item, label);
+    item
+}
+
+fn form_property(
+    host: &form::Host,
+    role: AccessibleRole,
+    label: &str,
+    property: AccessibleStringProperty,
+) -> String {
+    host.item(role, label)
+        .accessible_string_property(property)
+        .unwrap()
+        .to_string()
+}
+
+/// A control of a native window is visible inside it and every scroll viewport.
 fn inside(native: &MinimalSoftwareWindow, role: AccessibleRole, label: &str) -> ItemRc {
     let item = modeless::accessible_item(native, role, label)
         .unwrap_or_else(|| panic!("Missing filter control: {label}"));
@@ -127,26 +157,33 @@ fn property(
 
 #[test]
 fn filter_controls_and_footer_remain_reachable_at_desktop_12px_and_touch_in_both_themes() {
-    let windows = platform();
+    let host = filter_host();
     for scheme in [0, 17] {
         for density in [0, 1] {
-            let (window, native) = form(&windows, scheme, density);
-            for (width, height) in [(540, 360), (320, 480)] {
-                modeless::draw(
-                    &native,
-                    width,
-                    height,
-                    &format!("filter-layout-{scheme}-{density}"),
-                );
+            open(&host, scheme, density);
+            // A 540 px wide dialog body, then a 320×480 body: the user enlarged the
+            // dialog to the frame margins of a 328×488 window.
+            for (width, height) in [(564, 384), (328, 488)] {
+                host.draw(width, height, &format!("filter-layout-{scheme}-{density}"));
+                if width == 328 {
+                    host.stretch_vertically(&host.item(AccessibleRole::Button, "Cancel"));
+                    host.draw(
+                        width,
+                        height,
+                        &format!("filter-layout-tall-{scheme}-{density}"),
+                    );
+                    let (_, body) = form::body(&host.item(AccessibleRole::Button, "Cancel"));
+                    assert_eq!((body.width, body.height), (320.0, 480.0));
+                }
                 for label in ["Filter history", "Filter mode"] {
-                    inside(&native, AccessibleRole::Combobox, label);
+                    form_inside(&host, AccessibleRole::Combobox, label);
                 }
                 let expression =
-                    inside(&native, AccessibleRole::TextInput, "File filter expression");
-                let clear = inside(&native, AccessibleRole::Button, "Clear filter expression");
-                inside(&native, AccessibleRole::Checkbox, "Case sensitive");
+                    form_inside(&host, AccessibleRole::TextInput, "File filter expression");
+                let clear = form_inside(&host, AccessibleRole::Button, "Clear filter expression");
+                form_inside(&host, AccessibleRole::Checkbox, "Case sensitive");
                 for label in ["Help", "Show all", "OK", "Cancel"] {
-                    inside(&native, AccessibleRole::Button, label);
+                    form_inside(&host, AccessibleRole::Button, label);
                 }
                 let center = |item: &ItemRc| {
                     item.map_to_native_window(item.geometry().origin).y
@@ -156,25 +193,20 @@ fn filter_controls_and_footer_remain_reachable_at_desktop_12px_and_touch_in_both
                     (center(&expression) - center(&clear)).abs() <= 1.0,
                     "draft and Clear centers differ"
                 );
-                if width == 540 {
-                    let ok = inside(&native, AccessibleRole::Button, "OK");
-                    let cancel = inside(&native, AccessibleRole::Button, "Cancel");
+                if width == 564 {
+                    let ok = form_inside(&host, AccessibleRole::Button, "OK");
+                    let cancel = form_inside(&host, AccessibleRole::Button, "Cancel");
                     assert!(
                         (center(&ok) - center(&cancel)).abs() <= 1.0,
                         "normal footer is misaligned"
                     );
                 }
             }
-            modeless::draw(
-                &native,
-                320,
-                200,
-                &format!("filter-minimum-{scheme}-{density}"),
-            );
-            inside(&native, AccessibleRole::Button, "Cancel");
-            input::key(&native, Key::Escape);
+            host.draw(328, 208, &format!("filter-minimum-{scheme}-{density}"));
+            form_inside(&host, AccessibleRole::Button, "Cancel");
+            input::key(&host.native, Key::Escape);
             assert!(
-                !window.window().is_visible(),
+                !host.is_open(),
                 "minimum filter must accept Escape without pointer repair"
             );
         }
@@ -183,23 +215,25 @@ fn filter_controls_and_footer_remain_reachable_at_desktop_12px_and_touch_in_both
 
 #[test]
 fn history_recall_and_draft_clear_preserve_applied_filter_and_busy_cancellation() {
-    let windows = platform();
+    let host = filter_host();
+    let presentation = host.main.global::<PanelFilterPresentation>();
     for scheme in [0, 17] {
         for density in [0, 1] {
-            let (window, native) = form(&windows, scheme, density);
+            open(&host, scheme, density);
+            let native = host.native.clone();
             let applies = Rc::new(RefCell::new(Vec::new()));
             let out = applies.clone();
-            window.on_apply(move |enabled, mode, expression, case| {
+            presentation.on_apply(move |_, enabled, mode, expression, case| {
                 out.borrow_mut()
                     .push((enabled, mode, expression.to_string(), case));
             });
             let clears = Rc::new(RefCell::new(0));
             let out = clears.clone();
-            window.on_clear(move || *out.borrow_mut() += 1);
+            presentation.on_clear(move |_| *out.borrow_mut() += 1);
             modeless::click(&native, "Clear filter expression");
             assert_eq!(
-                property(
-                    &native,
+                form_property(
+                    &host,
                     AccessibleRole::TextInput,
                     "File filter expression",
                     AccessibleStringProperty::Value
@@ -207,15 +241,15 @@ fn history_recall_and_draft_clear_preserve_applied_filter_and_busy_cancellation(
                 ""
             );
             assert_eq!(
-                property(
-                    &native,
+                form_property(
+                    &host,
                     AccessibleRole::Button,
                     "Clear filter expression",
                     AccessibleStringProperty::Enabled
                 ),
                 "false"
             );
-            assert!(window.get_model().enabled);
+            assert!(presentation.get_model().enabled);
             assert_eq!(
                 *clears.borrow(),
                 0,
@@ -223,15 +257,15 @@ fn history_recall_and_draft_clear_preserve_applied_filter_and_busy_cancellation(
             );
             input::key(&native, "*.文档");
             assert_eq!(
-                property(
-                    &native,
+                form_property(
+                    &host,
                     AccessibleRole::Button,
                     "Clear filter expression",
                     AccessibleStringProperty::Enabled
                 ),
                 "true"
             );
-            let history = inside(&native, AccessibleRole::Combobox, "Filter history");
+            let history = form_inside(&host, AccessibleRole::Combobox, "Filter history");
             input::click(&native, &history);
             input::key(&native, Key::DownArrow);
             input::key(&native, Key::DownArrow);
@@ -241,23 +275,18 @@ fn history_recall_and_draft_clear_preserve_applied_filter_and_busy_cancellation(
                 "confirming history must only fill the draft"
             );
             assert_eq!(
-                property(
-                    &native,
+                form_property(
+                    &host,
                     AccessibleRole::TextInput,
                     "File filter expression",
                     AccessibleStringProperty::Value
                 ),
                 "name like \"文档*\""
             );
-            let mut status = window.get_model();
+            let mut status = presentation.get_model();
             status.busy = true;
-            window.set_model(status);
-            modeless::draw(
-                &native,
-                540,
-                360,
-                &format!("filter-validating-{scheme}-{density}"),
-            );
+            presentation.set_model(status);
+            host.draw(564, 384, &format!("filter-validating-{scheme}-{density}"));
             for (role, label) in [
                 (AccessibleRole::Combobox, "Filter history"),
                 (AccessibleRole::Combobox, "Filter mode"),
@@ -267,7 +296,7 @@ fn history_recall_and_draft_clear_preserve_applied_filter_and_busy_cancellation(
                 (AccessibleRole::Button, "OK"),
             ] {
                 assert_eq!(
-                    property(&native, role, label, AccessibleStringProperty::Enabled),
+                    form_property(&host, role, label, AccessibleStringProperty::Enabled),
                     "false",
                     "{label} edits a validating draft"
                 );
@@ -280,22 +309,17 @@ fn history_recall_and_draft_clear_preserve_applied_filter_and_busy_cancellation(
                 1,
                 "Show all remains available to cancel pending validation"
             );
-            let mut status = window.get_model();
+            let mut status = presentation.get_model();
             status.busy = false;
-            window.set_model(status);
-            modeless::draw(
-                &native,
-                540,
-                360,
-                &format!("filter-recalled-{scheme}-{density}"),
-            );
+            presentation.set_model(status);
+            host.draw(564, 384, &format!("filter-recalled-{scheme}-{density}"));
             modeless::click(&native, "OK");
             assert_eq!(
                 applies.borrow().as_slice(),
                 [(true, 2, "name like \"文档*\"".to_owned(), true)]
             );
             input::key(&native, Key::Escape);
-            assert!(!window.window().is_visible());
+            assert!(!host.is_open());
         }
     }
 }

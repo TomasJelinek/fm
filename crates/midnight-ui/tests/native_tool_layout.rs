@@ -1,5 +1,7 @@
-//! Native tool bodies retain geometry, artwork and keyboard dismissal coverage.
+//! Tool bodies retain geometry, artwork and keyboard dismissal coverage.
 //! Backend identity and window-owner semantics live in the installed adapter tests.
+#[path = "support/embedded_form.rs"]
+mod form;
 #[path = "support/window_input.rs"]
 mod input;
 #[path = "support/modeless.rs"]
@@ -13,7 +15,7 @@ use i_slint_core::{
     window::WindowInner,
 };
 use midnight_ui::{
-    BookmarkRow, DecisionWindow, HotPathsWindow, JobsView, JobsWindow, OperationRow,
+    BookmarkRow, DecisionWindow, HotPathsPresentation, JobsView, JobsWindow, OperationRow,
 };
 use slint::{
     ComponentHandle, Model,
@@ -260,12 +262,13 @@ fn native_decision_keeps_recovery_details_artwork_and_reachable_footer() {
     assert!(!window.window().is_visible());
 }
 
-#[test]
-fn native_hot_paths_keeps_actions_artwork_and_compact_close() {
-    let windows = platform();
-    let window = HotPathsWindow::new().unwrap();
-    window.set_path("/very/long/文档/👩🏽‍💻/folder".into());
-    window.set_model(slint::ModelRc::new(slint::VecModel::from(vec![
+/// The embedded Hot Paths manager with one saved path, opened; Close and Escape
+/// dismiss it as the adapter does.
+fn hot_paths_host() -> form::Host {
+    let host = form::Host::new();
+    let presentation = host.main.global::<HotPathsPresentation>();
+    presentation.set_path("/very/long/文档/👩🏽‍💻/folder".into());
+    presentation.set_model(slint::ModelRc::new(slint::VecModel::from(vec![
         BookmarkRow {
             identity: "1".into(),
             label: "文档 · Saved project".into(),
@@ -273,33 +276,62 @@ fn native_hot_paths_keeps_actions_artwork_and_compact_close() {
             slot: 1,
         },
     ])));
-    window.set_action_icons(midnight_ui::ActionIcons {
+    presentation.set_action_icons(midnight_ui::ActionIcons {
         add_bookmark: marker(),
         ..Default::default()
     });
-    let weak = window.as_weak();
-    window.on_request_dismiss(move || weak.upgrade().unwrap().hide().unwrap());
-    window.show().unwrap();
-    let native = windows.borrow()[0].clone();
-    window.invoke_begin();
+    let weak = host.main.as_weak();
+    presentation.on_dismiss(move |_| {
+        if let Some(main) = weak.upgrade() {
+            main.global::<HotPathsPresentation>().set_token("".into());
+        }
+    });
+    presentation.set_token("hot-paths".into());
+    host
+}
+
+#[test]
+fn embedded_hot_paths_keeps_actions_artwork_and_compact_close() {
+    let host = hot_paths_host();
     for (scheme, density, font) in appearances() {
-        window.invoke_apply_preferences(scheme, density, "".into(), font, font);
-        let pixels = render(
-            &native,
+        host.apply_preferences(scheme, density, "", font, font);
+        host.layout(1040, 720);
+        // As tall as the main window allows, like the 1040×720 manager window this
+        // test used to render; the default height is checked separately below.
+        host.stretch_vertically(&host.item(AccessibleRole::Button, "Close"));
+        let pixels = host.render(
             1040,
             720,
-            &format!("native-hot-paths-{scheme}-{density}-{font}"),
+            &format!("embedded-hot-paths-{scheme}-{density}-{font}"),
         );
         for label in ["Add current", "Close"] {
-            inside(&native, label);
+            form::assert_unclipped(&host.visible_item(AccessibleRole::Button, label), label);
         }
         painted_icon(&pixels, "Add Hot Path");
-        render(&native, 320, 200, "native-hot-paths-compact");
-        inside(&native, "Close");
+        host.render(328, 208, "embedded-hot-paths-compact");
+        form::assert_unclipped(&host.visible_item(AccessibleRole::Button, "Close"), "Close");
     }
-    input::key(&native, Key::Escape);
+    input::key(&host.native, Key::Escape);
     assert!(
-        !window.window().is_visible(),
-        "compact Hot Paths Escape must dismiss its native body"
+        !host.is_open(),
+        "compact Hot Paths Escape must dismiss the embedded manager"
     );
+}
+
+/// At its default height in a roomy main window the manager shows Add current
+/// without scrolling, including the wrapped hint and the two-row shortcut picker of
+/// a 32 px font: the dialog's size follows HotPathsDialog's natural height.
+#[test]
+fn embedded_hot_paths_default_height_shows_add_current_at_every_font() {
+    let host = hot_paths_host();
+    for (scheme, density, font) in appearances() {
+        host.apply_preferences(scheme, density, "", font, font);
+        host.layout(1040, 720);
+        for label in ["Add current", "Close"] {
+            form::assert_unclipped(
+                &host.visible_item(AccessibleRole::Button, label),
+                &format!("{label} at a {font} px font"),
+            );
+        }
+    }
 }

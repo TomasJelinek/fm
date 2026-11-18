@@ -1,4 +1,6 @@
 //! Real hover, paint and click routing across the shared tooltip compiler adapter.
+#[path = "support/owned_windows.rs"]
+mod owned_windows;
 #[path = "support/ui.rs"]
 mod ui;
 
@@ -12,10 +14,7 @@ use midnight_core::*;
 use midnight_ui::{MainWindow, Presenter, Theme, install, refresh};
 use slint::{
     ComponentHandle, Model,
-    platform::{
-        Key, Platform, PlatformError, PointerEventButton, WindowAdapter, WindowEvent,
-        software_renderer::{MinimalSoftwareWindow, RepaintBufferType},
-    },
+    platform::{Key, PointerEventButton, WindowEvent, software_renderer::MinimalSoftwareWindow},
 };
 use std::{
     cell::{Cell, RefCell},
@@ -25,20 +24,6 @@ use std::{
 
 const WIDTH: usize = 1340;
 const HEIGHT: usize = 900;
-struct TestPlatform(
-    Rc<RefCell<Vec<Rc<MinimalSoftwareWindow>>>>,
-    Rc<Cell<Duration>>,
-);
-impl Platform for TestPlatform {
-    fn create_window_adapter(&self) -> Result<Rc<dyn WindowAdapter>, PlatformError> {
-        let native = MinimalSoftwareWindow::new(RepaintBufferType::ReusedBuffer);
-        self.0.borrow_mut().push(native.clone());
-        Ok(native)
-    }
-    fn duration_since_start(&self) -> Duration {
-        self.1.get()
-    }
-}
 fn draw(native: &MinimalSoftwareWindow, pixels: &mut [slint::Rgb8Pixel]) {
     slint::platform::update_timers_and_animations();
     native.draw_if_needed(|renderer| {
@@ -336,9 +321,8 @@ fn navigations(commands: &RefCell<Vec<Command>>) -> usize {
 
 #[test]
 fn panel_warning_tooltip_contains_the_reason_and_keeps_its_click_target_clear() {
-    let natives = Rc::new(RefCell::new(Vec::new()));
     let time = Rc::new(Cell::new(Duration::ZERO));
-    slint::platform::set_platform(Box::new(TestPlatform(natives.clone(), time.clone()))).unwrap();
+    let natives = owned_windows::clock_platform(time.clone());
     let window = MainWindow::new().unwrap();
     window.set_preferences_ready(true);
     let native = natives.borrow().last().unwrap().clone();
@@ -376,9 +360,8 @@ fn panel_warning_tooltip_contains_the_reason_and_keeps_its_click_target_clear() 
 
 #[test]
 fn shared_tooltips_keep_cursor_clear_in_panels_dropdowns_and_options() {
-    let natives = Rc::new(RefCell::new(Vec::new()));
     let time = Rc::new(Cell::new(Duration::ZERO));
-    slint::platform::set_platform(Box::new(TestPlatform(natives.clone(), time.clone()))).unwrap();
+    let natives = owned_windows::clock_platform(time.clone());
     for (density, font, scheme) in [
         (UiDensity::Desktop, 11, PreferenceTheme::Blue),
         (UiDensity::Touch, 15, PreferenceTheme::Dark),
@@ -602,9 +585,8 @@ fn shared_tooltips_keep_cursor_clear_in_panels_dropdowns_and_options() {
 
 #[test]
 fn folder_tab_tooltip_shows_only_the_complete_native_or_archive_path() {
-    let natives = Rc::new(RefCell::new(Vec::new()));
     let time = Rc::new(Cell::new(Duration::ZERO));
-    slint::platform::set_platform(Box::new(TestPlatform(natives.clone(), time.clone()))).unwrap();
+    let natives = owned_windows::clock_platform(time.clone());
     let window = MainWindow::new().unwrap();
     window.set_preferences_ready(true);
     let native = natives.borrow().last().unwrap().clone();
