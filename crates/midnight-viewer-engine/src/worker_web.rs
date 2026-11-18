@@ -21,15 +21,18 @@ pub(super) trait Browser: Send {
     /// queued and the host closed the session rather than lose ordered input. A refusal
     /// is therefore never transient.
     fn send(&self, command: api::CommandKind) -> bool;
-    /// Take queued output in order, then the newest frame. The session's end is its last
-    /// output, which the host publishes, and wakes the worker for, before `send` refuses
-    /// commands. A failure that stops the session replaces pending output with one terminal
-    /// error. A browser that closes itself, after the error of a document it could not open
-    /// or without one, ends its output with the protocol's Closed event; the output it sent
-    /// before keeps the browser's order, so such an error stays the newest. A session the
-    /// worker closes publishes no Closed event.
+    /// Take queued output and the newest frame in the browser's order (document, then
+    /// sequence), so an error the browser sent after a frame stays the newest output. The
+    /// session's end is its last output, which the host publishes, and wakes the worker
+    /// for, before `send` refuses commands. A failure that stops the session replaces
+    /// pending output with one terminal error. A browser that closes itself, after the
+    /// error of a document it could not open or without one, ends its output with the
+    /// protocol's Closed event, after the output it sent before. A session the worker
+    /// closes publishes no Closed event.
     fn drain(&self, maximum: usize) -> Vec<api::Event>;
     fn close(&self);
+    /// The session's actor thread ended its work. The host wakes the worker once this is
+    /// true, so a pending opening needs no retry.
     fn finished(&self) -> bool;
 }
 
