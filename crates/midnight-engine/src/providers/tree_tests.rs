@@ -472,6 +472,61 @@ fn node_and_depth_budgets_fail_atomically_and_do_not_turn_into_empty() {
     assert_eq!(row(&tree, 1).error, Some(ProviderError::ResourceLimited));
 }
 
+fn issued(tree: &DirectoryTree) -> usize {
+    tree.source_reference_counts().unwrap().0
+}
+
+#[test]
+fn reclamation_waits_until_no_branch_work_or_result_is_outstanding() {
+    let (_registry, graph, mut tree) = fixture(TreeLimits::default());
+    tree.reclaim_eagerly();
+    let cancel = Cancellation::default();
+    let (mount, _) = tree.navigation_target(tree.root()).unwrap();
+    // The root's file leaves the model; its reference stays issued until reclaimed.
+    let removed = row(&tree, 3).node;
+    graph.set(0, vec![directory(1), directory(2)]);
+    run(&mut tree, None, TreeRequest::Refresh);
+    let (first, second) = (row(&tree, 1).id, row(&tree, 2).id);
+    let outstanding = tree.request(second, TreeRequest::Expand).unwrap();
+    run(&mut tree, Some(first), TreeRequest::Expand);
+    let before = issued(&tree);
+    assert_eq!(tree.reclaim_after_completion(true, true, &cancel), None);
+    assert_eq!(
+        issued(&tree),
+        before,
+        "work not run yet released a reference"
+    );
+    mount.validate_reference(&removed).unwrap();
+
+    // The listing returns and issues entry-7, which no occurrence holds until the
+    // result is applied: releasing it would install a row with a stale reference.
+    let returned = outstanding.run();
+    assert_eq!(issued(&tree), before + 1);
+    assert_eq!(tree.reclaim_after_completion(true, true, &cancel), None);
+    assert_eq!(
+        issued(&tree),
+        before + 1,
+        "an unapplied result lost a reference"
+    );
+    assert!(tree.apply(returned));
+    let child = row(&tree, 7);
+    tree.navigation_target(child.id).unwrap();
+
+    // Nothing is outstanding: only the removed file's reference is released.
+    let live = tree.source_occurrence_count();
+    assert_eq!(
+        tree.reclaim_after_completion(true, false, &cancel),
+        Some(live)
+    );
+    assert_eq!(issued(&tree), before);
+    assert_eq!(
+        mount.validate_reference(&removed),
+        Err(ProviderError::StaleReference)
+    );
+    mount.validate_reference(&child.node).unwrap();
+    run(&mut tree, Some(child.id), TreeRequest::Expand);
+}
+
 #[test]
 fn revoked_mount_rejects_result_and_new_tree_cannot_accept_old_request() {
     let (registry, _graph, mut tree) = fixture(TreeLimits::default());

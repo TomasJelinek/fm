@@ -354,6 +354,23 @@ impl MountedFilesystem for NativeMount {
         check_cancel(cancel)?;
         Ok(Arc::new(NativeContent(source)))
     }
+
+    /// Forgets tokens the lister no longer holds, including tokens bound by failed,
+    /// stopped or presence-only enumerations that were never issued.
+    fn retain_nodes(
+        &self,
+        keep: &std::collections::HashSet<NodeToken>,
+    ) -> Result<(), ProviderError> {
+        self.nodes
+            .lock()
+            .map_err(|_| super::registry::poisoned())?
+            .retain(keep);
+        Ok(())
+    }
+
+    fn node_count(&self) -> Option<usize> {
+        self.nodes.lock().ok().map(|nodes| nodes.len())
+    }
 }
 
 impl NativeMount {

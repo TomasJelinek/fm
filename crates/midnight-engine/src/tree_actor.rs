@@ -874,6 +874,29 @@ impl Session {
         completion: BranchCompletion,
         cancel: &Cancellation,
     ) -> Result<bool, ProviderError> {
+        let failed = completion.result.failed();
+        let applied = self.apply_completion(completion, cancel);
+        // The completion and its result are gone, and a pane runs one branch job at
+        // a time, so no branch work or result of this tree is outstanding (the tree
+        // skips otherwise) and no call of the mount is in flight (the lease's reclaim
+        // gate skips otherwise). Local checkpoints are committed or restored by now;
+        // an unpublished recursive batch could still restore occurrences from its
+        // checkpoint, so it defers reclamation until it is published or rolled back.
+        if let Ok(published) = applied {
+            self.tree.reclaim_after_completion(
+                !self.recursive_batch_active(),
+                failed || !published,
+                &self.lifetime,
+            );
+        }
+        applied
+    }
+
+    fn apply_completion(
+        &mut self,
+        completion: BranchCompletion,
+        cancel: &Cancellation,
+    ) -> Result<bool, ProviderError> {
         if matches!(completion.pending.origin, WorkOrigin::Maintenance) {
             return self.apply_refresh(completion, cancel);
         }

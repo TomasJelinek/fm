@@ -21,7 +21,12 @@ use midnight_core::{
     SizeDirectoryIdentity, StoredLocation,
 };
 use midnight_plugin_host::ContentSource;
-use std::{fmt, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    fmt,
+    hash::Hash,
+    sync::Arc,
+};
 
 /// Exact backend target, never constructed from a displayed name. Resolving a
 /// target supplies context only; mutation still requires its own native proof.
@@ -74,10 +79,14 @@ pub trait FilesystemProvider: Send + Sync + 'static {
 }
 
 /// Browse/read capabilities of one live mount. No mutation authority is implied.
-/// Tokens identify logical nodes with a stable kind for this mount's lifetime.
-/// Never reuse a token for another node/kind: allocate a new token or invalidate
-/// the mount. Metadata/content can change; capturing content must validate its
-/// own revision, and a node reference is never immutable object identity.
+/// A token identifies one logical node with a stable kind and is never reused
+/// for another node or kind during this mount's lifetime: allocate a new token
+/// or invalidate the mount. A token stays valid for the mount's lifetime unless
+/// the mount's single lister opts in to reclamation (`retain_nodes`): a token
+/// it did not retain may then fail with `StaleReference`, and a node seen again
+/// later may receive a new token (a provider that kept its record emits the same
+/// one). Metadata/content can change; capturing content must validate its own
+/// revision, and a node reference is never immutable object identity.
 pub trait MountedFilesystem: Send + Sync + 'static {
     /// A shared release does not wait for another tab. The concrete last owner
     /// must acknowledge its native/provider tails before returning success.
@@ -144,6 +153,31 @@ pub trait MountedFilesystem: Send + Sync + 'static {
     ) -> Result<Arc<dyn ContentSource>, ProviderError> {
         Err(ProviderError::Unsupported)
     }
+
+    /// Reclamation, requested only through `MountedLocation::retain_issued` while
+    /// no listing, probe or parent lookup of this mount is in flight. `keep` holds
+    /// every reference the host still uses, the mount's root included: each must
+    /// stay valid. The provider may forget any other token, must then report
+    /// `StaleReference` for it and must never emit it again for another node or
+    /// kind. The default keeps every token for the mount's lifetime.
+    fn retain_nodes(&self, _keep: &HashSet<NodeToken>) -> Result<(), ProviderError> {
+        Ok(())
+    }
+
+    /// Node records this mount currently retains, when it tracks them. The host
+    /// counts records a provider bound without issuing (failed or stopped
+    /// listings, probes) toward reclamation. None: the provider does not report.
+    fn node_count(&self) -> Option<usize> {
+        None
+    }
+}
+
+/// Give back the spare capacity of a map that reclamation shrank to below a
+/// quarter of it, keeping room to grow again without immediate reallocation.
+fn release_spare_capacity<K: Eq + Hash, V>(map: &mut HashMap<K, V>) {
+    if map.len() < map.capacity() / 4 {
+        map.shrink_to(map.len().saturating_mul(2));
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -187,6 +221,8 @@ mod contract_tests;
 mod folder_listing_tests;
 #[cfg(test)]
 mod ownership_tests;
+#[cfg(test)]
+mod reclaim_tests;
 #[cfg(test)]
 #[path = "../provider_retirement_tests.rs"]
 mod retirement_tests;

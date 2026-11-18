@@ -180,4 +180,32 @@ impl MountedFilesystem for RootSeed {
     ) -> Result<Arc<dyn ContentSource>, ProviderError> {
         self.source.open_content(node, cancel)
     }
+
+    /// Captured rows not listed yet keep their tokens: their first listing emits them.
+    fn retain_nodes(&self, keep: &HashSet<NodeToken>) -> Result<(), ProviderError> {
+        let unlisted = self
+            .rows
+            .lock()
+            .map_err(|_| super::registry::poisoned())?
+            .as_ref()
+            .filter(|rows| rows.iter().any(|row| !keep.contains(&row.token)))
+            .map(|rows| {
+                rows.iter()
+                    .map(|row| row.token.clone())
+                    .chain([self.root.clone()])
+                    .collect::<Vec<_>>()
+            });
+        match unlisted {
+            Some(tokens) => {
+                let mut keep = keep.clone();
+                keep.extend(tokens);
+                self.source.retain_nodes(&keep)
+            }
+            None => self.source.retain_nodes(keep),
+        }
+    }
+
+    fn node_count(&self) -> Option<usize> {
+        self.source.node_count()
+    }
 }
