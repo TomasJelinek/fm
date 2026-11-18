@@ -9,6 +9,11 @@ use std::{
     },
 };
 
+/// Entries removed between enumeration and inspection (`NotFound` from
+/// `NativeAdapter::next`) that one page may skip in a row. More fail the page with
+/// `Io`, so an adapter that only reports removals cannot keep the call from ending.
+const MAX_CONSECUTIVE_REMOVED: u32 = 1024;
+
 impl<A: NativeAdapter> NativeFilesystem<A> {
     pub(super) fn list_begin(
         &self,
@@ -110,6 +115,7 @@ impl<A: NativeAdapter> NativeFilesystem<A> {
                 .try_reserve_exact(maximum.min(MAX_BATCH) as usize)
                 .map_err(|_| failure(ErrorCode::ResourceLimit))?;
             let mut bytes = 31usize;
+            let mut removed = 0;
             while entries.len() < maximum.min(MAX_BATCH) as usize && !data.done {
                 if context.is_cancelled() {
                     return Err(failure(ErrorCode::Cancelled));
@@ -123,9 +129,20 @@ impl<A: NativeAdapter> NativeFilesystem<A> {
                             data.done = true;
                             break;
                         }
-                        Err(error) if error.code == ErrorCode::NotFound => continue,
+                        Err(error) if error.code == ErrorCode::NotFound => {
+                            removed += 1;
+                            if removed > MAX_CONSECUTIVE_REMOVED {
+                                return Err(Failure::new(
+                                    ErrorCode::Io,
+                                    "Directory entries kept disappearing during listing.",
+                                ));
+                            }
+                            continue;
+                        }
                         Err(error) => return Err(error),
                     };
+                    // Every entry that does not end the page is accepted below.
+                    removed = 0;
                     let mut components = Path::new(&entry.name).components();
                     if !matches!(components.next(), Some(Component::Normal(_)))
                         || components.next().is_some()

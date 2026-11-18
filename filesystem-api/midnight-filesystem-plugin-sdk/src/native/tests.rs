@@ -2,9 +2,18 @@ use super::*;
 use crate::api::abi::Cancellation;
 use crate::ffi_tests::{create_instance, descriptor, destroy, invoke, read, release};
 struct Adapter;
-struct Directory(usize, bool);
+struct Directory {
+    next: usize,
+    bad_page: bool,
+    /// Entries reported removed (`NotFound`) before each listed entry; `u32::MAX`
+    /// reports nothing else.
+    removed_before_each: u32,
+    removed: u32,
+}
 struct Reader(bool);
 static TINY_STATS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+/// Removals reported by the `only-removed` directory.
+static ONLY_REMOVED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 impl NativeReader for Reader {
     fn length(&self) -> u64 {
         3
@@ -53,27 +62,47 @@ impl NativeAdapter for Adapter {
         })
     }
     fn list(path: &Path, _context: &CallContext<'_>) -> Result<Directory, Failure> {
-        Ok(Directory(
-            0,
-            path.file_name().is_some_and(|name| name == "bad-page"),
-        ))
+        let name = path.file_name().and_then(OsStr::to_str);
+        Ok(Directory {
+            next: 0,
+            bad_page: name == Some("bad-page"),
+            removed_before_each: match name {
+                Some("only-removed") => u32::MAX,
+                Some("removed-between") => 1024,
+                _ => 0,
+            },
+            removed: 0,
+        })
     }
     fn next(
         directory: &mut Directory,
         _: &CallContext<'_>,
     ) -> Result<Option<NativeEntry>, Failure> {
-        if directory.0 == 10000 {
+        if directory.removed < directory.removed_before_each {
+            directory.removed += 1;
+            if directory.removed_before_each == u32::MAX {
+                ONLY_REMOVED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }
+            return Err(failure(ErrorCode::NotFound));
+        }
+        directory.removed = 0;
+        let count = if directory.removed_before_each == 0 {
+            10000
+        } else {
+            3
+        };
+        if directory.next == count {
             return Ok(None);
         }
-        let name = OsString::from(format!("entry{}", directory.0));
-        directory.0 += 1;
+        let name = OsString::from(format!("entry{}", directory.next));
+        directory.next += 1;
         Ok(Some(NativeEntry {
             name,
             info: NativeInfo {
                 kind: Kind::File,
                 metadata: Metadata {
                     size: Some(3),
-                    modified: (directory.1 && directory.0 == 2).then_some(Timestamp {
+                    modified: (directory.bad_page && directory.next == 2).then_some(Timestamp {
                         seconds: 0,
                         nanos: 1_000_000_000,
                     }),
@@ -245,6 +274,76 @@ fn first_page_streams_and_wrong_ordinal_cannot_advance_or_close_an_owned_cursor(
     );
     assert_eq!(destroy(&api, instance), 0);
 }
+#[test]
+fn a_page_skips_removed_entries_but_not_an_endless_run_of_them() {
+    let api = descriptor::<NativeFilesystem<Adapter>>();
+    let instance = create_instance(&api, Config::default());
+    let list = |name: &str| {
+        let Response::Resolved { mount, node } = call(
+            &api,
+            instance,
+            Request::Resolve {
+                address: Adapter::encode(&std::env::current_dir().unwrap().join(name)),
+            },
+        ) else {
+            panic!("Resolve failed")
+        };
+        let page = call(
+            &api,
+            instance,
+            Request::ListBegin {
+                mount,
+                directory: node.id,
+                max_entries: 16,
+            },
+        );
+        (mount, page)
+    };
+    // 1024 removals in a row before each entry: every entry is still listed.
+    let (between, page) = list("removed-between");
+    let Response::Page {
+        cursor,
+        entries,
+        done,
+        ..
+    } = page
+    else {
+        panic!("removals interrupted the listing: {page:?}")
+    };
+    assert!(done);
+    let names: Vec<_> = entries.iter().map(|entry| entry.display.as_str()).collect();
+    assert_eq!(names, ["entry0", "entry1", "entry2"]);
+    assert_eq!(
+        call(&api, instance, Request::CloseList { cursor }),
+        Response::Unit
+    );
+    // An adapter that reports nothing but removals fails the page instead of spinning,
+    // and the failed cursor releases its mount.
+    ONLY_REMOVED.store(0, std::sync::atomic::Ordering::Relaxed);
+    let (only, page) = list("only-removed");
+    assert!(
+        matches!(
+            page,
+            Response::Failed(Failure {
+                code: ErrorCode::Io,
+                ..
+            })
+        ),
+        "{page:?}"
+    );
+    assert_eq!(
+        ONLY_REMOVED.load(std::sync::atomic::Ordering::Relaxed),
+        1025
+    );
+    for mount in [between, only] {
+        assert_eq!(
+            call(&api, instance, Request::CloseMount { mount }),
+            Response::Unit
+        );
+    }
+    assert_eq!(destroy(&api, instance), 0);
+}
+
 #[test]
 fn independent_reader_handles_keep_mount_busy_and_follow_exact_eof() {
     let api = descriptor::<NativeFilesystem<Adapter>>();
