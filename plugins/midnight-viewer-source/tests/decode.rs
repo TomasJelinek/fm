@@ -26,6 +26,49 @@ fn exact_utf8_malformed_control_and_newline_anchors_above_four_gib() {
 }
 
 #[test]
+fn explicit_bidi_controls_display_as_replacement_with_one_anchor_each() {
+    // RLO and PDI would reorder the displayed text; LRM is an ordinary direction mark.
+    let decoded = decode(
+        "a\u{202e}b\u{2069}c\u{200e}".as_bytes(),
+        0,
+        Encoding::Utf8,
+        true,
+        8192,
+        30,
+        || false,
+    )
+    .unwrap();
+    assert_eq!(decoded.text, "a\u{fffd}b\u{fffd}c\u{200e}");
+    assert_eq!(
+        decoded
+            .anchors
+            .iter()
+            .map(|a| a.source_offset)
+            .collect::<Vec<_>>(),
+        [0, 1, 4, 5, 8, 9, 12]
+    );
+    decoded.page(1, true).validate().unwrap();
+    for control in ('\u{202a}'..='\u{202e}').chain('\u{2066}'..='\u{2069}') {
+        let word = u16::try_from(u32::from(control)).unwrap();
+        for (bytes, encoding) in [
+            (word.to_le_bytes(), Encoding::Le),
+            (word.to_be_bytes(), Encoding::Be),
+        ] {
+            let decoded = decode(&bytes, 2, encoding, true, 8192, 30, || false).unwrap();
+            assert_eq!(decoded.text, "\u{fffd}", "{control:?} {encoding:?}");
+            assert_eq!(
+                decoded
+                    .anchors
+                    .iter()
+                    .map(|a| a.source_offset)
+                    .collect::<Vec<_>>(),
+                [2, 4]
+            );
+        }
+    }
+}
+
+#[test]
 fn utf16_surrogate_pairs_and_malformed_units_are_exact() {
     assert_eq!(encoding(&[0xff, 0xfe]), (Encoding::Le, 2));
     assert_eq!(encoding(&[0xfe, 0xff]), (Encoding::Be, 2));

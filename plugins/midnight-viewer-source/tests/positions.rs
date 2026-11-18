@@ -103,6 +103,8 @@ fn malformed_scalars_controls_and_partial_characters_keep_source_boundaries() {
             (8, 2, 1),
         ),
         ("a🙂z".as_bytes().to_vec(), 3, (5, 1, 3)),
+        // Each explicit bidi control displays as one U+FFFD: one column, one boundary.
+        ("a\u{202e}b\u{2066}c".as_bytes().to_vec(), 8, (8, 1, 5)),
     ] {
         let mut host = Host::new(&bytes, entry);
         open(&mut host, bytes.len() as u64);

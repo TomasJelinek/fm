@@ -90,7 +90,10 @@ Returning near an exact checkpoint can recover line/column values. Explicit
 search remains a separate cancellable streaming operation.
 
 UTF-8 and BOM UTF-16 LE/BE, surrogate pairs, malformed units, CR/LF/CRLF and
-control pictures are supported. No terminal escape interpretation occurs.
+control pictures are supported. C1 controls and the explicit bidirectional
+embedding, override and isolate controls (U+202A-U+202E, U+2066-U+2069) display
+as U+FFFD, so file content cannot reorder the displayed text; implicit direction
+marks remain. No terminal escape interpretation occurs.
 Offsets use checked u64 arithmetic. Every displayed scalar boundary has an
 exact source-byte anchor; incomplete encoded units are deferred to the next
 read. Maximum emitted text is 8192 UTF-8 bytes, with a further requested line

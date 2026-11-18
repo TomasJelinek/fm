@@ -114,6 +114,12 @@ fn decode_until(
             } else {
                 '\u{fffd}'
             };
+        } else if matches!(ch, '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}') {
+            // Like C1 controls, the explicit bidirectional embedding, override and isolate
+            // controls display as U+FFFD, so file content cannot reorder the displayed text
+            // ("Trojan Source"). One replacement keeps one boundary per displayed scalar.
+            // Implicit direction marks (LRM, RLM, ALM) remain for ordinary RTL text.
+            ch = '\u{fffd}';
         }
         if decoded.text.len() + ch.len_utf8() > limit {
             break;

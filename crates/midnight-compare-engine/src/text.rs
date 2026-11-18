@@ -364,20 +364,33 @@ fn text_control(c: char) -> bool {
 }
 
 /// Show the accepted invisible controls as Unicode control pictures (tabs keep their
-/// layout), so a difference in them is visible and not rendered as tofu.
+/// layout), so a difference in them is visible and not rendered as tofu. The explicit
+/// bidirectional embedding, override and isolate controls are shown as `\uNNNN` escapes,
+/// so neither file can reorder its displayed lines ("Trojan Source"). Display only: the
+/// diff compares the raw lines.
 fn visible_controls(text: &str) -> std::borrow::Cow<'_, str> {
-    if !text.contains(['\u{0b}', '\u{0c}', '\u{1b}']) {
+    if !text.contains(|c| matches!(c, '\u{0b}' | '\u{0c}' | '\u{1b}') || bidi_control(c)) {
         return text.into();
     }
-    text.chars()
-        .map(|c| match c {
-            '\u{0b}' | '\u{0c}' | '\u{1b}' => {
-                char::from_u32(0x2400 + u32::from(c)).unwrap_or(char::REPLACEMENT_CHARACTER)
+    let mut shown = String::with_capacity(text.len() + 8);
+    for c in text.chars() {
+        match c {
+            '\u{0b}' | '\u{0c}' | '\u{1b}' => shown
+                .push(char::from_u32(0x2400 + u32::from(c)).unwrap_or(char::REPLACEMENT_CHARACTER)),
+            c if bidi_control(c) => {
+                use std::fmt::Write;
+                let _ = write!(shown, "\\u{:04X}", u32::from(c));
             }
-            other => other,
-        })
-        .collect::<String>()
-        .into()
+            other => shown.push(other),
+        }
+    }
+    shown.into()
+}
+
+/// The explicit bidirectional embedding, override and isolate controls (U+202A-U+202E,
+/// U+2066-U+2069). Implicit direction marks (LRM, RLM, ALM) stay ordinary text.
+fn bidi_control(c: char) -> bool {
+    matches!(c, '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
 }
 
 fn resolve_family(families: &[String], preferred: &str) -> String {
@@ -481,6 +494,42 @@ mod tests {
             .unwrap();
         assert!(frame.accessible_text.contains("page 1␌"));
         assert!(frame.accessible_text.contains("␛[31mred␛[0m␋x"));
+    }
+
+    #[test]
+    fn bidi_controls_are_shown_as_escapes() {
+        assert_eq!(
+            visible_controls("a\u{202e}b\u{2066}c\u{200f}d\u{1b}"),
+            "a\\u202Eb\\u2066c\u{200f}d␛"
+        );
+        for control in ('\u{202a}'..='\u{202e}').chain('\u{2066}'..='\u{2069}') {
+            let line = format!("x{control}y");
+            assert_eq!(
+                visible_controls(&line),
+                format!("x\\u{:04X}y", u32::from(control))
+            );
+        }
+        assert!(matches!(
+            visible_controls("RTL \u{200e}\u{200f}\u{61c} marks"),
+            std::borrow::Cow::Borrowed(_)
+        ));
+    }
+
+    #[test]
+    fn lines_that_differ_only_in_a_bidi_control_show_both_escapes_in_one_changed_row() {
+        let cancel = AtomicBool::new(false);
+        let mut diff = TextComparison::new("x\u{202e}y\n", "x\u{202c}y\n", &cancel).unwrap();
+        assert_eq!(diff.rows.len(), 1);
+        assert!(diff.rows[0].changed);
+        let geometry = ViewerGeometry {
+            width: 400,
+            height: 100,
+            scale: 1.0,
+        };
+        let frame = diff.paint(geometry, &appearance(12.0), &cancel).unwrap();
+        assert!(frame.accessible_text.contains("x\\u202Ey"));
+        assert!(frame.accessible_text.contains("x\\u202Cy"));
+        assert!(!frame.accessible_text.contains(bidi_control));
     }
 
     fn appearance(font_size: f32) -> ViewerAppearance {

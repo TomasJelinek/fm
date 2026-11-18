@@ -902,6 +902,11 @@ fields and conservative physical-device classifications.
   executable markup or source-directory grammars. Parsing and decompression run
   on bounded backend workers; cancellation is cooperative, not a promise to kill
   a blocked thread safely.
+- File content cannot reorder displayed text: the basic viewer and the text
+  comparator show the explicit bidirectional embedding, override and isolate
+  controls (U+202A-U+202E, U+2066-U+2069) as `\u202E`-style escapes, the source
+  and Markdown viewers show them as U+FFFD, and terminal controls appear as
+  escapes or control pictures. Copy and search use the displayed text.
 - The native content broker provides LiveValidated reads, not a filesystem snapshot:
   it prepares identity, opens without following links, and checks revision before
   and after reads. Replaced/changed files report an error. Reads are bounded to
