@@ -12,9 +12,9 @@ mod tests;
 /// without blocking.
 const PUMP_INTERVAL: Duration = Duration::from_millis(10);
 /// Longest idle wait of an open session with a waker. Native input and every controller
-/// wake end it, so its expiry is not needed for correctness: it bounds the effect of a
-/// lost wakeup (a platform defect), and how long the session of a window that closed
-/// without a detach stays open, at 0.2 idle wakeups per second.
+/// wake end it. Its expiry bounds the effect of a lost wakeup (a platform defect), and
+/// how long a session stays open after its host lifetime was cancelled without a detach
+/// (which ends no wait), at 0.2 idle wakeups per second.
 const IDLE_WAIT: Duration = Duration::from_secs(5);
 
 /// The open session's waker: installed by the actor, called by the controller.
