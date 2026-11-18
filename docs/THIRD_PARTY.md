@@ -69,7 +69,8 @@ Inventory captured on 12 November 2026 from the checked-in lockfiles and actual
 Cargo selections for Windows x64 and Linux x86-64, plus Darwin x86-64/arm64
 captures for the independent native macOS filesystem package only. The targeted
 17 November removals described in this file (`fs2`/`winapi`, Windows `notify`)
-and the 18 November recheck below give the current tables:
+and the 18 November recheck below give the current tables, which a complete
+46-pair capture and generator `--check` confirmed on 18 November:
 
 - [Direct dependencies](dependencies/DIRECT_DEPENDENCIES.md): **65**
   package/version records declared by project crates, including build/test tools.
@@ -267,8 +268,19 @@ Windows graphs), every application crate's direct declarations match the
 direct-dependant column, and the native Windows plugin's two records match. A
 Windows-host capture for the Linux target, which is not equivalent to a native
 Linux capture for host-dependent build dependencies, found no `app`/Linux record
-missing from the inventory. No row changed. A full regeneration or `--check` still
-needs all forty-six native captures; no native Linux or Darwin capture was taken.
+missing from the inventory. No row changed. That recheck took no native Linux or
+Darwin capture; the complete check that followed it is described next.
+
+Later on 18 November all forty-six metadata/tree pairs were captured fresh for
+integration tip `93d36411` with the build and test changes of the next review batch:
+22 on Windows, 22 on native Linux (WSL Ubuntu 24.04) and the two macOS cross-target
+pairs of `native-macos`. `scripts/dependency-inventory.py --check` passed against the
+committed tables, so they hold **643 records / 525 names / 65 direct records**
+([record](verification/2026-11-18-workspaces-and-opt-in-qualification.md#dependency-inventory)).
+No `Cargo.toml` or `Cargo.lock` of any workspace changed between the recheck commit
+`5a0c23f2`, `93d36411` and the review's integration tip `2050f745`
+(`git diff --stat 5a0c23f2 2050f745 -- '*Cargo.toml' '*Cargo.lock'` is empty), so the
+tables also describe `2050f745`.
 
 That recheck covers Cargo package, version and feature selections. The vendored,
 patched sources also changed since `48ec78d`, with unchanged versions and licenses:
@@ -540,10 +552,10 @@ API/SDK crates, and writes deterministic Markdown/CSV. Explicitly marked vendore
 third-party workspace members remain included. Recapture after every dependency
 or feature change. `--check` verifies tables against the supplied captures; it
 does not prove that those captures are current. Current source hashes are not
-used as a substitute for capture provenance. The four application/renderer pairs
-were refreshed on 11 November 2026; other pairs retain their documented native-
-host or macOS cross-target provenance. A complete current input set is required
-for regeneration.
+used as a substitute for capture provenance. All forty-six pairs were last captured
+together on 18 November 2026 (native Windows and native Linux hosts, plus the two
+macOS cross-target pairs), for the `--check` described above; those captures were
+not kept. A complete current input set is required for regeneration.
 
 The generator emits package/license/scope records, not enabled-feature columns.
 Retain the affected package's `resolve.nodes[].features` with each metadata
