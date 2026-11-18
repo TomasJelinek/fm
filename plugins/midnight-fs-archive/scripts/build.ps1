@@ -57,7 +57,7 @@ try {
 schema_version = 1
 id = "midnight.fs.archive"
 kind = "filesystem-worker"
-version = "0.1.0"
+version = "0.2.0"
 entry_executable = "midnight-fs-archive.exe"
 target = "$target"
 protocol = 3
