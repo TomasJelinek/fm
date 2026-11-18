@@ -11,6 +11,13 @@ use std::{
 };
 use tokio::sync::{Notify, mpsc};
 
+/// Deadline of every wait for Engine progress: a listing worker entering the provider,
+/// the next event, or a retired Engine cancelling its listing. Each wait ends as soon as
+/// that progress happens, so the deadline elapses only in a failing test; it is long
+/// because a worker can wait seconds for a CPU while other test suites saturate the
+/// machine (3 s expired once that way, TEST-03).
+const PROGRESS: Duration = Duration::from_secs(30);
+
 struct ControlledFileSystem {
     entered: Arc<Notify>,
     released: Arc<(Mutex<bool>, Condvar)>,
@@ -203,7 +210,7 @@ fn navigate(pane: PaneId, generation: u64, path: &str) -> Command {
 }
 
 async fn next(events: &mut mpsc::Receiver<Event>) -> Event {
-    tokio::time::timeout(Duration::from_secs(3), events.recv())
+    tokio::time::timeout(PROGRESS, events.recv())
         .await
         .expect("engine must deliver an event")
         .expect("engine output must remain connected")
@@ -226,7 +233,7 @@ async fn blocked_left_listing_does_not_prevent_right_completion() {
         .send(navigate(PaneId::Left, 1, "slow"))
         .await
         .unwrap();
-    tokio::time::timeout(Duration::from_secs(3), filesystem.entered.notified())
+    tokio::time::timeout(PROGRESS, filesystem.entered.notified())
         .await
         .expect("left worker entered provider");
     commands
@@ -266,7 +273,7 @@ async fn replacing_navigation_cancels_old_completion() {
         .send(navigate(PaneId::Left, 1, "slow"))
         .await
         .unwrap();
-    tokio::time::timeout(Duration::from_secs(3), filesystem.entered.notified())
+    tokio::time::timeout(PROGRESS, filesystem.entered.notified())
         .await
         .unwrap();
     commands
@@ -392,7 +399,7 @@ async fn uninterruptible_old_reads_cannot_exhaust_the_other_panes_workers() {
             .send(navigate(PaneId::Left, generation, "slow"))
             .await
             .unwrap();
-        tokio::time::timeout(Duration::from_secs(3), filesystem.entered.notified())
+        tokio::time::timeout(PROGRESS, filesystem.entered.notified())
             .await
             .unwrap();
     }
@@ -442,7 +449,7 @@ async fn aborting_engine_cancels_the_cooperative_listing_it_owns() {
         .send(navigate(PaneId::Left, 1, "slow"))
         .await
         .unwrap();
-    tokio::time::timeout(Duration::from_secs(3), filesystem.entered.notified())
+    tokio::time::timeout(PROGRESS, filesystem.entered.notified())
         .await
         .unwrap();
     let cancellation = filesystem.cancellation.lock().unwrap().clone().unwrap();
@@ -450,7 +457,7 @@ async fn aborting_engine_cancels_the_cooperative_listing_it_owns() {
     assert!(engine.await.unwrap_err().is_cancelled());
     drop(events);
     // EngineRun retires the suspended future on its dedicated worker.
-    tokio::time::timeout(Duration::from_secs(3), async {
+    tokio::time::timeout(PROGRESS, async {
         while !cancellation.is_cancelled() {
             tokio::task::yield_now().await;
         }

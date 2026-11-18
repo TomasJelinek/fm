@@ -13,9 +13,11 @@ use midnight_engine::{CommandSender, reclaim};
 use std::time::Duration;
 use tokio::{sync::mpsc, task::JoinHandle};
 
-/// Deadline of one harness wait for UI or Engine progress. It only elapses when a
-/// test fails, so it is generous for loaded CI runners.
-pub const UI_WAIT: Duration = Duration::from_secs(15);
+/// Deadline of one harness wait for UI or Engine progress. Every wait ends as soon as
+/// its condition holds, so the deadline elapses only when a test fails. It is long
+/// because real listings and transfers can wait seconds for a CPU while other test
+/// suites saturate the machine (15 s expired once that way, TEST-03).
+pub const UI_WAIT: Duration = Duration::from_secs(60);
 /// Deadline for an orderly Engine shutdown after the presenter retired its state.
 pub const ENGINE_SHUTDOWN: Duration = Duration::from_secs(8);
 /// Bound for blocking-pool work still running when a harness drops its runtime.
