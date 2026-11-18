@@ -2,7 +2,8 @@
 //! existing bounded settings worker. Never publish defaults over an unread file.
 //!
 //! The sampler runs only after a native resize, move or scale change of the main
-//! window or a restoration, and stops once nothing is dirty and no save retry waits.
+//! window or a restoration, and stops once nothing is dirty and no save retry waits,
+//! or while the window is hidden or minimized and so cannot settle.
 use crate::pulse::Pulse;
 use midnight_core::{Command, WindowGeometry, WindowMonitor, WindowRect};
 use midnight_ui::{MainWindow, Presenter};
@@ -59,15 +60,20 @@ impl WindowState {
                     return false;
                 };
                 let mut shared = shared.borrow_mut();
-                if window.window().is_visible() {
-                    shared.sample(
+                let observed = window.window().is_visible()
+                    && shared.sample(
                         &window,
                         &mut presenter.borrow_mut(),
                         commands.as_ref(),
                         false,
                     );
+                // A hidden or minimized window cannot settle; its next native geometry
+                // event wakes the sampler again. Only a refused save keeps it polling.
+                if observed {
+                    shared.pending()
+                } else {
+                    shared.retry_at.is_some()
                 }
-                shared.pending()
             })
         });
         Self { pulse, state }
@@ -137,22 +143,24 @@ impl State {
         }
     }
 
+    /// Returns whether a placement was observed: captured, or the last one at close.
     fn sample(
         &mut self,
         window: &MainWindow,
         presenter: &mut Presenter,
         send: &dyn Fn(Command) -> bool,
         closing: bool,
-    ) {
+    ) -> bool {
         if !self.initialized || !presenter.window_geometry_ready() {
-            return;
+            return false;
         }
         let Some(geometry) = capture(window, self.last.as_ref())
             .or_else(|| closing.then(|| self.last.clone()).flatten())
         else {
-            return;
+            return false;
         };
         self.record(geometry, Instant::now(), presenter, send, closing);
+        true
     }
 
     /// Track one captured geometry and save it once it has settled.

@@ -72,6 +72,56 @@ fn the_sampler_stops_when_quiet_and_runs_after_geometry_events_or_for_a_pending_
 }
 
 #[test]
+fn a_window_minimized_before_its_save_stops_sampling_until_the_next_geometry_event() {
+    let clock = Rc::new(Cell::new(Duration::ZERO));
+    slint::platform::set_platform(Box::new(ClockWindow {
+        window: MinimalSoftwareWindow::new(RepaintBufferType::ReusedBuffer),
+        clock: clock.clone(),
+    }))
+    .unwrap();
+    let advance = |by: Duration| {
+        clock.set(clock.get() + by);
+        slint::platform::update_timers_and_animations();
+    };
+    let window = MainWindow::new().unwrap();
+    let root = std::env::current_dir().unwrap();
+    let presenter = Rc::new(RefCell::new(Presenter::new(root.clone(), root)));
+    presenter
+        .borrow_mut()
+        .apply(Event::PreferencesLoaded(Ok(Box::new(
+            UserPreferences::default(),
+        ))));
+    let geometry = WindowState::install(&window, presenter, Rc::new(|_| true), true);
+    window.show().unwrap();
+    let pulse = geometry.pulse.clone().unwrap();
+    advance(POLL);
+    assert!(!pulse.running());
+
+    // A move sampled just before minimizing leaves its save pending. The test window,
+    // like a minimized one, has no native placement to capture.
+    {
+        let mut state = geometry.state.borrow_mut();
+        state.initialized = true;
+        state.changed_at = Some(Instant::now());
+        state.dirty_since = state.changed_at;
+    }
+    geometry.geometry_changed();
+    advance(POLL);
+    assert!(!pulse.running(), "an unobservable window stops the sampler");
+    for _ in 0..100 {
+        advance(POLL);
+        assert!(!pulse.running(), "a minimized window costs no tick");
+    }
+    assert!(
+        geometry.state.borrow().pending(),
+        "the save waits for the next observed placement"
+    );
+    geometry.geometry_changed();
+    assert!(pulse.running(), "restoring the window wakes the sampler");
+    window.hide().unwrap();
+}
+
+#[test]
 fn a_window_moved_back_to_its_saved_geometry_settles_without_a_save() {
     let saved = WindowGeometry {
         normal: WindowRect {
