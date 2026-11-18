@@ -8,6 +8,9 @@ publish.workspace = true
 [[bin]]
 name = "midnight-elevated-listing"
 path = "src/main.rs"
+# The entry point has no unit tests (the library's tests cover the helper), so
+# `cargo test` neither builds nor starts an empty test harness for it.
+test = false
 
 [dependencies]
 midnight-core.workspace = true

@@ -19,6 +19,12 @@ midnight-platform-linux.workspace = true
 [dev-dependencies]
 tempfile.workspace = true
 
+# The facade has no unit tests, so `cargo test` neither builds nor starts an empty
+# test harness for it; `library_has_no_unit_tests` in tests/integration.rs fails if
+# one is added while this is set.
+[lib]
+test = false
+
 [[test]]
 name = "integration"
 path = "tests/integration.rs"
