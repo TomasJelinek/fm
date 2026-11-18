@@ -16,10 +16,42 @@ struct Harness {
     windows: Rc<RefCell<Vec<Rc<MinimalSoftwareWindow>>>>,
 }
 
+/// The shared software windows, plus a record of every URL Slint asks to open.
+struct UrlRecorder {
+    windows: Windows,
+    opened: Rc<RefCell<Vec<String>>>,
+}
+impl slint::platform::Platform for UrlRecorder {
+    fn create_window_adapter(&self) -> Result<Rc<dyn WindowAdapter>, slint::PlatformError> {
+        slint::platform::Platform::create_window_adapter(&self.windows)
+    }
+    fn open_url(&self, url: &str) -> Result<(), slint::PlatformError> {
+        self.opened.borrow_mut().push(url.to_owned());
+        Ok(())
+    }
+}
+
 impl Harness {
     fn new() -> Self {
         let windows = Rc::new(RefCell::new(Vec::new()));
-        slint::platform::set_platform(Box::new(Windows(windows.clone()))).unwrap();
+        Self::with_platform(Box::new(Windows(windows.clone())), windows)
+    }
+
+    fn recording_urls() -> (Self, Rc<RefCell<Vec<String>>>) {
+        let windows = Rc::new(RefCell::new(Vec::new()));
+        let opened = Rc::new(RefCell::new(Vec::new()));
+        let platform = UrlRecorder {
+            windows: Windows(windows.clone()),
+            opened: opened.clone(),
+        };
+        (Self::with_platform(Box::new(platform), windows), opened)
+    }
+
+    fn with_platform(
+        platform: Box<dyn slint::platform::Platform>,
+        windows: Rc<RefCell<Vec<Rc<MinimalSoftwareWindow>>>>,
+    ) -> Self {
+        slint::platform::set_platform(platform).unwrap();
         let main = MainWindow::new().unwrap();
         let path = std::env::temp_dir().join("native-dialogs-文档");
         let state = Rc::new(RefCell::new(Presenter::new(path.clone(), path)));
@@ -122,6 +154,71 @@ fn about_action_opens_independent_window_with_a_working_close_button() {
     modeless::click(&child, "Close");
     assert!(!child.window().is_visible());
     assert!(h.main.window().is_visible());
+}
+
+#[test]
+fn about_window_keeps_slint_attribution_visible_without_opening_its_link() {
+    let (h, opened) = Harness::recording_urls();
+    h.main.invoke_show_about();
+    let child = h.child();
+    for (width, height) in [(900, 650), (320, 200)] {
+        modeless::draw(&child, width, height, "native-about-attribution");
+        let badge =
+            modeless::accessible_item(&child, AccessibleRole::Image, "#MadeWithSlint").unwrap();
+        let version = modeless::accessible_item(
+            &child,
+            AccessibleRole::Text,
+            "Version 1.18.1\nhttps://slint.dev/",
+        )
+        .unwrap();
+        let (rect, at) = (
+            badge.geometry(),
+            badge.map_to_native_window(badge.geometry().origin),
+        );
+        assert!(rect.height() >= 48.0, "{width}x{height}: {rect:?}");
+        // At 320x200 the version text lies below the scroll viewport, as before.
+        assert!(version.geometry().height() > 0.0);
+        if width == 900 {
+            assert!(version.is_visible());
+            // The bare widget's geometry before the covering wrapper was added
+            // (Slint 1.18.1): the wrapper must not resize the attribution.
+            let near = |actual: f32, expected: f32| (actual - expected).abs() < 0.5;
+            assert!(
+                near(at.x, 20.0)
+                    && near(at.y, 107.0)
+                    && near(rect.width(), 860.0)
+                    && near(rect.height(), 393.49),
+                "{at:?} {rect:?}"
+            );
+            let size = version.geometry().size;
+            assert!(
+                near(size.width, 860.0) && near(size.height, 27.0),
+                "{size:?}"
+            );
+            let position =
+                slint::LogicalPosition::new(at.x + rect.width() / 2.0, at.y + rect.height() / 2.0);
+            for event in [
+                WindowEvent::PointerMoved { position },
+                WindowEvent::PointerPressed {
+                    position,
+                    button: slint::platform::PointerEventButton::Left,
+                },
+                WindowEvent::PointerReleased {
+                    position,
+                    button: slint::platform::PointerEventButton::Left,
+                },
+            ] {
+                child.window().dispatch_event(event);
+            }
+            slint::platform::update_timers_and_animations();
+            assert!(
+                opened.borrow().is_empty(),
+                "the attribution must not open a URL: {:?}",
+                opened.borrow()
+            );
+        }
+    }
+    assert!(child.window().is_visible(), "the click leaves About open");
 }
 
 #[test]
