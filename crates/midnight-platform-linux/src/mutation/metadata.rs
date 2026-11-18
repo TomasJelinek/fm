@@ -102,7 +102,7 @@ struct Children {
     path: PathBuf,
     identity: Identity,
     directory: Arc<File>,
-    names: Vec<OsString>,
+    names: CapturedNames,
 }
 
 /// Listing and pinning change nothing, so their cancellation has its own text.
@@ -159,32 +159,38 @@ pub(super) fn children(
         names.push(OsStr::from_bytes(raw).to_owned());
     }
     drop(entries);
-    names.shrink_to_fit();
     Ok(Box::new(Children {
         path: item.item.path.clone(),
         identity: item.identity,
         directory,
-        names,
+        names: CapturedNames::new(names),
     }))
 }
 
 impl MetadataChildren for Children {
     fn names(&self) -> &[OsString] {
-        &self.names
+        self.names.remaining()
     }
 
-    fn pin(
+    fn pin_next(
         &mut self,
-        index: usize,
         cancel: &Cancellation,
-    ) -> Result<Arc<dyn PreparedMutation>, FsError> {
-        let Some(name) = self.names.get(index).filter(|name| !name.is_empty()) else {
-            return Err(error(
-                &self.path,
-                ErrorKind::InvalidInput,
-                "no captured child that is not pinned yet has this index",
-            ));
-        };
+    ) -> Option<Result<Arc<dyn PreparedMutation>, (OsString, FsError)>> {
+        let name = self.names.take_next()?;
+        Some(match self.open(&name, cancel) {
+            Ok(mut child) => {
+                child.name = name;
+                Ok(Arc::new(child))
+            }
+            Err(error) => Err((name, error)),
+        })
+    }
+}
+
+impl Children {
+    /// Opens and pins the entry now named `name` relative to the retained directory
+    /// descriptor; the caller hands the pinned entry its name.
+    fn open(&self, name: &OsStr, cancel: &Cancellation) -> Result<Prepared, FsError> {
         let path = self.path.join(name);
         listing_continues(cancel, &path)?;
         let source = File::from(
@@ -205,7 +211,7 @@ impl MetadataChildren for Children {
             FileType::Symlink => EntryKind::Symlink,
             _ => EntryKind::Other,
         };
-        Ok(Arc::new(Prepared {
+        Ok(Prepared {
             item: MutationItem {
                 path,
                 kind,
@@ -216,13 +222,13 @@ impl MetadataChildren for Children {
                 },
             },
             parent_path: self.path.clone(),
-            name: std::mem::take(&mut self.names[index]),
+            name: OsString::new(),
             parent: self.directory.clone(),
             parent_identity: self.identity,
             identity,
             _source: source,
             trash_root: None,
-        }))
+        })
     }
 }
 

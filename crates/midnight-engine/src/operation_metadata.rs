@@ -2,7 +2,7 @@
 use super::*;
 use midnight_platform_common::metadata::{case_name, validate_patch};
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{HashMap, HashSet, VecDeque},
     ffi::{OsStr, OsString},
     io,
     path::Path,
@@ -263,11 +263,17 @@ impl Edit {
             if issue.is_none()
                 && let Some(change) = patch.case
             {
-                match case_name(path.file_name().unwrap_or_default(), change) {
+                let current = path.file_name().unwrap_or_default();
+                match case_name(current, change) {
                     Ok(proposed) => {
                         issue = target.metadata_name_available(&proposed, cancel).err();
-                        let destination = path.with_file_name(&proposed);
-                        if let Some(previous) = destinations.insert(destination, index) {
+                        // Only changing names are compared, as for traversed siblings: a
+                        // name that stays keeps its other changes, and a changing name that
+                        // would take it is refused by its own probe.
+                        if proposed != current
+                            && let Some(previous) =
+                                destinations.insert(path.with_file_name(&proposed), index)
+                        {
                             let conflict = error(
                                 path,
                                 io::ErrorKind::AlreadyExists,
@@ -335,8 +341,8 @@ fn proposed_metadata(current: &MetadataSnapshot, patch: &MetadataPatch) -> Metad
     proposed
 }
 
-/// One entry of the current traversal path. A listed folder keeps its name snapshot until
-/// its last child is done; its children are pinned one at a time from that snapshot.
+/// One entry of the current traversal path. A listed folder keeps the names of its entries
+/// not processed yet; they are taken and pinned one at a time.
 struct Frame {
     target: Arc<dyn PreparedMutation>,
     depth: usize,
@@ -346,32 +352,57 @@ struct Frame {
     children: Option<Listing>,
 }
 
+impl Frame {
+    /// One of this folder's entries completed: its next failure revalidates the folder again.
+    fn entry_succeeded(&mut self) {
+        if let Some(listing) = &mut self.children {
+            listing.passed = None;
+        }
+    }
+}
+
 /// A listed folder's captured child names and how far its traversal got.
 struct Listing {
     children: Box<dyn MetadataChildren>,
-    /// Captured siblings whose case change is a conflict; empty without a case change.
-    collides: Vec<bool>,
-    /// The captured index pinned next.
-    next: usize,
-    /// What this snapshot still holds of the traversal's name budget.
+    /// Whether each name not taken yet is a sibling case conflict, in the order of
+    /// `children.names()`; empty without a case change.
+    collides: VecDeque<bool>,
+    /// How many names were captured.
+    total: usize,
+    /// What this snapshot still holds of the traversal's name budget: the names not taken
+    /// yet, and their bytes.
     names: usize,
     bytes: usize,
+    /// The failure kind after which the folder last passed its revalidation, until one of
+    /// its entries succeeds.
+    passed: Option<io::ErrorKind>,
 }
 
-/// What the name snapshots of the folders on one root's traversal path may still hold.
-/// A folder's names are charged when it is listed. Each name's bytes return as soon as
-/// its entry is pinned, which releases the name, and the rest returns once the folder is
-/// done, when its snapshot and the slots of its released names are dropped. So the bytes
-/// bound the names not processed yet, while the count covers every name the snapshots on
-/// the current path were captured with.
+impl Listing {
+    /// Whether the next name is a sibling case conflict. Its flag is dropped, and the flags
+    /// are shrunk once at most a quarter of their space is in use.
+    fn next_collides(&mut self) -> bool {
+        let collides = self.collides.pop_front() == Some(true);
+        if self.collides.len() <= self.collides.capacity() / 4 {
+            self.collides.shrink_to_fit();
+        }
+        collides
+    }
+}
+
+/// What the name snapshots of the folders on one root's traversal path may still hold of
+/// the names they have not processed yet. A folder's names are charged when it is listed;
+/// each name, one count and its bytes, returns as soon as its entry is taken, which
+/// releases it, and the rest returns when the folder is done or stopped.
 ///
-/// Retained memory along one path is therefore at most 100,000 name slots of 24 bytes and
-/// conflict flags of one byte, 4 MiB of unprocessed names held without spare capacity, and
-/// one allocation per unprocessed name (allocator minimum and header, up to about 32 bytes
-/// each): about 10 MiB. Listing a folder for a case change also builds, only until its
-/// first entry is pinned, a set of its names and a map of its changing names' new
-/// spellings (case mapping at most triples a name's bytes): at most about 25 MiB for
-/// 100,000 names of 4 MiB, typically a few MiB.
+/// Retained memory along one path is therefore at most 4 MiB of unprocessed names held
+/// without spare capacity, one allocation per unprocessed name (allocator minimum and
+/// header, up to about 32 bytes each), name slots of 24 bytes (32 on Windows), at most
+/// twice as many slots as unprocessed names, and one-byte conflict flags with space for at
+/// most four times as many: about 12 MiB, or 14 MiB on Windows. Listing a folder for a
+/// case change also builds, only until its first entry is pinned, a set of its names and a
+/// map of its changing names' new spellings (case mapping at most triples a name's bytes):
+/// at most about 25 MiB for 100,000 names of 4 MiB, typically a few MiB.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct NameBudget {
     names: usize,
@@ -406,20 +437,25 @@ impl NameBudget {
         }
         self.names -= names;
         self.bytes -= bytes;
-        let collides = sibling_collisions(children.names(), case);
+        let collides = sibling_collisions(children.names(), case).into();
         Ok(Listing {
             children,
             collides,
-            next: 0,
+            total: names,
             names,
             bytes,
+            passed: None,
         })
     }
 
-    /// Returns the bytes of a name the snapshot released when its entry was pinned.
+    /// Returns what a name the snapshot released when its entry was taken held: one name
+    /// and its bytes.
     fn release(&mut self, listing: &mut Listing, bytes: usize) {
+        let names = listing.names.min(1);
         let bytes = bytes.min(listing.bytes);
+        listing.names -= names;
         listing.bytes -= bytes;
+        self.names += names;
         self.bytes += bytes;
     }
 
@@ -510,8 +546,8 @@ fn name_shortfall(path: &Path, free: NameBudget, refusal: &FsError) -> FsError {
     } else {
         format!(
             "this folder's names exceed the {} names or {} of names still free; one \
-             recursive edit holds {limit} at once, and the folders above it that are still \
-             being processed hold the rest",
+             recursive edit holds {limit} at once, and the entries not processed yet in the \
+             folders above it hold the rest",
             grouped(free.names),
             binary_size(free.bytes)
         )
@@ -557,28 +593,39 @@ fn list(
 
 /// A child failure that may mean its folder changed: conflicts, cancellation and fields an
 /// entry does not support concern only that entry.
-fn may_mean_folder_changed(error: &FsError) -> bool {
+fn may_mean_folder_changed(kind: io::ErrorKind) -> bool {
     !matches!(
-        error.kind,
+        kind,
         io::ErrorKind::AlreadyExists | io::ErrorKind::Interrupted | io::ErrorKind::Unsupported
     )
 }
 
-/// After one of a listed folder's entries failed, revalidates the folder once. A folder
-/// that another program moved, replaced or removed would fail each remaining entry the same
-/// way, so it stops with one error that counts them; the outcomes of processed entries stay.
-fn stop_if_changed(folder: &mut Frame, cancel: &Cancellation, budget: &mut NameBudget) {
-    let Some(listing) = &folder.children else {
+/// After one of a listed folder's entries failed with `kind`, revalidates the folder. A
+/// folder that another program moved, replaced or removed would fail each remaining entry
+/// the same way, so it stops with one error that counts them; the outcomes of processed
+/// entries stay. A folder that passes is not revalidated again for further failures of the
+/// same kind until one of its entries succeeds, so entries that each fail alone, for example
+/// for a permission they lack, cost one revalidation per run instead of one each.
+fn stop_if_changed(
+    folder: &mut Frame,
+    kind: io::ErrorKind,
+    cancel: &Cancellation,
+    budget: &mut NameBudget,
+) {
+    let Some(listing) = &mut folder.children else {
         return;
     };
-    let total = listing.children.names().len();
-    let remaining = total - listing.next;
+    let (remaining, total) = (listing.names, listing.total);
     // The folder's own edit revalidates it after its last entry.
-    if remaining == 0 {
+    if remaining == 0 || listing.passed == Some(kind) {
         return;
     }
-    let Err(failure) = folder.target.metadata_snapshot(cancel) else {
-        return;
+    let failure = match folder.target.metadata_snapshot(cancel) {
+        Ok(_) => {
+            listing.passed = Some(kind);
+            return;
+        }
+        Err(failure) => failure,
     };
     if failure.kind == io::ErrorKind::Interrupted {
         return;
@@ -610,9 +657,9 @@ enum Pinned {
     Failed(MetadataOutcome),
 }
 
-/// Pins a listed folder's next captured entry and plans its edit: the issue and new name
-/// that `Edit::prepare_confirmed` finds for that entry alone, then the sibling conflicts
-/// found on the captured names.
+/// Takes and pins a listed folder's next captured entry, which returns its name to the
+/// budget, and plans its edit: the issue and new name that `Edit::prepare_confirmed` finds
+/// for that entry alone, then the sibling conflicts found on the captured names.
 fn pin_next(
     folder: &mut Frame,
     budget: &mut NameBudget,
@@ -620,21 +667,24 @@ fn pin_next(
     cancel: &Cancellation,
 ) -> Option<Pinned> {
     let listing = folder.children.as_mut()?;
-    let index = listing.next;
-    let bytes = listing.children.names().get(index)?.len();
-    listing.next += 1;
-    let target = match listing.children.pin(index, cancel) {
+    // The charge counts the names not taken yet, so a folder never yields more entries
+    // than it was listed with, whatever its adapter reports.
+    if listing.names == 0 {
+        return None;
+    }
+    let bytes = listing.children.names().first()?.len();
+    let pinned = listing.children.pin_next(cancel)?;
+    let collides = listing.next_collides();
+    budget.release(listing, bytes);
+    let target = match pinned {
         Ok(target) => target,
-        Err(error) => {
-            // A failed pin keeps its captured name.
-            let name = listing.children.names().get(index).cloned();
-            let path = &folder.target.item().path;
-            let mut outcome = MetadataOutcome::unchanged(path.join(name.unwrap_or_default()));
+        Err((name, error)) => {
+            let path = folder.target.item().path.join(name);
+            let mut outcome = MetadataOutcome::unchanged(path);
             outcome.error = Some(error);
             return Some(Pinned::Failed(outcome));
         }
     };
-    budget.release(listing, bytes);
     let (id, preview) = plan;
     let (mut issue, name) = match Edit::prepare_confirmed(
         id,
@@ -649,7 +699,7 @@ fn pin_next(
         ),
         Err(error) => (Some(error), None),
     };
-    if listing.collides.get(index) == Some(&true)
+    if collides
         && issue
             .as_ref()
             .is_none_or(|issue| issue.kind == io::ErrorKind::AlreadyExists)
@@ -748,10 +798,11 @@ impl Tally<'_> {
 }
 
 /// Edits one root and, for a recursive patch, every entry below it in postorder. A folder
-/// is listed once and its entries are pinned one at a time, only when they are processed,
-/// so at most one pinned child per listed level is alive: at most `MAX_METADATA_DEPTH`
-/// traversal targets, besides the selected roots of the shared budget. The name snapshots
-/// on the current path share one `NameBudget`.
+/// is listed once and its entries are taken and pinned one at a time, in the captured
+/// order and only when they are processed, so at most one pinned child per listed level is
+/// alive: at most `MAX_METADATA_DEPTH` traversal targets, besides the selected roots of the
+/// shared budget. The names that the snapshots on the current path have not processed yet
+/// share one `NameBudget`.
 fn traverse(
     tally: &mut Tally,
     root: Arc<dyn PreparedMutation>,
@@ -798,10 +849,10 @@ fn traverse(
                 continue;
             }
             Some(Pinned::Failed(outcome)) => {
-                let changed = outcome.error.as_ref().is_some_and(may_mean_folder_changed);
+                let failed = outcome.error.as_ref().map(|error| error.kind);
                 tally.record(outcome, frame.depth + 1, None);
-                if changed {
-                    stop_if_changed(&mut frame, cancel, &mut budget);
+                if let Some(kind) = failed.filter(|kind| may_mean_folder_changed(*kind)) {
+                    stop_if_changed(&mut frame, kind, cancel, &mut budget);
                 }
                 stack.push(frame);
                 continue;
@@ -824,11 +875,17 @@ fn traverse(
                 .target
                 .edit_metadata(patch, frame.name.as_deref(), cancel),
         };
-        let changed = outcome.error.as_ref().is_some_and(may_mean_folder_changed);
+        let failed = outcome.error.as_ref().map(|error| error.kind);
         tally.record(outcome, frame.depth, frame.name.as_deref());
         drop(frame);
-        if changed && let Some(folder) = stack.last_mut() {
-            stop_if_changed(folder, cancel, &mut budget);
+        if let Some(folder) = stack.last_mut() {
+            match failed {
+                None => folder.entry_succeeded(),
+                Some(kind) if may_mean_folder_changed(kind) => {
+                    stop_if_changed(folder, kind, cancel, &mut budget);
+                }
+                Some(_) => {}
+            }
         }
     }
 }

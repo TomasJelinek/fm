@@ -1,11 +1,12 @@
 //! Recursive metadata traversal against an in-memory adapter: pins bounded by depth, one
-//! listing per folder, the name budget along the current path, entries that fail alone,
-//! folders that change while they are processed, sibling case conflicts found on the
-//! captured names, cancellation, and the release of a folder's snapshot and pinned entries
-//! before its own edit.
+//! listing per folder, the name budget along the current path and its return as entries are
+//! taken, entries that fail alone or were replaced after the snapshot, folders that change
+//! while they are processed, case conflicts among selected names and captured siblings,
+//! cancellation, and the release of a folder's snapshot and pinned entries before its own
+//! edit.
 use super::*;
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet, VecDeque},
     ffi::{OsStr, OsString},
     io,
     path::{Path, PathBuf},
@@ -75,6 +76,10 @@ struct Probe {
     early: Mutex<Vec<PathBuf>>,
     /// Folders that another program moved: their revalidation fails.
     moved: Mutex<HashSet<PathBuf>>,
+    /// Native snapshot reads (revalidations) per entry.
+    snapshots: Mutex<HashMap<PathBuf, usize>>,
+    /// Entries that a name check finds besides the checked entry itself.
+    existing: Mutex<HashSet<PathBuf>>,
 }
 
 impl Probe {
@@ -89,7 +94,17 @@ impl Probe {
             edited: Mutex::default(),
             early: Mutex::default(),
             moved: Mutex::default(),
+            snapshots: Mutex::default(),
+            existing: Mutex::default(),
         })
+    }
+    fn snapshots_of(&self, path: &Path) -> usize {
+        self.snapshots
+            .lock()
+            .unwrap()
+            .get(path)
+            .copied()
+            .unwrap_or_default()
     }
     fn listings(&self) -> Vec<Listed> {
         self.listings.lock().unwrap().clone()
@@ -144,6 +159,11 @@ enum Quirk {
     /// Its edit fails as if another program moved its folder, which then fails its
     /// revalidation.
     MovesFolder,
+    /// Its edit fails with `PermissionDenied`, as for an entry the user may not change.
+    Denied,
+    /// Its snapshot breaks the contract: it never releases its first name and yields an
+    /// entry for it on every pin.
+    Repeats,
     /// Times cannot be changed, like a link's.
     NoTimes,
 }
@@ -156,6 +176,9 @@ enum Entry {
     Node(Arc<Node>),
     /// Removed after the snapshot: pinning it fails with `NotFound`.
     Vanished,
+    /// A file when the snapshot was taken; another program replaced it with this node
+    /// before its pin, so the pin finds the node.
+    Replaced(Arc<Node>),
 }
 
 /// An in-memory tree whose listing refuses more names or name bytes than allowed with
@@ -219,6 +242,13 @@ impl PreparedMutation for Node {
         &self.item
     }
     fn metadata_snapshot(&self, _: &Cancellation) -> Result<MetadataSnapshot, FsError> {
+        *self
+            .probe
+            .snapshots
+            .lock()
+            .unwrap()
+            .entry(self.item.path.clone())
+            .or_default() += 1;
         if self.probe.moved.lock().unwrap().contains(&self.item.path) {
             return Err(FsError::from_io(
                 "revalidate mutation",
@@ -237,6 +267,19 @@ impl PreparedMutation for Node {
             },
             ..Default::default()
         })
+    }
+    fn metadata_name_available(&self, name: &OsStr, _: &Cancellation) -> Result<(), FsError> {
+        let destination = self.item.path.with_file_name(name);
+        if destination != self.item.path
+            && self.probe.existing.lock().unwrap().contains(&destination)
+        {
+            return Err(FsError::from_io(
+                "check name collision",
+                &destination,
+                io::ErrorKind::AlreadyExists.into(),
+            ));
+        }
+        Ok(())
     }
     fn metadata_children(
         &self,
@@ -257,6 +300,13 @@ impl PreparedMutation for Node {
                 io::Error::new(kind, "the adapter failed for another reason"),
             ));
         }
+        if self.quirk == Quirk::Repeats {
+            return Ok(Box::new(Repeating {
+                folder: self.item.path.clone(),
+                names: vec![self.entries[0].0.clone()],
+                probe: self.probe.clone(),
+            }));
+        }
         let bytes: usize = self.entries.iter().map(|(name, _)| name.len()).sum();
         if self.entries.len() > max_names || bytes > max_bytes {
             return Err(FsError::from_io(
@@ -272,7 +322,7 @@ impl PreparedMutation for Node {
             .insert(self.item.path.clone());
         Ok(Box::new(Snapshot {
             folder: self.item.path.clone(),
-            names: self.entries.iter().map(|(name, _)| name.clone()).collect(),
+            names: CapturedNames::new(self.entries.iter().map(|(name, _)| name.clone()).collect()),
             entries: self
                 .entries
                 .iter()
@@ -306,6 +356,14 @@ impl PreparedMutation for Node {
         let mut outcome = MetadataOutcome::unchanged(path.clone());
         match self.quirk {
             Quirk::Cancels => cancel.cancel(),
+            Quirk::Denied => {
+                outcome.error = Some(FsError::from_io(
+                    "edit metadata",
+                    path,
+                    io::ErrorKind::PermissionDenied.into(),
+                ));
+                return outcome;
+            }
             Quirk::MovesFolder => {
                 let folder = path.parent().unwrap().to_owned();
                 probe.moved.lock().unwrap().insert(folder);
@@ -342,48 +400,60 @@ impl PreparedMutation for Node {
 /// A fake folder's captured names; entries are created only when they are pinned.
 struct Snapshot {
     folder: PathBuf,
-    names: Vec<OsString>,
-    entries: Vec<Entry>,
+    names: CapturedNames,
+    /// The entries of the names not taken yet, in the same order.
+    entries: VecDeque<Entry>,
     probe: Arc<Probe>,
 }
 
 impl MetadataChildren for Snapshot {
     fn names(&self) -> &[OsString] {
-        &self.names
+        self.names.remaining()
     }
-    fn pin(
+    fn pin_next(
         &mut self,
-        index: usize,
         _: &Cancellation,
-    ) -> Result<Arc<dyn PreparedMutation>, FsError> {
-        let Some(name) = self.names.get(index).filter(|name| !name.is_empty()) else {
-            return Err(FsError::from_io(
-                "pin child",
-                &self.folder,
-                io::ErrorKind::InvalidInput.into(),
-            ));
-        };
-        let path = self.folder.join(name);
+    ) -> Option<Result<Arc<dyn PreparedMutation>, (OsString, FsError)>> {
+        let name = self.names.take_next()?;
+        let entry = self.entries.pop_front()?;
+        let path = self.folder.join(&name);
         self.probe.pins.lock().unwrap().push(path.clone());
-        let node = match &self.entries[index] {
+        let node = match entry {
             Entry::File => Node::file(&self.probe, path),
-            Entry::Node(node) => node.clone(),
+            Entry::Node(node) | Entry::Replaced(node) => node,
             Entry::Vanished => {
-                return Err(FsError::from_io(
-                    "pin child",
-                    &path,
-                    io::ErrorKind::NotFound.into(),
-                ));
+                let missing = FsError::from_io("pin child", &path, io::ErrorKind::NotFound.into());
+                return Some(Err((name, missing)));
             }
         };
-        self.names[index] = OsString::new();
-        Ok(Arc::new(Held::new(node)))
+        Some(Ok(Arc::new(Held::new(node))))
     }
 }
 
 impl Drop for Snapshot {
     fn drop(&mut self) {
         self.probe.listed.lock().unwrap().remove(&self.folder);
+    }
+}
+
+/// A snapshot that keeps reporting its one name and yields a new entry for every pin.
+struct Repeating {
+    folder: PathBuf,
+    names: Vec<OsString>,
+    probe: Arc<Probe>,
+}
+
+impl MetadataChildren for Repeating {
+    fn names(&self) -> &[OsString] {
+        &self.names
+    }
+    fn pin_next(
+        &mut self,
+        _: &Cancellation,
+    ) -> Option<Result<Arc<dyn PreparedMutation>, (OsString, FsError)>> {
+        let path = self.folder.join(&self.names[0]);
+        self.probe.pins.lock().unwrap().push(path.clone());
+        Some(Ok(Arc::new(Held::new(Node::file(&self.probe, path)))))
     }
 }
 
@@ -416,6 +486,9 @@ impl PreparedMutation for Held {
     }
     fn metadata_snapshot(&self, cancel: &Cancellation) -> Result<MetadataSnapshot, FsError> {
         self.0.metadata_snapshot(cancel)
+    }
+    fn metadata_name_available(&self, name: &OsStr, cancel: &Cancellation) -> Result<(), FsError> {
+        self.0.metadata_name_available(name, cancel)
     }
     fn metadata_children(
         &self,
@@ -490,10 +563,20 @@ fn fake_job(
     patch: MetadataPatch,
     policy: MetadataConflictPolicy,
 ) -> worker::Job {
+    fake_roots_job(probe, vec![root], patch, policy)
+}
+
+/// A confirmed edit of in-memory selected roots, pinned from the probe's shared budget.
+fn fake_roots_job(
+    probe: &Arc<Probe>,
+    roots: Vec<Arc<Node>>,
+    patch: MetadataPatch,
+    policy: MetadataConflictPolicy,
+) -> worker::Job {
     let cancel = Cancellation::default();
     let sources = Roots {
-        roots: vec![root],
-        covered: vec![false],
+        covered: vec![false; roots.len()],
+        roots,
     };
     let scope = input::MetadataScope::capture(&sources);
     let source_directory = PathBuf::from("captured");
@@ -649,9 +732,9 @@ async fn a_folder_over_the_name_count_is_refused_before_any_entry_is_pinned() {
 }
 
 #[tokio::test]
-async fn name_budget_spans_the_current_path_and_returns_when_a_folder_is_done() {
-    // The root holds 3 MiB of names (3,072 names of 1 KiB). Each pin releases its name's
-    // bytes; the count stays charged until the root is done.
+async fn name_budget_spans_the_current_path_and_returns_each_name_when_it_is_taken() {
+    // The root holds 3 MiB of names (3,072 names of 1 KiB). Taking an entry returns its
+    // name, one count and 1 KiB, before the entry is listed.
     let probe = Probe::new();
     let parent = PathBuf::from("PARENT");
     let folder = |name: &OsString, count: usize, prefix: &str| {
@@ -678,32 +761,32 @@ async fn name_budget_spans_the_current_path_and_returns_when_a_folder_is_done() 
     assert_eq!((result.processed, result.failed), (4098, 1));
     let free_names = MAX_METADATA_NAMES - 3072;
     let mebibyte = 1024 * 1024;
-    // A (2 MiB) finds 1 MiB and its own released 1 KiB name free.
+    // A (2 MiB) finds 1 MiB and its own released name free.
     assert_eq!(
         probe.listing_of(&parent.join(&a)),
-        (free_names, mebibyte + 1024)
+        (free_names + 1, mebibyte + 1024)
     );
     let refusal = &progress.errors[0];
     assert_eq!(refusal.path, parent.join(&a));
     assert!(
         refusal.message.starts_with(
-            "this folder's names exceed the 96,928 names or 1.0 MiB of names still free; one \
+            "this folder's names exceed the 96,929 names or 1.0 MiB of names still free; one \
              recursive edit holds at most 100,000 names or 4 MiB of names at once, and the \
-             folders above it that are still being processed hold the rest; this folder and \
-             its contents were not changed"
+             entries not processed yet in the folders above it hold the rest; this folder \
+             and its contents were not changed"
         ) && refusal.message.ends_with(NATIVE_REFUSAL),
         "{}",
         refusal.message
     );
-    // B (1 MiB) fits; once B is done its whole share returns, so C sees exactly one more
-    // released name than B did.
+    // B (1 MiB) fits; once B is done its whole share has returned, so C sees exactly one
+    // more released name than B did.
     assert_eq!(
         probe.listing_of(&parent.join(&b)),
-        (free_names, mebibyte + 2 * 1024)
+        (free_names + 2, mebibyte + 2 * 1024)
     );
     assert_eq!(
         probe.listing_of(&parent.join(&c)),
-        (free_names, mebibyte + 3 * 1024)
+        (free_names + 3, mebibyte + 3 * 1024)
     );
     let edited = probe.edited_paths();
     assert!(!edited.iter().any(|path| path.starts_with(parent.join(&a))));
@@ -713,9 +796,10 @@ async fn name_budget_spans_the_current_path_and_returns_when_a_folder_is_done() 
 }
 
 #[tokio::test]
-async fn a_subfolder_after_its_finished_siblings_sees_their_name_bytes_returned() {
-    // 3,000 names of 1 KiB, then a subfolder holding 2,000 more: charged whole, the
-    // siblings would leave it about 1 MiB; released as they are pinned, they leave 4 MiB.
+async fn a_subfolder_after_its_finished_siblings_sees_their_names_returned() {
+    // 3,000 names of 1 KiB, then a subfolder holding 2,000 more: charged until the root is
+    // done, the siblings would leave it 96,999 names and about 1 MiB; returned as they are
+    // taken, they leave the whole budget.
     let probe = Probe::new();
     let parent = PathBuf::from("PARENT");
     let last = kibibyte_name("S", 0);
@@ -735,8 +819,83 @@ async fn a_subfolder_after_its_finished_siblings_sees_their_name_bytes_returned(
     assert_eq!((result.processed, result.failed), (5002, 0));
     assert_eq!(
         probe.listing_of(&subfolder),
-        (MAX_METADATA_NAMES - 3001, MAX_METADATA_NAMES_BYTES)
+        (MAX_METADATA_NAMES, MAX_METADATA_NAMES_BYTES)
     );
+    probe.assert_released();
+}
+
+#[tokio::test]
+async fn a_folder_yields_no_more_entries_than_it_was_listed_with() {
+    let probe = Probe::new();
+    let parent = PathBuf::from("PARENT");
+    let root = Node::new(
+        &probe,
+        parent.clone(),
+        EntryKind::Directory,
+        files(1),
+        Quirk::Repeats,
+    );
+    let (progress, result) = run(&probe, root).await;
+    assert_eq!(progress.state, OperationState::Completed, "{progress:?}");
+    assert_eq!((result.processed, result.failed), (2, 0));
+    assert_eq!(probe.pins(), [parent.join("000")]);
+    probe.assert_released();
+}
+
+#[tokio::test]
+async fn a_captured_file_replaced_by_a_folder_is_traversed_as_that_folder() {
+    // "001" was a file when PARENT was listed; the pin finds the folder that replaced it.
+    let probe = Probe::new();
+    let parent = PathBuf::from("PARENT");
+    let replaced = parent.join("001");
+    let replacement = Node::folder(&probe, replaced.clone(), files(2));
+    let mut entries = files(3);
+    entries[1].1 = Entry::Replaced(replacement);
+    let (progress, result) = run(&probe, Node::folder(&probe, parent.clone(), entries)).await;
+    assert_eq!(progress.state, OperationState::Completed, "{progress:?}");
+    assert_eq!((result.processed, result.changed, result.failed), (6, 6, 0));
+    probe.listing_of(&replaced);
+    assert_eq!(
+        probe.edited_paths(),
+        [
+            parent.join("000"),
+            replaced.join("000"),
+            replaced.join("001"),
+            replaced.clone(),
+            parent.join("002"),
+            parent.clone(),
+        ],
+        "the replacement's entries, then the replacement, before its later siblings"
+    );
+    probe.assert_released();
+}
+
+#[tokio::test]
+async fn a_folder_is_revalidated_once_per_run_of_failures_of_one_kind() {
+    // 001-003, 006 and the last entry 008 are denied; 004 was removed after the snapshot.
+    let probe = Probe::new();
+    let parent = PathBuf::from("PARENT");
+    let mut entries = files(9);
+    for index in [1, 2, 3, 6, 8] {
+        let path = parent.join(format!("{index:03}"));
+        let denied = Node::new(&probe, path, EntryKind::File, vec![], Quirk::Denied);
+        entries[index].1 = Entry::Node(denied);
+    }
+    entries[4].1 = Entry::Vanished;
+    let root = Node::folder(&probe, parent.clone(), entries);
+    let job = fake_job(&probe, root, modified(), MetadataConflictPolicy::Skip);
+    let prepared = probe.snapshots_of(&parent);
+    let (progress, result) = execute(job).await;
+    assert_eq!(progress.state, OperationState::CompletedWithErrors);
+    assert_eq!(
+        (result.processed, result.changed, result.failed),
+        (10, 4, 6)
+    );
+    // After 001 (a new run), 004 (another kind) and 006 (a new run once 005 succeeded);
+    // not after 002 and 003, which failed like 001, nor after 008, the last entry, which
+    // the folder's own edit follows.
+    assert_eq!(probe.snapshots_of(&parent) - prepared, 3);
+    assert_eq!(probe.edited_paths().last(), Some(&parent));
     probe.assert_released();
 }
 
@@ -864,6 +1023,51 @@ async fn an_unchanged_sibling_keeps_its_changes_next_to_one_that_fails_validatio
     assert_eq!(progress.errors[0].path, parent.join("AB"));
     assert_eq!(progress.errors[0].kind, io::ErrorKind::Unsupported);
     assert_eq!(probe.name_given(&parent.join("ab")).unwrap(), "ab");
+    probe.assert_released();
+}
+
+#[tokio::test]
+async fn selected_names_that_stay_are_never_case_conflicts() {
+    // Lower keeps "ab"; "AB" would take it, which its own name check finds. "Cd" and "CD"
+    // would both become "cd".
+    let probe = Probe::new();
+    let folder = PathBuf::from("FOLDER");
+    let roots: Vec<_> = ["ab", "AB", "Cd", "CD"]
+        .iter()
+        .map(|name| Node::file(&probe, folder.join(name)))
+        .collect();
+    probe
+        .existing
+        .lock()
+        .unwrap()
+        .extend(roots.iter().map(|root| root.item.path.clone()));
+    let job = fake_roots_job(&probe, roots, lower(true), MetadataConflictPolicy::SkipAll);
+    let preview = &job.metadata.as_ref().unwrap().preview;
+    let conflicts: Vec<_> = preview
+        .sample
+        .iter()
+        .filter(|row| {
+            row.issue.as_ref().map(|issue| issue.kind) == Some(io::ErrorKind::AlreadyExists)
+        })
+        .map(|row| row.path.clone())
+        .collect();
+    assert_eq!(
+        conflicts,
+        [folder.join("AB"), folder.join("Cd"), folder.join("CD")]
+    );
+    assert_eq!(preview.conflicts, 3);
+    let (progress, result) = execute(job).await;
+    assert_eq!(progress.state, OperationState::CompletedWithErrors);
+    assert_eq!(
+        (
+            result.processed,
+            result.changed,
+            result.skipped,
+            result.failed
+        ),
+        (4, 1, 3, 0)
+    );
+    assert_eq!(probe.name_given(&folder.join("ab")).unwrap(), "ab");
     probe.assert_released();
 }
 

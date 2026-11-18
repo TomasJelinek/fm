@@ -130,7 +130,11 @@ fn a_child_replaced_by_a_symlink_after_the_snapshot_is_pinned_as_the_link() {
         (metadata.permissions().mode(), metadata.modified().unwrap())
     };
     let before = (state(&outside), state(&outside.join("OUT.txt")));
-    let pinned = children.pin(0, &cancel).unwrap();
+    let pinned = children.pin_next(&cancel).unwrap().unwrap();
+    assert!(
+        children.names().is_empty(),
+        "taking the entry releases its name"
+    );
     assert_eq!(pinned.item().path, parent.join("S"));
     assert_eq!(pinned.item().kind, EntryKind::Symlink);
     assert_eq!(

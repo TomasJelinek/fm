@@ -425,36 +425,37 @@ fn native_listing_refuses_more_names_or_name_bytes_than_allowed() {
         assert_eq!(refusal.kind, io::ErrorKind::Other, "{refusal:?}");
     }
     let mut children = prepared.metadata_children(&cancel, 3, 6).unwrap();
-    let mut names = children.names().to_vec();
-    names.sort();
-    assert_eq!(names, ["ab", "c", "文"]);
-    let position = |names: &[OsString], name: &str| {
-        names.iter().position(|captured| captured == name).unwrap()
-    };
-    // An entry removed after the snapshot fails alone and keeps its captured name.
+    let captured = children.names().to_vec();
+    let mut sorted = captured.clone();
+    sorted.sort();
+    assert_eq!(sorted, ["ab", "c", "文"]);
+    // An entry removed after the snapshot fails alone and gives its captured name back.
     fs::remove_file(parent.join("c")).unwrap();
-    let removed = position(children.names(), "c");
-    let missing = children.pin(removed, &cancel).err().unwrap();
-    assert_eq!(missing.kind, io::ErrorKind::NotFound, "{missing:?}");
-    assert_eq!(children.names()[removed], "c");
-    for name in ["ab", "文"] {
-        let index = position(children.names(), name);
-        let pinned = children.pin(index, &cancel).unwrap();
-        assert_eq!(pinned.item().path, parent.join(name));
-        assert_eq!(pinned.item().kind, EntryKind::File);
-        assert!(
-            children.names()[index].is_empty(),
-            "pinning releases the name"
+    for (taken, name) in captured.iter().enumerate() {
+        assert_eq!(
+            children.names(),
+            &captured[taken..],
+            "taken in captured order"
         );
-        let again = children.pin(index, &cancel).err().unwrap();
-        assert_eq!(again.kind, io::ErrorKind::InvalidInput, "{again:?}");
+        match children.pin_next(&cancel).unwrap() {
+            Ok(pinned) => {
+                assert_ne!(name, "c");
+                assert_eq!(pinned.item().path, parent.join(name));
+                assert_eq!(pinned.item().kind, EntryKind::File);
+            }
+            Err((returned, missing)) => {
+                assert_eq!(name, "c");
+                assert_eq!(returned, "c");
+                assert_eq!(missing.kind, io::ErrorKind::NotFound, "{missing:?}");
+            }
+        }
     }
-    let outside = children.pin(3, &cancel).err().unwrap();
-    assert_eq!(outside.kind, io::ErrorKind::InvalidInput, "{outside:?}");
+    assert!(children.names().is_empty(), "every name is released");
+    assert!(children.pin_next(&cancel).is_none());
 }
 
 /// A selected folder whose snapshot runs `hook` with each captured name just before that
-/// entry is pinned, as another program changing the folder in between.
+/// entry is taken and pinned, as another program changing the folder in between.
 struct Hooked {
     inner: Arc<dyn PreparedMutation>,
     hook: Arc<dyn Fn(&OsStr) + Send + Sync>,
@@ -511,15 +512,14 @@ impl MetadataChildren for HookedChildren {
     fn names(&self) -> &[OsString] {
         self.inner.names()
     }
-    fn pin(
+    fn pin_next(
         &mut self,
-        index: usize,
         cancel: &Cancellation,
-    ) -> Result<Arc<dyn PreparedMutation>, FsError> {
-        if let Some(name) = self.inner.names().get(index) {
+    ) -> Option<Result<Arc<dyn PreparedMutation>, (OsString, FsError)>> {
+        if let Some(name) = self.inner.names().first() {
             (self.hook)(name);
         }
-        self.inner.pin(index, cancel)
+        self.inner.pin_next(cancel)
     }
 }
 

@@ -206,7 +206,7 @@ struct Children {
     path: PathBuf,
     volume: u64,
     directory: File,
-    names: Vec<OsString>,
+    names: CapturedNames,
 }
 
 pub(super) fn children(
@@ -237,26 +237,34 @@ pub(super) fn children(
         path: item.item.path.clone(),
         volume: item.identity.volume,
         directory,
-        names,
+        names: CapturedNames::new(names),
     }))
 }
 
 impl MetadataChildren for Children {
     fn names(&self) -> &[OsString] {
-        &self.names
+        self.names.remaining()
     }
 
-    fn pin(
+    fn pin_next(
         &mut self,
-        index: usize,
         cancel: &Cancellation,
-    ) -> Result<Arc<dyn PreparedMutation>, FsError> {
-        let Some(name) = self.names.get(index).filter(|name| !name.is_empty()) else {
-            return Err(invalid(
-                &self.path,
-                "no captured child that is not pinned yet has this index",
-            ));
-        };
+    ) -> Option<Result<Arc<dyn PreparedMutation>, (OsString, FsError)>> {
+        let name = self.names.take_next()?;
+        Some(match self.open(&name, cancel) {
+            Ok(mut child) => {
+                child.name = name;
+                Ok(Arc::new(child))
+            }
+            Err(error) => Err((name, error)),
+        })
+    }
+}
+
+impl Children {
+    /// Opens and pins the entry now named `name` relative to the retained directory handle;
+    /// the caller hands the pinned entry its name.
+    fn open(&self, name: &OsStr, cancel: &Cancellation) -> Result<WindowsMutation, FsError> {
         let path = self.path.join(name);
         checked(cancel, &path)?;
         let child = native::open_child(&self.directory, name, false)
@@ -275,7 +283,7 @@ impl MetadataChildren for Children {
             .directory
             .try_clone()
             .map_err(|e| failure("pin parent", &self.path, e))?;
-        Ok(Arc::new(WindowsMutation {
+        Ok(WindowsMutation {
             item: MutationItem {
                 path,
                 kind: native.kind(),
@@ -287,9 +295,9 @@ impl MetadataChildren for Children {
             },
             parent,
             source: child,
-            name: std::mem::take(&mut self.names[index]),
+            name: OsString::new(),
             identity,
-        }))
+        })
     }
 }
 
