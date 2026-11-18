@@ -1,4 +1,5 @@
 use super::*;
+use std::path::Path;
 
 fn kept(path: PathBuf) -> SpoolRoot {
     SpoolRoot {

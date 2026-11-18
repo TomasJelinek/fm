@@ -45,6 +45,10 @@ pub struct SpoolSpace {
 mod report;
 pub use report::{AppendSpool, SpoolPrefix};
 
+#[path = "spool_root.rs"]
+mod roots;
+pub use roots::{ProcessRootGuard, SpoolRoot};
+
 /// A verified private directory capability. Open and all I/O belong on backend workers.
 pub struct PrivateSpoolDirectory(Arc<Root>);
 

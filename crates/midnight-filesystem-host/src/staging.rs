@@ -1,13 +1,14 @@
 //! Session-owned content staging. Native paths and handles never cross the worker wire.
 use midnight_filesystem_api::{MAX_READ, Message, StagePurpose};
 use midnight_worker_platform::spool::{
-    PrivateSpoolDirectory, SPACE_CHECK_INTERVAL, Spool, SpoolSpace, free_space_reserve,
+    PrivateSpoolDirectory, ProcessRootGuard, SPACE_CHECK_INTERVAL, Spool, SpoolRoot, SpoolSpace,
+    free_space_reserve,
 };
 use std::{
     collections::{HashMap, VecDeque},
     io,
-    path::{Path, PathBuf},
-    sync::{Arc, Mutex, PoisonError, Weak},
+    path::Path,
+    sync::Arc,
 };
 
 const CACHE_ENTRIES: usize = 16;
@@ -46,7 +47,7 @@ pub(crate) struct Lease {
     /// Storage only member leases keep allocated; scratch stages stay sealed anyway.
     member_bytes: u64,
     /// Declared after the spool, which closes first: a read can outlive its mount.
-    _process_root: Option<Arc<ProcessRoot>>,
+    _process_root: Option<Arc<ProcessRootGuard>>,
 }
 impl Lease {
     pub(crate) fn read(&self, offset: u64, length: u32) -> io::Result<Vec<u8>> {
@@ -89,15 +90,7 @@ pub(crate) struct Staging {
     /// Member reads served from or added to the cache by this mount.
     reads: u64,
     /// Declared last: the root and every spool of this mount close first.
-    process_root: Option<Arc<ProcessRoot>>,
-}
-/// One candidate private spool root.
-#[derive(Debug, PartialEq, Eq)]
-struct SpoolRoot {
-    path: PathBuf,
-    /// Only this process uses the root, so it is removed after its last spool closes
-    /// instead of accumulating one directory per run.
-    per_process: bool,
+    process_root: Option<Arc<ProcessRootGuard>>,
 }
 impl Staging {
     /// Open this user's private spool root, trying the platform's per-user candidates in
@@ -111,7 +104,7 @@ impl Staging {
         for root in roots {
             // The guard exists before the open, so a closing mount of this process
             // cannot remove the root between its open and the spools created in it.
-            let process_root = root.per_process.then(|| ProcessRoot::acquire(&root.path));
+            let process_root = root.guard();
             let opened = Self::open(&root.path).and_then(|staging| {
                 drop(staging.root.create()?);
                 Ok(staging)
@@ -485,47 +478,6 @@ fn invalid() -> io::Error {
         io::ErrorKind::InvalidData,
         "Invalid archive staging exchange",
     )
-}
-
-/// Guards of live per-process spool roots. A guard is created, and an unused root is
-/// removed, only under this lock, so no mount of this process sees its root disappear.
-static PROCESS_ROOTS: Mutex<Vec<(PathBuf, Weak<ProcessRoot>)>> = Mutex::new(Vec::new());
-
-/// Keeps a per-process spool root while a mount of this process or a read lease may
-/// use it. Every mount that falls back to the same root shares one guard.
-struct ProcessRoot(PathBuf);
-impl ProcessRoot {
-    fn acquire(path: &Path) -> Arc<Self> {
-        let mut roots = PROCESS_ROOTS.lock().unwrap_or_else(PoisonError::into_inner);
-        if let Some(live) = roots
-            .iter()
-            .filter(|(root, _)| root == path)
-            .find_map(|(_, guard)| guard.upgrade())
-        {
-            return live;
-        }
-        roots.retain(|(root, _)| root != path);
-        let guard = Arc::new(Self(path.to_owned()));
-        roots.push((path.to_owned(), Arc::downgrade(&guard)));
-        guard
-    }
-}
-impl Drop for ProcessRoot {
-    fn drop(&mut self) {
-        let mut roots = PROCESS_ROOTS.lock().unwrap_or_else(PoisonError::into_inner);
-        if roots
-            .iter()
-            .any(|(root, guard)| *root == self.0 && guard.strong_count() != 0)
-        {
-            // A newer guard keeps the root for its own mount.
-            return;
-        }
-        roots.retain(|(root, _)| *root != self.0);
-        // Spools are anonymous (Linux) or deleted on close (Windows), so the root is
-        // empty once its last spool closed. `remove_dir` removes only an empty
-        // directory, never a link target; a root it cannot remove is kept.
-        let _ = std::fs::remove_dir(&self.0);
-    }
 }
 
 #[cfg(test)]

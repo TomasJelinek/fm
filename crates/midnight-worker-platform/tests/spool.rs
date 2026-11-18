@@ -1,4 +1,4 @@
-use midnight_worker_platform::spool::{MAX_IO, PrivateSpoolDirectory};
+use midnight_worker_platform::spool::{MAX_IO, PrivateSpoolDirectory, SpoolRoot};
 use std::{io, sync::Arc};
 
 #[test]
@@ -79,6 +79,36 @@ fn independent_spools_retain_root_and_allow_concurrent_readers() {
     drop(first);
     drop(second);
     assert_eq!(std::fs::read_dir(&path).unwrap().count(), 0);
+}
+
+#[test]
+fn holders_share_a_per_process_root_whose_last_guard_removes_it_once_empty() {
+    let temporary = tempfile::tempdir().unwrap();
+    let root = SpoolRoot {
+        path: temporary.path().join("spool-7"),
+        per_process: true,
+    };
+    let first = root.guard().unwrap();
+    let directory = PrivateSpoolDirectory::open(&root.path).unwrap();
+    let spool = directory.create().unwrap();
+    let second = root.guard().unwrap();
+    assert!(Arc::ptr_eq(&first, &second), "holders share one guard");
+    drop((spool, directory, first));
+    assert!(root.path.is_dir(), "a live guard keeps the root");
+    drop(second);
+    assert!(!root.path.exists(), "the last guard removes the empty root");
+    // A later holder gets a new guard, which keeps a root that is not empty.
+    let third = root.guard().unwrap();
+    std::fs::create_dir(&root.path).unwrap();
+    std::fs::write(root.path.join("left"), b"left").unwrap();
+    drop(third);
+    assert!(root.path.join("left").is_file());
+    // A root kept for later runs has no guard.
+    let kept = SpoolRoot {
+        per_process: false,
+        ..root
+    };
+    assert!(kept.guard().is_none());
 }
 
 #[test]
