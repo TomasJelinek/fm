@@ -61,9 +61,21 @@ foreach ($file in @('LICENSE.txt','CREDITS.html')) {
     Copy-Item -LiteralPath (Join-Path $cefStage $file) -Destination $package -Force
     $cefSources[$file] = $file
 }
-$metadata = & cargo metadata --manifest-path (Join-Path $project 'Cargo.toml') --config $SdkConfig --locked --offline --format-version 1
-if ($LASTEXITCODE -ne 0) { throw 'Dependency metadata unavailable' }
-$metadata | Set-Content -LiteralPath (Join-Path $TargetDirectory 'dependency-metadata.json')
+# Cargo prints UTF-8, but PowerShell decodes native output with the console encoding
+# (an OEM code page by default), which would garble non-ASCII dependency paths such as
+# a CARGO_HOME below a user profile. The caller's console encoding is restored.
+$consoleEncoding = [Console]::OutputEncoding
+[Console]::OutputEncoding = New-Object Text.UTF8Encoding $false
+try {
+    $metadata = & cargo metadata --manifest-path (Join-Path $project 'Cargo.toml') --config $SdkConfig --locked --offline --format-version 1
+    if ($LASTEXITCODE -ne 0) { throw 'Dependency metadata unavailable' }
+} finally {
+    [Console]::OutputEncoding = $consoleEncoding
+}
+$metadata = $metadata -join "`n"
+# UTF-8 without BOM, as Cargo wrote it (Windows PowerShell's Set-Content would use ANSI).
+[IO.File]::WriteAllText((Join-Path $TargetDirectory 'dependency-metadata.json'), $metadata + "`n",
+    (New-Object Text.UTF8Encoding $false))
 $metadata = $metadata | ConvertFrom-Json
 $notices = Join-Path $package 'notices'
 New-Item -ItemType Directory -Force $notices | Out-Null
