@@ -167,3 +167,86 @@ requested probe name is then a hard link to that file. A cold run therefore comp
 the probe once per key, and a warm run does not compile it at all.
 
 Those tests use actual subprocesses and a socket rendezvous to prove simultaneous execution, bounded admission, output isolation and cleanup of owned processes while an unrelated process stays alive. They also cover filter coalescing, no-match refusal, receipt/path and independent-workspace validation, changed artifacts and anchored result parsing. They demonstrate runner behavior, not a Rust throughput improvement; report measured elapsed times with the actual selected suite and cache state when comparing runs.
+
+### Isolated X11 tests
+
+The ignored X11 drag/drop and clipboard tests of `midnight-platform-linux` use XTEST
+input and clipboard ownership on a private Xvfb display, and run only when opted in.
+CI's Linux `check` job runs them from `crates/midnight-platform-linux` with the library
+test executable `$executable` (CI takes it from
+`scripts/ci-workspace-tests.py artifact midnight-platform-linux lib`; locally, use the
+one that `cargo test -p midnight-platform-linux --lib --locked --no-run` reports):
+
+```sh
+xvfb-run -a -s "-screen 0 1280x1024x24 -nolisten tcp -noreset" \
+    env MIDNIGHT_DND_TEST_ISOLATED=1 "$executable" file_drag_drop:: --ignored --test-threads=1
+xvfb-run -a -s "-screen 0 1280x1024x24 -nolisten tcp -noreset" \
+    env -u WAYLAND_DISPLAY MIDNIGHT_CLIPBOARD_TEST_ISOLATED=1 "$executable" \
+    clipboard::tests::x11_ file_clipboard::x11::tests:: --ignored --test-threads=1
+```
+
+`-noreset` keeps Xvfb from resetting when its last client disconnects; during a reset
+it refuses connections, such as the first one of the next drag/drop test. The
+clipboard session test refuses to run while `WAYLAND_DISPLAY` is set, because arboard
+would then publish its text on the real desktop clipboard through Wayland.
+`xvfb-run` needs the `xvfb` and `xauth` packages. Never set either opt-in variable on
+your working desktop display.
+
+### Installed archive worker qualification
+
+The ignored real-worker tests of `midnight-filesystem-host` launch the independently
+built archive worker from a [private installation root](#private-plugin-installation-root).
+`test:worker` installs `ARCHIVE_WORKER` below `ARCHIVE_TEST_INSTALL_ROOT`;
+`test:streaming_worker` and the library's `captured_source_tests::` use the package
+installed at `ARCHIVE_CAPTURE_INSTALLATION/filesystems/archive`; `test:discovery_kinds`
+creates its packages below `HOST_TEST_INSTALL_ROOT`. CI's `check` job runs all of them
+with one root for all three variables. To run them locally:
+
+1. Test, build and package the worker with a released worker SDK, for example
+   `plugins/midnight-fs-archive/scripts/build.ps1 -SdkConfig <registry.toml> -BuildRoot _build/archive-ci -OutputDirectory _build/archive-ci/package/archive -Test -Offline`
+   (Linux: `bash plugins/midnight-fs-archive/scripts/build.sh <registry.toml> <build root> <package> debug --test --offline`).
+   Copy the package directory to `<root>/filesystems/archive`; on Linux make its
+   directories and the `midnight-fs-archive` executable `chmod 700` and its other
+   files `chmod 600`.
+2. Export the plugin's owned format and cancellation fixtures:
+   `cargo test --config <registry.toml> --manifest-path plugins/midnight-fs-archive/Cargo.toml --test worker_fixtures --locked --offline -- --ignored`
+   with `MIDNIGHT_ARCHIVE_FIXTURES` set to a directory below `_build`. To reuse the
+   test build of step 1 instead of compiling everything again, also set
+   `CARGO_TARGET_DIR` to its build root and `CARGO_INCREMENTAL=0`,
+   `CARGO_PROFILE_DEV_DEBUG=0` and `CARGO_PROFILE_TEST_DEBUG=0`, as the build scripts do.
+3. Write the large read-only ZIP with `py -3 -B scripts/archive-test-zip.py _build/archive-test.zip`
+   (Linux: `python3 -B`). It is above the former 64 MiB source limit and never
+   replaces an existing file.
+4. Set `HOST_TEST_INSTALL_ROOT`, `ARCHIVE_TEST_INSTALL_ROOT` and
+   `ARCHIVE_CAPTURE_INSTALLATION` to `<root>`, `ARCHIVE_WORKER` to the packaged
+   executable, and `MIDNIGHT_ARCHIVE_FIXTURES` and `MIDNIGHT_ARCHIVE_TEST_ZIP` to the
+   fixtures. Then run `cargo test -p midnight-filesystem-host` with `--test worker`,
+   `--test streaming_worker`, `--test discovery_kinds` and `--lib captured_source_tests::`,
+   each followed by `-- --ignored --test-threads=1`.
+
+### Windows Copy/Move qualification volume
+
+On Windows, the engine's Copy/Move qualification tests (for example
+`copy_planning_tests` and the scheduler, concurrency-regression, peer-refusal and
+File List output tests) need exact native lookup keys for the temporary folders they
+create. The platform reports those keys only on an NTFS volume whose persistent 8.3
+short-name creation is disabled ([Windows namespace pins](TRANSFERS.md#windows-namespace-pins)).
+Elsewhere these tests fail; each failing `copy_planning_tests` case then reports first
+that its fixture "requires a supported local lookup domain". The application itself is
+unaffected: Copy/Move on such a volume takes the opaque lane with full pin refreshes.
+
+The tests create their folders in `TEMP`/`TMP`. `scripts/cargo.ps1`, the targeted runner
+(`scripts/run-targeted-tests.py`) and CI put those below the checkout's `_build`, so
+there the checkout's volume decides; a plain `cargo test` uses your profile's temporary
+folder, normally on `C:`. Check a volume from an elevated prompt with
+`fsutil 8dot3name query D:`: it must report
+`The volume state is: 1 (8dot3 name creation is disabled)`. The registry line and the
+summary line do not count, because a machine-wide registry setting does not set the
+volume state that the platform reads. System volumes usually still create 8.3 names.
+To qualify a run, point `TEMP` and `TMP` at a folder on a qualified NTFS volume (for
+example the checkout's `_build/tmp` on a data volume), or disable short-name creation
+on a data volume with `fsutil 8dot3name set D: 1` (elevated; it applies to names
+created afterwards, and other software then gets no 8.3 names on that volume). ReFS
+(including Dev Drive) and FAT volumes never qualify. `MIDNIGHT_TEST_NAMESPACE_LOOKUP`
+forces a lookup mode only in `midnight-platform-windows`'s own test build, not for
+engine tests.

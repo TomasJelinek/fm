@@ -148,8 +148,9 @@ fn reduce(image: DynamicImage, width: u32, height: u32) -> DynamicImage {
     DynamicImage::ImageRgba8(reduced)
 }
 
-/// Embedded ICC handling. RGB and gray profiles are converted to sRGB; anything
-/// else is rejected rather than claiming sRGB, except CMYK (see `new`).
+/// Embedded ICC handling. RGB profiles, and gray profiles of gray images, are
+/// converted to sRGB; anything else is rejected rather than claiming sRGB, except
+/// CMYK (see `new`).
 struct Conversion {
     transform: std::sync::Arc<moxcms::Transform8BitExecutor>,
     gray: bool,

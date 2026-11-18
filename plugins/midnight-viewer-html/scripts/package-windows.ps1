@@ -10,8 +10,15 @@ $ErrorActionPreference = 'Stop'
 $project = Split-Path $PSScriptRoot -Parent
 $repository = Split-Path (Split-Path $project -Parent) -Parent
 if (-not $TargetDirectory) { $TargetDirectory = Join-Path $repository '_build/html-viewer/provider-target' }
-$cefStage = if ($CefDirectory) { $CefDirectory } else { Join-Path $TargetDirectory 'cef-sdk' }
-$package = if ($OutputDirectory) { [IO.Path]::GetFullPath($OutputDirectory) } else { Join-Path $TargetDirectory 'package' }
+# Resolve caller paths once against the PowerShell location: .NET methods such as
+# [IO.File]::WriteAllText and [IO.Path]::GetFullPath use the process working directory,
+# which Set-Location does not change.
+function Resolve-CallerPath([string]$Path) {
+    [IO.Path]::GetFullPath($ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Path))
+}
+$TargetDirectory = Resolve-CallerPath $TargetDirectory
+$cefStage = if ($CefDirectory) { Resolve-CallerPath $CefDirectory } else { Join-Path $TargetDirectory 'cef-sdk' }
+$package = if ($OutputDirectory) { Resolve-CallerPath $OutputDirectory } else { Join-Path $TargetDirectory 'package' }
 $configuration = if ($Release) { 'release' } else { 'debug' }
 
 function Get-RelativePath([string]$Root, [string]$Path) {
@@ -61,9 +68,21 @@ foreach ($file in @('LICENSE.txt','CREDITS.html')) {
     Copy-Item -LiteralPath (Join-Path $cefStage $file) -Destination $package -Force
     $cefSources[$file] = $file
 }
-$metadata = & cargo metadata --manifest-path (Join-Path $project 'Cargo.toml') --config $SdkConfig --locked --offline --format-version 1
-if ($LASTEXITCODE -ne 0) { throw 'Dependency metadata unavailable' }
-$metadata | Set-Content -LiteralPath (Join-Path $TargetDirectory 'dependency-metadata.json')
+# Cargo prints UTF-8, but PowerShell decodes native output with the console encoding
+# (an OEM code page by default), which would garble non-ASCII dependency paths such as
+# a CARGO_HOME below a user profile. The caller's console encoding is restored.
+$consoleEncoding = [Console]::OutputEncoding
+[Console]::OutputEncoding = New-Object Text.UTF8Encoding $false
+try {
+    $metadata = & cargo metadata --manifest-path (Join-Path $project 'Cargo.toml') --config $SdkConfig --locked --offline --format-version 1
+    if ($LASTEXITCODE -ne 0) { throw 'Dependency metadata unavailable' }
+} finally {
+    [Console]::OutputEncoding = $consoleEncoding
+}
+$metadata = $metadata -join "`n"
+# UTF-8 without BOM, as Cargo wrote it (Windows PowerShell's Set-Content would use ANSI).
+[IO.File]::WriteAllText((Join-Path $TargetDirectory 'dependency-metadata.json'), $metadata + "`n",
+    (New-Object Text.UTF8Encoding $false))
 $metadata = $metadata | ConvertFrom-Json
 $notices = Join-Path $package 'notices'
 New-Item -ItemType Directory -Force $notices | Out-Null
