@@ -31,13 +31,14 @@ Source: main `cf8138e4` and the TEST-03 fix commits on top of it.
 
 The test creates its event channel with 8 slots and then waits up to 3 s for the
 left listing to enter the provider (a `Notify`) without reading events. A fresh
-Engine sends 7 events that nobody asked for: 5 fallback icons from the desktop
-icon preload, `NetworkAvailability` and `ArchiveAvailability`. The left
-navigation's auxiliary task adds `StorageKindUpdated` and `SpaceUpdated`. The
-listing task's first step is `outbox.send(ListingStarted)`, before its listing
-permit and before the provider call. When 8 of those 9 events are queued before
-that first poll, the send waits for room that the test never makes: the listing
-never reaches the provider, and the stall is permanent, not slow.
+Engine without desktop services, as in this test, sends 7 events that nobody asked
+for: 5 fallback icons from the desktop icon preload, `NetworkAvailability` and
+`ArchiveAvailability`. The left navigation's auxiliary task adds
+`StorageKindUpdated` and `SpaceUpdated`. The listing task's first step is
+`outbox.send(ListingStarted)`, before its listing permit and before the provider
+call. When 8 of those 9 events are queued before that first poll, the send waits
+for room that the test never makes: the listing never reaches the provider, and
+the stall is permanent, not slow.
 
 ### A saved-tab restore after the test's click
 
@@ -98,7 +99,7 @@ while the test does not read a bounded event channel that the Engine fills.
 | --- | --- |
 | The four waits of `navigation.rs` (8, 32, 32 and 16 slots) and the three tests above (16 slots each) | Fixed: the awaited call follows a send to the event channel, with little headroom or, in `find_sort_after_stop`, a time-driven number of sends. |
 | `clipboard.rs` and `clipboard_retirement_tests.rs` (session copied/dropped/closed), `desktop.rs` (properties, open, system location, helper reaping), `file_actions.rs` (clipboard owner pumps), `folder_sizes.rs` (14 waits) and `folder_size_warnings.rs` (scan lanes enter the directory), `engine_configuration.rs`, `engine_lifecycle_tests.rs`, `engine_command_admission_tests.rs`, `engine_comparator_policy_tests.rs` and `archives/retirement_tests.rs` (worker, retirement and drop markers; settings load) | Cannot block: nothing sends to the event channel before the awaited call. The clipboard copies before it reports; desktop workers call the service before they send; folder-size lanes hand results to the emitter through their own 8-slot channel and read the directory first; the retirement tests do not run the Engine or wait only for its retirement. |
-| `tree_controller.rs` (8 waits, 32 and 64 slots), `tree_filters.rs` (64), `watch_native.rs` (2 waits, 32), `volumes.rs` (64), `find_actions.rs` (`a_blocked_result_validation_does_not_stall_another_validation`, 32) and the icon and context gates of the tests in `src/desktop.rs` (64 and 32) | Cannot block: the test has read the events of its earlier commands, so at most the 7 startup events, the 2 auxiliary events of a navigation and a few events of the awaited request can be queued, far fewer than the slots. |
+| `tree_controller.rs` (8 waits, 32 and 64 slots), `tree_filters.rs` (64), `watch_native.rs` (2 waits, 32), `volumes.rs` (64), `find_actions.rs` (`a_blocked_result_validation_does_not_stall_another_validation`, 32) and the icon and context gates of the tests in `src/desktop.rs` (64 and 32) | Cannot block: the test has read the events of its earlier commands, so at most the startup events (7; 8 in `src/desktop.rs`, whose icon service returns the Options action icon), the 2 auxiliary events of a navigation and a few events of the awaited request can be queued, far fewer than the slots. |
 | `tree_recursive_controller.rs`, `find_current_directory.rs` and all loops over `next(&mut events)` | Not affected: they read events while they wait. |
 
 ## Method
@@ -111,7 +112,13 @@ while the test does not read a bounded event channel that the Engine fills.
   `cargo test -p midnight-engine -p midnight-ui --test integration --locked --offline -j 4 --no-run`
   and ran from the package directory with the toolchain on `PATH`. Before and after
   binaries differ only in the changed test files; the baselines are builds of the
-  original files at `cf8138e4`.
+  original files at `cf8138e4`. The one exception is the baseline of the Linux
+  `navigation::` loop (1 of 100 failed). It came from an earlier build that did not
+  yet declare the workaround's crate-root names (below) and left out the two
+  checksum test modules, so it holds 257 tests instead of 456: the 85 of
+  `checksums_backend`, the 82 of `checksum_manifest_verification` and the 32
+  crate-root `retirement` tests are missing. Its `navigation` tests are the original
+  ones, and its one failure is their panic at `navigation.rs:231`.
 - Injected delays use gdb in non-stop mode, so one thread sleeps in `usleep` while
   all other threads keep running. Engine: a breakpoint on the first poll of the
   listing task (`TaskFuture<run_inner::{closure#0}::{closure#34}>::poll`) holds it
@@ -157,7 +164,7 @@ Engine, `navigation::blocked_left_listing_does_not_prevent_right_completion`:
 | --- | --- | --- |
 | The test alone (`--exact`), quiet | 5 of 200 failed (load 0.5–0.7) | 0 of 200 failed (load 2.4–2.7) |
 | The test alone beside full UI binary runs | 9 of 200 failed (load 17–25) | 0 of 200 failed (load 13–20) |
-| `navigation::` (8 tests) | 1 of 100 failed (load 0.2–3.8; binary built before the workaround's crate-root modules) | 0 of 200 failed (load 0.7–3.1) |
+| `navigation::` (8 tests) | 1 of 100 failed (load 0.2–3.8; the 257-test build, see Method) | 0 of 200 failed (load 0.7–3.1) |
 | The test alone, listing task's first poll held for 300 ms | 5 of 5 failed; 8 sends at resume and none after | 0 of 5 failed; 9 sends at resume, 20 in all |
 | Full engine binary (456 tests, 7 ignored) | 5 of 5 passed (load 10–25) | 5 of 5 passed (load 13–15) |
 | Windows `navigation::` | 0 of 40 failed | 0 of 40 failed |
@@ -213,8 +220,13 @@ on Linux.
   the 15 s timeout would point to another cause, such as F5 lost in focus or key
   routing.
 - The audit's "cannot block" verdicts for 32- and 64-slot channels rest on today's
-  7 unsolicited startup events; a change that adds startup events (for example
-  fallback art for the 36 action icons) needs the same audit again.
+  unsolicited startup events: 5 fallback icons, `NetworkAvailability` and
+  `ArchiveAvailability`, plus one icon event for each action icon of which an
+  installed icon service returns a valid image (`valid_pixels`). That is 7 in most
+  engine tests and 8 in the tests of `src/desktop.rs` (Options) and in those of
+  `tests/desktop.rs` that use `SystemServices` (Recycle Bin). A change that adds
+  startup events (for example fallback art for the 36 action icons) needs the same
+  audit again.
 - `cf8138e4` does not build without the local workaround above, and its full UI
   binary has the unrelated failures listed above.
 - The product follow-ups are recorded, not changed: TABS-01, NOTICE-03 and IO-03
