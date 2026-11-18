@@ -95,17 +95,18 @@ fn rerun_where_lookups_are_qualified(test: &str) {
         "the forced qualified lookup mode needs a local NTFS build volume"
     );
     let module = module_path!().split_once("::").unwrap().1;
-    let output = std::process::Command::new(std::env::current_exe().unwrap())
-        .arg(format!("{module}::{test}"))
-        .args(["--exact", "--test-threads", "1"])
-        .env(LOOKUP, "short-names-disabled")
-        .output()
-        .unwrap();
-    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stdout = crate::test_child::run_test_child(
+        &[
+            &format!("{module}::{test}"),
+            "--exact",
+            "--test-threads",
+            "1",
+        ],
+        (LOOKUP, "short-names-disabled"),
+    );
     assert!(
-        output.status.success() && stdout.contains("test result: ok. 1 passed"),
-        "{test} failed in the qualified lookup mode:\n{stdout}\n{}",
-        String::from_utf8_lossy(&output.stderr)
+        stdout.contains("test result: ok. 1 passed"),
+        "{test} did not run in the qualified lookup mode:\n{stdout}"
     );
 }
 

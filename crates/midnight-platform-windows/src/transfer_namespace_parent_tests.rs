@@ -22,18 +22,13 @@ fn namespace_tests_pass_in_the_other_lookup_mode_too() {
         LookupMode::ShortNamesDisabled { .. } => "unqualified",
         LookupMode::Unqualified => "short-names-disabled",
     };
-    let output = std::process::Command::new(std::env::current_exe().unwrap())
-        .args(["transfer::namespace::tests::", "--test-threads", "4"])
-        .env(TEST_LOOKUP_ENV, other)
-        .output()
-        .unwrap();
-    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stdout = crate::test_child::run_test_child(
+        &["transfer::namespace::tests::", "--test-threads", "4"],
+        (TEST_LOOKUP_ENV, other),
+    );
     assert!(
-        output.status.success()
-            && stdout.contains("test result: ok")
-            && !stdout.contains("ok. 0 passed"),
-        "namespace tests failed in the {other} lookup mode:\n{stdout}\n{}",
-        String::from_utf8_lossy(&output.stderr)
+        stdout.contains("test result: ok") && !stdout.contains("ok. 0 passed"),
+        "namespace tests did not run in the {other} lookup mode:\n{stdout}"
     );
 }
 
