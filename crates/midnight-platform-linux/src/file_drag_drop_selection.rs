@@ -5,6 +5,8 @@ use x11rb::protocol::xproto::{PropertyNotifyEvent, SelectionNotifyEvent, Selecti
 pub(super) struct PendingRead {
     pub source: Window,
     pub candidate: Candidate,
+    /// The packed root coordinates of the drop.
+    pub position: u32,
     pub started: Instant,
     time: u32,
     incremental: Option<Vec<u8>>,
@@ -24,6 +26,7 @@ impl Session {
         source: Window,
         time: u32,
         candidate: Candidate,
+        position: u32,
     ) -> Result<(), FsError> {
         self.connection
             .delete_property(self.proxy, self.atoms.read)
@@ -33,6 +36,7 @@ impl Session {
         self.read = Some(PendingRead {
             source,
             candidate,
+            position,
             time,
             started: Instant::now(),
             incremental: None,
@@ -51,7 +55,9 @@ impl Session {
         Ok(())
     }
 
-    fn read_property(&self) -> Result<xproto::GetPropertyReply, FsError> {
+    /// The transferred property, or the fixed reason to refuse the drop: over the byte
+    /// budget, or not delivered at all.
+    fn read_property(&self) -> Result<xproto::GetPropertyReply, &'static str> {
         let reply = self
             .connection
             .get_property(
@@ -62,15 +68,17 @@ impl Session {
                 0,
                 (MAX_FILE_CLIPBOARD_BYTES / 4 + 1) as u32,
             )
-            .map_err(failure)?
-            .reply()
-            .map_err(failure)?;
+            .ok()
+            .and_then(|cookie| cookie.reply().ok())
+            .ok_or(SOURCE_LIST_MISSING)?;
         if reply.bytes_after != 0 || reply.value.len() > MAX_FILE_CLIPBOARD_BYTES {
-            return Err(failure("The XDND file list exceeds its resource budget."));
+            return Err(LIST_TOO_LARGE);
         }
         Ok(reply)
     }
 
+    /// Every refusal here ends a read, which only a drop that showed the Copy status
+    /// starts, so each is reported once (see `refuse`).
     pub(super) fn selection_notify(&mut self, event: SelectionNotifyEvent) -> Result<(), FsError> {
         let Some(read) = self.read.as_ref() else {
             return Ok(());
@@ -84,25 +92,29 @@ impl Session {
             return Ok(());
         }
         if event.property != self.atoms.read {
-            return self.finish_incoming(false);
+            // The source refused to convert its selection to a file list.
+            return self.refuse_drop(SOURCE_LIST_MISSING);
         }
-        let Ok(reply) = self.read_property() else {
-            return self.finish_incoming(false);
+        let reply = match self.read_property() {
+            Ok(reply) => reply,
+            Err(reason) => return self.refuse_drop(reason),
         };
         if reply.type_ == self.atoms.incr {
             let hint = reply.value32().and_then(|mut values| values.next());
-            if reply.format != 32
-                || reply.value.len() != 4
-                || hint.is_none_or(|len| len as usize > MAX_FILE_CLIPBOARD_BYTES)
-            {
-                return self.finish_incoming(false);
+            let Some(hint) = hint.filter(|_| reply.format == 32 && reply.value.len() == 4) else {
+                return self.refuse_drop(SOURCE_LIST_MISSING);
+            };
+            if hint as usize > MAX_FILE_CLIPBOARD_BYTES {
+                return self.refuse_drop(LIST_TOO_LARGE);
             }
-            self.read.as_mut().unwrap().incremental = Some(Vec::new());
+            if let Some(read) = &mut self.read {
+                read.incremental = Some(Vec::new());
+            }
             Ok(())
         } else if reply.type_ == self.atoms.uri && reply.format == 8 {
             self.accept_bytes(reply.value)
         } else {
-            self.finish_incoming(false)
+            self.refuse_drop(SOURCE_LIST_MISSING)
         }
     }
 
@@ -110,19 +122,25 @@ impl Session {
         if !self.read.as_ref().is_some_and(|r| r.incremental.is_some()) {
             return Ok(());
         }
-        let Ok(reply) = self.read_property() else {
-            return self.finish_incoming(false);
+        let reply = match self.read_property() {
+            Ok(reply) => reply,
+            Err(reason) => return self.refuse_drop(reason),
         };
         if reply.type_ != self.atoms.uri || reply.format != 8 {
-            return self.finish_incoming(false);
+            return self.refuse_drop(SOURCE_LIST_MISSING);
         }
-        let read = self.read.as_mut().unwrap();
-        let bytes = read.incremental.as_mut().unwrap();
+        let Some(bytes) = self
+            .read
+            .as_mut()
+            .and_then(|read| read.incremental.as_mut())
+        else {
+            return Ok(());
+        };
         if reply.value.is_empty() {
             let complete = std::mem::take(bytes);
             self.accept_bytes(complete)
         } else if bytes.len().saturating_add(reply.value.len()) > MAX_FILE_CLIPBOARD_BYTES {
-            self.finish_incoming(false)
+            self.refuse_drop(LIST_TOO_LARGE)
         } else {
             bytes.extend(reply.value);
             Ok(())
@@ -130,29 +148,29 @@ impl Session {
     }
 
     fn accept_bytes(&mut self, bytes: Vec<u8>) -> Result<(), FsError> {
-        let accepted = match self.admit(&bytes) {
-            Ok(accepted) => accepted,
-            Err(refusal) => {
-                // The source was told Copy is accepted here: say once why nothing
-                // happens. The sink only records the report and never waits, so this
-                // X11 event loop is not blocked.
-                self.sink.reject(refusal);
-                false
-            }
-        };
-        self.finish_incoming(accepted)
+        match self.admit(&bytes) {
+            Ok(accepted) => self.finish_incoming(accepted),
+            Err(refusal) => self.refuse(refusal),
+        }
     }
 
-    /// `Ok(false)` refuses silently a read that no longer serves a current drop: it
-    /// timed out, or the destination or the selection owner changed. `Err` is this
-    /// drop's own refusal, in fixed text.
+    /// `Ok(false)` ends silently a read that no longer serves a drop: none is pending,
+    /// or the window closed. `Err` is this drop's refusal, in fixed text: the list came
+    /// too late or from another selection owner, the drop position no longer shows the
+    /// destination (see `read_destination`), or the list or its admission failed.
     fn admit(&self, bytes: &[u8]) -> Result<bool, FsError> {
         let Some(read) = self.read.as_ref() else {
             return Ok(false);
         };
-        if read.started.elapsed() >= TRANSFER_TIMEOUT || !self.candidate_current(&read.candidate) {
+        if self.host.lifetime.is_cancelled() {
             return Ok(false);
         }
+        if read.started.elapsed() >= self.read_timeout {
+            return Err(failure(SOURCE_LIST_MISSING));
+        }
+        let candidate = self
+            .read_destination(read)
+            .ok_or_else(|| failure(DESTINATION_CHANGED))?;
         let owner = self
             .connection
             .get_selection_owner(self.atoms.selection)
@@ -160,9 +178,9 @@ impl Session {
             .and_then(|cookie| cookie.reply().ok())
             .map(|reply| reply.owner);
         if owner != Some(read.source) {
-            return Ok(false);
+            return Err(failure(SOURCE_LIST_MISSING));
         }
-        let request = drop_request(bytes, &read.candidate)?;
+        let request = drop_request(bytes, &candidate)?;
         // This synchronous callback reserves actual backend queue capacity.
         // No native Copy success is sent before it returns successfully.
         self.sink.try_accept(request)?;

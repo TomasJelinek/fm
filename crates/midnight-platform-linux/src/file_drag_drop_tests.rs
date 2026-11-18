@@ -39,6 +39,10 @@ impl FileDropSink for Sink {
 
 /// The one fixed report for a dropped list that cannot be decoded.
 const REFUSED_LIST: &str = "The dropped file list is empty, malformed, names non-local files, or is longer than 4096 items.";
+/// The Windows target's fixed reports, and the one for an over-budget list.
+const CHANGED: &str = "The drop destination changed.";
+const MISSING: &str = "The drag source did not provide its file list.";
+const TOO_LARGE: &str = "The dropped file list exceeds the 4 MiB limit.";
 
 use x11rb::{
     protocol::{
@@ -60,6 +64,13 @@ struct Fixture {
 }
 impl Fixture {
     fn new() -> Self {
+        Self::build(None)
+    }
+    /// A session whose incoming file-list reads time out after `timeout`.
+    fn with_read_timeout(timeout: Duration) -> Self {
+        Self::build(Some(timeout))
+    }
+    fn build(read_timeout: Option<Duration>) -> Self {
         assert_eq!(
             std::env::var("MIDNIGHT_DND_TEST_ISOLATED").as_deref(),
             Ok("1")
@@ -105,17 +116,22 @@ impl Fixture {
         }));
         let sink = Arc::new(Sink::default());
         let lifetime = Cancellation::default();
-        let session = NativeFileDragDrop
-            .open_session(
-                DragHost {
-                    generation: 7,
-                    native: NativeDragWindow::X11 { window: host },
-                    lifetime: lifetime.clone(),
-                },
-                targets.clone(),
-                sink.clone(),
-            )
-            .unwrap();
+        let drag_host = DragHost {
+            generation: 7,
+            native: NativeDragWindow::X11 { window: host },
+            lifetime: lifetime.clone(),
+        };
+        let session: Box<dyn FileDragDropSession> = match read_timeout {
+            None => NativeFileDragDrop
+                .open_session(drag_host, targets.clone(), sink.clone())
+                .unwrap(),
+            Some(timeout) => {
+                let mut session =
+                    Session::new(drag_host, host, targets.clone(), sink.clone()).unwrap();
+                session.read_timeout = timeout;
+                Box::new(session)
+            }
+        };
         let proxy_atom = connection
             .intern_atom(false, b"XdndProxy")
             .unwrap()
@@ -188,6 +204,11 @@ impl Fixture {
         event.data.as_data32()
     }
     fn offer(&mut self, action: &str) -> [u32; 5] {
+        // Host root origin (100,200), client point (35,45) inside the right panel.
+        self.offer_at(action, (135 << 16) | 245)
+    }
+    /// Enters and moves to the packed root position `position`; returns the status.
+    fn offer_at(&mut self, action: &str, position: u32) -> [u32; 5] {
         self.connection
             .set_selection_owner(self.source, self.atom("XdndSelection"), x11rb::CURRENT_TIME)
             .unwrap()
@@ -197,10 +218,9 @@ impl Fixture {
             "XdndEnter",
             [self.source, 5 << 24, self.atom("text/uri-list"), 0, 0],
         );
-        // Host root origin (100,200), client point (35,45) inside the right panel.
         self.send(
             "XdndPosition",
-            [self.source, 0, (135 << 16) | 245, 0, self.atom(action)],
+            [self.source, 0, position, 0, self.atom(action)],
         );
         self.message("XdndStatus")
     }
@@ -213,8 +233,8 @@ impl Fixture {
         };
         request
     }
-    fn payload(&mut self, bytes: &[u8]) -> [u32; 5] {
-        let request = self.request_drop();
+    /// Answers `request` with `bytes`, as the drag source does.
+    fn answer(&self, request: &xproto::SelectionRequestEvent, bytes: &[u8]) {
         self.connection
             .change_property8(
                 PropMode::REPLACE,
@@ -226,6 +246,10 @@ impl Fixture {
             .unwrap()
             .check()
             .unwrap();
+        self.notify(request, request.property);
+    }
+    /// Sends the SelectionNotify that ends `request`, naming `property` (NONE refuses).
+    fn notify(&self, request: &xproto::SelectionRequestEvent, property: u32) {
         self.connection
             .send_event(
                 false,
@@ -238,13 +262,20 @@ impl Fixture {
                     requestor: request.requestor,
                     selection: request.selection,
                     target: request.target,
-                    property: request.property,
+                    property,
                 },
             )
             .unwrap()
             .check()
             .unwrap();
+    }
+    fn payload(&mut self, bytes: &[u8]) -> [u32; 5] {
+        let request = self.request_drop();
+        self.answer(&request, bytes);
         self.message("XdndFinished")
+    }
+    fn reports(&self) -> Vec<String> {
+        self.sink.3.lock().unwrap().clone()
     }
 }
 
@@ -315,40 +346,122 @@ fn x11_drop_rejects_move_queue_saturation_and_malformed_or_oversized_payloads() 
 #[ignore = "requires isolated Xvfb DISPLAY and MIDNIGHT_DND_TEST_ISOLATED=1"]
 fn x11_drop_rejects_target_navigation_between_position_and_selection() {
     let mut f = Fixture::new();
+    // A republish of the same destination while the list is read (a refresh, say)
+    // keeps the drop.
     f.offer("XdndActionCopy");
     let request = f.request_drop();
     f.targets.lock().unwrap().revision += 1;
+    f.answer(&request, b"file:///tmp/good\r\n");
+    assert_eq!(f.message("XdndFinished")[1] & 1, 1);
+    assert_eq!(f.sink.0.lock().unwrap()[0].targets_revision, 10);
+    // The pane navigated elsewhere: the user released over a folder no longer shown.
+    f.offer("XdndActionCopy");
+    let request = f.request_drop();
+    {
+        let mut targets = f.targets.lock().unwrap();
+        targets.revision += 1;
+        targets.targets[0].navigation = NavigationId(12);
+    }
+    f.answer(&request, b"file:///tmp/good\r\n");
+    assert_eq!(f.message("XdndFinished")[1] & 1, 0);
+    assert_eq!(f.sink.0.lock().unwrap().len(), 1);
+    assert_eq!(f.reports(), [CHANGED]);
+}
+
+#[test]
+#[ignore = "requires isolated Xvfb DISPLAY and MIDNIGHT_DND_TEST_ISOLATED=1"]
+fn x11_drop_goes_to_the_republished_destination_and_reports_one_that_is_gone() {
+    let mut f = Fixture::new();
+    // Republished since the Copy status, unchanged at the drop position: admitted to
+    // the current revision, as the Windows target re-resolves at Drop.
+    assert_eq!(f.offer("XdndActionCopy")[1] & 1, 1);
+    f.targets.lock().unwrap().revision += 1;
+    assert_eq!(f.payload(b"file:///tmp/good\r\n")[1] & 1, 1);
+    assert_eq!(f.sink.0.lock().unwrap()[0].targets_revision, 10);
+    assert!(f.reports().is_empty());
+    // The pane withdrew its target since the Copy status (it is loading); the session
+    // notices that before the drop arrives.
+    assert_eq!(f.offer("XdndActionCopy")[1] & 1, 1);
+    {
+        let mut targets = f.targets.lock().unwrap();
+        targets.revision += 1;
+        targets.targets.clear();
+    }
+    f.session.service_pending().unwrap();
+    f.send("XdndDrop", [f.source, 0, 0, 0, 0]);
+    assert_eq!(f.message("XdndFinished")[1] & 1, 0);
+    assert_eq!(f.sink.0.lock().unwrap().len(), 1);
+    assert_eq!(f.reports(), [CHANGED], "reported once");
+}
+
+#[test]
+#[ignore = "requires isolated Xvfb DISPLAY and MIDNIGHT_DND_TEST_ISOLATED=1"]
+fn x11_drop_reports_a_source_that_does_not_deliver_its_file_list() {
+    let mut f = Fixture::new();
+    // The drag source lost the selection before the drop.
+    f.offer("XdndActionCopy");
     f.connection
-        .change_property8(
-            PropMode::REPLACE,
-            request.requestor,
-            request.property,
-            request.target,
-            b"file:///tmp/good\r\n",
-        )
+        .set_selection_owner(x11rb::NONE, f.atom("XdndSelection"), x11rb::CURRENT_TIME)
         .unwrap()
         .check()
         .unwrap();
-    f.connection
-        .send_event(
-            false,
-            request.requestor,
-            EventMask::NO_EVENT,
-            SelectionNotifyEvent {
-                response_type: xproto::SELECTION_NOTIFY_EVENT,
-                sequence: 0,
-                time: request.time,
-                requestor: request.requestor,
-                selection: request.selection,
-                target: request.target,
-                property: request.property,
-            },
-        )
-        .unwrap()
-        .check()
-        .unwrap();
+    f.send("XdndDrop", [f.source, 0, 0, 0, 0]);
+    assert_eq!(f.message("XdndFinished")[1] & 1, 0);
+    // The source refuses to convert its selection.
+    f.offer("XdndActionCopy");
+    let request = f.request_drop();
+    f.notify(&request, x11rb::NONE);
+    assert_eq!(f.message("XdndFinished")[1] & 1, 0);
+    // A new drag enters before the dropped list arrived.
+    f.offer("XdndActionCopy");
+    f.request_drop();
+    f.send(
+        "XdndEnter",
+        [f.source, 5 << 24, f.atom("text/uri-list"), 0, 0],
+    );
     assert_eq!(f.message("XdndFinished")[1] & 1, 0);
     assert!(f.sink.0.lock().unwrap().is_empty());
+    assert_eq!(f.reports(), [MISSING, MISSING, MISSING]);
+}
+
+#[test]
+#[ignore = "requires isolated Xvfb DISPLAY and MIDNIGHT_DND_TEST_ISOLATED=1"]
+fn x11_drop_reports_a_list_read_that_times_out_once() {
+    // Every read times out at the session's next pass.
+    let mut f = Fixture::with_read_timeout(Duration::ZERO);
+    f.offer("XdndActionCopy");
+    let request = f.request_drop();
+    assert_eq!(f.message("XdndFinished")[1] & 1, 0);
+    assert_eq!(f.reports(), [MISSING]);
+    // The late answer finds no read. The next offer's status follows it, so the
+    // session has handled the answer by then.
+    f.answer(&request, b"file:///tmp/late\r\n");
+    f.offer("XdndActionCopy");
+    assert!(f.sink.0.lock().unwrap().is_empty());
+    assert_eq!(f.reports(), [MISSING], "no second report");
+}
+
+#[test]
+#[ignore = "requires isolated Xvfb DISPLAY and MIDNIGHT_DND_TEST_ISOLATED=1"]
+fn x11_drop_without_a_copy_status_or_after_the_window_closed_is_refused_silently() {
+    let mut f = Fixture::new();
+    // Outside both panels: the source never saw the Copy status.
+    assert_eq!(
+        f.offer_at("XdndActionCopy", (10 << 16) | 210)[1] & 1,
+        0,
+        "no target there"
+    );
+    f.send("XdndDrop", [f.source, 0, 0, 0, 0]);
+    assert_eq!(f.message("XdndFinished")[1] & 1, 0);
+    // The window closes while the dropped list is read: nobody is left to tell.
+    f.offer("XdndActionCopy");
+    let request = f.request_drop();
+    f.lifetime.cancel();
+    assert_eq!(f.message("XdndFinished")[1] & 1, 0);
+    f.answer(&request, b"file:///tmp/good\r\n");
+    f.session.service_pending().unwrap();
+    assert!(f.sink.0.lock().unwrap().is_empty());
+    assert!(f.reports().is_empty());
 }
 
 #[test]
@@ -443,11 +556,13 @@ fn x11_incremental_drop_is_bounded_and_window_cancellation_refuses_admission() {
         .check()
         .unwrap();
     assert_eq!(f.message("XdndFinished")[1] & 1, 0);
+    assert_eq!(f.reports(), [TOO_LARGE]);
     f.offer("XdndActionCopy");
     f.lifetime.cancel();
     f.send("XdndDrop", [f.source, 0, 0, 0, 0]);
     f.session.service_pending().unwrap();
     assert_eq!(f.sink.0.lock().unwrap().len(), 1);
+    assert_eq!(f.reports(), [TOO_LARGE], "a closed window adds no report");
 }
 
 #[test]

@@ -809,11 +809,16 @@ Report texts are fixed: a drag source's own error description is never shown, on
 its HRESULT code. The callback never waits for delivery: the backend keeps only the
 latest undelivered refusal, outside the bounded event queue, and reports it once the
 UI accepts events again, unless the drop window has closed by then. Linux X11 drops
-report an undecodable or over-4,096-item file list (one fixed text), a failed
-validation and a failed admission, once per drop that saw a Copy status; a
-destination or selection-owner change at XdndDrop or during the read, a closed
-window, an oversized (over 4 MiB) or wrongly typed transfer, and a read timeout
-still end without a report.
+report the same kinds of refusal, in fixed texts (the Windows ones for a changed
+destination and a missing file list), once per drop that showed the Copy status: an
+undecodable or over-4,096-item file list, an over-4 MiB transfer, a failed validation
+or admission, a destination change (at XdndDrop the drop goes to the panel target now
+at the last position, as on Windows, and is refused when there is none; while the list
+is read, only a republish of the same folder keeps it), and a source that does not
+deliver its file list (a lost or refused selection, a wrongly typed transfer, a new
+drag before the list arrived, or the 5-second read timeout). A Move-only offer or a
+drop that never showed Copy is refused silently, and a closed window has nobody to
+tell.
 
 Pending drop admissions retain their ordering relative to later clipboard copies.
 Cancelling one before backend enqueue rejects its token rather than sending a

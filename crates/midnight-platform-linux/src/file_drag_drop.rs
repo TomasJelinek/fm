@@ -34,6 +34,11 @@ use source::Outgoing;
 
 const TRANSFER_TIMEOUT: Duration = Duration::from_secs(5);
 const EVENT_BUDGET: usize = 128;
+/// Fixed refusal reports for a drop that showed the Copy status. The first two are the
+/// Windows target's texts; neither ever repeats source-supplied data.
+const DESTINATION_CHANGED: &str = "The drop destination changed.";
+const SOURCE_LIST_MISSING: &str = "The drag source did not provide its file list.";
+const LIST_TOO_LARGE: &str = "The dropped file list exceeds the 4 MiB limit.";
 
 pub(crate) struct NativeFileDragDrop;
 
@@ -139,6 +144,11 @@ struct Incoming {
     source: Window,
     supported: bool,
     candidate: Option<Candidate>,
+    /// The last XdndStatus told the source that Copy is accepted: a refusal of the
+    /// drop is then reported once. A stale `candidate` does not clear it.
+    copy_shown: bool,
+    /// The packed root coordinates of the last XdndPosition, where the drop lands.
+    position: u32,
 }
 
 struct Session {
@@ -160,6 +170,9 @@ struct Session {
     grabbed_pointer: bool,
     grabbed_keyboard: bool,
     last_time: u32,
+    /// How long a dropped file list may take to arrive (`TRANSFER_TIMEOUT`); tests
+    /// shorten it.
+    read_timeout: Duration,
 }
 
 impl Session {
@@ -230,6 +243,7 @@ impl Session {
             grabbed_pointer: false,
             grabbed_keyboard: false,
             last_time: CURRENT_TIME,
+            read_timeout: TRANSFER_TIMEOUT,
         };
         for (window, property, type_, value) in [
             (proxy, session.atoms.proxy, AtomEnum::WINDOW, proxy),
@@ -337,6 +351,37 @@ impl Session {
             })
     }
 
+    /// The destination of a pending read: its candidate while still current, or else
+    /// the target now at the drop position if it is the same pane, navigation and
+    /// folder (a republish such as a refresh or resize). None once the window closed or
+    /// another destination or none is shown there: the user released over that folder.
+    fn read_destination(&self, read: &PendingRead) -> Option<Candidate> {
+        if self.candidate_current(&read.candidate) {
+            return Some(read.candidate.clone());
+        }
+        self.candidate_at(read.position).filter(|candidate| {
+            let (now, then) = (&candidate.target, &read.candidate.target);
+            now.pane == then.pane
+                && now.navigation == then.navigation
+                && now.directory == then.directory
+        })
+    }
+
+    /// Refuses the current drop, which showed the Copy status, and tells the user why,
+    /// once: `finish_incoming` ends the drop, so later events find nothing to refuse.
+    /// The sink only records the report, so this X11 event loop never waits. A closed
+    /// window has nobody to tell.
+    fn refuse(&mut self, refusal: FsError) -> Result<(), FsError> {
+        if !self.host.lifetime.is_cancelled() {
+            self.sink.reject(refusal);
+        }
+        self.finish_incoming(false)
+    }
+
+    fn refuse_drop(&mut self, reason: &str) -> Result<(), FsError> {
+        self.refuse(failure(reason))
+    }
+
     fn finish_incoming(&mut self, accepted: bool) -> Result<(), FsError> {
         let read = self.read.take();
         let incoming = self.incoming.take();
@@ -378,7 +423,8 @@ impl Session {
         }
         if event.type_ == self.atoms.enter {
             if self.read.is_some() {
-                self.finish_incoming(false)?;
+                // A new drag began before the dropped one delivered its file list.
+                self.refuse_drop(SOURCE_LIST_MISSING)?;
             }
             self.sink.hover(None);
             let supported = data[0] != NONE
@@ -402,6 +448,8 @@ impl Session {
                 source: data[0],
                 supported,
                 candidate: None,
+                copy_shown: false,
+                position: 0,
             });
         } else if event.type_ == self.atoms.position {
             let Some(incoming) = &self.incoming else {
@@ -417,7 +465,11 @@ impl Session {
             };
             let accepted = candidate.is_some();
             self.sink.hover(candidate.as_ref().map(|c| c.target.pane));
-            self.incoming.as_mut().unwrap().candidate = candidate;
+            if let Some(incoming) = &mut self.incoming {
+                incoming.candidate = candidate;
+                incoming.copy_shown = accepted;
+                incoming.position = data[2];
+            }
             // Always request positions. A zero status rectangle cannot cache a stale panel mapping.
             self.message(
                 data[0],
@@ -448,10 +500,17 @@ impl Session {
             if offer.source != data[0] {
                 return Ok(());
             }
-            let candidate = offer
-                .candidate
-                .clone()
-                .filter(|c| self.candidate_current(c));
+            let (copy_shown, position) = (offer.copy_shown, offer.position);
+            if !copy_shown {
+                // A Move-only offer or a position without a target: the source never
+                // saw the Copy status, so there is nothing to explain.
+                return self.finish_incoming(false);
+            }
+            // As the Windows target does at Drop, the drop goes to the target now at the
+            // last position; a republish since that status (a refresh) is no refusal.
+            let Some(candidate) = self.candidate_at(position) else {
+                return self.refuse_drop(DESTINATION_CHANGED);
+            };
             let owner = self
                 .connection
                 .get_selection_owner(self.atoms.selection)
@@ -459,11 +518,10 @@ impl Session {
                 .reply()
                 .map_err(failure)?
                 .owner;
-            if let Some(candidate) = candidate.filter(|_| owner == data[0]) {
-                self.begin_read(data[0], data[2], candidate)?;
-            } else {
-                self.finish_incoming(false)?;
+            if owner != data[0] {
+                return self.refuse_drop(SOURCE_LIST_MISSING);
             }
+            self.begin_read(data[0], data[2], candidate, position)?;
         }
         Ok(())
     }
@@ -526,15 +584,30 @@ impl Session {
 
 impl FileDragDropSession for Session {
     fn service_pending(&mut self) -> Result<(), FsError> {
-        if self.read.as_ref().is_some_and(|r| {
-            r.started.elapsed() >= TRANSFER_TIMEOUT || !self.candidate_current(&r.candidate)
-        }) {
-            self.finish_incoming(false)?;
-        }
         if self.host.lifetime.is_cancelled() {
+            // A closed window has nobody to tell: end a pending read silently.
+            if self.read.is_some() {
+                self.finish_incoming(false)?;
+            }
             self.incoming = None;
             self.sink.hover(None);
             return Ok(());
+        }
+        let read = self.read.as_ref().map(|read| {
+            (
+                read.started.elapsed() >= self.read_timeout,
+                self.read_destination(read),
+            )
+        });
+        match read {
+            Some((true, _)) => self.refuse_drop(SOURCE_LIST_MISSING)?,
+            Some((false, None)) => self.refuse_drop(DESTINATION_CHANGED)?,
+            Some((false, Some(destination))) => {
+                if let Some(read) = &mut self.read {
+                    read.candidate = destination;
+                }
+            }
+            None => {}
         }
         if self
             .incoming
