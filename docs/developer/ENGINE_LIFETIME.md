@@ -232,7 +232,8 @@ Windows) in the first usable private root of this user, chosen by the root polic
 that all generated-content spools share (`private_spool::private_spool_roots`). On
 Linux the candidates start with `$XDG_CACHE_HOME` (or `~/.cache`)
 `/midnight-explorer/file-list`, which is disk-backed (small diagnostic reports skip
-it), then `$XDG_RUNTIME_DIR/midnight-explorer/file-list`. The temporary directory
+it without resolving its base, which could block on an unresponsive network home),
+then `$XDG_RUNTIME_DIR/midnight-explorer/file-list`. The temporary directory
 comes last on both systems (on Windows the per-user `%TEMP%` is the only base): first
 a per-user name, `midnight-explorer-<uid>-file-list` (Windows
 `MidnightExplorer-<hex of the account name>-file-list`), then a per-process name

@@ -33,12 +33,22 @@ pub(crate) enum SpoolContent {
     Large,
 }
 
-/// This session's per-user bases, gathered by the platform module. Bases that
-/// are not absolute paths are ignored.
+impl SpoolContent {
+    /// Whether the user's disk-backed cache is a candidate base. Only then does
+    /// the platform module look that base up: resolving it can block on an
+    /// unresponsive network home, which reports must not wait for.
+    fn uses_cache(self) -> bool {
+        self == Self::Large
+    }
+}
+
+/// This session's per-user bases for one kind of content, gathered by the
+/// platform module. Bases that are not absolute paths are ignored.
 struct Session {
     /// The application's directory name and name prefix on this platform.
     application: &'static str,
-    /// The user's disk-backed cache directory (Linux `$XDG_CACHE_HOME`).
+    /// The user's disk-backed cache directory (Linux `$XDG_CACHE_HOME`), looked
+    /// up only for content that uses it.
     cache: Option<PathBuf>,
     /// The session's owner-only runtime directory (Linux `$XDG_RUNTIME_DIR`).
     runtime: Option<PathBuf>,
@@ -59,7 +69,12 @@ struct Session {
 /// skipped rather than used. Open spools with `create_private_spool`, which
 /// removes a per-process root after its last spool.
 pub(crate) fn private_spool_roots(name: &str, content: SpoolContent) -> Vec<SpoolRoot> {
-    spool_roots(&session::current(), std::process::id(), name, content)
+    spool_roots(
+        &session::current(content),
+        std::process::id(),
+        name,
+        content,
+    )
 }
 
 fn spool_roots(
@@ -73,10 +88,7 @@ fn spool_roots(
         path,
         per_process: false,
     };
-    let cache = session
-        .cache
-        .as_ref()
-        .filter(|_| content == SpoolContent::Large);
+    let cache = session.cache.as_ref().filter(|_| content.uses_cache());
     let mut roots: Vec<_> = cache
         .into_iter()
         .chain(&session.runtime)

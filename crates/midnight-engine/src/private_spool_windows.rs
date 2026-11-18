@@ -1,7 +1,7 @@
 //! Windows spool bases: `%TEMP%`, normally the profile's per-user `Local\Temp`.
 //! It can be redirected to a directory that other accounts share, so names in it
 //! still carry this account's label.
-use super::Session;
+use super::{Session, SpoolContent};
 use std::{
     ffi::{OsStr, OsString},
     path::PathBuf,
@@ -11,7 +11,8 @@ use std::{
 #[path = "private_spool_windows_tests.rs"]
 mod tests;
 
-pub(super) fn current() -> Session {
+/// Every content shares this session: Windows has no separate cache base.
+pub(super) fn current(_: SpoolContent) -> Session {
     from_environment(std::env::var_os("USERNAME"), std::env::temp_dir())
 }
 
