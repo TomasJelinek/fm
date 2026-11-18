@@ -227,31 +227,12 @@ fn watch_refresh_keeps_computed_folder_sizes_but_explicit_refresh_discards_them(
 
 #[test]
 fn folders_the_attempted_scan_never_covered_are_not_reported_as_unfinished() {
-    let presented = |p: &Presenter, path: &str| {
-        let pane = &p.panes[0];
-        let entry = pane
-            .entries
-            .iter()
-            .find(|e| e.path.as_path() == Path::new(path))
-            .unwrap();
-        crate::size_presentation::folder_size(
-            pane.folder_size(entry),
-            pane.folder_size_running(entry),
-            pane.size_scan_attempted && pane.tree_view().is_none(),
-            p.preferences.values.size_display,
-            &p.number_locale,
-        )
-        .0
-    };
-    // (scan scope retained after cancellation, folders listed by the re-read, attempted after it)
-    for (cancelled, relisted, attempted) in [
-        (false, &["left/sized", "left/new"][..], false),
-        (true, &["left/sized", "left/unreached"][..], true),
-        (
-            true,
-            &["left/sized", "left/unreached", "left/new"][..],
-            false,
-        ),
+    use slint::Model;
+    // (scan scope retained after cancellation, folders listed by the re-read)
+    for (cancelled, relisted) in [
+        (false, &["left/sized", "left/new"][..]),
+        (true, &["left/sized", "left/unreached"][..]),
+        (true, &["left/sized", "left/unreached", "left/new"][..]),
     ] {
         let mut p = Presenter::new("left".into(), "right".into());
         let first = begin(&mut p, PaneId::Left, "left");
@@ -288,22 +269,28 @@ fn folders_the_attempted_scan_never_covered_are_not_reported_as_unfinished() {
             .map(|(id, path)| entry(id as u64 + 1, path))
             .collect();
         finish(&mut p, PaneId::Left, refresh, rows);
-        assert_eq!(p.panes[0].size_scan_attempted, attempted, "{relisted:?}");
+        // Each folder keeps its own state in the panel row model: a new folder is
+        // not calculated, while one the scan did not reach stays unfinished.
+        let model = crate::Rows::new(std::rc::Rc::new(RefCell::new(p)), PaneId::Left);
+        let size = |name: &str| {
+            (0..model.row_count())
+                .filter_map(|row| model.row_data(row))
+                .find(|row| row.name == name)
+                .unwrap_or_else(|| panic!("no {name} row"))
+                .size
+                .to_string()
+        };
         if relisted.contains(&"left/new") {
-            assert_eq!(presented(&p, "left/new"), "<DIR>", "never part of a scan");
+            assert_eq!(size("new"), "<DIR>", "never part of a scan: {relisted:?}");
         }
-        if attempted {
+        if relisted.contains(&"left/unreached") {
             assert_eq!(
-                presented(&p, "left/unreached"),
+                size("unreached"),
                 "—",
-                "the cancelled scan did not finish it"
+                "the cancelled scan did not finish it: {relisted:?}"
             );
         }
-        assert_ne!(
-            presented(&p, "left/sized"),
-            "<DIR>",
-            "the computed size stays"
-        );
+        assert_ne!(size("sized"), "<DIR>", "the computed size stays");
     }
 }
 

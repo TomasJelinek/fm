@@ -182,6 +182,9 @@ pub(crate) struct Pane {
     cancelled_size_scan: Option<FolderSizeScanId>,
     pub(crate) size_scan_scope: Option<SizeScanScope>,
     pub(crate) size_scan_attempted: bool,
+    /// Folders that a same-folder re-read first listed after the attempted full
+    /// size scan of this location; that scan never covered them.
+    size_scan_new_folders: HashSet<PathBuf>,
     selection_sizes: selection_sizes::State,
     entry_size_scans: Vec<entry_sizes::EntrySizeScope>,
     folder_presence: folder_presence::State,
@@ -507,6 +510,8 @@ impl Presenter {
             self.retired.push(Box::new(p.size_scan_scope.take()));
             p.cancelled_size_scan = None;
             p.size_scan_attempted = false;
+            self.retired
+                .push(Box::new(mem::take(&mut p.size_scan_new_folders)));
             p.history_index = None;
             p.loading = false;
         }
@@ -738,6 +743,8 @@ impl Presenter {
             p.folder_column_samples = SizeColumnSamples::default();
             self.retired.push(Box::new(mem::take(&mut p.folder_sizes)));
             p.size_scan_attempted = false;
+            self.retired
+                .push(Box::new(mem::take(&mut p.size_scan_new_folders)));
         }
         if let Some(mut superseded) = p.pending.take() {
             if !superseded.keep_rows {
@@ -1338,16 +1345,10 @@ impl Presenter {
                 if request.keep_rows {
                     retain_listed_folder_sizes(&mut p.folder_sizes, &index, &mut self.retired);
                     // A folder the attempted scan never covered (created after it)
-                    // is not calculated rather than unfinished.
-                    if p.size_scan_attempted
-                        && lists_unscanned_folder(
-                            &entries,
-                            &index,
-                            &p.folder_sizes,
-                            p.size_scan_scope.as_ref(),
-                        )
-                    {
-                        p.size_scan_attempted = false;
+                    // is not calculated rather than unfinished; the others keep
+                    // their own state.
+                    if p.size_scan_attempted {
+                        note_new_folders(&mut p.size_scan_new_folders, &p.index, &index);
                     }
                 }
                 self.retired
@@ -1811,6 +1812,7 @@ impl Pane {
             cancelled_size_scan: None,
             size_scan_scope: None,
             size_scan_attempted: false,
+            size_scan_new_folders: HashSet::new(),
             entry_size_scans: Vec::new(),
             folder_presence: folder_presence::State::default(),
             folder_errors: None,
@@ -2028,23 +2030,24 @@ fn retain_listed_folder_sizes(
 /// not cover. Without a retained scope the scan finished and sized every folder
 /// it listed. `sizes` holds only listed folders, so counting the directory bits
 /// avoids a per-entry pass when every folder has a size.
-fn lists_unscanned_folder(
-    entries: &[Entry],
-    index: &DirectoryIndex,
-    sizes: &HashMap<PathBuf, FolderSize>,
-    scope: Option<&SizeScanScope>,
-) -> bool {
-    let folders: usize = index
-        .directory_bits
-        .iter()
-        .map(|bits| bits.count_ones() as usize)
-        .sum();
-    sizes.len() < folders
-        && entries.iter().any(|entry| {
-            matches!(entry.kind, EntryKind::Directory | EntryKind::DirectoryLink)
-                && !sizes.contains_key(&entry.path)
-                && scope.is_none_or(|scope| !scope.contains(&entry.path))
-        })
+/// Folders a same-folder re-read lists for the first time since the attempted full
+/// size scan: new ones stay new while listed, and folders that the previous listing
+/// did not have become new.
+fn note_new_folders(new: &mut HashSet<PathBuf>, previous: &DirectoryIndex, index: &DirectoryIndex) {
+    let lists = |index: &DirectoryIndex, path: &Path| {
+        index
+            .by_path
+            .get(path)
+            .is_some_and(|id| index.is_directory(*id))
+    };
+    new.retain(|path| lists(index, path));
+    new.extend(
+        index
+            .by_path
+            .iter()
+            .filter(|(path, id)| index.is_directory(**id) && !lists(previous, path))
+            .map(|(path, _)| path.clone()),
+    );
 }
 
 /// Navigation uses logical parents: `link/..` goes to the link's lexical parent,

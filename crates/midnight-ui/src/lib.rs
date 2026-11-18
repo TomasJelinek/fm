@@ -227,7 +227,7 @@ impl Model for Rows {
             size_presentation::folder_size(
                 pane.folder_size(entry),
                 pane.folder_size_running(entry),
-                pane.size_scan_attempted && pane.tree_view().is_none(),
+                pane.size_scan_covers(entry) && pane.tree_view().is_none(),
                 state.preferences.values.size_display,
                 &state.number_locale,
             )
