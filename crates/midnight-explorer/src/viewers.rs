@@ -301,20 +301,32 @@ impl ImagePreparation {
 /// Work that waits for the initial settings response. The backend-ready handler is
 /// installed before the viewers, so it reaches them through this late-bound handle.
 pub(crate) struct SettingsLoaded {
+    viewers: std::rc::Weak<ViewerWindows>,
     preparation: std::rc::Weak<ImagePreparation>,
 }
 
 impl SettingsLoaded {
-    pub(crate) fn new(preparation: &Rc<ImagePreparation>) -> Self {
+    pub(crate) fn new(viewers: &Rc<ViewerWindows>, preparation: &Rc<ImagePreparation>) -> Self {
         Self {
+            viewers: Rc::downgrade(viewers),
             preparation: Rc::downgrade(preparation),
         }
     }
 
     /// Call once the initial settings response, successful or failed, was applied.
     pub(crate) fn applied(&self, presenter: &RefCell<Presenter>) {
-        if let Some(preparation) = self.preparation.upgrade() {
-            preparation.settings_applied(&presenter.borrow());
+        let preferences = {
+            let state = presenter.borrow();
+            if let Some(preparation) = self.preparation.upgrade() {
+                preparation.settings_applied(&state);
+            }
+            Arc::new(state.viewer_preferences().clone())
+        };
+        // Viewers opened before the read show defaults plus their own edits, which the
+        // presenter merged into these values. Restoration saves nothing, reports no
+        // edit and runs without a Presenter borrow.
+        if let Some(viewers) = self.viewers.upgrade() {
+            viewers.restore_preferences(preferences);
         }
     }
 }
@@ -349,7 +361,13 @@ mod preparation_tests {
         let service =
             midnight_viewer_engine::Service::with_native_capture(runtime.handle().clone(), capture);
         let preparation = Rc::new(ImagePreparation::new(service));
-        let loaded = SettingsLoaded::new(&preparation);
+        let viewers = Rc::new(ViewerWindows::new(
+            midnight_viewer_engine::Service::with_native_capture(
+                runtime.handle().clone(),
+                Arc::new(|_, _| Err("No content is read".into())),
+            ),
+        ));
+        let loaded = SettingsLoaded::new(&viewers, &preparation);
         assert!(!released.load(Ordering::Acquire));
         drop(preparation);
         assert!(
@@ -412,6 +430,117 @@ mod preparation_tests {
         presenter.request_operation_shutdown(&|_| true);
         preparation.exit_requested(&presenter);
         assert!(calls.borrow().is_empty());
+    }
+}
+
+#[cfg(test)]
+mod restore_tests {
+    use super::*;
+    use midnight_core::{
+        DirectoryIndex, Entry, EntryId, EntryKind, Event, UserPreferences, ViewerPreferences,
+    };
+    use midnight_viewer_ui::ViewerWindow;
+    use slint::platform::{
+        Platform, PlatformError, WindowAdapter,
+        software_renderer::{MinimalSoftwareWindow, RepaintBufferType},
+    };
+
+    struct Windows;
+    impl Platform for Windows {
+        fn create_window_adapter(&self) -> Result<Rc<dyn WindowAdapter>, PlatformError> {
+            Ok(MinimalSoftwareWindow::new(RepaintBufferType::ReusedBuffer))
+        }
+    }
+
+    fn open(manager: &ViewerWindows) -> ViewerWindow {
+        let path = std::env::temp_dir().join("restore before read 文档.txt");
+        let entries: Arc<[Entry]> =
+            vec![Entry::new(EntryId(1), path.clone(), EntryKind::File)].into();
+        manager
+            .open(
+                ViewerLaunch {
+                    find: None,
+                    associations: Default::default(),
+                    tree: None,
+                    generated: None,
+                    // Opened during the hidden startup: the presenter still has defaults.
+                    preferences: Arc::new(ViewerPreferences::default()),
+                    focused: path,
+                    view: Arc::new(DirectoryIndex::from_entries(&entries)),
+                    entries,
+                    archive: None,
+                    basic: true,
+                    disabled_plugins: Arc::from([]),
+                },
+                ViewerAppearance {
+                    family: "monospace".into(),
+                    font_size: 14.0,
+                    foreground: [255; 4],
+                    background: [0, 0, 0, 255],
+                    selection: [80, 80, 80, 255],
+                    accent: [100, 100, 255, 255],
+                },
+                slint::LogicalSize::new(640.0, 480.0),
+                Rc::new(|_, _| None),
+                Rc::new(|_| {}),
+            )
+            .unwrap()
+            .upgrade()
+            .unwrap()
+    }
+
+    #[test]
+    fn the_settings_read_restores_merged_choices_into_viewers_opened_before_it() {
+        slint::platform::set_platform(Box::new(Windows)).unwrap();
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let service = midnight_viewer_engine::Service::with_native_capture(
+            runtime.handle().clone(),
+            Arc::new(|_, _| Err("Content is deliberately unavailable.".into())),
+        );
+        let viewers = Rc::new(ViewerWindows::new(service));
+        let root = std::env::current_dir().unwrap();
+        let presenter = Rc::new(RefCell::new(Presenter::new(root.clone(), root)));
+        let edits = Rc::new(Cell::new(0));
+        let (settings, counted) = (presenter.clone(), edits.clone());
+        viewers.set_preferences_listener(Rc::new(move |change| {
+            counted.set(counted.get() + 1);
+            settings
+                .borrow_mut()
+                .save_viewer_preferences(change, &|_| true);
+        }));
+        let window = open(&viewers);
+        assert!(window.get_line_numbers());
+        assert_eq!(window.get_viewer_font_size(), 14);
+        // An edit before the read is retained and merged into the loaded values.
+        window.invoke_change_case_sensitive(true);
+        assert_eq!(edits.get(), 1);
+        let mut loaded = ViewerPreferences {
+            line_numbers: false,
+            ..Default::default()
+        };
+        loaded.text_font.size = 19;
+        presenter
+            .borrow_mut()
+            .apply(Event::PreferencesLoaded(Ok(Box::new(UserPreferences {
+                viewer: loaded,
+                ..Default::default()
+            }))));
+        let preparation = Rc::new(ImagePreparation::with(|_, _| {}));
+        SettingsLoaded::new(&viewers, &preparation).applied(&presenter);
+        let presented = (
+            window.get_line_numbers(),
+            window.get_viewer_font_size(),
+            window.get_case_sensitive(),
+            edits.get(),
+        );
+        // Close before asserting: an unwinding test must not wait on live sessions.
+        viewers.close_all();
+        assert_eq!(
+            presented,
+            (false, 19, true, 1),
+            "the loaded choices reach the open viewer, its earlier edit survives the \
+             merge, and restoration reports no edit"
+        );
     }
 }
 

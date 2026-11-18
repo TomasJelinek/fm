@@ -105,6 +105,14 @@ uses the existing backend settings command, coalescing and atomic file publicati
 Queue rejection retains the latest unsaved values for the existing save retry and
 shutdown flush. A failed initial read never authorizes overwriting the old file.
 
+Startup reveals the main window after 10 seconds without a settings answer, so a
+viewer can be opened before the read arrives; it starts with the defaults plus its
+own edits. When the read arrives, the explorer restores the loaded choices, merged
+with those edits, into every open viewer window, so conflicting edits made in
+different windows before the read converge to the last one. Raster images adopt the
+restored zoom; PDF geometry stays as it is. Restoration saves nothing and reports
+no edit.
+
 The strict application codec writes schema 21 when viewer settings differ from
 defaults, or schema 22 when the comparator font is customized. A customized panel
 split independently requires schema 23, retaining viewer choices and allowing

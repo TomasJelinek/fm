@@ -704,7 +704,7 @@ fn run_window(
         local.clone(),
         &mut *image_spare_retirement,
     );
-    let _ = settings_loaded.set(viewers::SettingsLoaded::new(&image_preparation));
+    let _ = settings_loaded.set(viewers::SettingsLoaded::new(&viewers, &image_preparation));
     let thumbnails = thumbnails::install(
         &window,
         presenter.clone(),
