@@ -354,7 +354,7 @@ async fn an_identical_retry_of_a_failed_revision_is_written_again() {
         next(&mut events).await,
         Event::PreferencesSaved {
             revision: PreferencesRevision(1),
-            result: Ok(())
+            result: Ok(_)
         }
     ));
     assert_eq!(*service.persisted.lock().unwrap(), values);
