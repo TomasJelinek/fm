@@ -8,6 +8,7 @@ mod idle_probe;
 mod native_content;
 mod native_events;
 mod pulse;
+mod retry_pass;
 mod shutdown;
 mod shutdown_preferences;
 mod size_refresh;
@@ -366,7 +367,11 @@ fn run_window(
         }
     });
     let retire_queue = reclaim::start(runtime.handle(), notify.clone());
-    let command_reclaim = command_reclaim::CommandReclaim::new(retire_queue.clone());
+    // Refused sends and unavailable owned scopes leave work for the retry pass.
+    let refusals = Rc::new(pulse::Refusals::default());
+    let scope_refusals = refusals.clone();
+    let command_reclaim = command_reclaim::CommandReclaim::new(retire_queue.clone())
+        .observe_refusals(Rc::new(move || scope_refusals.refused()));
     let mut engine = Engine::with_shared_native_filesystem(
         engine_lifetime,
         shared_native,
@@ -451,6 +456,7 @@ fn run_window(
         .map_err(|error| error.to_string())?;
     let begin_owned = command_reclaim.factory(commands.clone());
     let control_commands = commands.clone();
+    let control_refusals = refusals.clone();
     let control_send: Rc<dyn Fn(Command) -> bool> = Rc::new(move |command| {
         // Captured owners and listing acknowledgements use an owned scope.
         // This fallback receives only provider-free controls and metadata.
@@ -458,6 +464,7 @@ fn run_window(
             Ok(()) => true,
             Err(error) => {
                 drop(error.into_inner());
+                control_refusals.refused();
                 false
             }
         }
@@ -508,12 +515,6 @@ fn run_window(
         control_send.clone(),
         !options.ui_smoke,
     ));
-    let geometry_state = Rc::downgrade(&window_state);
-    main_events.on_geometry(move || {
-        if let Some(state) = geometry_state.upgrade() {
-            state.geometry_changed();
-        }
-    });
     let startup = Rc::new(startup::Startup::install(
         &window,
         presenter.clone(),
@@ -584,7 +585,7 @@ fn run_window(
         if changed {
             midnight_ui::refresh(&window, &state.borrow());
             pending_sizes.painted();
-            sync_visible(&state, &ui_begin_owned, &ui_visible_sync);
+            let _ = retry_pass::sync_visible(&state, &ui_begin_owned, &ui_visible_sync);
         }
         if preferences_applied {
             if let Some(loaded) = loaded_settings.get() {
@@ -686,7 +687,7 @@ fn run_window(
         &mut *image_spare_retirement,
     );
     let _ = settings_loaded.set(viewers::SettingsLoaded::new(&image_preparation));
-    let thumbnail_timer = thumbnails::install(
+    let thumbnails = thumbnails::install(
         &window,
         presenter.clone(),
         filesystem.clone(),
@@ -700,55 +701,39 @@ fn run_window(
         local,
         filesystem,
     );
-    // Bounded queue saturation cannot permanently lose the accepted-listing ack.
-    // Directory rows are shared; this timer only reads identities and tries sends.
-    let visible_timer = slint::Timer::default();
-    let sync_state = presenter.clone();
-    let sync_controls = control_send.clone();
-    let sync_begin_owned = begin_owned.clone();
-    let sync_window = window.as_weak();
-    let sync_viewers = viewers.clone();
-    let sync_comparators = comparators.clone();
-    let sync_preparation = Rc::downgrade(&image_preparation);
-    visible_timer.start(
-        slint::TimerMode::Repeated,
-        Duration::from_millis(100),
-        move || {
-            {
-                let mut state = sync_state.borrow_mut();
-                if let Some(preparation) = sync_preparation.upgrade() {
-                    preparation.exit_requested(&state);
-                }
-                if state.continue_operation_shutdown(&*sync_controls)
-                    && let Some(window) = sync_window.upgrade()
-                {
-                    state.shutdown_drag_drop(&*sync_controls);
-                    sync_viewers.close_all();
-                    sync_comparators.close_all();
-                    // Every tool window family (Jobs, job progress, decisions and
-                    // the embedded forms too); the helper never borrows Presenter.
-                    midnight_ui::close_tool_windows(&window);
-                    let _ = window.hide();
-                }
-            }
-            if sync_window
-                .upgrade()
-                .is_none_or(|window| !window.window().is_visible())
-            {
-                sync_viewers.close_all();
-                sync_comparators.close_all();
-            }
-            let _ =
-                midnight_ui::with_owned_commands(&sync_state, &sync_begin_owned, |state, send| {
-                    state.flush_selection(send);
-                    state.flush_filters(send);
-                    state.flush_filename_colors(send);
-                    state.flush_search(send);
-                    state.flush_comparison(send);
-                });
-            sync_visible(&sync_state, &sync_begin_owned, &visible_sync);
-        },
-    );
+    let close_viewers = viewers.clone();
+    let close_comparators = comparators.clone();
+    let retry = retry_pass::RetryPass {
+        presenter: presenter.clone(),
+        controls: control_send.clone(),
+        begin_owned: begin_owned.clone(),
+        window: window.as_weak(),
+        close_viewers: Box::new(move || {
+            close_viewers.close_all();
+            close_comparators.close_all();
+        }),
+        preparation: Rc::downgrade(&image_preparation),
+        visible: visible_sync,
+        refusals: refusals.clone(),
+    };
+    let retry_pulse = pulse::Pulse::start(retry_pass::INTERVAL, move || retry.run());
+    thumbnails.follow_with(&retry_pulse);
+    let pulses = [thumbnails.pulse(), Rc::downgrade(&retry_pulse)];
+    for pulse in &pulses {
+        refusals.watch(pulse.clone());
+    }
+    let presentation = pulses.clone();
+    window.on_presentation_changed(move || pulse::wake_all(&presentation));
+    main_events.on_visibility(move || pulse::wake_all(&pulses));
+    let geometry_state = Rc::downgrade(&window_state);
+    let scale = [thumbnails.pulse()];
+    main_events.on_geometry(move || {
+        if let Some(state) = geometry_state.upgrade() {
+            state.geometry_changed();
+        }
+        // A scale change changes the decode edge of every visible thumbnail.
+        pulse::wake_all(&scale);
+    });
     if options.ui_smoke {
         let error_state = smoke_error.clone();
         let state = presenter.clone();
@@ -788,10 +773,10 @@ fn run_window(
     window.invoke_close_find_windows();
     window.invoke_close_checksum_windows();
     window.invoke_close_file_list_window();
-    visible_timer.stop();
+    retry_pulse.stop();
     size_updates.stop();
-    thumbnail_timer.stop();
-    drop(thumbnail_timer);
+    thumbnails.stop();
+    drop(thumbnails);
     // Detach the receiver from dormant UI callbacks without holding a RefCell
     // borrow across the post-window asynchronous exit grace.
     let (_, empty_events) = mpsc::channel(1);
@@ -863,22 +848,4 @@ fn run_window(
         println!("snapshot: {}", path.display());
     }
     Ok(startup_recovery::Attempt::Finished)
-}
-
-fn sync_visible(
-    presenter: &Rc<RefCell<Presenter>>,
-    begin_owned: &midnight_ui::BeginOwned,
-    sync: &RefCell<VisibleSync>,
-) {
-    for pane in [PaneId::Left, PaneId::Right] {
-        if midnight_ui::with_owned_commands(presenter, begin_owned, |p, send| {
-            if let Some(visible) = p.visible_directory(pane) {
-                sync.borrow_mut().send(visible, send);
-            }
-        })
-        .is_none()
-        {
-            break;
-        }
-    }
 }

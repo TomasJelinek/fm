@@ -1,5 +1,9 @@
 //! Composition bridge: copy bounded visible identities, and present completed RGBA buffers.
-use crate::wake_gate::WakeGate;
+//!
+//! The pulse runs while a pass reports work and stops after a quiet pass. Presentation
+//! changes, native scale changes, refused sends, visibility changes, delivered frames and
+//! cache clears wake it again.
+use crate::{pulse::Pulse, wake_gate::WakeGate};
 use midnight_core::Command;
 use midnight_thumbnail_host::scheduler::Work;
 use midnight_thumbnail_host::service::{Service, View};
@@ -8,7 +12,7 @@ use slint::ComponentHandle;
 use std::{
     cell::{Cell, RefCell},
     collections::HashMap,
-    rc::Rc,
+    rc::{Rc, Weak},
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -19,13 +23,29 @@ mod content;
 #[path = "native_thumbnail_linux_tests.rs"]
 mod native_linux_tests;
 
+const INTERVAL: Duration = Duration::from_millis(100);
+/// After the first preview request, keep polling until the service reports its
+/// initialization outcome (a frame or a notice), at most this long. The service sets
+/// notices without its ready notifier, so a stopped pulse would not publish them.
+const OUTCOME_WAIT: Duration = Duration::from_secs(10);
+
 pub(crate) struct Controller {
-    timer: slint::Timer,
+    pulse: Rc<Pulse>,
     service: Rc<Service>,
+    follower: Rc<RefCell<Weak<Pulse>>>,
 }
 impl Controller {
+    pub(crate) fn pulse(&self) -> Weak<Pulse> {
+        Rc::downgrade(&self.pulse)
+    }
+
+    /// Wake `pulse` after every pass: a pass can move the tree viewport it sends.
+    pub(crate) fn follow_with(&self, pulse: &Rc<Pulse>) {
+        *self.follower.borrow_mut() = Rc::downgrade(pulse);
+    }
+
     pub(crate) fn stop(&self) {
-        self.timer.stop();
+        self.pulse.stop();
         self.service.stop();
     }
 }
@@ -127,8 +147,15 @@ const DELIVERY_TIME: Duration = Duration::from_millis(8);
 
 thread_local! {
     /// The UI thread's bridge, reached by backend wakes through the Slint event loop.
-    static BRIDGE: RefCell<std::rc::Weak<RefCell<Bridge>>> =
-        const { RefCell::new(std::rc::Weak::new()) };
+    static BRIDGE: RefCell<Weak<RefCell<Bridge>>> = const { RefCell::new(Weak::new()) };
+    /// Its pulse, woken by delivered frames and cache clears.
+    static PULSE: RefCell<Weak<Pulse>> = const { RefCell::new(Weak::new()) };
+}
+
+fn wake_pulse() {
+    if let Some(pulse) = PULSE.with(|pulse| pulse.borrow().upgrade()) {
+        pulse.wake();
+    }
 }
 
 struct Bridge {
@@ -144,27 +171,42 @@ struct Bridge {
     next_token: u64,
     tick: u64,
     last_epoch: u64,
+    /// The cache location, or the failure to resolve it, has been published.
+    located: bool,
+    /// Requests were made and the service has reported no frame or notice yet.
+    outcome_wait: Option<Instant>,
 }
 
 impl Bridge {
-    /// The periodic pulse: follow view changes and animation, and take ready frames.
-    fn pulse(&mut self) {
+    /// One pass: follow view changes and animation, and take ready frames. Returns
+    /// whether work remains; the pulse stops after a pass that reports none.
+    fn pulse(&mut self) -> bool {
         let Some(window) = self.window.upgrade() else {
             self.service.stop();
-            return;
+            return false;
         };
         if !window.window().is_visible() {
-            return;
+            // Startup waits hidden for preferences; poll until the window shows.
+            return true;
         }
+        let mut busy = false;
         if let Some(path) = self.service.take_cache_location() {
             window.set_thumbnail_cache_location(path.to_string_lossy().as_ref().into());
+            self.located = true;
+            busy = true;
         }
         let rows = window_targets(&window, &self.presenter);
         let presenter = self.presenter.clone();
         let mut state = presenter.borrow_mut();
         // Native command artwork shares visible admission, but never enters an image decoder.
         // Retry a rejected send on the next pulse, even when the visible rows are unchanged.
-        state.refresh_command_icons(&rows, self.send.as_ref());
+        let refused = Cell::new(false);
+        state.refresh_command_icons(&rows, &|command| {
+            let sent = (self.send)(command);
+            refused.set(refused.get() || !sent);
+            sent
+        });
+        busy |= refused.get();
         let scale = window.window().scale_factor();
         let mut refresh_all = false;
         let mut changed = Vec::new();
@@ -173,12 +215,16 @@ impl Bridge {
             self.tokens.clear();
             self.last_epoch = self.epoch.get();
             refresh_all = true;
+            self.await_outcome();
         }
         if let Some(notice) = self.service.take_notice() {
             state.report_thumbnail_error(notice);
             refresh_all = true;
+            self.located = true;
+            self.outcome_reported();
         }
         if self.deliveries.changed(&rows, scale) {
+            busy = true;
             // Entering/leaving an animated state can change the displayed
             // frame. Viewport scheduling alone has no presentation change.
             for row in self.deliveries.previous.iter().chain(&rows) {
@@ -197,7 +243,7 @@ impl Bridge {
                 }
             }
             retain_source_tokens(&mut self.tokens, &self.deliveries.previous, &rows);
-            let targets = rows
+            let targets: Vec<_> = rows
                 .iter()
                 .filter_map(|row| {
                     if matches!(
@@ -217,6 +263,9 @@ impl Bridge {
                     self.capture.target(row, token, physical_edge(row, scale))
                 })
                 .collect();
+            if !targets.is_empty() {
+                self.await_outcome();
+            }
             self.service.set_view(View {
                 generation: self.epoch.get(),
                 targets,
@@ -233,11 +282,14 @@ impl Bridge {
                 retained >= work.edge || service.retry_delivery(work, retained)
             });
         }
-        self.take_ready(&mut state, scale, &mut changed);
+        let presented = changed.len();
+        busy |= self.take_ready(&mut state, scale, &mut changed) || changed.len() > presented;
         self.tick = self.tick.wrapping_add(1);
         if self.tick.is_multiple_of(2) && state.advance_thumbnail_animation() {
             changed.extend(state.animated_thumbnail_identities());
         }
+        // Animation advances on every other pass; keep both while a frame animates.
+        busy |= !state.animated_thumbnail_identities().is_empty();
         // Slint can synchronously read presenter-backed models while refreshing.
         // Finish all mutations before it borrows the presenter again.
         drop(state);
@@ -246,6 +298,24 @@ impl Bridge {
         } else if !changed.is_empty() {
             midnight_ui::refresh_thumbnail_rows(&window, &presenter.borrow(), &changed);
         }
+        busy || refresh_all
+            || !self.located
+            || self
+                .outcome_wait
+                .is_some_and(|deadline| Instant::now() < deadline)
+    }
+
+    /// The first request starts waiting for the service's initialization outcome.
+    fn await_outcome(&mut self) {
+        if self.outcome_wait.is_none() {
+            self.outcome_wait = Some(Instant::now() + OUTCOME_WAIT);
+        }
+    }
+
+    /// A frame or a notice arrived: later results reach the presentation through the
+    /// ready notifier or the next wake.
+    fn outcome_reported(&mut self) {
+        self.outcome_wait = Some(Instant::now());
     }
 
     /// A backend wake: present ready frames without waiting for the next pulse.
@@ -279,6 +349,7 @@ impl Bridge {
             let Some(ready) = self.service.poll() else {
                 return false;
             };
+            self.outcome_reported();
             if ready.generation != self.epoch.get() {
                 continue;
             }
@@ -335,9 +406,11 @@ fn wake_bridge(gate: &Arc<WakeGate>) {
         {
             bridge.deliver();
         }
+        // A delivered frame can start an animation or retry a refused upload.
+        wake_pulse();
     });
     if scheduled.is_err() {
-        // No event loop: the periodic pulse still delivers every frame.
+        // No event loop: a later pulse still delivers every frame.
         gate.release();
     }
 }
@@ -358,6 +431,7 @@ fn install_service(
         clear_epoch.set(clear_epoch.get().wrapping_add(1));
         clear_state.borrow_mut().clear_thumbnail_images();
         clear.clear_cache();
+        wake_pulse();
     });
     let wake = Arc::new(WakeGate::default());
     let ready = wake.clone();
@@ -375,20 +449,27 @@ fn install_service(
         next_token: 1,
         tick: 0,
         last_epoch: 1,
+        located: false,
+        outcome_wait: None,
     }));
     BRIDGE.with(|slot| *slot.borrow_mut() = Rc::downgrade(&bridge));
-    let timer = slint::Timer::default();
-    timer.start(
-        slint::TimerMode::Repeated,
-        Duration::from_millis(100),
-        move || bridge.borrow_mut().pulse(),
-    );
+    let follower: Rc<RefCell<Weak<Pulse>>> = Rc::default();
+    let next = follower.clone();
+    let pulse = Pulse::start(INTERVAL, move || {
+        let busy = bridge.borrow_mut().pulse();
+        // A pass can move the tree viewport, which the retry pass sends.
+        if let Some(next) = next.borrow().upgrade() {
+            next.wake();
+        }
+        busy
+    });
+    PULSE.with(|slot| *slot.borrow_mut() = Rc::downgrade(&pulse));
     Controller {
-        timer,
+        pulse,
         service: control,
+        follower,
     }
 }
-
 fn retain_source_tokens(
     tokens: &mut HashMap<String, u64>,
     previous: &[ThumbnailTarget],
@@ -437,3 +518,7 @@ mod delivery_tests;
 #[cfg(test)]
 #[path = "command_icon_bridge_tests.rs"]
 mod command_icon_bridge_tests;
+
+#[cfg(test)]
+#[path = "thumbnails_pulse_tests.rs"]
+mod pulse_tests;

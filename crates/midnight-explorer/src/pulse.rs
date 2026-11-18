@@ -1,5 +1,9 @@
 //! A repeated UI timer that runs only while its tick reports remaining work.
-use std::{cell::Cell, rc::Rc, time::Duration};
+use std::{
+    cell::{Cell, RefCell},
+    rc::{Rc, Weak},
+    time::Duration,
+};
 
 pub(crate) struct Pulse {
     timer: slint::Timer,
@@ -51,6 +55,37 @@ impl Pulse {
     #[cfg(test)]
     pub(crate) fn running(&self) -> bool {
         self.timer.running()
+    }
+}
+
+/// Wake every live pulse of `pulses`.
+pub(crate) fn wake_all(pulses: &[Weak<Pulse>]) {
+    for pulse in pulses.iter().filter_map(Weak::upgrade) {
+        pulse.wake();
+    }
+}
+
+/// Refused command sends and unavailable owned scopes leave work behind. They set the
+/// retry pass's flag and wake every watching pulse.
+#[derive(Default)]
+pub(crate) struct Refusals {
+    refused: Cell<bool>,
+    pulses: RefCell<Vec<Weak<Pulse>>>,
+}
+
+impl Refusals {
+    pub(crate) fn watch(&self, pulse: Weak<Pulse>) {
+        self.pulses.borrow_mut().push(pulse);
+    }
+
+    pub(crate) fn refused(&self) {
+        self.refused.set(true);
+        wake_all(&self.pulses.borrow());
+    }
+
+    /// Whether a send was refused since the last call.
+    pub(crate) fn take(&self) -> bool {
+        self.refused.replace(false)
     }
 }
 
@@ -155,5 +190,27 @@ mod tests {
         assert_eq!(ticks.get(), 2);
         assert!(!pulse.running());
         slot.borrow_mut().take();
+    }
+
+    #[test]
+    fn a_refusal_wakes_every_watching_pulse_and_is_reported_once() {
+        let clock = Rc::new(Cell::new(Duration::ZERO));
+        slint::platform::set_platform(Box::new(Clock(clock.clone()))).unwrap();
+        let pulses = [
+            Pulse::start(INTERVAL, || false),
+            Pulse::start(INTERVAL, || false),
+        ];
+        clock.set(INTERVAL);
+        slint::platform::update_timers_and_animations();
+        assert!(pulses.iter().all(|pulse| !pulse.running()));
+        let refusals = Refusals::default();
+        for pulse in &pulses {
+            refusals.watch(Rc::downgrade(pulse));
+        }
+        assert!(!refusals.take());
+        refusals.refused();
+        assert!(pulses.iter().all(|pulse| pulse.running()));
+        assert!(refusals.take());
+        assert!(!refusals.take(), "a refusal is reported once");
     }
 }
