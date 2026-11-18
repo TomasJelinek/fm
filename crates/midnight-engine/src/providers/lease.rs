@@ -137,7 +137,30 @@ impl MountedLocation {
         cancel: &Cancellation,
         limit: usize,
     ) -> Result<Vec<MountedEntry>, ProviderError> {
-        self.list_selected(node, cancel, true, limit.min(MAX_LIST_ENTRIES))
+        self.list_selected(
+            node,
+            cancel,
+            Selection::Folders,
+            limit.min(MAX_LIST_ENTRIES),
+        )
+        .map(|(entries, _)| entries)
+    }
+
+    /// `list_folders` plus the provider's full watch observation of the whole
+    /// directory from the same enumeration, when it has one
+    /// (`MountedFilesystem::list_folders_observed`).
+    pub fn list_folders_observed(
+        &self,
+        node: &NodeRef,
+        cancel: &Cancellation,
+        limit: usize,
+    ) -> Result<(Vec<MountedEntry>, Option<[u8; 32]>), ProviderError> {
+        self.list_selected(
+            node,
+            cancel,
+            Selection::ObservedFolders,
+            limit.min(MAX_LIST_ENTRIES),
+        )
     }
 
     /// Presence-only disclosure probe: whether the directory contains a folder.
@@ -189,7 +212,8 @@ impl MountedLocation {
         node: &NodeRef,
         cancel: &Cancellation,
     ) -> Result<Vec<MountedEntry>, ProviderError> {
-        self.list_selected(node, cancel, false, MAX_LIST_ENTRIES)
+        self.list_selected(node, cancel, Selection::All, MAX_LIST_ENTRIES)
+            .map(|(entries, _)| entries)
     }
 
     pub(super) fn validate_reference(&self, node: &NodeRef) -> Result<(), ProviderError> {
@@ -200,9 +224,10 @@ impl MountedLocation {
         &self,
         node: &NodeRef,
         cancel: &Cancellation,
-        folders_only: bool,
+        selection: Selection,
         limit: usize,
-    ) -> Result<Vec<MountedEntry>, ProviderError> {
+    ) -> Result<(Vec<MountedEntry>, Option<[u8; 32]>), ProviderError> {
+        let folders_only = selection != Selection::All;
         if !matches!(
             self.lease.check_node(node)?,
             EntryKind::Directory | EntryKind::DirectoryLink
@@ -260,24 +285,34 @@ impl MountedLocation {
             });
             true
         };
-        let result = if folders_only {
-            self.lease
+        let result = match selection {
+            Selection::All => self
+                .lease
+                .mount
+                .list(&node.token, &request, &mut accept)
+                .map(|()| None),
+            Selection::Folders => self
+                .lease
                 .mount
                 .list_folders(&node.token, &request, &mut accept)
-        } else {
-            self.lease.mount.list(&node.token, &request, &mut accept)
+                .map(|()| None),
+            Selection::ObservedFolders => {
+                self.lease
+                    .mount
+                    .list_folders_observed(&node.token, &request, &mut accept)
+            }
         };
         if let Some(error) = failure {
             return Err(error);
         }
-        result?;
+        let observation = result?;
         check_cancel(&request)?;
         self.lease.issue(
             entries
                 .iter()
                 .map(|entry| (&entry.node.token, entry.entry.kind)),
         )?;
-        Ok(entries)
+        Ok((entries, observation))
     }
 
     /// Viewer/thumbnail brokers consume this source without inventing a native path.
@@ -359,6 +394,15 @@ impl ContentConstruction {
         }
         Ok(())
     }
+}
+
+/// Which entries a listing returns, and whether it also asks for the provider's
+/// full watch observation of the directory.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Selection {
+    All,
+    Folders,
+    ObservedFolders,
 }
 
 /// Validation shared by complete, folder-only and presence listings: cancellation,

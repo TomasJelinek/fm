@@ -128,6 +128,20 @@ pub trait MountedFilesystem: Send + Sync + 'static {
         self.list(directory, cancel, emit)
     }
 
+    /// `list_folders` that also returns the full watch observation of the
+    /// directory from the same enumeration: the `watch::signature` multiset of
+    /// every entry, files and hidden entries included, with the metadata a watch
+    /// probe reads. `None` when the provider has no such observation, as by
+    /// default.
+    fn list_folders_observed(
+        &self,
+        directory: &NodeToken,
+        cancel: &Cancellation,
+        emit: &mut dyn FnMut(ProviderEntry) -> bool,
+    ) -> Result<Option<[u8; 32]>, ProviderError> {
+        self.list_folders(directory, cancel, emit).map(|()| None)
+    }
+
     /// Provider root semantics; the host never parses a caption or joins `..`.
     fn parent(
         &self,

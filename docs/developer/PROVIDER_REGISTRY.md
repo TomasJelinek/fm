@@ -78,9 +78,13 @@ disclosure probe at the first folder without issuing references; the tokens it
 inspects before that folder are charged to the same 32 MiB token ledger and
 one-million-callback ceiling, so a generic provider's long file prefix fails as
 resource-limited instead of growing the probe's duplicate set. Entries a provider
-emits after the stop cannot change the answer. See
-[inline provider branches](INLINE_TREES.md) for the backend tree model, ownership,
-limits and pending production projection.
+emits after the stop cannot change the answer. `list_folders_observed` returns the
+same rows plus the provider's full watch observation of the directory from that
+enumeration: the native adapter adds every entry, files included, with the
+metadata a watch probe reads (one metadata read per skipped file where enumeration
+lacks it), still without encoding or binding files; other providers return none.
+See [inline provider branches](INLINE_TREES.md) for the backend tree model,
+ownership, limits and pending production projection.
 
 Listings reject duplicate/self-referencing tokens, contradictory known kinds,
 oversized output and cancellation. A failed registry listing issues no partial

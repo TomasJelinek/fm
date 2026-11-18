@@ -5,15 +5,28 @@ use midnight_core::NodeRef;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// Lists the root as one folder (1), folder 1 as `rows`, and counts every entry
-/// emitted after the root listing.
+/// emitted after the root listing and every observed folder listing.
 struct Emitting {
     root: Vec<ProviderEntry>,
     rows: Vec<ProviderEntry>,
     emitted: AtomicUsize,
+    observed: AtomicUsize,
 }
 struct EmittingProvider(Arc<Emitting>);
 
+const OBSERVATION: [u8; 32] = [7; 32];
+
 impl MountedFilesystem for Emitting {
+    fn list_folders_observed(
+        &self,
+        node: &NodeToken,
+        cancel: &Cancellation,
+        emit: &mut dyn FnMut(ProviderEntry) -> bool,
+    ) -> Result<Option<[u8; 32]>, ProviderError> {
+        self.observed.fetch_add(1, Ordering::SeqCst);
+        self.list(node, cancel, emit).map(|()| Some(OBSERVATION))
+    }
+
     fn list(
         &self,
         node: &NodeToken,
@@ -60,6 +73,7 @@ fn emitting_tree(rows: Vec<ProviderEntry>) -> (ProviderRegistry, Arc<Emitting>, 
         root: vec![directory(1)],
         rows,
         emitted: AtomicUsize::new(0),
+        observed: AtomicUsize::new(0),
     });
     let address = StoredLocation::new(
         ProviderId::new("test.tree.probe").unwrap(),
@@ -188,6 +202,65 @@ fn a_probe_reports_a_branch_with_more_folders_than_a_listing_can_hold() {
     // Only an expansion has to hold every child within the listing budget.
     run(&mut tree, Some(branch), TreeRequest::Expand);
     assert_eq!(row(&tree, 1).error, Some(ProviderError::ResourceLimited));
+}
+
+#[test]
+fn only_an_expansion_in_a_watched_tree_keeps_the_provider_observation() {
+    let (_registry, provider, mut tree) = emitting_tree(vec![directory(4)]);
+    let branch = row(&tree, 1).id;
+    let observation = |tree: &DirectoryTree| tree.watch_listing(branch).unwrap().2;
+    // An unwatched tree never asks its provider for an observation.
+    run(&mut tree, Some(branch), TreeRequest::Expand);
+    assert_eq!(observation(&tree), None);
+    tree.observe_listings();
+    // A probe asks for presence only, and a refresh starts no branch watch.
+    let child = row(&tree, 4).id;
+    run(&mut tree, Some(child), TreeRequest::Probe);
+    run(&mut tree, Some(branch), TreeRequest::Refresh);
+    assert_eq!(observation(&tree), None);
+    assert_eq!(provider.observed.load(Ordering::SeqCst), 0);
+    run(&mut tree, Some(branch), TreeRequest::Expand);
+    assert_eq!(provider.observed.load(Ordering::SeqCst), 1);
+    assert_eq!(observation(&tree), Some(OBSERVATION));
+    // A later refresh replaces the listing and drops its observation, so that
+    // branch's first watch probe still requests maintenance.
+    run(&mut tree, Some(branch), TreeRequest::Refresh);
+    assert_eq!(observation(&tree), None);
+    assert_eq!(provider.observed.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn an_observed_native_folder_listing_matches_the_watch_probe() {
+    let directory = tempfile::tempdir().unwrap();
+    std::fs::write(directory.path().join("file.txt"), b"contents").unwrap();
+    std::fs::write(directory.path().join(".hidden"), b"").unwrap();
+    std::fs::create_dir(directory.path().join("folder")).unwrap();
+    let filesystem: Arc<dyn midnight_core::FileSystem> =
+        Arc::new(midnight_platform::LocalFileSystem::new(None));
+    let address = native_location(directory.path()).unwrap();
+    let registry = ProviderRegistry::default();
+    registry
+        .register(
+            address.provider().clone(),
+            Arc::new(NativeProvider::new(filesystem.clone())),
+        )
+        .unwrap();
+    let location = registry
+        .resolve(&address, &Cancellation::default())
+        .unwrap();
+    let cancel = Cancellation::default();
+    let (rows, observation) = location
+        .list_folders_observed(location.root(), &cancel, 8)
+        .unwrap();
+    assert_eq!(rows.len(), 1, "only the folder becomes a row");
+    let probe =
+        crate::watch::signature::probe(filesystem.as_ref(), directory.path(), false, &cancel)
+            .unwrap();
+    assert_eq!(
+        observation,
+        Some(probe.full),
+        "files and hidden entries join the observation"
+    );
 }
 
 /// Before/after evidence for presence probes on a real directory. Run with

@@ -123,8 +123,12 @@ generation cancellation rules and prevent canceled option publications.
   projection.
 - The watch compares a target's first probe with its accepted listing. The
   root's complete listing is also its full observation, so an unchanged root
-  requests no pass when the tree opens. A folder-only branch has no full
-  observation of the files it hides, so its first probe still requests a pass.
+  requests no pass when the tree opens. Once the session is watched, each
+  expansion also returns the provider's full observation of the listed
+  directory, files included (the native adapter reads one metadata record per
+  skipped file where enumeration lacks it), so an unchanged expanded branch
+  requests no pass either. A branch whose provider has no such observation, or
+  that a refresh re-listed before its first probe, still requests one.
 - Only provider-supplied failure text gets a details report. Admission,
   staleness, capacity and cancellation outcomes carry just their bounded
   message, so routine command races create no spool files. Reports live in the

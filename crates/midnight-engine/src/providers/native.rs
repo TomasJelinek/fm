@@ -306,7 +306,8 @@ impl MountedFilesystem for NativeMount {
         cancel: &Cancellation,
         emit: &mut dyn FnMut(ProviderEntry) -> bool,
     ) -> Result<(), ProviderError> {
-        self.enumerate(directory, cancel, false, emit)
+        self.enumerate(directory, cancel, false, None, emit)
+            .map(|_| ())
     }
 
     /// Regular files are skipped before stat, locale formatting, name encoding and
@@ -318,7 +319,22 @@ impl MountedFilesystem for NativeMount {
         cancel: &Cancellation,
         emit: &mut dyn FnMut(ProviderEntry) -> bool,
     ) -> Result<(), ProviderError> {
-        self.enumerate(directory, cancel, true, emit)
+        self.enumerate(directory, cancel, true, None, emit)
+            .map(|_| ())
+    }
+
+    /// Every enumerated entry also joins the watch observation, a skipped file
+    /// with the listing metadata a watch probe reads (one metadata read where
+    /// enumeration lacks it), still without locale formatting, encoding or a token.
+    fn list_folders_observed(
+        &self,
+        directory: &NodeToken,
+        cancel: &Cancellation,
+        emit: &mut dyn FnMut(ProviderEntry) -> bool,
+    ) -> Result<Option<[u8; 32]>, ProviderError> {
+        let mut observed = crate::watch::signature::Signature::default();
+        let complete = self.enumerate(directory, cancel, true, Some(&mut observed), emit)?;
+        Ok(complete.then(|| observed.digest(false)))
     }
 
     fn parent(
@@ -357,13 +373,16 @@ impl MountedFilesystem for NativeMount {
 }
 
 impl NativeMount {
+    /// Returns whether every entry was enumerated, so the consumer never stopped.
+    /// `observed` collects the watch signature of every entry when requested.
     fn enumerate(
         &self,
         directory: &NodeToken,
         cancel: &Cancellation,
         folders_only: bool,
+        mut observed: Option<&mut crate::watch::signature::Signature>,
         emit: &mut dyn FnMut(ProviderEntry) -> bool,
-    ) -> Result<(), ProviderError> {
+    ) -> Result<bool, ProviderError> {
         check_cancel(cancel)?;
         let node = self
             .nodes
@@ -397,6 +416,15 @@ impl NativeMount {
                     if folders_only
                         && !matches!(entry.kind, EntryKind::Directory | EntryKind::DirectoryLink)
                     {
+                        if let Some(observed) = observed.as_deref_mut() {
+                            crate::watch::signature::listing_metadata(
+                                self.filesystem.as_ref(),
+                                &mut entry,
+                            );
+                            observed
+                                .add(&entry)
+                                .map_err(|()| ProviderError::ResourceLimited)?;
+                        }
                         return Ok(None);
                     }
                     let path = path.to_owned();
@@ -404,6 +432,11 @@ impl NativeMount {
                         && let Ok(metadata) = self.filesystem.entry_metadata(&path)
                     {
                         entry.metadata = metadata;
+                    }
+                    if let Some(observed) = observed.as_deref_mut() {
+                        observed
+                            .add(&entry)
+                            .map_err(|()| ProviderError::ResourceLimited)?;
                     }
                     check_cancel(cancel)?;
                     crate::localize_metadata(&mut entry.metadata, self.locale.as_deref());
@@ -444,7 +477,8 @@ impl NativeMount {
                 error.path, error.kind,
             ))
         })?;
-        check_cancel(cancel)
+        check_cancel(cancel)?;
+        Ok(!stopped)
     }
 }
 
