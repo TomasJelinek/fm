@@ -136,8 +136,9 @@ impl Drop for WindowPermit {
     }
 }
 
-/// Owns an admitted window until its backend worker starts. If the runtime drops the
-/// worker job without running it, the slot is released and the opening fails.
+/// Owns an admitted window until its backend worker starts. If the resident pool drops
+/// the worker job without running it (a refused or skipped submission), the slot is
+/// released and the opening fails.
 struct WindowStart {
     _permit: WindowPermit,
     output: Arc<Mailbox>,
