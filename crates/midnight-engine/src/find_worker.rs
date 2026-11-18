@@ -41,8 +41,10 @@ impl CurrentDirectory {
 }
 
 /// Searches the native `service`. `locale` formats the modification time of each
-/// published result only: never of an examined node that does not match, nor of
-/// a duplicate candidate that joins no published group.
+/// published result: never of an examined node that does not match, nor of a
+/// duplicate candidate that joins no group or whose group the result limit omits.
+/// A group is formatted before its strings are charged, so the one group that the
+/// retained-bytes budget refuses (which ends the search) is formatted unpublished.
 pub(crate) fn search_with_location(
     service: &dyn FindService,
     locale: Option<&dyn LocaleService>,
