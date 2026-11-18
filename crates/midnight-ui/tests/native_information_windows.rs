@@ -156,69 +156,127 @@ fn about_action_opens_independent_window_with_a_working_close_button() {
     assert!(h.main.window().is_visible());
 }
 
+slint::slint! {
+    import { AboutSlint } from "std-widgets.slint";
+    // Slint's attribution without the About window's cover, in a column of the
+    // same width: the reference for the covered one.
+    export component BareAttribution inherits Window {
+        in property <length> column;
+        VerticalLayout {
+            alignment: start;
+            AboutSlint { width: root.column; }
+        }
+    }
+}
+
+/// An item's rectangle in its native window: x, y, width, height.
+fn bounds(item: &i_slint_core::item_tree::ItemRc) -> [f32; 4] {
+    let rect = item.geometry();
+    let at = item.map_to_native_window(rect.origin);
+    [at.x, at.y, rect.width(), rect.height()]
+}
+
+fn assert_near(actual: f32, expected: f32, what: &str) {
+    assert!(
+        (actual - expected).abs() < 0.5,
+        "{what}: {actual} instead of {expected}"
+    );
+}
+
 #[test]
 fn about_window_keeps_slint_attribution_visible_without_opening_its_link() {
     let (h, opened) = Harness::recording_urls();
     h.main.invoke_show_about();
     let child = h.child();
+    let reference = BareAttribution::new().unwrap();
+    reference.show().unwrap();
+    let bare = h.windows.borrow().last().unwrap().clone();
+    assert_eq!(
+        h.windows.borrow().len(),
+        3,
+        "the reference has its own window"
+    );
     for (width, height) in [(900, 650), (320, 200)] {
         modeless::draw(&child, width, height, "native-about-attribution");
-        let badge =
-            modeless::accessible_item(&child, AccessibleRole::Image, "#MadeWithSlint").unwrap();
-        let version = modeless::accessible_item(
-            &child,
+        let find = |role, label| modeless::accessible_item(&child, role, label).unwrap();
+        let tagline = bounds(&find(
+            AccessibleRole::Text,
+            "A focused, two-pane file manager.",
+        ));
+        let badge = bounds(&find(AccessibleRole::Image, "#MadeWithSlint"));
+        let version = bounds(&find(
             AccessibleRole::Text,
             "Version 1.18.1\nhttps://slint.dev/",
-        )
-        .unwrap();
-        let (rect, at) = (
-            badge.geometry(),
-            badge.map_to_native_window(badge.geometry().origin),
+        ));
+        let size = format!("{width}x{height}");
+        // The attribution keeps the bare widget's place, whatever the platform's
+        // fonts: the whole column below the tagline, inside AboutSlint's 12px
+        // padding, with its 8px spacing before the version text.
+        assert_near(badge[0], tagline[0] + 12.0, &format!("{size} badge x"));
+        assert_near(badge[2], tagline[2] - 24.0, &format!("{size} badge width"));
+        assert_near(
+            badge[1],
+            tagline[1] + tagline[3] + 8.0 + 12.0,
+            &format!("{size} badge y"),
         );
-        assert!(rect.height() >= 48.0, "{width}x{height}: {rect:?}");
-        // At 320x200 the version text lies below the scroll viewport, as before.
-        assert!(version.geometry().height() > 0.0);
-        if width == 900 {
-            assert!(version.is_visible());
-            // The bare widget's geometry before the covering wrapper was added
-            // (Slint 1.18.1): the wrapper must not resize the attribution.
-            let near = |actual: f32, expected: f32| (actual - expected).abs() < 0.5;
-            assert!(
-                near(at.x, 20.0)
-                    && near(at.y, 107.0)
-                    && near(rect.width(), 860.0)
-                    && near(rect.height(), 393.49),
-                "{at:?} {rect:?}"
-            );
-            let size = version.geometry().size;
-            assert!(
-                near(size.width, 860.0) && near(size.height, 27.0),
-                "{size:?}"
-            );
-            let position =
-                slint::LogicalPosition::new(at.x + rect.width() / 2.0, at.y + rect.height() / 2.0);
+        assert_near(version[0], badge[0], &format!("{size} version x"));
+        assert_near(version[2], badge[2], &format!("{size} version width"));
+        assert_near(
+            version[1],
+            badge[1] + badge[3] + 8.0,
+            &format!("{size} version y"),
+        );
+        assert!(
+            badge[3] >= 48.0 && version[3] > 0.0,
+            "{size}: {badge:?} {version:?}"
+        );
+        // ... and the bare widget's badge width at that column width.
+        reference.set_column(tagline[2]);
+        modeless::layout(&bare, tagline[2].ceil() as u32, 1000);
+        let expected = bounds(
+            &modeless::accessible_item(&bare, AccessibleRole::Image, "#MadeWithSlint").unwrap(),
+        );
+        assert_near(badge[2], expected[2], &format!("{size} bare badge width"));
+        if width != 900 {
+            // At 320x200 the About text scrolls, so its rows keep their minimum
+            // heights, as without the cover: the badge keeps AboutSlint's 48px
+            // minimum and the version text lies below the viewport.
+            continue;
+        }
+        // With room for the whole text, the badge has the bare widget's height too.
+        assert_near(badge[3], expected[3], "900x650 bare badge height");
+        assert!(find(AccessibleRole::Text, "Version 1.18.1\nhttps://slint.dev/").is_visible());
+        // Slint's own link area spans the whole widget, padding included: no click
+        // on it may open the URL.
+        let [left, top, across, tall] = badge;
+        let middle = left + across / 2.0;
+        let points = [
+            (middle, top + tall / 2.0),
+            (left + 1.0, top + 1.0),
+            (left + across - 1.0, top + tall - 1.0),
+            (middle, top - 6.0),
+            (middle, version[1] + version[3] / 2.0),
+            (middle, version[1] + version[3] + 6.0),
+        ];
+        for (px, py) in points {
+            let position = slint::LogicalPosition::new(px, py);
+            let button = slint::platform::PointerEventButton::Left;
             for event in [
                 WindowEvent::PointerMoved { position },
-                WindowEvent::PointerPressed {
-                    position,
-                    button: slint::platform::PointerEventButton::Left,
-                },
-                WindowEvent::PointerReleased {
-                    position,
-                    button: slint::platform::PointerEventButton::Left,
-                },
+                WindowEvent::PointerPressed { position, button },
+                WindowEvent::PointerReleased { position, button },
             ] {
                 child.window().dispatch_event(event);
             }
-            slint::platform::update_timers_and_animations();
-            assert!(
-                opened.borrow().is_empty(),
-                "the attribution must not open a URL: {:?}",
-                opened.borrow()
-            );
         }
+        slint::platform::update_timers_and_animations();
+        assert!(
+            opened.borrow().is_empty(),
+            "the attribution must not open a URL: {:?}",
+            opened.borrow()
+        );
     }
-    assert!(child.window().is_visible(), "the click leaves About open");
+    assert!(child.window().is_visible(), "the clicks leave About open");
 }
 
 #[test]
