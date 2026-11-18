@@ -341,18 +341,40 @@ impl Harness {
         .collect()
     }
 
+    pub fn cursor(&self, pane: PaneId) -> i32 {
+        match pane {
+            PaneId::Left => self.ui.window.get_left_cursor(),
+            PaneId::Right => self.ui.window.get_right_cursor(),
+        }
+    }
+
+    /// Click `name` and focus the file list, as a user does before a key press.
+    #[track_caller]
     pub fn focus(&mut self, pane: PaneId, name: &str, toggle: bool) {
         let index = self
             .rows(pane)
             .iter()
             .position(|row| row.name == name)
-            .unwrap();
+            .unwrap_or_else(|| panic!("the {pane:?} panel shows no row {name:?}"));
         self.ui.window.invoke_activate(pane.index() as i32);
         self.ui
             .window
             .invoke_row_click(pane.index() as i32, index as i32, toggle, false);
         self.ui.window.invoke_focus_files();
         self.settle();
+        // Keys act on the cursor row. Fail here rather than in a later wait for a
+        // key's result when the click did not leave the cursor on the row, for
+        // example because the panel was replaced meanwhile.
+        let cursor = self.cursor(pane);
+        let rows = self.rows(pane);
+        let current = usize::try_from(cursor).ok().and_then(|row| rows.get(row));
+        assert!(
+            current.is_some_and(|row| row.name == name),
+            "the {pane:?} cursor left the clicked row {name:?}: cursor {cursor} is on {:?} \
+             of {} rows",
+            current.map(|row| row.name.as_str()),
+            rows.len()
+        );
     }
 
     fn apply(&mut self, event: Event, presenter: &mut Presenter, send: &dyn Fn(Command) -> bool) {
