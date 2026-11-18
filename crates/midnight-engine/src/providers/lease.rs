@@ -5,10 +5,10 @@ use super::{
 use midnight_core::{
     Cancellation, EntryKind, MountRef, NodeRef, NodeToken, SizeDirectoryIdentity, StoredLocation,
 };
+#[cfg(test)]
 use midnight_plugin_host::{CapturedFile, ContentSource};
 use std::{
     collections::{HashMap, HashSet},
-    fmt,
     sync::{Arc, Mutex, RwLock, RwLockReadGuard, TryLockError},
 };
 
@@ -55,6 +55,10 @@ pub struct MountedEntry {
 impl MountedLocation {
     pub(crate) fn release_on_worker(self) -> Result<(), ProviderError> {
         self.lease.release_on_worker()
+    }
+    /// Gives this location's lease reference up (`MountLease::give_up`).
+    fn give_up(self) {
+        self.lease.give_up();
     }
     pub(super) fn new(
         address: StoredLocation,
@@ -114,7 +118,9 @@ impl MountedLocation {
         Ok(identity)
     }
 
-    pub fn parent(
+    /// Test-only until a consumer looks up provider parents through a lease.
+    #[cfg(test)]
+    pub(crate) fn parent(
         &self,
         node: &NodeRef,
         cancel: &Cancellation,
@@ -391,8 +397,11 @@ impl MountedLocation {
         Ok((entries, observation))
     }
 
-    /// Viewer/thumbnail brokers consume this source without inventing a native path.
-    pub fn open_content(
+    /// Viewer/thumbnail brokers would consume this source without inventing a native
+    /// path. Test-only until a production consumer exists, which first needs leased
+    /// content to give up a tainted reference (backlog ARCH-06).
+    #[cfg(test)]
+    pub(crate) fn open_content(
         &self,
         node: &NodeRef,
         cancel: &Cancellation,
@@ -443,11 +452,13 @@ impl MountedLocation {
     }
 }
 
+#[cfg(test)]
 struct ContentConstruction {
     source: Option<Arc<dyn ContentSource>>,
     captured: Option<CapturedFile>,
     lease: Option<Arc<MountLease>>,
 }
+#[cfg(test)]
 impl ContentConstruction {
     fn release_source(&mut self) -> Result<(), ProviderError> {
         if let Some(source) = self.source.take() {
@@ -532,24 +543,47 @@ impl<'a> TokenLedger<'a> {
 impl MountLease {
     fn release_on_worker(self: Arc<Self>) -> Result<(), ProviderError> {
         use crate::copy_nested_retirement::{self as nested, Retained};
-        nested::provider_step(|| {
-            let Some(owner) = Arc::into_inner(self) else {
-                return Ok(());
-            };
-            let MountLease {
-                mount,
-                _registration,
-                _permit,
-                ..
-            } = owner;
-            let mut tail = Retained::new((_registration, _permit));
-            nested::release_mount(mount)?;
-            let (registration, permit) = tail.take();
-            let mut permit = Retained::new(permit);
-            registration.release_on_worker()?;
-            drop(permit.take());
-            Ok(())
-        })
+        nested::provider_release(
+            self,
+            |lease| {
+                let Some(owner) = Arc::into_inner(lease) else {
+                    return Ok(());
+                };
+                let MountLease {
+                    mount,
+                    _registration,
+                    _permit,
+                    ..
+                } = owner;
+                let mut tail = Retained::new((_registration, _permit));
+                nested::release_mount(mount)?;
+                let (registration, permit) = tail.take();
+                let mut permit = Retained::new(permit);
+                registration.release_on_worker()?;
+                drop(permit.take());
+                Ok(())
+            },
+            Self::give_up,
+        )
+    }
+    /// Where the release cannot run (a quarantined retirement, or a failed release of
+    /// a resource that this lease's owner guards), a shared reference only gives up its
+    /// count. The last one gives its mount up and keeps its registration and mount
+    /// permit retained: the mount's teardown is unconfirmed, and a plugin-backed mount
+    /// relies on its registration. The issued and reclaim tables are plain memory.
+    fn give_up(self: Arc<Self>) {
+        use crate::copy_nested_retirement::{self as nested, Retained};
+        let Some(owner) = Arc::into_inner(self) else {
+            return;
+        };
+        let MountLease {
+            mount,
+            _registration,
+            _permit,
+            ..
+        } = owner;
+        let _retained = Retained::new((_registration, _permit));
+        nested::give_up_mount(mount);
     }
     /// Shared reclaim gate for one call that may bind, emit or issue references.
     fn listing(&self) -> Result<RwLockReadGuard<'_, ()>, ProviderError> {
@@ -607,14 +641,16 @@ impl MountLease {
     }
 }
 
+#[cfg(test)]
 struct LeasedContent {
     source: CapturedFile,
     // Source destructor runs while the mount and plugin registration are alive.
     lease: Arc<MountLease>,
 }
 
-impl fmt::Debug for LeasedContent {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+#[cfg(test)]
+impl std::fmt::Debug for LeasedContent {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("LeasedContent")
             .field("mount", &self.lease.reference)
@@ -622,6 +658,7 @@ impl fmt::Debug for LeasedContent {
     }
 }
 
+#[cfg(test)]
 impl ContentSource for LeasedContent {
     fn cleanup_unconfirmed(&self) -> bool {
         self.source.cleanup_unconfirmed()

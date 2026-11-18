@@ -94,6 +94,15 @@ pub trait MountedFilesystem: Send + Sync + 'static {
         std::mem::forget(self);
         Err(crate::copy_nested_retirement::provider_error())
     }
+    /// Give up this reference where its release cannot run: inside a retirement that
+    /// is already quarantined, or after the release of a resource it guards failed.
+    /// Never waits and destroys no native resource. A shared reference only gives up
+    /// its count; the last owner (atomic `Arc::into_inner`) passes the archive
+    /// references it holds on to their own quarantined release, frees plain memory and
+    /// keeps everything else retained. The default retains the incoming Arc.
+    fn release_quarantined(self: Arc<Self>) {
+        std::mem::forget(self);
+    }
     /// Read-only target identity for ancestor cycle detection. No resolved path
     /// or operation authority is returned. Unsupported ordinary directories keep
     /// their existing browsing semantics; directory links require an identity.

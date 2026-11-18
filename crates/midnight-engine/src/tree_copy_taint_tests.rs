@@ -1,0 +1,270 @@
+//! A tainted archive session held by a tree Copy capture, its prepared roots and a
+//! pane navigation from the same tree. However its owners release or give up their
+//! references, the last one reaches the host's tainted release, which stops the
+//! worker and returns its process permit.
+use super::*;
+use crate::{
+    archives::Retirement,
+    copy_nested_retirement as nested,
+    providers::{ProviderRegistry, captured_archive_root},
+    tree_actor::WorkerBudget,
+    tree_projection::ProjectionOptions,
+};
+
+/// `TaintedHost::id`.
+const HOST: u64 = 72;
+
+fn member(entry: u64, name: &str) -> ArchiveNode {
+    ArchiveNode {
+        id: VirtualEntryId { mount: HOST, entry },
+        parent: 1,
+        raw_name: Arc::from(name.as_bytes()),
+        display_name: name.into(),
+        kind: EntryKind::Directory,
+        size: None,
+        readable: false,
+        modified: None,
+    }
+}
+
+/// A tree over the tab's session, seeded with the directories `a` and `b`.
+fn tree_over(tab: &Arc<dyn ArchiveMount>) -> Session {
+    let location = ArchiveLocation {
+        mount: Some(tab.clone()),
+        address: ArchiveAddress {
+            provider: "taint-fixture".into(),
+            format: None,
+            container: std::env::temp_dir().join("tainted.zip"),
+            source_version: vec![1],
+            components: Vec::new(),
+        },
+        directory: 1,
+        trail: vec![(1, "tainted.zip".into())],
+    };
+    let entries: Arc<[Entry]> = Arc::from([
+        Entry::from_archive(member(2, "a")),
+        Entry::from_archive(member(3, "b")),
+    ]);
+    let root = TreeRootSnapshot {
+        pane: PaneId::Left,
+        navigation: NavigationId(1),
+        index: Arc::new(DirectoryIndex::from_entries(&entries)),
+        entries,
+    };
+    let opened = captured_archive_root(&location, &root.entries, &Cancellation::default()).unwrap();
+    Session::new(
+        root,
+        opened,
+        Arc::new(ProviderRegistry::default()),
+        WorkerBudget::new(Arc::new(Semaphore::new(2))),
+        ProjectionOptions::default(),
+        &Cancellation::default(),
+        crate::ReportArena::testing(),
+    )
+    .unwrap()
+}
+
+fn select(session: &mut Session, action: TreeSelectionAction) -> TreePublication {
+    let current = session.publication().unwrap();
+    assert!(session.commit(&current.view));
+    session
+        .select(&TreeSelectionRequest {
+            view: current.view,
+            revision: SelectionRevision(current.selection_revision.0 + 1),
+            seed: None,
+            seed_revision: SelectionRevision(0),
+            action,
+        })
+        .unwrap();
+    session.publication().unwrap()
+}
+
+/// The tree's Copy capture of both directories (holding the one capture permit of
+/// `capacity`) and, when asked, a pane navigation into `a` that the pane's archive
+/// guard adopted. The tree itself is closed with ordinary drops.
+fn capture_and_navigate(
+    tab: &Arc<dyn ArchiveMount>,
+    capacity: &Arc<Semaphore>,
+    navigate: bool,
+) -> (
+    Arc<dyn CapturedTransferSources>,
+    Option<Arc<dyn ArchiveMount>>,
+) {
+    let mut session = tree_over(tab);
+    let rows = session
+        .projection()
+        .rows
+        .iter()
+        .map(|row| row.id)
+        .collect::<Vec<_>>();
+    assert_eq!(rows.len(), 2);
+    select(&mut session, TreeSelectionAction::Toggle(rows[0]));
+    let selected = select(&mut session, TreeSelectionAction::Toggle(rows[1]));
+    let capture = session
+        .capture_transfer(
+            &TreeTransferRequest {
+                intent: TransferIntent::Copy,
+                view: selected.view.clone(),
+                request: TreeRequestId(1),
+                selection_revision: selected.selection_revision,
+                selection: selected.selection.clone(),
+                fallback: None,
+                cancel: Cancellation::default(),
+            },
+            capacity,
+            &Cancellation::default(),
+        )
+        .unwrap();
+    assert_eq!(capture.root_count, 2);
+    let pane = navigate.then(|| {
+        let TreeNavigationTarget::Archive(mut location) = session
+            .navigate(
+                &selected.view,
+                TreeRequestId(2),
+                rows[0],
+                NavigationId(2),
+                &Cancellation::default(),
+            )
+            .unwrap()
+        else {
+            panic!("archive navigation expected")
+        };
+        // As the pane's archive navigation adopts it.
+        let (pane, _, _) = Retirement::copy_mount_for_test(location.mount.take().unwrap());
+        pane
+    });
+    drop(session);
+    (capture.sources, pane)
+}
+
+/// How a release step runs: in a fresh Copy context of its own, or in one that an
+/// earlier failure already quarantined.
+#[derive(Clone, Copy, Debug)]
+enum Context {
+    Fresh,
+    Quarantined,
+}
+impl Context {
+    fn context(self) -> nested::Context {
+        let context = nested::Context::default();
+        if matches!(self, Self::Quarantined) {
+            context.quarantine();
+        }
+        context
+    }
+}
+
+#[test]
+fn a_tainted_session_shared_by_a_tree_copy_capture_and_a_navigation_ends_its_worker_in_either_order()
+ {
+    let active = Arc::new(Semaphore::new(2));
+    for pane_context in [Context::Fresh, Context::Quarantined] {
+        for copy_first in [true, false] {
+            let case = format!("pane {pane_context:?}, copy first: {copy_first}");
+            let (host, probe) = Retirement::tainted_host_for_test(&active);
+            let (tab, _, _) = Retirement::copy_mount_for_test(host);
+            let capacity = Arc::new(Semaphore::new(1));
+            let (copy, pane) = capture_and_navigate(&tab, &capacity, true);
+            let pane = pane.unwrap();
+            probe.taint();
+            let host = || (probe.releases(), probe.stopped(), probe.dropped());
+            // The tab gives up only its count.
+            assert!(
+                Context::Fresh
+                    .context()
+                    .with(|| nested::release_archive(tab))
+                    .is_err(),
+                "{case}"
+            );
+            assert_eq!(host(), (0, false, false), "{case}");
+            let release_copy = move || {
+                Context::Fresh
+                    .context()
+                    .with(|| nested::release_transfer_sources(copy))
+                    .is_err()
+            };
+            let release_pane = move || {
+                pane_context
+                    .context()
+                    .with(|| nested::release_archive(pane))
+                    .is_err()
+            };
+            if copy_first {
+                release_in_order(release_copy, release_pane, host, &active, &case);
+            } else {
+                release_in_order(release_pane, release_copy, host, &active, &case);
+            }
+            // Given up with its unconfirmed targets, the capture keeps its permit.
+            assert_eq!(capacity.available_permits(), 0, "{case}");
+        }
+    }
+}
+
+/// Each release fails, as every release of a tainted session does. The first only
+/// gives up counts; the last one reaches the host's tainted release, which stops the
+/// worker and returns its process permit without destroying the tainted source.
+fn release_in_order(
+    first: impl FnOnce() -> bool,
+    last: impl FnOnce() -> bool,
+    host: impl Fn() -> (usize, bool, bool),
+    active: &Semaphore,
+    case: &str,
+) {
+    assert!(first(), "{case}: a tainted release succeeded");
+    assert_eq!(
+        host(),
+        (0, false, false),
+        "{case}: a shared release ended it"
+    );
+    assert_eq!(active.available_permits(), 1, "{case}");
+    assert!(last(), "{case}: a tainted release succeeded");
+    assert_eq!(
+        host(),
+        (1, true, false),
+        "{case}: the last owner missed the host"
+    );
+    assert_eq!(active.available_permits(), 2, "{case}: process permit kept");
+}
+
+#[test]
+fn prepared_tree_copy_archive_roots_dropped_in_a_copy_give_up_the_tainted_session() {
+    let active = Arc::new(Semaphore::new(2));
+    for context in [Context::Fresh, Context::Quarantined] {
+        let (host, probe) = Retirement::tainted_host_for_test(&active);
+        let (tab, _, _) = Retirement::copy_mount_for_test(host);
+        // Preparing a root lists its parent directory before the taint.
+        probe.answer_lists(vec![member(2, "a"), member(3, "b")]);
+        let capacity = Arc::new(Semaphore::new(1));
+        let (copy, _) = capture_and_navigate(&tab, &capacity, false);
+        let service = midnight_platform::LocalFileSystem::new(None);
+        let PreparedCapturedTransfer::Copy(roots) = copy
+            .prepare_with_links(&service, CopyLinkPolicy::Reject, &Cancellation::default())
+            .unwrap()
+        else {
+            panic!("tree Copy roots expected")
+        };
+        assert_eq!(roots.len(), 2);
+        // Preparation handed the capture over to its roots.
+        Context::Fresh
+            .context()
+            .with(|| nested::release_transfer_sources(copy))
+            .unwrap();
+        probe.taint();
+        assert!(
+            Context::Fresh
+                .context()
+                .with(|| nested::release_archive(tab))
+                .is_err()
+        );
+        assert_eq!(probe.releases(), 0, "{context:?}");
+        // The Copy job's payload drop: the first archive root fails on the tainted
+        // session and quarantines the context, unless it already was.
+        let copy_context = context.context();
+        copy_context.with(|| drop(roots));
+        assert!(copy_context.is_quarantined(), "{context:?}");
+        assert_eq!(probe.releases(), 1, "{context:?}: the worker was kept");
+        assert!(probe.stopped() && !probe.dropped(), "{context:?}");
+        assert_eq!(active.available_permits(), 2, "{context:?}");
+        assert_eq!(capacity.available_permits(), 0, "{context:?}");
+    }
+}

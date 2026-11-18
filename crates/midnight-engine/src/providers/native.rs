@@ -161,9 +161,11 @@ impl NativeProvider {
         }
     }
 
-    /// Production injects the installed filesystem plugin's capture service.
-    /// A browse-only adapter returns Unsupported for content, never native I/O.
-    pub fn with_capture(mut self, capture: NativeCapture) -> Self {
+    /// Test seam for content capture. Production providers are browse-only:
+    /// `NativeProvider::audited` installs no capture, so their content is
+    /// Unsupported, never native I/O.
+    #[cfg(test)]
+    pub(crate) fn with_capture(mut self, capture: NativeCapture) -> Self {
         self.audited = false;
         self.capture = Some(capture);
         self

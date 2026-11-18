@@ -359,3 +359,171 @@ fn failed_mounted_release_retains_registration_and_mount_accounting() {
     registry.release_on_worker().unwrap();
     assert_eq!(calls.drops.load(Ordering::SeqCst), 0);
 }
+
+#[test]
+fn a_failed_context_lease_gives_up_the_remaining_lease_and_keeps_its_registration_and_permit() {
+    /// Refuses its release and retains itself.
+    struct Refusal;
+    impl MountedFilesystem for Refusal {
+        fn list(
+            &self,
+            _: &NodeToken,
+            _: &Cancellation,
+            _: &mut dyn FnMut(ProviderEntry) -> bool,
+        ) -> Result<(), ProviderError> {
+            Ok(())
+        }
+        fn parent(
+            &self,
+            _: &NodeToken,
+            _: &Cancellation,
+        ) -> Result<Option<NodeToken>, ProviderError> {
+            Ok(None)
+        }
+        fn release_on_worker(self: Arc<Self>) -> Result<(), ProviderError> {
+            std::mem::forget(self);
+            Err(ProviderError::Failed("controlled close refusal".into()))
+        }
+    }
+    struct Refusing;
+    impl FilesystemProvider for Refusing {
+        fn resolve(
+            &self,
+            _: &StoredLocation,
+            _: &Cancellation,
+        ) -> Result<OpenedLocation, ProviderError> {
+            Ok(OpenedLocation {
+                root: NodeToken::new(b"root").unwrap(),
+                mount: Arc::new(Refusal),
+            })
+        }
+        fn release_on_worker(self: Arc<Self>) -> Result<(), ProviderError> {
+            Ok(())
+        }
+    }
+    /// Records how its last owner lets go of it.
+    struct GivenUp(Arc<Calls>);
+    impl MountedFilesystem for GivenUp {
+        fn list(
+            &self,
+            _: &NodeToken,
+            _: &Cancellation,
+            _: &mut dyn FnMut(ProviderEntry) -> bool,
+        ) -> Result<(), ProviderError> {
+            Ok(())
+        }
+        fn parent(
+            &self,
+            _: &NodeToken,
+            _: &Cancellation,
+        ) -> Result<Option<NodeToken>, ProviderError> {
+            Ok(None)
+        }
+        fn resolve_target(
+            &self,
+            _: &NodeToken,
+            _: &Cancellation,
+        ) -> Result<ProviderTarget, ProviderError> {
+            Ok(ProviderTarget::Native(std::path::PathBuf::from(
+                "given-up-fixture",
+            )))
+        }
+        fn release_on_worker(self: Arc<Self>) -> Result<(), ProviderError> {
+            if let Some(owner) = Arc::into_inner(self) {
+                owner.0.order.lock().unwrap().push("mount");
+            }
+            Ok(())
+        }
+        fn release_quarantined(self: Arc<Self>) {
+            if let Some(owner) = Arc::into_inner(self) {
+                owner.0.order.lock().unwrap().push("given up");
+            }
+        }
+    }
+    struct GivingUp(Arc<Calls>);
+    impl FilesystemProvider for GivingUp {
+        fn resolve(
+            &self,
+            _: &StoredLocation,
+            _: &Cancellation,
+        ) -> Result<OpenedLocation, ProviderError> {
+            Ok(OpenedLocation {
+                root: NodeToken::new(b"root").unwrap(),
+                mount: Arc::new(GivenUp(self.0.clone())),
+            })
+        }
+        fn release_on_worker(self: Arc<Self>) -> Result<(), ProviderError> {
+            if let Some(owner) = Arc::into_inner(self) {
+                owner.0.order.lock().unwrap().push("provider");
+            }
+            Ok(())
+        }
+    }
+    let cancel = Cancellation::default();
+    let registry = Arc::new(ProviderRegistry::default());
+    let calls = Arc::new(Calls::default());
+    let refused_address = StoredLocation::new(
+        midnight_core::ProviderId::new("retirement.refused").unwrap(),
+        NonZeroU32::MIN,
+        Arc::from(&b"root"[..]),
+    );
+    let address = address();
+    registry
+        .register(refused_address.provider().clone(), Arc::new(Refusing))
+        .unwrap();
+    let instance = registry
+        .register(
+            address.provider().clone(),
+            Arc::new(GivingUp(calls.clone())),
+        )
+        .unwrap();
+    let refused = registry.resolve(&refused_address, &cancel).unwrap();
+    let given = registry.resolve(&address, &cancel).unwrap();
+    let target = given
+        .resolve_target_with_context(
+            given.root(),
+            &cancel,
+            vec![(refused.clone(), refused.root().clone())],
+        )
+        .unwrap();
+    drop((refused, given));
+    let context = retirement::Context::default();
+    assert!(context.with(|| target.release_on_worker()).is_err());
+    assert!(context.is_quarantined());
+    // The lease after the failed one was given up: not forgotten, and not released
+    // after an unconfirmed teardown.
+    assert_eq!(*calls.order.lock().unwrap(), ["given up"]);
+    // A location whose release a quarantined context skips gives its lease up too.
+    let skipped = registry.resolve(&address, &cancel).unwrap();
+    let quarantined = retirement::Context::default();
+    quarantined.quarantine();
+    assert!(quarantined.with(|| skipped.release_on_worker()).is_err());
+    assert_eq!(*calls.order.lock().unwrap(), ["given up", "given up"]);
+    // Each of the three leases keeps its mount permit.
+    let mut remaining = Vec::new();
+    for _ in 3..ProviderRegistry::MAX_MOUNTS {
+        remaining.push(registry.resolve(&refused_address, &cancel).unwrap());
+    }
+    assert!(matches!(
+        registry.resolve(&refused_address, &cancel),
+        Err(ProviderError::ResourceLimited)
+    ));
+    drop(remaining);
+    // And its registration: unregistering does not release the provider.
+    assert!(
+        registry
+            .unregister_on_worker(address.provider(), instance)
+            .unwrap()
+    );
+    assert_eq!(*calls.order.lock().unwrap(), ["given up", "given up"]);
+    // A mount release step that a quarantined context skips gives the mount up.
+    assert!(
+        quarantined
+            .with(|| retirement::release_mount(Arc::new(GivenUp(calls.clone()))))
+            .is_err()
+    );
+    assert_eq!(
+        *calls.order.lock().unwrap(),
+        ["given up", "given up", "given up"]
+    );
+}

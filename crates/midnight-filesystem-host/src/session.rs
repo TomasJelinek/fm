@@ -726,12 +726,21 @@ impl Mount {
         })? {
             Message::Content { .. } if cancelled() => Err(interrupted()),
             Message::Content { bytes, .. } => Ok(bytes),
-            _ => Err(FsError::from_io(
-                "archive read",
-                &self.container,
-                io::ErrorKind::InvalidData.into(),
-            )),
+            _ => Err(self.wrong_reply("archive read")),
         }
+    }
+    /// A terminal reply of the wrong type for its request. `exchange_read` returns only
+    /// Content for a Read and Entries for a List (the protocol-1 reply match, the staged
+    /// `terminal` exchange and the member cache), so this is a fail-closed backstop that,
+    /// like every other protocol violation, ends the worker and records why.
+    fn wrong_reply(&self, operation: &'static str) -> FsError {
+        let error = FsError::from_io(
+            operation,
+            &self.container,
+            io::ErrorKind::InvalidData.into(),
+        );
+        self.supervision.request_stop(Stop::failed(&error.message));
+        error
     }
 }
 /// Whether a terminal reply keeps the wire rules of its own request. The wire
@@ -861,11 +870,7 @@ impl ArchiveMount for Mount {
                 return Err(interrupted());
             }
             let Message::Entries { entries, more, .. } = page else {
-                return Err(FsError::from_io(
-                    "archive list",
-                    &self.container,
-                    io::ErrorKind::InvalidData.into(),
-                ));
+                return Err(self.wrong_reply("archive list"));
             };
             // exchange_read rejects an empty page that announces more, so every page
             // that continues the listing advances the cursor.

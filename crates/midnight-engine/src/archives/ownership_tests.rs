@@ -240,6 +240,8 @@ struct HostState {
     dropped: AtomicBool,
     stopped: Mutex<bool>,
     stop: Condvar,
+    /// Members that `list` returns before the taint (`HostProbe::answer_lists`).
+    rows: Mutex<Vec<ArchiveNode>>,
 }
 impl TaintedHost {
     /// Holds one of `active`'s process permits until its worker stops.
@@ -289,8 +291,18 @@ impl ArchiveMount for TaintedHost {
     fn id(&self) -> u64 {
         72
     }
-    fn list(&self, _: u64, _: &Cancellation) -> Result<Vec<ArchiveNode>, FsError> {
-        panic!("release must not list")
+    /// Only a caller preparing work before the taint lists, never a release.
+    fn list(&self, directory: u64, _: &Cancellation) -> Result<Vec<ArchiveNode>, FsError> {
+        let rows = self.probe.0.rows.lock().unwrap();
+        assert!(
+            !self.cleanup_unconfirmed() && !rows.is_empty(),
+            "release must not list"
+        );
+        Ok(rows
+            .iter()
+            .filter(|row| row.parent == directory)
+            .cloned()
+            .collect())
     }
     fn read(&self, _: u64, _: u64, _: u32, _: &Cancellation) -> Result<Vec<u8>, FsError> {
         panic!("release must not read")
@@ -302,6 +314,11 @@ impl ArchiveMount for TaintedHost {
 impl HostProbe {
     pub(crate) fn taint(&self) {
         self.0.tainted.store(true, Ordering::SeqCst);
+    }
+    /// Lets the session list these members until it is tainted, as preparing a Copy
+    /// of its directories does.
+    pub(crate) fn answer_lists(&self, rows: Vec<ArchiveNode>) {
+        *self.0.rows.lock().unwrap() = rows;
     }
     /// Host releases reached, whether or not they stopped the worker.
     pub(crate) fn releases(&self) -> usize {

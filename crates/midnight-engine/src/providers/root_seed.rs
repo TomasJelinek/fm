@@ -98,12 +98,21 @@ struct RootSeed {
 
 impl MountedFilesystem for RootSeed {
     fn release_on_worker(self: Arc<Self>) -> Result<(), ProviderError> {
-        crate::copy_nested_retirement::provider_step(|| {
-            let Some(owner) = Arc::into_inner(self) else {
-                return Ok(());
-            };
-            crate::copy_nested_retirement::release_mount(owner.source)
-        })
+        use crate::copy_nested_retirement as nested;
+        nested::provider_release(
+            self,
+            |seed| match Arc::into_inner(seed) {
+                Some(owner) => nested::release_mount(owner.source),
+                None => Ok(()),
+            },
+            |seed| seed.release_quarantined(),
+        )
+    }
+    /// The last seed gives its source up; unread captured rows are plain memory.
+    fn release_quarantined(self: Arc<Self>) {
+        if let Some(owner) = Arc::into_inner(self) {
+            owner.source.release_quarantined();
+        }
     }
     fn browse_directory_identity(
         &self,
