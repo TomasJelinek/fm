@@ -240,7 +240,7 @@ fn an_animated_thumbnail_keeps_the_pulse_until_it_is_deselected() {
     fixture
         .presenter
         .borrow_mut()
-        .select_row(PaneId::Left, row, true, &|_| true);
+        .select_row_modified(PaneId::Left, row, true, false, &|_| true);
     midnight_ui::refresh(&fixture.window, &fixture.presenter.borrow());
     for pass in 0..6 {
         fixture.advance();
@@ -249,7 +249,7 @@ fn an_animated_thumbnail_keeps_the_pulse_until_it_is_deselected() {
     fixture
         .presenter
         .borrow_mut()
-        .select_row(PaneId::Left, row, true, &|_| true);
+        .select_row_modified(PaneId::Left, row, true, false, &|_| true);
     midnight_ui::refresh(&fixture.window, &fixture.presenter.borrow());
     fixture.settle();
 }

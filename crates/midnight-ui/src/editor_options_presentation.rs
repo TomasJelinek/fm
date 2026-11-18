@@ -87,34 +87,43 @@ pub(crate) fn install(
     state: Rc<RefCell<Presenter>>,
     send: Rc<dyn Fn(Command) -> bool>,
 ) {
+    // Every draft edit invalidates an open picker: wake its check, so the cancellation
+    // reaches the queue at the cancellation cadence instead of the slow check.
     let weak = window.as_weak();
     let p = state.clone();
+    let sender = send.clone();
     window.global::<EditorOptionsView>().on_edit(move |form| {
         p.borrow_mut().edit_editor_form(form);
         if let Some(w) = weak.upgrade() {
             refresh(&w, &p.borrow());
+            crate::settings_picker_presentation::wake(&w, &p, sender.clone());
         }
     });
     let weak = window.as_weak();
     let p = state.clone();
+    let sender = send.clone();
     window.global::<EditorOptionsView>().on_select(move |row| {
         p.borrow_mut().select_editor_rule(row);
         if let Some(w) = weak.upgrade() {
             refresh(&w, &p.borrow());
+            crate::settings_picker_presentation::wake(&w, &p, sender.clone());
         }
     });
     let weak = window.as_weak();
     let p = state.clone();
+    let sender = send.clone();
     window
         .global::<EditorOptionsView>()
         .on_action(move |action| {
             p.borrow_mut().editor_rule_action(action);
             if let Some(w) = weak.upgrade() {
                 refresh(&w, &p.borrow());
+                crate::settings_picker_presentation::wake(&w, &p, sender.clone());
             }
         });
     let weak = window.as_weak();
     let p = state.clone();
+    let sender = send.clone();
     window
         .global::<EditorOptionsView>()
         .on_argument(move |operation, row, text| {
@@ -122,6 +131,7 @@ pub(crate) fn install(
                 .edit_editor_argument(operation, row, text.as_str());
             if let Some(w) = weak.upgrade() {
                 refresh(&w, &p.borrow());
+                crate::settings_picker_presentation::wake(&w, &p, sender.clone());
             }
         });
     let weak = window.as_weak();
@@ -141,7 +151,7 @@ pub(crate) fn install(
     });
     let weak = window.as_weak();
     let p = state.clone();
-    let sender = send;
+    let sender = send.clone();
     window
         .global::<EditorOptionsView>()
         .on_browse_directory(move || {
@@ -162,6 +172,7 @@ pub(crate) fn install(
         state.borrow_mut().discard_editor_draft();
         if let Some(w) = weak.upgrade() {
             crate::refresh(&w, &state.borrow());
+            crate::settings_picker_presentation::wake(&w, &state, send.clone());
         }
     });
 }

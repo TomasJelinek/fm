@@ -286,7 +286,7 @@ impl Service {
             .lock()
             .unwrap_or_else(|error| error.into_inner());
         let Ok((runtime, images, web)) = catalogs else {
-            // A later call with the same policy must retry a transient discovery failure.
+            // Forget a policy whose catalog discovery failed so an explicit later call can prepare again; the explorer prepares once per session.
             if current.as_ref() == Some(&policy) {
                 *current = None;
             }

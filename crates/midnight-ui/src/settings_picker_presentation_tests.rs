@@ -1,9 +1,184 @@
 //! An open picker is checked once a second; a pending cancellation is retried every
-//! 25 ms, even when a slow check was already armed, until the queue accepts it.
+//! 25 ms, even when a slow check was already armed, until the queue accepts it. Every
+//! Options callback that invalidates an open picker wakes its check.
 use super::*;
-use crate::{EditorOptionsView, presenter::settings_picker::Target, test_harness::Harness};
+use crate::{
+    EditorOptionsDraft, EditorOptionsView, UserCommandSettingsView,
+    presenter::settings_picker::Target, test_harness::Harness,
+};
 use midnight_core::{PathPickerOwner, UserPreferences};
 use std::cell::Cell;
+
+fn cancellations(harness: &Harness) -> usize {
+    harness
+        .sent
+        .borrow()
+        .iter()
+        .filter(|command| matches!(command, Command::CancelPathPicker { .. }))
+        .count()
+}
+
+/// Invalidate the picker the production Browse callback opened, with the queue full
+/// during the callback: a callback that delivers the cancellation itself is refused.
+/// The woken check then delivers it at the cancellation cadence, long before the
+/// pending one-second check.
+fn expect_prompt_cancellation(
+    harness: &mut Harness,
+    name: &str,
+    browse: impl FnOnce(&Harness),
+    invalidate: impl FnOnce(&Harness),
+) {
+    browse(&*harness);
+    harness.settle();
+    assert!(harness.presenter.borrow().settings_picker.busy(), "{name}");
+    harness.advance(Duration::from_millis(100));
+    let before = cancellations(harness);
+    harness.refuse.set(true);
+    invalidate(&*harness);
+    harness.refuse.set(false);
+    assert!(
+        harness
+            .presenter
+            .borrow()
+            .settings_picker
+            .cancellation_pending(),
+        "{name} invalidates the picker"
+    );
+    assert_eq!(cancellations(harness), before, "{name}");
+    harness.advance(CANCEL_RETRY);
+    assert_eq!(cancellations(harness), before + 1, "{name} wakes the check");
+    assert!(!harness.presenter.borrow().settings_picker.busy(), "{name}");
+}
+
+fn browse_editor(harness: &Harness) {
+    harness.window.global::<EditorOptionsView>().invoke_browse();
+}
+
+fn browse_command(harness: &Harness) {
+    harness
+        .window
+        .global::<UserCommandSettingsView>()
+        .invoke_browse(0);
+}
+
+#[test]
+fn editor_callbacks_that_invalidate_a_picker_deliver_its_cancellation_within_25_ms() {
+    let mut harness = Harness::options(UserPreferences::default(), 4);
+    harness.freeze_time();
+    expect_prompt_cancellation(
+        &mut harness,
+        "an edited form",
+        browse_editor,
+        |harness: &Harness| {
+            let form = EditorOptionsDraft {
+                executable: "editor 編集.exe".into(),
+                ..Default::default()
+            };
+            harness
+                .window
+                .global::<EditorOptionsView>()
+                .invoke_edit(form);
+        },
+    );
+    expect_prompt_cancellation(
+        &mut harness,
+        "a selected rule",
+        browse_editor,
+        |harness: &Harness| {
+            harness
+                .window
+                .global::<EditorOptionsView>()
+                .invoke_select(0)
+        },
+    );
+    expect_prompt_cancellation(
+        &mut harness,
+        "an added rule",
+        browse_editor,
+        |harness: &Harness| {
+            harness
+                .window
+                .global::<EditorOptionsView>()
+                .invoke_action(0)
+        },
+    );
+    expect_prompt_cancellation(
+        &mut harness,
+        "an added argument",
+        browse_editor,
+        |harness: &Harness| {
+            let view = harness.window.global::<EditorOptionsView>();
+            view.invoke_argument(1, 0, "--wait".into());
+        },
+    );
+    expect_prompt_cancellation(
+        &mut harness,
+        "a discarded draft",
+        browse_editor,
+        |harness: &Harness| {
+            harness
+                .window
+                .global::<EditorOptionsView>()
+                .invoke_discard()
+        },
+    );
+    expect_prompt_cancellation(
+        &mut harness,
+        "another Options topic",
+        browse_editor,
+        |harness: &Harness| {
+            let view = harness.window.global::<UserCommandSettingsView>();
+            view.invoke_picker_context(9);
+        },
+    );
+    // Last: Cancel closes Options.
+    expect_prompt_cancellation(
+        &mut harness,
+        "Options Cancel",
+        browse_editor,
+        |harness: &Harness| harness.window.invoke_options_cancelled(),
+    );
+}
+
+#[test]
+fn command_callbacks_that_invalidate_a_picker_deliver_its_cancellation_within_25_ms() {
+    let mut harness = Harness::options(UserPreferences::default(), 9);
+    harness.freeze_time();
+    harness
+        .window
+        .global::<UserCommandSettingsView>()
+        .invoke_new_command();
+    harness.settle();
+    expect_prompt_cancellation(
+        &mut harness,
+        "an edited draft",
+        browse_command,
+        |harness: &Harness| {
+            let view = harness.window.global::<UserCommandSettingsView>();
+            let mut form = view.get_draft();
+            form.name = "Renamed 名前".into();
+            view.invoke_draft_edited(view.get_token(), form);
+        },
+    );
+    expect_prompt_cancellation(
+        &mut harness,
+        "an added argument",
+        browse_command,
+        |harness: &Harness| {
+            let view = harness.window.global::<UserCommandSettingsView>();
+            view.invoke_argument(1, 0, "--wait".into());
+        },
+    );
+    expect_prompt_cancellation(
+        &mut harness,
+        "an inserted variable",
+        browse_command,
+        |harness: &Harness| {
+            let view = harness.window.global::<UserCommandSettingsView>();
+            assert!(view.invoke_insert_variable(view.get_token(), view.get_draft(), 0, 1));
+        },
+    );
+}
 
 /// The harness queue, counting every cancellation attempt including refused ones.
 fn sender(harness: &Harness, attempts: &Rc<Cell<usize>>) -> Rc<dyn Fn(Command) -> bool> {

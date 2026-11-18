@@ -1472,10 +1472,27 @@ pub fn install_with_owned(
         p.accept_options(s);
         let _ = w;
     });
-    callback!(on_options_cancelled, |w, p, s| {
-        p.cancel_options(s);
-        let _ = w;
-    });
+    {
+        let weak = window.as_weak();
+        let state = presenter.clone();
+        let sender = send.clone();
+        let begin = begin_owned.clone();
+        window.on_options_cancelled(move || {
+            let Some(w) = weak.upgrade() else {
+                return;
+            };
+            let cancelled =
+                owned_commands::with_control_commands(&state, &begin, sender.as_ref(), |p, s| {
+                    p.cancel_options(s)
+                });
+            if cancelled.is_none() {
+                return;
+            }
+            refresh_properties(&w, &state.borrow(), true);
+            // Cancel also cancels an open picker; a refused cancellation retries promptly.
+            settings_picker_presentation::wake(&w, &state, sender.clone());
+        });
+    }
     callback!(
         on_thumbnail_options_changed,
         |w, p, s, enabled, network, archives, field| {

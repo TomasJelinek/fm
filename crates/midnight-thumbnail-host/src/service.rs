@@ -124,7 +124,8 @@ pub struct Ready {
     pub edge: u32,
     pub frame: Arc<Frame>,
 }
-/// Invoked on a backend thread after a frame enters the bounded delivery queue.
+/// Invoked on a backend thread after a frame enters the bounded delivery queue, and after
+/// a cache location or a notice is reported.
 pub type ReadyNotifier = Arc<dyn Fn() + Send + Sync>;
 struct Mailbox {
     next: Option<View>,
@@ -179,6 +180,18 @@ impl Shared {
         let mut mailbox = self.lock();
         update(&mut mailbox);
         self.notify(mailbox);
+    }
+    /// Store a cache location or notice for the presentation, then tell it: nothing
+    /// else would make it poll again.
+    fn report(&self, update: impl FnOnce(&mut Mailbox)) {
+        let notifier = {
+            let mut mailbox = self.lock();
+            update(&mut mailbox);
+            mailbox.ready_notifier.clone()
+        };
+        if let Some(notifier) = notifier {
+            notifier();
+        }
     }
     /// Block until a producer signals after `seen`, or until the optional deadline.
     fn wait(&self, seen: u64, deadline: Option<Instant>) {
@@ -254,7 +267,7 @@ impl Service {
             // leave bounded headroom; source captures remain owned by admitted workers.
             let initialized = (|| {
                 let (executable, cache) = locations()?;
-                input.lock().cache_location = Some(cache.clone());
+                input.report(|mailbox| mailbox.cache_location = Some(cache.clone()));
                 // Do not discover decoders or scan the cache inventory for a session that
                 // never shows previews.
                 if !input.wait_for_demand() {
@@ -268,7 +281,9 @@ impl Service {
                 Ok(Some(value)) => value,
                 Ok(None) => return,
                 Err(error) => {
-                    input.lock().notice = Some(format!("Previews are unavailable: {error}"));
+                    input.report(|mailbox| {
+                        mailbox.notice = Some(format!("Previews are unavailable: {error}"));
+                    });
                     return;
                 }
             };
@@ -286,10 +301,18 @@ impl Service {
             thread: Some(thread),
         }
     }
-    /// Notify the presentation as soon as a frame can be polled. The callback runs on a
-    /// backend thread and must only schedule UI work.
+    /// Notify the presentation as soon as a frame, a cache location or a notice can be
+    /// polled. The callback runs on a backend thread and must only schedule UI work; it
+    /// runs once immediately when a location or notice arrived before it was installed.
     pub fn set_ready_notifier(&self, notifier: ReadyNotifier) {
-        self.shared.lock().ready_notifier = Some(notifier);
+        let reported = {
+            let mut mailbox = self.shared.lock();
+            mailbox.ready_notifier = Some(notifier.clone());
+            mailbox.cache_location.is_some() || mailbox.notice.is_some()
+        };
+        if reported {
+            notifier();
+        }
     }
     pub fn set_view(&self, view: View) -> bool {
         if view.targets.len() > midnight_core::MAX_THUMBNAIL_VIEW_TARGETS
@@ -494,8 +517,10 @@ fn run(
                     .get_ref()
                     .is_some_and(|error| error.is::<CacheFailure>())
             {
-                shared.lock().notice =
-                    Some(format!("Could not store or read preview cache: {error}"));
+                shared.report(|mailbox| {
+                    mailbox.notice =
+                        Some(format!("Could not store or read preview cache: {error}"));
+                });
                 cache_error_reported = true;
             }
             let cancelled =
@@ -575,7 +600,9 @@ fn run(
                 .unwrap_or_else(|error| error.into_inner())
                 .clear();
             if let Err(error) = result {
-                shared.lock().notice = Some(format!("Could not clear preview cache: {error}"));
+                shared.report(|mailbox| {
+                    mailbox.notice = Some(format!("Could not clear preview cache: {error}"));
+                });
             }
             scheduler = Scheduler::default();
             scheduler.set_view(

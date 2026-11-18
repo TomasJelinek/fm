@@ -247,6 +247,8 @@ pub(crate) fn install(
                 let Some(window) = weak.upgrade() else { return; };
                 { let mut state = state.borrow_mut(); let $p = &mut *state; let $send = sender.as_ref(); $body }
                 if $full { crate::refresh(&window, &state.borrow()); } else { refresh(&window, &state.borrow()); }
+                // An edited draft invalidates an open picker; deliver its cancellation promptly.
+                crate::settings_picker_presentation::wake(&window, &state, sender.clone());
             });
         }};
     }
@@ -299,9 +301,18 @@ pub(crate) fn install(
                     }
                 });
             }
+            // A cancellation the queue refused retries at the cancellation cadence.
+            if let Some(window) = weak.upgrade() {
+                crate::settings_picker_presentation::wake(
+                    &window,
+                    &context_state,
+                    context_send.clone(),
+                );
+            }
         });
     let weak = window.as_weak();
     let selected = state.clone();
+    let sender = send.clone();
     window
         .global::<UserCommandSettingsView>()
         .on_argument(move |operation, row, text| {
@@ -319,6 +330,7 @@ pub(crate) fn install(
                     .set_draft(to_view(form));
             }
             refresh(&window, &selected.borrow());
+            crate::settings_picker_presentation::wake(&window, &selected, sender.clone());
         });
     let weak = window.as_weak();
     let selected = state.clone();
@@ -360,6 +372,7 @@ pub(crate) fn install(
     });
     let weak = window.as_weak();
     let selected = state.clone();
+    let sender = send.clone();
     window
         .global::<UserCommandSettingsView>()
         .on_insert_variable(move |token, form, field, variable| {
@@ -382,6 +395,7 @@ pub(crate) fn install(
                     .set_draft(to_view(form));
             }
             refresh(&window, &selected.borrow());
+            crate::settings_picker_presentation::wake(&window, &selected, sender.clone());
             accepted
         });
     let weak = window.as_weak();
