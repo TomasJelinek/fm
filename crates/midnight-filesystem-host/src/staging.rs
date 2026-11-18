@@ -76,10 +76,12 @@ struct Cached {
     /// Value of `Staging::reads` at this member's latest read.
     last_read: u64,
 }
+/// Queries the free space of the volume that holds a private spool root.
+type SpaceQuery = fn(&PrivateSpoolDirectory) -> io::Result<SpoolSpace>;
 pub(crate) struct Staging {
     root: PrivateSpoolDirectory,
     /// Queries the volume of `root`; tests substitute a fake volume.
-    space: fn(&PrivateSpoolDirectory) -> io::Result<SpoolSpace>,
+    space: SpaceQuery,
     next: u64,
     pending: Option<(u64, Pending)>,
     sealed: HashMap<u64, Sealed>,
@@ -93,28 +95,41 @@ pub(crate) struct Staging {
     process_root: Option<Arc<ProcessRootGuard>>,
 }
 impl Staging {
-    /// Open this user's private spool root, trying the platform's per-user candidates in
-    /// order. A root that cannot be verified or cannot hold an anonymous spool yields to
-    /// the next, so one unusable location never disables staged archive reads.
+    /// Open this user's private spool root from the platform's per-user candidates. A
+    /// root that cannot be verified or cannot hold an anonymous spool yields to the
+    /// next, so one unusable location never disables staged archive reads.
     pub(crate) fn open_private() -> io::Result<Self> {
-        Self::open_first(root::candidates())
+        Self::open_first(root::candidates(), PrivateSpoolDirectory::space)
     }
-    fn open_first(roots: impl IntoIterator<Item = SpoolRoot>) -> io::Result<Self> {
+    /// The first usable candidate whose volume can take at least one check interval
+    /// above its free-space reserve, or else the first usable candidate: a volume at
+    /// its reserve refuses every member, so it serves only when no other has room.
+    fn open_first(
+        roots: impl IntoIterator<Item = SpoolRoot>,
+        space: SpaceQuery,
+    ) -> io::Result<Self> {
         let mut failure = None;
+        let mut fallback = None;
         for root in roots {
             // The guard exists before the open, so a closing mount of this process
             // cannot remove the root between its open and the spools created in it.
             let process_root = root.guard();
-            let opened = Self::open(&root.path).and_then(|staging| {
+            let opened = Self::open_root(&root.path, space).and_then(|staging| {
                 drop(staging.root.create()?);
                 Ok(staging)
             });
             match opened {
                 Ok(staging) => {
-                    return Ok(Self {
+                    let staging = Self {
                         process_root,
                         ..staging
-                    });
+                    };
+                    if space(&staging.root)
+                        .is_ok_and(|volume| space_budget(volume) == SPACE_CHECK_INTERVAL)
+                    {
+                        return Ok(staging);
+                    }
+                    fallback.get_or_insert(staging);
                 }
                 Err(error) => {
                     failure = Some(io::Error::new(
@@ -127,17 +142,19 @@ impl Staging {
                 }
             }
         }
-        Err(failure.unwrap_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::NotFound,
-                "No private per-user archive spool directory is available",
-            )
-        }))
+        fallback.ok_or_else(|| {
+            failure.unwrap_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::NotFound,
+                    "No private per-user archive spool directory is available",
+                )
+            })
+        })
     }
-    pub(crate) fn open(root: &Path) -> io::Result<Self> {
+    fn open_root(root: &Path, space: SpaceQuery) -> io::Result<Self> {
         Ok(Self {
             root: PrivateSpoolDirectory::open(root)?,
-            space: PrivateSpoolDirectory::space,
+            space,
             next: 0,
             pending: None,
             sealed: HashMap::new(),
@@ -147,6 +164,12 @@ impl Staging {
             reads: 0,
             process_root: None,
         })
+    }
+    /// Test fixtures stage in `root` on a fake volume with ample free space, so no
+    /// test depends on the free space of the machine's temporary volume.
+    #[cfg(test)]
+    pub(crate) fn open(root: &Path) -> io::Result<Self> {
+        Self::open_root(root, ample_volume)
     }
     #[cfg(test)]
     pub(crate) fn set_cache_budget(&mut self, bytes: u64) {
@@ -247,7 +270,7 @@ impl Staging {
                         // the session drops the partial stage with its staging.
                         return Err(io::Error::new(
                             io::ErrorKind::StorageFull,
-                            "Archive staging stopped before the temporary volume's \
+                            "Archive staging stopped before the archive spool volume's \
                              free-space reserve (the larger of 1 GiB and 2% of its capacity)",
                         ));
                     }
@@ -478,6 +501,14 @@ fn invalid() -> io::Error {
         io::ErrorKind::InvalidData,
         "Invalid archive staging exchange",
     )
+}
+/// A 1 TiB volume with all of it free: every query grants a whole check interval.
+#[cfg(test)]
+fn ample_volume(_: &PrivateSpoolDirectory) -> io::Result<SpoolSpace> {
+    Ok(SpoolSpace {
+        available: 1 << 40,
+        total: 1 << 40,
+    })
 }
 
 #[cfg(test)]

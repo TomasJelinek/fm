@@ -77,26 +77,86 @@ fn an_unusable_spool_root_yields_to_the_next_private_candidate() {
     let occupied = temp.path().join("occupied");
     std::fs::write(&occupied, b"not a directory").unwrap();
     let private = temp.path().join("private");
-    let mut staging = Staging::open_first([kept(&occupied), kept(&private)]).unwrap();
+    let mut staging = Staging::open_first([kept(&occupied), kept(&private)], ample_volume).unwrap();
     assert!(private.is_dir());
     let op = read(1, 2);
     staging.nested(&op, &begin(1, 2)).unwrap();
-    let error = Staging::open_first([kept(&occupied)]).err().unwrap();
+    let error = Staging::open_first([kept(&occupied)], ample_volume)
+        .err()
+        .unwrap();
     assert!(error.to_string().contains("occupied"), "{error}");
-    assert!(Staging::open_first(Vec::new()).is_err());
+    assert!(Staging::open_first(Vec::new(), ample_volume).is_err());
     drop(staging);
     assert!(private.is_dir(), "a per-user root is kept for later runs");
 }
 
 #[test]
-fn the_last_spool_root_candidate_belongs_to_this_process_alone() {
+fn one_spool_root_candidate_belongs_to_this_process_alone() {
     let roots = root::candidates();
-    let (last, earlier) = roots.split_last().unwrap();
-    assert!(last.per_process);
-    let name = last.path.file_name().unwrap().to_string_lossy();
     let suffix = format!("-archive-spool-{}", std::process::id());
-    assert!(name.ends_with(&suffix), "{last:?}");
-    assert!(earlier.iter().all(|root| !root.per_process), "{roots:?}");
+    let mut processes = roots
+        .iter()
+        .enumerate()
+        .filter(|(_, root)| root.per_process);
+    let (Some((position, own)), None) = (processes.next(), processes.next()) else {
+        panic!("not exactly one per-process root: {roots:?}")
+    };
+    let name = own.path.file_name().unwrap().to_string_lossy();
+    assert!(name.ends_with(&suffix), "{roots:?}");
+    // It only replaces a per-user root that this session cannot use.
+    assert!(position > 0, "{roots:?}");
+}
+
+thread_local! {
+    /// Free space above the reserve that `volumes_in_turn` reports, one entry per
+    /// query; `None` fails that query.
+    static VOLUMES: std::cell::RefCell<VecDeque<Option<u64>>> =
+        const { std::cell::RefCell::new(VecDeque::new()) };
+}
+/// 100 GiB volumes, whose reserve is 2 GiB, answering from `VOLUMES` in turn.
+fn volumes_in_turn(_: &PrivateSpoolDirectory) -> io::Result<SpoolSpace> {
+    let above_reserve = VOLUMES
+        .with_borrow_mut(VecDeque::pop_front)
+        .flatten()
+        .ok_or_else(|| io::Error::other("the fake volume query failed"))?;
+    Ok(SpoolSpace {
+        available: 2 * GIB + above_reserve,
+        total: 100 * GIB,
+    })
+}
+
+#[test]
+fn a_spool_root_with_room_above_its_reserve_is_preferred_to_an_earlier_full_one() {
+    let temp = tempfile::tempdir().unwrap();
+    let full = temp.path().join("full");
+    let unknown = temp.path().join("unknown");
+    let roomy = temp.path().join("roomy-7");
+    // The first volume lacks one byte of a whole check interval above its reserve and
+    // the second cannot be queried: the third, with a whole interval, is used.
+    VOLUMES.set(VecDeque::from([
+        Some(SPACE_CHECK_INTERVAL - 1),
+        None,
+        Some(SPACE_CHECK_INTERVAL),
+    ]));
+    let candidates = [kept(&full), kept(&unknown), per_process(&roomy)];
+    let staging = Staging::open_first(candidates, volumes_in_turn).unwrap();
+    assert!(
+        VOLUMES.with_borrow(VecDeque::is_empty),
+        "one query per root"
+    );
+    assert!(full.is_dir() && unknown.is_dir());
+    // The chosen per-process root lives as long as its staging.
+    assert!(roomy.is_dir());
+    drop(staging);
+    assert!(!roomy.exists());
+    // Without room on any volume the first usable root serves anyway: the reserve then
+    // refuses only members that do not fit.
+    VOLUMES.set(VecDeque::from([Some(0), Some(0), Some(4)]));
+    let mut staging =
+        Staging::open_first([kept(&full), per_process(&roomy)], volumes_in_turn).unwrap();
+    assert!(!roomy.exists(), "the unused per-process root was removed");
+    let lease = stage_member(&mut staging, 1, 2, b"test");
+    assert_eq!(lease.read(0, 4).unwrap(), b"test");
 }
 
 #[test]
@@ -106,8 +166,8 @@ fn mounts_share_a_per_process_root_until_its_last_spool_closes() {
     std::fs::write(&occupied, b"not a directory").unwrap();
     let path = temp.path().join("archive-spool-7");
     let roots = || [kept(&occupied), per_process(&path)];
-    let mut first = Staging::open_first(roots()).unwrap();
-    let mut second = Staging::open_first(roots()).unwrap();
+    let mut first = Staging::open_first(roots(), ample_volume).unwrap();
+    let mut second = Staging::open_first(roots(), ample_volume).unwrap();
     let lease = stage_member(&mut first, 1, 2, b"read");
     drop(first);
     // The other mount still stages members in the root.
@@ -123,7 +183,7 @@ fn mounts_share_a_per_process_root_until_its_last_spool_closes() {
         "the last spool removes the per-process root"
     );
     // A later mount of this process creates it again.
-    drop(Staging::open_first(roots()).unwrap());
+    drop(Staging::open_first(roots(), ample_volume).unwrap());
     assert!(!path.exists());
 }
 

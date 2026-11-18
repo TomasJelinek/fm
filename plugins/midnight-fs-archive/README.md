@@ -72,7 +72,7 @@ volume and by native file-offset ranges. The host keeps a free-space reserve on 
 volume: staging fails with a disk-full error before the volume's free space would
 fall below max(1 GiB, 2% of its capacity), so a highly compressed member cannot fill
 it. The host queries the volume on each stage's first append and at least every
-64 MiB appended; other programs' concurrent writes to the volume are not counted.
+64 MiB appended; writes by other programs between two queries are not counted.
 Disk-full, short writes, flush failures and the reserve discard staging and fail
 the request. Metadata remains bounded to 100,000 entries and 8 MiB of names; a
 TAR long-name, long-link or PAX record, which tar-rs buffers completely, is bounded
