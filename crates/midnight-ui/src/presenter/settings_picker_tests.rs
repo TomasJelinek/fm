@@ -3,11 +3,14 @@ use std::cell::RefCell;
 
 #[test]
 fn picker_pages_are_the_editors_and_custom_commands_options_topics() {
-    // settings_picker_context and the Custom Commands shortcut identify picker pages
-    // by these Options topic identities; they must follow ui/options-navigation.slint.
+    // settings_picker_context, the comparator Browse and the Custom Commands shortcut
+    // identify picker pages by these Options topic identities; they must follow
+    // ui/options-navigation.slint, where Comparators (index 4) took the new topic 10
+    // and the other topics kept their identities.
     let source = include_str!("../../ui/options-navigation.slint");
     assert!(
-        source.contains("return index >= 2 ? index + 1 : index;"),
+        source.contains("return index == 4 ? 10 : index >= 5 && index <= 9 ? index")
+            && source.contains(": index >= 2 && index <= 3 ? index + 1 : index == 1 ? 1 : 0;"),
         "OptionsTopics.topic mapping changed; update the picker pages"
     );
     let titles: Vec<&str> = source
@@ -23,9 +26,16 @@ fn picker_pages_are_the_editors_and_custom_commands_options_topics() {
             .iter()
             .position(|candidate| *candidate == title)
             .unwrap_or_else(|| panic!("no Options topic {title}"));
-        if index >= 2 { index + 1 } else { index }
+        match index {
+            4 => 10,
+            5..=9 => index,
+            2..=3 => index + 1,
+            1 => 1,
+            _ => 0,
+        }
     };
     assert_eq!(topic("Editors"), OPTIONS_TOPIC_EDITORS as usize);
+    assert_eq!(topic("Comparators"), OPTIONS_TOPIC_COMPARATORS as usize);
     assert_eq!(
         topic("Custom Commands"),
         OPTIONS_TOPIC_CUSTOM_COMMANDS as usize
