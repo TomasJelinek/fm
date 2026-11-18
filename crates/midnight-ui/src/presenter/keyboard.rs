@@ -14,8 +14,6 @@ pub(crate) struct KeyboardBindings {
     overrides: Vec<ShortcutBinding>,
     commands: std::sync::Weak<Vec<UserCommand>>,
     hints: HashMap<String, (SharedString, SharedString)>,
-    editor_text: HashMap<String, String>,
-    scopes: HashMap<String, String>,
     function_files: [[crate::FunctionSlot; 12]; 16],
     function_search: [[crate::FunctionSlot; 12]; 16],
 }
@@ -28,8 +26,6 @@ impl KeyboardBindings {
     ) -> Result<Self, String> {
         let map = ShortcutMap::with_user_commands(overrides, commands)?;
         let mut hints = HashMap::new();
-        let mut editor_text = HashMap::new();
-        let mut scopes = HashMap::new();
         let mut help = String::new();
         for action in map.definitions() {
             let keys = map.bindings(&action.id).expect("catalog action");
@@ -46,11 +42,6 @@ impl KeyboardBindings {
                 .or_else(|| keys.first());
             let primary = primary.map(display_key).unwrap_or_default();
             let aliases = keys.iter().map(display_key).collect::<Vec<_>>().join(" / ");
-            let canonical = keys
-                .iter()
-                .map(ShortcutChord::display)
-                .collect::<Vec<_>>()
-                .join("\n");
             let scope = match keys.first() {
                 Some(first)
                     if keys
@@ -78,8 +69,6 @@ impl KeyboardBindings {
                 scope
             ));
             hints.insert(action.id.clone(), (primary.into(), aliases.into()));
-            editor_text.insert(action.id.clone(), canonical);
-            scopes.insert(action.id.clone(), scope);
         }
         Ok(Self {
             function_files: function_slots::build(&map, ShortcutContext::Files),
@@ -91,8 +80,6 @@ impl KeyboardBindings {
             overrides: overrides.to_vec(),
             commands: Arc::downgrade(commands),
             hints,
-            editor_text,
-            scopes,
         })
     }
 
@@ -100,14 +87,6 @@ impl KeyboardBindings {
         self.hints
             .get(action)
             .map_or("", |(primary, aliases)| if all { aliases } else { primary })
-    }
-
-    pub(crate) fn editor_text(&self, action: &str) -> &str {
-        self.editor_text.get(action).map_or("", String::as_str)
-    }
-
-    pub(crate) fn scope(&self, action: &str) -> &str {
-        self.scopes.get(action).map_or("", String::as_str)
     }
 
     pub(crate) fn hint_owned(&self, action: &str, all: bool) -> SharedString {

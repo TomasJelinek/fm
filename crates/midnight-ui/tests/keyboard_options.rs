@@ -1140,10 +1140,13 @@ fn reassigned_clipboard_chords_remain_native_while_searching_filenames() {
     ]);
     h.open_keyboard();
     h.select_action("files.rename");
-    assert_eq!(
-        h.ui.window.get_keyboard_scope(),
-        "File list outside filename search"
-    );
+    // A captured Ctrl+C shows that Rename receives it only outside filename search.
+    let window = h.ui.window.clone_strong();
+    let view = window.global::<KeyboardEditorView>();
+    view.invoke_capture_chord("Ctrl+C".into());
+    h.draw();
+    assert_eq!(view.get_candidate(), "Ctrl+C");
+    assert_eq!(view.get_scope(), "File list outside filename search");
     ui::click_popup(&h.ui.window, "Cancel", AccessibleRole::Button);
     h.ui.window.invoke_focus_files();
     let mutations = Rc::new(RefCell::new(Vec::new()));

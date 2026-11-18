@@ -1,6 +1,8 @@
 //! Function captions describe the exact effective chord, including modifier layers.
 #[path = "support/render.rs"]
 mod render;
+#[path = "support/shortcut_editor.rs"]
+mod shortcut_editor;
 #[path = "support/ui.rs"]
 mod ui;
 
@@ -457,21 +459,16 @@ fn modified_function_buttons_and_keyboard_dispatch_the_same_action_and_pane() {
 #[test]
 fn live_remapping_moves_the_physical_slot_and_respects_filename_search_scope() {
     let mut test = ready();
-    let presenter = Rc::new(RefCell::new(Presenter::new("left".into(), "right".into())));
-    presenter
-        .borrow_mut()
-        .apply(Event::PreferencesLoaded(Ok(Box::new(
-            UserPreferences::default(),
-        ))));
-    install(&test.window, presenter.clone(), Rc::new(|_| true));
-    refresh(&test.window, &presenter.borrow());
+    let mut presenter = Presenter::new("left".into(), "right".into());
+    presenter.apply(Event::PreferencesLoaded(Ok(Box::new(
+        UserPreferences::default(),
+    ))));
+    let shortcuts = shortcut_editor::Shortcuts::install(&test.window, presenter);
+    shortcuts.assign(&test.window, "files.rename", &["Shift+F5"]);
+    // The Presenter has no listing; restore the fixture's file targets.
     test.window.set_left_can_target_cursor(true);
     test.window.set_left_can_target_selection(true);
     test.window.invoke_focus_files();
-    test.window
-        .invoke_keyboard_apply("files.rename".into(), "Shift+F5".into());
-    test.window.set_left_can_target_cursor(true);
-    assert!(test.window.get_keyboard_error().is_empty());
     test.draw();
     assert!(
         test.window
@@ -492,13 +489,9 @@ fn live_remapping_moves_the_physical_slot_and_respects_filename_search_scope() {
     ui::click_root(&test.window, "Shift+F5 Rename", AccessibleRole::Button);
     assert_eq!(&*captured.borrow(), &[(0, 0), (0, 0)]);
     modifiers(&test, 4, false);
-    test.window
-        .invoke_keyboard_apply("files.attributes".into(), "".into());
-    assert!(test.window.get_keyboard_error().is_empty());
-    test.window
-        .invoke_keyboard_apply("files.copy".into(), "Ctrl+F2".into());
+    shortcut_editor::unassign(&test.window, "files.attributes");
+    shortcuts.assign(&test.window, "files.copy", &["Ctrl+F2"]);
     test.window.set_left_can_target_selection(true);
-    assert!(test.window.get_keyboard_error().is_empty());
     modifiers(&test, 1, true);
     test.draw();
     ui::root_item(&test.window, "Ctrl+F2 Copy", AccessibleRole::Button);
