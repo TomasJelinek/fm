@@ -21,8 +21,11 @@ MAX_DOWNLOAD_BYTES = 16 * 1024 * 1024
 MAX_EXTRACT_BYTES = 64 * 1024 * 1024
 MAX_ENTRIES = 8192
 # Windows refuses to rename a directory while a file below it is open, and antivirus
-# software briefly holds just-written executables (WinError 5). Waits total 12.7 s.
+# software briefly holds just-written executables. Waits total 12.7 s.
 PUBLISH_RETRY_DELAYS = (0.1, 0.2, 0.4, 0.8, 1.6, 3.2, 6.4) if os.name == 'nt' else ()
+# A scanner's open handle fails the rename with ERROR_ACCESS_DENIED, ERROR_SHARING_VIOLATION
+# or ERROR_LOCK_VIOLATION; other PermissionErrors (a write-protected volume) fail at once.
+PUBLISH_RETRY_WINERRORS = (5, 32, 33)
 
 @dataclass(frozen=True)
 class Artifact:
@@ -188,7 +191,9 @@ def publish(staging, destination):
         try:
             staging.rename(destination)
             return
-        except PermissionError:
+        except PermissionError as error:
+            if getattr(error, 'winerror', None) not in PUBLISH_RETRY_WINERRORS:
+                raise
             time.sleep(delay)
     staging.rename(destination)
 
