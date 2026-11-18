@@ -152,7 +152,18 @@ impl State {
         else {
             return;
         };
-        let now = Instant::now();
+        self.record(geometry, Instant::now(), presenter, send, closing);
+    }
+
+    /// Track one captured geometry and save it once it has settled.
+    fn record(
+        &mut self,
+        geometry: WindowGeometry,
+        now: Instant,
+        presenter: &mut Presenter,
+        send: &dyn Fn(Command) -> bool,
+        closing: bool,
+    ) {
         if self.last.as_ref() != Some(&geometry) {
             self.last = Some(geometry.clone());
             self.dirty_since.get_or_insert(now);
@@ -165,16 +176,19 @@ impl State {
             || self
                 .dirty_since
                 .is_some_and(|at| now.duration_since(at) >= MAX_DELAY);
-        if due && presenter.window_geometry() != Some(&geometry) {
-            let accepted = std::cell::Cell::new(false);
-            presenter.save_window_geometry(geometry, &|command| {
-                let sent = send(command);
-                accepted.set(sent);
-                sent
-            });
-            self.retry_at = (!accepted.get()).then_some(now + MAX_DELAY);
+        if due {
+            // A window that settled back where the presenter has it needs no save.
             self.changed_at = None;
             self.dirty_since = None;
+            if presenter.window_geometry() != Some(&geometry) {
+                let accepted = std::cell::Cell::new(false);
+                presenter.save_window_geometry(geometry, &|command| {
+                    let sent = send(command);
+                    accepted.set(sent);
+                    sent
+                });
+                self.retry_at = (!accepted.get()).then_some(now + MAX_DELAY);
+            }
         }
         if !closing && self.retry_at.is_some_and(|at| now >= at) {
             self.retry_at = presenter

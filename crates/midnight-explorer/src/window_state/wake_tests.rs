@@ -72,6 +72,52 @@ fn the_sampler_stops_when_quiet_and_runs_after_geometry_events_or_for_a_pending_
 }
 
 #[test]
+fn a_window_moved_back_to_its_saved_geometry_settles_without_a_save() {
+    let saved = WindowGeometry {
+        normal: WindowRect {
+            x: 100,
+            y: 80,
+            width: 900,
+            height: 600,
+        },
+        maximized: false,
+        fullscreen: false,
+        monitor: None,
+    };
+    let mut moved = saved.clone();
+    moved.normal.x += 40;
+    let root = std::env::current_dir().unwrap();
+    let mut presenter = Presenter::new(root.clone(), root);
+    presenter.apply(Event::PreferencesLoaded(Ok(Box::new(UserPreferences {
+        window_geometry: Some(saved.clone()),
+        ..Default::default()
+    }))));
+    let mut state = State {
+        initialized: true,
+        last: Some(saved.clone()),
+        ..State::default()
+    };
+    let sent = Cell::new(0);
+    let send = |_| {
+        sent.set(sent.get() + 1);
+        true
+    };
+    let start = Instant::now();
+    let returned = start + POLL;
+    state.record(moved, start, &mut presenter, &send, false);
+    state.record(saved.clone(), returned, &mut presenter, &send, false);
+    assert!(state.pending(), "the move has not settled yet");
+    let settled = returned + IDLE;
+    state.record(saved.clone(), settled, &mut presenter, &send, false);
+    assert!(
+        !state.pending(),
+        "a settled window with nothing new to save stops the sampler"
+    );
+    assert_eq!(sent.get(), 0);
+    assert_eq!(presenter.window_geometry(), Some(&saved));
+}
+
+#[test]
 fn automated_runs_install_no_sampler() {
     slint::platform::set_platform(Box::new(ClockWindow {
         window: MinimalSoftwareWindow::new(RepaintBufferType::ReusedBuffer),
