@@ -1,22 +1,26 @@
 //! Streaming UTF-8 generation to a private, sealed temporary file.
-#[path = "file_list_spool.rs"]
-mod spool_root;
 #[cfg(test)]
 #[path = "file_list_worker_tests.rs"]
 mod tests;
 use super::file_list_actor::{Retention, sizes::Captured};
 use super::file_list_records::{captured_record, check, error, selected};
+use crate::private_spool::{PrivateSpool, SpoolContent, create_private_spool, private_spool_roots};
 use crate::retirement::{RetirementLease, WorkerOwned};
 use midnight_core::*;
-use midnight_worker_platform::spool::{MAX_IO, Spool};
+use midnight_worker_platform::spool::{MAX_IO, PrivateSpoolDirectory, Spool};
 use std::{collections::BTreeMap, fmt, io, sync::Arc};
+
+/// The spool name of generated file lists (see `private_spool_roots`).
+const SPOOL: &str = "file-list";
 
 pub(super) struct OutputReservation {
     pub(super) lease: RetirementLease,
     pub(super) retention: Arc<Retention>,
 }
 struct Content {
-    spool: Spool,
+    /// An anonymous spool in this user's first usable private root. It closes
+    /// before its root guard, which then removes an unused per-process root.
+    spool: PrivateSpool<Spool>,
     #[cfg(test)]
     after_drop: Option<Box<dyn Send + Sync>>,
     // The token survives native Spool destruction and any test-observed unwind.
@@ -118,7 +122,11 @@ pub(super) fn generate_with_sizes(
     let mut spool = if preview {
         None
     } else {
-        Some(spool_root::create().map_err(|e| error(e.to_string()))?)
+        let roots = private_spool_roots(SPOOL, SpoolContent::Large);
+        Some(
+            create_private_spool(&roots, PrivateSpoolDirectory::create)
+                .map_err(|e| error(e.to_string()))?,
+        )
     };
     let mut text = String::new();
     let mut truncated = false;
@@ -131,7 +139,7 @@ pub(super) fn generate_with_sizes(
         let row = format
             .render(&sized_record(entry)?, &widths)
             .map_err(error)?;
-        if let Some(spool) = &mut spool {
+        if let Some(spool) = spool.as_deref_mut() {
             for bytes in row.as_bytes().chunks(MAX_IO) {
                 check(cancel)?;
                 spool

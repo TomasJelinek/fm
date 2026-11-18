@@ -127,11 +127,16 @@ generation cancellation rules and prevent canceled option publications.
   observation of the files it hides, so its first probe still requests a pass.
 - Only provider-supplied failure text gets a details report. Admission,
   staleness, capacity and cancellation outcomes carry just their bounded
-  message, so routine command races create no spool files. Reports live in a
-  per-user private spool root: under `%TEMP%` on Windows; on Linux under the
-  session's `XDG_RUNTIME_DIR` unless `TMPDIR` is set explicitly, and otherwise
-  under the temporary directory with a user-specific name. The root is created
-  owner-only; a foreign, linked or permissive root is refused.
+  message, so routine command races create no spool files. Reports live in the
+  per-user private report root that size warnings share (`ReportLog::private`,
+  candidates from `private_spool::private_spool_roots`): on Linux
+  `$XDG_RUNTIME_DIR/midnight-explorer/reports`, then `midnight-explorer-<uid>-reports`
+  (effective user ID) and a per-process `midnight-explorer-reports-<pid>` in the
+  temporary directory; on Windows `MidnightExplorer-<hex of the account name>-reports`
+  and then `MidnightExplorer-reports-<pid>` in the per-user `%TEMP%`. Each root must
+  open as an owner-only directory of this user reached without links; a foreign,
+  linked or permissive root is refused for the next candidate, and a per-process root
+  is removed after its last report closes.
 - Queue or payload saturation returns `Unavailable`, `Rejected` or
   `SelectionFailed` as appropriate; options use `ReprojectFailed`.
   Reprojection retains at most 4,096 UTF-8 expression bytes per queued command;

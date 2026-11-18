@@ -218,17 +218,24 @@ actual destruction. Four visible jobs and two workers remain separate limits; wo
 admission spans native execution and reply delivery. Refused admission leaves the
 previous generation intact. Native destination pins and captured size reports stay
 inside the guarded job, including confirmation queued before native execution.
-Generated content uses an anonymous spool under a private root of this user: on
-Linux `$XDG_CACHE_HOME` (or `~/.cache`) `/midnight-explorer/file-list`, then
-`$XDG_RUNTIME_DIR/midnight-explorer-file-list`, then, as the last resort,
-`midnight-explorer-<uid>-file-list` in the temporary directory; on Windows the
-per-user `%TEMP%`. A root that is refused or lacks anonymous files yields to the next
-candidate, and output fails with the last error when none is usable. The cache root
-fails on an NFS home without `O_TMPFILE` and below a symlinked home component (the
-no-link walk refuses it); sessions without `XDG_RUNTIME_DIR` (su, sudo, ssh,
-containers) then reach the temporary directory, whose predictable name another
-account can occupy. The private-root check refuses such a directory instead of
-using it, so that only denies output when both per-user roots are unusable as well.
+Generated content uses an anonymous spool (`O_TMPFILE` on Linux, delete-on-close on
+Windows) in the first usable private root of this user, chosen by the root policy
+that all generated-content spools share (`private_spool::private_spool_roots`). On
+Linux the candidates start with `$XDG_CACHE_HOME` (or `~/.cache`)
+`/midnight-explorer/file-list`, which is disk-backed (small diagnostic reports skip
+it), then `$XDG_RUNTIME_DIR/midnight-explorer/file-list`. The temporary directory
+comes last on both systems (on Windows the per-user `%TEMP%` is the only base): first
+a per-user name, `midnight-explorer-<uid>-file-list` (Windows
+`MidnightExplorer-<hex of the account name>-file-list`), then a per-process name
+ending in `-file-list-<pid>`, which is removed once the last spool in it closes (a
+crash leaves it behind). Each root must open as an owner-only directory of this user
+reached without links. A root that is refused or lacks anonymous files yields to the
+next candidate, and output fails with the last error when none is usable. The cache
+root fails on an NFS home without `O_TMPFILE` and below a symlinked home component
+(the no-link walk refuses it); sessions without `XDG_RUNTIME_DIR` (su, sudo, ssh,
+containers) then reach the temporary directory, whose predictable names another
+account can occupy. The private-root check refuses such a directory instead of using
+it, so output fails only when the per-process candidate is unusable as well.
 
 Saving to a file keeps one queued acquisition of the mutation gate, so a refilled
 Copy queue cannot starve it. While queued, the save holds neither a worker nor a

@@ -1,25 +1,32 @@
 //! Streaming diagnostic records with retained, immutable text snapshots.
 //! Construction, recording and reads belong on backend workers; retained owners retire native
 //! storage independently of the final caller or its executor lifetime.
+//!
+//! Size-warning, listing-error and presence-error logs share one per-user report
+//! root, chosen by the policy of all generated-content spools (`private_spool`).
+use crate::private_spool::{
+    PrivateSpool, SpoolContent, SpoolRoot, create_private_spool, private_spool_roots,
+};
 use crate::report_arena::{ReportArena, Retained, Retention};
 use midnight_core::{
     Cancellation, FsError, GeneratedTextSource, SizeWarningReport, SizeWarningSource,
     SizeWarningSummary,
 };
 use midnight_worker_platform::spool::{AppendSpool, MAX_IO, PrivateSpoolDirectory, SpoolPrefix};
+#[cfg(test)]
+use std::path::PathBuf;
 use std::{
-    ffi::OsString,
     fmt,
     io::{self, Write},
-    path::{Path, PathBuf},
-    sync::{Arc, Mutex, OnceLock, PoisonError, Weak},
+    path::Path,
+    sync::{Arc, Mutex, OnceLock, Weak},
 };
 
 const BUFFER_BYTES: usize = 16 * 1024;
 const DEFAULT_TITLE: &str = "Directory size warnings";
 const TOOLTIP_BYTES: usize = 768;
-/// The common path component limit (ext4 bytes, NTFS UTF-16 units).
-const MAX_COMPONENT: usize = 255;
+/// The spool name shared by all diagnostic report logs.
+const REPORTS: &str = "reports";
 
 trait Storage: Send {
     fn append(&mut self, offset: u64, bytes: &[u8]) -> io::Result<u64>;
@@ -37,6 +44,18 @@ impl Storage for AppendSpool {
         self.prefix(start, end)
     }
 }
+/// Report storage in a private root keeps the root's guard with the spool.
+impl<T: Storage> Storage for PrivateSpool<T> {
+    fn append(&mut self, offset: u64, bytes: &[u8]) -> io::Result<u64> {
+        T::append(self, offset, bytes)
+    }
+    fn length(&self) -> u64 {
+        T::length(self)
+    }
+    fn prefix(&self, start: u64, end: u64) -> io::Result<SpoolPrefix> {
+        T::prefix(self, start, end)
+    }
+}
 
 #[derive(Clone, Copy, Default)]
 struct Boundary {
@@ -46,8 +65,10 @@ struct Boundary {
 }
 
 struct State {
-    /// Candidate private roots, tried in order until one opens and stores.
-    directories: Vec<SpoolRoot>,
+    /// Candidate private roots, tried in order until one opens and stores. `None`
+    /// stands for this user's report roots, resolved only when the first record
+    /// needs storage: most logs never record anything.
+    directories: Option<Vec<SpoolRoot>>,
     title: &'static str,
     storage: Option<Retained<Mutex<Box<dyn Storage>>>>,
     arena: ReportArena,
@@ -84,179 +105,20 @@ impl fmt::Debug for ReportRange {
     }
 }
 
-/// One candidate private spool root (see `private_spool_roots`).
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct SpoolRoot {
-    pub(crate) path: PathBuf,
-    /// Only this process uses the root, so it is removed after its last spool
-    /// closes instead of accumulating one directory per run.
-    pub(crate) per_process: bool,
-}
-
-/// Per-user private spool roots for `name`, in preference order. Linux desktops
-/// provide `$XDG_RUNTIME_DIR`, the user's own 0700 runtime directory. Otherwise
-/// the temporary directory (per user on Windows, usually the shared `/tmp` on
-/// Linux) gets a per-user name, then a per-process one. The spool accepts only
-/// an owner-only directory of the current user, so a root that another account
-/// created (by accident or to deny storage) is skipped rather than used. Open
-/// spools with `create_private_spool`, which removes a per-process root.
-pub(crate) fn private_spool_roots(name: &str) -> Vec<SpoolRoot> {
-    let user = ["USER", "USERNAME", "LOGNAME"]
-        .into_iter()
-        .find_map(std::env::var_os);
-    spool_roots(
-        std::env::var_os("XDG_RUNTIME_DIR"),
-        user,
-        std::env::temp_dir(),
-        std::process::id(),
-        name,
-    )
-}
-
-fn spool_roots(
-    runtime: Option<OsString>,
-    user: Option<OsString>,
-    temporary: PathBuf,
-    process: u32,
-    name: &str,
-) -> Vec<SpoolRoot> {
-    let shared = |path| SpoolRoot {
-        path,
-        per_process: false,
-    };
-    let mut roots = Vec::with_capacity(3);
-    if let Some(runtime) = runtime.map(PathBuf::from).filter(|path| path.is_absolute()) {
-        roots.push(shared(runtime.join("MidnightExplorer").join(name)));
-    }
-    // The lowercase hex of the account name's encoded bytes is a lossless,
-    // file-name-safe label for a name in any script, so two account names never
-    // share a root. Ownership is still verified when the root is opened.
-    if let Some(user) = user.filter(|user| !user.is_empty()) {
-        const HEX: &[u8; 16] = b"0123456789abcdef";
-        let mut label = String::with_capacity(user.len() * 2);
-        for byte in user.as_encoded_bytes() {
-            label.push(char::from(HEX[usize::from(byte >> 4)]));
-            label.push(char::from(HEX[usize::from(byte & 0xf)]));
-        }
-        let component = format!("MidnightExplorer-{label}-{name}");
-        // A name too long for one path component keeps the per-process root.
-        if component.len() <= MAX_COMPONENT {
-            roots.push(shared(temporary.join(component)));
-        }
-    }
-    roots.push(SpoolRoot {
-        path: temporary.join(format!("MidnightExplorer-{name}-{process}")),
-        per_process: true,
-    });
-    roots
-}
-
-/// A spool in a private root. Field order closes the spool, and the root
-/// handles it pins, before the guard that removes an empty per-process root.
-/// Read-only prefixes of the spool must not outlive it.
-pub(crate) struct PrivateSpool<T> {
-    spool: T,
-    _root: Option<Arc<ProcessRoot>>,
-}
-impl<T> std::ops::Deref for PrivateSpool<T> {
-    type Target = T;
-    fn deref(&self) -> &T {
-        &self.spool
-    }
-}
-impl<T> std::ops::DerefMut for PrivateSpool<T> {
-    fn deref_mut(&mut self) -> &mut T {
-        &mut self.spool
-    }
-}
-impl<T: Storage> Storage for PrivateSpool<T> {
-    fn append(&mut self, offset: u64, bytes: &[u8]) -> io::Result<u64> {
-        self.spool.append(offset, bytes)
-    }
-    fn length(&self) -> u64 {
-        self.spool.length()
-    }
-    fn prefix(&self, start: u64, end: u64) -> io::Result<SpoolPrefix> {
-        self.spool.prefix(start, end)
-    }
-}
-
-/// Create one spool with `create` in the first candidate root that opens as an
-/// owner-only directory of this user. Backend workers only (native I/O).
-pub(crate) fn create_private_spool<T>(
-    roots: &[SpoolRoot],
-    create: impl Fn(&PrivateSpoolDirectory) -> io::Result<T>,
-) -> io::Result<PrivateSpool<T>> {
-    let mut failure = io::Error::from(io::ErrorKind::NotFound);
-    for root in roots {
-        // The guard exists before the open, so the root cannot be removed
-        // between its open and the spool creation in it.
-        let guard = root.per_process.then(|| ProcessRoot::acquire(&root.path));
-        match PrivateSpoolDirectory::open(&root.path).and_then(|directory| create(&directory)) {
-            Ok(spool) => {
-                return Ok(PrivateSpool {
-                    spool,
-                    _root: guard,
-                });
-            }
-            Err(error) => failure = error,
-        }
-    }
-    Err(failure)
-}
-
-/// Guards of live per-process roots. A guard is created, and an unused root is
-/// removed, only under this lock, so no opener can see its root disappear.
-static PROCESS_ROOTS: Mutex<Vec<(PathBuf, Weak<ProcessRoot>)>> = Mutex::new(Vec::new());
-
-/// Keeps a per-process root while a spool of this process may use it.
-struct ProcessRoot(PathBuf);
-impl ProcessRoot {
-    fn acquire(path: &Path) -> Arc<Self> {
-        let mut roots = PROCESS_ROOTS.lock().unwrap_or_else(PoisonError::into_inner);
-        if let Some(live) = roots
-            .iter()
-            .filter(|(root, _)| root == path)
-            .find_map(|(_, guard)| guard.upgrade())
-        {
-            return live;
-        }
-        roots.retain(|(root, _)| root != path);
-        let guard = Arc::new(Self(path.to_owned()));
-        roots.push((path.to_owned(), Arc::downgrade(&guard)));
-        guard
-    }
-}
-impl Drop for ProcessRoot {
-    fn drop(&mut self) {
-        let mut roots = PROCESS_ROOTS.lock().unwrap_or_else(PoisonError::into_inner);
-        if roots
-            .iter()
-            .any(|(root, guard)| *root == self.0 && guard.strong_count() != 0)
-        {
-            // A newer guard keeps the root for its own spool.
-            return;
-        }
-        roots.retain(|(root, _)| *root != self.0);
-        // Spools are anonymous (Linux) or deleted on close (Windows), so the root
-        // is empty after its last spool closed. `remove_dir` removes only an empty
-        // directory, never a link target; a root it cannot remove is kept.
-        let _ = std::fs::remove_dir(&self.0);
-    }
-}
-
 impl ReportLog {
     pub(crate) fn for_scan(arena: &ReportArena) -> Self {
         Self::private(arena, DEFAULT_TITLE)
     }
-    /// A log in this user's private spool root (see `private_spool_roots`).
+    /// A log in this user's private report root (see `private_spool_roots`),
+    /// shared by size warnings and listing errors.
     pub(crate) fn private(arena: &ReportArena, title: &'static str) -> Self {
-        Self::with_candidates(arena, private_spool_roots("size-warnings"), title)
+        Self::with_roots(arena, None, title)
     }
     #[cfg(test)]
     pub(crate) fn new(arena: &ReportArena, directory: PathBuf) -> Self {
         Self::with_title(arena, directory, DEFAULT_TITLE)
     }
+    #[cfg(test)]
     pub(crate) fn with_title(arena: &ReportArena, directory: PathBuf, title: &'static str) -> Self {
         let root = SpoolRoot {
             path: directory,
@@ -264,9 +126,17 @@ impl ReportLog {
         };
         Self::with_candidates(arena, vec![root], title)
     }
+    #[cfg(test)]
     fn with_candidates(
         arena: &ReportArena,
         directories: Vec<SpoolRoot>,
+        title: &'static str,
+    ) -> Self {
+        Self::with_roots(arena, Some(directories), title)
+    }
+    fn with_roots(
+        arena: &ReportArena,
+        directories: Option<Vec<SpoolRoot>>,
         title: &'static str,
     ) -> Self {
         Self(Arc::new(Mutex::new(State {
@@ -325,10 +195,15 @@ impl ReportLog {
         let result = (|| {
             if state.storage.is_none() {
                 let reservation = state.arena.reserve()?;
+                // Storage is created once: a failure is final for this log.
+                let directories = state
+                    .directories
+                    .take()
+                    .unwrap_or_else(|| private_spool_roots(REPORTS, SpoolContent::Reports));
                 // Every read prefix holds a retention of this storage, so the
                 // per-process root guard inside it outlives all of them.
                 let storage: Box<dyn Storage> = Box::new(create_private_spool(
-                    &state.directories,
+                    &directories,
                     PrivateSpoolDirectory::create_append_only,
                 )?);
                 state.storage = Some(reservation.retain(Mutex::new(storage)));
