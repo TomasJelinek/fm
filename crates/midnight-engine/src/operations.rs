@@ -554,7 +554,12 @@ async fn run(
             .values()
             .filter_map(|job| {
                 let mut progress = job.status.lock().unwrap_or_else(|e| e.into_inner());
-                let requested = !progress.state.is_terminal() && job.cancel.pause_requested();
+                // A disposal stores Cancelled before `finish` removes the job; only
+                // `finish` publishes that terminal state, so each job reports it once.
+                if progress.state.is_terminal() {
+                    return None;
+                }
+                let requested = job.cancel.pause_requested();
                 let paused = requested && job.cancel.is_paused();
                 let changed = (progress.pause_requested, progress.paused) != (requested, paused);
                 progress.pause_requested = requested;
