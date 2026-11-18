@@ -29,6 +29,36 @@ async fn next(events: &mut mpsc::Receiver<Event>) -> Event {
         .unwrap()
 }
 
+/// Waits until the held listing enters the provider, reading the Engine's events
+/// meanwhile: its unsolicited startup events and the listing's own start and
+/// storage events share the bounded channel, and the listing sends its start
+/// event before it reaches the provider. The held listing can neither fail nor
+/// fall back before it is released.
+async fn until_entered(entered: &Notify, events: &mut mpsc::Receiver<Event>) {
+    let entered = entered.notified();
+    tokio::pin!(entered);
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            tokio::select! {
+                () = &mut entered => return,
+                event = events.recv() => still_held(event),
+            }
+        }
+    })
+    .await
+    .expect("the blocked listing must enter the provider");
+}
+
+fn still_held(event: Option<Event>) {
+    let event = event.expect("engine output must remain connected");
+    if matches!(
+        event,
+        Event::ListingFallback { .. } | Event::ListingFailed { .. }
+    ) {
+        panic!("a held listing ended before it was released: {event:?}");
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn missing_unicode_descendants_recover_each_parent_and_list_the_first_existing_ancestor() {
     let fixture = tempfile::tempdir().unwrap();
@@ -180,9 +210,7 @@ async fn cancelled_uncancellable_failure_emits_no_fallback_and_failed_root_stops
         .install(filesystem.clone());
     let task = tokio::spawn(engine.run(receiver));
     commands.send(navigate(1, blocked)).await.unwrap();
-    tokio::time::timeout(Duration::from_secs(5), filesystem.entered.notified())
-        .await
-        .unwrap();
+    until_entered(&filesystem.entered, &mut events).await;
     commands.send(navigate(2, root.clone())).await.unwrap();
     loop {
         match next(&mut events).await {

@@ -460,8 +460,12 @@ async fn pending_find_can_cancel_while_two_native_calls_are_blocked_and_session_
             .await
             .unwrap();
     }
+    // Each session publishes its start before it opens its root, and the Engine's
+    // startup events share the bounded channel: drop them while waiting. Only the
+    // later sessions' events are checked.
     tokio::time::timeout(Duration::from_secs(5), async {
         while gate.entered.load(Ordering::SeqCst) != 2 {
+            while receive.try_recv().is_ok() {}
             tokio::time::sleep(Duration::from_millis(1)).await;
         }
     })
