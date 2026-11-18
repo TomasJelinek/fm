@@ -2,13 +2,12 @@
 use super::*;
 use midnight_platform_common::metadata::{case_name, validate_patch};
 use std::{
-    collections::HashMap,
-    ffi::OsString,
+    collections::{HashMap, HashSet},
+    ffi::{OsStr, OsString},
     io,
     path::Path,
     time::{Instant, SystemTime},
 };
-use tokio::sync::{OwnedSemaphorePermit, TryAcquireError};
 
 pub(super) struct Edit {
     pub(super) preview: MetadataPreview,
@@ -97,8 +96,8 @@ impl Edit {
         Self::with_snapshots(id, 0, MetadataPatch::default(), targets, cancel)
     }
 
-    /// Recursive execution: freshly enumerated and pinned children are read once
-    /// and the confirmed patch is applied directly, without a preview refresh.
+    /// Recursive execution: a freshly pinned child is read once and the confirmed patch
+    /// is applied directly, without a preview refresh.
     pub(super) fn prepare_confirmed(
         id: OperationId,
         revision: u64,
@@ -336,179 +335,508 @@ fn proposed_metadata(current: &MetadataSnapshot, patch: &MetadataPatch) -> Metad
     proposed
 }
 
+/// One entry of the current traversal path. A listed folder keeps its name snapshot until
+/// its last child is done; its children are pinned one at a time from that snapshot.
 struct Frame {
     target: Arc<dyn PreparedMutation>,
-    visited: bool,
     depth: usize,
     issue: Option<FsError>,
     name: Option<OsString>,
-    // Target is declared first: its native handles close before this pin is returned.
-    pin: Option<Pin>,
+    visited: bool,
+    children: Option<Listing>,
 }
 
-impl Frame {
-    fn holds_shared_pin(&self) -> bool {
-        self.pin.as_ref().is_some_and(|pin| pin.shared)
-    }
+/// A listed folder's captured child names and how far its traversal got.
+struct Listing {
+    children: Box<dyn MetadataChildren>,
+    /// Captured siblings whose case change is a conflict; empty without a case change.
+    collides: Vec<bool>,
+    /// The captured index pinned next.
+    next: usize,
+    /// What this snapshot still holds of the traversal's name budget.
+    names: usize,
+    bytes: usize,
 }
 
-/// One pinned traversal target; dropping it returns the slot to its pool.
-struct Pin {
-    _permit: OwnedSemaphorePermit,
-    /// Borrowed from the shared budget rather than the executing job's reserve.
-    shared: bool,
+/// What the name snapshots of the folders on one root's traversal path may still hold.
+/// A folder's names are charged when it is listed. Each name's bytes return as soon as
+/// its entry is pinned, which releases the name, and the rest returns once the folder is
+/// done, when its snapshot and the slots of its released names are dropped. So the bytes
+/// bound the names not processed yet, while the count covers every name the snapshots on
+/// the current path were captured with.
+///
+/// Retained memory along one path is therefore at most 100,000 name slots of 24 bytes and
+/// conflict flags of one byte, 4 MiB of unprocessed names held without spare capacity, and
+/// one allocation per unprocessed name (allocator minimum and header, up to about 32 bytes
+/// each): about 10 MiB. Listing a folder for a case change also builds, only until its
+/// first entry is pinned, a set of its names and a map of its changing names' new
+/// spellings (case mapping at most triples a name's bytes): at most about 25 MiB for
+/// 100,000 names of 4 MiB, typically a few MiB.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct NameBudget {
+    names: usize,
+    bytes: usize,
 }
 
-/// Pins taken for one directory's children before native enumeration opens any of them.
-/// Declared before the enumerated children, so their native handles close first.
-#[derive(Default)]
-struct Lease {
-    reserve: Option<OwnedSemaphorePermit>,
-    shared: Option<OwnedSemaphorePermit>,
-}
+impl NameBudget {
+    const FULL: Self = Self {
+        names: MAX_METADATA_NAMES,
+        bytes: MAX_METADATA_NAMES_BYTES,
+    };
 
-impl Lease {
-    fn count(&self) -> usize {
-        self.reserve_count() + self.shared_count()
-    }
-    fn reserve_count(&self) -> usize {
-        self.reserve
-            .as_ref()
-            .map_or(0, OwnedSemaphorePermit::num_permits)
-    }
-    fn shared_count(&self) -> usize {
-        self.shared
-            .as_ref()
-            .map_or(0, OwnedSemaphorePermit::num_permits)
-    }
-    /// Returns the pins the listed children do not need, borrowed shared ones first.
-    fn trim(&mut self, needed: usize) {
-        let mut excess = self.count().saturating_sub(needed);
-        for permits in [&mut self.shared, &mut self.reserve].into_iter().flatten() {
-            let released = excess.min(permits.num_permits());
-            drop(permits.split(released));
-            excess -= released;
+    /// Charges a folder's snapshot. One larger than the adapter was allowed to return
+    /// breaks the `metadata_children` contract; it is refused rather than held.
+    fn take(
+        &mut self,
+        path: &Path,
+        children: Box<dyn MetadataChildren>,
+        case: Option<CaseChange>,
+    ) -> Result<Listing, FsError> {
+        let names = children.names().len();
+        let bytes = children
+            .names()
+            .iter()
+            .fold(0usize, |sum, name| sum.saturating_add(name.len()));
+        if names > self.names || bytes > self.bytes {
+            return Err(error(
+                path,
+                io::ErrorKind::Other,
+                "metadata traversal exceeds its name budget",
+            ));
         }
-    }
-    /// One child pin, from the reserve first.
-    fn pin(&mut self) -> Option<Pin> {
-        if let Some(permit) = self.reserve.as_mut().and_then(|permits| permits.split(1)) {
-            return Some(Pin {
-                _permit: permit,
-                shared: false,
-            });
-        }
-        let permit = self.shared.as_mut()?.split(1)?;
-        Some(Pin {
-            _permit: permit,
-            shared: true,
+        self.names -= names;
+        self.bytes -= bytes;
+        let collides = sibling_collisions(children.names(), case);
+        Ok(Listing {
+            children,
+            collides,
+            next: 0,
+            names,
+            bytes,
         })
     }
-}
 
-/// Takes up to `at_most` currently free permits and never waits: pending metadata jobs
-/// keep their pins while they wait for the executing job, so any wait could deadlock.
-/// A failed attempt means another acquirer took permits after they were counted.
-fn take_free(pool: &Arc<Semaphore>, at_most: usize) -> Option<OwnedSemaphorePermit> {
-    loop {
-        let count = pool.available_permits().min(at_most);
-        if count == 0 {
-            return None;
-        }
-        match pool.clone().try_acquire_many_owned(count as u32) {
-            Ok(permits) => return Some(permits),
-            Err(TryAcquireError::Closed) => return None,
-            Err(TryAcquireError::NoPermits) => {}
-        }
+    /// Returns the bytes of a name the snapshot released when its entry was pinned.
+    fn release(&mut self, listing: &mut Listing, bytes: usize) {
+        let bytes = bytes.min(listing.bytes);
+        listing.bytes -= bytes;
+        self.bytes += bytes;
+    }
+
+    /// Returns the rest of a done or stopped folder's charge. Dropping the listing closes
+    /// its directory handle.
+    fn give_back(&mut self, listing: Listing) {
+        self.names += listing.names;
+        self.bytes += listing.bytes;
     }
 }
 
-/// Snapshots and pins a directory's children with at most `cap` pins. The executing
-/// job's reserve is used first. Free shared pins are borrowed only when no reserve pin
-/// is free or the adapter refused the directory as larger than the pins taken; both
-/// native adapters refuse that with `ErrorKind::Other` before opening any child, and
-/// report other failures (for example a directory replaced just before enumeration,
-/// `NotFound`) with other kinds, which are returned without borrowing.
-fn list_children(
-    target: &dyn PreparedMutation,
-    job: &worker::Job,
-    cap: usize,
-    lease: &mut Lease,
-) -> Result<Vec<Arc<dyn PreparedMutation>>, FsError> {
-    if let Some(permits) = job
-        .metadata_traversal
-        .as_ref()
-        .and_then(|reserve| take_free(reserve, cap))
-    {
-        lease.reserve = Some(permits);
-        match target.metadata_children(&job.cancel, lease.count()) {
-            Err(refusal) if refusal.kind == io::ErrorKind::Other && lease.count() < cap => {
-                lease.shared = take_free(&job.metadata_budget, cap - lease.count());
-                if lease.shared.is_none() {
-                    return Err(refusal);
-                }
-            }
-            listed => return listed,
-        }
-    } else {
-        // Still list with no pins at all, so that an empty folder succeeds.
-        lease.shared = take_free(&job.metadata_budget, cap);
-    }
-    target.metadata_children(&job.cancel, lease.count())
-}
-
-/// Names why a directory could not be pinned, then keeps the adapter's own text: an
-/// adapter can report another failure with the same `ErrorKind::Other` as its refusal.
-/// Fewer pins than the per-job cap means borrowing took every free shared target, so
-/// all shared targets then belonged to this job (`own_shared`) or to other pending jobs.
-fn pin_shortfall(
-    path: &Path,
-    pinned: usize,
-    cap: usize,
-    own_shared: usize,
-    refusal: &FsError,
-) -> FsError {
-    let size = match pinned {
-        0 => "none of this folder's entries could be pinned".to_owned(),
-        pinned => format!("this folder has more entries than the {pinned} that could be pinned"),
+/// Captured siblings whose case change cannot complete: two changing names that map to the
+/// same new name, or a changing name whose new name another captured sibling has now. A
+/// sibling whose own name stays is never marked and keeps its other changes. Found before
+/// any sibling is renamed, so these conflicts do not depend on the processing order; a
+/// sibling that later fails validation still counts. Each child's own probe, made when it
+/// is processed, sees entries that other programs create and the renames of earlier
+/// siblings, so it can depend on that order: Mixed titlecasing is not idempotent. Only the
+/// no-replace rename is authoritative, which keeps every order safe.
+fn sibling_collisions(names: &[OsString], case: Option<CaseChange>) -> Vec<bool> {
+    let Some(change) = case else {
+        return Vec::new();
     };
-    let cause = if pinned < cap {
-        let others = MAX_METADATA_TARGETS.saturating_sub(own_shared);
-        format!(
-            "other pending metadata jobs hold {others} of the {MAX_METADATA_TARGETS} \
-             shared targets"
-        )
+    let current: HashSet<&OsStr> = names.iter().map(OsString::as_os_str).collect();
+    let mut first = HashMap::<OsString, usize>::new();
+    let mut collides = vec![false; names.len()];
+    for (index, name) in names.iter().enumerate() {
+        let Ok(proposed) = case_name(name, change) else {
+            continue;
+        };
+        if proposed == *name {
+            continue;
+        }
+        if current.contains(proposed.as_os_str()) {
+            collides[index] = true;
+        }
+        match first.entry(proposed) {
+            std::collections::hash_map::Entry::Occupied(earlier) => {
+                collides[*earlier.get()] = true;
+                collides[index] = true;
+            }
+            std::collections::hash_map::Entry::Vacant(free) => {
+                free.insert(index);
+            }
+        }
+    }
+    collides
+}
+
+/// A count with thousands separators, as in "100,000".
+fn grouped(value: usize) -> String {
+    let digits = value.to_string();
+    let mut text = String::with_capacity(digits.len() + digits.len() / 3);
+    for (index, digit) in digits.chars().enumerate() {
+        if index > 0 && (digits.len() - index).is_multiple_of(3) {
+            text.push(',');
+        }
+        text.push(digit);
+    }
+    text
+}
+
+/// A byte count in binary units, as in "4 MiB" or "1.5 KiB".
+fn binary_size(bytes: usize) -> String {
+    const KIB: usize = 1024;
+    let (unit, scale) = match bytes {
+        bytes if bytes >= KIB * KIB => ("MiB", KIB * KIB),
+        bytes if bytes >= KIB => ("KiB", KIB),
+        bytes => return format!("{bytes} bytes"),
+    };
+    if bytes.is_multiple_of(scale) {
+        format!("{} {unit}", bytes / scale)
+    } else {
+        format!("{:.1} {unit}", bytes as f64 / scale as f64)
+    }
+}
+
+/// Names why a folder's names could not be held, then keeps the adapter's own text: an
+/// adapter can report another failure with the same `ErrorKind::Other` as its refusal.
+fn name_shortfall(path: &Path, free: NameBudget, refusal: &FsError) -> FsError {
+    let limit = format!(
+        "at most {} names or {} of names",
+        grouped(MAX_METADATA_NAMES),
+        binary_size(MAX_METADATA_NAMES_BYTES)
+    );
+    let cause = if free == NameBudget::FULL {
+        format!("this folder's names exceed what one recursive edit can hold ({limit})")
     } else {
         format!(
-            "one metadata job pins at most {MAX_METADATA_TARGETS} targets, including its \
-             selected targets and the listed entries it has not processed yet"
+            "this folder's names exceed the {} names or {} of names still free; one \
+             recursive edit holds {limit} at once, and the folders above it that are still \
+             being processed hold the rest",
+            grouped(free.names),
+            binary_size(free.bytes)
         )
     };
     error(
         path,
         io::ErrorKind::Other,
         &format!(
-            "{size}, because {cause}; this folder and its contents were not changed. \
-             The file system reported: {}",
+            "{cause}; this folder and its contents were not changed. The file system \
+             reported: {}",
             refusal.message
         ),
     )
+}
+
+/// Lists a folder once for recursive traversal, within what is left of the name budget.
+fn list(
+    frame: &Frame,
+    cancel: &Cancellation,
+    budget: &mut NameBudget,
+    case: Option<CaseChange>,
+) -> Result<Listing, FsError> {
+    let path = &frame.target.item().path;
+    if frame.depth >= MAX_METADATA_DEPTH {
+        // Checked first: a folder beyond the depth budget is never listed.
+        return Err(error(
+            path,
+            io::ErrorKind::Other,
+            "metadata traversal exceeds its depth budget",
+        ));
+    }
+    match frame
+        .target
+        .metadata_children(cancel, budget.names, budget.bytes)
+    {
+        Ok(children) => budget.take(path, children, case),
+        Err(refusal) if refusal.kind == io::ErrorKind::Other => {
+            Err(name_shortfall(path, *budget, &refusal))
+        }
+        Err(error) => Err(error),
+    }
+}
+
+/// A child failure that may mean its folder changed: conflicts, cancellation and fields an
+/// entry does not support concern only that entry.
+fn may_mean_folder_changed(error: &FsError) -> bool {
+    !matches!(
+        error.kind,
+        io::ErrorKind::AlreadyExists | io::ErrorKind::Interrupted | io::ErrorKind::Unsupported
+    )
+}
+
+/// After one of a listed folder's entries failed, revalidates the folder once. A folder
+/// that another program moved, replaced or removed would fail each remaining entry the same
+/// way, so it stops with one error that counts them; the outcomes of processed entries stay.
+fn stop_if_changed(folder: &mut Frame, cancel: &Cancellation, budget: &mut NameBudget) {
+    let Some(listing) = &folder.children else {
+        return;
+    };
+    let total = listing.children.names().len();
+    let remaining = total - listing.next;
+    // The folder's own edit revalidates it after its last entry.
+    if remaining == 0 {
+        return;
+    }
+    let Err(failure) = folder.target.metadata_snapshot(cancel) else {
+        return;
+    };
+    if failure.kind == io::ErrorKind::Interrupted {
+        return;
+    }
+    if let Some(listing) = folder.children.take() {
+        budget.give_back(listing);
+    }
+    let kind = match failure.kind {
+        io::ErrorKind::AlreadyExists => io::ErrorKind::Other,
+        kind => kind,
+    };
+    folder.issue = Some(error(
+        &folder.target.item().path,
+        kind,
+        &format!(
+            "this folder changed while its entries were processed, so {} of its {} entries \
+             and the folder itself were not changed. The file system reported: {}",
+            grouped(remaining),
+            grouped(total),
+            failure.message
+        ),
+    ));
+}
+
+/// What pinning a listed folder's next entry gave: a frame to process, or the outcome of an
+/// entry that could not be pinned and fails alone.
+enum Pinned {
+    Child(Frame),
+    Failed(MetadataOutcome),
+}
+
+/// Pins a listed folder's next captured entry and plans its edit: the issue and new name
+/// that `Edit::prepare_confirmed` finds for that entry alone, then the sibling conflicts
+/// found on the captured names.
+fn pin_next(
+    folder: &mut Frame,
+    budget: &mut NameBudget,
+    plan: (OperationId, &MetadataPreview),
+    cancel: &Cancellation,
+) -> Option<Pinned> {
+    let listing = folder.children.as_mut()?;
+    let index = listing.next;
+    let bytes = listing.children.names().get(index)?.len();
+    listing.next += 1;
+    let target = match listing.children.pin(index, cancel) {
+        Ok(target) => target,
+        Err(error) => {
+            // A failed pin keeps its captured name.
+            let name = listing.children.names().get(index).cloned();
+            let path = &folder.target.item().path;
+            let mut outcome = MetadataOutcome::unchanged(path.join(name.unwrap_or_default()));
+            outcome.error = Some(error);
+            return Some(Pinned::Failed(outcome));
+        }
+    };
+    budget.release(listing, bytes);
+    let (id, preview) = plan;
+    let (mut issue, name) = match Edit::prepare_confirmed(
+        id,
+        preview.revision,
+        preview.patch.clone(),
+        std::slice::from_ref(&target),
+        cancel,
+    ) {
+        Ok(planned) => (
+            planned.issues.into_iter().next().flatten(),
+            planned.names.into_iter().next().flatten(),
+        ),
+        Err(error) => (Some(error), None),
+    };
+    if listing.collides.get(index) == Some(&true)
+        && issue
+            .as_ref()
+            .is_none_or(|issue| issue.kind == io::ErrorKind::AlreadyExists)
+    {
+        issue = Some(error(
+            &target.item().path,
+            io::ErrorKind::AlreadyExists,
+            "another entry of this folder has or would get the same name",
+        ));
+    }
+    Some(Pinned::Child(Frame {
+        target,
+        depth: folder.depth + 1,
+        issue,
+        name,
+        visited: false,
+        children: None,
+    }))
+}
+
+/// One metadata job's report: item outcomes, conflict decisions and throttled progress.
+struct Tally<'a> {
+    edit: &'a Edit,
+    outbox: &'a Outbox,
+    cancel: &'a Cancellation,
+    status: &'a Status,
+    root_count: usize,
+    progress: OperationProgress,
+    result: MetadataResult,
+    policy: MetadataConflictPolicy,
+    last: Instant,
+}
+
+impl Tally<'_> {
+    /// Records one entry's outcome; a name conflict applies, or asks for, a decision.
+    fn record(&mut self, outcome: MetadataOutcome, depth: usize, name: Option<&OsStr>) {
+        self.result.processed += 1;
+        self.result.changed += u64::from(outcome.changes.any());
+        if depth == 0 && self.root_count == 1 && outcome.changes.renamed {
+            self.progress.renamed_to = Some(outcome.current_path.clone());
+        }
+        self.progress.current_path = Some(outcome.current_path.clone());
+        if outcome.changes.any() {
+            self.progress.processed_entries += 1;
+        }
+        if let Some(error) = &outcome.error {
+            if error.kind == io::ErrorKind::AlreadyExists {
+                let choice = if self.policy == MetadataConflictPolicy::Skip {
+                    let destination = name.map_or_else(
+                        || outcome.current_path.clone(),
+                        |name| outcome.original_path.with_file_name(name),
+                    );
+                    self.edit.conflict_state.ask(
+                        self.progress.id,
+                        outcome.original_path.clone(),
+                        destination,
+                        self.outbox,
+                        self.cancel,
+                    )
+                } else {
+                    self.policy
+                };
+                match choice {
+                    MetadataConflictPolicy::Cancel => self.cancel.cancel(),
+                    MetadataConflictPolicy::Skip => self.result.skipped += 1,
+                    MetadataConflictPolicy::SkipAll => {
+                        self.result.skipped += 1;
+                        self.policy = MetadataConflictPolicy::SkipAll;
+                    }
+                }
+            } else if error.kind != io::ErrorKind::Interrupted {
+                self.result.failed += 1;
+            }
+            if self.progress.errors.len() < 16 {
+                self.progress.errors.push(error.clone());
+            }
+        }
+        if self.result.sample.len() < 32 {
+            self.result.sample.push(outcome);
+        }
+        if self.last.elapsed() >= Duration::from_millis(250) {
+            *self.status.lock().unwrap_or_else(|e| e.into_inner()) = self.progress.clone();
+            if self
+                .outbox
+                .sender
+                .try_send(Event::Operation(OperationEvent::Progress(Arc::new(
+                    self.progress.clone(),
+                ))))
+                .is_ok()
+            {
+                (self.outbox.wakeup)();
+            }
+            self.last = Instant::now();
+        }
+    }
+}
+
+/// Edits one root and, for a recursive patch, every entry below it in postorder. A folder
+/// is listed once and its entries are pinned one at a time, only when they are processed,
+/// so at most one pinned child per listed level is alive: at most `MAX_METADATA_DEPTH`
+/// traversal targets, besides the selected roots of the shared budget. The name snapshots
+/// on the current path share one `NameBudget`.
+fn traverse(
+    tally: &mut Tally,
+    root: Arc<dyn PreparedMutation>,
+    issue: Option<FsError>,
+    name: Option<OsString>,
+) {
+    let edit = tally.edit;
+    let cancel = tally.cancel;
+    let patch = &edit.preview.patch;
+    let plan = (tally.progress.id, &edit.preview);
+    let mut budget = NameBudget::FULL;
+    let mut stack = vec![Frame {
+        target: root,
+        depth: 0,
+        issue,
+        name,
+        visited: false,
+        children: None,
+    }];
+    while let Some(mut frame) = stack.pop() {
+        if cancel.is_cancelled() {
+            break;
+        }
+        if !frame.visited {
+            frame.visited = true;
+            if frame.issue.is_none()
+                && patch.recursive
+                && frame.target.item().kind == EntryKind::Directory
+            {
+                match list(&frame, cancel, &mut budget, patch.case) {
+                    Ok(listing) => frame.children = Some(listing),
+                    Err(issue) => frame.issue = Some(issue),
+                }
+            }
+        }
+        match pin_next(&mut frame, &mut budget, plan, cancel) {
+            Some(Pinned::Child(child)) => {
+                stack.push(frame);
+                stack.push(child);
+                // One pinned child per listed level, and a folder at the depth budget is
+                // never listed: at most MAX_METADATA_DEPTH traversal targets. Only the job
+                // that holds every mutation-gate share executes.
+                debug_assert!(stack.len() <= MAX_METADATA_DEPTH + 1);
+                continue;
+            }
+            Some(Pinned::Failed(outcome)) => {
+                let changed = outcome.error.as_ref().is_some_and(may_mean_folder_changed);
+                tally.record(outcome, frame.depth + 1, None);
+                if changed {
+                    stop_if_changed(&mut frame, cancel, &mut budget);
+                }
+                stack.push(frame);
+                continue;
+            }
+            None => {}
+        }
+        // The folder is done: its snapshot and directory handle close, like every pinned
+        // child before, ahead of its own edit (Windows refuses to rename a folder while a
+        // handle below it is open).
+        if let Some(listing) = frame.children.take() {
+            budget.give_back(listing);
+        }
+        let outcome = match frame.issue.take() {
+            Some(issue) => {
+                let mut outcome = MetadataOutcome::unchanged(frame.target.item().path.clone());
+                outcome.error = Some(issue);
+                outcome
+            }
+            None => frame
+                .target
+                .edit_metadata(patch, frame.name.as_deref(), cancel),
+        };
+        let changed = outcome.error.as_ref().is_some_and(may_mean_folder_changed);
+        tally.record(outcome, frame.depth, frame.name.as_deref());
+        drop(frame);
+        if changed && let Some(folder) = stack.last_mut() {
+            stop_if_changed(folder, cancel, &mut budget);
+        }
+    }
 }
 
 pub(super) fn execute(mut job: worker::Job, outbox: Outbox) -> OperationProgress {
     let edit = job.metadata.as_ref().expect("metadata job");
     let patch = &edit.preview.patch;
     let mut progress = job.progress();
-    let mut result = MetadataResult {
-        id: progress.id,
-        processed: 0,
-        changed: 0,
-        skipped: 0,
-        failed: 0,
-        sample: vec![],
-    };
-    let mut last = Instant::now();
-    let mut conflict_policy = edit.conflicts;
     if patch.recursive {
         progress.total = progress.total.saturating_sub(
             job.metadata_covered
@@ -522,6 +850,24 @@ pub(super) fn execute(mut job: worker::Job, outbox: Outbox) -> OperationProgress
     // The retained capture stays in job until every root/descendant pin has closed.
     let root_count = job.targets.len();
     let roots = std::mem::take(&mut job.targets);
+    let mut tally = Tally {
+        edit,
+        outbox: &outbox,
+        cancel: &job.cancel,
+        status: &job.status,
+        root_count,
+        result: MetadataResult {
+            id: progress.id,
+            processed: 0,
+            changed: 0,
+            skipped: 0,
+            failed: 0,
+            sample: vec![],
+        },
+        progress,
+        policy: edit.conflicts,
+        last: Instant::now(),
+    };
     for (root_index, root) in roots.into_iter().enumerate() {
         // Typed occurrence ancestry, captured before preview, handles selected overlaps.
         // The covering root walks this subtree once; nonrecursive edits keep every root.
@@ -531,177 +877,24 @@ pub(super) fn execute(mut job: worker::Job, outbox: Outbox) -> OperationProgress
         if job.cancel.is_cancelled() {
             break;
         }
-        let before_failures = result.failed;
-        let mut stack = vec![Frame {
-            target: root.clone(),
-            visited: false,
-            depth: 0,
-            issue: edit.issues[root_index].clone(),
-            name: edit.names[root_index].clone(),
-            pin: None,
-        }];
-        while let Some(mut frame) = stack.pop() {
-            if job.cancel.is_cancelled() {
-                break;
-            }
-            if !frame.visited
-                && frame.issue.is_none()
-                && patch.recursive
-                && frame.target.item().kind == EntryKind::Directory
-            {
-                if frame.depth >= MAX_METADATA_DEPTH {
-                    // Checked first: a depth refusal never reserves or borrows pins.
-                    frame.issue = Some(error(
-                        &frame.target.item().path,
-                        io::ErrorKind::Other,
-                        "metadata traversal exceeds its depth budget",
-                    ));
-                } else {
-                    // Pins are taken before native enumeration opens any child. This job's
-                    // selection, pending frames and these children stay within the
-                    // per-job budget, and no pin is ever waited for (E6-7).
-                    let cap = MAX_METADATA_TARGETS.saturating_sub(stack.len() + root_count);
-                    let mut lease = Lease::default();
-                    match list_children(frame.target.as_ref(), &job, cap, &mut lease) {
-                        Ok(children) if children.len() <= lease.count() => {
-                            // Unused pins return before the snapshot reads below.
-                            lease.trim(children.len());
-                            let child_edit = match Edit::prepare_confirmed(
-                                progress.id,
-                                edit.preview.revision,
-                                patch.clone(),
-                                &children,
-                                &job.cancel,
-                            ) {
-                                Ok(edit) => edit,
-                                Err(error) => {
-                                    frame.issue = Some(error);
-                                    stack.push(frame);
-                                    continue;
-                                }
-                            };
-                            // Children are processed in listing order. The first ones take
-                            // the reserve pins, so the reserve refills as they finish.
-                            let pins: Vec<_> = (0..children.len())
-                                .map(|_| lease.pin().expect("one trimmed pin per child"))
-                                .collect();
-                            frame.visited = true;
-                            let depth = frame.depth + 1;
-                            stack.push(frame);
-                            for ((index, child), pin) in
-                                children.into_iter().enumerate().zip(pins).rev()
-                            {
-                                stack.push(Frame {
-                                    target: child,
-                                    visited: false,
-                                    depth,
-                                    issue: child_edit.issues[index].clone(),
-                                    name: child_edit.names[index].clone(),
-                                    pin: Some(pin),
-                                });
-                            }
-                            continue;
-                        }
-                        Ok(_) => {
-                            frame.issue = Some(error(
-                                &frame.target.item().path,
-                                io::ErrorKind::Other,
-                                "metadata traversal exceeds its pinned-target budget",
-                            ))
-                        }
-                        Err(refusal) if refusal.kind == io::ErrorKind::Other => {
-                            let own_shared = root_count
-                                + lease.shared_count()
-                                + usize::from(frame.holds_shared_pin())
-                                + stack
-                                    .iter()
-                                    .filter(|other| other.holds_shared_pin())
-                                    .count();
-                            frame.issue = Some(pin_shortfall(
-                                &frame.target.item().path,
-                                lease.count(),
-                                cap,
-                                own_shared,
-                                &refusal,
-                            ));
-                        }
-                        Err(error) => frame.issue = Some(error),
-                    }
-                }
-            }
-            let outcome = if let Some(error) = frame.issue {
-                let mut outcome = MetadataOutcome::unchanged(frame.target.item().path.clone());
-                outcome.error = Some(error);
-                outcome
-            } else {
-                frame
-                    .target
-                    .edit_metadata(patch, frame.name.as_deref(), &job.cancel)
-            };
-            result.processed += 1;
-            result.changed += u64::from(outcome.changes.any());
-            if frame.depth == 0 && root_count == 1 && outcome.changes.renamed {
-                progress.renamed_to = Some(outcome.current_path.clone());
-            }
-            progress.current_path = Some(outcome.current_path.clone());
-            if outcome.changes.any() {
-                progress.processed_entries += 1;
-            }
-            if let Some(error) = &outcome.error {
-                if error.kind == io::ErrorKind::AlreadyExists {
-                    let choice = if conflict_policy == MetadataConflictPolicy::Skip {
-                        let destination = frame.name.as_ref().map_or_else(
-                            || outcome.current_path.clone(),
-                            |name| outcome.original_path.with_file_name(name),
-                        );
-                        edit.conflict_state.ask(
-                            progress.id,
-                            outcome.original_path.clone(),
-                            destination,
-                            &outbox,
-                            &job.cancel,
-                        )
-                    } else {
-                        conflict_policy
-                    };
-                    match choice {
-                        MetadataConflictPolicy::Cancel => job.cancel.cancel(),
-                        MetadataConflictPolicy::Skip => result.skipped += 1,
-                        MetadataConflictPolicy::SkipAll => {
-                            result.skipped += 1;
-                            conflict_policy = MetadataConflictPolicy::SkipAll;
-                        }
-                    }
-                } else if error.kind != io::ErrorKind::Interrupted {
-                    result.failed += 1;
-                }
-                if progress.errors.len() < 16 {
-                    progress.errors.push(error.clone());
-                }
-            }
-            if result.sample.len() < 32 {
-                result.sample.push(outcome);
-            }
-            if last.elapsed() >= Duration::from_millis(250) {
-                *job.status.lock().unwrap_or_else(|e| e.into_inner()) = progress.clone();
-                if outbox
-                    .sender
-                    .try_send(Event::Operation(OperationEvent::Progress(Arc::new(
-                        progress.clone(),
-                    ))))
-                    .is_ok()
-                {
-                    (outbox.wakeup)();
-                }
-                last = Instant::now();
-            }
-        }
-        if result.failed > before_failures {
-            progress.failed += 1;
+        let before_failures = tally.result.failed;
+        traverse(
+            &mut tally,
+            root,
+            edit.issues[root_index].clone(),
+            edit.names[root_index].clone(),
+        );
+        if tally.result.failed > before_failures {
+            tally.progress.failed += 1;
         } else if !job.cancel.is_cancelled() {
-            progress.completed += 1;
+            tally.progress.completed += 1;
         }
     }
+    let Tally {
+        mut progress,
+        result,
+        ..
+    } = tally;
     progress.state = if job.cancel.is_cancelled() {
         OperationState::Cancelled
     } else if result.failed > 0 || result.skipped > 0 {

@@ -553,73 +553,6 @@ fn prepared_jobs_share_handle_budget_and_release_it_after_cleanup() {
 }
 
 #[tokio::test]
-async fn recursive_budget_is_checked_before_any_child_is_renamed() {
-    let h = Harness::new(&[("PARENT", true)]);
-    for name in ["FIRST", "SECOND"] {
-        fs::write(h.directory.path().join("PARENT").join(name), b"unchanged").unwrap();
-    }
-    let cancel = Cancellation::default();
-    let budget = Arc::new(Semaphore::new(MAX_METADATA_TARGETS));
-    // Other pending jobs leave one free shared target besides this job's root pin.
-    let _others = budget
-        .clone()
-        .try_acquire_many_owned(MAX_METADATA_TARGETS as u32 - 2)
-        .unwrap();
-    let mut job = worker::prepare(
-        h.request.clone(),
-        Some(Arc::new(LocalFileSystem::new(None))),
-        cancel.clone(),
-        Arc::new(Mutex::new(worker::initial(&h.request))),
-        budget,
-    )
-    .unwrap();
-    job.metadata.as_mut().unwrap().update(
-        1,
-        MetadataPatch {
-            recursive: true,
-            case: Some(CaseChange::default()),
-            ..Default::default()
-        },
-        &job.targets,
-        &cancel,
-    );
-    let (sender, _events) = mpsc::channel(64);
-    let progress = tokio::task::spawn_blocking(move || {
-        job.execute(Outbox {
-            sender,
-            wakeup: Arc::new(|| {}),
-        })
-    })
-    .await
-    .unwrap();
-    assert_eq!(progress.state, OperationState::CompletedWithErrors);
-    assert_eq!(
-        progress.processed_entries, 0,
-        "a directory batch exceeding the shared budget must fail before writes"
-    );
-    assert_eq!(
-        fs::read(h.directory.path().join("PARENT/FIRST")).unwrap(),
-        b"unchanged"
-    );
-    assert_eq!(
-        fs::read(h.directory.path().join("PARENT/SECOND")).unwrap(),
-        b"unchanged"
-    );
-    // Without a traversal reserve the single free shared target is borrowed. The refusal
-    // names the jobs holding the rest and then keeps the native adapter's own text.
-    let message = &progress.errors[0].message;
-    assert!(
-        message.contains("more entries than the 1 that could be pinned")
-            && message.contains("other pending metadata jobs hold 254 of the 256")
-            && message.ends_with(
-                "The file system reported: metadata directory snapshot exceeds its \
-                 resource budget"
-            ),
-        "{message}"
-    );
-}
-
-#[tokio::test]
 async fn conflict_tokens_skip_one_then_skip_all_without_overwriting() {
     let mut h = Harness::new(&[("straße", false), ("maße", false), ("große", false)]);
     h.controller.prepare(h.request.clone()).await;
@@ -796,5 +729,7 @@ async fn metadata_preview_captures_native_locale_on_worker_for_current_and_propo
 
 #[path = "operation_metadata_pin_tests.rs"]
 mod pins;
+#[path = "operation_metadata_traversal_tests.rs"]
+mod traversal;
 #[path = "tree_metadata_operation_tests.rs"]
 mod tree_metadata;

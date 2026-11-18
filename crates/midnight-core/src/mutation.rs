@@ -1,7 +1,7 @@
 //! Backend-only, platform-specific file mutation capabilities.
 use crate::{Cancellation, EntryKind, EntryMetadata, FsError};
 use std::{
-    ffi::OsStr,
+    ffi::{OsStr, OsString},
     fmt,
     path::{Path, PathBuf},
     sync::Arc,
@@ -100,6 +100,35 @@ pub struct PreparedRenameReplacement {
     pub directory: Arc<dyn crate::TransferDirectory>,
     pub target: Arc<dyn crate::TransferTarget>,
 }
+
+/// Child names that the name snapshots of one recursive metadata traversal hold together:
+/// every folder on its current path keeps its names counted until that folder is done (see
+/// [`PreparedMutation::metadata_children`] and `MAX_METADATA_NAMES_BYTES`).
+pub const MAX_METADATA_NAMES: usize = 100_000;
+
+/// One directory's child names, captured for recursive metadata traversal through the
+/// directory's pinned native handle before any child is opened or changed. Children are
+/// opened and pinned one at a time, only when the traversal processes them, relative to
+/// the handle this retains. Dropping it closes that handle; the engine drops it before it
+/// edits the directory itself.
+pub trait MetadataChildren: Send {
+    /// The captured names in native enumeration order, without `.` and `..`. Pinning an
+    /// entry releases its name, which then reads as empty.
+    fn names(&self) -> &[OsString];
+    /// Opens and pins the entry now named `names()[index]` relative to the retained
+    /// directory handle, never through a pathname, and releases that name. A link at that
+    /// name is pinned as the link and never followed; an entry on another mount or volume
+    /// is refused. The entry found now is pinned under its current identity, even if it
+    /// replaced the captured one; a missing entry fails with `NotFound`. An index outside
+    /// `names()`, or one whose entry is already pinned, fails with `InvalidInput`. A
+    /// failure concerns only this entry and keeps its name.
+    fn pin(
+        &mut self,
+        index: usize,
+        cancel: &Cancellation,
+    ) -> Result<Arc<dyn PreparedMutation>, FsError>;
+}
+
 /// An identity captured on a worker before confirmation. Implementations must
 /// revalidate it before mutation and never follow directory links recursively.
 /// No operation may silently replace another entry or fall back from trash to
@@ -147,20 +176,21 @@ pub trait PreparedMutation: Send + Sync {
         let _ = (name, cancel);
         Ok(())
     }
-    /// Snapshot child names and pin identities before any child is renamed. Implementations
-    /// reject links/mount crossings and enforce MAX_METADATA_TARGETS / names-byte limits.
-    ///
-    /// A directory with more than `max_targets` children (at most MAX_METADATA_TARGETS),
-    /// or whose child names exceed the names-byte limit, fails with
-    /// `std::io::ErrorKind::Other` before any child is opened or pinned. Every other
-    /// failure uses another kind: callers rely on `Other` to tell this budget refusal
-    /// apart (the engine reports it as too few pinned targets for the folder).
+    /// Revalidates this directory and captures its child names for recursive metadata
+    /// traversal, before any child is opened, pinned or changed; a link or mount crossing is
+    /// never listed. A directory with more than `max_names` children, or whose names together
+    /// exceed `max_bytes` (each name counted as its `OsStr::len`), fails with
+    /// `std::io::ErrorKind::Other` before more names are retained; callers pass what is left
+    /// of their traversal budget (at most `MAX_METADATA_NAMES` and `MAX_METADATA_NAMES_BYTES`).
+    /// Every other failure uses another kind: the engine reports `Other` as a refusal of that
+    /// budget. Names are released as their entries are pinned (see [`MetadataChildren`]).
     fn metadata_children(
         &self,
         cancel: &Cancellation,
-        max_targets: usize,
-    ) -> Result<Vec<Arc<dyn PreparedMutation>>, FsError> {
-        let _ = (cancel, max_targets);
+        max_names: usize,
+        max_bytes: usize,
+    ) -> Result<Box<dyn MetadataChildren>, FsError> {
+        let _ = (cancel, max_names, max_bytes);
         Err(FsError::from_io(
             "inspect children",
             &self.item().path,

@@ -20,9 +20,6 @@ pub(super) struct Job {
     preview: OperationPreview,
     pub(super) metadata: Option<super::metadata::Edit>,
     pub(super) metadata_budget: Arc<Semaphore>,
-    /// The actor's recursive-traversal reserve, attached only once this job holds the
-    /// whole mutation gate. Without it, traversal borrows only free shared pins.
-    pub(super) metadata_traversal: Option<Arc<Semaphore>>,
     pub(super) predecessors: Arc<crate::copy_fence::Predecessors>,
     // Declared after targets so native resources close before permits are returned.
     metadata_permits: Vec<tokio::sync::OwnedSemaphorePermit>,
@@ -221,7 +218,6 @@ fn new_job(
         rename_locale: None,
         metadata: None,
         metadata_budget,
-        metadata_traversal: None,
         predecessors: Default::default(),
         metadata_permits: vec![],
         _captured_sources: None,

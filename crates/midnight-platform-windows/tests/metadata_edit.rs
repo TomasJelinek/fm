@@ -406,3 +406,54 @@ fn compression_collision_keeps_requested_readonly_clear_unapplied() {
     assert_eq!(fs::read(&path).unwrap(), b"source");
     assert_eq!(fs::read(&target).unwrap(), b"target");
 }
+
+#[test]
+fn a_child_replaced_by_a_junction_after_the_snapshot_is_pinned_as_the_link() {
+    let dir = test_fixtures::build_temp("fixture-");
+    let parent = dir.path().join("PARENT");
+    let outside = dir.path().join("OUTSIDE");
+    fs::create_dir_all(parent.join("S")).unwrap();
+    fs::create_dir(&outside).unwrap();
+    fs::write(outside.join("OUT.txt"), b"outside").unwrap();
+    let cancel = Cancellation::default();
+    let prepared = WindowsFileSystem::new(None)
+        .prepare(&parent, &cancel)
+        .unwrap();
+    let mut children = prepared
+        .metadata_children(&cancel, MAX_METADATA_NAMES, MAX_METADATA_NAMES_BYTES)
+        .unwrap();
+    assert_eq!(children.names(), ["S"]);
+    // Another program replaces the captured folder with a junction to OUTSIDE.
+    fs::rename(parent.join("S"), dir.path().join("S_old")).unwrap();
+    fs::create_dir(parent.join("S")).unwrap();
+    test_fixtures::create_junction(&parent.join("S"), &outside).unwrap();
+    let modified = |path: &std::path::Path| fs::metadata(path).unwrap().modified().unwrap();
+    let before = (modified(&outside), modified(&outside.join("OUT.txt")));
+    let pinned = children.pin(0, &cancel).unwrap();
+    assert_eq!(pinned.item().path, parent.join("S"));
+    assert_eq!(pinned.item().kind, EntryKind::DirectoryLink);
+    assert_eq!(
+        pinned
+            .metadata_children(&cancel, MAX_METADATA_NAMES, MAX_METADATA_NAMES_BYTES)
+            .err()
+            .unwrap()
+            .kind,
+        std::io::ErrorKind::InvalidInput,
+        "a link is never listed"
+    );
+    let patch = MetadataPatch {
+        modified: TimeEdit::Set(UNIX_EPOCH + Duration::from_secs(1_600_000_000)),
+        windows_mask: EDIT_HIDDEN,
+        windows_value: EDIT_HIDDEN,
+        recursive: true,
+        ..Default::default()
+    };
+    let outcome = pinned.edit_metadata(&patch, None, &cancel);
+    assert_eq!(outcome.error.unwrap().kind, std::io::ErrorKind::Unsupported);
+    assert!(!outcome.changes.any());
+    assert_eq!(
+        (modified(&outside), modified(&outside.join("OUT.txt"))),
+        before
+    );
+    assert_eq!(fs::read(outside.join("OUT.txt")).unwrap(), b"outside");
+}

@@ -51,14 +51,6 @@ type Running = (
     Option<Arc<MetadataResult>>,
 );
 pub(crate) const MAX_JOBS: usize = 32;
-/// Recursive metadata traversal pins of the executing job, separate from the shared
-/// 256-target budget that holds the selected targets of every prepared, queued and
-/// executing metadata job. Only the executing job uses them, and it is exclusive because
-/// every executing mutation job holds all `NAMESPACE_WEIGHT` mutation-gate shares.
-/// Traversal never waits for a pin from this reserve or the shared budget: pending jobs
-/// keep their pins while they wait for the executing job, so any wait could deadlock
-/// (E6-7).
-const METADATA_TRAVERSAL_RESERVE: usize = MAX_METADATA_DEPTH;
 
 enum Message {
     Prepare(WorkerOwned<Input>, Cancellation, Status),
@@ -391,7 +383,6 @@ async fn run(
 ) {
     let budget = Arc::new(Semaphore::new(2));
     let metadata_budget = Arc::new(Semaphore::new(MAX_METADATA_TARGETS));
-    let traversal_reserve = Arc::new(Semaphore::new(METADATA_TRAVERSAL_RESERVE));
     let mut preparing = Tracked::<Preparation>::default();
     let mut running = Tracked::<Running>::default();
     let mut disposing = Tracked::<OperationProgress>::default();
@@ -608,9 +599,8 @@ async fn run(
             let status = job.status.clone();
             let output = outbox.clone();
             let gate = mutation_gate.clone();
-            let reserve = traversal_reserve.clone();
             running.spawn(status.clone(), async move {
-                let job = match acquire_mutation(job, gate, reserve).await {
+                let job = match acquire_mutation(job, gate).await {
                     Ok(job) => job,
                     Err(progress) => return (status, Ok(*progress), None),
                 };
@@ -706,7 +696,6 @@ fn prepare_on_worker(
 async fn acquire_mutation(
     mut job: WorkerOwned<worker::Job>,
     gate: Arc<Semaphore>,
-    traversal_reserve: Arc<Semaphore>,
 ) -> Result<WorkerOwned<worker::Job>, Box<OperationProgress>> {
     if let Err(error) = job
         .predecessors
@@ -727,16 +716,8 @@ async fn acquire_mutation(
             }
         }
     };
+    // Holding every gate share, not the dequeue, makes this the only executing job.
     job.hold_mutation_permit(permit);
-    // Holding every gate share, not the dequeue, makes this the only executing job. A
-    // previous job, even one whose actor task already ended, releases its traversal
-    // pins before its native worker releases the gate shares.
-    debug_assert_eq!(
-        traversal_reserve.available_permits(),
-        METADATA_TRAVERSAL_RESERVE,
-        "only the executing mutation job holds traversal reserve pins"
-    );
-    job.metadata_traversal = Some(traversal_reserve);
     Ok(job)
 }
 
