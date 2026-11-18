@@ -1,5 +1,5 @@
 //! Keep automated UI runs independent of the user's persisted preferences.
-use midnight_core::{FsError, SettingsService, UserPreferences};
+use midnight_core::{FsError, PanelViewMode, SettingsService, UserPreferences};
 use std::{
     io,
     path::Path,
@@ -12,6 +12,17 @@ pub(crate) fn for_run(smoke: bool, native: Arc<dyn SettingsService>) -> Arc<dyn 
     } else {
         native
     }
+}
+
+/// The idle-wakeup probe measures defaults, or the Thumbnails view on both panes,
+/// without reading or writing the user's profile.
+pub(crate) fn for_probe(thumbnails: bool) -> Arc<dyn SettingsService> {
+    let mut preferences = UserPreferences::default();
+    if thumbnails {
+        preferences.thumbnails_enabled = true;
+        preferences.panel_view_modes = [PanelViewMode::Thumbnails; 2];
+    }
+    Arc::new(SmokeSettings(Mutex::new(preferences)))
 }
 
 #[derive(Default)]
@@ -79,6 +90,26 @@ mod tests {
         assert_eq!(
             next_run.load_preferences().unwrap(),
             UserPreferences::default()
+        );
+    }
+
+    #[test]
+    fn probe_preferences_are_in_memory_defaults_with_an_optional_thumbnails_view() {
+        let details = for_probe(false);
+        assert_eq!(
+            details.load_preferences().unwrap(),
+            UserPreferences::default()
+        );
+        let thumbnails = for_probe(true).load_preferences().unwrap();
+        assert!(thumbnails.thumbnails_enabled);
+        assert_eq!(thumbnails.panel_view_modes, [PanelViewMode::Thumbnails; 2]);
+        assert_eq!(
+            UserPreferences {
+                thumbnails_enabled: true,
+                panel_view_modes: [PanelViewMode::Thumbnails; 2],
+                ..UserPreferences::default()
+            },
+            thumbnails
         );
     }
 

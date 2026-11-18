@@ -4,6 +4,7 @@
 mod command_artwork;
 mod command_reclaim;
 mod comparator;
+mod idle_probe;
 mod native_content;
 mod shutdown;
 mod shutdown_preferences;
@@ -303,7 +304,10 @@ fn run_window(
         std::env::var_os("SLINT_BACKEND").is_some(),
         false,
     );
-    if let Err(error) = window_backend::select(options.software) {
+    let wakeup_probe = idle_probe::from_env();
+    if let Err(error) =
+        window_backend::select(options.software, wakeup_probe.map(idle_probe::Probe::new))
+    {
         return startup_recovery::native_failure(
             format!("Cannot initialize renderer: {error}"),
             may_retry,
@@ -318,7 +322,10 @@ fn run_window(
     };
     // This owner aborts/wakes a pending settings write on every early return.
     let startup_owner = startup_gate::Owner::new();
-    let settings = smoke_settings::for_run(options.ui_smoke, settings);
+    let settings = match wakeup_probe {
+        Some(probe) => smoke_settings::for_probe(probe.thumbnails),
+        None => smoke_settings::for_run(options.ui_smoke, settings),
+    };
     let settings = startup_settings::for_startup(settings, startup_owner.gate());
     let package_version = env!("CARGO_PKG_VERSION");
     let display_version = package_version
