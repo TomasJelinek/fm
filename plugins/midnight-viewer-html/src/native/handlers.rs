@@ -49,7 +49,7 @@ fn dip_rect(viewport: &api::Viewport) -> Rect {
 }
 
 wrap_app! {
-    pub(super) struct ViewerApp;
+    pub(super) struct ViewerApp { schedule: Arc<Schedule> }
     impl App {
         fn on_before_command_line_processing(&self, _process_type: Option<&CefString>, command_line: Option<&mut CommandLine>) {
             if let Some(command_line) = command_line {
@@ -57,6 +57,19 @@ wrap_app! {
                     command_line.append_switch(Some(&CefString::from(flag)));
                 }
             }
+        }
+        fn browser_process_handler(&self) -> Option<BrowserProcessHandler> {
+            crate::platform::EXTERNAL_MESSAGE_PUMP.then(|| Pump::new(self.schedule.clone()))
+        }
+    }
+}
+
+wrap_browser_process_handler! {
+    struct Pump { schedule: Arc<Schedule> }
+    impl BrowserProcessHandler {
+        // CEF calls this from any thread; it never pumps, it only schedules the main loop.
+        fn on_schedule_message_pump_work(&self, delay_ms: i64) {
+            self.schedule.request(delay_ms, std::time::Instant::now());
         }
     }
 }

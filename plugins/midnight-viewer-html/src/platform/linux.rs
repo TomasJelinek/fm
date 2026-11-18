@@ -6,6 +6,10 @@ use std::os::unix::ffi::OsStringExt;
 
 pub(crate) type NativeKeyEvent = cef::sys::XEvent;
 
+/// CEF's pump on Linux also integrates glib and X11 sources; the external message pump
+/// has not been qualified there, so the main loop keeps pumping about every 2 ms.
+pub(crate) const EXTERNAL_MESSAGE_PUMP: bool = false;
+
 pub(crate) fn run() -> i32 {
     // Raw argv bytes: a non-UTF-8 installation or profile path must not panic before
     // CEF starts (std::env::args, used by cef::args::Args, panics on such entries).

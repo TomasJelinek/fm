@@ -23,6 +23,9 @@ pub(crate) enum Event {
     CommandDispatch,
     /// Command batch and CEF pump returned; last command's document and sequence.
     CommandTurnComplete,
+    /// The main loop pumped CEF; commands handled in its turn, and 1 when CEF's requested
+    /// pump was due.
+    PumpTurn,
     Wheel,
     PaintBegin,
     PaintConverted,
@@ -43,6 +46,7 @@ impl Event {
             Self::CommandReceived => "command_received",
             Self::CommandDispatch => "command_dispatch",
             Self::CommandTurnComplete => "command_turn_complete",
+            Self::PumpTurn => "pump_turn",
             Self::Wheel => "wheel",
             Self::PaintBegin => "paint_begin",
             Self::PaintConverted => "paint_converted",

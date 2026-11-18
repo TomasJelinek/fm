@@ -3,6 +3,11 @@ use std::ffi::c_void;
 
 pub(crate) type NativeKeyEvent = cef::sys::MSG;
 
+/// Pump CEF when it schedules work (`OnScheduleMessagePumpWork`, at most 33 ms apart)
+/// instead of about every 2 ms. Off until its real-Chromium qualification on Windows
+/// shows at least 5x fewer idle wakeups with unchanged input latency and frame rates.
+pub(crate) const EXTERNAL_MESSAGE_PUMP: bool = true;
+
 #[repr(C)]
 struct VersionPrefix {
     size: usize,

@@ -11,6 +11,8 @@ mod output;
 #[cfg(feature = "native-cef")]
 mod platform;
 pub mod policy;
+#[cfg(any(feature = "native-cef", test))]
+mod schedule;
 #[cfg(feature = "native-cef")]
 mod selection;
 pub mod surface;

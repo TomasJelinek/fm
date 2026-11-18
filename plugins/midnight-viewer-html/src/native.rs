@@ -13,8 +13,10 @@ mod input;
 mod resources;
 
 use crate::output::Output;
+use crate::schedule::{Schedule, Turn};
 
-/// Longest wait between CEF message-loop pumps; a command wakes the loop at once.
+/// Longest wait between CEF message-loop pumps without the external message pump; a
+/// command wakes the loop at once.
 const PUMP_INTERVAL: Duration = Duration::from_millis(2);
 /// Commands handled before the next pump, so a burst of resource replies or input
 /// costs one turn instead of one pump plus a fixed sleep each.
@@ -288,7 +290,9 @@ fn dispatch(session: &mut Session, command: api::Command, output: &Arc<Output>) 
 pub(crate) fn run(args: &MainArgs, sandbox: *mut u8) -> i32 {
     // Select the exact versioned C API before constructing any ref-counted CEF wrapper.
     let _ = api_hash(sys::CEF_API_VERSION_LAST, 0);
-    let mut app = handlers::ViewerApp::new();
+    let external = crate::platform::EXTERNAL_MESSAGE_PUMP;
+    let schedule = Arc::new(Schedule::new(Instant::now()));
+    let mut app = handlers::ViewerApp::new(schedule.clone());
     let result = execute_process(Some(args), Some(&mut app), sandbox);
     if result >= 0 {
         return result;
@@ -323,6 +327,7 @@ pub(crate) fn run(args: &MainArgs, sandbox: *mut u8) -> i32 {
         ),
         log_severity: LogSeverity::ERROR,
         cookieable_schemes_exclude_defaults: 1,
+        external_message_pump: i32::from(external),
         ..Default::default()
     };
     if initialize(Some(args), Some(&settings), Some(&mut app), sandbox) == 0 {
@@ -334,7 +339,10 @@ pub(crate) fn run(args: &MainArgs, sandbox: *mut u8) -> i32 {
     }
     #[cfg(feature = "diagnostic-timing")]
     crate::trace::record(crate::trace::Event::Initialized, 0, 0);
-    let (tx, rx) = mpsc::sync_channel::<api::Command>(64);
+    let (tx, rx) = mpsc::sync_channel::<Turn>(64);
+    if external {
+        schedule.connect(tx.clone());
+    }
     let (output, mut events) = crate::output::channel();
     let writer_output = output.clone();
     let writer = std::thread::spawn(move || {
@@ -378,44 +386,71 @@ pub(crate) fn run(args: &MainArgs, sandbox: *mut u8) -> i32 {
                 command.header.document,
                 command.header.sequence,
             );
-            if tx.send(command).is_err() {
-                break;
+            if tx.send(Turn::Command(command)).is_err() {
+                return;
             }
         }
+        // The schedule holds another sender, so the end of input must be explicit.
+        let _ = tx.send(Turn::End);
     });
     let mut session = Session::default();
     'run: loop {
         if output.failed.load(Ordering::Acquire) {
             break;
         }
-        let mut next = match rx.recv_timeout(PUMP_INTERVAL) {
-            Ok(command) => Some(command),
+        // With the external pump, wait until CEF's requested pump is due; a request
+        // interrupts the wait. Otherwise pump about every 2 ms.
+        let wait = if external {
+            schedule.turn();
+            schedule.wait(Instant::now())
+        } else {
+            PUMP_INTERVAL
+        };
+        let mut next = match rx.recv_timeout(wait) {
+            Ok(turn) => Some(turn),
             Err(mpsc::RecvTimeoutError::Timeout) => None,
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
         };
         #[cfg(feature = "diagnostic-timing")]
         let mut last_command = None;
-        let mut handled = 0;
-        while let Some(command) = next.take() {
-            #[cfg(feature = "diagnostic-timing")]
-            {
-                last_command = Some(command.header);
+        let mut handled: u64 = 0;
+        let mut received = 0;
+        while let Some(turn) = next.take() {
+            match turn {
+                Turn::Command(command) => {
+                    #[cfg(feature = "diagnostic-timing")]
+                    {
+                        last_command = Some(command.header);
+                    }
+                    match dispatch(&mut session, command, &output) {
+                        Flow::Continue => {}
+                        Flow::Stop => break 'run,
+                        Flow::Exit(code) => return code,
+                    }
+                    handled += 1;
+                }
+                Turn::Pump => {}
+                Turn::End => break 'run,
             }
-            match dispatch(&mut session, command, &output) {
-                Flow::Continue => {}
-                Flow::Stop => break 'run,
-                Flow::Exit(code) => return code,
-            }
-            handled += 1;
-            if handled < MAX_COMMANDS_PER_TURN {
+            received += 1;
+            if received < MAX_COMMANDS_PER_TURN {
                 next = match rx.try_recv() {
-                    Ok(command) => Some(command),
+                    Ok(turn) => Some(turn),
                     Err(mpsc::TryRecvError::Empty) => None,
                     Err(mpsc::TryRecvError::Disconnected) => break 'run,
                 };
             }
         }
-        do_message_loop_work();
+        // Commands are pumped at once, to keep input latency, even before CEF's pump is due.
+        let due = external && schedule.due(Instant::now());
+        if !external || handled > 0 || due {
+            do_message_loop_work();
+            if external {
+                schedule.pumped(Instant::now());
+            }
+            #[cfg(feature = "diagnostic-timing")]
+            crate::trace::record(crate::trace::Event::PumpTurn, handled, u64::from(due));
+        }
         #[cfg(feature = "diagnostic-timing")]
         if let Some(header) = last_command {
             crate::trace::record(
