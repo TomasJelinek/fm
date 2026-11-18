@@ -87,7 +87,12 @@ fn the_current_session_ends_with_its_per_process_temporary_root() {
         assert!(roots.iter().all(|root| root.path.is_absolute()));
         let (last, earlier) = roots.split_last().unwrap();
         assert!(last.per_process);
-        assert_eq!(last.path.parent(), Some(std::env::temp_dir().as_path()));
+        // The temporary directory, whose links Linux resolves first.
+        let canonical = |path: &Path| std::fs::canonicalize(path).unwrap();
+        assert_eq!(
+            canonical(last.path.parent().unwrap()),
+            canonical(&std::env::temp_dir())
+        );
         assert!(
             last.path
                 .to_string_lossy()

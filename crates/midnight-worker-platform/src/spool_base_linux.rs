@@ -1,7 +1,8 @@
 //! Linux spool bases chosen by the user or the system, such as `$XDG_CACHE_HOME`,
-//! `~/.cache` or `$XDG_RUNTIME_DIR`. Every backend that lists private spool roots
-//! below such a base resolves its links here, so one link policy serves them all,
-//! and labels a per-user root name in a shared base with `effective_uid`.
+//! `~/.cache`, `$XDG_RUNTIME_DIR` or the temporary directory (`$TMPDIR`). Every
+//! backend that lists private spool roots below such a base resolves its links
+//! here, so one link policy serves them all, and labels a per-user root name in a
+//! shared base with `effective_uid`.
 use std::path::{Path, PathBuf};
 
 #[cfg(test)]

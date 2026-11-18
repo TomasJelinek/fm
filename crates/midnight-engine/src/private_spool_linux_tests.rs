@@ -17,12 +17,14 @@ fn variable<'a>(variables: &'a [(&str, &str)]) -> impl Fn(&str) -> Option<OsStri
     }
 }
 
-/// A session for `content` whose bases resolve only through `links` (link,
-/// target); any other base is used as entered.
+/// A session for `content` with the temporary directory `temporary`, whose
+/// bases resolve only through `links` (link, target); any other base is used as
+/// entered.
 fn linked_session(
     variables: &[(&str, &str)],
     links: &[(&str, &str)],
     uid: u32,
+    temporary: &str,
     content: SpoolContent,
 ) -> Session {
     from_environment(
@@ -34,7 +36,7 @@ fn linked_session(
                 .map(|(_, target)| PathBuf::from(target))
         },
         uid,
-        PathBuf::from("/tmp"),
+        PathBuf::from(temporary),
         content,
     )
 }
@@ -47,7 +49,7 @@ fn roots(
     name: &str,
     content: SpoolContent,
 ) -> Vec<SpoolRoot> {
-    let session = linked_session(variables, &[], uid, content);
+    let session = linked_session(variables, &[], uid, "/tmp", content);
     spool_roots(&session, process, name, content)
 }
 
@@ -126,14 +128,16 @@ fn spool_roots_use_xdg_directories_first_and_the_temporary_directory_last() {
     );
 }
 
-/// Both bases go through the shared resolver (`resolve_base`, whose own tests
-/// cover missing trailing names and unresolvable bases); the temporary
-/// directory is used as entered.
+/// Every base goes through the shared resolver (`resolve_base`, whose own tests
+/// cover missing trailing names and unresolvable bases) before the spool names
+/// are appended.
 #[test]
-fn linked_cache_and_runtime_bases_resolve_before_the_spool_names_are_appended() {
+fn linked_bases_resolve_before_the_spool_names_are_appended() {
     let links = [
         ("/data/cache", "/mnt/disk/cache"),
         ("/run/user/1000", "/run/user-sessions/1000"),
+        // A linked home, with `$TMPDIR` below it.
+        ("/home/u", "/var/home/u"),
     ];
     assert_eq!(
         spool_roots(
@@ -144,6 +148,7 @@ fn linked_cache_and_runtime_bases_resolve_before_the_spool_names_are_appended() 
                 ],
                 &links,
                 1000,
+                "/home/u/tmp",
                 SpoolContent::Large,
             ),
             42,
@@ -153,10 +158,19 @@ fn linked_cache_and_runtime_bases_resolve_before_the_spool_names_are_appended() 
         [
             kept("/mnt/disk/cache/midnight-explorer/file-list"),
             kept("/run/user-sessions/1000/midnight-explorer/file-list"),
-            kept("/tmp/midnight-explorer-1000-file-list"),
-            per_process("/tmp/midnight-explorer-file-list-42"),
+            kept("/var/home/u/tmp/midnight-explorer-1000-file-list"),
+            per_process("/var/home/u/tmp/midnight-explorer-file-list-42"),
         ]
     );
+    // A relative temporary directory is ignored, even where it would resolve.
+    let relative = linked_session(
+        &[],
+        &[("tmp", "/var/tmp")],
+        1000,
+        "tmp",
+        SpoolContent::Reports,
+    );
+    assert!(spool_roots(&relative, 42, "reports", SpoolContent::Reports).is_empty());
 }
 
 /// Resolving a cache base on an unresponsive network home blocks in
@@ -270,6 +284,55 @@ fn a_linked_cache_base_is_usable_while_links_below_it_stay_refused() {
     }
     assert_eq!(std::fs::read_dir(&private).unwrap().count(), 0);
     assert_eq!(open_files_below(&private), 0);
+}
+
+/// `$TMPDIR` below a linked home (`/home` -> `/var/home`) in a session without a
+/// cache or runtime base: the temporary base resolves like the other bases, so
+/// its roots are usable, while a link at a root name in it stays refused.
+#[test]
+fn a_temporary_base_below_a_linked_home_is_usable_while_a_linked_root_name_stays_refused() {
+    let temporary = tempfile::tempdir().unwrap();
+    let directory = temporary.path().canonicalize().unwrap();
+    let real = directory.join("var-home");
+    std::fs::create_dir_all(real.join("u/tmp")).unwrap();
+    let home = directory.join("home");
+    std::os::unix::fs::symlink(&real, &home).unwrap();
+    let entered = home.join("u/tmp");
+    let session = from_environment(
+        |_| None,
+        |path| std::fs::canonicalize(path).ok(),
+        effective_uid(),
+        entered.clone(),
+        SpoolContent::Reports,
+    );
+    let candidates = spool_roots(&session, 7, "reports", SpoolContent::Reports);
+    let resolved = real.join("u/tmp");
+    let per_user = resolved.join(format!("midnight-explorer-{}-reports", effective_uid()));
+    let last = resolved.join("midnight-explorer-reports-7");
+    assert_eq!(candidates, [kept(&per_user), per_process(&last)]);
+    // The private-root walk follows no link, so the entered spelling is unusable.
+    let name = per_user.file_name().unwrap();
+    assert!(PrivateSpoolDirectory::open(&entered.join(name)).is_err());
+    let spool = create_private_spool(&candidates, PrivateSpoolDirectory::create).unwrap();
+    assert_eq!(open_files_below(&per_user), 1);
+    drop(spool);
+    // A link at a root name is never resolved, even one to this user's own
+    // private directory: the per-user name is refused, and the spool falls
+    // through to the per-process root.
+    std::fs::remove_dir(&per_user).unwrap();
+    let private = directory.join("private");
+    std::fs::create_dir(&private).unwrap();
+    std::fs::set_permissions(&private, Permissions::from_mode(0o700)).unwrap();
+    std::os::unix::fs::symlink(&private, &per_user).unwrap();
+    let spool = create_private_spool(&candidates, PrivateSpoolDirectory::create).unwrap();
+    assert_eq!(open_files_below(&last), 1);
+    assert_eq!(open_files_below(&private), 0);
+    drop(spool);
+    assert!(
+        !last.exists(),
+        "the last spool removes its per-process root"
+    );
+    assert!(std::fs::symlink_metadata(&per_user).unwrap().is_symlink());
 }
 
 /// Regular files that this process holds open below `directory`. An anonymous

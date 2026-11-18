@@ -23,13 +23,14 @@ pub(super) fn current(content: SpoolContent) -> Session {
 
 /// A relative or empty XDG variable is ignored, as the XDG base directory
 /// specification requires; the cache then defaults to `~/.cache`. Links in the
-/// cache and runtime bases are resolved (`resolve_base`, shared with the
-/// filesystem host's staging bases), so a linked home such as `/home` ->
-/// `/var/home` keeps its disk-backed cache root, while the
-/// `midnight-explorer/<name>` directories below a base are never resolved. Only
-/// content that uses the cache looks it up: resolving a base on a network home
-/// can block, and reports must not wait for a cache they skip. The cache root
-/// still fails on an NFS home without `O_TMPFILE`, and sessions without
+/// cache, runtime and temporary bases are resolved (`resolve_base`, shared with
+/// the filesystem host's staging bases), so a linked home such as `/home` ->
+/// `/var/home` keeps its disk-backed cache root and a `$TMPDIR` below it, while
+/// the `midnight-explorer` names below a base are never resolved. Only content
+/// that uses the cache looks it up: resolving a base on a network home can
+/// block, and reports must not wait for a cache they skip. The runtime and
+/// temporary bases serve every content, so they are always resolved. The cache
+/// root still fails on an NFS home without `O_TMPFILE`, and sessions without
 /// `XDG_RUNTIME_DIR` (su, sudo, ssh or containers) have no runtime root, so
 /// those reach the temporary directory.
 fn from_environment(
@@ -55,6 +56,11 @@ fn from_environment(
         // The private-root check compares the owner with the effective user ID,
         // which `USER` need not name (`su` keeps it), so that ID is the label.
         account: Some(uid.to_string()),
-        temporary,
+        // A relative temporary directory stays as entered: `spool_roots` ignores it.
+        temporary: if temporary.is_absolute() {
+            resolve_base(&temporary, &canonical)
+        } else {
+            temporary
+        },
     }
 }

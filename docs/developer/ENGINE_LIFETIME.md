@@ -241,13 +241,14 @@ ending in `-file-list-<pid>`, which is removed once the last spool in it closes 
 crash leaves it behind). Each root must open as an owner-only directory of this user
 reached without links. A root that is refused or lacks anonymous files yields to the
 next candidate, and output fails with the last error when none is usable. Links in
-the cache and runtime bases (a linked `~/.cache`, or `/home` linked to `/var/home`)
-are resolved first, as the filesystem host does for its staging bases, while links
-at and below `midnight-explorer/<name>` stay refused. The cache root fails on an NFS
-home without `O_TMPFILE`; sessions without `XDG_RUNTIME_DIR` (su, sudo, ssh,
-containers) then reach the temporary directory, whose predictable names another
-account can occupy. The private-root check refuses such a directory instead of using
-it, so output fails only when the per-process candidate is unusable as well.
+the cache, runtime and temporary bases (a linked `~/.cache`, or `/home` linked to
+`/var/home` with `$TMPDIR` below it) are resolved first, as the filesystem host does
+for its staging bases, while links at and below the `midnight-explorer` names in a
+base stay refused. The cache root fails on an NFS home without `O_TMPFILE`; sessions
+without `XDG_RUNTIME_DIR` (su, sudo, ssh, containers) then reach the temporary
+directory, whose predictable names another account can occupy. The private-root
+check refuses such a directory instead of using it, so output fails only when the
+per-process candidate is unusable as well.
 
 Saving to a file keeps one queued acquisition of the mutation gate, so a refilled
 Copy queue cannot starve it. While queued, the save holds neither a worker nor a
