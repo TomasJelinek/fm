@@ -182,7 +182,8 @@ latest change unacknowledged for retry on the next tick, including a blocked wai
 clear; discovery changes do not depend on throughput. Initial, decision and
 terminal boundary delivery remain explicit, as do the boundary snapshots of each
 preparation attempt, the first namespace-grant wait and pause/resume
-acknowledgement.
+acknowledgement. Neither the heartbeat nor the mutation queue's pause and
+cancellation rescan republishes a terminal state, so each job reports it once.
 
 ## Verification and charts
 

@@ -132,6 +132,44 @@ async fn a_closed_event_receiver_cannot_strand_native_job_teardown() {
     .unwrap();
 }
 
+/// Only `deliver` publishes a job's terminal state. The intermediate sender refuses
+/// it from every other publisher, so each job reports its terminal state once.
+#[tokio::test]
+async fn the_intermediate_sender_refuses_terminal_progress() {
+    let (sender, mut receiver) = mpsc::channel(8);
+    let outbox = CopyOutbox::unblocked(Outbox {
+        sender,
+        wakeup: Arc::new(|| {}),
+    });
+    for state in [
+        CopyOperationState::Cancelled,
+        CopyOperationState::Completed,
+        CopyOperationState::CompletedWithErrors,
+        CopyOperationState::Failed,
+    ] {
+        let terminal = || Event::Copy(CopyEvent::Progress(Arc::new(progress(state))));
+        assert!(
+            matches!(
+                outbox.sender.try_send(terminal()),
+                Err(mpsc::error::TrySendError::Closed(_))
+            ),
+            "{state:?}"
+        );
+        outbox.send(terminal()).await;
+    }
+    assert!(receiver.try_recv().is_err());
+    outbox
+        .sender
+        .try_send(Event::Copy(CopyEvent::Progress(Arc::new(progress(
+            CopyOperationState::Running,
+        )))))
+        .unwrap();
+    assert_eq!(
+        event_state(receiver.try_recv().unwrap()),
+        CopyOperationState::Running
+    );
+}
+
 #[tokio::test]
 async fn heartbeat_retries_a_wait_clear_after_direct_status_fills_the_outbox() {
     let (sender, mut receiver) = mpsc::channel(1);

@@ -1,7 +1,7 @@
-//! A tainted archive session held by a tree Copy capture, its prepared roots and a
-//! pane navigation from the same tree. However its owners release or give up their
-//! references, the last one reaches the host's tainted release, which stops the
-//! worker and returns its process permit.
+//! A tainted archive session held by a tree Copy capture, its prepared roots, a pane
+//! navigation from the same tree, or the targets of any tree capture. However its
+//! owners release or give up their references, the last one reaches the host's
+//! tainted release, which stops the worker and returns its process permit.
 use super::*;
 use crate::{
     archives::Retirement,
@@ -232,6 +232,90 @@ fn release_in_order(
         "{case}: the last owner missed the host"
     );
     assert_eq!(active.available_permits(), 2, "{case}: process permit kept");
+}
+
+/// The tree's capture of both directories over a tainted session whose tab already
+/// gave its count up, so the capture's two targets hold the session's last references.
+/// Also returns the host's (releases, stopped, dropped).
+fn tainted_capture(
+    active: &Arc<Semaphore>,
+) -> (CapturedSelection, impl Fn() -> (usize, bool, bool)) {
+    let (host, probe) = Retirement::tainted_host_for_test(active);
+    let (tab, _, _) = Retirement::copy_mount_for_test(host);
+    let mut session = tree_over(&tab);
+    let rows = session
+        .projection()
+        .rows
+        .iter()
+        .map(|row| row.id)
+        .collect::<Vec<_>>();
+    select(&mut session, TreeSelectionAction::Toggle(rows[0]));
+    let selected = select(&mut session, TreeSelectionAction::Toggle(rows[1]));
+    let capture = session
+        .capture_selection(
+            &selected.view,
+            selected.selection_revision,
+            &selected.selection,
+            None,
+            &Cancellation::default(),
+        )
+        .unwrap();
+    assert_eq!(capture.targets.len(), 2);
+    drop(session);
+    probe.taint();
+    assert!(
+        Context::Fresh
+            .context()
+            .with(|| nested::release_archive(tab))
+            .is_err()
+    );
+    let host = move || (probe.releases(), probe.stopped(), probe.dropped());
+    assert_eq!(host(), (0, false, false));
+    (capture, host)
+}
+
+/// A tree capture gives up what its release cannot reach instead of forgetting it:
+/// the targets after a failed one, and a selection or target whose own release step
+/// finds the context quarantined, as when another holder quarantines it between the
+/// caller's check and that step. The session's last reference then still reaches the
+/// host. Clipboard, drop-directory and tree Copy captures share these paths.
+#[test]
+fn a_tree_capture_gives_up_what_its_release_cannot_reach() {
+    /// Releases the capture one way; true when that release failed.
+    type Release = fn(CapturedSelection) -> bool;
+    let active = Arc::new(Semaphore::new(2));
+    let cases: [(&str, Release); 3] = [
+        ("the second target after the first failed", |capture| {
+            Context::Fresh
+                .context()
+                .with(|| capture.release_on_worker())
+                .is_err()
+        }),
+        ("the selection in a quarantined context", |capture| {
+            Context::Quarantined
+                .context()
+                .with(|| capture.release_on_worker())
+                .is_err()
+        }),
+        ("each target in a quarantined context", |capture| {
+            capture.targets.into_iter().all(|target| {
+                Context::Quarantined
+                    .context()
+                    .with(|| target.captured.release_on_worker())
+                    .is_err()
+            })
+        }),
+    ];
+    for (case, release) in cases {
+        let (capture, host) = tainted_capture(&active);
+        assert!(release(capture), "{case}: a tainted release succeeded");
+        assert_eq!(
+            host(),
+            (1, true, false),
+            "{case}: the last owner missed the host"
+        );
+        assert_eq!(active.available_permits(), 2, "{case}: process permit kept");
+    }
 }
 
 #[test]

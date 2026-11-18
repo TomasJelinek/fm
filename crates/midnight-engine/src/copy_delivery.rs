@@ -19,11 +19,18 @@ pub(super) struct Sender {
     initial: Arc<Initial>,
 }
 impl Sender {
+    /// Intermediate events only: `CopyOutbox::deliver` publishes a job's terminal
+    /// progress once, so this refuses terminal progress from any other publisher.
     #[expect(
         clippy::result_large_err,
         reason = "Keep refused events intact for retry or disposal without an additional box."
     )]
     pub(super) fn try_send(&self, event: Event) -> Result<(), TrySendError<Event>> {
+        if let Event::Copy(CopyEvent::Progress(progress)) = &event
+            && progress.state.is_terminal()
+        {
+            return Err(TrySendError::Closed(event));
+        }
         let state = self
             .initial
             .state

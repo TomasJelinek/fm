@@ -517,8 +517,14 @@ impl WorkerOwned<Job> {
         self.dispose(result).await
     }
     pub(super) async fn cancelled(self) -> OperationProgress {
-        self.set_state(OperationState::Cancelled);
-        let result = self.progress();
+        let result = {
+            let mut status = self.status.lock().unwrap_or_else(|e| e.into_inner());
+            status.state = OperationState::Cancelled;
+            // A terminal state reports no pause, as on every other terminal path.
+            status.pause_requested = false;
+            status.paused = false;
+            status.clone()
+        };
         self.dispose(result).await
     }
     async fn dispose(self, mut result: OperationProgress) -> OperationProgress {
