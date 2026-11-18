@@ -137,9 +137,20 @@ pub(super) fn execute(job: worker::Job, outbox: Outbox) -> OperationProgress {
             break;
         }
         match target.rename(&name, &job.cancel) {
-            Ok(destination) => {
-                completed(&mut progress, destination);
+            Ok(done) => {
+                // A residue never makes the completed rename a failure or a conflict.
+                let issue = done.residue.as_ref().map(|residue| {
+                    let renamed = format!("Renamed to {}", done.destination.display());
+                    worker::residue_issue(&renamed, residue)
+                });
+                completed(&mut progress, done.destination);
                 progress.state = OperationState::Completed;
+                if let Some(issue) = issue {
+                    progress.failed = 1;
+                    progress.message = issue.to_string();
+                    progress.errors.push(issue);
+                    progress.state = OperationState::CompletedWithErrors;
+                }
                 break;
             }
             Err(failure)

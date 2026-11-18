@@ -13,6 +13,8 @@ use tokio::sync::mpsc;
 
 #[path = "delete_pause_tests.rs"]
 mod pause;
+#[path = "operation_residue_tests.rs"]
+mod residue;
 #[path = "operation_retirement_tests.rs"]
 mod retirement;
 #[path = "operation_summary_tests.rs"]
@@ -38,6 +40,15 @@ struct Calls {
     cleanup_blocked: std::sync::atomic::AtomicBool,
     cleanup_entered: tokio::sync::Notify,
     entered: tokio::sync::Notify,
+    /// Staging that the next completed rename or delete reports as left behind.
+    residue: Mutex<Option<MutationResidue>>,
+    /// The error of the next rename, which then does not complete.
+    rename_failure: Mutex<Option<FsError>>,
+    /// The target whose delete fails after reporting its progress.
+    failing_delete: Mutex<Option<PathBuf>>,
+    /// Entries each target's discovery reports beyond the target itself, as if
+    /// another program removed them before the deletion.
+    discovered_extra: AtomicUsize,
 }
 struct FakeService(Arc<Calls>);
 struct FakeTarget {
@@ -104,23 +115,56 @@ impl PreparedDirectory for FakeDirectory {
     }
 }
 impl PreparedMutation for FakeTarget {
+    /// The trait's default, plus `Calls::discovered_extra` entries after a file.
+    fn discover(
+        &self,
+        cancel: &Cancellation,
+        visit: &mut dyn FnMut(&MutationItem),
+    ) -> Result<(), FsError> {
+        let refused = if !cancel.wait_if_paused() {
+            Some(std::io::ErrorKind::Interrupted)
+        } else {
+            (self.item.kind == EntryKind::Directory).then_some(std::io::ErrorKind::Unsupported)
+        };
+        if let Some(kind) = refused {
+            return Err(FsError::from_io(
+                "discover operation",
+                &self.item.path,
+                kind.into(),
+            ));
+        }
+        visit(&self.item);
+        for index in 0..self.calls.discovered_extra.load(Ordering::Relaxed) {
+            visit(&MutationItem {
+                path: self.item.path.join(index.to_string()),
+                ..self.item.clone()
+            });
+        }
+        Ok(())
+    }
     fn item(&self) -> &MutationItem {
         &self.item
     }
-    fn rename(&self, name: &OsStr, _: &Cancellation) -> Result<PathBuf, FsError> {
+    fn rename(&self, name: &OsStr, _: &Cancellation) -> Result<RenameCompletion, FsError> {
         self.calls
             .renamed
             .lock()
             .unwrap()
             .push((self.item.path.clone(), name.to_string_lossy().into_owned()));
-        Ok(self.item.path.with_file_name(name))
+        if let Some(failure) = self.calls.rename_failure.lock().unwrap().take() {
+            return Err(failure);
+        }
+        Ok(RenameCompletion {
+            destination: self.item.path.with_file_name(name),
+            residue: self.calls.residue.lock().unwrap().take(),
+        })
     }
     fn delete(
         &self,
         mode: DeleteMode,
         cancel: &Cancellation,
         progress: &mut dyn FnMut(&Path),
-    ) -> Result<(), FsError> {
+    ) -> Result<DeleteCompletion, FsError> {
         self.calls
             .deleted
             .lock()
@@ -143,14 +187,18 @@ impl PreparedMutation for FakeTarget {
         while self.calls.blocked_after_progress.load(Ordering::Acquire) && !cancel.is_cancelled() {
             std::thread::park_timeout(Duration::from_millis(5));
         }
-        if self.calls.fail_after_progress.load(Ordering::Acquire) {
+        if self.calls.fail_after_progress.load(Ordering::Acquire)
+            || self.calls.failing_delete.lock().unwrap().as_ref() == Some(&self.item.path)
+        {
             return Err(FsError::from_io(
                 "delete",
                 &self.item.path,
                 std::io::ErrorKind::PermissionDenied.into(),
             ));
         }
-        Ok(())
+        Ok(DeleteCompletion {
+            residue: self.calls.residue.lock().unwrap().take(),
+        })
     }
 }
 

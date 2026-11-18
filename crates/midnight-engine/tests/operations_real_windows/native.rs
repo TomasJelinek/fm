@@ -231,7 +231,7 @@ fn real_permanent_delete_cancels_at_first_reported_node_then_resumes_owned_tree(
     }
     drop(item);
     let mut resumed_nodes = 0;
-    provider
+    let completion = provider
         .prepare(&tree, &Cancellation::default())
         .unwrap()
         .delete(
@@ -243,6 +243,7 @@ fn real_permanent_delete_cancels_at_first_reported_node_then_resumes_owned_tree(
             },
         )
         .unwrap();
+    assert!(completion.residue.is_none());
     assert!(!tree.exists());
     assert_eq!(fs::read(&sentinel).unwrap(), b"read only source");
     assert!(fs::metadata(&sentinel).unwrap().permissions().readonly());
@@ -303,7 +304,8 @@ fn real_recycle_owned_fixture_without_permanent_fallback() {
             recycled.push(path.to_owned())
         });
     match result {
-        Ok(()) => {
+        Ok(completion) => {
+            assert!(completion.residue.is_none());
             assert!(!tree.exists());
             assert_eq!(recycled, vec![tree]);
             fixture.record("PASS actual Windows dedicated recycle API accepted owned folder; no global Recycle Bin enumeration or cleanup performed");

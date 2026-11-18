@@ -377,3 +377,82 @@ fn completion_refresh_follows_a_pane_that_moved_on_while_its_old_refresh_waited(
         Command::Refresh { pane: PaneId::Left, path, .. } if path == Path::new("b"))));
     assert!(p.operations.refresh.is_empty());
 }
+
+/// A terminal Rename of the focused entry to `renamed` with one issue.
+fn renamed_with_issue(
+    p: &mut Presenter,
+    state: OperationState,
+    renamed: &Path,
+    issue: FsError,
+) -> (String, String) {
+    let completed = u64::from(state == OperationState::CompletedWithErrors);
+    p.apply(Event::Operation(OperationEvent::Progress(Arc::new(
+        OperationProgress {
+            pause_requested: false,
+            paused: false,
+            discovery: Default::default(),
+            id: OperationId(1),
+            throughput: Arc::default(),
+            kind: MutationKind::Rename,
+            state,
+            total: 1,
+            completed,
+            failed: 1,
+            processed_entries: completed,
+            current_path: None,
+            message: issue.to_string(),
+            errors: vec![issue],
+            source_directory: p.panes[0].path.clone(),
+            renamed_to: (completed == 1).then(|| renamed.to_owned()),
+        },
+    ))));
+    p.desktop
+        .notice
+        .clone()
+        .expect("terminal issues are reported")
+}
+
+#[test]
+fn completed_with_errors_notice_names_completion_and_reveals_the_renamed_entry() {
+    let mut p = ready();
+    let renamed = p.panes[0].path.join("renamed.txt");
+    let stage = p.panes[0].path.join(".midnight-mutation-1-2-3");
+    // A completed Rename whose staging folder could not be removed (P2-9).
+    let issue = FsError::from_io(
+        "remove staging folder",
+        &stage,
+        io::Error::other(format!(
+            "Renamed to {}, but its temporary staging folder remains at {} because it \
+             could not be removed: Directory not empty (os error 39). The folder is no \
+             longer needed, but another program may have placed entries in it.",
+            renamed.display(),
+            stage.display()
+        )),
+    );
+    let (title, body) =
+        renamed_with_issue(&mut p, OperationState::CompletedWithErrors, &renamed, issue);
+    assert_eq!(title, "File operation completed with errors");
+    assert!(body.contains("remains at"), "{body}");
+    assert!(!body.contains("have not been undone"), "{body}");
+    p.refresh_operation_paths(&|_| true);
+    let navigation = NavigationId(p.panes[0].generation);
+    let mut entries: Vec<Entry> = p.panes[0]
+        .entries
+        .iter()
+        .filter(|entry| entry.id != EntryId(1))
+        .cloned()
+        .collect();
+    entries.push(Entry::new(EntryId(99), renamed, EntryKind::File));
+    finish(&mut p, PaneId::Left, navigation, entries);
+    assert_eq!(p.panes[0].cursor, Some(EntryId(99)));
+    // A Rename that did not complete is still titled as failed.
+    let mut p = ready();
+    let refused = FsError::from_io(
+        "mutate entry",
+        &p.panes[0].entries[0].path,
+        io::Error::other("Permission denied (os error 13)"),
+    );
+    let renamed = p.panes[0].path.join("renamed.txt");
+    let (title, _) = renamed_with_issue(&mut p, OperationState::Failed, &renamed, refused);
+    assert_eq!(title, "File operation failed");
+}

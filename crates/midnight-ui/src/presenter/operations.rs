@@ -427,21 +427,25 @@ impl Presenter {
                             .cloned();
                         self.queue_operation_refresh(pane, &progress.source_directory, reveal);
                     }
+                    let title = if progress.state == OperationState::CompletedWithErrors {
+                        "File operation completed with errors"
+                    } else {
+                        "File operation failed"
+                    };
                     if !progress.errors.is_empty() {
+                        // Only targets that did not complete can leave partial changes.
+                        let partial = (progress.completed > 0 || progress.processed_entries > 0)
+                            && progress.completed < progress.total;
                         self.desktop.report(
-                            "File operation failed",
-                            crate::error_presentation::issues(
-                                &progress.errors,
-                                progress.completed > 0 || progress.processed_entries > 0,
-                            ),
+                            title,
+                            crate::error_presentation::issues(&progress.errors, partial),
                         );
                     } else if !progress.message.is_empty() {
                         if matches!(
                             progress.state,
                             OperationState::Failed | OperationState::CompletedWithErrors
                         ) {
-                            self.desktop
-                                .report("File operation failed", progress.message.clone());
+                            self.desktop.report(title, progress.message.clone());
                         } else {
                             self.desktop
                                 .inform("File operation", progress.message.clone());

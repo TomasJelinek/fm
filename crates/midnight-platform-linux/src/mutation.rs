@@ -17,14 +17,22 @@
 //! identities before unlink, never follow links, and reject mount crossings.
 //! Cancellation and errors restore the remaining tree where possible; already
 //! unlinked descendants cannot be restored. A crash may leave staging behind.
+//! A completed change whose now empty staging directory cannot be removed (for
+//! example because another program created an entry in it) is still reported as
+//! completed, with that directory as a typed residue; its location is claimed
+//! only while it still has the identity it was created with. A failed change
+//! that also leaves its staging directory behind names it in an error of kind
+//! Other, never as a plain conflict or cancellation; after a failed capture
+//! request, one that holds the staged name or cannot be inspected is reported as
+//! possibly holding the item. Staging contents are never removed recursively.
 //! renameat2(RENAME_NOREPLACE) support is required. Recursive operations use
 //! openat2 (Linux 5.6+) and fail explicitly if these kernel guarantees are absent.
 //! Preparation retains two file descriptors per selected item; exhaustion fails
 //! preparation. Traversal additionally uses descriptors proportional to depth.
 
 use midnight_core::{
-    Cancellation, DeleteMode, EntryKind, EntryMetadata, FsError, MutationItem, MutationService,
-    PreparedDirectory, PreparedMutation,
+    Cancellation, DeleteCompletion, DeleteMode, EntryKind, EntryMetadata, FsError, MutationItem,
+    MutationResidue, MutationService, PreparedDirectory, PreparedMutation, RenameCompletion,
 };
 use rustix::fs::{
     AtFlags, CWD, FileType, Mode, OFlags, RenameFlags, ResolveFlags, Stat, fstat, mkdirat, openat,
@@ -347,11 +355,14 @@ impl PreparedMutation for Prepared {
         metadata::edit(self, patch, name, cancel)
     }
 
-    fn rename(&self, new_name: &OsStr, cancel: &Cancellation) -> Result<PathBuf, FsError> {
+    fn rename(&self, new_name: &OsStr, cancel: &Cancellation) -> Result<RenameCompletion, FsError> {
         validate_name(new_name, &self.item.path)?;
         self.revalidate(cancel)?;
         if new_name == self.name {
-            return Ok(self.item.path.clone());
+            return Ok(RenameCompletion {
+                destination: self.item.path.clone(),
+                residue: None,
+            });
         }
         let staged = Staged::create(self)?;
         staged.capture(self, cancel)?;
@@ -369,15 +380,11 @@ impl PreparedMutation for Prepared {
             .map_err(|e| native_error(&destination, e))
         });
         match result {
-            Ok(()) => {
-                staged.cleanup().map_err(|cleanup| {
-                    completed_with_residue(
-                        &format!("The entry was renamed to {}", destination.display()),
-                        cleanup,
-                    )
-                })?;
-                Ok(destination)
-            }
+            // Published: the rename completed even if its staging stays behind.
+            Ok(()) => Ok(RenameCompletion {
+                destination,
+                residue: staged.cleanup().err(),
+            }),
             Err(failure) => Err(staged.restore(self, failure)),
         }
     }
@@ -387,7 +394,7 @@ impl PreparedMutation for Prepared {
         mode: DeleteMode,
         cancel: &Cancellation,
         progress: &mut dyn FnMut(&Path),
-    ) -> Result<(), FsError> {
+    ) -> Result<DeleteCompletion, FsError> {
         self.revalidate(cancel)?;
         if mode == DeleteMode::Trash {
             return trash::move_entry(self, cancel, progress);
@@ -401,9 +408,9 @@ impl PreparedMutation for Prepared {
             cancel,
             progress,
         ) {
-            Ok(()) => staged
-                .cleanup()
-                .map_err(|cleanup| completed_with_residue("The entry was deleted", cleanup)),
+            Ok(()) => Ok(DeleteCompletion {
+                residue: staged.cleanup().err(),
+            }),
             Err(failure) => Err(staged.restore(self, failure)),
         }
     }
@@ -421,17 +428,6 @@ fn staging_unavailable(prepared: &Prepared, problem: &str, cause: io::Error) -> 
         ),
         kind: cause.kind(),
     }
-}
-
-/// The mutation itself completed; only removing its empty private staging
-/// directory failed. The error states both facts and the residual path.
-fn completed_with_residue(completed: &str, mut cleanup: FsError) -> FsError {
-    cleanup.message = format!(
-        "{completed}, but its empty staging directory {} could not be removed: {}",
-        cleanup.path.display(),
-        cleanup.message
-    );
-    cleanup
 }
 
 struct Staged {
@@ -506,7 +502,7 @@ impl Staged {
 
     fn capture(&self, prepared: &Prepared, cancel: &Cancellation) -> Result<(), FsError> {
         if let Err(failure) = prepared.revalidate(cancel) {
-            return Err(self.abandon(prepared, failure));
+            return Err(self.abandon(prepared, failure, false));
         }
         if let Err(e) = renameat_with(
             &*prepared.parent,
@@ -515,7 +511,7 @@ impl Staged {
             STAGED_NAME,
             RenameFlags::NOREPLACE,
         ) {
-            return Err(self.abandon(prepared, native_error(&prepared.item.path, e)));
+            return Err(self.abandon(prepared, native_error(&prepared.item.path, e), true));
         }
         if let Err(failure) = prepared.identity.verify(
             &self.directory,
@@ -527,37 +523,51 @@ impl Staged {
         Ok(())
     }
 
-    /// Removes the stage after a capture failed and returns `failure`. A capture
-    /// request that returned an error may still have moved the item there (a lost
-    /// reply on a network or FUSE filesystem): the selected item found at the
-    /// staged name is restored to its name, as after any later failure. A stage
-    /// that cannot be removed is named in `failure`, including whether another
-    /// object holds the staged name.
-    fn abandon(&self, prepared: &Prepared, mut failure: FsError) -> FsError {
-        if prepared
-            .identity
-            .verify(
+    /// Removes the stage of a change that did not complete and returns `failure`. A
+    /// capture request that returned an error may still have moved the item there (a
+    /// lost reply on a network or FUSE filesystem): after such a request the selected
+    /// item found at the staged name (identity-checked against the pinned inode) is
+    /// restored to its name, as after any later failure. A stage that stays behind is
+    /// named in `failure` and makes it kind Other, so it is never consumed as a plain
+    /// conflict or cancellation. After a capture request the message says whether the
+    /// staged name holds another entry or could not be inspected (then the item may be
+    /// there); a stage is described as unused only when nothing holds the staged name.
+    fn abandon(
+        &self,
+        prepared: &Prepared,
+        mut failure: FsError,
+        capture_requested: bool,
+    ) -> FsError {
+        let staged = capture_requested.then(|| {
+            prepared.identity.verify(
                 &self.directory,
                 OsStr::new(STAGED_NAME),
                 &prepared.item.path,
             )
-            .is_ok()
-        {
+        });
+        if matches!(staged, Some(Ok(()))) {
             return self.restore(prepared, failure);
         }
-        if let Err(cleanup) = self.cleanup() {
-            let held = statat(&*self.directory, STAGED_NAME, AtFlags::SYMLINK_NOFOLLOW).is_ok();
-            failure.message.push_str(&if held {
-                format!(
-                    "; the staging directory remains at {} and holds an entry that is not the selected item: {cleanup}",
-                    self.path.display()
-                )
-            } else {
-                format!(
-                    "; the unused staging directory remains at {}: {cleanup}",
-                    self.path.display()
-                )
-            });
+        let Err(residue) = self.cleanup() else {
+            return failure;
+        };
+        failure.kind = ErrorKind::Other;
+        match staged {
+            Some(Err(state)) if state.kind == ErrorKind::InvalidInput => {
+                failure.message.push_str(&format!(
+                    "; the staging directory remains at {} and holds an entry that is not the selected item: {}",
+                    self.path.display(),
+                    residue.error.message
+                ));
+            }
+            Some(Err(state)) if state.kind != ErrorKind::NotFound => {
+                failure.message.push_str(&format!(
+                    "; the item may have been moved into {}: {}",
+                    self.path.join(STAGED_NAME).display(),
+                    residue.error.message
+                ));
+            }
+            _ => failure.message.push_str(&format!("; {residue}")),
         }
         failure
     }
@@ -570,25 +580,109 @@ impl Staged {
             &prepared.name,
             RenameFlags::NOREPLACE,
         ) {
-            Ok(()) => {
-                if let Err(cleanup) = self.cleanup() {
-                    failure.message.push_str(&format!("; {cleanup}"));
-                }
-            }
+            Ok(()) => self.abandon(prepared, failure, false),
             Err(restore) => {
                 failure.message.push_str(&format!(
                     "; remaining entry preserved at {} (restore failed: {restore})",
                     self.path.join(STAGED_NAME).display()
                 ));
+                // The entry stays in staging: never present this as a name conflict
+                // (whose resolution would drop the preserved location) or a cancellation.
+                failure.kind = ErrorKind::Other;
+                failure
             }
         }
-        failure
     }
 
-    fn cleanup(&self) -> Result<(), FsError> {
-        self.identity.verify(&self.parent, &self.name, &self.path)?;
-        unlinkat(&*self.parent, &self.name, AtFlags::REMOVEDIR)
-            .map_err(|e| native_error(&self.path, e))
+    /// Removes the staging directory while it is still the one created here; rmdir
+    /// never removes contents. A directory that stays behind is a residue whose
+    /// location is confirmed only if it still has its identity after the failure.
+    fn cleanup(&self) -> Result<(), MutationResidue> {
+        #[cfg(test)]
+        simulation::before_cleanup(&self.path);
+        let residue = |cleanup_unconfirmed, error| MutationResidue {
+            path: self.path.clone(),
+            cleanup_unconfirmed,
+            error,
+        };
+        self.verify().map_err(|changed| residue(true, changed))?;
+        let failure = match unlinkat(&*self.parent, &self.name, AtFlags::REMOVEDIR) {
+            Ok(()) => return Ok(()),
+            Err(e) => native_error(&self.path, e),
+        };
+        #[cfg(test)]
+        simulation::after_failed_removal(&self.path);
+        Err(match self.verify() {
+            Ok(()) => residue(false, failure),
+            Err(changed) => residue(true, changed),
+        })
+    }
+
+    fn verify(&self) -> Result<(), FsError> {
+        let current = statat(&*self.parent, &self.name, AtFlags::SYMLINK_NOFOLLOW)
+            .map_err(|e| native_error(&self.path, e))?;
+        if Identity::from_stat(&current) != self.identity {
+            return Err(error(
+                &self.path,
+                ErrorKind::Other,
+                "a different entry now has its name",
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// Test-only interference with staging cleanup, on the calling thread only.
+#[cfg(test)]
+pub(crate) mod simulation {
+    use std::{cell::RefCell, path::Path, thread::LocalKey};
+
+    type Interference = Box<dyn FnOnce(&Path)>;
+    type Hook = LocalKey<RefCell<Option<Interference>>>;
+
+    thread_local! {
+        static BEFORE_CLEANUP: RefCell<Option<Interference>> = const { RefCell::new(None) };
+        static AFTER_FAILED_REMOVAL: RefCell<Option<Interference>> = const { RefCell::new(None) };
+    }
+
+    /// Calls `interfere` with the staging directory's path just before the first
+    /// staging cleanup that `run` performs.
+    pub(crate) fn with_interference_before_cleanup<T>(
+        interfere: impl FnOnce(&Path) + 'static,
+        run: impl FnOnce() -> T,
+    ) -> T {
+        with(&BEFORE_CLEANUP, Box::new(interfere), run)
+    }
+
+    /// Calls `interfere` with the staging directory's path right after the first
+    /// failed removal of a staging directory that `run` performs, before that
+    /// directory's binding is checked again.
+    pub(crate) fn with_interference_after_failed_removal<T>(
+        interfere: impl FnOnce(&Path) + 'static,
+        run: impl FnOnce() -> T,
+    ) -> T {
+        with(&AFTER_FAILED_REMOVAL, Box::new(interfere), run)
+    }
+
+    fn with<T>(hook: &'static Hook, interfere: Interference, run: impl FnOnce() -> T) -> T {
+        hook.with(|hook| *hook.borrow_mut() = Some(interfere));
+        let result = run();
+        hook.with(|hook| hook.borrow_mut().take());
+        result
+    }
+
+    pub(super) fn before_cleanup(stage: &Path) {
+        interfere(&BEFORE_CLEANUP, stage);
+    }
+
+    pub(super) fn after_failed_removal(stage: &Path) {
+        interfere(&AFTER_FAILED_REMOVAL, stage);
+    }
+
+    fn interfere(hook: &'static Hook, stage: &Path) {
+        if let Some(interfere) = hook.with(|hook| hook.borrow_mut().take()) {
+            interfere(stage);
+        }
     }
 }
 
@@ -670,6 +764,8 @@ fn error(path: &Path, kind: ErrorKind, message: &str) -> FsError {
 
 #[cfg(test)]
 mod create_tests;
+#[cfg(test)]
+mod residue_tests;
 #[cfg(test)]
 mod tests;
 

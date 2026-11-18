@@ -1,8 +1,29 @@
 #![cfg(windows)]
 
-use midnight_core::{Cancellation, DeleteMode, MutationService, PreparedMutation};
+use midnight_core::{
+    Cancellation, DeleteCompletion, DeleteMode, FsError, MutationService, PreparedMutation,
+    RenameCompletion,
+};
 use midnight_platform_windows::WindowsFileSystem;
-use std::{ffi::OsStr, fs, io, path::Path, sync::Arc};
+use std::{
+    ffi::OsStr,
+    fs, io,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
+
+/// The destination of a rename; Windows never leaves staging behind.
+fn renamed_cleanly(result: Result<RenameCompletion, FsError>) -> PathBuf {
+    let completion = result.unwrap();
+    assert!(completion.residue.is_none(), "{:?}", completion.residue);
+    completion.destination
+}
+
+/// Asserts a completed deletion; Windows never leaves staging behind.
+fn deleted_cleanly(result: Result<DeleteCompletion, FsError>) {
+    let completion = result.unwrap();
+    assert!(completion.residue.is_none(), "{:?}", completion.residue);
+}
 
 fn fixture() -> tempfile::TempDir {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -39,12 +60,10 @@ fn unicode_rename_preserves_bytes_and_refuses_destination_collision() {
     );
     assert_eq!(fs::read(&source).unwrap(), b"original");
     assert_eq!(fs::read(&collision).unwrap(), b"existing");
-    let renamed = item
-        .rename(
-            OsStr::new("e\u{301} renamed 🦀.txt"),
-            &Cancellation::default(),
-        )
-        .unwrap();
+    let renamed = renamed_cleanly(item.rename(
+        OsStr::new("e\u{301} renamed 🦀.txt"),
+        &Cancellation::default(),
+    ));
     assert_eq!(renamed, temp.path().join("e\u{301} renamed 🦀.txt"));
     assert_eq!(fs::read(renamed).unwrap(), b"original");
     assert!(!source.exists());
@@ -55,9 +74,7 @@ fn case_only_rename_changes_the_actual_directory_entry_spelling() {
     let temp = fixture();
     let source = temp.path().join("Case.txt");
     fs::write(&source, b"payload").unwrap();
-    prepare(&source)
-        .rename(OsStr::new("CASE.txt"), &Cancellation::default())
-        .unwrap();
+    renamed_cleanly(prepare(&source).rename(OsStr::new("CASE.txt"), &Cancellation::default()));
     let names: Vec<_> = fs::read_dir(temp.path())
         .unwrap()
         .map(|entry| entry.unwrap().file_name())
@@ -177,9 +194,11 @@ fn nested_permanent_delete_reports_entries_and_honors_partial_cancellation() {
     assert_eq!(error.kind, io::ErrorKind::Interrupted);
     assert_eq!(visited.len(), 1);
     assert!(root.exists());
-    prepare(&root)
-        .delete(DeleteMode::Permanent, &Cancellation::default(), &mut |_| {})
-        .unwrap();
+    deleted_cleanly(prepare(&root).delete(
+        DeleteMode::Permanent,
+        &Cancellation::default(),
+        &mut |_| {},
+    ));
     assert!(!root.exists());
 }
 
@@ -219,13 +238,15 @@ fn paths_beyond_max_path_can_be_renamed_and_deleted() {
     fs::create_dir_all(&root).unwrap();
     let source = root.join("source.txt");
     fs::write(&source, b"long").unwrap();
-    let renamed = prepare(&source)
-        .rename(OsStr::new("renamed 🦀.txt"), &Cancellation::default())
-        .unwrap();
+    let renamed = renamed_cleanly(
+        prepare(&source).rename(OsStr::new("renamed 🦀.txt"), &Cancellation::default()),
+    );
     assert_eq!(fs::read(&renamed).unwrap(), b"long");
-    prepare(&renamed)
-        .delete(DeleteMode::Permanent, &Cancellation::default(), &mut |_| {})
-        .unwrap();
+    deleted_cleanly(prepare(&renamed).delete(
+        DeleteMode::Permanent,
+        &Cancellation::default(),
+        &mut |_| {},
+    ));
     assert!(!renamed.exists());
 }
 
@@ -244,9 +265,11 @@ fn recursive_delete_removes_a_junction_without_touching_its_target() {
         prepare(&junction).item().kind,
         midnight_core::EntryKind::DirectoryLink
     );
-    prepare(&tree)
-        .delete(DeleteMode::Permanent, &Cancellation::default(), &mut |_| {})
-        .unwrap();
+    deleted_cleanly(prepare(&tree).delete(
+        DeleteMode::Permanent,
+        &Cancellation::default(),
+        &mut |_| {},
+    ));
     assert!(!tree.exists());
     assert_eq!(fs::read(target.join("sentinel")).unwrap(), b"keep me");
 }
@@ -295,7 +318,7 @@ fn confirmed_permanent_delete_removes_read_only_files_without_changing_other_lin
         prepare(&path).delete(DeleteMode::Permanent, &Cancellation::default(), &mut |_| {});
     let retained_readonly = fs::metadata(&retained).unwrap().permissions().readonly();
     fs::set_permissions(&retained, original).unwrap();
-    result.unwrap();
+    deleted_cleanly(result);
     assert!(!path.exists());
     assert!(retained_readonly);
     assert_eq!(
@@ -390,12 +413,11 @@ fn removable_media_creation_discovery_and_permanent_deletion() {
         .unwrap();
     assert_eq!(discovered.len(), 5, "{discovered:?}");
     // A rename and a leaf deletion.
-    let renamed = prepare(&tree.join("empty.txt"))
-        .rename(OsStr::new("renamed to a longer name.txt"), &cancel)
-        .unwrap();
-    prepare(&renamed)
-        .delete(DeleteMode::Permanent, &cancel, &mut |_| {})
-        .unwrap();
+    let renamed = renamed_cleanly(
+        prepare(&tree.join("empty.txt"))
+            .rename(OsStr::new("renamed to a longer name.txt"), &cancel),
+    );
+    deleted_cleanly(prepare(&renamed).delete(DeleteMode::Permanent, &cancel, &mut |_| {}));
     assert!(!renamed.exists());
     // Copy and Move need stable identities.
     let transfer = filesystem_service.prepare_transfer_destination(temp.path(), &cancel);
@@ -412,11 +434,9 @@ fn removable_media_creation_discovery_and_permanent_deletion() {
         assert_eq!(error.kind, io::ErrorKind::PermissionDenied, "{error:?}");
         assert!(read_only.exists());
         fs::set_permissions(&read_only, writable).unwrap();
-        prepare(&tree)
-            .delete(DeleteMode::Permanent, &cancel, &mut |_| {})
-            .unwrap();
+        deleted_cleanly(prepare(&tree).delete(DeleteMode::Permanent, &cancel, &mut |_| {}));
     } else {
-        deleted.unwrap();
+        deleted_cleanly(deleted);
     }
     assert!(!tree.exists());
 }
@@ -435,7 +455,7 @@ fn confirmed_permanent_delete_removes_read_only_empty_directories() {
     if path.exists() {
         fs::set_permissions(&path, original).unwrap();
     }
-    result.unwrap();
+    deleted_cleanly(result);
     assert!(!path.exists());
 }
 
@@ -806,8 +826,7 @@ fn rename_rejects_distinct_hardlink_aliases_even_when_target_case_differs() {
     fs::hard_link(&source, &alias).unwrap();
     let item = prepare(&source);
     assert_eq!(
-        item.rename(OsStr::new("source.txt"), &Cancellation::default())
-            .unwrap(),
+        renamed_cleanly(item.rename(OsStr::new("source.txt"), &Cancellation::default())),
         source
     );
     for name in ["alias.txt", "ALIAS.TXT"] {
@@ -839,9 +858,9 @@ fn rename_case_only_with_another_hardlink_keeps_native_unicode_spelling() {
     let alias = temp.path().join("alias.txt");
     fs::write(&source, b"same object").unwrap();
     fs::hard_link(&source, &alias).unwrap();
-    let target = prepare(&source)
-        .rename(OsStr::new("ŽLUŤOUČKÝ.TXT"), &Cancellation::default())
-        .unwrap();
+    let target = renamed_cleanly(
+        prepare(&source).rename(OsStr::new("ŽLUŤOUČKÝ.TXT"), &Cancellation::default()),
+    );
     assert_eq!(target, temp.path().join("ŽLUŤOUČKÝ.TXT"));
     assert_eq!(fs::read(&target).unwrap(), b"same object");
     assert_eq!(fs::read(&alias).unwrap(), b"same object");

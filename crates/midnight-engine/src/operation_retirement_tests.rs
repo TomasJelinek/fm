@@ -38,7 +38,7 @@ impl PreparedMutation for Target {
     fn item(&self) -> &MutationItem {
         &self.item
     }
-    fn rename(&self, _: &OsStr, _: &Cancellation) -> Result<PathBuf, FsError> {
+    fn rename(&self, _: &OsStr, _: &Cancellation) -> Result<RenameCompletion, FsError> {
         unreachable!("the retirement fixture never renames")
     }
     fn delete(
@@ -46,7 +46,7 @@ impl PreparedMutation for Target {
         _: DeleteMode,
         _: &Cancellation,
         _: &mut dyn FnMut(&Path),
-    ) -> Result<(), FsError> {
+    ) -> Result<DeleteCompletion, FsError> {
         panic!("an unconfirmed Delete must not execute")
     }
 }

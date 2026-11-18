@@ -60,7 +60,7 @@ fn recursive_delete_pauses_after_one_entry_then_resumes_or_cancels_without_more_
             assert_eq!(fs::read_dir(&tree).unwrap().count(), 2);
             assert_eq!(fs::read_dir(fixture.path()).unwrap().count(), 1);
         } else {
-            result.unwrap();
+            assert!(result.unwrap().residue.is_none());
             assert_eq!(completed.load(Ordering::Acquire), 4);
             assert!(!tree.exists());
         }

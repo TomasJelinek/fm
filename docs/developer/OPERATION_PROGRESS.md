@@ -25,6 +25,19 @@ application delivery remain pending.
 - Cancellation remains cooperative: finish the safe checkpoint and clean up owned
   unpublished temporary files. Earlier committed changes remain. Jobs retains the
   final result, including cleanup errors; closing presentation never means success.
+- A Rename, Trash move or permanent Delete whose change completed but whose private
+  Linux staging folder could not be removed afterwards counts its target as completed
+  (a renamed entry is still revealed) and adds one issue that starts with the completed
+  change and names that folder. The folder is said to remain there only while it has
+  the identity it was created with; otherwise the issue says it could not be confirmed
+  and that another program may have moved, removed or replaced it. The job ends
+  Completed with errors; nothing needs to be retried, and the issue never asks a
+  name-conflict question or reads as a cancellation. A Properties (metadata) rename in
+  the same situation still applies the item's remaining permission and time changes
+  but counts the item as failed (its error is never a name conflict either); a single
+  edited item is still revealed under its new name. Notices of jobs that end
+  Completed with errors are titled "File operation completed with errors", never
+  "failed", and say that changes were not undone only when a target did not complete.
 - Closing Jobs only closes the ledger. It does not cancel independent operations.
 - Successfully completed automatic progress closes. A manually reopened progress
   window stays open; so does manually opened Jobs.

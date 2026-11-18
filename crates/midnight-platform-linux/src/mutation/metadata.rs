@@ -197,11 +197,49 @@ fn apply(
         last_modification: timestamp(patch.modified, &item.item.path)?,
     };
     let mut current_name = item.name.as_os_str();
+    let mut residue = None;
     if let Some(name) = name.filter(|name| *name != item.name) {
         name_available(item, name, cancel)?;
-        rename(item, name, cancel, result)?;
+        residue = rename(item, name, cancel, result)?;
         current_name = name;
     }
+    // Staging left behind by the completed rename never stops the remaining fields;
+    // it is reported once they were applied, or with the step that failed.
+    let applied = apply_fields(item, patch, &times, current_name, cancel, result);
+    match (applied, residue) {
+        (applied, None) => applied,
+        (Ok(()), Some(residue)) => Err(completed_with_residue("The entry was renamed", residue)),
+        (Err(mut failure), Some(residue)) => {
+            failure
+                .message
+                .push_str(&format!("; the entry was renamed, but {residue}"));
+            // Never a name conflict or a cancellation that hides the completed rename.
+            failure.kind = ErrorKind::Other;
+            Err(failure)
+        }
+    }
+}
+
+/// A completed metadata rename whose staging directory could not be removed, as the
+/// outcome error: kind Other, so that it never reads as a name conflict or a
+/// cancellation of the completed rename. The metadata job counts its item as failed.
+fn completed_with_residue(completed: &str, residue: MutationResidue) -> FsError {
+    FsError::from_io(
+        OPERATION,
+        &residue.path,
+        io::Error::other(format!("{completed}, but {residue}")),
+    )
+}
+
+/// Permission and time changes after any rename, through the pinned descriptor.
+fn apply_fields(
+    item: &Prepared,
+    patch: &MetadataPatch,
+    times: &Timestamps,
+    current_name: &OsStr,
+    cancel: &Cancellation,
+    result: &mut MetadataOutcome,
+) -> Result<(), FsError> {
     if patch.unix_mask != 0 {
         check_cancel(cancel, &result.current_path)?;
         let stat = fstat(&item._source).map_err(|e| native_error(&result.current_path, e))?;
@@ -234,13 +272,13 @@ fn apply(
     }
     if patch.modified != TimeEdit::Keep || patch.accessed != TimeEdit::Keep {
         check_cancel(cancel, &result.current_path)?;
-        if let Err(failure) = utimensat(&item._source, c"", &times, AtFlags::EMPTY_PATH) {
+        if let Err(failure) = utimensat(&item._source, c"", times, AtFlags::EMPTY_PATH) {
             if matches!(
                 failure,
                 rustix::io::Errno::INVAL | rustix::io::Errno::NOENT | rustix::io::Errno::NOSYS
             ) {
                 let source = usable_handle(item, current_name, &result.current_path)?;
-                futimens(&source, &times).map_err(|e| native_error(&result.current_path, e))?;
+                futimens(&source, times).map_err(|e| native_error(&result.current_path, e))?;
             } else {
                 return Err(native_error(&result.current_path, failure));
             }
@@ -251,12 +289,14 @@ fn apply(
     Ok(())
 }
 
+/// Renames through private staging. Once published the rename has completed: a
+/// staging directory that then cannot be removed is returned, never an error.
 fn rename(
     item: &Prepared,
     name: &OsStr,
     cancel: &Cancellation,
     result: &mut MetadataOutcome,
-) -> Result<(), FsError> {
+) -> Result<Option<MutationResidue>, FsError> {
     let staged = Staged::create(item)?;
     if let Err(failure) = staged.capture(item, cancel) {
         record_staged_path(item, &staged, result);
@@ -281,10 +321,7 @@ fn rename(
     }
     result.current_path = item.item.path.with_file_name(name);
     result.changes.renamed = true;
-    // Cleanup may fail after publication; the outcome must still describe the completed rename.
-    staged
-        .cleanup()
-        .map_err(|cleanup| completed_with_residue("The entry was renamed", cleanup))
+    Ok(staged.cleanup().err())
 }
 
 fn record_staged_path(item: &Prepared, staged: &Staged, result: &mut MetadataOutcome) {

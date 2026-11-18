@@ -468,7 +468,7 @@ impl PreparedMutation for Node {
         outcome.changes.modified = true;
         outcome
     }
-    fn rename(&self, _: &OsStr, _: &Cancellation) -> Result<PathBuf, FsError> {
+    fn rename(&self, _: &OsStr, _: &Cancellation) -> Result<RenameCompletion, FsError> {
         panic!("time edits never rename")
     }
     fn delete(
@@ -476,7 +476,7 @@ impl PreparedMutation for Node {
         _: DeleteMode,
         _: &Cancellation,
         _: &mut dyn FnMut(&Path),
-    ) -> Result<(), FsError> {
+    ) -> Result<DeleteCompletion, FsError> {
         panic!("metadata edits never delete")
     }
 }

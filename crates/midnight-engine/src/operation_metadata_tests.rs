@@ -479,7 +479,7 @@ fn confirmed_recursive_children_read_each_native_snapshot_once() {
             &self,
             _: &std::ffi::OsStr,
             _: &Cancellation,
-        ) -> Result<std::path::PathBuf, FsError> {
+        ) -> Result<RenameCompletion, FsError> {
             panic!("preparation never renames")
         }
         fn delete(
@@ -487,7 +487,7 @@ fn confirmed_recursive_children_read_each_native_snapshot_once() {
             _: DeleteMode,
             _: &Cancellation,
             _: &mut dyn FnMut(&std::path::Path),
-        ) -> Result<(), FsError> {
+        ) -> Result<DeleteCompletion, FsError> {
             panic!("preparation never deletes")
         }
     }
