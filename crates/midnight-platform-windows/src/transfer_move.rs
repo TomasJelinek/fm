@@ -133,8 +133,8 @@ impl Capture {
 struct State {
     outcome: Option<TransferMoveCaptureOutcome>,
     retained: Option<destination::Directory>,
-    /// The empty private stage of a failed capture whose own turn could not remove it
-    /// (see `keep_or_remove_stage_in`). The next capture reuses it; without one,
+    /// The empty private stage of a failed capture whose removal failed (see
+    /// `keep_or_remove_stage_in`). The next capture reuses it; without one,
     /// `take_stage_cleanup` hands it to the engine's cleanup. A capture that moves the
     /// source consumes it, so it is never set together with `retained`.
     unused: Option<destination::Directory>,
@@ -370,14 +370,15 @@ impl Capture {
     }
 }
 
-/// Removes, within the capture's own turn, the empty private stage of a capture that
-/// moved nothing. Granted peers can still refuse the rename into a stage this turn has
-/// just created (the rename announces that stage again); the refused turn then refuses
-/// every later change, and a new turn would replace the refusal that the engine waits
-/// for and retries on with its own reservation. So the capture keeps the empty stage
-/// instead of dropping it unreported: its next attempt reuses the stage, and otherwise
-/// `take_stage_cleanup` returns it for the engine to remove or report. Any other failed
-/// removal keeps the stage the same way.
+/// Removes, in the capture's own turn, the empty private stage of a capture that moved
+/// nothing. If this turn created the stage, the reservation made at its creation covers
+/// the removal, so peers cannot refuse it. A stage reused from an earlier attempt is
+/// reserved again in this turn (by the capture's rename, or else by this removal), and
+/// granted peers can refuse that before anything moved; the refused turn then allows no
+/// further change, so the removal fails. In that case, and when the removal itself
+/// fails (another entry in the stage, an I/O error), the capture keeps the stage instead
+/// of dropping it unreported: its next attempt reuses it, and otherwise
+/// `take_stage_cleanup` returns it for the engine to remove or report.
 fn keep_or_remove_stage_in(
     state: &mut State,
     stage: destination::Directory,
