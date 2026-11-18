@@ -1,5 +1,6 @@
 //! The thumbnail pulse runs while a pass reports work and stops after a quiet pass;
-//! presentation changes, refused sends and animation keep or restart it.
+//! presentation changes, refused sends, animation and the awaited cache location keep or
+//! restart it. Only a pass that moved a row range wakes the retry pass.
 use super::*;
 use midnight_core::{
     DirectoryIndex, Entry, EntryId, EntryKind, Event, PaneId, PanelViewMode, UserCommand,
@@ -37,6 +38,8 @@ struct Fixture {
     controller: Controller,
     icon_views: Rc<RefCell<Vec<usize>>>,
     refuse: Rc<Cell<bool>>,
+    /// The cache location the service reports; never created, as discovery fails first.
+    cache: PathBuf,
 }
 
 impl Fixture {
@@ -119,11 +122,12 @@ impl Fixture {
         let icon_views = Rc::new(RefCell::new(Vec::new()));
         let refuse = Rc::new(Cell::new(false));
         let (views, refused) = (icon_views.clone(), refuse.clone());
+        let cache = root.join("thumbnail cache");
         // An empty executable identity fails discovery on the first preview request.
         let controller = install_service(
             &window,
             presenter.clone(),
-            Rc::new(Service::start(PathBuf::new(), PathBuf::new())),
+            Rc::new(Service::start(PathBuf::new(), cache.clone())),
             content::Factory {
                 native: Arc::new(|_, _| panic!("no content is captured")),
                 storage: Arc::new(|_| panic!("no storage is queried")),
@@ -145,6 +149,7 @@ impl Fixture {
             controller,
             icon_views,
             refuse,
+            cache,
         };
         fixture.frame();
         fixture
@@ -211,6 +216,7 @@ fn an_animated_thumbnail_keeps_the_pulse_until_it_is_deselected() {
         .join("thumbnail pulse 文档")
         .join("left");
     let identity = window_targets(&fixture.window, &fixture.presenter)
+        .0
         .into_iter()
         .find(|target| {
             matches!(&target.content, midnight_ui::ThumbnailContent::Native(path)
@@ -285,4 +291,79 @@ fn refreshes_callbacks_and_layout_changes_invoke_presentation_changed() {
     fixture.window.set_panel_zoomed(true);
     fixture.frame();
     assert!(calls.get() > before, "a changed handler invokes it");
+}
+
+#[test]
+fn the_cache_location_is_published_without_another_wake() {
+    let fixture = Fixture::new(PanelViewMode::Detailed, false);
+    // From here only the pass's own rules keep the pulse running.
+    fixture.window.on_presentation_changed(|| {});
+    fixture.settle();
+    assert_eq!(
+        fixture.window.get_thumbnail_cache_location().as_str(),
+        fixture.cache.to_string_lossy()
+    );
+}
+
+#[test]
+fn an_unreported_cache_location_keeps_the_pulse_polling() {
+    let fixture = Fixture::new(PanelViewMode::Detailed, false);
+    fixture.window.on_presentation_changed(|| {});
+    // Take the backend's answer before the first pass, so that the bridge still awaits
+    // it, as it does while a slow cache root is resolved. The deadline only elapses on
+    // failure.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while fixture.controller.service.take_cache_location().is_none() {
+        assert!(
+            Instant::now() < deadline,
+            "the service never resolved its cache"
+        );
+        std::thread::yield_now();
+    }
+    for pass in 0..20 {
+        fixture.advance();
+        assert!(
+            fixture.running(),
+            "pass {pass}: the location is still awaited"
+        );
+    }
+    assert!(fixture.window.get_thumbnail_cache_location().is_empty());
+}
+
+#[test]
+fn only_a_pass_that_moves_a_row_range_wakes_the_retry_pass() {
+    let fixture = Fixture::new(PanelViewMode::Thumbnails, false);
+    let passes = Rc::new(Cell::new(0));
+    let counted = passes.clone();
+    let retry = Pulse::start(INTERVAL, move || {
+        counted.set(counted.get() + 1);
+        false
+    });
+    fixture.controller.follow_with(&retry);
+    let settle = || {
+        fixture.settle();
+        // A retry pass woken by the last thumbnail pass runs one interval later.
+        fixture.advance();
+        assert!(!retry.running());
+    };
+    settle();
+    let before = passes.get();
+    // A presentation change that keeps every row range runs thumbnail passes only.
+    midnight_ui::refresh(&fixture.window, &fixture.presenter.borrow());
+    assert!(fixture.running());
+    settle();
+    assert_eq!(
+        passes.get(),
+        before,
+        "an unmoved tree viewport needs no retry pass"
+    );
+    // Zooming the left panel takes the right panel's rows, and so its viewport, away.
+    fixture.window.set_panel_zoomed(true);
+    fixture.frame();
+    assert!(fixture.running());
+    settle();
+    assert!(
+        passes.get() > before,
+        "a moved tree viewport runs the retry pass"
+    );
 }

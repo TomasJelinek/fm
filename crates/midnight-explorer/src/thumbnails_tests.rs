@@ -129,7 +129,7 @@ impl ThumbnailUi {
     }
 
     pub(super) fn targets(&self) -> Vec<ThumbnailTarget> {
-        window_targets(&self.window, &self.presenter)
+        window_targets(&self.window, &self.presenter).0
     }
 
     pub(super) fn panel_targets(

@@ -39,7 +39,8 @@ impl Controller {
         Rc::downgrade(&self.pulse)
     }
 
-    /// Wake `pulse` after every pass: a pass can move the tree viewport it sends.
+    /// Wake `pulse` after a pass that moved a pane's row range: the range is also that
+    /// pane's tree viewport, which `pulse` (the retry pass) sends.
     pub(crate) fn follow_with(&self, pulse: &Rc<Pulse>) {
         *self.follower.borrow_mut() = Rc::downgrade(pulse);
     }
@@ -94,7 +95,14 @@ impl Deliveries {
     }
 }
 
-fn window_targets(window: &MainWindow, presenter: &RefCell<Presenter>) -> Vec<ThumbnailTarget> {
+/// Each pane's visible row range, which is also its tree viewport.
+type Ranges = [(usize, usize); 2];
+
+/// The visible thumbnail targets and the row ranges they were taken from.
+fn window_targets(
+    window: &MainWindow,
+    presenter: &RefCell<Presenter>,
+) -> (Vec<ThumbnailTarget>, Ranges) {
     let single_panel = window.get_panel_zoomed() || window.get_compact_window();
     let active_pane = window.get_active_pane();
     let (left_hover, left_range) = if !single_panel || active_pane == 0 {
@@ -119,10 +127,11 @@ fn window_targets(window: &MainWindow, presenter: &RefCell<Presenter>) -> Vec<Th
     } else {
         (slint::SharedString::default(), (0, 0))
     };
-    presenter.borrow_mut().thumbnail_targets(
-        [left_range, right_range],
-        [left_hover.as_str(), right_hover.as_str()],
-    )
+    let ranges = [left_range, right_range];
+    let targets = presenter
+        .borrow_mut()
+        .thumbnail_targets(ranges, [left_hover.as_str(), right_hover.as_str()]);
+    (targets, ranges)
 }
 
 pub(crate) fn install(
@@ -175,6 +184,9 @@ struct Bridge {
     located: bool,
     /// Requests were made and the service has reported no frame or notice yet.
     outcome_wait: Option<Instant>,
+    /// The row ranges of the last pass, and whether the latest pass moved them.
+    ranges: Ranges,
+    ranges_moved: bool,
 }
 
 impl Bridge {
@@ -195,7 +207,9 @@ impl Bridge {
             self.located = true;
             busy = true;
         }
-        let rows = window_targets(&window, &self.presenter);
+        let (rows, ranges) = window_targets(&window, &self.presenter);
+        self.ranges_moved = ranges != self.ranges;
+        self.ranges = ranges;
         let presenter = self.presenter.clone();
         let mut state = presenter.borrow_mut();
         // Native command artwork shares visible admission, but never enters an image decoder.
@@ -451,14 +465,20 @@ fn install_service(
         last_epoch: 1,
         located: false,
         outcome_wait: None,
+        ranges: Ranges::default(),
+        ranges_moved: false,
     }));
     BRIDGE.with(|slot| *slot.borrow_mut() = Rc::downgrade(&bridge));
     let follower: Rc<RefCell<Weak<Pulse>>> = Rc::default();
     let next = follower.clone();
     let pulse = Pulse::start(INTERVAL, move || {
-        let busy = bridge.borrow_mut().pulse();
-        // A pass can move the tree viewport, which the retry pass sends.
-        if let Some(next) = next.borrow().upgrade() {
+        let (busy, moved) = {
+            let mut bridge = bridge.borrow_mut();
+            let busy = bridge.pulse();
+            (busy, std::mem::take(&mut bridge.ranges_moved))
+        };
+        // A moved row range is a moved tree viewport, which the retry pass sends.
+        if moved && let Some(next) = next.borrow().upgrade() {
             next.wake();
         }
         busy
