@@ -199,17 +199,20 @@ on Windows and the workspace tests gave 6,156 passed / 0 failed / 127 ignored in
 groups (logs `vfinal-win-*`); on Linux workspace Clippy reported no warnings, and in
 a third run the workspace tests gave 6,004 passed / 0 failed / 128
 ignored in 85 groups (log `vfinal-linux-test3.log`). The two earlier Linux runs of
-`ac4c2e87` each had one timeout, a different test each time. Both were races inside
-the tests and are fixed in the tests only (TEST-03, [test timeout
-races](verification/2026-11-18-test-timeout-races.md)):
-`navigation::blocked_left_listing_does_not_prevent_right_completion` waited for its
-listing to reach the provider without reading its 8-slot event channel, which the
-Engine's unsolicited startup and navigation events could fill before the listing
-sent its start event, and `operations_native_ui::real_copy_conflict_shows_both_entries_in_the_native_locale`
-clicked a row before the Engine's saved preferences restored the tabs, which
-replaced the panel, so F5 found no target. The engine tests now read events while
-they wait, the real-Engine UI harnesses wait for the restored tabs, and the
-operations harness checks the cursor after each click.
+`ac4c2e87` each had one timeout, a different test each time; both are fixed in the
+tests only (TEST-03, [test timeout
+races](verification/2026-11-18-test-timeout-races.md)).
+`navigation::blocked_left_listing_does_not_prevent_right_completion` was a race
+inside the test: it waited for its listing to reach the provider without reading
+its 8-slot event channel, which the Engine's unsolicited startup and navigation
+events could fill before the listing sent its start event. The timeout of
+`operations_native_ui::real_copy_conflict_shows_both_entries_in_the_native_locale`
+is attributed, by its mechanism and an injected-delay reproduction with the
+identical message, to a click on a row before the Engine's saved preferences
+restored the tabs, which replaced the panel, so F5 found no target; no trace of the
+historical run exists. The engine tests now read events while they wait, the
+real-Engine UI harnesses wait for the restored tabs, and the operations harness
+checks the cursor after each click.
 
 Not established by this checkpoint:
 

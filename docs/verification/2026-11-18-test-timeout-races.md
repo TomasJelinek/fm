@@ -13,12 +13,17 @@ Two fixed-deadline waits each failed once in a Linux workspace test run of
   copy=None operation=None`, `crates/midnight-ui/tests/operations_native_ui.rs`
   line 88, the wait for the Copy dialog after F5.
 
-Both were races inside the tests. Neither involves state shared with other tests
-of the same binary, such as the process-wide disk-I/O gate: each reproduces with
-only its own test in the process, and an injected delay reproduces each with its
-identical message. This record gives the causes, the test-only fixes, an audit of
-the other engine test waits and the before/after evidence. Source: main `cf8138e4`
-and the TEST-03 fix commits on top of it.
+The engine failure was a race inside the test: it also fails with only its own
+test in the process, and an injected delay reproduces it in every run with its
+identical message. The UI timeout is attributed, by its mechanism and an
+injected-delay reproduction with the identical message, to a race inside the test
+harness: a saved-tab restore that lands after the test's click. Apart from the
+historical run itself, of which no trace exists, no run here or in the
+investigation failed without an injected delay (see Causes and Limitations).
+Neither mechanism involves state shared with other tests of the same binary, such
+as the process-wide disk-I/O gate. This record gives the causes, the test-only
+fixes, an audit of the other engine test waits and the before/after evidence.
+Source: main `cf8138e4` and the TEST-03 fix commits on top of it.
 
 ## Causes
 
@@ -41,17 +46,18 @@ The harness saves both panel paths as tabs, so applying the Engine's
 `PreferencesLoaded` restores them (`restore_tab_session`): each panel is replaced
 by a new pane that is listed again, even though it shows the same folder
 (`activate_tab`, `replace_pane_location`). `Harness::new` waited only for the first
-listings. When the preferences were applied after that wait, inside the settle of
-`focus()` and so after the row click, the replaced panel had no cursor and no
-selection, and F5 returned without a message (`request_selection_action`), so no
-Copy dialog appeared. The production application keeps its window hidden until the
+listings. When the preferences are applied after that wait, inside the settle of
+`focus()` and so after the row click, the replaced panel has no cursor and no
+selection, and F5 returns without a message (`request_selection_action`), so no
+Copy dialog appears. The production application keeps its window hidden until the
 preferences are applied; the harness has no such gate. The product behaviors are
 backlog rows TABS-01 (the replaced panel) and NOTICE-03 (no message).
 
 The kept fixture of the historical failure shows a `Harness::new` of 2.24 s instead
 of about 0.2 s (fixture created at 15:43:15.528, `destination/file-03.bin` written
 at 15:43:17.764). No trace of that run exists, so its path is attributed by the
-mechanism and the reproduction below, not observed.
+mechanism and the reproduction below, not observed; another way to lose F5 without
+a message, such as focus or key routing, is not excluded.
 
 ## Fixes (tests only)
 
@@ -202,7 +208,10 @@ on Linux.
 - Neither failure reproduced on Windows, before or after; the code paths and event
   counts are the same, so the Windows runs show only that the fix breaks nothing.
 - The historical UI failure is attributed by mechanism and injected-delay
-  reproduction; no natural reproduction of it exists.
+  reproduction; no natural reproduction or trace of it exists. The harness now
+  waits for the restore and checks the cursor after its click, so a recurrence of
+  the 15 s timeout would point to another cause, such as F5 lost in focus or key
+  routing.
 - The audit's "cannot block" verdicts for 32- and 64-slot channels rest on today's
   7 unsolicited startup events; a change that adds startup events (for example
   fallback art for the 36 action icons) needs the same audit again.
