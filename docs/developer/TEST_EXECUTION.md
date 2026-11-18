@@ -221,3 +221,30 @@ with one root for all three variables. To run them locally:
    fixtures. Then run `cargo test -p midnight-filesystem-host` with `--test worker`,
    `--test streaming_worker`, `--test discovery_kinds` and `--lib captured_source_tests::`,
    each followed by `-- --ignored --test-threads=1`.
+
+### Windows Copy/Move qualification volume
+
+On Windows, the engine's Copy/Move qualification tests (for example
+`copy_planning_tests` and the scheduler, concurrency-regression, peer-refusal and
+File List output tests) need exact native lookup keys for the temporary folders they
+create. The platform reports those keys only on an NTFS volume whose persistent 8.3
+short-name creation is disabled ([Windows namespace pins](TRANSFERS.md#windows-namespace-pins)).
+Elsewhere these tests fail; each failing `copy_planning_tests` case then reports first
+that its fixture "requires a supported local lookup domain". The application itself is
+unaffected: Copy/Move on such a volume takes the opaque lane with full pin refreshes.
+
+The tests create their folders in `TEMP`/`TMP`. `scripts/cargo.ps1`, the targeted runner
+(`scripts/run-targeted-tests.py`) and CI put those below the checkout's `_build`, so
+there the checkout's volume decides; a plain `cargo test` uses your profile's temporary
+folder, normally on `C:`. Check a volume from an elevated prompt with
+`fsutil 8dot3name query D:`: it must report
+`The volume state is: 1 (8dot3 name creation is disabled)`. The registry line and the
+summary line do not count, because a machine-wide registry setting does not set the
+volume state that the platform reads. System volumes usually still create 8.3 names.
+To qualify a run, point `TEMP` and `TMP` at a folder on a qualified NTFS volume (for
+example the checkout's `_build/tmp` on a data volume), or disable short-name creation
+on a data volume with `fsutil 8dot3name set D: 1` (elevated; it applies to names
+created afterwards, and other software then gets no 8.3 names on that volume). ReFS
+(including Dev Drive) and FAT volumes never qualify. `MIDNIGHT_TEST_NAMESPACE_LOOKUP`
+forces a lookup mode only in `midnight-platform-windows`'s own test build, not for
+engine tests.

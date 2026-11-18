@@ -156,8 +156,24 @@ fn fixture(opaque: bool) -> (tempfile::TempDir, RetainedService, Arc<Counts>) {
 fn known(source: &dyn TransferSource, cancel: &Cancellation) {
     assert!(
         matches!(source.native_namespace_scope(cancel).unwrap().unwrap().refresh(cancel).unwrap(), TransferNamespaceProbe::Known(scopes) if !scopes.is_empty()),
-        "this native qualification fixture requires a supported local lookup domain"
+        "this native qualification fixture requires a supported local lookup domain: on Windows, \
+         TEMP and TMP on an NTFS volume with persistent 8.3 short-name creation disabled \
+         (docs/developer/TEST_EXECUTION.md)"
     );
+}
+/// Tests that plan real endpoints in `folder` first check its volume with an uncounted
+/// probe file, so an unqualified TEMP fails with the reason above instead of a later
+/// owner or scope assertion.
+fn require_qualified_volume(folder: &Path) {
+    let probe = folder.join("qualification-probe");
+    std::fs::write(&probe, b"probe").unwrap();
+    let cancel = Cancellation::default();
+    let source = midnight_platform::LocalFileSystem::new(None)
+        .prepare_transfer_source(&probe, &cancel)
+        .unwrap();
+    known(source.as_ref(), &cancel);
+    drop(source);
+    std::fs::remove_file(probe).unwrap();
 }
 
 #[test]
@@ -271,6 +287,7 @@ fn failed_pin_qualification_retains_original_owner_for_retry() {
 #[test]
 fn endpoint_planning_opens_only_read_only_destination_and_uses_exact_children() {
     let temp = tempfile::tempdir().unwrap();
+    require_qualified_volume(temp.path());
     let source = temp.path().join("source");
     let destination = temp.path().join("destination");
     std::fs::write(&source, b"data").unwrap();
@@ -330,6 +347,7 @@ fn endpoint_planning_opens_only_read_only_destination_and_uses_exact_children() 
 #[test]
 fn metadata_only_move_can_plan_an_opaque_destination_without_directory_read_rights() {
     let temp = tempfile::tempdir().unwrap();
+    require_qualified_volume(temp.path());
     let source = temp.path().join("source");
     let destination = temp.path().join("destination");
     std::fs::write(&source, b"payload").unwrap();
@@ -465,6 +483,7 @@ impl CapturedTransferSources for Captured {
 #[test]
 fn captured_native_roots_keep_deferred_owners_and_original_plan_on_retry() {
     let temp = tempfile::tempdir().unwrap();
+    require_qualified_volume(temp.path());
     let roots: Vec<_> = (0..128)
         .map(|index| temp.path().join(index.to_string()))
         .collect();
