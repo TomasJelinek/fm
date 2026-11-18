@@ -9,6 +9,7 @@ import subprocess
 import tarfile
 import tempfile
 import unittest
+from unittest import mock
 import zipfile
 
 SCRIPT = Path(__file__).resolve().parents[1] / 'bootstrap-tools.py'
@@ -93,6 +94,49 @@ class BootstrapTests(unittest.TestCase):
         (destination / 'sitecustomize.py').write_bytes(b'print(2)')
         with self.assertRaisesRegex(ValueError, 'cached|Cached'):
             self.module.unpack(self.root, artifact, data)
+
+    @unittest.skipUnless(os.name == 'nt', 'Windows refuses to rename a directory while a file below it is open')
+    def test_publication_waits_for_a_scanner_to_release_an_extracted_file(self):
+        data = self.zip_bytes([('nasm/nasm.exe', b'fresh executable')])
+        artifact = self.artifact(data)
+        restore, held, delays = self.module.restore_timestamps, [], []
+        self.addCleanup(lambda: [handle.close() for handle in held])
+        def extracted(root, entries):
+            restore(root, entries)
+            # Like antivirus software scanning the executable just written.
+            held.append((root / 'nasm/nasm.exe').open('rb'))
+        def wait(seconds):
+            delays.append(seconds)
+            held.pop().close()
+        with mock.patch.object(self.module, 'restore_timestamps', extracted), mock.patch('time.sleep', wait):
+            destination = self.module.unpack(self.root, artifact, data)
+        self.assertEqual((destination / 'nasm/nasm.exe').read_bytes(), b'fresh executable')
+        self.assertEqual(delays, list(self.module.PUBLISH_RETRY_DELAYS[:1]))
+        self.assertEqual([path.name for path in (self.root / 'tools').iterdir()], ['fixture'])
+
+    def test_publication_retry_is_bounded_and_only_for_windows_permission_errors(self):
+        delays = getattr(self.module, 'PUBLISH_RETRY_DELAYS', ())
+        if os.name == 'nt':
+            self.assertTrue(delays, 'Windows publication must wait for antivirus scans')
+            self.assertLessEqual(sum(delays), 15)
+        else:
+            self.assertEqual(delays, ())
+        data = self.zip_bytes([('tool', b'payload')])
+        artifact = self.artifact(data)
+        for failure, retried in [(PermissionError(13, 'held by a scanner'), True),
+                                 (FileExistsError(17, 'published concurrently'), False)]:
+            with self.subTest(failure=type(failure).__name__):
+                attempts, waits = [], []
+                def rename(source, target):
+                    attempts.append(target)
+                    raise failure
+                with mock.patch.object(Path, 'rename', rename), mock.patch('time.sleep', waits.append):
+                    with self.assertRaises(type(failure)):
+                        self.module.unpack(self.root, artifact, data)
+                expected = list(delays) if retried else []
+                self.assertEqual(waits, expected)
+                self.assertEqual(len(attempts), len(expected) + 1)
+                self.assertEqual(list((self.root / 'tools').iterdir()), [], 'Staging must be removed')
 
     def test_tar_source_preserves_contents_but_refuses_links(self):
         for is_link in [False, True]:
