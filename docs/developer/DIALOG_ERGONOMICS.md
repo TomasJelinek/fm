@@ -155,6 +155,14 @@ matching [Mozilla's implementation investigation](https://bugzilla.mozilla.org/s
 Shell extension modal UI can defer closure; the worker retains its permit until
 the real chooser returns. It never destroys Shell windows or terminates threads.
 
+The Custom Command icon chooser is the Shell's `PickIconDlg`, not a Common Item
+Dialog, on its own STA. Its result is the dialog's path text: one pair of
+surrounding quotes is removed and `%NAME%` references are expanded from the
+process environment (an undefined reference stays literal) before handle-based
+validation and pixel capture; the selected module is never executed. Cancellation
+posts the ordinary close message to the chooser whose owner chain reaches the
+worker's hidden owner window.
+
 Linux uses the [FileChooser portal](https://flatpak.github.io/xdg-desktop-portal/docs/doc-org.freedesktop.portal.FileChooser.html)
 over the session bus, subscribes before opening, validates the returned request
 ownership, decodes local file URIs without losing native bytes, and closes its

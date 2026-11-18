@@ -355,8 +355,10 @@ Clipboard copy has a background queue and full SHA-256 destination readback by
 default. Explicit quick mode checks size and 64 KiB first/middle/last samples
 (all bytes up to 192 KiB); it can miss corruption between samples.
 Existing names offer Skip, Skip all, a different name, recoverable Replace/Replace
-all or explicit directory Merge/Merge all, Cancel job and Decide later. Jobs can
-reopen deferred conflicts while browsing continues. Copy retains its sources;
+all or explicit directory Merge/Merge all, Cancel job and Decide later. In such a
+decision window, Escape and X cancel the job like Cancel job; Decide later keeps the
+decision pending. Jobs can reopen deferred conflicts while browsing continues.
+Copy retains its sources;
 replacement retains displaced originals. See [transfer limits](developer/TRANSFERS.md).
 Other unlisted Salamander/Total Commander
 shortcuts, such as Shift+F9 for a bookmark menu, are not implemented.
@@ -377,12 +379,12 @@ Viewer windows have their own configurable shortcut context:
 | Keys | Viewer action |
 | --- | --- |
 | Escape | Close the viewer, including when search has focus |
-| Space / Alt+Right in content | Next regular file in captured panel order, wrapping at the end |
+| Space / Alt+Right in content | Next regular file in captured panel order, wrapping at the end; in very large folders the order is a window around the opened file |
 | Backspace / Alt+Left in content | Previous regular file in the same captured order, wrapping at the beginning |
 | Ctrl+F | Focus search |
 | Enter in search / F3 | Next match |
 | Shift+F3 | Previous match |
-| Ctrl+A in content | Select the loaded page (bounded copy) |
+| Ctrl+A in content | Select the visible rows of the loaded page (bounded copy) |
 | Ctrl+C in content | Copy selected displayed text |
 | Arrows / PageUp / PageDown | Scroll content |
 | Ctrl+Home / Ctrl+End | First / last page |

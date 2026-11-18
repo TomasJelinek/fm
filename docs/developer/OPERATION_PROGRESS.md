@@ -201,15 +201,17 @@ Logical committed bytes are separate from actual I/O counters. Retries and
 verification reads cannot inflate completion. Cross-volume Move keeps files in
 Items remaining until their source removal is confirmed, even when destination
 publication has already succeeded. ETA is an explicitly approximate
-presentation of remaining logical work and backend-measured rates. It remains
-Calculating when discovery/rates are unavailable and does not advance while paused.
+presentation of remaining logical work and backend-measured rates. While
+discovery or rates are unavailable, Delete shows Time remaining: Calculating..., and
+Copy/Move show their current activity instead (for example Copying..., Saving... or
+Verifying current file...). While paused, both show Paused instead of an estimate.
 The backend budgets writes and selected-policy readback for each discovered file:
 full length for SHA-256, or up to 192 KiB of disjoint samples. Cross-volume Move
 also includes source and destination proof reads both before and after source
 capture. Current retained copy/proof state reduces this budget; retry I/O does not
 become logical completion, and a repeated removal proof becomes outstanding again.
 Native rename and Delete use item rates. Metadata, sync and namespace work have no
-byte estimate, so ETA may return to Calculating while those steps remain. ETA is
+byte estimate, so the estimate may disappear again while those steps remain. ETA is
 not a guarantee against future stalls or conflicts. See the
 [work-accounting evidence](../verification/2026-11-12-transfer-eta.md).
 

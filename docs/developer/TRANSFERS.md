@@ -158,10 +158,12 @@ restoration failures remain in history. A source-name restoration conflict retai
 both objects and reports the residual path. Unsafe cleanup/commit failures stop
 the job instead of offering an optimistic Retry.
 
-The error dialog has Retry/Skip/Skip All/Cancel only when supported. Escape or
-Decide later preserves the attention state; Jobs → Resolve opens the exact pending
-decision. Successful Copy/Move closes only automatically opened progress, after
-all associated work succeeds. Manually opened Jobs remains open. Completed
+The error dialog has Retry/Skip/Skip All/Cancel only when supported. Decide later
+preserves the attention state; Jobs → Resolve opens the exact pending decision.
+Escape and the window's close button (X) on a native decision window cancel that
+exact job, as Cancel job does; whether they should mean Decide later instead is an
+open design decision. Successful Copy/Move closes only automatically opened
+progress, after all associated work succeeds. Manually opened Jobs remains open. Completed
 records remain for the current session, including when progress closes. The Jobs
 ledger is separate from the operation window. Copy, Move, Delete and Recycle use the same
 `JobProgressWindow` component, with operation-specific counts and units. Each active
@@ -182,8 +184,9 @@ and future intervals use the same coarser resolution. Original timestamps and
 per-series measured maxima survive, so early peaks remain visible and determine
 the vertical scale. Different series' peaks in a combined interval need not have
 occurred simultaneously. Current labels remain the latest actual interval rates,
-not aggregated peaks. The UI displays one chart for the selected
-job, caches its geometry by snapshot identity and never measures I/O itself.
+not aggregated peaks. Each operation's progress window displays that job's chart;
+the Jobs ledger has none. The UI caches chart geometry per job by snapshot identity
+and never measures I/O itself.
 
 The Copy/Move timer publishes the latest progress on each existing 250 ms tick,
 including a sample already collected by the native I/O worker. Sampling a rate
