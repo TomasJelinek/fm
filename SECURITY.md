@@ -742,33 +742,35 @@ confirmation of its exact revision. Preparation captures native object identitie
 each OS adapter revalidates them and applies changes through pinned handles.
 Recursive traversal does not follow links or cross mounts. It captures each
 directory's child names through the directory's pinned handle before changing any
-of them, then opens and pins each child by its captured name, relative to that
-handle, only when it processes it, and processes children before their parent. A
-child replaced after the names were captured is processed under its new identity;
-a child that can no longer be opened, for example because it was removed, is
-reported as failed without stopping its siblings; entries added later are not
-visited. When a child fails and its directory then fails revalidation, for example
-because another program moved it, that directory stops with one error that counts
-the entries it did not process. Sibling case conflicts are found on the captured
-names before any sibling is renamed: two names that would become equal, or a name
-that would become another sibling's current name. A sibling whose own name stays
-keeps its other changes. Each child's own name check runs when it is processed and
-sees the renames of earlier siblings, so with title case, which is not idempotent,
-an outcome can depend on the processing order; every rename still refuses to
-replace an existing entry. Selected targets of all prepared, queued and executing
-metadata jobs share a 256-target pin budget. Traversal never takes or waits for
-those pins: it keeps only the directories on its current path and the child it is
-processing pinned, at most one target per depth level. Only one mutation job
-executes at a time, because it holds every mutation-gate share, so at most 320
-metadata targets are pinned at once. Depth is limited to 64. The name snapshots of
-the directories on the current path together hold at most 100,000 names and at
-most 4 MiB of the names they have not processed yet, each name counted by its
-native encoded length; a directory beyond that is reported and left unchanged with
-its contents. Resource exhaustion is reported as an error that names its cause and
-keeps the file system's own report, not as a successful truncated operation. These
-are operation resource budgets, not path-length limits. A metadata preview lists every selected
-target, at most 256 rows; operation previews and metadata result samples keep at
-most 32 items.
+of them, then takes them in that order and opens and pins each child by its
+captured name, relative to that handle, only when it processes it, and processes
+children before their parent. A child replaced after the names were captured is
+processed under its new identity; a child that can no longer be opened, for example
+because it was removed, is reported as failed without stopping its siblings;
+entries added later are not visited. When a child fails and its directory then
+fails revalidation, for example because another program moved it, that directory
+stops with one error that counts the entries it did not process. Case conflicts are
+found before any entry is renamed, among the selected targets and among each
+directory's captured names: two names that would become equal, or a name that would
+become another entry's current name. An entry whose own name stays is never a
+conflict and keeps its other changes. Each child's own name check runs when it is
+processed and sees the renames of earlier siblings, so with title case, which is not
+idempotent, an outcome can depend on the processing order; every rename still
+refuses to replace an existing entry. Selected targets of all prepared, queued and
+executing metadata jobs share a 256-target pin budget. Traversal never takes or
+waits for those pins: it keeps only the directories on its current path and the
+child it is processing pinned, at most one target per depth level. Only one
+mutation job executes at a time, because it holds every mutation-gate share, so at
+most 320 metadata targets are pinned at once. Depth is limited to 64. The name
+snapshots of the directories on the current path together hold at most 100,000
+names and 4 MiB of names that they have not processed yet, each name counted as its
+`OsStr::len` (its raw bytes on Linux, WTF-8 bytes on Windows) and released when its
+entry is taken; a directory whose names do not fit is reported and left unchanged
+with its contents. Resource exhaustion is reported as an error that names its cause
+and keeps the file system's own report, not as a successful truncated operation.
+These are operation resource budgets, not path-length limits. A metadata preview
+lists every selected target, at most 256 rows; operation previews and metadata
+result samples keep at most 32 items.
 
 Filename conversion uses full Unicode case mapping with the root locale while
 preserving untouched native bytes/code units. An undecodable transformed component
