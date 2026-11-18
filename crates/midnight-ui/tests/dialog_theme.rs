@@ -353,10 +353,16 @@ fn folder_notice_hides_reports_and_requires_an_explicit_authorization_action() {
         assert_eq!(visible_label_count(host.popup().unwrap(), details), 0);
         host.click("Retry with authorization");
         assert_eq!(retries.get(), 1);
+        // A 320×360 notice, the size of the former notice window: a 328×368 main
+        // window with the dialog stretched to its frame margins.
+        host.layout(328, 368);
+        host.stretch_vertically(&host.visible_item(AccessibleRole::Button, "Close"));
         host.draw(328, 368, &format!("folder-notice-narrow-{scheme}"));
-        // Close at this width: narrow_folder_notice_offer_keeps_close_inside_its_dialog.
         let retry = host.visible_item(AccessibleRole::Button, "Retry with authorization");
+        let (_, body) = form::body(&retry);
+        assert_eq!((body.width, body.height), (320.0, 360.0));
         form::assert_inside(&retry, "Retry with authorization");
+        form::assert_inside(&host.visible_item(AccessibleRole::Button, "Close"), "Close");
         host.click("Retry with authorization");
         assert_eq!(retries.get(), 2);
         notice.set_can_authorize(false);
@@ -370,11 +376,10 @@ fn folder_notice_hides_reports_and_requires_an_explicit_authorization_action() {
     }
 }
 
-/// A 320 px wide notice body puts the authorization offer on its own row. The
-/// embedded notice sizes its body from a formula that is a few pixels shorter than
-/// NoticeDialog's minimum layout there, so the body clips Close.
+/// A 320 px wide notice body puts the authorization offer on its own row. At its
+/// default height the dialog still shows both actions: its size follows
+/// NoticeDialog's natural height, not a separate estimate.
 #[test]
-#[ignore = "DEFERRED-CROSS: embedded-notice.slint sizes a narrow folder notice with an authorization offer a few pixels shorter than NoticeDialog needs, so Close is clipped; enable with the fix"]
 fn narrow_folder_notice_offer_keeps_close_inside_its_dialog() {
     let host = notice_host();
     host.apply_preferences(0, 0, "Segoe UI", 14, 18);

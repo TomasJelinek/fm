@@ -31,11 +31,11 @@ export component EmbeddedHotPaths inherits Rectangle {
         manager-frame := DialogFrame {
             x: 0px; y: 0px; width: root.width; height: root.height;
             desired-width: max(520px, Theme.font-size * 23);
-            desired-height: max(320px, Theme.control-height * 5 + 110px
-                + min(5, HotPathsPresentation.model.length) * max(44px, Theme.font-size + Theme.small-font + 12px));
+            // The manager's own measure at the dialog's width.
+            desired-height: max(320px, manager.natural-height);
             dim: true; dismiss-on-outside: false;
             init => { self.reset(); }
-            HotPathsDialog {
+            manager := HotPathsDialog {
                 model: HotPathsPresentation.model;
                 action-icons: HotPathsPresentation.action-icons;
                 path: HotPathsPresentation.path;

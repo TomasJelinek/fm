@@ -21,6 +21,26 @@ export component HotPathsDialog inherits Rectangle {
     callback dismiss();
     callback move-dialog(length, length);
     changed model => { root.revision += 1; }
+    // The height that shows the whole manager without scrolling, with the regular
+    // padding and spacing. It depends only on the width, so EmbeddedHotPaths sizes
+    // its dialog from it. (The content's own preferred height would not do: its
+    // width follows the padding, and the padding follows the dialog's height.)
+    out property <length> natural-height: 32px + header.regular-height + 10px
+        + root.list-height + 8px + hint-measure.preferred-height
+        + 8px + (root.stacked
+            ? max(Theme.control-height, slot-picker.preferred-height) + 8px
+                + max(Theme.control-height, apply-button.preferred-height)
+            : max(Theme.control-height, slot-picker.preferred-height, apply-button.preferred-height))
+        + 8px + current-path.preferred-height
+        + 8px + max(Theme.control-height, add-current.preferred-height)
+        + 10px + max(Theme.control-height, bookmark-close.preferred-height);
+    private property <length> row-height: max(44px, Theme.font-size + Theme.small-font + 12px);
+    private property <length> list-height: root.row-height * clamp(root.model.length, 1, 5);
+    // Narrow managers put Apply shortcut below the shortcut picker.
+    private property <bool> stacked: root.width < max(440px, Theme.font-size * 25);
+    private property <string> hint: root.model.length == 0
+        ? "Add the current folder to create your first Hot Path."
+        : "Select a path to change its numbered shortcut.";
     // Entering the compact layout can clip the focused control; move focus once
     // when the layout changes, never on every resize step inside it.
     private property <bool> compact: root.width < 400px || root.height < 350px;
@@ -37,6 +57,12 @@ export component HotPathsDialog inherits Rectangle {
         root.draft-slot = slot;
     }
     background: Theme.surface; border-radius: 8px; border-color: Theme.active-frame; border-width: 1px;
+    // A hidden measure of the wrapped hint at the width of the regular layout.
+    hint-measure := Text {
+        visible: false; accessible-role: none;
+        width: max(1px, root.width - 32px);
+        text: root.hint; font-size: Theme.small-font; wrap: word-wrap;
+    }
     FocusScope {
         capture-key-pressed(event) => {
             if event.text == Key.Escape { root.dismiss(); return accept; }
@@ -45,7 +71,7 @@ export component HotPathsDialog inherits Rectangle {
         VerticalLayout {
             padding: root.height < 350px ? 6px : 16px;
             spacing: root.height < 350px ? 4px : 10px;
-            DialogHeader { title: "Manage Hot Paths"; compact: root.height < 350px;
+            header := DialogHeader { title: "Manage Hot Paths"; compact: root.height < 350px;
                 close-label: "Close dialog"; close => { root.dismiss(); }
                 dragged(dx, dy) => { root.move-dialog(dx, dy); }
                 fallback-icon: FallbackIcons.bookmarks; }
@@ -55,11 +81,10 @@ export component HotPathsDialog inherits Rectangle {
                 content-width: self.visible-width;
                 VerticalLayout { spacing: 8px;
                     ListView {
-                        height: max(44px, Theme.font-size + Theme.small-font + 12px)
-                        * clamp(root.model.length, 1, 5);
+                        height: root.list-height;
                         horizontal-scrollbar-policy: always-off;
                         for bookmark[index] in root.model : Rectangle {
-                            height: max(44px, Theme.font-size + Theme.small-font + 12px);
+                            height: root.row-height;
                             background: bookmark.identity == root.selected-identity ? Theme.selected-background : row-area.has-hover ? Theme.hover : transparent;
                             border-width: 1px; border-color: bookmark-focus.has-focus ? Theme.active-frame : transparent;
                             accessible-role: button;
@@ -112,7 +137,7 @@ export component HotPathsDialog inherits Rectangle {
                             }
                         }
                     }
-                    Text { text: root.model.length == 0 ? "Add the current folder to create your first Hot Path." : "Select a path to change its numbered shortcut."; color: Theme.secondary-text; font-size: Theme.small-font; wrap: word-wrap; }
+                    Text { text: root.hint; color: Theme.secondary-text; font-size: Theme.small-font; wrap: word-wrap; }
                     GridLayout {
                         spacing: 8px;
                         slot-picker := HintedComboBox {
@@ -125,20 +150,20 @@ export component HotPathsDialog inherits Rectangle {
                             current-index <=> root.draft-slot;
                             hint: "Number for the selected path. Occupied numbers are exchanged; every saved folder is kept. Configure keys in Options → Keyboard.";
                         }
-                        HintedActionButton {
-                            row: root.width < max(440px, Theme.font-size * 25) ? 1 : 0;
-                            col: root.width < max(440px, Theme.font-size * 25) ? 0 : 1;
+                        apply-button := HintedActionButton {
+                            row: root.stacked ? 1 : 0;
+                            col: root.stacked ? 0 : 1;
                             horizontal-stretch: 0;
                             text: "Apply shortcut"; enabled: root.selected-identity != ""; min-height: Theme.control-height;
                             hint: "Apply the numbered shortcut to the selected saved path.";
                             clicked => { root.assign-bookmark(root.selected-identity, root.draft-slot); }
                         }
                     }
-                    PathText {
+                    current-path := PathText {
                         text: "Current folder: " + root.path; foreground: Theme.secondary-text; font-size: Theme.small-font;
                         Tooltip { TipBody { text: root.path; } }
                     }
-                    HintedActionButton {
+                    add-current := HintedActionButton {
                         native-icon: root.action-icons.add-bookmark; fallback-icon: FallbackIcons.add-bookmark;
                         text: "Add current"; min-height: Theme.control-height;
                         hint: "Save the current folder once, using the first free numbered shortcut.";

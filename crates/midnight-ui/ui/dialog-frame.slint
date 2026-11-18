@@ -146,6 +146,9 @@ export component DialogHeader inherits Rectangle {
     in property <string> close-label: "Cancel dialog";
     private property <length> close-size: max(root.compact ? 26px : 30px, Theme.font-size + 8px);
     private property <length> heading-height: max(root.compact ? 28px : 36px, root.text-size + 6px, root.close-size);
+    // The height when not compact. A dialog that sizes its host from its content reads
+    // this instead of `height`: `compact` usually follows the dialog's own height.
+    out property <length> regular-height: max(36px, root.text-size + 6px, Theme.font-size + 8px) + 10px;
     height: root.heading-height + (root.compact ? 5px : 10px);
     min-width: 0px;
     HorizontalLayout {

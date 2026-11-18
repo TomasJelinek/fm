@@ -319,18 +319,19 @@ fn embedded_hot_paths_keeps_actions_artwork_and_compact_close() {
 }
 
 /// At its default height in a roomy main window the manager shows Add current
-/// without scrolling. The height formula in embedded-hot-paths.slint does not grow
-/// with the wrapped hint and the two-row shortcut picker of a 32 px font.
+/// without scrolling, including the wrapped hint and the two-row shortcut picker of
+/// a 32 px font: the dialog's size follows HotPathsDialog's natural height.
 #[test]
-#[ignore = "DEFERRED-CROSS: embedded-hot-paths.slint gives the Hot Paths manager a default height shorter than its content at a 32 px font, so Add current starts scrolled out of view; enable with the fix"]
 fn embedded_hot_paths_default_height_shows_add_current_at_every_font() {
     let host = hot_paths_host();
     for (scheme, density, font) in appearances() {
         host.apply_preferences(scheme, density, "", font, font);
         host.layout(1040, 720);
-        form::assert_unclipped(
-            &host.item(AccessibleRole::Button, "Add current"),
-            &format!("Add current at a {font} px font"),
-        );
+        for label in ["Add current", "Close"] {
+            form::assert_unclipped(
+                &host.visible_item(AccessibleRole::Button, label),
+                &format!("{label} at a {font} px font"),
+            );
+        }
     }
 }
