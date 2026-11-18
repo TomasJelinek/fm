@@ -1,7 +1,7 @@
 //! Parser events to inert semantic blocks with exact source anchors.
 use crate::{
     decode::{self, Decoded},
-    fence::{self, OpenFence},
+    fence::{self, Kind, OpenBlock},
     markdown::safe_link,
 };
 use midnight_plugin_sdk::api::{document::*, viewer::*};
@@ -37,8 +37,9 @@ pub(crate) struct Parsed {
     /// read, or `u64::MAX` at EOF. Later blocks may continue past the read
     /// edge, so they are never presented as complete layout units.
     pub proven_end: u64,
-    /// A top-level fenced code block still open at the read edge.
-    pub open_fence: Option<OpenFence>,
+    /// A top-level fenced code block, GFM table or HTML block of type 6 or 7
+    /// cut by the read edge, whose end later plain reads can find.
+    pub open_block: Option<OpenBlock>,
 }
 
 enum Container {
@@ -58,8 +59,8 @@ struct Unit {
     blocks: usize,
     events: usize,
     literal: bool,
-    /// Marker and length when the unit is a fenced code block.
-    fence: Option<(u8, usize)>,
+    /// The kind of a fenced code block, table or HTML block of type 6 or 7.
+    kind: Option<Kind>,
 }
 
 pub(crate) fn render_raw(
@@ -82,7 +83,7 @@ pub(crate) fn render_raw(
     let mut depth = 0usize;
     let mut unit: Option<Unit> = None;
     let mut unbuilt: Option<usize> = None;
-    let mut open_fence = None;
+    let mut open_block = None;
     for (count, (event, range)) in parser(&decoded.text).into_offset_iter().enumerate() {
         if count.is_multiple_of(POLL_EVENTS) && cancelled() {
             return None;
@@ -91,9 +92,14 @@ pub(crate) fn render_raw(
             if unbuilt.is_none() && count >= PARSE_EVENTS {
                 unbuilt = Some(range.start);
             }
-            let fence = match &event {
+            let kind = match &event {
                 Event::Start(Tag::CodeBlock(CodeBlockKind::Fenced(_))) => {
                     fence::opening(decoded.text.get(range.start..)?)
+                        .map(|(marker, length)| Kind::Fence { marker, length })
+                }
+                Event::Start(Tag::Table(_)) => Some(Kind::Table),
+                Event::Start(Tag::HtmlBlock) => {
+                    fence::html_block_kind(decoded.text.get(range.start..)?)
                 }
                 _ => None,
             };
@@ -102,7 +108,7 @@ pub(crate) fn render_raw(
                 blocks: builder.page.blocks.len(),
                 events: 0,
                 literal: false,
-                fence,
+                kind,
             });
         }
         match event {
@@ -134,16 +140,22 @@ pub(crate) fn render_raw(
             builder.flush();
             builder.reset();
         }
-        if range.end >= decoded.text.len()
-            && !eof
-            && let Some((marker, length)) = finished.fence
-        {
-            open_fence = continued_fence(decoded, finished.start, marker, length);
-        }
-        // Rendering already traverses the exact parser events. Record complete
-        // top-level boundaries here rather than parsing the same window again.
-        // A unit ending at the read edge may continue in the next read.
-        if range.end < decoded.text.len() {
+        // A unit is complete only when the line after it is complete too, or at
+        // EOF: the parser takes a partial last line, such as the indentation of
+        // the next row, as if it ended the input. A unit ending at the read edge
+        // or before such a line may continue in the next read.
+        let complete = eof
+            || decoded
+                .text
+                .get(range.end..)
+                .is_some_and(|rest| rest.contains('\n'));
+        if !complete {
+            if let Some(kind) = finished.kind {
+                open_block = continued_block(decoded, finished.start, kind);
+            }
+        } else if range.end < decoded.text.len() {
+            // Rendering already traverses the exact parser events. Record complete
+            // top-level boundaries here rather than parsing the same window again.
             let offset = decoded.source_at(range.end)?;
             if unbuilt.is_none() {
                 proven = offset;
@@ -177,27 +189,22 @@ pub(crate) fn render_raw(
         page,
         checkpoints,
         proven_end: if eof { u64::MAX } else { proven },
-        open_fence,
+        open_block,
     })
 }
 
-/// A fenced unit cut by the read edge: every complete line after its opening
-/// line was fence content, except possibly the last one, which a closing
-/// fence may end exactly at the edge; the scan resumes there.
-fn continued_fence(
-    decoded: &Decoded,
-    start: usize,
-    marker: u8,
-    length: usize,
-) -> Option<OpenFence> {
+/// A fence, table or HTML block unit cut by the read edge: every complete line
+/// after its opening line belongs to it, except possibly the last complete
+/// line, which may end it exactly at the edge (a closing fence or a blank line)
+/// or was judged before the next line was complete; the scan resumes there.
+fn continued_block(decoded: &Decoded, start: usize, kind: Kind) -> Option<OpenBlock> {
     let text = &decoded.text;
     let content = start + text.get(start..)?.find('\n')? + 1;
-    let complete = text.strip_suffix('\n').unwrap_or(text);
+    let complete = &text[..text.rfind('\n')?];
     let last = complete.rfind('\n').map_or(0, |at| at + 1).max(content);
-    Some(OpenFence {
+    Some(OpenBlock {
         start: decoded.source_at(start)?,
-        marker,
-        length,
+        kind,
         resume: decoded.source_at(last)?,
     })
 }

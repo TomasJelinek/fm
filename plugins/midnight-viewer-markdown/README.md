@@ -76,16 +76,23 @@ limit. Ordinary Markdown source line endings become spaces; explicit hard
 breaks remain displayed newlines. Known fence/quote context therefore survives
 nearby random or sequential viewports. Regions more than 32 KiB past every
 retained checkpoint use a plain paragraph fallback.
-A top-level fenced block longer than one read cannot prove its end inside a
-parse; plain reads that continue contiguously from where the parse stopped
-find its closing fence and prove the checkpoint after it, so sequential
-scrolling and search continue semantically after long fenced logs. A seek past
-such a fence before it was scanned shows source text with literal markers until
-the viewer has read through the fence from its start. Any other single top-level
-block longer than a 64 KiB read (a long list, table, block quote or HTML block)
-ends checkpoint discovery: plain pages resynchronize only after fences, so pages
-more than 32 KiB past the last checkpoint before that block show source text
-with literal markers for the rest of the session.
+A parse proves a top-level boundary only when the line after the unit is
+complete too, so a read that ends inside the next line's indentation proves
+none there. A top-level fenced block, GFM table or HTML block of CommonMark
+types 6 and 7 that is longer than one read cannot prove its end inside a
+parse. Plain reads that continue contiguously from where the parse stopped
+find that end (the closing fence, or the first blank line after the table or
+HTML block) and prove the checkpoint after it, so sequential scrolling and
+search continue semantically after long fenced logs, generated tables and HTML
+dumps. A table line before that blank line that could start another block (a
+heading, quote, list item, fence, rule or HTML, after any indentation) ends the
+search without a checkpoint. A seek past such a block before it was scanned
+shows source text with literal markers until the viewer has read through the
+block from its start. Any other single top-level block longer than a 64 KiB
+read (a long list or block quote, an HTML block of types 1-5, or a table
+interrupted that way) ends checkpoint discovery: pages more than 32 KiB past
+the last checkpoint before that block show source text with literal markers
+for the rest of the session.
 If invalid/control text expands beyond the decoded context budget, viewport
 and search reuse a nearby fragment of the same bounded read and discard the
 unproven parser context rather than skipping the requested content.

@@ -7,7 +7,7 @@
 //! the replay distance it matches decoded source text, as the viewport shows.
 use crate::{
     decode::{self, Decoded},
-    fence::{self, OpenFence},
+    fence::{self, OpenBlock},
     markdown,
     paging::REPLAY_BYTES,
     plugin::{self, Permit, Session, lock},
@@ -38,8 +38,9 @@ struct Scan {
     boundary: Option<u64>,
     /// Semantic blocks are joined by a line break, also across steps.
     separate: Option<u64>,
-    /// A top-level fence longer than a read, whose end plain steps look for.
-    fence: Option<OpenFence>,
+    /// A top-level fence, table or HTML block longer than a read, whose end
+    /// plain steps look for.
+    open_block: Option<OpenBlock>,
     query: Vec<char>,
     prefix: Vec<usize>,
     matched: usize,
@@ -96,7 +97,7 @@ pub fn start(
             offset,
             boundary,
             separate: None,
-            fence: None,
+            open_block: None,
             query,
             prefix,
             matched: 0,
@@ -163,9 +164,9 @@ fn step(context: Context, mut scan: Scan) {
         }
     };
     let read_offset = start.unwrap_or_else(|| {
-        // A pending fence scan continues contiguously from its resume line.
+        // A pending block scan continues contiguously from its resume line.
         let near = decode::lookbehind(scan.offset, bom, encoding);
-        scan.fence
+        scan.open_block
             .map(|open| open.resume)
             .filter(|&resume| resume <= near && near - resume <= STEP_BYTES / 2)
             .unwrap_or(near)
@@ -298,8 +299,8 @@ fn match_parsed(
     } else {
         scan.offset = read_end;
         scan.separate = None;
-        if parsed.open_fence.is_some() {
-            scan.fence = parsed.open_fence;
+        if parsed.open_block.is_some() {
+            scan.open_block = parsed.open_block;
         }
     }
     Some(Outcome::Continue)
@@ -314,10 +315,12 @@ fn match_plain(
     eof: bool,
 ) -> Option<Outcome> {
     scan.separate = None;
-    // The end of a long fence proves the next checkpoint: match plain text
-    // only up to it, then continue semantically from there.
+    // The end of a long fence, table or HTML block proves the next checkpoint:
+    // match plain text only up to it, then continue semantically from there.
+    // An abandoned scan leaves the rest plain; the session checkpoints are
+    // never changed here.
     let mut until = u64::MAX;
-    if let Some(mut open) = scan.fence.take() {
+    if let Some(mut open) = scan.open_block.take() {
         match open.advance(decoded) {
             fence::Scan::Closed(boundary) => {
                 scan.boundary = Some(boundary);
@@ -326,8 +329,8 @@ fn match_plain(
                 }
                 until = boundary;
             }
-            fence::Scan::Open => scan.fence = Some(open),
-            fence::Scan::Gap => {}
+            fence::Scan::Open => scan.open_block = Some(open),
+            fence::Scan::Gap | fence::Scan::Abandoned => {}
         }
     }
     let anchors = &decoded.anchors;

@@ -1,7 +1,7 @@
 use crate::{
     checkpoints::Checkpoints,
     decode::{self, Decoded},
-    fence::{self, OpenFence},
+    fence::{self, OpenBlock},
     markdown, page_cache,
     plugin::{Session, lock, send},
     retained_context::Retained,
@@ -21,8 +21,9 @@ pub struct Hints {
     pub(crate) checkpoints: Checkpoints,
     cache: page_cache::Cache,
     context: Option<Retained>,
-    /// The latest top-level fence a parse left open at its read edge.
-    fence: Option<OpenFence>,
+    /// The latest top-level fence, table or HTML block a parse left open at its
+    /// read edge.
+    open_block: Option<OpenBlock>,
 }
 impl Hints {
     pub fn new(mode: u16) -> Self {
@@ -31,7 +32,7 @@ impl Hints {
             checkpoints: Checkpoints::default(),
             cache: page_cache::Cache::default(),
             context: None,
-            fence: None,
+            open_block: None,
         }
     }
     pub fn initialize(&mut self, bom: u64) {
@@ -215,8 +216,8 @@ pub fn viewport(
         }
         trace::retained(&parsed.page, hints.context.as_ref());
         hints.checkpoints.extend(parsed.checkpoints);
-        if parsed.open_fence.is_some() {
-            hints.fence = parsed.open_fence;
+        if parsed.open_block.is_some() {
+            hints.open_block = parsed.open_block;
         }
         page
     };
@@ -233,15 +234,16 @@ pub fn viewport(
 }
 
 /// A plain read without a nearby checkpoint may continue the scan for the end
-/// of a long top-level fence; the line after it is a proven checkpoint.
+/// of a long top-level fence, table or HTML block; the line after it is a
+/// proven checkpoint. An abandoned scan records none.
 fn resynchronize(session: &Session, decoded: &Decoded) {
-    let Some(mut open) = lock(&session.hints).fence else {
+    let Some(mut open) = lock(&session.hints).open_block else {
         return;
     };
     let scan = open.advance(decoded);
     let mut hints = lock(&session.hints);
     if hints
-        .fence
+        .open_block
         .is_some_and(|current| current.start != open.start)
     {
         return;
@@ -249,9 +251,10 @@ fn resynchronize(session: &Session, decoded: &Decoded) {
     match scan {
         fence::Scan::Closed(boundary) => {
             hints.checkpoints.extend([boundary]);
-            hints.fence = None;
+            hints.open_block = None;
         }
-        fence::Scan::Open => hints.fence = Some(open),
+        fence::Scan::Abandoned => hints.open_block = None,
+        fence::Scan::Open => hints.open_block = Some(open),
         fence::Scan::Gap => {}
     }
 }

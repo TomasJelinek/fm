@@ -217,6 +217,204 @@ fn a_fenced_log_longer_than_a_read_does_not_end_semantic_rendering() {
     );
 }
 
+/// Headed sections with styled paragraphs after a long block.
+fn push_sections(input: &mut String) {
+    for index in 0..300 {
+        input.push_str(&format!(
+            "\n## After {index}\n\nParagraph {index} with **bold** text.\n"
+        ));
+    }
+}
+
+/// Every page of sequential forward scrolling from the start to the end.
+fn scroll_through(host: &mut Host, input: &str) -> Vec<DocumentPage> {
+    let mut pages = Vec::new();
+    let mut anchor = 0;
+    for _ in 0..1000 {
+        let page = page(host, anchor, false);
+        anchor = page.source.end().unwrap();
+        let more = page.has_after;
+        pages.push(page);
+        if !more {
+            break;
+        }
+    }
+    assert_eq!(anchor, input.len() as u64, "scrolling reached the end");
+    pages
+}
+
+/// Blocks starting at or after `end`, each of which must be semantic.
+fn semantic_after(pages: &[DocumentPage], end: u64) -> usize {
+    let mut semantic = 0;
+    for block in pages.iter().flat_map(|page| &page.blocks) {
+        if block.text.source.offset >= end {
+            assert!(
+                !block.text.text.contains("**") && !block.text.text.contains("## "),
+                "content after the block stays semantic: {:?}",
+                block.text.text
+            );
+            semantic += 1;
+        }
+    }
+    semantic
+}
+
+fn first_match(host: &mut Host, query: &str) -> SearchMatch {
+    let request = host.submit(
+        abi::REQUEST_SEARCH,
+        &Search {
+            query: query.into(),
+            source_anchor: 0,
+            backwards: false,
+            case_sensitive: true,
+        },
+    );
+    let events = host.finish();
+    codec::decode(
+        &events
+            .iter()
+            .find(|e| e.id == request && e.kind == abi::EVENT_SEARCH_MATCH)
+            .unwrap_or_else(|| panic!("{query:?} not found: {events:?}"))
+            .payload,
+    )
+    .unwrap()
+}
+
+#[test]
+fn a_table_longer_than_a_read_does_not_end_semantic_rendering() {
+    let mut input = String::from("# Intro\n\nText **bold**.\n\n| id | text |\n| --- | --- |\n");
+    let mut row = 0;
+    while input.len() < 100 * 1024 {
+        input.push_str(&format!("| {row:05} | generated table row |\n"));
+        row += 1;
+    }
+    let table_end = input.len() as u64;
+    push_sections(&mut input);
+    let mut host = open(&input);
+    let pages = scroll_through(&mut host, &input);
+    let semantic = semantic_after(&pages, table_end);
+    assert!(
+        semantic >= 500,
+        "{semantic} semantic blocks after the table"
+    );
+    // Search continues through the table and matches displayed text after it.
+    let found = first_match(&mut host, "Paragraph 250 with bold text");
+    assert_eq!(
+        found.source.offset,
+        input.find("Paragraph 250 ").unwrap() as u64
+    );
+}
+
+#[test]
+fn an_html_block_longer_than_a_read_does_not_end_semantic_rendering() {
+    let mut input = String::from("# Intro\n\nText **bold**.\n\n<div>\n");
+    let mut row = 0;
+    while input.len() < 100 * 1024 {
+        input.push_str(&format!("<p>row {row:05}</p>\n"));
+        row += 1;
+    }
+    input.push_str("</div>\n");
+    let html_end = input.len() as u64;
+    push_sections(&mut input);
+    let mut host = open(&input);
+    let pages = scroll_through(&mut host, &input);
+    let semantic = semantic_after(&pages, html_end);
+    assert!(semantic >= 500, "{semantic} semantic blocks after the HTML");
+    let found = first_match(&mut host, "Paragraph 250 with bold text");
+    assert_eq!(
+        found.source.offset,
+        input.find("Paragraph 250 ").unwrap() as u64
+    );
+}
+
+#[test]
+fn a_table_interrupted_by_a_fence_records_no_boundary_inside_the_fence() {
+    let mut input = String::from("# Intro\n\n| id | text |\n| --- | --- |\n");
+    let mut row = 0;
+    while input.len() < 100 * 1024 {
+        input.push_str(&format!("| {row:05} | generated table row |\n"));
+        row += 1;
+    }
+    // The fence interrupts the table; its blank line is no top-level boundary.
+    input.push_str("```\nfenced\n\n# not a heading\n```\n");
+    push_sections(&mut input);
+    let mut host = open(&input);
+    for page in scroll_through(&mut host, &input) {
+        assert!(
+            !page
+                .blocks
+                .iter()
+                .any(|block| block.kind == BLOCK_HEADING && block.text.text == "not a heading"),
+            "a checkpoint was recorded inside the fence"
+        );
+    }
+}
+
+/// A document whose first 64 KiB read ends after the two indentation spaces of
+/// one of `line`'s equally long lines: the parser takes that partial line as
+/// blank and ends the block there.
+fn cut_inside_indentation(head: &str, line: impl Fn(usize) -> String, tail: &str) -> String {
+    const READ: usize = 65536;
+    let length = line(0).len();
+    let fill = (READ - 2 - "# Intro\n\nText .\n\n".len() - head.len()) % length;
+    let mut input = format!("# Intro\n\nText {}.\n\n{head}", "x".repeat(fill));
+    let mut row = 0;
+    while input.len() < 100 * 1024 {
+        input.push_str(&line(row));
+        row += 1;
+    }
+    assert_eq!(
+        &input[READ - 2..READ],
+        "  ",
+        "the read edge is inside the indentation"
+    );
+    assert_ne!(&input[READ - 3..READ - 2], " ");
+    input.push_str(tail);
+    input
+}
+
+#[test]
+fn an_indented_table_or_html_dump_cut_inside_its_indentation_keeps_its_rows() {
+    let cases = [
+        (
+            cut_inside_indentation(
+                "| id | text |\n| --- | --- |\n",
+                |row| format!("  | r{row:05} | x |\n"),
+                "",
+            ),
+            // Rows parsed from a checkpoint inside the table would be one paragraph.
+            "x | | r",
+        ),
+        (
+            cut_inside_indentation(
+                "<div>\n",
+                |row| format!("  <span>row {row:05}</span>\n"),
+                "</div>\n",
+            ),
+            // Lines parsed from a checkpoint inside the HTML block would be a paragraph.
+            "</span> <span>",
+        ),
+    ];
+    for (mut input, joined) in cases {
+        let block_end = input.len() as u64;
+        push_sections(&mut input);
+        let mut host = open(&input);
+        let pages = scroll_through(&mut host, &input);
+        for block in pages.iter().flat_map(|page| &page.blocks) {
+            assert!(
+                !block.text.text.contains(joined),
+                "rows after a checkpoint inside the block: {:?}",
+                &block.text.text[..block.text.text.len().min(80)]
+            );
+        }
+        let semantic = semantic_after(&pages, block_end);
+        assert!(
+            semantic >= 500,
+            "{semantic} semantic blocks after the block"
+        );
+    }
+}
+
 #[test]
 fn ordinary_styled_prose_keeps_styles_links_and_tables_at_production_budget() {
     let input = styled_article();
