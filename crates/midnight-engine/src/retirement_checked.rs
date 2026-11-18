@@ -1,6 +1,6 @@
 //! Checked ownership retains its original indexed slot until an explicit receipt.
+use super::super::copy_nested_retirement::Context as ReleaseContext;
 use super::*;
-use crate::copy_nested_retirement::Context as ReleaseContext;
 use midnight_core::FsError;
 
 pub(crate) enum CheckedRelease<R> {
