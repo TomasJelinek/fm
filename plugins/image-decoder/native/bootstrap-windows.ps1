@@ -23,9 +23,18 @@ if (-not (Get-Command cl.exe -ErrorAction SilentlyContinue) -or $env:VSCMD_ARG_T
 if (-not (Get-Command cl.exe -ErrorAction SilentlyContinue) -or $env:VSCMD_ARG_TGT_ARCH -notin @('x64', 'amd64')) {
     throw 'An x64 MSVC developer shell could not be initialized'
 }
-$nativeBootstrapArgs = @('-3', '-I', '-S', '-B', (Join-Path $PSScriptRoot 'bootstrap-tools.py'), $BuildRoot, '--platform', 'windows')
+# The tool root may be below a non-ASCII directory. Isolated Python ignores PYTHONUTF8,
+# so -X utf8 makes it print UTF-8 (before 3.15 it uses the ANSI code page), and PowerShell
+# decodes that as UTF-8 instead of the console's OEM code page, restored afterwards.
+$nativeBootstrapArgs = @('-3', '-I', '-S', '-B', '-X', 'utf8', (Join-Path $PSScriptRoot 'bootstrap-tools.py'), $BuildRoot, '--platform', 'windows')
 if ($Offline) { $nativeBootstrapArgs += '--offline' }
-$nativeBootstrapRoot = & py @nativeBootstrapArgs
+$nativeBootstrapEncoding = [Console]::OutputEncoding
+[Console]::OutputEncoding = New-Object Text.UTF8Encoding $false
+try {
+    $nativeBootstrapRoot = & py @nativeBootstrapArgs
+} finally {
+    [Console]::OutputEncoding = $nativeBootstrapEncoding
+}
 if ($LASTEXITCODE -ne 0) { throw 'Pinned private tool preparation failed' }
 $nativeBootstrapRoot = $nativeBootstrapRoot.Trim()
 $env:PYTHONDONTWRITEBYTECODE = '1'

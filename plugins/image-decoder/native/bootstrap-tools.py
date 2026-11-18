@@ -12,6 +12,7 @@ import shutil
 import stat
 import sys
 import tarfile
+import time
 import urllib.request
 import uuid
 import zipfile
@@ -19,6 +20,12 @@ import zipfile
 MAX_DOWNLOAD_BYTES = 16 * 1024 * 1024
 MAX_EXTRACT_BYTES = 64 * 1024 * 1024
 MAX_ENTRIES = 8192
+# Windows refuses to rename a directory while a file below it is open, and antivirus
+# software briefly holds just-written executables. Waits total 12.7 s.
+PUBLISH_RETRY_DELAYS = (0.1, 0.2, 0.4, 0.8, 1.6, 3.2, 6.4) if os.name == 'nt' else ()
+# A scanner's open handle fails the rename with ERROR_ACCESS_DENIED, ERROR_SHARING_VIOLATION
+# or ERROR_LOCK_VIOLATION; other PermissionErrors (a write-protected volume) fail at once.
+PUBLISH_RETRY_WINERRORS = (5, 32, 33)
 
 @dataclass(frozen=True)
 class Artifact:
@@ -178,6 +185,19 @@ def restore_timestamps(root, entries):
             options = {"follow_symlinks": False} if os.utime in os.supports_follow_symlinks else {}
             os.utime(root / name, (mtime, mtime), **options)
 
+
+def publish(staging, destination):
+    for delay in PUBLISH_RETRY_DELAYS:
+        try:
+            staging.rename(destination)
+            return
+        except PermissionError as error:
+            if getattr(error, 'winerror', None) not in PUBLISH_RETRY_WINERRORS:
+                raise
+            time.sleep(delay)
+    staging.rename(destination)
+
+
 def unpack(root, artifact, data):
     entries = archive_entries(artifact, data)
     tools = directory(root, 'tools')
@@ -205,7 +225,7 @@ def unpack(root, artifact, data):
                 if os.name != 'nt':
                     target.chmod((mode & 0o755) or 0o644)
         restore_timestamps(staging, entries)
-        staging.rename(destination)
+        publish(staging, destination)
     finally:
         # Only our freshly created, verified in-root staging directory may be removed.
         if staging.exists() and staging.resolve() == staging and staging.parent == tools:

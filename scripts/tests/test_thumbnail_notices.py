@@ -2,8 +2,10 @@
 
 import importlib.util
 import json
+import os
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest import mock
@@ -11,6 +13,21 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts/thumbnail-notices.py"
+# Runs the command line in a child Python. Only Cargo is replaced: a process replays the
+# fixture metadata's raw UTF-8 bytes, so the script's own decoding of the output is real.
+REPLAYING_CARGO = """import importlib.util, pathlib, subprocess, sys
+script, repository, *arguments = sys.argv[1:]
+spec = importlib.util.spec_from_file_location("thumbnail_notices", script)
+notices = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(notices)
+run = subprocess.run
+def cargo(command, **options):
+    plugin = pathlib.Path(command[command.index("--manifest-path") + 1]).parent.name
+    replay = "import sys; sys.stdout.buffer.write(open(sys.argv[1], 'rb').read())"
+    return run([sys.executable, "-c", replay, str(pathlib.Path(repository) / (plugin + ".json"))], **options)
+subprocess.run = cargo
+notices.main(arguments, repository=pathlib.Path(repository))
+"""
 
 
 class ThumbnailNoticeTests(unittest.TestCase):
@@ -179,6 +196,26 @@ class ThumbnailNoticeTests(unittest.TestCase):
             with self.assertRaises(subprocess.CalledProcessError) as failure:
                 self.notices.main(["--config", str(config), "--output", str(self.output)], repository=self.root)
         self.assertEqual(failure.exception.returncode, 47)
+
+    @unittest.skipUnless(os.name == "nt", "Python before 3.15 decodes text output in the Windows ANSI code page")
+    def test_cli_decodes_cargo_metadata_below_a_non_ascii_path_as_utf8(self):
+        # A crates.io dependency below a non-ASCII CARGO_HOME, such as a user profile. Cargo
+        # writes UTF-8 JSON, which Python's pre-3.15 default (-X utf8=0) decoded as ANSI.
+        home = self.root / "Jiří 文档/.cargo/registry/src/index.crates.io-0000"
+        self.dependency(self.package("codec", directory=home / "codec-1.2.3",
+                                     files={"LICENSE-MIT": "Codec terms\n"}))
+        for plugin in self.plugins:
+            (self.root / f"{plugin}.json").write_bytes(
+                json.dumps(self.metadata[plugin], ensure_ascii=False).encode("utf-8"))
+        config = self.root / "sdk.toml"
+        config.write_text("# Fixture SDK config\n", encoding="utf-8")
+        result = subprocess.run(
+            [sys.executable, "-X", "utf8=0", "-B", "-c", REPLAYING_CARGO, str(SCRIPT), str(self.root),
+             "--config", str(config), "--output", str(self.output)],
+            capture_output=True, encoding="utf-8", errors="replace", timeout=60)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        licenses = self.output / "midnight-thumbnail-image/licenses/codec-1.2.3"
+        self.assertEqual((licenses / "LICENSE-MIT").read_text(encoding="utf-8"), "Codec terms\n")
 
 
 if __name__ == "__main__":

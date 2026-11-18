@@ -1,13 +1,16 @@
 """Exercise the real package wrapper with inert compiler/plugin fixtures."""
+import json
 import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
 PWSH = shutil.which("pwsh")
+WRAPPER_SCRIPTS = ("build-image-viewer.ps1", "utf8-native-output.ps1")
 
 
 class ImageViewerBuildWrapperTests(unittest.TestCase):
@@ -31,8 +34,8 @@ class ImageViewerBuildWrapperTests(unittest.TestCase):
         self.powershell_case("pdf", False)
 
     def powershell_case(self, viewer, fail):
-        shutil.copyfile(ROOT / "scripts/build-image-viewer.ps1",
-                        self.root / "scripts/build-image-viewer.ps1")
+        for name in WRAPPER_SCRIPTS:
+            shutil.copyfile(ROOT / "scripts" / name, self.root / "scripts" / name)
         plugin = self.root / f"plugins/midnight-viewer-{viewer}/scripts"
         plugin.mkdir(parents=True, exist_ok=True)
         native_parameter = ", [switch]$NativeOffline" if viewer == "image" else ""
@@ -98,6 +101,104 @@ class ImageViewerBuildWrapperTests(unittest.TestCase):
                 cwd=self.root, env=environment, capture_output=True, text=True,
                 timeout=30, check=False)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+
+@unittest.skipUnless(os.name == "nt", "Windows PowerShell wrapper")
+class ImageViewerWorkerSdkWindows(unittest.TestCase):
+    """The real wrapper packages the worker SDK; only Cargo and the plugin build are stubs."""
+
+    def setUp(self):
+        temporary = ROOT / "_build/tmp"
+        temporary.mkdir(parents=True, exist_ok=True)
+        owner = tempfile.TemporaryDirectory(prefix="image sdk ", dir=temporary)
+        self.addCleanup(owner.cleanup)
+        self.owner = Path(owner.name)
+        # cmd.exe reads a batch file in the console code page: keep the stubs on an ASCII path.
+        tools = self.owner / "bin"
+        tools.mkdir()
+        self.log = self.owner / "cargo.jsonl"
+        self.sdk_report = self.owner / "plugin-sdk.txt"
+        (tools / "cargo.py").write_text(
+            "import json, os, pathlib, sys\n"
+            "arguments = sys.argv[1:]\n"
+            "with open(os.environ['IMAGE_TEST_LOG'], 'a', encoding='utf-8') as log:\n"
+            "    log.write(json.dumps(arguments) + '\\n')\n"
+            "if 'run' in arguments:\n"
+            "    # Like worker-packages: a new bundle, reported in UTF-8 whatever the console code page.\n"
+            "    bundle = pathlib.Path(arguments[-1]) / 'worker-sdk-1'\n"
+            "    (bundle / '.cargo').mkdir(parents=True)\n"
+            "    (bundle / '.cargo/registry.toml').write_text('# worker SDK fixture\\n')\n"
+            "    sys.stdout.buffer.write(b'Public worker API/SDK release bundle: ' + str(bundle).encode() + b'\\n')\n",
+            encoding="utf-8")
+        (tools / "cargo.cmd").write_text(f'@"{sys.executable}" "{tools / "cargo.py"}" %*\n')
+        self.environment = dict(os.environ, PATH=str(tools) + os.pathsep + os.environ["PATH"],
+                                IMAGE_TEST_LOG=str(self.log), IMAGE_TEST_SDK=str(self.sdk_report))
+        for name in ("CARGO_TARGET_DIR", "MIDNIGHT_IMAGE_VIEWER_SDK_CONFIG", "MIDNIGHT_VIEWERS_OFFLINE"):
+            self.environment.pop(name, None)
+
+    def checkout(self, parent):
+        checkout = parent / "checkout"
+        (checkout / "scripts").mkdir(parents=True)
+        for name in WRAPPER_SCRIPTS:
+            shutil.copyfile(ROOT / "scripts" / name, checkout / "scripts" / name)
+        for directory in ("api/tools/package", "worker-api", "thumbnail-api", "filesystem-api", "image-viewer-api"):
+            (checkout / directory).mkdir(parents=True)
+            (checkout / directory / "source").write_text("source fixture\n")
+        plugin = checkout / "plugins/midnight-viewer-image/scripts"
+        plugin.mkdir(parents=True)
+        (plugin / "build.ps1").write_text(
+            "param($SdkConfig, $BuildRoot, $OutputDirectory, $Profile, [switch]$NativeOffline)\n"
+            "[IO.File]::WriteAllText($env:IMAGE_TEST_SDK, $SdkConfig)\n", encoding="utf-8")
+        return checkout
+
+    def run_wrapper(self, checkout, code_page=0):
+        """Run the wrapper from a console of its own, set to `code_page` unless it is 0."""
+        report = self.owner / "code-page.txt"
+        driver = self.owner / "driver.ps1"
+        driver.write_text(
+            "param([string]$Script, [string]$App, [string]$Report, [int]$CodePage)\n"
+            "if ($CodePage) { [Console]::OutputEncoding = [Text.Encoding]::GetEncoding($CodePage) }\n"
+            "try { & $Script -AppDirectory $App }\n"
+            "finally { [IO.File]::WriteAllText($Report, [string][Console]::OutputEncoding.CodePage) }\n",
+            encoding="utf-8")
+        # The code page belongs to the console, not to the process: CREATE_NO_WINDOW gives
+        # the wrapper a console of its own and leaves the test runner's console untouched.
+        result = subprocess.run(
+            [PWSH or "powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(driver),
+             "-Script", str(checkout / "scripts/build-image-viewer.ps1"), "-App", str(checkout / "_build/app"),
+             "-Report", str(report), "-CodePage", str(code_page)],
+            cwd=checkout, env=self.environment, capture_output=True, encoding="utf-8", errors="replace",
+            timeout=120, creationflags=subprocess.CREATE_NO_WINDOW)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        return report.read_text()
+
+    def cargo_calls(self, command):
+        calls = [json.loads(line) for line in self.log.read_text(encoding="utf-8").splitlines()]
+        return [call for call in calls if command in call]
+
+    def test_a_fresh_checkout_packages_the_sdk_once_and_caches_it_beside_the_viewer_build(self):
+        # No other module's build directory exists yet, as on a first build.
+        checkout = self.checkout(self.owner)
+        for _ in range(2):
+            self.run_wrapper(checkout)
+        self.assertEqual(len(self.cargo_calls("run")), 1)
+        bundle = checkout / "_build/image-viewer/releases/worker-sdk-1"
+        state = json.loads((checkout / "_build/image-viewer/sdk-state.json").read_text())
+        self.assertEqual(Path(state["config"]), bundle / ".cargo/registry.toml")
+        # Other modules' caches are only read.
+        self.assertFalse((checkout / "_build/pdf-viewer").exists())
+        self.assertFalse((checkout / "_build/thumbnailers").exists())
+        self.assertEqual(Path(self.sdk_report.read_text(encoding="utf-8")), bundle / ".cargo/registry.toml")
+
+    def test_worker_sdk_below_a_non_ascii_path_survives_a_legacy_console_code_page(self):
+        # worker-packages prints its bundle path in UTF-8, but PowerShell decodes native
+        # output with the console code page, so the SDK below a non-ASCII checkout was lost.
+        checkout = self.checkout(self.owner / "Jiří 文档")
+        self.assertEqual(self.run_wrapper(checkout, 850), "850", "The caller's console encoding was not restored")
+        config = checkout / "_build/image-viewer/releases/worker-sdk-1/.cargo/registry.toml"
+        self.assertEqual(Path(self.sdk_report.read_text(encoding="utf-8")), config)
+        plugin_fetch = self.cargo_calls("fetch")[-1]
+        self.assertEqual(Path(plugin_fetch[plugin_fetch.index("--config") + 1]), config)
 
 
 if __name__ == "__main__":
