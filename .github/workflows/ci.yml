@@ -370,11 +370,21 @@ jobs:
             bash "$plugin/scripts/build.sh" $sdk $build $package release --test --offline
           }
           if ($LASTEXITCODE -ne 0) { throw 'Independent archive tests or packaging failed' }
+          # The plugin's owned format and cooperative-cancellation fixtures for the host's
+          # real-worker qualification in the check job (the test binary is already built).
+          $env:MIDNIGHT_ARCHIVE_FIXTURES = Join-Path $env:GITHUB_WORKSPACE '_build/archive-fixtures'
+          cargo test --config $sdk --manifest-path "$plugin/Cargo.toml" --test worker_fixtures --locked --offline -- --ignored
+          if ($LASTEXITCODE -ne 0) { throw 'Archive worker fixture export failed' }
       - uses: actions/upload-artifact@v4
         with:
           name: filesystem-${{ runner.os }}-archive
           if-no-files-found: error
           path: _build/archive-ci/package/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: archive-fixtures-${{ runner.os }}
+          if-no-files-found: error
+          path: _build/archive-fixtures/
 
   filesystem-libraries:
     strategy:
@@ -494,6 +504,10 @@ jobs:
           pattern: filesystem-${{ runner.os }}-*
           merge-multiple: true
           path: _build/filesystem-packages
+      - uses: actions/download-artifact@v4
+        with:
+          name: archive-fixtures-${{ runner.os }}
+          path: _build/archive-fixtures
       - uses: ./.github/actions/private-test-installation
       - if: runner.os == 'Linux'
         uses: ./.github/actions/linux-build-prerequisites
@@ -578,6 +592,24 @@ jobs:
         run: python -B scripts/ci-workspace-tests.py run midnight-image-viewer-host test:pdf_native --ignored --test-threads=1
       - name: Restricted archive worker listing, source validation and cancellation
         run: python -B scripts/ci-workspace-tests.py run midnight-filesystem-host test:worker --ignored --test-threads=1
+      - name: Installed archive worker streaming, all formats, cooperative cancellation and package discovery
+        shell: pwsh
+        run: |
+          # The installed archive package, the archive job's exported fixtures and a
+          # generated ZIP above the former 64 MiB source ceiling.
+          $env:ARCHIVE_CAPTURE_INSTALLATION = $env:HOST_TEST_INSTALL_ROOT
+          $env:MIDNIGHT_ARCHIVE_FIXTURES = Join-Path $env:GITHUB_WORKSPACE '_build/archive-fixtures'
+          $env:MIDNIGHT_ARCHIVE_TEST_ZIP = Join-Path $env:GITHUB_WORKSPACE '_build/archive-test.zip'
+          python -B scripts/archive-test-zip.py $env:MIDNIGHT_ARCHIVE_TEST_ZIP
+          if ($LASTEXITCODE -ne 0) { throw 'Large ZIP fixture generation failed' }
+          python -B scripts/ci-workspace-tests.py run midnight-filesystem-host test:streaming_worker --ignored --test-threads=1
+          if ($LASTEXITCODE -ne 0) { throw 'Installed archive worker streaming qualification failed' }
+          python -B scripts/ci-workspace-tests.py run midnight-filesystem-host lib captured_source_tests:: --ignored --test-threads=1
+          if ($LASTEXITCODE -ne 0) { throw 'Installed archive worker pathless content failed' }
+          python -B scripts/ci-workspace-tests.py run midnight-filesystem-host test:discovery_kinds --ignored --test-threads=1
+          if ($LASTEXITCODE -ne 0) { throw 'Protected filesystem package discovery failed' }
+      # -noreset: an X server resets when its last client disconnects and refuses
+      # connections during the reset, such as the first one of the next test.
       - name: Native X11 drag and drop (isolated display)
         if: runner.os == 'Linux'
         shell: bash
@@ -585,8 +617,19 @@ jobs:
           set -euo pipefail
           executable=$(python3 -B scripts/ci-workspace-tests.py artifact midnight-platform-linux lib)
           cd crates/midnight-platform-linux
-          xvfb-run -a -s "-screen 0 1280x1024x24 -nolisten tcp" \
+          xvfb-run -a -s "-screen 0 1280x1024x24 -nolisten tcp -noreset" \
             env MIDNIGHT_DND_TEST_ISOLATED=1 "$executable" file_drag_drop:: --ignored --test-threads=1
+      - name: Native X11 clipboard (isolated display)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          executable=$(python3 -B scripts/ci-workspace-tests.py artifact midnight-platform-linux lib)
+          cd crates/midnight-platform-linux
+          # Without WAYLAND_DISPLAY, arboard cannot reach a real desktop clipboard.
+          xvfb-run -a -s "-screen 0 1280x1024x24 -nolisten tcp -noreset" \
+            env -u WAYLAND_DISPLAY MIDNIGHT_CLIPBOARD_TEST_ISOLATED=1 "$executable" \
+            clipboard::tests::x11_ file_clipboard::x11::tests:: --ignored --test-threads=1
 
   # The fat-LTO release build runs beside the test job instead of after it.
   release:
