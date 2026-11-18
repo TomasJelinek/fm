@@ -32,7 +32,7 @@ each with its trigger. The last batch merged at `cd66e919` with the follow-up
 `d0f44c55`: explicit bidirectional controls in shown names and paths, the event-woken
 thumbnail pulse and the comparison font restored into open comparators (UI and
 Viewers below). This documentation pass and the readable Recycle Bin refusal
-(`4ab0b16f`, merged at `ac4c2e87`) followed.
+(`9d25722e` and `4ab0b16f`, merged at `ac4c2e87`) followed.
 
 Changes by area (the linked contracts describe the current behavior):
 
@@ -140,9 +140,11 @@ Changes by area (the linked contracts describe the current behavior):
   tests name the qualified NTFS volume they need. Beyond the clipboard
   transfers named in the 17 November entry below, the root F5/F6 transfers of
   `tree_move` now also hold scalar watch hints through the transfer terminal ([test
-  execution](developer/TEST_EXECUTION.md)). Running each Windows test executable
-  alone took 238.5 s at `d0f44c55`, against 2,147.5 s at main `3a27eeb2`, with 6,155
-  instead of 5,373 passing tests ([test execution
+  execution](developer/TEST_EXECUTION.md)). Running each Windows workspace test
+  executable alone, one after another, took 238.5 s at `d0f44c55` against 2,103.9 s
+  for the same kinds of targets at main `3a27eeb2` (2,147.5 s with the 29 examples
+  that only that run built), with 6,155 instead of 5,364 passing tests ([test
+  execution
   time](verification/2026-11-18-test-execution-time.md)).
 - **CI and build.** New `viewer-conformance` and `thumbnail-image` jobs; the `check`
   job runs the isolated X11 drag/drop and clipboard tests (Xvfb `-noreset`), the
@@ -189,17 +191,17 @@ batch merged after it at `cd66e919` passed its package's Windows runs (core, UI,
 viewer UI, comparator and explorer tests); with the follow-up `d0f44c55`, Windows
 workspace Clippy reported no warnings and the tests of the compare engine,
 comparator, viewer UI and explorer gave 350 passed / 0 failed / 22 ignored (logs
-`b10e-final-*`). At `d0f44c55` the timed Windows run passed every test: 6,155 passed
+`b10e-final-*`). At `d0f44c55` no test failed in the timed Windows run: 6,155 passed
 / 0 failed / 127 ignored in 66 test executables ([test execution
 time](verification/2026-11-18-test-execution-time.md)). At `ac4c2e87`, after this
 pass's Recycle Bin merge, `cargo fmt --check` and workspace Clippy reported nothing
 on Windows and the workspace tests gave 6,156 passed / 0 failed / 127 ignored in 88
-groups (logs `vfinal-win-*`); on Linux workspace Clippy reported no warnings, and on
-an otherwise idle machine the workspace tests gave 6,004 passed / 0 failed / 128
+groups (logs `vfinal-win-*`); on Linux workspace Clippy reported no warnings, and in
+a third run the workspace tests gave 6,004 passed / 0 failed / 128
 ignored in 85 groups (log `vfinal-linux-test3.log`). The two earlier Linux runs of
-`ac4c2e87`, made while the Windows suite ran beside them, each had one timeout, a
-different test each time; both tests passed five isolated runs and the other runs
-(TEST-03).
+`ac4c2e87` each had one timeout, a different test each time: the first while Windows
+Clippy and the Windows tests ran beside it, the second after the Windows suite had
+finished; both tests passed five isolated runs and the other full runs (TEST-03).
 
 Not established by this checkpoint:
 
