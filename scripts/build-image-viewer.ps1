@@ -73,7 +73,9 @@ try {
             $line = @($output | Where-Object { $_.ToString().StartsWith($prefix) }) | Select-Object -Last 1
             if (-not $line) { throw 'Worker SDK packager did not report its output directory' }
             $WorkerSdkConfig = Join-Path ($line.ToString().Substring($prefix.Length)) '.cargo/registry.toml'
-            @{ stamp = $stamp; config = $WorkerSdkConfig } | ConvertTo-Json | Set-Content -LiteralPath $statePath
+            # Record the SDK in this viewer's own cache; another module's directory may not exist.
+            @{ stamp = $stamp; config = $WorkerSdkConfig } | ConvertTo-Json |
+                Set-Content -LiteralPath (Join-Path $buildRoot 'sdk-state.json')
         }
     }
     $WorkerSdkConfig = (Resolve-Path -LiteralPath $WorkerSdkConfig).Path
