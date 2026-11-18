@@ -3,8 +3,8 @@
 //! that creation covers the later changes beneath the directory and its removal in the
 //! same change, so a failure after the first namespace change removes the empty
 //! directory without another reservation. Also the empty stage of a failed capture that
-//! cannot be removed: it is kept, then reused (announced again, which peers can refuse)
-//! or handed to the job's cleanup.
+//! cannot be removed: it is kept, then reused (announced again, as is its removal after
+//! another failure, which peers can refuse) or handed to the job's cleanup.
 use super::*;
 use midnight_core::{
     TransferNamespacePin, TransferNamespaceProbe, TransferNativeMoveOutcome, TransferPublication,
@@ -271,6 +271,79 @@ fn a_repeated_capture_refused_at_the_stage_it_reuses_keeps_that_stage() {
         assert_eq!(fs::read_dir(&stage).unwrap().count(), 0);
         assert_eq!(fs::read(source).unwrap(), b"original");
         // The engine repeats the capture once a refusing peer changes.
+        let TransferMoveCaptureOutcome::Captured { recovery, .. } =
+            capture.capture(&Cancellation::default()).unwrap()
+        else {
+            panic!("the repeated capture moves the source");
+        };
+        assert_eq!(recovery.path, stage.join("source"));
+        assert_eq!(move_stages(parent), vec![stage.clone()], "no second stage");
+        capture.restore().unwrap();
+        let cleanup = capture.take_stage_cleanup().unwrap();
+        assert_eq!(cleanup.path(), stage);
+        drop(capture);
+        cleanup.cleanup().unwrap();
+        assert!(move_stages(parent).is_empty());
+        assert_eq!(fs::read(source).unwrap(), b"original");
+    });
+}
+
+#[test]
+fn a_repeated_capture_that_fails_again_removes_the_stage_it_reused() {
+    run(|registry, parent, source, capture| {
+        let stage = kept_stage(parent, source, &capture);
+        fs::remove_file(stage.join("foreign")).unwrap();
+        let cancel = Cancellation::default();
+        let failure = capture
+            .capture_with(&cancel, || cancel.cancel(), || {})
+            .unwrap_err();
+        assert_eq!(failure.kind, ErrorKind::Interrupted, "{failure:?}");
+        assert!(!registry.refused.load(Ordering::SeqCst));
+        assert!(
+            move_stages(parent).is_empty(),
+            "removed in the repeated capture's change"
+        );
+        assert!(capture.take_stage_cleanup().is_none());
+        assert!(!capture.restoration_completed());
+        assert_eq!(fs::read(source).unwrap(), b"original");
+    });
+}
+
+#[test]
+fn a_repeated_capture_whose_cleanup_is_refused_keeps_the_stage_it_reused() {
+    run(|registry, parent, source, capture| {
+        let stage = kept_stage(parent, source, &capture);
+        fs::remove_file(stage.join("foreign")).unwrap();
+        let cancel = Cancellation::default();
+        let failure = capture
+            .capture_with(
+                &cancel,
+                || {
+                    // The repeated capture has announced the reused stage; it fails before
+                    // moving anything, and the stage was reserved in an earlier change, so
+                    // its removal announces it again. Peers refuse that.
+                    registry.refuse_name(stage.file_name().unwrap());
+                    cancel.cancel();
+                },
+                || {},
+            )
+            .unwrap_err();
+        assert_eq!(failure.kind, ErrorKind::Interrupted, "{failure:?}");
+        assert!(
+            registry.refuse_name.lock().unwrap().is_none(),
+            "the removal of the reused stage was refused"
+        );
+        assert!(
+            registry.refused.load(Ordering::SeqCst),
+            "no later reservation replaced the refusal that the engine retries on"
+        );
+        assert_eq!(
+            move_stages(parent),
+            vec![stage.clone()],
+            "the stage is kept"
+        );
+        assert_eq!(fs::read_dir(&stage).unwrap().count(), 0);
+        assert_eq!(fs::read(source).unwrap(), b"original");
         let TransferMoveCaptureOutcome::Captured { recovery, .. } =
             capture.capture(&Cancellation::default()).unwrap()
         else {

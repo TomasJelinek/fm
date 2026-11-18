@@ -4,7 +4,8 @@
 //! directory and its removal in the same turn, so peers can refuse such a turn only
 //! before its first namespace change. Also the empty stage of a failed capture that
 //! cannot be removed (another program created an entry in it): it is kept, then
-//! reused or handed to the job's cleanup.
+//! reused (reserved again by the repeated capture's rename, or else by its removal
+//! after another failure, which peers can refuse) or handed to the job's cleanup.
 use super::*;
 use midnight_core::{
     EntryKind, FsError, TransferNamespacePin, TransferNamespaceProbe, TransferNativeMoveOutcome,
@@ -413,6 +414,82 @@ fn a_stage_kept_after_a_failed_capture_is_handed_to_the_job_cleanup() {
     cleanup.cleanup().unwrap();
     assert!(move_stages(&parent).is_empty());
     assert_eq!(fs::read(&source).unwrap(), b"original");
+}
+
+#[test]
+fn a_repeated_capture_that_fails_again_removes_the_stage_it_reused() {
+    run(
+        "a_repeated_capture_that_fails_again_removes_the_stage_it_reused",
+        |registry, parent, source, capture| {
+            let stage = kept_stage(parent, source, &capture);
+            fs::remove_file(stage.join("foreign")).unwrap();
+            let cancel = Cancellation::default();
+            let failure = capture
+                .capture_with(&cancel, || cancel.cancel(), || {})
+                .unwrap_err();
+            assert_eq!(failure.kind, ErrorKind::Interrupted, "{failure:?}");
+            assert!(!registry.refused.load(Ordering::SeqCst));
+            assert!(
+                move_stages(parent).is_empty(),
+                "removed in the repeated capture's turn"
+            );
+            assert!(capture.take_stage_cleanup().is_none());
+            assert!(!capture.restoration_completed());
+            assert_eq!(fs::read(source).unwrap(), b"original");
+        },
+    );
+}
+
+#[test]
+fn a_repeated_capture_whose_cleanup_is_refused_keeps_the_stage_it_reused() {
+    run(
+        "a_repeated_capture_whose_cleanup_is_refused_keeps_the_stage_it_reused",
+        |registry, parent, source, capture| {
+            let stage = kept_stage(parent, source, &capture);
+            fs::remove_file(stage.join("foreign")).unwrap();
+            let kept = vec![stage.file_name().unwrap().to_owned()];
+            let cancel = Cancellation::default();
+            let failure = capture
+                .capture_with(
+                    &cancel,
+                    || {
+                        // The repeated capture fails before its rename into the reused
+                        // stage, which this turn has not reserved yet, so the stage's
+                        // removal reserves it again. Peers refuse that.
+                        registry.refuse_next.store(true, Ordering::SeqCst);
+                        cancel.cancel();
+                    },
+                    || {},
+                )
+                .unwrap_err();
+            assert_eq!(failure.kind, ErrorKind::Interrupted, "{failure:?}");
+            assert!(
+                !registry.refuse_next.load(Ordering::SeqCst),
+                "the removal of the reused stage reserved it again"
+            );
+            assert!(
+                registry.refused.load(Ordering::SeqCst),
+                "no later reservation replaced the refusal that the engine retries on"
+            );
+            assert_eq!(move_stages(parent), kept, "the stage is kept, not leaked");
+            assert_eq!(fs::read_dir(&stage).unwrap().count(), 0);
+            assert_eq!(fs::read(source).unwrap(), b"original");
+            let TransferMoveCaptureOutcome::Captured { recovery, .. } =
+                capture.capture(&Cancellation::default()).unwrap()
+            else {
+                panic!("the repeated capture moves the source");
+            };
+            assert_eq!(recovery.path, stage.join("source"));
+            assert_eq!(move_stages(parent), kept, "no second stage");
+            capture.restore().unwrap();
+            let cleanup = capture.take_stage_cleanup().unwrap();
+            assert_eq!(cleanup.path(), stage);
+            drop(capture);
+            cleanup.cleanup().unwrap();
+            assert!(move_stages(parent).is_empty());
+            assert_eq!(fs::read(source).unwrap(), b"original");
+        },
+    );
 }
 
 #[test]
