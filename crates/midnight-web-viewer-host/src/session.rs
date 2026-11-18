@@ -6,12 +6,14 @@ use std::{
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, AtomicU64, Ordering},
-        mpsc,
     },
     thread::JoinHandle,
 };
 #[path = "session_actor.rs"]
 mod actor;
+
+/// Consumer commands the session queues for its actor.
+const QUEUED_COMMANDS: usize = 64;
 
 #[derive(Default)]
 struct Output {
@@ -62,6 +64,18 @@ impl Output {
         });
         true
     }
+    /// Where the retained frame belongs among the queued events in the browser's order
+    /// (document, then sequence). The queue keeps that order: the actor queues each
+    /// document's events in sequence and documents in order, a replacing State is the
+    /// newest event, and a Policy change clears the queue.
+    fn frame_position(&self) -> Option<usize> {
+        let frame = self.frame.as_ref()?;
+        let order = |event: &api::Event| (event.header.document, event.header.sequence);
+        Some(
+            self.events
+                .partition_point(|event| order(event) < order(frame)),
+        )
+    }
     /// End the output of a session the browser closed with the protocol's Closed event. The
     /// output the browser sent before it keeps the browser's order, the newest frame
     /// included, so an error sent after that frame stays the newest output (and the reason).
@@ -71,12 +85,9 @@ impl Output {
         if std::mem::replace(&mut self.ended, true) {
             return false;
         }
-        if let Some(frame) = self.frame.take() {
-            // The actor queues each document's events in sequence, and documents in order.
-            let order = |event: &api::Event| (event.header.document, event.header.sequence);
-            let at = self
-                .events
-                .partition_point(|event| order(event) < order(&frame));
+        if let Some(at) = self.frame_position()
+            && let Some(frame) = self.frame.take()
+        {
             self.events.insert(at, frame);
         }
         self.events.push_back(api::Event {
@@ -122,15 +133,55 @@ fn supervise(
     stopped.store(true, Ordering::Release);
 }
 
+/// Run `actor` under `supervise` on the session's thread. Owning `shared` and `actor`, it
+/// drops every handle the thread holds when it returns, before `Exit` publishes the exit.
+fn supervised(shared: Shared, actor: impl FnOnce(&Shared) -> Result<actor::End, String>) {
+    supervise(
+        || actor(&shared),
+        &shared.output,
+        &shared.closed,
+        &shared.document,
+        &*shared.wake,
+    );
+}
+
+/// What a session shares with its actor thread.
+#[derive(Clone)]
+struct Shared {
+    signal: Arc<actor::Signal>,
+    output: Arc<Mutex<Output>>,
+    /// The session was closed or stopped: `send` refuses commands.
+    closed: Arc<AtomicBool>,
+    /// The newest document the consumer requested.
+    document: Arc<AtomicU64>,
+    wake: Arc<dyn Fn() -> bool + Send + Sync>,
+}
+
+/// Publishes the actor thread's exit, then wakes the consumer. Created first on that
+/// thread, it is dropped last, also when the thread unwinds, so `finished` is true when
+/// the consumer handles this wake.
+struct Exit {
+    exited: Arc<AtomicBool>,
+    wake: Arc<dyn Fn() -> bool + Send + Sync>,
+}
+impl Drop for Exit {
+    fn drop(&mut self) {
+        self.exited.store(true, Ordering::Release);
+        (self.wake)();
+    }
+}
+
 /// Bounded nonblocking command endpoint. Construction, destruction and drain belong on the
 /// viewer backend; the frontend talks only to its existing ViewerSession queue.
 pub struct Session {
-    input: Arc<Mutex<midnight_web_viewer_sdk::CommandQueue>>,
+    signal: Arc<actor::Signal>,
     sequence: AtomicU64,
     output: Arc<Mutex<Output>>,
     closed: Arc<AtomicBool>,
     document: Arc<AtomicU64>,
     wake: Arc<dyn Fn() -> bool + Send + Sync>,
+    /// The actor thread published its exit (see `Exit`).
+    exited: Arc<AtomicBool>,
     thread: Option<JoinHandle<()>>,
 }
 
@@ -142,53 +193,66 @@ impl Session {
         viewport: api::Viewport,
         wake: Arc<dyn Fn() -> bool + Send + Sync>,
     ) -> Result<Self, String> {
-        let input = Arc::new(Mutex::new(
-            midnight_web_viewer_sdk::CommandQueue::new(64).map_err(|error| error.to_string())?,
-        ));
-        let receiver = input.clone();
-        let output = Arc::new(Mutex::new(Output::default()));
-        let closed = Arc::new(AtomicBool::new(false));
-        let stopped = closed.clone();
-        let document = Arc::new(AtomicU64::new(1));
-        let requested_document = document.clone();
-        let events = output.clone();
-        let actor_wake = wake.clone();
         let resources = resources.or_else(|| {
             source
                 .resources()
                 .map(|value| Arc::new(CapturedResources(value)) as Arc<dyn Resources>)
         });
+        Self::start(wake, move |shared| {
+            actor::run(provider, source, resources, viewport, shared)
+        })
+    }
+
+    /// A session whose actor runs over `transport` instead of a launched browser.
+    #[cfg(test)]
+    fn with_transport(
+        transport: actor::Transport,
+        source: CapturedFile,
+        resources: Option<Arc<dyn Resources>>,
+        viewport: api::Viewport,
+        limits: actor::Limits,
+        wake: Arc<dyn Fn() -> bool + Send + Sync>,
+    ) -> Result<Self, String> {
+        let store = crate::resources::Store::new(source, resources);
+        Self::start(wake, move |shared| {
+            actor::run_with(transport, store, viewport, shared, limits)
+        })
+    }
+
+    /// Run `actor` on the session's thread, supervised (see `supervise`). The thread
+    /// publishes its exit and wakes the consumer last (see `Exit`).
+    fn start(
+        wake: Arc<dyn Fn() -> bool + Send + Sync>,
+        actor: impl FnOnce(&Shared) -> Result<actor::End, String> + Send + 'static,
+    ) -> Result<Self, String> {
+        let shared = Shared {
+            signal: Arc::new(actor::Signal::new(QUEUED_COMMANDS)?),
+            output: Arc::default(),
+            closed: Arc::default(),
+            document: Arc::new(AtomicU64::new(1)),
+            wake,
+        };
+        let exited = Arc::new(AtomicBool::new(false));
+        let exit = (exited.clone(), shared.wake.clone());
+        let thread_shared = shared.clone();
         let thread = std::thread::Builder::new()
             .name("viewer-html".into())
             .spawn(move || {
-                supervise(
-                    || {
-                        actor::run(
-                            provider,
-                            source,
-                            resources,
-                            viewport,
-                            receiver,
-                            &events,
-                            &stopped,
-                            &requested_document,
-                            &actor_wake,
-                        )
-                    },
-                    &events,
-                    &stopped,
-                    &requested_document,
-                    &*actor_wake,
-                );
+                let _exit = Exit {
+                    exited: exit.0,
+                    wake: exit.1,
+                };
+                supervised(thread_shared, actor);
             })
             .map_err(|error| error.to_string())?;
         Ok(Self {
-            input,
+            signal: shared.signal,
             sequence: AtomicU64::new(1),
-            output,
-            closed,
-            document,
-            wake,
+            output: shared.output,
+            closed: shared.closed,
+            document: shared.document,
+            wake: shared.wake,
+            exited,
             thread: Some(thread),
         })
     }
@@ -234,17 +298,13 @@ impl Session {
                 value.checked_add(1)
             });
         let accepted = sequence.is_ok_and(|sequence| {
-            self.input.lock().is_ok_and(|mut queue| {
-                queue
-                    .push(api::Command {
-                        header: api::Header {
-                            session: 1,
-                            document: self.document.load(Ordering::Acquire),
-                            sequence,
-                        },
-                        kind: command,
-                    })
-                    .is_ok()
+            self.signal.push(api::Command {
+                header: api::Header {
+                    session: 1,
+                    document: self.document.load(Ordering::Acquire),
+                    sequence,
+                },
+                kind: command,
             })
         });
         if !accepted {
@@ -267,14 +327,18 @@ impl Session {
         }) {
             (self.wake)();
         }
+        self.signal.interrupt();
     }
 
-    /// Take queued output in order, then the newest frame. The session's end is its last
-    /// output, published once, and the wake called, before `send` refuses commands: when
-    /// the session stops for a failure (a panic included), one terminal error replaces its
-    /// pending output; when the browser closes it, the protocol's Closed event follows the
-    /// output the browser sent, in the browser's order. A close the consumer requests
-    /// publishes nothing.
+    /// Take queued output and the newest frame in the browser's order (document, then
+    /// sequence), at most `maximum` events. An error the browser sent after the frame is
+    /// drained after it, so it stays the newest output. A frame that would come after the
+    /// limit stays for a later drain, where a newer frame can still replace it. The
+    /// session's end is its last output, published once, and the wake called, before
+    /// `send` refuses commands: when the session stops for a failure (a panic included),
+    /// one terminal error replaces its pending output; when the browser closes it, the
+    /// protocol's Closed event follows the output the browser sent, in the browser's
+    /// order. A close the consumer requests publishes nothing.
     pub fn drain(&self, maximum: usize) -> Vec<api::Event> {
         let Ok(mut output) = self.output.lock() else {
             return Vec::new();
@@ -292,20 +356,29 @@ impl Session {
         {
             output.frame = None;
         }
-        let count = maximum.min(output.events.len());
-        let mut events: Vec<_> = output.events.drain(..count).collect();
-        if events.len() < maximum
-            && let Some(frame) = output.frame.take()
-        {
-            events.push(frame);
+        match output.frame_position() {
+            Some(at) if at < maximum => {
+                let mut events: Vec<_> = output.events.drain(..at).collect();
+                events.extend(output.frame.take());
+                let later = (maximum - at - 1).min(output.events.len());
+                events.extend(output.events.drain(..later));
+                events
+            }
+            _ => {
+                let count = maximum.min(output.events.len());
+                output.events.drain(..count).collect()
+            }
         }
-        events
     }
+    /// Stop the session. Its actor wakes at once and ends without publishing anything.
     pub fn close(&self) {
         self.closed.store(true, Ordering::Release);
+        self.signal.interrupt();
     }
+    /// The actor thread ended its work; dropping the session then only joins the thread's
+    /// return. The thread wakes the consumer once this is true.
     pub fn finished(&self) -> bool {
-        self.thread.as_ref().is_none_or(JoinHandle::is_finished)
+        self.thread.is_none() || self.exited.load(Ordering::Acquire)
     }
 }
 impl Drop for Session {
@@ -358,14 +431,13 @@ mod tests {
         wake: impl Fn() -> bool + Send + Sync + 'static,
     ) -> Session {
         Session {
-            input: Arc::new(Mutex::new(
-                midnight_web_viewer_sdk::CommandQueue::new(capacity).unwrap(),
-            )),
+            signal: Arc::new(actor::Signal::new(capacity).unwrap()),
             sequence: AtomicU64::new(1),
             output,
             closed,
             document: Arc::new(AtomicU64::new(1)),
             wake: Arc::new(wake),
+            exited: Arc::default(),
             thread: None,
         }
     }
@@ -425,6 +497,88 @@ mod tests {
         }
         assert_eq!(output.frame.as_ref().unwrap().header.sequence, 300);
         assert!(output.events.is_empty());
+    }
+    #[test]
+    fn a_frame_and_a_later_error_drain_in_the_browsers_order() {
+        let woken = Arc::new(AtomicU64::new(0));
+        let session = idle(&woken, 64);
+        let error = runtime("Chromium renderer terminated; reopen the document");
+        pending(&session, [frame(1), event(2, error.clone())]);
+        assert_eq!(
+            kinds(&session),
+            [frame(1).kind, error],
+            "the error stays the newest output, so the frame's status cannot replace it"
+        );
+    }
+    #[test]
+    fn a_frame_older_than_queued_events_is_drained_before_them() {
+        let woken = Arc::new(AtomicU64::new(0));
+        let session = idle(&woken, 64);
+        let found = api::EventKind::FindResult(api::FindResult {
+            request_sequence: 2,
+            matches: 3,
+            active: 1,
+            complete: true,
+        });
+        pending(
+            &session,
+            [
+                event(1, api::EventKind::Ready),
+                frame(2),
+                event(3, found.clone()),
+            ],
+        );
+        assert_eq!(
+            kinds(&session),
+            [api::EventKind::Ready, frame(2).kind, found]
+        );
+    }
+    #[test]
+    fn a_frame_past_the_drain_limit_stays_replaceable() {
+        let woken = Arc::new(AtomicU64::new(0));
+        let session = idle(&woken, 64);
+        let ready = |sequence| event(sequence, api::EventKind::Ready);
+        pending(&session, (1..=8).map(ready).chain([frame(9)]));
+        let order = |events: Vec<api::Event>| {
+            let frames = events.iter().map(|event| {
+                let frame = matches!(event.kind, api::EventKind::Frame(_));
+                (event.header.sequence, frame)
+            });
+            frames.collect::<Vec<_>>()
+        };
+        assert_eq!(
+            order(session.drain(4)),
+            [(1, false), (2, false), (3, false), (4, false)],
+            "the frame follows events beyond the limit, so it stays"
+        );
+        pending(&session, [frame(10)]);
+        assert_eq!(
+            order(session.drain(64)),
+            [(5, false), (6, false), (7, false), (8, false), (10, true)],
+            "a newer frame replaced the retained one"
+        );
+    }
+    #[test]
+    fn an_error_of_a_replaced_document_drains_ahead_of_the_new_documents_output() {
+        let woken = Arc::new(AtomicU64::new(0));
+        let session = idle(&woken, 64);
+        assert!(session.send(api::CommandKind::Policy(api::Policy::default())));
+        let current = |mut event: api::Event| {
+            event.header.document = 2;
+            event
+        };
+        // The actor admitted this error before the replacement; drain keeps old errors.
+        let stale = event(5, runtime("The document could not be opened"));
+        let error = runtime("Chromium renderer terminated; reopen the document");
+        pending(
+            &session,
+            [
+                stale.clone(),
+                current(frame(1)),
+                current(event(2, error.clone())),
+            ],
+        );
+        assert_eq!(kinds(&session), [stale.kind, frame(1).kind, error]);
     }
     #[test]
     fn a_browser_that_closes_itself_ends_the_output_once_and_wakes_the_consumer() {

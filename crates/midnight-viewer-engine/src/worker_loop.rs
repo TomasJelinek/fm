@@ -7,17 +7,18 @@ impl Worker {
         if self.web_backlog {
             return Some(Duration::ZERO);
         }
-        // A closing plugin session signals the end of its dispatcher (see `Worker::closing`),
-        // so only browser and image teardown is retried.
-        let closing = self.pending_open && !self.actors_finished();
-        (self.dirty || closing).then_some(RETRY)
+        // A pending opening needs no retry: a closing plugin session signals the end of its
+        // dispatcher (see `Worker::closing`), and closing browser and image actors wake this
+        // worker once they finished (see `actors_finished`).
+        self.dirty.then_some(RETRY)
     }
 
     pub(super) fn closings_finished(&self) -> bool {
         self.closing.as_ref().is_none_or(Session::is_closed) && self.actors_finished()
     }
 
-    /// Previous browser and image actors have finished closing. Their end has no wake.
+    /// Previous browser and image actors have finished closing. Each actor thread publishes
+    /// its end, then wakes this worker.
     fn actors_finished(&self) -> bool {
         self.closing_web
             .as_ref()

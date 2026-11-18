@@ -42,12 +42,21 @@ terminal error the host publishes for the refused command is drained in the same
 pass and replaces that report; later refusals are silent. A browser that closes the
 session itself is reported the same way without waiting for input: the host wakes the
 viewer and `Session::drain` delivers the protocol's Closed event after the pending
-output (an error stays ahead of it), while a session the viewer closes publishes no
-Closed event. The host retains at most one
+output, while a session the viewer closes publishes no Closed event. `Session::drain`
+returns the queued events and the one retained frame in the browser's order (document,
+then sequence), so an error the browser sent after a frame is drained after that frame
+and stays the newest output and the reported reason. The host retains at most one
 pending painted frame. Replaced document generations and
 viewport revisions cannot publish stale pixels. Transport budgets bound messages
 and viewport memory, not complete file sizes. Frame acknowledgements and close/EOF
-release ownership. No UI callback performs file reads, discovery or process waits.
+release ownership. The host acknowledges and drops a frame of an older viewport
+revision: a Resize it sends can cross a frame the browser has already painted. The SDK
+`Session` validator checks messages in the provider's transport order, where frames that
+follow a Resize carry its revision. No UI callback performs file reads, discovery or
+process waits. The host session actor and its watchdog block until a command, browser
+output, a stop or a watchdog deadline (5 s after the latest write to the browser
+started, which ends a write still blocked then, and 30 s until Ready), so an idle open
+document causes no periodic host wakeups.
 
 The application's opt-in `Service::open_with_layout` path uses app-private
 `midnight_core::viewer` messages. `ViewerOutput::LayoutSelected` announces a
@@ -85,7 +94,11 @@ Windows runs the matching official CEF bootstrap with the same-basename client
 DLL and the exact five-argument `RunWinMain` sandbox ABI. It passes the sandbox
 state to subprocess dispatch and initialization. A host kill-on-close job owns
 up to 32 processes and 2 GiB aggregate committed memory. Browser profile files live
-in a fresh private session directory and are removed after process cleanup; the
+in a fresh private session directory. After the browser tree is terminated, the host
+waits up to two seconds for every browser process to exit (Windows until the job
+reports no active process, Linux until the session's cgroup is empty) and then removes
+the directory. A directory that could not be removed then, or one left by a crashed
+session, is removed when a later application process starts its first browser. The
 user's normal browser profile is never used. Linux has its own launcher and
 requires Linux 5.14+ with cgroup v2 and an existing writable user delegation with
 `memory` and `pids` already enabled. It creates an owned child cgroup with 2 GiB
@@ -100,6 +113,14 @@ under WSLg XWayland; see the [Linux report](../verification/2026-11-10-html-linu
 IME composition/commit pass CEF's required invalid replacement range (a synthetic
 commit is covered by the opt-in native fixture); physical IME input, native Chromium
 Wayland and other display/system policies still need their own qualification. Windows measurements do not establish Linux frame pacing.
+The event-driven host session was qualified with real Chromium on Windows only: an idle
+open document caused about 174 host context switches per second before and under 1
+after. While a document is open, the provider still waits at most 2 ms for a command
+before it pumps CEF again. On Linux that is about every 2 ms (not measured). On an idle
+Windows document it is about 64 times per second, because the wait rounds up to the
+timer period (15.6 ms when measured). CEF's external message pump measured only about 3x
+fewer idle pumps on Windows and is not used
+([idle-wakeup record](../verification/2026-11-18-html-idle-wakeups.md)).
 
 Viewer controls reuse Escape, Ctrl+F, Find next/previous and zoom. Pointer, keyboard
 and IME input target the displayed content generation. Space, Backspace and

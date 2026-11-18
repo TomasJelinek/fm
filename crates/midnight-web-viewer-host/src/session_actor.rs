@@ -1,26 +1,284 @@
+//! The session actor forwards consumer commands to the browser, brokers its resource reads
+//! and publishes its output. The actor, the reader of the browser's output and the
+//! watchdog block on one monitor (`Signal`) until they have work, so an idle session wakes
+//! none of them.
 use super::*;
 use crate::resources::Store;
 use std::{
-    fs::File,
+    io::{self, Read, Write},
+    sync::{Condvar, MutexGuard, PoisonError},
     time::{Duration, Instant},
 };
+#[cfg(test)]
+#[path = "session_actor_tests.rs"]
+mod tests;
 
-struct Wire {
-    input: File,
-    header: api::Header,
-    busy: Arc<Mutex<Option<Instant>>>,
+/// Browser read results queued ahead of the actor. The reader waits for room instead of
+/// reading on, so a browser that floods the host blocks in its own writes.
+const BACKLOG: usize = 2;
+/// Commands the actor forwards before it handles the next browser message.
+const COMMANDS_PER_TURN: usize = 64;
+const QUEUE_UNAVAILABLE: &str = "Browser command queue unavailable";
+const WATCHDOG_UNAVAILABLE: &str = "Browser watchdog unavailable";
+
+/// The browser process tree the watchdog ends.
+pub(super) trait BrowserProcess: Send {
+    /// Terminate the whole process tree. Termination may complete asynchronously.
+    fn kill(&mut self) -> io::Result<()>;
+    /// Wait until the browser and every process of its tree exited. `Ok(false)` reports
+    /// a failed exit status.
+    fn wait(&mut self) -> io::Result<bool>;
 }
-impl Wire {
+
+impl BrowserProcess for midnight_worker_platform::browser::Process {
+    fn kill(&mut self) -> io::Result<()> {
+        midnight_worker_platform::browser::Process::kill(self)
+    }
+    fn wait(&mut self) -> io::Result<bool> {
+        midnight_worker_platform::browser::Process::wait(self)
+    }
+}
+
+/// The browser's standard input and output, and its process tree.
+pub(super) struct Transport {
+    pub(super) input: Box<dyn Write + Send>,
+    pub(super) output: Box<dyn Read + Send>,
+    pub(super) process: Box<dyn BrowserProcess>,
+}
+
+/// How long the watchdog lets one write to the browser block, and the browser take to
+/// report Ready, before it kills the process tree.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct Limits {
+    pub(super) busy: Duration,
+    pub(super) startup: Duration,
+}
+
+impl Default for Limits {
+    fn default() -> Self {
+        Self {
+            busy: Duration::from_secs(5),
+            startup: Duration::from_secs(30),
+        }
+    }
+}
+
+/// The monitor of one session: what its actor, reader and watchdog wait for, under one
+/// lock. Every predicate they wait on changes under this lock, or its writer locks and
+/// unlocks it before notifying (see `interrupt`), so no wakeup is lost.
+pub(super) struct Signal {
+    inbox: Mutex<Inbox>,
+    /// The actor: a command, browser output, the reader's end, a close or a stop.
+    actor: Condvar,
+    /// The reader: room in the browser backlog, a close or a stop.
+    room: Condvar,
+    /// The watchdog: a write it does not time yet, Ready, a close or a stop.
+    watchdog: Condvar,
+    /// Tests: one of the session's threads starts waiting.
+    #[cfg(test)]
+    observed: Condvar,
+}
+
+struct Inbox {
+    commands: midnight_web_viewer_sdk::CommandQueue,
+    /// Read results of the browser's output, at most `BACKLOG`.
+    browser: VecDeque<io::Result<api::Message>>,
+    /// A write to the browser is in progress; it started at `written`.
+    writing: bool,
+    /// When the latest write to the browser started.
+    written: Option<Instant>,
+    /// When the watchdog wakes by itself; `None` while it waits without a deadline.
+    watch: Option<Instant>,
+    /// The browser reported Ready, which ends the startup limit.
+    ready: bool,
+    /// The actor stopped: the reader and the watchdog end.
+    stopping: bool,
+    /// The reader ended. Once `browser` is empty, no further output comes.
+    reader_done: bool,
+    #[cfg(test)]
+    turns: Turns,
+}
+
+/// Tests: which of the session's threads wait, and how often the actor and the watchdog
+/// woke.
+#[cfg(test)]
+#[derive(Debug, Default)]
+struct Turns {
+    actor_waiting: bool,
+    actor_wakes: u64,
+    reader_waiting: bool,
+    watchdog_waiting: bool,
+    watchdog_wakes: u64,
+}
+
+/// One turn of the actor, in this order: up to 64 commands, then one browser message.
+struct Turn {
+    commands: Vec<api::Command>,
+    browser: Option<io::Result<api::Message>>,
+}
+
+impl Signal {
+    pub(super) fn new(capacity: usize) -> Result<Self, String> {
+        Ok(Self {
+            inbox: Mutex::new(Inbox {
+                commands: midnight_web_viewer_sdk::CommandQueue::new(capacity)
+                    .map_err(|error| error.to_string())?,
+                browser: VecDeque::with_capacity(BACKLOG),
+                writing: false,
+                written: None,
+                watch: None,
+                ready: false,
+                stopping: false,
+                reader_done: false,
+                #[cfg(test)]
+                turns: Turns::default(),
+            }),
+            actor: Condvar::new(),
+            room: Condvar::new(),
+            watchdog: Condvar::new(),
+            #[cfg(test)]
+            observed: Condvar::new(),
+        })
+    }
+
+    /// The inbox, even after a panic poisoned its lock: each field stays valid between
+    /// statements, and a stop must still reach every waiter.
+    fn lock(&self) -> MutexGuard<'_, Inbox> {
+        self.inbox.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Queue a consumer command and wake the actor. False when the queue is full.
+    pub(super) fn push(&self, command: api::Command) -> bool {
+        let pushed = self
+            .inbox
+            .lock()
+            .is_ok_and(|mut inbox| inbox.commands.push(command).is_ok());
+        if pushed {
+            self.actor.notify_one();
+        }
+        pushed
+    }
+
+    /// Make a change of the session's `closed` flag visible to every waiter. A waiter that
+    /// checked the flag before the change already waits once this lock is free, so the
+    /// notification reaches it.
+    pub(super) fn interrupt(&self) {
+        drop(self.lock());
+        self.actor.notify_all();
+        self.room.notify_all();
+        self.watchdog.notify_all();
+    }
+
+    /// Wait for the actor's next turn. `None` once the session is closed; an error once
+    /// the reader ended without further output.
+    fn take(&self, closed: &AtomicBool) -> Result<Option<Turn>, String> {
+        let mut inbox = self.inbox.lock().map_err(|_| QUEUE_UNAVAILABLE)?;
+        let turn = loop {
+            if closed.load(Ordering::Acquire) {
+                return Ok(None);
+            }
+            let commands: Vec<_> = (0..COMMANDS_PER_TURN)
+                .map_while(|_| inbox.commands.pop())
+                .collect();
+            let browser = inbox.browser.pop_front();
+            if !commands.is_empty() || browser.is_some() {
+                break Turn { commands, browser };
+            }
+            if inbox.reader_done {
+                return Err("Chromium disconnected".into());
+            }
+            #[cfg(test)]
+            {
+                inbox.turns.actor_waiting = true;
+                self.observed.notify_all();
+            }
+            inbox = self.actor.wait(inbox).map_err(|_| QUEUE_UNAVAILABLE)?;
+            #[cfg(test)]
+            {
+                inbox.turns.actor_waiting = false;
+                inbox.turns.actor_wakes += 1;
+            }
+        };
+        drop(inbox);
+        if turn.browser.is_some() {
+            self.room.notify_one();
+        }
+        Ok(Some(turn))
+    }
+
+    /// A write to the browser starts. The watchdog learns of it only when it would not wake
+    /// by this write's deadline anyway: it keeps timing the latest write for one limit
+    /// after it started, so a burst of writes wakes it about once per limit, not per write.
+    fn busy(&self, limit: Duration) -> Result<(), String> {
+        let mut inbox = self.inbox.lock().map_err(|_| WATCHDOG_UNAVAILABLE)?;
+        let now = Instant::now();
+        inbox.writing = true;
+        inbox.written = Some(now);
+        let untimed = now
+            .checked_add(limit)
+            .is_some_and(|deadline| inbox.watch.is_none_or(|watch| watch > deadline));
+        drop(inbox);
+        if untimed {
+            self.watchdog.notify_one();
+        }
+        Ok(())
+    }
+
+    /// The write in progress ended; the watchdog notices when it next wakes.
+    fn idle(&self) -> Result<(), String> {
+        self.inbox.lock().map_err(|_| WATCHDOG_UNAVAILABLE)?.writing = false;
+        Ok(())
+    }
+
+    /// The browser reported Ready: the watchdog stops timing its startup.
+    fn ready(&self) {
+        let mut inbox = self.lock();
+        let first = !std::mem::replace(&mut inbox.ready, true);
+        drop(inbox);
+        if first {
+            self.watchdog.notify_one();
+        }
+    }
+}
+
+/// Stops the reader and the watchdog when dropped, also while the actor unwinds from a
+/// panic. The watchdog then ends the browser's whole process tree, which releases blocked
+/// pipe reads and writes, so the scope can join its threads.
+struct Stop<'a>(&'a Signal);
+impl Drop for Stop<'_> {
+    fn drop(&mut self) {
+        self.0.lock().stopping = true;
+        self.0.actor.notify_all();
+        self.0.room.notify_all();
+        self.0.watchdog.notify_all();
+    }
+}
+
+/// Marks the reader's end, also when it unwinds, so the actor never waits for output that
+/// cannot come.
+struct ReaderDone<'a>(&'a Signal);
+impl Drop for ReaderDone<'_> {
+    fn drop(&mut self) {
+        self.0.lock().reader_done = true;
+        self.0.actor.notify_one();
+    }
+}
+
+struct Wire<'a> {
+    input: Box<dyn Write + Send>,
+    header: api::Header,
+    signal: &'a Signal,
+    /// How long one write may block (`Limits::busy`).
+    limit: Duration,
+}
+impl Wire<'_> {
     fn send(&mut self, kind: api::CommandKind) -> Result<(), String> {
         self.header.sequence = self
             .header
             .sequence
             .checked_add(1)
             .ok_or("Browser sequence exhausted")?;
-        *self
-            .busy
-            .lock()
-            .map_err(|_| "Browser watchdog unavailable")? = Some(Instant::now());
+        self.signal.busy(self.limit)?;
         let result = api::write_message(
             &mut self.input,
             &api::Message::Command(api::Command {
@@ -29,12 +287,103 @@ impl Wire {
             }),
         )
         .map_err(|error| format!("Browser transport: {error}"));
-        *self
-            .busy
-            .lock()
-            .map_err(|_| "Browser watchdog unavailable")? = None;
+        self.signal.idle()?;
         result
     }
+}
+
+/// Queue each read result of the browser's output for the actor, waiting for room instead
+/// of reading on. It ends after a failed read, and once the actor stops or the session
+/// closes.
+fn read(signal: &Signal, closed: &AtomicBool, mut pipe: Box<dyn Read + Send>) {
+    let _done = ReaderDone(signal);
+    loop {
+        let message = api::read_message(&mut pipe);
+        let failed = message.is_err();
+        let mut inbox = signal.lock();
+        while inbox.browser.len() >= BACKLOG && !inbox.stopping && !closed.load(Ordering::Acquire) {
+            #[cfg(test)]
+            {
+                inbox.turns.reader_waiting = true;
+                signal.observed.notify_all();
+            }
+            inbox = signal
+                .room
+                .wait(inbox)
+                .unwrap_or_else(PoisonError::into_inner);
+            #[cfg(test)]
+            {
+                inbox.turns.reader_waiting = false;
+            }
+        }
+        if inbox.stopping || closed.load(Ordering::Acquire) {
+            return;
+        }
+        inbox.browser.push_back(message);
+        drop(inbox);
+        signal.actor.notify_one();
+        if failed {
+            return;
+        }
+    }
+}
+
+/// End the browser's process tree once the actor stops or the session closes, when one
+/// write blocks longer than `limits.busy`, or when the browser is not Ready within
+/// `limits.startup`. Once the browser is Ready and one limit passed since the latest
+/// write started, it waits without a deadline.
+fn watch(signal: &Signal, closed: &AtomicBool, limits: Limits, process: &mut dyn BrowserProcess) {
+    let startup = Instant::now().checked_add(limits.startup);
+    let mut inbox = signal.lock();
+    loop {
+        if inbox.stopping || closed.load(Ordering::Acquire) {
+            break;
+        }
+        let now = Instant::now();
+        let startup = startup.filter(|_| !inbox.ready);
+        let write = inbox.written.and_then(|at| at.checked_add(limits.busy));
+        if startup.is_some_and(|deadline| deadline <= now)
+            || inbox.writing && write.is_some_and(|deadline| deadline <= now)
+        {
+            break;
+        }
+        // Timing the latest write past its end spares the writes that follow within the
+        // limit a notification (see `Signal::busy`).
+        let deadline = startup
+            .into_iter()
+            .chain(write.filter(|deadline| *deadline > now))
+            .min();
+        inbox.watch = deadline;
+        let left = deadline.map(|deadline| deadline.duration_since(now));
+        #[cfg(test)]
+        {
+            inbox.turns.watchdog_waiting = true;
+            signal.observed.notify_all();
+        }
+        inbox = match left {
+            None => signal
+                .watchdog
+                .wait(inbox)
+                .unwrap_or_else(PoisonError::into_inner),
+            Some(left) => {
+                signal
+                    .watchdog
+                    .wait_timeout(inbox, left)
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .0
+            }
+        };
+        #[cfg(test)]
+        {
+            inbox.turns.watchdog_waiting = false;
+            inbox.turns.watchdog_wakes += 1;
+        }
+    }
+    // Kill and wait with the lock released: waiting can take seconds, and `send` must
+    // not block meanwhile.
+    drop(inbox);
+    let _ = process.kill();
+    let _ = process.wait();
 }
 
 /// Why the actor stopped when no error stopped it.
@@ -89,192 +438,180 @@ fn admit(
     })
 }
 
-/// Stops the supervisor when dropped, also while the session loop unwinds from a panic.
-/// The supervisor then closes the broker's entire process tree, which releases blocked
-/// pipe reads/writes, so the scope can join its threads.
-struct Stop<'a>(&'a AtomicBool);
-impl Drop for Stop<'_> {
-    fn drop(&mut self) {
-        self.0.store(true, Ordering::Release);
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
+/// Start the provider's browser and run the session over its pipes.
 pub(super) fn run(
     provider: Provider,
     source: CapturedFile,
     resources: Option<Arc<dyn Resources>>,
-    mut viewport: api::Viewport,
-    commands: Arc<Mutex<midnight_web_viewer_sdk::CommandQueue>>,
-    output: &Arc<Mutex<Output>>,
-    closed: &Arc<AtomicBool>,
-    requested_document: &Arc<AtomicU64>,
-    wake: &Arc<dyn Fn() -> bool + Send + Sync>,
+    viewport: api::Viewport,
+    shared: &Shared,
 ) -> Result<End, String> {
     provider.validate().map_err(|error| error.to_string())?;
     let browser =
         midnight_worker_platform::browser::spawn_with_host_shortcuts(&provider.executable)
             .map_err(|error| format!("Chromium startup: {error}"))?;
-    let mut store = Store::new(source, resources);
+    let transport = Transport {
+        input: Box::new(browser.input),
+        output: Box::new(browser.output),
+        process: Box::new(browser.process),
+    };
+    // The rest of `browser`, its private profile, is dropped when this function returns:
+    // after `run_with` waited for the whole process tree.
+    run_with(
+        transport,
+        Store::new(source, resources),
+        viewport,
+        shared,
+        Limits::default(),
+    )
+}
+
+/// Run the session over `transport`: the actor on this thread, the reader of the browser's
+/// output and the watchdog on scoped threads. Returns once all three ended, after the
+/// watchdog killed and waited for the browser's process tree.
+pub(super) fn run_with(
+    transport: Transport,
+    mut store: Store,
+    mut viewport: api::Viewport,
+    shared: &Shared,
+    limits: Limits,
+) -> Result<End, String> {
+    let Transport {
+        input,
+        output,
+        mut process,
+    } = transport;
+    let (signal, closed) = (&*shared.signal, &*shared.closed);
     let mut wire = Wire {
-        input: browser.input,
+        input,
         header: api::Header {
             session: 1,
             document: 1,
             sequence: 0,
         },
-        busy: Arc::new(Mutex::new(None)),
+        signal,
+        limit: limits.busy,
     };
-    let stopping = Arc::new(AtomicBool::new(false));
-    let ready = Arc::new(AtomicBool::new(false));
-    let mut process = browser.process;
     std::thread::scope(|scope| {
-        let stop = Stop(&stopping);
-        let stopping = &stopping;
-        let busy = wire.busy.clone();
-        let ready = &ready;
-        let supervisor = scope.spawn(move || {
-            let started = Instant::now();
-            while !stopping.load(Ordering::Acquire) && !closed.load(Ordering::Acquire) {
-                let expired = busy.lock().map_or(true, |at| {
-                    at.is_some_and(|at| at.elapsed() > Duration::from_secs(5))
-                });
-                if expired
-                    || !ready.load(Ordering::Acquire) && started.elapsed() > Duration::from_secs(30)
-                {
-                    break;
-                }
-                std::thread::sleep(Duration::from_millis(10));
-            }
-            let _ = process.kill();
-            let _ = process.wait();
-        });
-        let (sender, incoming) = mpsc::sync_channel(2);
-        let reader = scope.spawn(move || {
-            let mut pipe = browser.output;
-            loop {
-                let message = api::read_message(&mut pipe);
-                let failed = message.is_err();
-                if sender.send(message).is_err() || failed {
-                    break;
-                }
-            }
-        });
-        let result = (|| {
-            let main = store.reset(false)?;
-            wire.send(api::CommandKind::Open {
-                source: main,
-                viewport,
-                policy: api::Policy::default(),
-            })?;
-            let mut event_sequence = 0;
-            while !closed.load(Ordering::Acquire) {
-                let batch: Vec<_> = {
-                    let mut commands = commands
-                        .lock()
-                        .map_err(|_| "Browser command queue unavailable")?;
-                    (0..64).map_while(|_| commands.pop()).collect()
-                };
-                for command in batch {
-                    match command.kind {
-                        api::CommandKind::Policy(next) => {
-                            if next.scripts && !next.network {
-                                return Err("Scripts require online mode".into());
-                            }
-                            wire.header.document = wire
-                                .header
-                                .document
-                                .checked_add(1)
-                                .ok_or("Browser document IDs exhausted")?;
-                            wire.header.sequence = 0;
-                            event_sequence = 0;
-                            output
-                                .lock()
-                                .map_err(|_| "Browser output unavailable")?
-                                .frame = None;
-                            let source = store.reset(next.network)?;
-                            wire.send(api::CommandKind::Open {
-                                source,
-                                viewport,
-                                policy: next,
-                            })?;
-                        }
-                        api::CommandKind::Resize(next) => {
-                            if next.revision <= viewport.revision {
-                                continue;
-                            }
-                            viewport = next;
-                            wire.send(api::CommandKind::Resize(next))?;
-                        }
-                        api::CommandKind::Close => return Ok(End::Requested),
-                        other => wire.send(other)?,
-                    }
-                }
-                let incoming = match incoming.recv_timeout(Duration::from_millis(5)) {
-                    Ok(value) => {
-                        value.map_err(|error| format!("Chromium transport stopped: {error}"))?
-                    }
-                    Err(mpsc::RecvTimeoutError::Timeout) => continue,
-                    Err(_) => return Err("Chromium disconnected".into()),
-                };
-                let api::Message::Event(event) = incoming else {
-                    return Err("Unexpected browser command".into());
-                };
-                let requested = requested_document.load(Ordering::Acquire);
-                match admit(&event, wire.header, &mut event_sequence, requested)? {
-                    Admit::Current => {}
-                    Admit::Stale => continue,
-                    Admit::End => return Ok(End::Browser),
-                }
-                let reply = match &event.kind {
-                    api::EventKind::ResourceResolve { request, base, url } => {
-                        Some(store.resolve(*request, *base, url))
-                    }
-                    api::EventKind::ResourceRead {
-                        request,
-                        resource,
-                        offset,
-                        length,
-                    } => Some(store.read(*request, *resource, *offset, *length)),
-                    api::EventKind::ResourceRelease { resource } => Some(store.release(*resource)),
-                    _ => None,
-                };
-                if let Some(reply) = reply {
-                    wire.send(api::CommandKind::ResourceReply(reply))?;
-                    continue;
-                }
-                match &event.kind {
-                    api::EventKind::Frame(frame) => {
-                        if frame.acknowledged_input > wire.header.sequence {
-                            return Err("Browser acknowledged unsent input".into());
-                        }
-                        wire.send(api::CommandKind::FrameAck {
-                            frame_sequence: event.header.sequence,
-                        })?;
-                        if frame.viewport_revision != viewport.revision {
-                            continue;
-                        }
-                        if frame.width != viewport.width || frame.height != viewport.height {
-                            return Err("Browser frame dimensions do not match viewport".into());
-                        }
-                    }
-                    api::EventKind::Ready => ready.store(true, Ordering::Release),
-                    _ => {}
-                }
-                output
-                    .lock()
-                    .map_err(|_| "Browser output unavailable")?
-                    .put(event)?;
-                wake();
-            }
-            Ok(End::Requested)
-        })();
+        let stop = Stop(signal);
+        let watchdog = scope.spawn(|| watch(signal, closed, limits, &mut *process));
+        let reader = scope.spawn(move || read(signal, closed, output));
+        let result = forward(&mut wire, &mut store, &mut viewport, shared);
         drop(stop);
-        drop(incoming);
-        let _ = supervisor.join();
+        let _ = watchdog.join();
         let _ = reader.join();
         result
     })
+}
+
+/// The actor: open the document, then forward commands and handle the browser's output
+/// until the session ends.
+fn forward(
+    wire: &mut Wire<'_>,
+    store: &mut Store,
+    viewport: &mut api::Viewport,
+    shared: &Shared,
+) -> Result<End, String> {
+    let main = store.reset(false)?;
+    wire.send(api::CommandKind::Open {
+        source: main,
+        viewport: *viewport,
+        policy: api::Policy::default(),
+    })?;
+    let mut event_sequence = 0;
+    while let Some(turn) = shared.signal.take(&shared.closed)? {
+        for command in turn.commands {
+            match command.kind {
+                api::CommandKind::Policy(next) => {
+                    if next.scripts && !next.network {
+                        return Err("Scripts require online mode".into());
+                    }
+                    wire.header.document = wire
+                        .header
+                        .document
+                        .checked_add(1)
+                        .ok_or("Browser document IDs exhausted")?;
+                    wire.header.sequence = 0;
+                    event_sequence = 0;
+                    shared
+                        .output
+                        .lock()
+                        .map_err(|_| "Browser output unavailable")?
+                        .frame = None;
+                    let source = store.reset(next.network)?;
+                    wire.send(api::CommandKind::Open {
+                        source,
+                        viewport: *viewport,
+                        policy: next,
+                    })?;
+                }
+                api::CommandKind::Resize(next) => {
+                    if next.revision <= viewport.revision {
+                        continue;
+                    }
+                    *viewport = next;
+                    wire.send(api::CommandKind::Resize(next))?;
+                }
+                api::CommandKind::Close => return Ok(End::Requested),
+                other => wire.send(other)?,
+            }
+        }
+        let Some(incoming) = turn.browser else {
+            continue;
+        };
+        let incoming = incoming.map_err(|error| format!("Chromium transport stopped: {error}"))?;
+        let api::Message::Event(event) = incoming else {
+            return Err("Unexpected browser command".into());
+        };
+        let requested = shared.document.load(Ordering::Acquire);
+        match admit(&event, wire.header, &mut event_sequence, requested)? {
+            Admit::Current => {}
+            Admit::Stale => continue,
+            Admit::End => return Ok(End::Browser),
+        }
+        let reply = match &event.kind {
+            api::EventKind::ResourceResolve { request, base, url } => {
+                Some(store.resolve(*request, *base, url))
+            }
+            api::EventKind::ResourceRead {
+                request,
+                resource,
+                offset,
+                length,
+            } => Some(store.read(*request, *resource, *offset, *length)),
+            api::EventKind::ResourceRelease { resource } => Some(store.release(*resource)),
+            _ => None,
+        };
+        if let Some(reply) = reply {
+            wire.send(api::CommandKind::ResourceReply(reply))?;
+            continue;
+        }
+        match &event.kind {
+            api::EventKind::Frame(frame) => {
+                if frame.acknowledged_input > wire.header.sequence {
+                    return Err("Browser acknowledged unsent input".into());
+                }
+                wire.send(api::CommandKind::FrameAck {
+                    frame_sequence: event.header.sequence,
+                })?;
+                if frame.viewport_revision != viewport.revision {
+                    continue;
+                }
+                if frame.width != viewport.width || frame.height != viewport.height {
+                    return Err("Browser frame dimensions do not match viewport".into());
+                }
+            }
+            api::EventKind::Ready => shared.signal.ready(),
+            _ => {}
+        }
+        shared
+            .output
+            .lock()
+            .map_err(|_| "Browser output unavailable")?
+            .put(event)?;
+        (shared.wake)();
+    }
+    Ok(End::Requested)
 }
 
 #[test]

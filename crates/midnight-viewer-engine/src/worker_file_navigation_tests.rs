@@ -118,11 +118,11 @@ fn identity_capture_overlaps_the_teardown_of_the_previous_image() {
         // worker joins it.
         let (release, teardown) = std::sync::mpsc::channel::<()>();
         let (_, events) = std::sync::mpsc::sync_channel(1);
-        let thread = std::thread::spawn(move || {
+        let teardown: Box<dyn FnOnce() + Send> = Box::new(move || {
             let _ = teardown.recv();
         });
         worker.image = Some(crate::image_view::ImageView::new(
-            crate::image_worker::ImageWorker::for_test(events, Some(thread)),
+            crate::image_worker::ImageWorker::for_test(events, Some(teardown)),
             worker.image_ids.clone(),
         ));
         worker.input(ViewerInput::NextFile, &output);

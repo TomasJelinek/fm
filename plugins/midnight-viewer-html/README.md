@@ -101,8 +101,10 @@ locally. Provider events are validated before they are queued, so an over-budget
 event becomes a bounded runtime error instead of stopping the transport. Paints and
 browser state keep only their latest value, resource releases use their own bounded
 lane, and the remaining controls use a FIFO of 256. The run loop handles up to 64 queued
-commands per CEF pump and wakes as soon as a command arrives; without commands it
-still pumps CEF about every 2 ms (no external message pump is used).
+commands per CEF pump and wakes as soon as a command arrives. Without commands it waits
+at most 2 ms before the next CEF pump, and no external message pump is used. On Linux
+that is about every 2 ms (not measured). On an idle Windows document it is about 64
+pumps per second, because the wait rounds up to the timer period.
 
 Windows virtual keys never come from a character's ASCII value: punctuation uses
 the US-layout OEM key of its physical key, letters follow the produced Latin letter
