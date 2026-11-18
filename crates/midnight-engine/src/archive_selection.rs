@@ -54,7 +54,7 @@ pub(crate) fn apply(
             }
         }
         ArchiveSelectionAction::Ranges { ranges, mode } => {
-            if ranges.len() != view.by_id.len() {
+            if ranges.source_len() != view.by_id.len() {
                 return Err(error(
                     "Selection rectangle no longer matches its captured archive view",
                 ));

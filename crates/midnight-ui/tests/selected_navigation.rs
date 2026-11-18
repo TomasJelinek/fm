@@ -68,12 +68,14 @@ fn selected_navigation_real_keys_preserve_marks_in_all_layouts_and_respect_edit_
         for row in [1, 4, 7] {
             presenter
                 .borrow_mut()
-                .select_row(pane, row, true, &|command| {
+                .select_row_modified(pane, row, true, false, &|command| {
                     commands.borrow_mut().push(command);
                     true
                 });
         }
-        presenter.borrow_mut().select_row(pane, 1, false, &|_| true);
+        presenter
+            .borrow_mut()
+            .select_row_modified(pane, 1, false, false, &|_| true);
     }
     refresh(&test.window, &presenter.borrow());
     let cursors = || {

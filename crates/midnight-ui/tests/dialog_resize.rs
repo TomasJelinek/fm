@@ -1,12 +1,13 @@
 //! Pointer resize checks for the actual shared embedded dialog frame.
+#[allow(dead_code)] // Only the shared software platform is used.
+#[path = "support/modeless.rs"]
+mod modeless;
+
 use slint::{
     ComponentHandle, LogicalPosition,
-    platform::{
-        Platform, PlatformError, PointerEventButton, WindowAdapter, WindowEvent,
-        software_renderer::{MinimalSoftwareWindow, RepaintBufferType},
-    },
+    platform::{PointerEventButton, WindowEvent, software_renderer::MinimalSoftwareWindow},
 };
-use std::rc::Rc;
+use std::{cell::RefCell, rc::Rc};
 
 slint::slint! {
     import { DialogFrame } from "../ui/dialog-frame.slint";
@@ -33,13 +34,6 @@ slint::slint! {
                 }
             }
         }
-    }
-}
-
-struct TestPlatform(Rc<MinimalSoftwareWindow>);
-impl Platform for TestPlatform {
-    fn create_window_adapter(&self) -> Result<Rc<dyn WindowAdapter>, PlatformError> {
-        Ok(self.0.clone())
     }
 }
 
@@ -74,10 +68,12 @@ fn drag(window: &ResizeFixture, start: LogicalPosition, dx: f32, dy: f32) {
 
 #[test]
 fn edges_and_corners_resize_the_open_frame_without_replacing_the_draft() {
-    let native = MinimalSoftwareWindow::new(RepaintBufferType::ReusedBuffer);
-    slint::platform::set_platform(Box::new(TestPlatform(native.clone()))).unwrap();
+    // A DialogFrame fixture component, not MainWindow: TestUi does not apply.
+    let windows = Rc::new(RefCell::new(Vec::new()));
+    slint::platform::set_platform(Box::new(modeless::Windows(windows.clone()))).unwrap();
     let window = ResizeFixture::new().unwrap();
     window.show().unwrap();
+    let native = windows.borrow()[0].clone();
     window
         .window()
         .dispatch_event(WindowEvent::WindowActiveChanged(true));

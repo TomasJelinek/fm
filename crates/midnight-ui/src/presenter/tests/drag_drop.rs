@@ -330,10 +330,26 @@ fn refused_external_drop_reports_its_reason_and_keeps_native_dragging() {
         }),
         &send,
     );
-    assert!(
-        p.desktop.status.contains("The drop destination changed."),
-        "{}",
-        p.desktop.status
+    // The reason alone: no repeated operation name and no empty path suffix.
+    assert_eq!(p.desktop.status, "Drag/drop: The drop destination changed.");
+    let path = test_root().join("拖放 & $(literal)").join("e\u{301}.txt");
+    p.apply_with_sender(
+        Event::DragDrop(DragDropEvent::Failed {
+            id: None,
+            error: FsError::from_io(
+                "Windows file drag/drop",
+                &path,
+                io::Error::other("The drag source did not provide its file list.\nDetails"),
+            ),
+        }),
+        &send,
+    );
+    assert_eq!(
+        p.desktop.status,
+        format!(
+            "Drag/drop: The drag source did not provide its file list. ({})",
+            path.display()
+        )
     );
     assert_eq!(
         p.drag_drop.supported,

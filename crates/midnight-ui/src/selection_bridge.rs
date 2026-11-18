@@ -34,7 +34,7 @@ struct Gesture {
 }
 
 fn same_ranges(left: &SelectionRanges, right: &SelectionRanges) -> bool {
-    left.len() == right.len() && left.spans() == right.spans()
+    left.source_len() == right.source_len() && left.spans() == right.spans()
 }
 struct Bridge {
     window: slint::Weak<MainWindow>,

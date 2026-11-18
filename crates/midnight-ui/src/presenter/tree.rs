@@ -180,7 +180,6 @@ impl Presenter {
                 p.selection_revision = SelectionRevision(0);
                 p.selection_applied = SelectionRevision(0);
                 p.selection_resolved = SelectionRevision(0);
-                p.selection_reset = true;
             }
             if let Some(archive) = &mut p.archive {
                 archive.clear_tree_selection(&mut self.retired);
@@ -709,7 +708,19 @@ impl Presenter {
                 request,
                 result,
             } => {
-                self.tree_transfer_captured(stamp, request, result);
+                // Unlike MetadataCaptured, this event does not say whether a refusal is
+                // retryable. A refusal counts as the mailbox's stale-view refusal only
+                // when a newer publication of the same session has already replaced
+                // the captured view; one that overtakes that publication is reported.
+                let retryable = result.is_err()
+                    && self.panes[stamp.pane.index()]
+                        .tree_view()
+                        .is_some_and(|view| {
+                            view.stamp.navigation == stamp.navigation
+                                && view.stamp.session == stamp.session
+                                && view.stamp.revision.0 > stamp.revision.0
+                        });
+                self.tree_transfer_captured(stamp, request, retryable, result);
             }
             TreeEvent::Sizes(event) => self.apply_tree_sizes(event, send),
             TreeEvent::Reprojected {

@@ -801,7 +801,7 @@ impl Presenter {
                 }
                 // Without a gesture this is a refused incoming drop or a session failure;
                 // only `Ready { supported: false }` revokes native drag support.
-                self.desktop.status = format!("Drag/drop: {error}");
+                self.desktop.status = crate::error_presentation::status("Drag/drop", &error);
             }
         }
         self.flush_drag_commands(send);

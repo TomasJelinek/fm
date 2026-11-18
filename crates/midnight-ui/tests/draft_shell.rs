@@ -1,21 +1,15 @@
 //! Real editor events protect a draft from late settings and cross-shell picks.
+#[path = "support/ui.rs"]
+mod ui;
+
 use midnight_core::*;
 use midnight_ui::{MainWindow, Presenter, install};
 use slint::{
     ComponentHandle,
-    platform::{
-        Key, Platform, PlatformError, WindowAdapter, WindowEvent,
-        software_renderer::{MinimalSoftwareWindow, RepaintBufferType},
-    },
+    platform::{Key, WindowEvent},
 };
 use std::{cell::RefCell, path::PathBuf, rc::Rc};
 
-struct TestPlatform(Rc<MinimalSoftwareWindow>);
-impl Platform for TestPlatform {
-    fn create_window_adapter(&self) -> Result<Rc<dyn WindowAdapter>, PlatformError> {
-        Ok(self.0.clone())
-    }
-}
 fn key(window: &MainWindow, text: impl Into<slint::SharedString>) {
     let text = text.into();
     window
@@ -28,13 +22,8 @@ fn key(window: &MainWindow, text: impl Into<slint::SharedString>) {
 
 #[test]
 fn nonempty_editor_and_inserted_paths_keep_their_shell_across_late_load_and_picker_changes() {
-    let native = MinimalSoftwareWindow::new(RepaintBufferType::ReusedBuffer);
-    slint::platform::set_platform(Box::new(TestPlatform(native.clone()))).unwrap();
-    let window = MainWindow::new().unwrap();
-    window.show().unwrap();
-    window
-        .window()
-        .dispatch_event(WindowEvent::WindowActiveChanged(true));
+    let mut ui = ui::TestUi::bare();
+    let window = ui.window.clone_strong();
     let presenter = Rc::new(RefCell::new(Presenter::new(
         "folder & echo INJECTED".into(),
         "right".into(),
@@ -56,14 +45,7 @@ fn nonempty_editor_and_inserted_paths_keep_their_shell_across_late_load_and_pick
         locations: vec![],
     });
     midnight_ui::refresh(&window, &presenter.borrow());
-    native.set_size(slint::PhysicalSize::new(1340, 820));
-    window.window().dispatch_event(WindowEvent::Resized {
-        size: slint::LogicalSize::new(1340.0, 820.0),
-    });
-    let mut pixels = vec![slint::Rgb8Pixel::default(); 1340 * 820];
-    native.draw_if_needed(|renderer| {
-        renderer.render(&mut pixels, 1340);
-    });
+    ui.draw();
     window.invoke_focus_command();
     commands.borrow_mut().clear();
     key(&window, "echo ");

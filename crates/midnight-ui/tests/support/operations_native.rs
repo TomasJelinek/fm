@@ -92,8 +92,20 @@ impl Harness {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let root = parent.join(format!("native-ui-{}-{stamp}", std::process::id()));
-        fs::create_dir(&root).unwrap();
+        // Parallel tests can read the same clock tick: number the collisions.
+        let root = (0..64)
+            .find_map(|attempt| {
+                let root = parent.join(format!(
+                    "native-ui-{}-{stamp}-{attempt}",
+                    std::process::id()
+                ));
+                match fs::create_dir(&root) {
+                    Ok(()) => Some(root),
+                    Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => None,
+                    Err(error) => panic!("cannot create {}: {error}", root.display()),
+                }
+            })
+            .expect("a unique native fixture name");
         assert_eq!(root.parent(), Some(parent.as_path()));
         let left = root.join("source");
         let right = root.join("destination");
@@ -136,7 +148,8 @@ impl Harness {
             .configure_mutations()
             .unwrap()
             .install(service.clone());
-        engine.configure_locale().unwrap().install(service);
+        // As production does: Copy/Move conflicts need the audited slot.
+        engine.configure_audited_locale().unwrap().install(service);
         engine
             .configure_settings()
             .unwrap()
@@ -268,6 +281,23 @@ impl Harness {
             "the confirmation must be the only non-tooltip popup on Main"
         );
         self.ui.native.clone()
+    }
+
+    /// Lay out the newest visible modeless window (an operation decision) and click
+    /// its control.
+    pub fn click_decision(&mut self, label: &str) {
+        let decision = self
+            .windows
+            .borrow()
+            .iter()
+            .skip(1)
+            .rev()
+            .find(|window| window.window().is_visible())
+            .cloned()
+            .expect("a visible decision window");
+        modeless::layout(&decision, 900, 650);
+        modeless::click(&decision, label);
+        self.settle();
     }
 
     pub fn rows(&self, pane: PaneId) -> Vec<midnight_ui::FileRow> {

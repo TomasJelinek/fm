@@ -76,7 +76,7 @@ fn summarize(
     request: &RectangleSummaryRequest,
     stop: &Cancellation,
 ) -> Option<ArchiveSelectionTotals> {
-    if request.ranges.len() != request.view.by_id.len() {
+    if request.ranges.source_len() != request.view.by_id.len() {
         return None;
     }
     let cancelled = || request.cancel.is_cancelled() || stop.is_cancelled();

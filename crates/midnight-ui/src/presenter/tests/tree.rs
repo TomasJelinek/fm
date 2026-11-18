@@ -1495,8 +1495,12 @@ fn leaving_tree_uses_fresh_flat_selection_context_even_when_navigation_fails() {
         },
         &send,
     );
-    assert!(sent.borrow().iter().any(|command| matches!(command, Command::Selection(request)
-        if request.context != old_context && request.restore.as_ref().is_none_or(|origin| origin.navigation != old_context))));
+    assert!(
+        sent.borrow()
+            .iter()
+            .any(|command| matches!(command, Command::Selection(request)
+        if request.context != old_context))
+    );
 }
 
 #[test]

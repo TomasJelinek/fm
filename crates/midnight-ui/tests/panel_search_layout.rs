@@ -6,25 +6,18 @@ use i_slint_core::{
     items::{Orientation, TextCursorAffinity, TextInput},
     window::WindowInner,
 };
+#[path = "support/ui.rs"]
+mod ui;
+
 use midnight_ui::MainWindow;
 use slint::{
     ComponentHandle,
-    platform::{
-        Key, Platform, PlatformError, WindowAdapter, WindowEvent,
-        software_renderer::{MinimalSoftwareWindow, RepaintBufferType},
-    },
+    platform::{Key, WindowAdapter, WindowEvent, software_renderer::MinimalSoftwareWindow},
 };
 use std::rc::Rc;
 
 const WIDTH: usize = 1040;
 const HEIGHT: usize = 900;
-
-struct TestPlatform(Rc<MinimalSoftwareWindow>);
-impl Platform for TestPlatform {
-    fn create_window_adapter(&self) -> Result<Rc<dyn WindowAdapter>, PlatformError> {
-        Ok(self.0.clone())
-    }
-}
 
 fn find(item: ItemRc, label: &str) -> Vec<ItemRc> {
     let mut result = Vec::new();
@@ -88,11 +81,9 @@ fn draw(native: &MinimalSoftwareWindow, pixels: &mut [slint::Rgb8Pixel]) {
 
 #[test]
 fn long_native_queries_pan_the_caret_without_covering_full_match_count_or_clear_button() {
-    let native = MinimalSoftwareWindow::new(RepaintBufferType::ReusedBuffer);
-    slint::platform::set_platform(Box::new(TestPlatform(native.clone()))).unwrap();
-    let window = MainWindow::new().unwrap();
-    midnight_ui::install_file_keys(&window);
-    window.show().unwrap();
+    let ui = ui::TestUi::new();
+    let window = ui.window.clone_strong();
+    let native = ui.native.clone();
     native.set_size(slint::PhysicalSize::new(WIDTH as u32, HEIGHT as u32));
     window.window().dispatch_event(WindowEvent::Resized {
         size: slint::LogicalSize::new(WIDTH as f32, HEIGHT as f32),

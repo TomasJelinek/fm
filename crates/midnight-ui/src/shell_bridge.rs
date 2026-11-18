@@ -72,10 +72,17 @@ pub(crate) fn install(
             return;
         };
         let anchor = anchor(&window, x, y, control, shift);
-        state
-            .borrow_mut()
-            .request_drive_menu(pane(id), token.as_str(), anchor, sender.as_ref());
-        refresh_if_idle(&window, &state);
+        if !request_drive_menu(&window, &state, sender.as_ref(), id, &token, anchor) {
+            // Delivered while Presenter is borrowed, as during a refresh: open the
+            // menu on the next tick. A borrow that outlasts it (a nested native
+            // loop) drops this right-click, as busy row menus are dropped.
+            let (weak, state, sender) = (weak.clone(), state.clone(), sender.clone());
+            slint::Timer::single_shot(std::time::Duration::ZERO, move || {
+                if let Some(window) = weak.upgrade() {
+                    request_drive_menu(&window, &state, sender.as_ref(), id, &token, anchor);
+                }
+            });
+        }
     });
     let weak = window.as_weak();
     let state = presenter.clone();
@@ -145,6 +152,24 @@ pub(crate) fn install(
             refresh_if_idle(&window, &presenter);
         });
     });
+}
+
+/// Request a drive's root menu unless Presenter is already borrowed.
+fn request_drive_menu(
+    window: &MainWindow,
+    presenter: &Rc<RefCell<Presenter>>,
+    send: &dyn Fn(midnight_core::Command) -> bool,
+    id: i32,
+    token: &str,
+    anchor: MenuAnchor,
+) -> bool {
+    let Ok(mut p) = presenter.try_borrow_mut() else {
+        return false;
+    };
+    p.request_drive_menu(pane(id), token, anchor, send);
+    drop(p);
+    refresh_if_idle(window, presenter);
+    true
 }
 
 fn report_busy(presenter: &Rc<RefCell<Presenter>>) {

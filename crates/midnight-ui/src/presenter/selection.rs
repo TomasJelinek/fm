@@ -96,14 +96,12 @@ impl Presenter {
             seed: p.selected.clone(),
             seed_revision: p.selection_applied,
             authoritative: self.comparison.seeds[pane.index()].clone(),
-            reset: p.selection_reset,
             action,
             toggle_directory,
             preserve: p
                 .pending
                 .as_ref()
                 .and_then(|pending| pending.previous_selection_origin.clone()),
-            restore: p.selection_restore.clone(),
         };
         // An internal rebase is retried by flush_selection; only user input
         // reports congestion, and an accepted send clears that notice again.
@@ -119,8 +117,6 @@ impl Presenter {
         if let Some(preview) = preview {
             p.selection_preview.push(preview);
         }
-        p.selection_reset = false;
-        p.selection_restore = None;
         if p.showing_stream()
             && let Some(pending) = pending_bulk
         {
@@ -175,8 +171,6 @@ impl Presenter {
         p.selection_revision = SelectionRevision(0);
         p.selection_applied = SelectionRevision(0);
         p.selection_resolved = SelectionRevision(0);
-        p.selection_reset = path != p.path || p.successful_generation.is_none();
-        p.selection_restore = None;
         p.selection_pending_bulk = false;
         p.selection_dirty = false;
         p.selection_rebase_pending = false;

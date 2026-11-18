@@ -8,10 +8,7 @@ use midnight_core::*;
 use midnight_ui::{MainWindow, Presenter, Theme, install, refresh};
 use slint::{
     ComponentHandle, Model, SharedString,
-    platform::{
-        Key, Platform, PlatformError, PointerEventButton, WindowAdapter, WindowEvent,
-        software_renderer::{MinimalSoftwareWindow, RepaintBufferType},
-    },
+    platform::{Key, PointerEventButton, WindowEvent},
 };
 use std::{cell::RefCell, path::PathBuf, rc::Rc, sync::Arc};
 
@@ -19,13 +16,6 @@ use ui::platform_keys;
 #[cfg(windows)]
 #[path = "support/windows_search_keys.rs"]
 mod search_keys;
-
-struct TestPlatform(Rc<MinimalSoftwareWindow>);
-impl Platform for TestPlatform {
-    fn create_window_adapter(&self) -> Result<Rc<dyn WindowAdapter>, PlatformError> {
-        Ok(self.0.clone())
-    }
-}
 
 fn key(window: &MainWindow, text: impl Into<SharedString>) {
     platform_keys::key(window, text.into());
@@ -146,9 +136,9 @@ fn row_pointer(window: &MainWindow, row: usize, down: bool) {
 
 #[test]
 fn plain_typing_searches_the_focused_panes_original_snapshot_without_navigating() {
-    let native = MinimalSoftwareWindow::new(RepaintBufferType::ReusedBuffer);
-    slint::platform::set_platform(Box::new(TestPlatform(native.clone()))).unwrap();
-    let window = MainWindow::new().unwrap();
+    let ui = ui::TestUi::bare();
+    let window = ui.window.clone_strong();
+    let native = ui.native.clone();
     let root = std::env::temp_dir().join("midnight-panel-search 文档");
     let presenter = Rc::new(RefCell::new(Presenter::new(root.clone(), root.clone())));
     presenter
@@ -199,11 +189,6 @@ fn plain_typing_searches_the_focused_panes_original_snapshot_without_navigating(
         });
     }
     refresh(&window, &presenter.borrow());
-    window.show().unwrap();
-    native.set_size(slint::PhysicalSize::new(1340, 820));
-    window.window().dispatch_event(WindowEvent::Resized {
-        size: slint::LogicalSize::new(1340.0, 820.0),
-    });
     window.invoke_focus_files();
     let before = commands.borrow().len();
     for character in ["a", "l"] {

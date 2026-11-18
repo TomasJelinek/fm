@@ -109,7 +109,9 @@ pub(crate) fn dispatch_window(window: &MainWindow, pane: i32, action: WindowActi
         A::Jobs => window.invoke_show_operations(),
         A::About => window.invoke_show_about(),
         A::CustomCommands => {
-            window.set_options_topic_index(9);
+            window.set_options_topic_index(
+                crate::presenter::settings_picker::OPTIONS_TOPIC_CUSTOM_COMMANDS,
+            );
             window.invoke_show_options();
         }
         A::Bookmarks => window.invoke_show_bookmarks(pane),

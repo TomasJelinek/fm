@@ -104,16 +104,15 @@ launch is introduced. The helper grants one read-only directory listing and does
 grant file content or mutation permissions. It runs only from an installation that
 standard users cannot change (administrator-protected on Windows, root-owned on
 Linux). Elsewhere the button still appears and the retry is refused with an
-explanation of that requirement, but the message box does not always show it. A
-missing helper, as in the current per-user installations, is refused as not found,
-and **Cannot open folder** shows the explanation. A helper that is present but
-unprotected, as in build output or in a release folder extracted where standard
-users can change it, is refused as access denied. The presenter
-(`show_navigation_error`) shows every access-denied failure, a failed authorized
-retry included, as "Access to this folder was denied.", so the message box then
-has the explanation only in **Copy details** until the presenter shows the reason
-of a failed authorized retry. When the folder was opened from a row of a flat
-native listing, that row's red diagnostic icon also shows it. See the
+explanation of that requirement, which **Cannot open folder** shows. A missing
+helper, as in the current per-user installations, is refused as not found. A helper
+that is present but unprotected, as in build output or in a release folder extracted
+where standard users can change it, is refused as access denied. The presenter
+(`show_navigation_error`) shows an ordinary access-denied failure as "Access to this
+folder was denied.", but for the navigation that an authorized retry started it
+shows the failure's own reason, so that refusal states the requirement too. When
+the folder was opened from a row of a flat native listing, that row's red
+diagnostic icon also shows it. See the
 [directory authorization helper](../../SECURITY.md#directory-authorization-helper)
 for the current contract; the
 [first qualification record](../verification/2026-11-11-directory-authorization.md)

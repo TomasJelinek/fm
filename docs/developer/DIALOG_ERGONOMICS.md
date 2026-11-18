@@ -77,6 +77,14 @@ separately; this document is not a claim that every item is already released.
 - Filename colors offer a reusable visual color picker: hue, saturation/value,
   numeric RGB/hex, sample colors, and reset to the theme. Existing automatic
   focused/selected color derivation and contrast adjustment remain in force.
+  Its footer stays fixed and the palette scrolls above it. A short picker keeps
+  at least one whole row of sample colors visible: it first narrows its gaps
+  from 8 px to 4 px and drops the divider, and below 240 px it also reduces its
+  padding, spacing and title size. Known limit: at 320 × 200 with touch density
+  and a 32 px font, the title, the two stacked footer rows and one 46 px sample
+  row need 9 px more than the window has, so the palette shows a 37 px viewport
+  and must be scrolled. Fixing it needs a product decision: smaller touch
+  samples, or a one-row footer at tiny sizes.
 - File-valued settings have Browse actions. Choosing a file does not execute it;
   cancellation does not overwrite the draft. Native paths stay lossless through
   the backend and late results cannot overwrite a newer form or another item.
@@ -215,6 +223,10 @@ and font at the intended width. Cancelled operations retain existing lifetime an
 job admission rules. Header close, Escape and Cancel use the same form dismissal.
 Active Copy/Move/Delete progress instead asks for cancellation confirmation;
 Continue is the default and dismissing that question keeps work running.
+Operation decision windows (name conflicts, Copy/Move errors and metadata conflicts)
+never cancel on dismissal either: their header close, the window's X and Escape
+close only the window, like Decide later, and the footer Cancel job is their explicit
+cancellation.
 Small list controls share compact padding and centered glyphs; remove/clear actions
 use the same red cross in history, cache and custom archive extensions.
 

@@ -182,6 +182,8 @@ impl Presenter {
         true
     }
 
+    /// Rename a saved path. The application binds no rename gesture yet; preference
+    /// loading and the keyboard options tests exercise this presenter contract.
     pub fn rename_bookmark(
         &mut self,
         id: BookmarkId,

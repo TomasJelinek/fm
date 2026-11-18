@@ -135,9 +135,7 @@ mod tests {
             seed: Arc::default(),
             seed_revision: SelectionRevision(0),
             authoritative: None,
-            reset: false,
             preserve: None,
-            restore: None,
             action: SelectionAction::Rebase,
             toggle_directory: false,
         };
@@ -203,9 +201,7 @@ mod tests {
             seed: Arc::default(),
             seed_revision: SelectionRevision(0),
             authoritative: None,
-            reset: false,
             preserve: None,
-            restore: None,
             action: SelectionAction::Rebase,
             toggle_directory: false,
         };

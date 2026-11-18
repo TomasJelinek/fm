@@ -11,21 +11,12 @@ use midnight_ui::{
 };
 use slint::{
     ComponentHandle, ModelRc, SharedString, VecModel,
-    platform::{
-        Key, Platform, PlatformError, PointerEventButton, WindowAdapter, WindowEvent,
-        software_renderer::{MinimalSoftwareWindow, RepaintBufferType},
-    },
+    platform::{Key, PointerEventButton, WindowEvent},
 };
-use std::{cell::RefCell, rc::Rc};
+use std::{cell::RefCell, rc::Rc, time::Duration};
 
 use ui::platform_keys;
 
-struct TestPlatform(Rc<MinimalSoftwareWindow>);
-impl Platform for TestPlatform {
-    fn create_window_adapter(&self) -> Result<Rc<dyn WindowAdapter>, PlatformError> {
-        Ok(self.0.clone())
-    }
-}
 fn chord(window: &MainWindow, modifiers: &[Key], text: impl Into<SharedString>) {
     for modifier in modifiers {
         window.window().dispatch_event(WindowEvent::KeyPressed {
@@ -114,10 +105,10 @@ fn active_overflow_tab(window: &MainWindow) -> slint::LogicalPosition {
 
 #[test]
 fn tabs_and_bookmark_shortcuts_follow_actual_file_focus() {
-    let native = MinimalSoftwareWindow::new(RepaintBufferType::ReusedBuffer);
-    slint::platform::set_platform(Box::new(TestPlatform(native.clone()))).unwrap();
-    let window = MainWindow::new().unwrap();
-    midnight_ui::install_file_keys(&window);
+    // Double clicks follow this virtual clock, never real elapsed time.
+    let (ui, clock) = ui::TestUi::with_virtual_clock();
+    let window = ui.window.clone_strong();
+    let native = ui.native.clone();
     window.set_left_tabs(ModelRc::new(VecModel::from(vec![
         tab("11", "A", true),
         tab("12", "B", false),
@@ -187,14 +178,6 @@ fn tabs_and_bookmark_shortcuts_follow_actual_file_focus() {
         captured
             .borrow_mut()
             .push(format!("add:{pane}:{name}:{slot}"))
-    });
-    window.show().unwrap();
-    window
-        .window()
-        .dispatch_event(WindowEvent::WindowActiveChanged(true));
-    native.set_size(slint::PhysicalSize::new(1340, 820));
-    window.window().dispatch_event(WindowEvent::Resized {
-        size: slint::LogicalSize::new(1340.0, 820.0),
     });
     window.invoke_focus_files();
     chord(&window, &[], "1");
@@ -446,6 +429,9 @@ fn tabs_and_bookmark_shortcuts_follow_actual_file_focus() {
         let tab_position = ui::root_position(&window, label, AccessibleRole::Button);
         let blank = slint::LogicalPosition::new(tab_position.x + 180.0, tab_position.y);
         let before = events.borrow().len();
+        // No earlier click can pair with this one; the next one, at the same
+        // virtual instant, is a double click.
+        ui::advance(&clock, Duration::from_secs(1));
         pointer_click(&window, blank, PointerEventButton::Left);
         assert_eq!(events.borrow().len(), before, "single blank click");
         pointer_click(&window, blank, PointerEventButton::Left);

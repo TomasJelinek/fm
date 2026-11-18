@@ -123,11 +123,8 @@ impl SelectionRanges {
     }
 
     /// Number of entries in the captured source, not the number selected.
-    pub fn len(&self) -> usize {
+    pub fn source_len(&self) -> usize {
         self.len
-    }
-    pub fn is_empty(&self) -> bool {
-        self.spans.is_empty()
     }
     pub fn spans(&self) -> &[SelectionSpan] {
         &self.spans
@@ -190,9 +187,7 @@ pub struct SelectionRequest {
     /// A worker adopts a newer seed once, then preserves subsequent queued edits.
     pub seed_revision: SelectionRevision,
     pub authoritative: Option<Arc<AuthoritativeSelection>>,
-    pub reset: bool,
     pub preserve: Option<SelectionOrigin>,
-    pub restore: Option<SelectionOrigin>,
     pub action: SelectionAction,
     /// Native kind for a single toggle received before a complete index exists.
     pub toggle_directory: bool,
@@ -322,8 +317,9 @@ impl SelectionSnapshot {
         &self.bits
     }
 
-    /// Enumeration may be linear in the whole listing; use only on a worker.
-    pub fn selected_paths(&self) -> impl Iterator<Item = &PathBuf> {
+    /// Test oracle; enumeration is linear in the whole listing.
+    #[cfg(test)]
+    pub(crate) fn selected_paths(&self) -> impl Iterator<Item = &PathBuf> {
         self.basis
             .by_path
             .iter()

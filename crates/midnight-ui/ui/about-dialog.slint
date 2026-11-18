@@ -31,7 +31,16 @@ export component AboutDialog inherits Rectangle {
                     spacing: 8px; alignment: start;
                     Text { text: "Version " + root.application-version; color: Theme.text; wrap: word-wrap; }
                     Text { text: "A focused, two-pane file manager."; color: Theme.secondary-text; wrap: word-wrap; }
-                    AboutSlint {}
+                    // Slint's royalty-free license requires this attribution to stay
+                    // visible. The covering TouchArea keeps a click from opening its
+                    // link: Slint would start the browser with std::process::Command on
+                    // the UI thread, outside the process-creation lock (WORKER_SDK.md).
+                    Rectangle {
+                        min-height: attribution.min-height;
+                        preferred-height: attribution.preferred-height;
+                        attribution := VerticalLayout { AboutSlint {} }
+                        TouchArea {}
+                    }
                 }
             }
             close-button := HintedActionButton {

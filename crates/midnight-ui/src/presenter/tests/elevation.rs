@@ -67,6 +67,41 @@ fn denied_folder_navigation_opens_a_brief_modal_without_prompting() {
     assert!(!p.can_retry_directory_elevated(PaneId::Left));
 }
 
+#[test]
+fn a_refused_authorized_retry_states_the_installation_requirement() {
+    let (mut p, navigation, path) = denied_notice();
+    offer(&mut p, navigation, &path);
+    p.retry_notice_authorized(p.desktop.notice_generation, &|_| true);
+    let retry = NavigationId(p.panes[0].generation);
+    assert!(retry > navigation);
+    // The fixed refusal of a helper in an unprotected folder (midnight-elevation).
+    let requirement = "Authorized listing requires midnight-elevated-listing.exe to be \
+        installed by an administrator in a protected folder that standard users cannot \
+        change, such as a folder under C:\\Program Files. C:\\Users\\me\\資料\\helper.exe \
+        is writable by its user.";
+    p.apply(Event::ListingFailed {
+        pane: PaneId::Left,
+        navigation: retry,
+        error: FsError::from_io(
+            "authorized directory listing",
+            &path,
+            io::Error::new(io::ErrorKind::PermissionDenied, requirement),
+        ),
+    });
+    let (title, body) = p.desktop.notice.clone().expect("the refusal is explained");
+    assert_eq!(title, "Cannot open folder");
+    assert_eq!(body, requirement);
+    // An ordinary denial of the same folder keeps the concise text.
+    assert!(p.navigate(PaneId::Left, path.clone(), None, &|_| true));
+    p.apply(Event::ListingFailed {
+        pane: PaneId::Left,
+        navigation: NavigationId(p.panes[0].generation),
+        error: FsError::from_io("list", &path, io::ErrorKind::PermissionDenied.into()),
+    });
+    let (_, body) = p.desktop.notice.clone().unwrap();
+    assert_eq!(body, "Access to this folder was denied.");
+}
+
 fn denied_notice() -> (Presenter, NavigationId, PathBuf) {
     let root = test_root();
     let destination = root.join("denied");
@@ -381,8 +416,9 @@ fn a_busy_authorization_queue_reports_failure_and_closes_both_authorization_entr
     assert!(body.contains("queue is busy"), "{body}");
     assert!(p.desktop.notice_path.contains(path.to_str().unwrap()));
     // The busy notice replaces the offer: neither the notice nor the pane can
-    // start an authorized retry until the folder is opened again. Whether the
-    // pane keeps its unreachable receipt meanwhile is not part of this contract.
+    // start an authorized retry until the folder is opened again, so the pane
+    // drops its now unreachable receipt.
     assert!(!p.notice_can_authorize());
     assert!(!p.can_retry_directory_elevated(PaneId::Left));
+    assert!(p.panes[0].elevation_retry.is_none());
 }

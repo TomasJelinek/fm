@@ -510,7 +510,7 @@ fn logical_gutter_and_grid_math_survive_density_font_and_window_changes() {
                 let SelectionAction::Ranges { ranges, .. } = request.action else {
                     panic!()
                 };
-                assert_eq!(ranges.len(), 5);
+                assert_eq!(ranges.source_len(), 5);
                 selection::acknowledge(&h.presenter, &h.commands, PaneId::Left, &[]);
             }
         }

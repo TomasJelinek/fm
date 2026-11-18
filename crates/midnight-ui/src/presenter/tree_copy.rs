@@ -7,6 +7,18 @@ pub(super) struct Pending {
     source: String,
     destination: PathBuf,
     summary: String,
+    retry: Option<Retry>,
+}
+
+/// The backend refused the capture with a retryable answer: its command queue was
+/// full, or a newer publication of the tree replaced the captured view in flight.
+/// The capture is sent again, moved to that publication once it is shown.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Retry {
+    /// Refused just now: the next flush only waits, so a publication still in
+    /// flight can arrive before the same view is sent again.
+    Deferred,
+    Due,
 }
 
 impl Pending {
@@ -38,6 +50,7 @@ impl Presenter {
             ),
             destination: self.panes[pane.other().index()].display_path().to_owned(),
             summary: String::new(),
+            retry: None,
         });
         self.flush_tree_transfer(send);
     }
@@ -81,6 +94,36 @@ impl Presenter {
             return;
         };
         let pane = pending.capture.view.stamp.pane;
+        if let Some(retry) = pending.retry {
+            let p = &self.panes[pane.index()];
+            if !p
+                .tree_view()
+                .is_some_and(|view| Arc::ptr_eq(view, &pending.capture.view))
+            {
+                let Some(capture) = pending.capture.rebased(p) else {
+                    let action = if pending.intent == TransferIntent::Move {
+                        "Move"
+                    } else {
+                        "Copy"
+                    };
+                    self.report_tree_capture_lost(
+                        &pending.capture.view,
+                        &pending.capture.cancel,
+                        action,
+                    );
+                    pending.capture.cancel.cancel();
+                    self.retired.push(Box::new(pending));
+                    return;
+                };
+                let refused = mem::replace(&mut pending.capture, capture);
+                self.retired.push(Box::new(refused));
+                pending.retry = Some(Retry::Due);
+            } else if retry == Retry::Deferred {
+                pending.retry = Some(Retry::Due);
+                self.copies.tree_pending = Some(pending);
+                return;
+            }
+        }
         let p = &mut self.panes[pane.index()];
         let (request, publication) = match pending.capture.status(p, self.operations.closing) {
             tree_capture::Status::Ready(request, publication) => (request, publication),
@@ -150,6 +193,7 @@ impl Presenter {
         )))) {
             p.tree.request = request;
             pending.capture.request = Some(request);
+            pending.retry = None;
         }
         self.copies.tree_pending = Some(pending);
     }
@@ -158,6 +202,7 @@ impl Presenter {
         &mut self,
         stamp: TreeViewStamp,
         request: TreeRequestId,
+        retryable: bool,
         result: Result<TreeTransferCapture, TreeDiagnostic>,
     ) {
         if !self.copies.tree_pending.as_ref().is_some_and(|pending| {
@@ -166,7 +211,7 @@ impl Presenter {
             self.retired.push(Box::new(result));
             return;
         }
-        let pending = self
+        let mut pending = self
             .copies
             .tree_pending
             .take()
@@ -200,6 +245,15 @@ impl Presenter {
                         intent: pending.intent,
                         retire_requested: false,
                     });
+                }
+                Err(error) if retryable => {
+                    // Nothing the user did: flush sends the same selection and
+                    // target row again, on the newer publication once it is shown.
+                    self.retired.push(Box::new(error));
+                    pending.capture.request = None;
+                    pending.retry = Some(Retry::Deferred);
+                    self.copies.tree_pending = Some(pending);
+                    return;
                 }
                 Err(error) => self.desktop.report(
                     if pending.intent == TransferIntent::Move {

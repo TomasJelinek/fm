@@ -1,30 +1,17 @@
 //! Dispatch real Slint keys against the whole window without a backend.
+#[path = "support/ui.rs"]
+mod ui;
+
 use midnight_ui::{MainWindow, Theme};
 use slint::{
     ComponentHandle, ModelRc, SharedString, VecModel,
-    platform::{
-        Key, Platform, PlatformError, WindowAdapter, WindowEvent,
-        software_renderer::{MinimalSoftwareWindow, RepaintBufferType},
-    },
+    platform::{Key, WindowEvent},
 };
 use std::{
     cell::{Cell, RefCell},
     rc::Rc,
 };
-
-#[cfg(windows)]
-#[path = "support/windows_keys.rs"]
-mod platform_keys;
-#[cfg(not(windows))]
-#[path = "support/default_keys.rs"]
-mod platform_keys;
-
-struct TestPlatform(Rc<MinimalSoftwareWindow>);
-impl Platform for TestPlatform {
-    fn create_window_adapter(&self) -> Result<Rc<dyn WindowAdapter>, PlatformError> {
-        Ok(self.0.clone())
-    }
-}
+use ui::platform_keys;
 fn key(window: &MainWindow, text: impl Into<SharedString>) {
     platform_keys::key(window, text.into());
 }
@@ -51,18 +38,9 @@ fn chord(window: &MainWindow, modifiers: &[Key], text: impl Into<SharedString>) 
 
 #[test]
 fn salamander_shortcuts_respect_actual_focus_and_modifiers() {
-    let native = MinimalSoftwareWindow::new(RepaintBufferType::ReusedBuffer);
-    slint::platform::set_platform(Box::new(TestPlatform(native.clone()))).unwrap();
-    let window = MainWindow::new().unwrap();
-    midnight_ui::install_file_keys(&window);
-    window.show().unwrap();
-    window
-        .window()
-        .dispatch_event(WindowEvent::WindowActiveChanged(true));
-    native.set_size(slint::PhysicalSize::new(1340, 820));
-    window.window().dispatch_event(WindowEvent::Resized {
-        size: slint::LogicalSize::new(1340.0, 820.0),
-    });
+    let ui = ui::TestUi::new();
+    let window = ui.window.clone_strong();
+    let native = ui.native.clone();
     window.invoke_focus_files();
     let compared = Rc::new(RefCell::new(Vec::new()));
     let captured = compared.clone();

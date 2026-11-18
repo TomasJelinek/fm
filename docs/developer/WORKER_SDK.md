@@ -67,9 +67,10 @@ Custom Command launches waiting for the lock; no test observes this for the rest
 Terminal launches call `CreateProcessW` without handle inheritance, and Shell
 launches (`ShellExecuteEx`) pass no handles. Third-party code that starts processes
 inside the application cannot take the lock and is outside this rule: Shell
-extensions run by a context-menu command or a `DelegateExecute` verb, and the link in
-Slint's `AboutSlint` attribution in the About window, which Slint's winit backend
-opens with the `webbrowser` crate's `std::process::Command::spawn` on the UI thread.
+extensions run by a context-menu command or a `DelegateExecute` verb. The About
+window shows Slint's `AboutSlint` attribution but covers it, so a click does not open
+its link, which Slint's winit backend would start with the `webbrowser` crate's
+`std::process::Command::spawn` on the UI thread.
 
 The optional FFmpeg provider requires ReadAndExecute access for that fixed
 worker SID on exactly `avcodec-63.dll`, `avformat-63.dll`, `avutil-61.dll` and

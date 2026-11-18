@@ -8,10 +8,7 @@ use i_slint_core::{
 use midnight_ui::{FileRow, MainWindow, Theme};
 use slint::{
     ComponentHandle, Image, Model, ModelRc, Rgb8Pixel, SharedPixelBuffer, VecModel,
-    platform::{
-        Platform, PlatformError, PointerEventButton, WindowAdapter, WindowEvent,
-        software_renderer::{MinimalSoftwareWindow, RepaintBufferType},
-    },
+    platform::{PointerEventButton, WindowEvent},
 };
 use std::{cell::RefCell, ops::Range, rc::Rc};
 
@@ -56,13 +53,6 @@ fn file_icon_columns(window: &MainWindow, name: &str, compressed: bool) -> Range
     origin.x.max(0.0).floor() as usize..((origin.x + rect.width()).ceil() as usize + 2).min(WIDTH)
 }
 
-struct TestPlatform(Rc<MinimalSoftwareWindow>);
-impl Platform for TestPlatform {
-    fn create_window_adapter(&self) -> Result<Rc<dyn WindowAdapter>, PlatformError> {
-        Ok(self.0.clone())
-    }
-}
-
 fn close(pixel: Rgb8Pixel, color: slint::Color) -> bool {
     pixel.r.abs_diff(color.red()) <= 18
         && pixel.g.abs_diff(color.green()) <= 18
@@ -101,10 +91,9 @@ fn prefix_ink(
 
 #[test]
 fn product_prefix_color_and_compression_badge_survive_themes_density_fonts_and_row_input() {
-    let native = MinimalSoftwareWindow::new(RepaintBufferType::ReusedBuffer);
-    slint::platform::set_platform(Box::new(TestPlatform(native.clone()))).unwrap();
-    let window = MainWindow::new().unwrap();
-    midnight_ui::install_file_keys(&window);
+    let ui = ui::TestUi::new();
+    let window = ui.window.clone_strong();
+    let native = ui.native.clone();
     let bytes: Vec<_> = (0..16 * 16).flat_map(|_| NATIVE).collect();
     let icon = Image::from_rgb8(SharedPixelBuffer::<Rgb8Pixel>::clone_from_slice(
         &bytes, 16, 16,
@@ -143,11 +132,6 @@ fn product_prefix_color_and_compression_badge_survive_themes_density_fonts_and_r
     let clicked = Rc::new(RefCell::new(Vec::new()));
     let captured = clicked.clone();
     window.on_row_click(move |pane, row, _, _| captured.borrow_mut().push((pane, row)));
-    window.show().unwrap();
-    native.set_size(slint::PhysicalSize::new(WIDTH as u32, HEIGHT as u32));
-    window.window().dispatch_event(WindowEvent::Resized {
-        size: slint::LogicalSize::new(WIDTH as f32, HEIGHT as f32),
-    });
     let theme = window.global::<Theme>();
     let mut pixels = vec![Rgb8Pixel::default(); WIDTH * HEIGHT];
     for scheme in 0..3 {

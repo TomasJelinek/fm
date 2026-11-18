@@ -183,6 +183,11 @@ Bracket shortcuts use the physical US `[` / `]` key positions, including on
 keyboard layouts with different labels. They work from the file list and command
 editor; AltGr remains available for typing. Options → Keyboard can reassign or
 disable these actions, and their command-editor hints follow the saved mapping.
+Outside the number row and these bracket keys, letter shortcuts such as Ctrl+C in
+the checksum results and Ctrl+V in the path editor follow the character the keyboard
+layout produces, as in other text fields, so on layouts without Latin letters (for
+example Russian or Greek) paste a path with Shift+Insert or the context menu and copy
+a checksum with Shift+F10 or the context menu.
 
 Inserted paths/names are raw text: no generated quotes, escaping or separator
 spaces. Directory insertions append a native path separator only when one is
@@ -358,8 +363,9 @@ default. Explicit quick mode checks size and 64 KiB first/middle/last samples
 (all bytes up to 192 KiB); it can miss corruption between samples.
 Existing names offer Skip, Skip all, a different name, recoverable Replace/Replace
 all or explicit directory Merge/Merge all, Cancel job and Decide later. In such a
-decision window, Escape and X cancel the job like Cancel job; Decide later keeps the
-decision pending. Jobs can reopen deferred conflicts while browsing continues.
+decision window, Escape and X close it like Decide later and keep the decision
+pending in Jobs; only Cancel job cancels the job. Jobs can reopen deferred conflicts
+while browsing continues.
 Copy retains its sources;
 replacement retains displaced originals. See [transfer limits](developer/TRANSFERS.md).
 Other unlisted Salamander/Total Commander

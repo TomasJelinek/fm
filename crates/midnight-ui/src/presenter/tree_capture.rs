@@ -59,6 +59,42 @@ impl Capture {
         })
     }
 
+    /// The same capture on a newer publication of its tree session, while the
+    /// selection it saw is still the applied one. It keeps its target row, not the
+    /// one the cursor reached meanwhile, and its cancellation. Without marks that
+    /// row is all it transfers, so it must still be in the view.
+    pub fn rebased(&self, pane: &Pane) -> Option<Self> {
+        let publication = pane.tree.publication.as_ref()?;
+        let view = &publication.view;
+        if view.stamp.navigation != self.view.stamp.navigation
+            || view.stamp.session != self.view.stamp.session
+            || view.stamp.revision.0 <= self.view.stamp.revision.0
+            || !pane.tree.preview.is_empty()
+            || pane.tree.applied != self.revision
+        {
+            return None;
+        }
+        // The backend uses the target row only when nothing is marked.
+        let fallback = self.fallback.and_then(|id| {
+            view.index
+                .row_positions
+                .get(&id)
+                .and_then(|position| view.rows.get(*position))
+                .filter(|row| row.selectable && !row.context_only)
+                .map(|row| row.id)
+        });
+        if fallback.is_none() && publication.selection.is_empty() {
+            return None;
+        }
+        Some(Self {
+            view: view.clone(),
+            request: None,
+            fallback,
+            cancel: self.cancel.clone(),
+            revision: self.revision,
+        })
+    }
+
     /// Menu receipts keep their original target even after the capture request finished.
     pub fn matches_current(&self, pane: &Pane) -> bool {
         !pane.loading

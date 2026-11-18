@@ -10,7 +10,7 @@ fn disjoint_ranges_preserve_holes_and_apply_explicit_modifier_modes() {
         ],
     )
     .unwrap();
-    assert_eq!(ranges.len(), 12);
+    assert_eq!(ranges.source_len(), 12);
     for (row, hit) in [
         (0, false),
         (1, true),
@@ -30,7 +30,7 @@ fn disjoint_ranges_preserve_holes_and_apply_explicit_modifier_modes() {
 
 #[test]
 fn ranges_validate_source_extent_order_overlap_and_bounded_payload() {
-    assert!(SelectionRanges::new(0, vec![]).unwrap().is_empty());
+    assert!(SelectionRanges::new(0, vec![]).unwrap().spans().is_empty());
     for spans in [
         vec![SelectionSpan { first: 3, last: 2 }],
         vec![SelectionSpan { first: 0, last: 12 }],

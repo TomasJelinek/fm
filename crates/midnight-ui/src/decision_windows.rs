@@ -1,4 +1,4 @@
-//! Exact-token modeless prompts. Deferral and cancellation are separate actions.
+//! Exact-token modeless prompts. Escape and X defer like Decide later; only Cancel job cancels.
 use crate::tool_window_failure::Failures;
 use crate::{
     DecisionWindow, MainWindow, Presenter,
@@ -84,31 +84,38 @@ impl DialogThemeTarget for DecisionWindow {
         self.invoke_apply_preferences(scheme, density, family, desktop, touch);
     }
 }
-pub(crate) fn install(
+fn context(
     main: &MainWindow,
-    state: Rc<RefCell<Presenter>>,
+    state: &Rc<RefCell<Presenter>>,
     send: Rc<dyn Fn(Command) -> bool>,
-) {
+) -> Rc<Context> {
     let closing = Rc::new(Cell::new(false));
     // This reporter only shows a bounded owned notice. Job/decision authority
     // remains pending; reporting must not submit a cancellation or retry.
     let failures = Failures::new(
         main,
-        &state,
+        state,
         &send,
         &closing,
         "Operation decision",
         |_, _: u8, _| true,
     );
-    let ctx = Rc::new(Context {
+    Rc::new(Context {
         main: main.as_weak(),
-        state: Rc::downgrade(&state),
+        state: Rc::downgrade(state),
         closing,
         failures,
         send,
         owner: DialogOwner::new(main),
         windows: RefCell::new(Windows::default()),
-    });
+    })
+}
+pub(crate) fn install(
+    main: &MainWindow,
+    state: Rc<RefCell<Presenter>>,
+    send: Rc<dyn Fn(Command) -> bool>,
+) {
+    let ctx = context(main, &state, send);
     let context = ctx.clone();
     main.on_open_decision_window(move |metadata, explicit| {
         let (Some(main), Some(state)) = (context.main.upgrade(), context.state.upgrade()) else {
@@ -290,8 +297,9 @@ fn open(
     });
     let weak = Rc::downgrade(ctx);
     window.on_request_dismiss(move || {
+        // Escape and the window's X close only this prompt, like Decide later.
         if let Some(ctx) = weak.upgrade() {
-            respond(&ctx, session, Some((3, SharedString::default())));
+            respond(&ctx, session, None);
         }
     });
     let weak = window.as_weak();
@@ -382,5 +390,93 @@ fn close(record: Option<Rc<Record>>, explicit: bool) {
         } else {
             record.host.close(record.window.window());
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use midnight_core::{
+        CopyChoice, CopyErrorStage, CopyEvent, CopyFailure, DragDropEvent, DropToken, Event,
+        FsError, PaneId, TransferIntent, UserPreferences,
+    };
+    use std::{io, path::Path, sync::Arc};
+
+    /// Escape and X no longer cancel, so a superseded window's Cancel job is the
+    /// action whose authority must be refused.
+    #[test]
+    fn a_superseded_decision_window_session_cannot_cancel_the_newer_revision() {
+        let harness = crate::test_harness::Harness::new(UserPreferences::default());
+        let state = harness.presenter.clone();
+        let sent = Rc::new(RefCell::new(Vec::new()));
+        let captured = sent.clone();
+        let send: Rc<dyn Fn(Command) -> bool> = Rc::new(move |command| {
+            captured.borrow_mut().push(command);
+            true
+        });
+        let apply = |event| state.borrow_mut().apply_with_sender(event, send.as_ref());
+        apply(Event::DragDrop(DragDropEvent::DropAccepted {
+            drag: None,
+            token: DropToken(1),
+            pane: PaneId::Right,
+            item_count: 1,
+            intent: TransferIntent::Copy,
+            verification: None,
+            destination: Arc::new(std::env::temp_dir().join("decision destination 文档")),
+        }));
+        let id = state
+            .borrow()
+            .copies
+            .progress
+            .last()
+            .expect("accepted job")
+            .id;
+        let failure = |version| {
+            Event::Copy(CopyEvent::Failure(Arc::new(CopyFailure {
+                id,
+                version,
+                error: FsError::from_io(
+                    "write",
+                    Path::new("destination/file.txt"),
+                    io::Error::from(io::ErrorKind::PermissionDenied),
+                ),
+                source: Some("source/file.txt".into()),
+                destination: "destination/file.txt".into(),
+                stage: CopyErrorStage::Writing,
+                can_retry: true,
+                can_skip: true,
+            })))
+        };
+        let ctx = context(&harness.window, &state, send.clone());
+        let open = |version: u64| {
+            ctx.windows.borrow_mut().wanted[0] = Some(Key {
+                metadata: false,
+                token: format!("copy-error:{}:{version}", id.0),
+            });
+            synchronize(&ctx, &harness.window, &state.borrow());
+            ctx.windows.borrow().records[0]
+                .as_ref()
+                .expect("an open decision window")
+                .session
+        };
+        apply(failure(4));
+        let retired = open(4);
+        apply(failure(5));
+        let current = open(5);
+        assert_ne!(retired, current, "a new revision owns a new window");
+        sent.borrow_mut().clear();
+        respond(&ctx, retired, Some((3, SharedString::default())));
+        assert!(
+            sent.borrow().is_empty(),
+            "the retired window's Cancel job has no authority"
+        );
+        assert!(ctx.windows.borrow().records[0].is_some());
+        respond(&ctx, current, Some((0, SharedString::default())));
+        assert!(matches!(
+            sent.borrow().as_slice(),
+            [Command::DecideCopy(decision)]
+                if decision.id == id && decision.version == 5
+                    && matches!(decision.choice, CopyChoice::Skip)
+        ));
     }
 }

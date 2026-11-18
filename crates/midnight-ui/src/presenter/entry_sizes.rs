@@ -118,6 +118,12 @@ impl Presenter {
 }
 
 impl Pane {
+    /// Whether the attempted full size scan of this location covered this folder
+    /// row: without a size it then shows that the calculation did not finish.
+    pub(crate) fn size_scan_covers(&self, entry: &Entry) -> bool {
+        self.size_scan_attempted && !self.size_scan_new_folders.contains(&entry.path)
+    }
+
     pub(crate) fn entry_size_running(&self, path: &Path) -> bool {
         (self.size_scan.is_some()
             && self

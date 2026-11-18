@@ -299,7 +299,7 @@ fn partial_network_listing_replaces_preview_but_keeps_loading_until_completion()
         assert_eq!(p.panes[0].display_location_text(), address(1).display);
         assert_eq!(p.panes[0].display_len(), 1);
         assert_eq!(p.panes[0].loading, !done);
-        assert_eq!(p.panes[0].folder_column_samples.maximum(), None);
+        assert_eq!(p.panes[0].folder_column_samples.values().max(), None);
         assert!(!p.panes[0].native_capabilities());
     }
 }

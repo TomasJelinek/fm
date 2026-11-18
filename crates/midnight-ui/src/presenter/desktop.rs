@@ -534,6 +534,10 @@ impl Presenter {
             if selection.is_none() {
                 p.folder_column_samples = SizeColumnSamples::default();
                 self.retired.push(Box::new(mem::take(&mut p.folder_sizes)));
+                // A full scan covers every folder listed now.
+                p.size_scan_attempted = true;
+                self.retired
+                    .push(Box::new(mem::take(&mut p.size_scan_new_folders)));
             }
             self.retired
                 .push(Box::new(mem::take(&mut p.entry_size_scans)));
@@ -547,7 +551,6 @@ impl Presenter {
                     index: p.index.clone(),
                     selection: selection.clone(),
                 })));
-            p.size_scan_attempted |= selection.is_none();
         } else {
             self.desktop
                 .report("Folder size queue busy", "Try scanning again.".into());

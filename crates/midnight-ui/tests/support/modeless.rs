@@ -117,10 +117,40 @@ pub fn accessible_popup_item(
         .rev()
         .find_map(|popup| find(ItemRc::new_root(popup.component.clone()), role, label))
 }
+/// Every item with this role and label, in tree order.
+#[allow(dead_code)] // Used where two controls share one label.
+pub fn accessible_items(
+    window: &MinimalSoftwareWindow,
+    role: AccessibleRole,
+    label: &str,
+) -> Vec<ItemRc> {
+    fn collect(item: ItemRc, role: AccessibleRole, label: &str, found: &mut Vec<ItemRc>) {
+        if item.accessible_role() == role
+            && item
+                .accessible_string_property(AccessibleStringProperty::Label)
+                .is_some_and(|v| v == label)
+        {
+            found.push(item.clone());
+        }
+        let mut child = item.first_child();
+        while let Some(item) = child {
+            child = item.next_sibling();
+            collect(item, role, label, found);
+        }
+    }
+    let mut found = Vec::new();
+    let root = WindowInner::from_pub(window.window()).component();
+    collect(ItemRc::new_root(root), role, label, &mut found);
+    found
+}
 pub fn click(window: &MinimalSoftwareWindow, label: &str) {
     let item = accessible_popup_item(window, AccessibleRole::Button, label)
         .or_else(|| accessible_item(window, AccessibleRole::Button, label))
         .unwrap_or_else(|| panic!("Missing {label}"));
+    click_item(window, &item, label);
+}
+/// Press and release the left button at the centre of `item`.
+pub fn click_item(window: &MinimalSoftwareWindow, item: &ItemRc, label: &str) {
     let rect = item.geometry();
     let origin = item.map_to_native_window(rect.origin);
     let position = slint::LogicalPosition::new(

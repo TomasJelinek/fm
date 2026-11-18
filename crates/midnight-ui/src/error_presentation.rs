@@ -62,6 +62,19 @@ fn folder_context<'a>(
     (reason, operation, native)
 }
 
+/// One status line: `{prefix}: ` and the first line of the message, then the path in
+/// parentheses only when the error has one.
+pub(crate) fn status(prefix: &str, error: &FsError) -> String {
+    let reason = error.message.lines().next().unwrap_or_default().trim();
+    let mut text = format!("{prefix}: {reason}");
+    if !error.path.as_os_str().is_empty() {
+        text.push_str(" (");
+        append_path(&mut text, &error.path);
+        text.push(')');
+    }
+    text
+}
+
 pub(crate) fn describe(error: &FsError) -> String {
     let mut text = error.message.clone();
     if !error.path.as_os_str().is_empty() {

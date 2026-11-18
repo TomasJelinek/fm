@@ -8,6 +8,17 @@ import { ColorPickerControls } from "color-picker-controls.slint";
 export component ColorPicker inherits Rectangle {
     in property <color> initial;
     private property <bool> stacked-footer: root.width < use-color.min-width + cancel-color.min-width + 24px;
+    // The footer stays fixed. When the popup is too short for one whole swatch row
+    // beside it, the spacing tightens and the divider goes first; the palette keeps
+    // the height that remains, up to one swatch row.
+    private property <length> regular-footer: root.stacked-footer
+        ? use-color.min-height + cancel-color.min-height + 8px
+        : max(use-color.min-height, cancel-color.min-height);
+    private property <bool> tight: root.height < root.regular-footer + 1px + 2 * 8px + Theme.control-height;
+    private property <length> gap: root.tight ? 4px : 8px;
+    private property <length> footer-height: root.stacked-footer
+        ? use-color.min-height + cancel-color.min-height + root.gap
+        : max(use-color.min-height, cancel-color.min-height);
     callback accepted(color);
     callback cancelled();
     min-width: 0px; min-height: 0px;
@@ -23,9 +34,11 @@ export component ColorPicker inherits Rectangle {
         // The parent allocates this viewport; responsive footer columns must not
         // feed their width-dependent intrinsic size back into that allocation.
         x: 0px; y: 0px; width: root.width; height: root.height;
-        spacing: 8px;
+        spacing: root.gap;
         scroll := ScrollView {
-            min-width: 0px; min-height: 0px; vertical-stretch: 1;
+            min-width: 0px; vertical-stretch: 1;
+            min-height: clamp(root.height - root.footer-height - (root.tight ? root.gap : 1px + 2 * root.gap),
+                0px, Theme.control-height);
             horizontal-scrollbar-policy: as-needed;
             // Flickable measures direct layouts, not reusable layout components.
             VerticalLayout {
@@ -33,11 +46,11 @@ export component ColorPicker inherits Rectangle {
                 controls := ColorPickerControls { }
             }
         }
-        Rectangle { height: 1px; background: Theme.frame; }
+        if !root.tight : Rectangle { height: 1px; background: Theme.frame; }
         // Keep full captions and real button minima. When they cannot share the
         // available width, Cancel gets its own row instead of overflowing the popup.
         GridLayout {
-            spacing: 8px;
+            spacing: root.gap;
             Rectangle {
                 row: 0; col: 0; rowspan: root.stacked-footer ? 2 : 1;
                 background: controls.current; border-width: 1px; border-color: Theme.frame;
@@ -82,10 +95,12 @@ export component ColorPickerDialog inherits Rectangle {
             reject
         }
         VerticalLayout {
-            padding: root.height < 350px ? 6px : 12px;
-            spacing: root.height < 350px ? 4px : 10px;
+            // Very short popups give the palette the space of the larger margins.
+            padding: root.height < 240px ? 4px : root.height < 350px ? 6px : 12px;
+            spacing: root.height < 240px ? 2px : root.height < 350px ? 4px : 10px;
             DialogHeader {
                 title: root.title; compact: root.height < 350px;
+                text-size: root.height < 240px ? Theme.font-size : max(20px, Theme.font-size + 4px);
                 fallback-icon: FallbackIcons.options;
                 close => { root.cancelled(); }
                 dragged(dx, dy) => { root.moved(dx, dy); }

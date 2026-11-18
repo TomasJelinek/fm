@@ -25,9 +25,6 @@ impl SizeColumnSamples {
         };
         self.maxima[unit] = self.maxima[unit].max(Some(bytes));
     }
-    pub fn maximum(&self) -> Option<u64> {
-        self.values().max()
-    }
     pub fn values(&self) -> impl Iterator<Item = u64> + '_ {
         self.maxima.iter().copied().flatten()
     }
@@ -150,7 +147,7 @@ mod tests {
         second.metadata.localized_modified.as_mut().unwrap().date = "15. září 2026".into();
         let a = DirectoryIndex::from_entries(&[first.clone(), second.clone()]).column_samples;
         let b = DirectoryIndex::from_entries(&[second, first]).column_samples;
-        assert_eq!(a.sizes.maximum(), Some(2 << 30));
+        assert_eq!(a.sizes.values().max(), Some(2 << 30));
         assert_eq!(
             a.sizes.values().collect::<Vec<_>>(),
             vec![(1 << 30) - 1024, 2 << 30]
