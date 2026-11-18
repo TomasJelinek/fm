@@ -79,6 +79,38 @@ fn real_f5_multiselection_toolbar_copy_and_f6_move_preserve_bytes_and_clear_sele
 }
 
 #[test]
+fn real_copy_conflict_shows_both_entries_in_the_native_locale() {
+    let mut h = native::Harness::new();
+    fs::write(h.right.join("file-03.bin"), "existing destination").unwrap();
+    h.focus(PaneId::Left, "file-03.bin", false);
+    let start = h.copies.len();
+    ui::key(&h.ui.window, Key::F5);
+    h.until(|h| !h.ui.window.get_copy_draft_token().is_empty());
+    input::key(&h.dialog(), Key::Return);
+    h.until(|h| h.ui.window.get_copy_token().starts_with("copy:"));
+    // Production installs the audited locale, so Copy/Move conflicts format both
+    // entries natively instead of the UI's labelled UTC fallback.
+    for details in [
+        h.ui.window.get_copy_source_details(),
+        h.ui.window.get_copy_target_details(),
+    ] {
+        let modified = details
+            .lines()
+            .find(|line| line.starts_with("Modified: "))
+            .unwrap_or_else(|| panic!("no modification time: {details}"));
+        assert!(!modified.contains("UTC"), "{details}");
+    }
+    h.click_decision("Skip");
+    let progress = h.copy_finished(start);
+    assert!(progress.state.is_terminal(), "{progress:?}");
+    assert_eq!(
+        fs::read(h.right.join("file-03.bin")).unwrap(),
+        b"existing destination"
+    );
+    h.assert_sentinel();
+}
+
+#[test]
 fn real_delete_confirmation_cancel_and_shift_f8_permanently_delete_only_the_selected_tree() {
     let mut h = native::Harness::new();
     h.focus(PaneId::Left, "nested", false);

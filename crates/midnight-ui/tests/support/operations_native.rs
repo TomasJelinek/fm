@@ -136,7 +136,8 @@ impl Harness {
             .configure_mutations()
             .unwrap()
             .install(service.clone());
-        engine.configure_locale().unwrap().install(service);
+        // As production does: Copy/Move conflicts need the audited slot.
+        engine.configure_audited_locale().unwrap().install(service);
         engine
             .configure_settings()
             .unwrap()
@@ -268,6 +269,23 @@ impl Harness {
             "the confirmation must be the only non-tooltip popup on Main"
         );
         self.ui.native.clone()
+    }
+
+    /// Lay out the newest visible modeless window (an operation decision) and click
+    /// its control.
+    pub fn click_decision(&mut self, label: &str) {
+        let decision = self
+            .windows
+            .borrow()
+            .iter()
+            .skip(1)
+            .rev()
+            .find(|window| window.window().is_visible())
+            .cloned()
+            .expect("a visible decision window");
+        modeless::layout(&decision, 900, 650);
+        modeless::click(&decision, label);
+        self.settle();
     }
 
     pub fn rows(&self, pane: PaneId) -> Vec<midnight_ui::FileRow> {
