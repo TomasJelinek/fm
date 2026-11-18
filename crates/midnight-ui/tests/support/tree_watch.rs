@@ -6,15 +6,17 @@
 //! A callback counts only while its subscription is live; a subscription being torn
 //! down is no evidence.
 //!
-//! The engine drops a tree's batch before registering its replacement and covers that
-//! gap with a logical rescan (`tree.dirty()`), so a change made inside the gap
-//! legitimately produces no callback. Registering a batch that contains a directory is
-//! therefore also evidence for that directory.
+//! The engine registers a tree's replacement batch before it releases the old one,
+//! so a directory in both stays covered by the old subscription until the swap ends.
+//! A directory that joins a batch was only polled until then, so the engine probes
+//! it at once instead of waiting for a callback. Registering a batch that contains a
+//! directory is therefore also evidence for that directory.
 //!
-//! Evidence for a directory can never come from another pane's subscription, from a
-//! subscription that does not contain the directory, or from the engine's periodic
-//! poll (which needs no subscription). A broken watch therefore fails its wait even
-//! when that poll later reconciles the row.
+//! Evidence is keyed by directory path: a live subscription of either pane that
+//! contains the directory supplies it. It never comes from a subscription that does
+//! not contain the directory, or from the engine's periodic poll (which needs no
+//! subscription). A broken watch therefore fails its wait even when that poll later
+//! reconciles the row.
 #![allow(dead_code)] // Each test module uses its own subset of these observations.
 use midnight_core::*;
 use std::{

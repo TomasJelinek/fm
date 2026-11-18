@@ -57,6 +57,29 @@ error occurrence. A new error invalidates the preceding source even when its sho
 text is identical. Mouse presses capture row, report revision and context: refresh
 or virtualized rebinding between press and release cancels the gesture.
 
+## Watch status
+
+`Event::WatchStatus` reports how an accepted flat view or tree session is watched:
+`PollingOnly` (with the registration error) after native registration failed, so
+only the periodic check (about every 15 seconds) finds changes; `Restarting` while
+a failed watch worker waits for its rate-limited restart; `Native` only to clear an
+earlier status of the same view. Each status is sent once per change of a view's
+status, never blocks the watch worker (a full event queue keeps the newest status
+until it can be sent), and a status for a view the pane no longer shows is
+dropped. It is non-fatal: rows, actions and manual Refresh stay usable, and it is
+never shown as a panel error or a modal dialog. The presenter adds it to the pane's
+status line only while its view is the pane's current view (a flat navigation, or
+the tree's navigation and session). `TreeEvent::WatchFailed` keeps reporting scope
+enrollment failures and epoch exhaustion.
+
+A flat folder registers again with a refresh; a tree batch with a later scope
+update, at most once per poll interval. A pane's watch worker that panics restarts
+in place on its own thread: at once the first time, afterwards no sooner than a
+minute after its previous restart, reporting `Restarting` meanwhile. A registration
+that panicked twice in a row is skipped until another one is made, so its view is
+only polled and reports `PollingOnly`. Panics on platform notification threads,
+such as the process-wide Windows watch service thread, are outside this policy.
+
 ## Presentation and viewing
 
 Yellow size warnings mean that a total is incomplete because of actual failures.
