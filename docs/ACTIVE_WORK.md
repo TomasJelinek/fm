@@ -31,7 +31,8 @@ review deferred, and the residuals it accepted, are rows of the
 each with its trigger. The last batch merged at `cd66e919` with the follow-up
 `d0f44c55`: explicit bidirectional controls in shown names and paths, the event-woken
 thumbnail pulse and the comparison font restored into open comparators (UI and
-Viewers below).
+Viewers below). This documentation pass and the readable Recycle Bin refusal
+(`4ab0b16f`, merged at `ac4c2e87`) followed.
 
 Changes by area (the linked contracts describe the current behavior):
 
@@ -69,8 +70,11 @@ Changes by area (the linked contracts describe the current behavior):
   of `notify`, pins Move destinations and recovery parents reached through
   junctions, falls back to the classic delete disposition for permanent deletion on
   FAT32/exFAT (not verified on real media) while Copy and Move refuse such volumes,
-  and waits out a folder Rename refused while a file below it is open
-  ([record](verification/2026-11-18-windows-directory-rename-refusals.md)). Linux
+  waits out a folder Rename refused while a file below it is open
+  ([record](verification/2026-11-18-windows-directory-rename-refusals.md)), and
+  reports a Recycle Bin move refused because the item or an entry below it is open
+  as busy, with a message that keeps the Shell code and names this application's
+  panels, expanded folders and viewers as possible holders (TRASH-01). Linux
   stages Rename and permanent Delete on mounts without POSIX modes under one
   admission rule in the platform crate and the native plugin, with ACL-aware
   private-group parents and overlayfs-aware mount checks; a completed Rename or
@@ -135,8 +139,11 @@ Changes by area (the linked contracts describe the current behavior):
   the user-command probe compiles once per compiler and source; Copy/Move planning
   tests name the qualified NTFS volume they need. Beyond the clipboard
   transfers named in the 17 November entry below, the root F5/F6 transfers of
-  `tree_move` now also hold scalar watch hints through the transfer terminal
-  ([test execution](developer/TEST_EXECUTION.md)).
+  `tree_move` now also hold scalar watch hints through the transfer terminal ([test
+  execution](developer/TEST_EXECUTION.md)). Running each Windows test executable
+  alone took 238.5 s at `d0f44c55`, against 2,147.5 s at main `3a27eeb2`, with 6,155
+  instead of 5,373 passing tests ([test execution
+  time](verification/2026-11-18-test-execution-time.md)).
 - **CI and build.** New `viewer-conformance` and `thumbnail-image` jobs; the `check`
   job runs the isolated X11 drag/drop and clipboard tests (Xvfb `-noreset`), the
   installed archive worker tests and the image decoder's native helper tests. Build
@@ -153,7 +160,8 @@ Evidence. The review's dated records are
 [recursive metadata traversal](verification/2026-11-18-recursive-metadata-traversal.md),
 [Windows directory rename refusals](verification/2026-11-18-windows-directory-rename-refusals.md),
 [HTML idle wakeups](verification/2026-11-18-html-idle-wakeups.md),
-[explorer idle wakeups](verification/2026-11-18-ui-idle-wakeups.md) and
+[explorer idle wakeups](verification/2026-11-18-ui-idle-wakeups.md), [test execution
+time](verification/2026-11-18-test-execution-time.md) and
 [separate workspaces and opt-in qualification](verification/2026-11-18-workspaces-and-opt-in-qualification.md).
 They build on [HTML frame pacing](verification/2026-11-12-html-frame-pacing.md) (the
 wheel-latency viewport), the [Linux HTML qualification](verification/2026-11-10-html-linux.md),
@@ -181,7 +189,17 @@ batch merged after it at `cd66e919` passed its package's Windows runs (core, UI,
 viewer UI, comparator and explorer tests); with the follow-up `d0f44c55`, Windows
 workspace Clippy reported no warnings and the tests of the compare engine,
 comparator, viewer UI and explorer gave 350 passed / 0 failed / 22 ignored (logs
-`b10e-final-*`). No full workspace run and no Linux run of `d0f44c55` is recorded.
+`b10e-final-*`). At `d0f44c55` the timed Windows run passed every test: 6,155 passed
+/ 0 failed / 127 ignored in 66 test executables ([test execution
+time](verification/2026-11-18-test-execution-time.md)). At `ac4c2e87`, after this
+pass's Recycle Bin merge, `cargo fmt --check` and workspace Clippy reported nothing
+on Windows and the workspace tests gave 6,156 passed / 0 failed / 127 ignored in 88
+groups (logs `vfinal-win-*`); on Linux workspace Clippy reported no warnings, and on
+an otherwise idle machine the workspace tests gave 6,004 passed / 0 failed / 128
+ignored in 85 groups (log `vfinal-linux-test3.log`). The two earlier Linux runs of
+`ac4c2e87`, made while the Windows suite ran beside them, each had one timeout, a
+different test each time; both tests passed five isolated runs and the other runs
+(TEST-03).
 
 Not established by this checkpoint:
 
@@ -218,7 +236,7 @@ UI-PERF-01 (idle wakeups); PERF-04 (unmeasured hot paths and the corpus test tim
 ARCH-01 (small-content budget); ARCH-05, ARCH-06 and LIFE-02 (captures retained
 after a taint or quarantine); ARCH-07, REL-01 and SDK-01 to SDK-04 (next API/SDK
 releases); META-04, WATCH-01, SPOOL-01, LINK-01, IO-02, TREE-PERF-01, TREE-02,
-INPUT-01, PROC-01, PLUGIN-01, COMPARE-01, BUILD-01, TRASH-01, TEST-01, TEST-02 and
+INPUT-01, PROC-01, PLUGIN-01, COMPARE-01, BUILD-01, TRASH-01, TEST-01, TEST-02, TEST-03 and
 OPTIONS-02. The role table under
 [current role boundaries](#current-role-boundaries-and-exclusive-ownership)
 describes assignments made before this review; the review assigned no further role
@@ -981,6 +999,7 @@ their evidence or authorize edits to another role's files.
 | [Panel qualification final handoff](verification/2026-11-12-panel-interaction-polish.md) | Its final “ready for main” and paused-backlog text describes that handoff. The current Orchestrator assignment establishes integration and resumed scoped work; it does not expand the report's executed test/native/CI scope. |
 | [Bulk selection fixtures](../crates/midnight-ui/tests/bulk_selection.rs), [tree bulk selection fixtures](../crates/midnight-ui/tests/tree_bulk_selection.rs) | Former expectations caused the recorded Linux CI failure. Fixture source is corrected in `2e0e554`; the completed-artifact diagnostic passed 1 flat and 8 tree tests. The combined result failed elsewhere; no all-integration or remote CI pass is inferred. |
 | [README Controls](../README.md#controls) | Corrected under the explicit scope extension: Ctrl+D clears every mark, including inline descendants; Ctrl+Shift+D is unassigned by default. Ctrl+A/Ctrl+Shift+A and Ctrl+I/Ctrl+Shift+I retain the verified files-only/top-level-all scopes. |
+| [Windows directory rename refusals](verification/2026-11-18-windows-directory-rename-refusals.md), Scope and Limitations | Recycling has no Retry/Skip/Cancel decision: the delete worker (`crates/midnight-engine/src/operation_worker.rs`, `MutationKind::Delete`) records a refused Trash target as failed and continues with the next selected target; only Move stops with Retry/Skip/Cancel. Its statement that the Shell error is shown with its code is superseded by `9d25722e` and `4ab0b16f`: 0x80270021 and 0x80270027 are reported as `ResourceBusy` with a readable message that keeps the code and the path and names this application's panels, expanded folders and viewers as possible holders. The remaining limit is TRASH-01 in the [backlog](IMPLEMENTATION_BACKLOG.md). |
 
 ## Evidence required to close work
 
