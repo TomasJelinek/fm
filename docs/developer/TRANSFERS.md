@@ -26,9 +26,8 @@ replacement; the consumed source stream is not replayed.
 All methods run on backend workers. UI receives bounded immutable progress and
 versioned conflict metadata, and sends a choice with the exact job/version.
 
-Transfer entries carry raw modification times. The Windows adapter formats none
-of them; the Linux adapter still formats every entry it reports until its
-follow-up. The engine formats only displayed entries, on a backend worker and only
+Transfer entries carry raw modification times, which neither native adapter
+formats. The engine formats only displayed entries, on a backend worker and only
 when the adapter supplied no text: both sides of a Copy/Move or Rename conflict
 prompt, and the existing output of a Make File List save confirmation. Copy/Move
 formats through the audited locale (`Engine::configure_audited_locale`), because
