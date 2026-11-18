@@ -239,7 +239,7 @@ fn font_options_keep_family_and_density_bases_independent() {
         window.on_properties(bump(&rows_run));
         window.on_folder_sizes(bump(&rows_run));
         window.on_calculate_checksums(bump(&rows_run));
-        let (x, y) = unscrolled_center(&window, "Close", 1040.0, height as f32);
+        let (x, y) = unscrolled(&window, "Close", 1040.0, height as f32).center;
         click(&window, x, y);
         native.draw_if_needed(|renderer| {
             renderer.render(&mut pixels, 1040);
@@ -258,10 +258,58 @@ fn font_options_keep_family_and_density_bases_independent() {
     window.hide().unwrap();
 }
 
-/// Return the centre of the open popup's button `label` after asserting, without
-/// scrolling anything, that it is inside the window and every scrolling ancestor's
-/// clip (a clipped row could only be hit through another one).
-fn unscrolled_center(window: &MainWindow, label: &str, width: f32, height: f32) -> (f32, f32) {
+/// The User menu is sized for its title and all of its rows at every font size and
+/// density: Close, the last row, is visible without scrolling, and less than a row
+/// of the list stays blank below it.
+#[test]
+fn user_menu_fits_its_rows_at_every_font_size() {
+    let native = MinimalSoftwareWindow::new(RepaintBufferType::ReusedBuffer);
+    slint::platform::set_platform(Box::new(TestPlatform(native.clone()))).unwrap();
+    let window = MainWindow::new().unwrap();
+    window.set_preferences_ready(true);
+    midnight_ui::install_file_keys(&window);
+    window.show().unwrap();
+    window
+        .window()
+        .dispatch_event(WindowEvent::WindowActiveChanged(true));
+    native.set_size(slint::PhysicalSize::new(1040, 820));
+    window.window().dispatch_event(WindowEvent::Resized {
+        size: slint::LogicalSize::new(1040.0, 820.0),
+    });
+    for (density, font) in [(0, 12), (0, 13), (0, 16), (0, 32), (1, 15), (1, 32)] {
+        window.invoke_apply_fonts("".into(), font, font);
+        window.invoke_apply_preferences(0, density);
+        window.invoke_focus_files();
+        key(&window, Key::F9);
+        ui::settle_layout(window.window());
+        let close = unscrolled(&window, "Close", 1040.0, 820.0);
+        assert!(
+            close.below < close.height,
+            "the User menu leaves a blank row below Close at {font}px, density {density}: {}px below a {}px row",
+            close.below,
+            close.height
+        );
+        key(&window, Key::Escape);
+        ui::settle_layout(window.window());
+        assert!(
+            !ui::has_popup(&window),
+            "Escape closes the User menu; font={font}, density={density}"
+        );
+    }
+    window.hide().unwrap();
+}
+
+/// An open popup's button, asserted to be inside the window and every scrolling
+/// ancestor's clip without scrolling anything (a clipped row could only be hit
+/// through another one).
+struct Unscrolled {
+    center: (f32, f32),
+    height: f32,
+    /// How far the innermost scrolling clip extends below the button.
+    below: f32,
+}
+
+fn unscrolled(window: &MainWindow, label: &str, width: f32, height: f32) -> Unscrolled {
     use i_slint_core::{
         item_tree::{ItemRc, ParentItemTraversalMode},
         items::Flickable,
@@ -282,6 +330,7 @@ fn unscrolled_center(window: &MainWindow, label: &str, width: f32, height: f32) 
         area.0 >= 0.0 && area.1 >= 0.0 && area.2 <= width && area.3 <= height,
         "{label} outside the window: {area:?}"
     );
+    let mut below = None;
     let mut parent = item.parent_item(ParentItemTraversalMode::StopAtPopups);
     while let Some(ancestor) = parent {
         if ancestor.downcast::<Flickable>().is_some() {
@@ -293,8 +342,15 @@ fn unscrolled_center(window: &MainWindow, label: &str, width: f32, height: f32) 
                     && area.3 <= clip.3 + 0.5,
                 "{label} needs scrolling: {area:?}, clip {clip:?}"
             );
+            if below.is_none() {
+                below = Some(clip.3 - area.3);
+            }
         }
         parent = ancestor.parent_item(ParentItemTraversalMode::StopAtPopups);
     }
-    ((area.0 + area.2) / 2.0, (area.1 + area.3) / 2.0)
+    Unscrolled {
+        center: ((area.0 + area.2) / 2.0, (area.1 + area.3) / 2.0),
+        height: area.3 - area.1,
+        below: below.expect("the button is inside a scrolling list"),
+    }
 }
