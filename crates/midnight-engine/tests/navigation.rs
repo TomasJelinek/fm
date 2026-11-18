@@ -209,6 +209,56 @@ async fn next(events: &mut mpsc::Receiver<Event>) -> Event {
         .expect("engine output must remain connected")
 }
 
+/// Whether a listing enters the provider within `limit`, reading the Engine's
+/// events meanwhile.
+///
+/// The Engine fills the test's bounded event channel without being asked: when
+/// it starts (fallback icons, network and archive availability) and for each
+/// navigation (listing start, storage kind, free space). A listing task sends
+/// its start event before it reaches the provider, so a wait that does not read
+/// the channel stalls for good once the channel is full. The events read here
+/// are dropped: in this file's waits every earlier listing is held in the
+/// provider, so no listing can finish or fail meanwhile.
+async fn entered_within(
+    entered: &Notify,
+    events: &mut mpsc::Receiver<Event>,
+    limit: Duration,
+) -> bool {
+    let entered = entered.notified();
+    tokio::pin!(entered);
+    tokio::time::timeout(limit, async {
+        loop {
+            tokio::select! {
+                () = &mut entered => return,
+                event = events.recv() => no_listing_outcome(event),
+            }
+        }
+    })
+    .await
+    .is_ok()
+}
+
+fn no_listing_outcome(event: Option<Event>) {
+    match event.expect("engine output must remain connected") {
+        Event::ListingFinished {
+            pane, navigation, ..
+        } => panic!("{pane:?} listing {navigation:?} finished while a listing was held"),
+        Event::ListingFailed {
+            pane,
+            navigation,
+            error,
+        } => panic!("{pane:?} listing {navigation:?} failed while a listing was held: {error}"),
+        _ => {}
+    }
+}
+
+async fn until_entered(entered: &Notify, events: &mut mpsc::Receiver<Event>) {
+    assert!(
+        entered_within(entered, events, Duration::from_secs(3)).await,
+        "listing worker did not enter the provider within 3 s"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn blocked_left_listing_does_not_prevent_right_completion() {
     let filesystem = provider();
@@ -226,9 +276,9 @@ async fn blocked_left_listing_does_not_prevent_right_completion() {
         .send(navigate(PaneId::Left, 1, "slow"))
         .await
         .unwrap();
-    tokio::time::timeout(Duration::from_secs(3), filesystem.entered.notified())
-        .await
-        .expect("left worker entered provider");
+    // Eight slots: fewer than the startup and left-pane events that can precede
+    // the left listing's provider call, so this wait must read them.
+    until_entered(&filesystem.entered, &mut events).await;
     commands
         .send(navigate(PaneId::Right, 1, "fast"))
         .await
@@ -266,9 +316,7 @@ async fn replacing_navigation_cancels_old_completion() {
         .send(navigate(PaneId::Left, 1, "slow"))
         .await
         .unwrap();
-    tokio::time::timeout(Duration::from_secs(3), filesystem.entered.notified())
-        .await
-        .unwrap();
+    until_entered(&filesystem.entered, &mut events).await;
     commands
         .send(navigate(PaneId::Left, 2, "fast"))
         .await
@@ -392,18 +440,30 @@ async fn uninterruptible_old_reads_cannot_exhaust_the_other_panes_workers() {
             .send(navigate(PaneId::Left, generation, "slow"))
             .await
             .unwrap();
-        tokio::time::timeout(Duration::from_secs(3), filesystem.entered.notified())
-            .await
-            .unwrap();
+        until_entered(&filesystem.entered, &mut events).await;
     }
     commands
         .send(navigate(PaneId::Left, 3, "slow"))
         .await
         .unwrap();
+    // The third listing sends its start event right before it waits for one of
+    // the pane's two listing permits, which both held reads keep.
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            match next(&mut events).await {
+                Event::ListingStarted {
+                    pane: PaneId::Left,
+                    navigation: NavigationId(3),
+                    ..
+                } => break,
+                event => no_listing_outcome(Some(event)),
+            }
+        }
+    })
+    .await
+    .expect("third listing started");
     assert!(
-        tokio::time::timeout(Duration::from_millis(100), filesystem.entered.notified())
-            .await
-            .is_err(),
+        !entered_within(&filesystem.entered, &mut events, Duration::from_millis(100)).await,
         "one pane must not start a third uncancellable OS read"
     );
     commands
@@ -430,7 +490,7 @@ async fn aborting_engine_cancels_the_cooperative_listing_it_owns() {
     let filesystem = provider();
     let _release = ReleaseOnDrop(filesystem.released.clone());
 
-    let (sender, events) = mpsc::channel(16);
+    let (sender, mut events) = mpsc::channel(16);
     let mut command_engine_8 = Engine::new(
         Engine::lifetime().expect("engine cleanup worker"),
         filesystem.clone(),
@@ -442,9 +502,7 @@ async fn aborting_engine_cancels_the_cooperative_listing_it_owns() {
         .send(navigate(PaneId::Left, 1, "slow"))
         .await
         .unwrap();
-    tokio::time::timeout(Duration::from_secs(3), filesystem.entered.notified())
-        .await
-        .unwrap();
+    until_entered(&filesystem.entered, &mut events).await;
     let cancellation = filesystem.cancellation.lock().unwrap().clone().unwrap();
     engine.abort();
     assert!(engine.await.unwrap_err().is_cancelled());
